@@ -1,0 +1,1 @@
+{"listen":{"host":"127.0.0.1","port":8787},"publicOrigin":"https://agents.example.com","proxy":{"trustedSourceIps":["127.0.0.1","::1"]},"tmux":{"pollIntervalMs":500},"launch":{"program":"/usr/local/bin/codex","args":["--workdir","{worktreePath}"]},"worktrees":[{"id":"my-project","label":"My project","path":"/absolute/path/to/project"}]}

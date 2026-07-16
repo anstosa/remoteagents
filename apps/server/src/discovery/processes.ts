@@ -1,0 +1,7 @@
+import { readFile, readdir } from 'node:fs/promises';
+const allowed = /^(codex|omx)(?:\.js)?$/i;
+export interface ProcessInspector { hasCodexDescendant(pid: number): Promise<boolean>; }
+export class ProcInspector implements ProcessInspector {
+  async hasCodexDescendant(root: number): Promise<boolean> { const pending = [root], seen = new Set<number>(); while (pending.length && seen.size < 256) { const pid = pending.pop()!; if (seen.has(pid)) continue; seen.add(pid); try { const comm = (await readFile(`/proc/${pid}/comm`, 'utf8')).trim(); if (allowed.test(comm)) return true; const cmd = (await readFile(`/proc/${pid}/cmdline`, 'utf8')).split('\0')[0].split('/').pop() ?? ''; if (allowed.test(cmd)) return true; const children = (await readFile(`/proc/${pid}/task/${pid}/children`, 'utf8')).trim().split(/\s+/).filter(Boolean).map(Number); for (const child of children) if (Number.isInteger(child) && child > 0) pending.push(child); } catch { /* exited/unreadable is not an agent */ } } return false; }
+}
+export async function tmuxServerPids(uid: number): Promise<number[]> { const entries = await readdir('/proc', { withFileTypes: true }); const found: number[] = []; for (const entry of entries) { if (!/^\d+$/.test(entry.name)) continue; try { const status = await readFile(`/proc/${entry.name}/status`, 'utf8'); if (!new RegExp(`^Uid:\\s+${uid}\\b`, 'm').test(status)) continue; const cmd = await readFile(`/proc/${entry.name}/cmdline`, 'utf8'); if (/\btmux(?::|\0).*server|tmux: server/.test(cmd)) found.push(Number(entry.name)); } catch { } } return found; }

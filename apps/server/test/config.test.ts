@@ -1,0 +1,7 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtemp, mkdir, symlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { validateConfig } from '../src/config/schema.js';
+const dirs:string[]=[]; async function fixture(){const root=await mkdtemp(join(tmpdir(),'rac-'));dirs.push(root);const work=join(root,'work');await mkdir(work);return {root,work,input:{publicOrigin:'https://agents.example.com',launch:{program:'/bin/echo',args:['--workdir','{worktreePath}']},worktrees:[{id:'a',path:work}]}}} afterEach(async()=>{for(const dir of dirs.splice(0))await (await import('node:fs/promises')).rm(dir,{recursive:true,force:true})});
+describe('configuration safety',()=>{it('canonicalizes an allowed worktree',async()=>{const {work,input}=await fixture();const config=await validateConfig(input);expect(config.worktrees[0]?.identity).toBe(work);expect(config.listen.host).toBe('127.0.0.1')});it('rejects non HTTPS origin and shell-like launch fields',async()=>{const {input}=await fixture();await expect(validateConfig({...input,publicOrigin:'http://agents.example.com'})).rejects.toThrow('HTTPS');await expect(validateConfig({...input,launch:{program:'codex',args:['{evil}']}})).rejects.toThrow()});it('rejects duplicate canonical identities including symlinks',async()=>{const {root,work,input}=await fixture();const alias=join(root,'alias');await symlink(work,alias);await expect(validateConfig({...input,worktrees:[{id:'a',path:work},{id:'b',path:alias}]})).rejects.toThrow('duplicate')})});
