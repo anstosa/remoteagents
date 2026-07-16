@@ -9,7 +9,6 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm --filter @rac/server test",
     "test:coverage": "pnpm --filter @rac/server test:coverage",
-    "test:e2e": "pnpm --filter @rac/web test:e2e",
     "start": "pnpm --filter @rac/server start"
   }
 }

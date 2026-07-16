@@ -8,7 +8,8 @@ export class AuthService {
     if (!passwordHash.startsWith('$argon2id$')) throw new Error('RAC_PASSWORD_HASH must be an Argon2id hash');
     if (Buffer.from(secret, 'base64url').length < 32) throw new Error('RAC_SESSION_SECRET must contain at least 32 bytes');
   }
-  bootstrap(): string { const value = token(); this.preauth.set(value, this.now() + 300_000); return value; }
+  private prunePreauth(): void { const now = this.now(); for (const [value, expires] of this.preauth) if (expires < now) this.preauth.delete(value); while (this.preauth.size >= 1_024) this.preauth.delete(this.preauth.keys().next().value!); }
+  bootstrap(): string { this.prunePreauth(); const value = token(); this.preauth.set(value, this.now() + 300_000); return value; }
   async login(password: string, preauth: string): Promise<Session | undefined> { const expiry = this.preauth.get(preauth); this.preauth.delete(preauth); if (!expiry || expiry < this.now()) return undefined; const ok = await argon2.verify(this.passwordHash, password).catch(() => false); if (!ok) return undefined; const session = { id: token(), csrf: token(), expires: this.now() + 8 * 60 * 60_000 }; this.sessions.set(session.id, session); return session; }
   get(id: string | undefined): Session | undefined { if (!id) return undefined; const session = this.sessions.get(id); if (!session || session.expires < this.now()) { this.sessions.delete(id); return undefined; } return session; }
   logout(id?: string): void { if (id) this.sessions.delete(id); }
