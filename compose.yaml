@@ -1,0 +1,64 @@
+services:
+  remote-agent-console:
+    build:
+      context: .
+      args:
+        CODEX_VERSION: ${CODEX_VERSION:-0.144.5}
+    restart: unless-stopped
+    init: true
+    # The application intentionally binds to loopback. Host networking keeps
+    # that boundary while making 127.0.0.1:8787 reachable from the host.
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      RAC_CONFIG: /config/remote-agent-console.docker.json
+      RAC_HOST_PROC: /host-proc
+      RAC_HOST_UNIX_SOCKETS: /host-proc-net-unix
+      RAC_HOST_TMUX_DIR: /host-tmux
+      RAC_HOST_UID: ${HOST_UID:-1000}
+      RAC_TMUX_BIN: /usr/local/bin/host-tmux
+    volumes:
+      - ./:/workspace:rw
+      - ${HOME}/.bash_aliases:/home/node/.bash_aliases:ro
+      - /home/ubuntu/ferry.fyi:/worktrees/ferry.fyi:rw
+      - /home/ubuntu/cora:/worktrees/cora:rw
+      - /home/ubuntu/owen:/worktrees/owen:rw
+      - /home/ubuntu/dave:/worktrees/dave:rw
+      - /home/ubuntu/eric:/worktrees/eric:rw
+      - /home/ubuntu/alex:/worktrees/alex:rw
+      - /home/ubuntu/skills:/worktrees/skills:rw
+      - ./config/remote-agent-console.docker.json:/config/remote-agent-console.docker.json:ro
+      # Discovery needs the host tmux server and process tree. The socket is
+      # mounted read-only; interaction remains limited to tmux's own protocol.
+      - /proc:/host-proc:ro
+      - /proc/net/unix:/host-proc-net-unix:ro
+      - /tmp/tmux-${HOST_UID:-1000}:/host-tmux:ro
+      - /home/linuxbrew:/home/linuxbrew:ro
+      - /usr/lib:/host-lib:ro
+      - codex-home:/home/node/.codex
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/healthz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    # The host configuration and tunnel credential are intentionally
+    # owner-readable only. Run this sidecar as root so its read-only bind mounts
+    # remain usable without weakening their host permissions.
+    user: "0:0"
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      remote-agent-console:
+        condition: service_healthy
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./config/cloudflared.yml:/etc/cloudflared/config.yml:ro
+      - ${CLOUDFLARED_CREDENTIALS_FILE:?set CLOUDFLARED_CREDENTIALS_FILE to the tunnel credential JSON path}:/etc/cloudflared/credentials.json:ro
+
+volumes:
+  codex-home:

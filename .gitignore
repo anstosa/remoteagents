@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .env
+config/cloudflared.yml
+config/remote-agent-console.docker.json
 coverage/
 playwright-report/
 test-results/

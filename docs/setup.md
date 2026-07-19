@@ -21,6 +21,27 @@ pnpm build
 pnpm start
 ```
 
+To run the console and its managed tmux/Codex sessions in Docker instead, see
+[the Docker Compose guide](docker.md).
+
+## Worktree commands
+
+Each worktree can define its own trusted shell command. The console changes to
+the worktree's canonical path before running it, so commands can use relative
+paths and project-local tooling:
+
+```json
+{
+  "id": "my-project",
+  "path": "/absolute/path/to/project",
+  "command": "/usr/local/bin/codex"
+}
+```
+
+The legacy `launch` template remains supported for existing configurations. A
+worktree must define either `command` or `launch` (or inherit the top-level
+`launch`); it cannot define both.
+
 The default server listener is `127.0.0.1:8787`; `/healthz` is loopback-only and reveals only `{ "ok": true }`. Do not put passwords, prompts, session cookies, CSRF tokens, or WebSocket tickets in configuration or logs.
 
 ## Operational checks
