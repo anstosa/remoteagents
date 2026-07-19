@@ -80,7 +80,13 @@ function Log({ id, onOpenTerminal }: { id: string; onOpenTerminal: () => void })
       setCanPageDown(buffer.viewportY < buffer.baseY);
     };
     const scrollSubscription = terminal.onScroll(syncScrollState);
-    const reconnect = () => { if (!closed) retry = window.setTimeout(() => void connect(), 1_000); };
+    const reconnect = () => {
+      if (closed || retry !== undefined) return;
+      retry = window.setTimeout(() => {
+        retry = undefined;
+        void connect();
+      }, 1_000);
+    };
     const connect = async () => {
       setStatus('Connecting');
       try {
@@ -88,9 +94,14 @@ function Log({ id, onOpenTerminal }: { id: string; onOpenTerminal: () => void })
         if (!response.ok) throw new Error('ticket unavailable');
         const { ticket } = await response.json();
         if (closed) return;
-        socket = new WebSocket(`${location.origin.replace(/^http/, 'ws')}/ws/logs/${encodeURIComponent(id)}`, ['rac', ticket]);
-        socket.onopen = () => setStatus('Live');
-        socket.onmessage = event => {
+        const ws = new WebSocket(`${location.origin.replace(/^http/, 'ws')}/ws/logs/${encodeURIComponent(id)}`, ['rac', ticket]);
+        socket = ws;
+        ws.onopen = () => {
+          if (closed || socket !== ws) return;
+          setStatus('Live');
+        };
+        ws.onmessage = event => {
+          if (closed || socket !== ws) return;
           const frame = JSON.parse(event.data);
           if (frame.type !== 'reset') { if (frame.text) setHasRendered(true); return terminal.write(frame.text, syncScrollState); }
           const buffer = terminal.buffer.active;
@@ -104,8 +115,13 @@ function Log({ id, onOpenTerminal }: { id: string; onOpenTerminal: () => void })
             syncScrollState();
           });
         };
-        socket.onclose = () => { setStatus('Reconnecting'); reconnect(); };
-        socket.onerror = () => socket?.close();
+        ws.onclose = () => {
+          if (closed || socket !== ws) return;
+          socket = undefined;
+          setStatus('Reconnecting');
+          reconnect();
+        };
+        ws.onerror = () => ws.close();
       } catch { setStatus('Reconnecting'); reconnect(); }
     };
     void connect();
