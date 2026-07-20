@@ -21,6 +21,7 @@ services:
     volumes:
       - ./:/workspace:rw
       - ${HOME}/.bash_aliases:/home/node/.bash_aliases:ro
+      - ${HOME}/.config/gh/hosts.yml:/home/node/.config/gh/hosts.yml:ro
       - /home/ubuntu/ferry.fyi:/worktrees/ferry.fyi:rw
       - /home/ubuntu/cora:/worktrees/cora:rw
       - /home/ubuntu/owen:/worktrees/owen:rw

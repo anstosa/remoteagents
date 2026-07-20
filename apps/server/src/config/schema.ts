@@ -12,11 +12,12 @@ const sourceSchema = z.object({
   listen: z.object({ host: z.string(), port: z.number().int().min(1).max(65535) }).strict().default({ host: '127.0.0.1', port: 8787 }),
   publicOrigin: z.string(), proxy: z.object({ trustedSourceIps: z.array(z.string()).default(['127.0.0.1', '::1']) }).strict().default({}),
   tmux: z.object({ pollIntervalMs: z.number().int().min(250).max(10000).default(500) }).strict().default({}),
+  newAgentCommand: command.default('codex'),
   launch: launchSchema.optional(),
   worktrees: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), label: z.string().max(120).optional(), path: z.string().min(1), hostPath: z.string().startsWith('/').optional(), port: z.number().int().min(1).max(65535).optional(), hostname: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/).optional(), command: command.optional(), launch: launchSchema.optional() }).strict()).min(1).max(100)
 }).strict();
 export type ConfigInput = z.input<typeof sourceSchema>;
-export type ValidatedConfig = { listen: { host: '127.0.0.1'|'::1'; port: number }; publicOrigin: URL; trustedProxyIps: Set<string>; pollIntervalMs: number; worktrees: Worktree[] };
+export type ValidatedConfig = { listen: { host: '127.0.0.1'|'::1'; port: number }; publicOrigin: URL; trustedProxyIps: Set<string>; pollIntervalMs: number; newAgentCommand: string; worktrees: Worktree[] };
 
 function canonicalOrigin(value: string): URL {
   let url: URL; try { url = new URL(value); } catch { throw new Error('publicOrigin must be an absolute HTTPS URL'); }
@@ -52,6 +53,6 @@ export async function validateConfig(input: unknown): Promise<ValidatedConfig> {
     const projectUrl = raw.hostname === undefined ? undefined : `https://${raw.hostname}`;
     worktrees.push({ id: raw.id, label: raw.label ?? raw.id, path, identity, hostPath: raw.hostPath === undefined ? undefined : resolve(raw.hostPath), available: true, command: raw.command, launch, projectUrl });
   }
-  return { listen: { host: parsed.listen.host as '127.0.0.1'|'::1', port: parsed.listen.port }, publicOrigin, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, worktrees };
+  return { listen: { host: parsed.listen.host as '127.0.0.1'|'::1', port: parsed.listen.port }, publicOrigin, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, newAgentCommand: parsed.newAgentCommand, worktrees };
 }
 export function expandLaunch(template: LaunchTemplate, worktree: Worktree): string[] { return template.args.map((arg) => arg.replaceAll('{worktreePath}', worktree.identity).replaceAll('{worktreeId}', worktree.id)); }

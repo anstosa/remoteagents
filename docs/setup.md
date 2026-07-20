@@ -44,6 +44,18 @@ worktree must define either `command` or `launch` (or inherit the top-level
 
 The default server listener is `127.0.0.1:8787`; `/healthz` is loopback-only and reveals only `{ "ok": true }`. Do not put passwords, prompts, session cookies, CSRF tokens, or WebSocket tickets in configuration or logs.
 
+## Browser capabilities
+
+The console can be installed as a browser app. It requests notification access
+only to alert you when an agent changes from working to ready. Voice input is
+shown only in browsers that implement the Web Speech API; microphone access is
+restricted by the console's permissions policy and is never required to use
+the prompt field.
+
+If a worktree has a GitHub `origin` remote and the host has GitHub CLI
+credentials (or `RAC_GITHUB_TOKEN`), the console can show a link to its open
+pull request. The lookup is read-only and its result is cached briefly.
+
 ## Operational checks
 
 Run `pnpm lint && pnpm typecheck && pnpm test && pnpm build`. On a disposable Linux host, start Codex in tmux and confirm it appears; start an ordinary shell/HUD pane and confirm it does not. Verify the configured active worktree is not duplicated, prompt Tab/newline/Ctrl+Enter behavior, and explicitly confirm the session-scoped terminal warning before using terminal access.

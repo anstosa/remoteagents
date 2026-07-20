@@ -4,26 +4,56 @@ import { run } from './command.js';
 const paneId = /^%\d+$/;
 const sessionId = /^\$?[-\w.]+$/;
 
+/**
+ * `capture-pane -e` preserves the SGR codes tmux uses for its rendered
+ * snapshot.  Keep those color/style codes, but discard every other terminal
+ * control sequence: Codex can emit alternate-screen and OSC controls while a
+ * completion menu is open, and replaying those in the browser xterm changes
+ * its terminal state instead of just rendering the snapshot.
+ */
+function safeSnapshot(value: string): string {
+  let result = '';
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (character === '\x1b') {
+      const next = value[index + 1];
+      if (next === '[') {
+        let end = index + 2;
+        while (end < value.length && (value.charCodeAt(end) < 0x40 || value.charCodeAt(end) > 0x7e)) end += 1;
+        if (value[end] === 'm') result += value.slice(index, end + 1);
+        index = end < value.length ? end : value.length;
+        continue;
+      }
+      if (next === ']' || next === 'P' || next === '^' || next === '_') {
+        index += 1;
+        while (index + 1 < value.length && value[index] !== '\x07' && !(value[index] === '\x1b' && value[index + 1] === '\\')) index += 1;
+        if (value[index] === '\x1b') index += 1;
+        continue;
+      }
+      index += next === undefined ? 0 : 1;
+      continue;
+    }
+    if (character >= '\x20' || character === '\n' || character === '\r' || character === '\t') result += character;
+  }
+  return result.replace(/(?:[ \t]*\r?\n)+[ \t]*$/u, '');
+}
+
 export class TmuxAdapter {
   private readonly binary = process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux';
 
   async listPanes(socket: SocketRef): Promise<Pane[]> {
-    const out = await run(this.binary, ['-S', socket.path, 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{pane_pid}\t#{pane_current_path}\t#{pane_title}']);
+    const out = await run(this.binary, ['-S', socket.path, 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}']);
     if (out.code !== 0) return [];
     return out.stdout.trim().split('\n').filter(Boolean).flatMap((line) => {
-      const [id, session, pid, path, title] = line.split('\t');
-      return paneId.test(id) && sessionId.test(session) && /^\d+$/.test(pid) && path ? [{ paneId: id, sessionId: session, pid: Number(pid), path, title: title ?? '', socket }] : [];
+      const [id, session, pid, path, command, title] = line.split('\t');
+      return paneId.test(id) && sessionId.test(session) && /^\d+$/.test(pid) && path ? [{ paneId: id, sessionId: session, pid: Number(pid), path, command: command ?? '', title: title ?? '', socket }] : [];
     });
   }
 
   async capture(socket: SocketRef, pane: string): Promise<string | undefined> {
     if (!paneId.test(pane)) return undefined;
-    // This is a screen snapshot, not a terminal stream. Do not include tmux's
-    // escape sequences: transient Codex UI (skills, suggestions, dialogs) can
-    // otherwise switch the browser's xterm into an alternate screen and leave
-    // the log view unusable after the dialog closes.
-    const out = await run(this.binary, ['-S', socket.path, 'capture-pane', '-p', '-t', pane, '-S', '-800']);
-    return out.code === 0 ? out.stdout.slice(-96_000) : undefined;
+    const out = await run(this.binary, ['-S', socket.path, 'capture-pane', '-e', '-p', '-t', pane, '-S', '-800']);
+    return out.code === 0 ? safeSnapshot(out.stdout).slice(-96_000) : undefined;
   }
 
   async pastePrompt(socket: SocketRef, pane: string, buffer: string, prompt: string): Promise<boolean> {
@@ -37,8 +67,25 @@ export class TmuxAdapter {
     return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, 'Enter'])).code === 0;
   }
 
+  async dismissCompletion(socket: SocketRef, pane: string): Promise<boolean> {
+    return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, 'Escape'])).code === 0;
+  }
+
+  async selectOption(socket: SocketRef, pane: string, index: number): Promise<boolean> {
+    if (!paneId.test(pane) || !Number.isInteger(index) || index < 0 || index > 15) return false;
+    // Codex presents the first choice as selected. `Home` is handled by its
+    // editor rather than its confirmation list, so only move down from that
+    // default selection before confirming.
+    const keys = [...Array.from({ length: index }, () => 'Down'), 'Enter'];
+    return (await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, ...keys])).code === 0;
+  }
+
   async interrupt(socket: SocketRef, pane: string): Promise<boolean> {
     return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, 'C-c'])).code === 0;
+  }
+
+  async close(socket: SocketRef, pane: string): Promise<boolean> {
+    return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'kill-pane', '-t', pane])).code === 0;
   }
 
   async attachArgs(socket: SocketRef, session: string): Promise<string[] | undefined> {
