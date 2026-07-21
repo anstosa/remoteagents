@@ -16,6 +16,7 @@ services:
       RAC_HOST_PROC: /host-proc
       RAC_HOST_UNIX_SOCKETS: /host-proc-net-unix
       RAC_HOST_TMUX_DIR: /host-tmux
+      RAC_HOST_TMUX_SOURCE: ${HOST_TMUX_DIR:-${HOME}/.local/state/tmux/tmux-${HOST_UID:-1000}}
       RAC_HOST_UID: ${HOST_UID:-1000}
       RAC_TMUX_BIN: /usr/local/bin/host-tmux
     volumes:
@@ -34,7 +35,7 @@ services:
       # mounted read-only; interaction remains limited to tmux's own protocol.
       - /proc:/host-proc:ro
       - /proc/net/unix:/host-proc-net-unix:ro
-      - /tmp/tmux-${HOST_UID:-1000}:/host-tmux:ro
+      - ${HOST_TMUX_DIR:-${HOME}/.local/state/tmux/tmux-${HOST_UID:-1000}}:/host-tmux:ro
       - /home/linuxbrew:/home/linuxbrew:ro
       - /usr/lib:/host-lib:ro
       - codex-home:/home/node/.codex
