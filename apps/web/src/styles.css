@@ -123,7 +123,7 @@ textarea { min-height: 7rem; resize: vertical; font-family: ui-monospace, SFMono
 .prompt-actions button, .project-open, .pull-request-open { box-sizing: border-box; height: 2rem; border-radius: .3rem; padding: .4rem .6rem; font-size: .75rem; font-weight: 700; box-shadow: none; }
 .prompt-actions .icon-button { display: inline-grid; flex: 0 0 2rem; width: 2rem; height: 2rem; padding: 0; place-items: center; }
 .prompt-actions .icon-button svg { display: block; width: 1rem; height: 1rem; }
-.prompt-actions .danger { margin-right: auto; }
+.prompt-actions-spacer { flex: 1; }
 .voice { width: 2rem; padding: 0; border-color: var(--surface-1); background: color-mix(in srgb, var(--mantle) 88%, transparent); color: var(--subtext-0); }
 .voice svg, .danger svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .danger svg rect { fill: currentColor; stroke: none; }
