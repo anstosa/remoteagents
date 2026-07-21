@@ -68,6 +68,10 @@ export class TmuxAdapter {
     return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, 'Enter'])).code === 0;
   }
 
+  async queue(socket: SocketRef, pane: string): Promise<boolean> {
+    return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, 'Tab'])).code === 0;
+  }
+
   async dismissCompletion(socket: SocketRef, pane: string): Promise<boolean> {
     return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, 'Escape'])).code === 0;
   }
