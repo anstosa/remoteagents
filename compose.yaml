@@ -23,6 +23,9 @@ services:
       - ${HOME}/.bash_aliases:/home/node/.bash_aliases:ro
       - ${HOME}/.config/gh/hosts.yml:/home/node/.config/gh/hosts.yml:ro
       - /home/ubuntu/ferry.fyi:/worktrees/ferry.fyi:rw
+      # Owen, Dave, and Eric are linked Git worktrees whose .git files point
+      # to this shared metadata directory on the host.
+      - /home/ubuntu/simulation-infra:/home/ubuntu/simulation-infra:ro
       - /home/ubuntu/cora:/worktrees/cora:rw
       - /home/ubuntu/owen:/worktrees/owen:rw
       - /home/ubuntu/dave:/worktrees/dave:rw
