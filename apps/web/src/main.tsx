@@ -327,9 +327,8 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
             if (text === snapshot) return;
             snapshot = text;
             setLastPrompt(lastPromptFromOutput(snapshot)); onQuestion(questionFromOutput(snapshot)); setHasRendered(true);
-            terminal.reset();
-            return terminal.write(text, () => {
-              terminal.scrollToBottom();
+            const viewport = `\x1b[H${text.replace(/\n/g, '\x1b[K\n')}\x1b[K\x1b[J`;
+            return terminal.write(viewport, () => {
               syncScrollState();
             });
           }
