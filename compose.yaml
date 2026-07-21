@@ -14,7 +14,6 @@ services:
     environment:
       RAC_CONFIG: /config/remote-agent-console.docker.json
       RAC_HOST_PROC: /host-proc
-      RAC_HOST_UNIX_SOCKETS: /host-proc-net-unix
       RAC_HOST_TMUX_DIR: /host-tmux
       RAC_HOST_TMUX_SOURCE: ${HOST_TMUX_DIR:-${HOME}/.local/state/tmux/tmux-${HOST_UID:-1000}}
       RAC_HOST_UID: ${HOST_UID:-1000}
@@ -34,7 +33,6 @@ services:
       # Discovery needs the host tmux server and process tree. The socket is
       # mounted read-only; interaction remains limited to tmux's own protocol.
       - /proc:/host-proc:ro
-      - /proc/net/unix:/host-proc-net-unix:ro
       - ${HOST_TMUX_DIR:-${HOME}/.local/state/tmux/tmux-${HOST_UID:-1000}}:/host-tmux:ro
       - /home/linuxbrew:/home/linuxbrew:ro
       - /usr/lib:/host-lib:ro
