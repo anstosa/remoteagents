@@ -27,6 +27,7 @@ type SpeechRecognitionInstance = { continuous: boolean; interimResults: boolean;
 type SpeechRecognitionConstructor = new () => SpeechRecognitionInstance;
 
 const logSnapshots = new Map<string, string>();
+const lastPrompts = new Map<string, string>();
 const promptDrafts = new Map<string, { value: string; pending: boolean }>();
 const terminalInputs = new Map<string, (value: string) => void>();
 const logHistoryRequests = new Map<string, (direction: -1 | 0 | 1) => void>();
@@ -34,6 +35,7 @@ const mobileModifiers = new Map<string, { alt: boolean; ctrl: boolean; shift: bo
 const cacheLogFrame = (id: string, frame: LogFrame) => {
   const text = frame.text ?? '';
   logSnapshots.set(id, frame.type === 'reset' ? text : `${logSnapshots.get(id) ?? ''}${text}`);
+  cachedLastPrompt(id, logSnapshots.get(id) ?? '');
 };
 
 const questionFromOutput = (output: string): ChoiceQuestion | undefined => {
@@ -61,6 +63,12 @@ const lastPromptFromOutput = (output: string): string | undefined => {
     if (/^•\s/.test(lines[continuation] ?? '')) return prompt.join(' ');
   }
   return undefined;
+};
+
+const cachedLastPrompt = (id: string, output: string) => {
+  const prompt = lastPromptFromOutput(output);
+  if (prompt !== undefined) lastPrompts.set(id, prompt);
+  return lastPrompts.get(id);
 };
 
 let csrf = '';
@@ -232,7 +240,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
     let connectingInteractive = false;
     const pendingInput: string[] = [];
     setHasRendered(false);
-    setLastPrompt(undefined);
+    setLastPrompt(lastPrompts.get(id));
     setVisibleFrame(0);
     let historyOffset = 0;
     let hasOlder = false;
@@ -291,7 +299,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
     const focus = () => { void connectInteractive(); };
     canvas.current!.addEventListener('focusin', focus);
     const cachedSnapshot = logSnapshots.get(id);
-    if (cachedSnapshot) { snapshot = cachedSnapshot; setHasRendered(true); setLastPrompt(lastPromptFromOutput(cachedSnapshot)); onQuestion(questionFromOutput(cachedSnapshot)); terminal.write(cachedSnapshot, syncScrollState); }
+    if (cachedSnapshot) { snapshot = cachedSnapshot; setHasRendered(true); setLastPrompt(cachedLastPrompt(id, cachedSnapshot)); onQuestion(questionFromOutput(cachedSnapshot)); terminal.write(cachedSnapshot, syncScrollState); }
     const reconnect = () => {
       if (closed || retry !== undefined) return;
       retry = window.setTimeout(() => {
@@ -326,11 +334,12 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
           hasOlder = frame.older === true;
           if (frame.newer !== true) historyOffset = 0;
           syncScrollState();
-          if (historyOffset === 0) cacheLogFrame(id, frame);
+          const latest = historyOffset === 0;
+          if (latest) cacheLogFrame(id, frame);
           if (frame.type === 'reset') {
             if (text === snapshot) return;
             snapshot = text;
-            setLastPrompt(lastPromptFromOutput(snapshot)); onQuestion(questionFromOutput(snapshot)); setHasRendered(true);
+            if (latest) setLastPrompt(cachedLastPrompt(id, snapshot)); onQuestion(questionFromOutput(snapshot)); setHasRendered(true);
             const viewport = `\x1b[H${text.replace(/\n/g, '\x1b[K\n')}\x1b[K\x1b[J`;
             const nextFrame: 0 | 1 = activeFrame === 0 ? 1 : 0;
             const nextTerminal = terminals[nextFrame];
@@ -346,7 +355,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
             });
           }
           snapshot += text;
-          setLastPrompt(lastPromptFromOutput(snapshot)); onQuestion(questionFromOutput(snapshot)); setHasRendered(true);
+          if (latest) setLastPrompt(cachedLastPrompt(id, snapshot)); onQuestion(questionFromOutput(snapshot)); setHasRendered(true);
           terminal.write(text, () => {
             terminal.scrollToBottom();
             syncScrollState();
