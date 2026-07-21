@@ -59,7 +59,7 @@ export class TmuxAdapter {
 
   async captureWindow(socket: SocketRef, pane: string, history: number, rows: number): Promise<{ text: string; older: boolean } | undefined> {
     if (!paneId.test(pane) || !Number.isInteger(history) || history < 0 || history > 5_000 || !Number.isInteger(rows) || rows < 2 || rows > 300) return undefined;
-    const window = Math.min(300, Math.max(rows * 3, rows + 8));
+    const window = rows;
     const requested = Math.min(5_000, history + window);
     const out = await run(this.binary, ['-S', socket.path, 'capture-pane', '-e', '-p', '-t', pane, '-S', `-${requested}`]);
     if (out.code !== 0) return undefined;
@@ -67,7 +67,7 @@ export class TmuxAdapter {
     const end = Math.max(0, lines.length - history);
     const start = Math.max(0, end - window);
     const visible = lines.slice(start, end).join('\n');
-    return { text: safeSnapshot(visible), older: lines.length >= requested };
+    return { text: safeSnapshot(visible), older: start > 0 };
   }
 
   async resize(socket: SocketRef, pane: string, cols: number, rows: number): Promise<boolean> {
