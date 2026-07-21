@@ -661,6 +661,21 @@ function App() {
     })();
     return () => { active = false; };
   }, []);
+  useEffect(() => {
+    if (state !== 'ready') return;
+    const checkControl = async () => {
+      try {
+        const response = await fetch('/api/auth/session', { credentials: 'same-origin', signal: AbortSignal.timeout(8_000) });
+        if (response.status === 401) return setState('login');
+        if (!response.ok) return;
+        const session = await response.json() as { csrfToken: string; active: boolean };
+        csrf = session.csrfToken;
+        if (!session.active) setState('inactive');
+      } catch { /* keep the active console visible while reconnecting */ }
+    };
+    window.addEventListener('focus', checkControl);
+    return () => window.removeEventListener('focus', checkControl);
+  }, [state]);
   if (state === 'checking') return <LoadingScreen />;
   if (state === 'ready') return <DashboardView onUnauthorized={() => setState('login')} onInactive={() => setState('inactive')} />;
   if (state === 'inactive') return <ControlScreen claimed={() => setState('ready')} />;
