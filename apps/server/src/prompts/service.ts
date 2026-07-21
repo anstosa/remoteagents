@@ -3,9 +3,17 @@ import type { DiscoveryService } from '../discovery/service.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { omxQuestion } from '../discovery/service.js';
 import type { Worktree } from '../domain/models.js';
+
+/**
+ * Tab is Codex's queue key.  Its completion menu owns Tab while the composer
+ * ends in a token, though, so the prompt never reaches the queue.  A trailing
+ * space dismisses that menu without changing the submitted prompt's meaning.
+ */
+const queueReadyPrompt = (prompt: string) => /\s$/u.test(prompt) ? prompt : `${prompt} `;
+
 export class PromptService {
   constructor(private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly worktrees: Worktree[] = []) {}
-  async submit(agentId: string, prompt: string): Promise<boolean> { if (!prompt || prompt.length > 32_000 || prompt.includes('\0')) return false; const first = await this.discovery.target(agentId); if (!first) return false; const buffer = `rac-${randomBytes(18).toString('base64url')}`; if (!await this.tmux.pastePrompt(first.socket, first.agent.paneId, buffer, prompt)) return false; const second = await this.discovery.target(agentId); if (!second || second.socket.fingerprint !== first.socket.fingerprint || second.agent.paneId !== first.agent.paneId) return false; return this.tmux.queue(second.socket, second.agent.paneId); }
+  async submit(agentId: string, prompt: string): Promise<boolean> { if (!prompt || prompt.length > 32_000 || prompt.includes('\0')) return false; const first = await this.discovery.target(agentId); if (!first) return false; const buffer = `rac-${randomBytes(18).toString('base64url')}`; if (!await this.tmux.pastePrompt(first.socket, first.agent.paneId, buffer, queueReadyPrompt(prompt))) return false; const second = await this.discovery.target(agentId); if (!second || second.socket.fingerprint !== first.socket.fingerprint || second.agent.paneId !== first.agent.paneId) return false; return this.tmux.queue(second.socket, second.agent.paneId); }
   async answerOption(agentId: string, index: number): Promise<boolean> {
     if (!Number.isInteger(index) || index < 0 || index > 15) return false;
     const first = await this.discovery.target(agentId); if (!first) return false;
