@@ -209,8 +209,11 @@ function MobileKeyIcon({ name }: { name: MobileKeyIconName }) {
 }
 
 function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: () => void; onQuestion: (question: ChoiceQuestion | undefined) => void }) {
-  const host = useRef<HTMLDivElement | null>(null);
+  const canvas = useRef<HTMLDivElement | null>(null);
+  const primaryHost = useRef<HTMLDivElement | null>(null);
+  const secondaryHost = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<XTerm | undefined>(undefined);
+  const [visibleFrame, setVisibleFrame] = useState<0 | 1>(0);
   const [status, setStatus] = useState('Connecting');
   const [hasRendered, setHasRendered] = useState(false);
   const [lastPrompt, setLastPrompt] = useState<string>();
@@ -230,16 +233,17 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
     const pendingInput: string[] = [];
     setHasRendered(false);
     setLastPrompt(undefined);
+    setVisibleFrame(0);
     let historyOffset = 0;
     let hasOlder = false;
     let requestHistory = (_offset: number) => {};
-    const terminal = new XTerm({ convertEol: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 11, scrollback: 0, theme: { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#585b7088', black: '#45475a', red: '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af', blue: '#89b4fa', magenta: '#f5c2e7', cyan: '#94e2d5', white: '#bac2de', brightBlack: '#585b70', brightRed: '#f38ba8', brightGreen: '#a6e3a1', brightYellow: '#f9e2af', brightBlue: '#89b4fa', brightMagenta: '#f5c2e7', brightCyan: '#89dceb', brightWhite: '#a6adc8' } });
+    const terminalOptions = { convertEol: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 11, scrollback: 0, theme: { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#585b7088', black: '#45475a', red: '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af', blue: '#89b4fa', magenta: '#f5c2e7', cyan: '#94e2d5', white: '#bac2de', brightBlack: '#585b70', brightRed: '#f38ba8', brightGreen: '#a6e3a1', brightYellow: '#f9e2af', brightBlue: '#89b4fa', brightMagenta: '#f5c2e7', brightCyan: '#89dceb', brightWhite: '#a6adc8' } };
+    const terminals = [new XTerm(terminalOptions), new XTerm(terminalOptions)];
+    const fits = [new FitAddon(), new FitAddon()];
+    let activeFrame: 0 | 1 = 0;
+    let terminal = terminals[activeFrame];
     terminalRef.current = terminal;
-    const fit = new FitAddon();
-    terminal.loadAddon(fit);
-    terminal.loadAddon(new WebLinksAddon((_event, uri) => window.open(uri, '_blank', 'noopener,noreferrer')));
-    terminal.open(host.current!);
-    fit.fit();
+    terminals.forEach((candidate, index) => { candidate.loadAddon(fits[index]); candidate.loadAddon(new WebLinksAddon((_event, uri) => window.open(uri, '_blank', 'noopener,noreferrer'))); candidate.open(index === 0 ? primaryHost.current! : secondaryHost.current!); fits[index].fit(); });
     const encoded = (value: string) => btoa(String.fromCharCode(...new TextEncoder().encode(value))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     const connectInteractive = async () => {
       if (closed || connectingInteractive || interactiveSocket !== undefined) return;
@@ -265,27 +269,27 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
     const moveHistory = (direction: -1 | 0 | 1) => requestHistory(direction < 0 ? historyOffset + Math.max(1, terminal.rows) : direction > 0 ? Math.max(0, historyOffset - Math.max(1, terminal.rows)) : 0);
     logHistoryRequests.set(id, moveHistory);
     const sendViewport = () => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ v: 1, type: 'viewport', cols: terminal.cols, rows: terminal.rows })); };
-    const observer = new ResizeObserver(() => { fit.fit(); sendViewport(); });
-    observer.observe(host.current!);
+    const observer = new ResizeObserver(() => { fits.forEach(fit => fit.fit()); sendViewport(); });
+    observer.observe(canvas.current!);
     const syncScrollState = () => {
       setScrolledUp(historyOffset > 0);
       setCanPageUp(hasOlder);
       setCanPageDown(historyOffset > 0);
     };
-    const keySubscription = terminal.onKey(({ domEvent }) => {
-      if ((domEvent.ctrlKey || domEvent.metaKey) && domEvent.key.toLowerCase() === 'c' && terminal.hasSelection()) {
+    const keySubscriptions = terminals.map(candidate => candidate.onKey(({ domEvent }) => {
+      if ((domEvent.ctrlKey || domEvent.metaKey) && domEvent.key.toLowerCase() === 'c' && candidate.hasSelection()) {
         domEvent.preventDefault();
-        void copyText(terminal.getSelection());
+        void copyText(candidate.getSelection());
       }
-    });
-    const inputSubscription = terminal.onData(value => {
+    }));
+    const inputSubscriptions = terminals.map(candidate => candidate.onData(value => {
       const { alt, ctrl, shift } = mobileModifiers.get(id) ?? { alt: false, ctrl: false, shift: false };
       const first = value.charAt(0);
       const modified = `${alt ? '\x1b' : ''}${ctrl && /^[a-z]$/iu.test(first) ? String.fromCharCode(first.toLowerCase().charCodeAt(0) - 96) : shift && /^[a-z]$/iu.test(first) ? `${first.toUpperCase()}${value.slice(1)}` : value}`;
       sendInput(modified);
-    });
+    }));
     const focus = () => { void connectInteractive(); };
-    host.current!.addEventListener('focusin', focus);
+    canvas.current!.addEventListener('focusin', focus);
     const cachedSnapshot = logSnapshots.get(id);
     if (cachedSnapshot) { snapshot = cachedSnapshot; setHasRendered(true); setLastPrompt(lastPromptFromOutput(cachedSnapshot)); onQuestion(questionFromOutput(cachedSnapshot)); terminal.write(cachedSnapshot, syncScrollState); }
     const reconnect = () => {
@@ -328,8 +332,17 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
             snapshot = text;
             setLastPrompt(lastPromptFromOutput(snapshot)); onQuestion(questionFromOutput(snapshot)); setHasRendered(true);
             const viewport = `\x1b[H${text.replace(/\n/g, '\x1b[K\n')}\x1b[K\x1b[J`;
-            return terminal.write(viewport, () => {
-              syncScrollState();
+            const nextFrame: 0 | 1 = activeFrame === 0 ? 1 : 0;
+            const nextTerminal = terminals[nextFrame];
+            nextTerminal.reset();
+            return nextTerminal.write(viewport, () => {
+              if (closed || socket !== ws) return;
+              const previousTerminal = terminal;
+              activeFrame = nextFrame;
+              terminal = nextTerminal;
+              terminalRef.current = terminal;
+              setVisibleFrame(activeFrame);
+              requestAnimationFrame(() => { previousTerminal.reset(); syncScrollState(); });
             });
           }
           snapshot += text;
@@ -349,7 +362,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
       } catch { setStatus('Reconnecting'); reconnect(); }
     };
     void connect();
-    return () => { closed = true; if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (retry !== undefined) window.clearTimeout(retry); keySubscription.dispose(); inputSubscription.dispose(); host.current?.removeEventListener('focusin', focus); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; terminal.dispose(); };
+    return () => { closed = true; if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (retry !== undefined) window.clearTimeout(retry); keySubscriptions.forEach(subscription => subscription.dispose()); inputSubscriptions.forEach(subscription => subscription.dispose()); canvas.current?.removeEventListener('focusin', focus); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; terminals.forEach(candidate => candidate.dispose()); };
   }, [id, onQuestion]);
   useEffect(() => {
     const prompt = promptRef.current;
@@ -364,7 +377,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
   useEffect(() => { if (!promptOverflows) setPromptExpanded(false); }, [promptOverflows]);
   const loading = !hasRendered;
   const loadingLabel = status === 'Live' ? 'Waiting for output' : status;
-  return <section className="log-shell"><div className="log"><div className={`log-topbar ${promptOverflows ? 'expandable' : ''} ${promptExpanded ? 'expanded' : ''}`} onClick={() => promptOverflows && setPromptExpanded(expanded => !expanded)}><button className="terminal-toggle" onClick={event => { event.stopPropagation(); onOpenTerminal(); }}>Open terminal</button>{lastPrompt && <span className={`last-prompt ${promptExpanded ? 'expanded' : ''}`} ref={promptRef} title={lastPrompt}><strong>Last prompt:</strong> {lastPrompt}</span>}<span className={`status log-status ${status.toLowerCase()}`}><i />{status}</span></div><div className="log-canvas" ref={host} aria-label="Live log" />{status !== 'Live' && <div className="log-stale-overlay" aria-hidden="true"><span>{status}</span></div>}{loading && <div className="log-loading"><span className="spinner" />{loadingLabel}</div>}<div className="log-controls-bottom">{scrolledUp && <button className="log-control back-to-bottom" onClick={() => logHistoryRequests.get(id)?.(0)}>Back to bottom</button>}<div className="page-controls"><button className="log-control page-arrow" aria-label="Page up" title="Page up" disabled={!canPageUp} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" title="Page down" disabled={!canPageDown} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></section>;
+  return <section className="log-shell"><div className="log"><div className={`log-topbar ${promptOverflows ? 'expandable' : ''} ${promptExpanded ? 'expanded' : ''}`} onClick={() => promptOverflows && setPromptExpanded(expanded => !expanded)}><button className="terminal-toggle" onClick={event => { event.stopPropagation(); onOpenTerminal(); }}>Open terminal</button>{lastPrompt && <span className={`last-prompt ${promptExpanded ? 'expanded' : ''}`} ref={promptRef} title={lastPrompt}><strong>Last prompt:</strong> {lastPrompt}</span>}<span className={`status log-status ${status.toLowerCase()}`}><i />{status}</span></div><div className="log-canvas" ref={canvas} aria-label="Live log"><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{status !== 'Live' && <div className="log-stale-overlay" aria-hidden="true"><span>{status}</span></div>}{loading && <div className="log-loading"><span className="spinner" />{loadingLabel}</div>}<div className="log-controls-bottom">{scrolledUp && <button className="log-control back-to-bottom" onClick={() => logHistoryRequests.get(id)?.(0)}>Back to bottom</button>}<div className="page-controls"><button className="log-control page-arrow" aria-label="Page up" title="Page up" disabled={!canPageUp} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" title="Page down" disabled={!canPageDown} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></section>;
 }
 
 function Terminal({ agent }: { agent: Agent }) {
