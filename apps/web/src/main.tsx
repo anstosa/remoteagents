@@ -8,7 +8,7 @@ import './styles.css';
 
 type OmxQuestion = { id: string; text: string; choices: string[]; paneId: string };
 type Agent = { id: string; sessionId: string; workspace: string; branch?: string; title: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; projectUrl?: string; pullRequestUrl?: string; question?: OmxQuestion };
-type Worktree = { id: string; label: string; path: string; available: boolean; pinned: boolean; order: number; projectUrl?: string };
+type Worktree = { id: string; label: string; path: string; available: boolean; pinned: boolean; order: number; projectUrl?: string; pullRequestUrl?: string };
 type Dashboard = { agents: Agent[]; worktrees: Worktree[] };
 const isDashboard = (value: unknown): value is Dashboard => {
   if (value === null || typeof value !== 'object') return false;
@@ -233,15 +233,15 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
           cacheLogFrame(id, frame);
           if (frame.type !== 'reset') { const text = frame.text ?? ''; snapshot += text; setLastPrompt(lastPromptFromOutput(snapshot)); onQuestion(questionFromOutput(snapshot)); if (text) setHasRendered(true); return terminal.write(text, syncScrollState); }
           const buffer = terminal.buffer.active;
-          const offsetFromBottom = buffer.baseY - buffer.viewportY;
-          const follow = offsetFromBottom < 2;
+          const viewportY = buffer.viewportY;
+          const follow = viewportY >= buffer.baseY - 1;
           terminal.reset();
           snapshot = frame.text ?? '';
           setLastPrompt(lastPromptFromOutput(snapshot)); onQuestion(questionFromOutput(snapshot));
           setHasRendered(Boolean(frame.text));
           terminal.write(frame.text ?? '', () => {
             if (follow) terminal.scrollToBottom();
-            else terminal.scrollToLine(Math.max(0, terminal.buffer.active.baseY - offsetFromBottom));
+            else terminal.scrollToLine(Math.min(viewportY, terminal.buffer.active.baseY));
             syncScrollState();
           });
         };
@@ -300,13 +300,39 @@ function Terminal({ agent }: { agent: Agent }) {
   return <section><button disabled={connected} onClick={() => void connect()}>Confirm and connect</button><div className="terminal" ref={host} aria-label="Interactive session terminal" /></section>;
 }
 
+type FlyoutSide = 'above' | 'below';
+function useViewportFlyout(open: boolean) {
+  const ref = useRef<HTMLSpanElement | null>(null);
+  const [side, setSide] = useState<FlyoutSide>('above');
+  useLayoutEffect(() => {
+    if (!open) return;
+    const position = () => {
+      const anchor = ref.current;
+      const flyout = anchor?.querySelector<HTMLElement>('.flyout-menu');
+      if (!anchor || !flyout) return;
+      const { top, bottom } = anchor.getBoundingClientRect();
+      const height = flyout.offsetHeight + 8;
+      const above = top;
+      const below = window.innerHeight - bottom;
+      setSide(below >= height || below > above ? 'below' : 'above');
+    };
+    position();
+    const observer = new ResizeObserver(position);
+    if (ref.current) observer.observe(ref.current);
+    window.addEventListener('resize', position);
+    window.addEventListener('scroll', position, true);
+    return () => { observer.disconnect(); window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true); };
+  }, [open]);
+  return { ref, side };
+}
+
 function More({ id }: { id: string }) {
-  const menu = useRef<HTMLSpanElement | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false); const [directoryOpen, setDirectoryOpen] = useState(false); const [tree, setTree] = useState<{ root: string; path: string; directories: string[] }>();
+  const [menuOpen, setMenuOpen] = useState(false); const { ref: menu, side } = useViewportFlyout(menuOpen);
+  const [directoryOpen, setDirectoryOpen] = useState(false); const [tree, setTree] = useState<{ root: string; path: string; directories: string[] }>();
   useEffect(() => { if (!menuOpen) return; const close = (event: MouseEvent) => { if (!menu.current?.contains(event.target as Node)) setMenuOpen(false); }; document.addEventListener('mousedown', close); return () => document.removeEventListener('mousedown', close); }, [menuOpen]);
   useEffect(() => { if (!directoryOpen) return; void request(`/api/agents/${encodeURIComponent(id)}/directories`).then(r => r.ok ? r.json() : undefined).then(setTree); }, [directoryOpen, id]);
   const chooseDirectory = () => { setMenuOpen(false); setDirectoryOpen(true); };
-  return <><span className="more-wrap" ref={menu}><button className="more" aria-label="More options" aria-expanded={menuOpen} onClick={() => setMenuOpen(value => !value)}>⋮</button>{menuOpen && <div className="more-menu"><button onClick={chooseDirectory}>Change directory</button></div>}</span>{directoryOpen && <div className="dialog" role="dialog" aria-modal="true"><div><button onClick={() => setDirectoryOpen(false)}>Close</button><h2>Change directory</h2><p>{tree?.path ?? 'Loading directories…'}</p>{tree && <button onClick={() => void request(`/api/agents/${encodeURIComponent(id)}/directory`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: tree.path }) }).then(() => setDirectoryOpen(false))}>Start agent here</button>}{tree?.directories.map(name => <button key={name} onClick={() => void request(`/api/agents/${encodeURIComponent(id)}/directories?path=${encodeURIComponent(`${tree.path}/${name}`)}`).then(r => r.ok && r.json()).then(setTree)}>{name}</button>)}</div></div>}</>;
+  return <><span className="more-wrap" ref={menu}><button className="more" aria-label="More options" aria-expanded={menuOpen} onClick={() => setMenuOpen(value => !value)}>⋮</button>{menuOpen && <div className="more-menu flyout-menu" data-flyout-side={side}><button onClick={chooseDirectory}>Change directory</button></div>}</span>{directoryOpen && <div className="dialog" role="dialog" aria-modal="true"><div><button onClick={() => setDirectoryOpen(false)}>Close</button><h2>Change directory</h2><p>{tree?.path ?? 'Loading directories…'}</p>{tree && <button onClick={() => void request(`/api/agents/${encodeURIComponent(id)}/directory`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: tree.path }) }).then(() => setDirectoryOpen(false))}>Start agent here</button>}{tree?.directories.map(name => <button key={name} onClick={() => void request(`/api/agents/${encodeURIComponent(id)}/directories?path=${encodeURIComponent(`${tree.path}/${name}`)}`).then(r => r.ok && r.json()).then(setTree)}>{name}</button>)}</div></div>}</>;
 }
 
 function AgentCard({ agent, active, onDeleted }: { agent: Agent; active: boolean; onDeleted: () => Promise<void> }) {
@@ -345,7 +371,7 @@ function WorktreeCard({ worktree, onLaunched }: { worktree: Worktree; onLaunched
     } catch { setError('Unable to reach the console while launching the agent.'); }
     finally { setLaunching(false); }
   };
-  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><div className="log-topbar"><button className="terminal-toggle" disabled>Open terminal</button><span className="status log-status inactive"><i />Inactive</span></div><div className="log-loading inactive">{launching ? <><span className="spinner" />Starting Codex…</> : 'Inactive'}</div><div className="log-controls-bottom"><div className="page-controls"><button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></section><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions"><button className="danger" disabled aria-label="Cancel agent" title="Cancel agent"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" /></svg></button><ProjectOpen url={worktree.projectUrl} /><button className="queue" disabled={!worktree.available || launching} onClick={() => void launch()}>{launching ? <><span className="spinner" />Launching</> : 'Launch agent'}</button></div></section></article>;
+  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><div className="log-topbar"><button className="terminal-toggle" disabled>Open terminal</button><span className="status log-status inactive"><i />Inactive</span></div><div className="log-loading inactive">{launching ? <><span className="spinner" />Starting Codex…</> : 'Inactive'}</div><div className="log-controls-bottom"><div className="page-controls"><button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></section><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions"><button className="danger" disabled aria-label="Cancel agent" title="Cancel agent"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" /></svg></button><PullRequestOpen url={worktree.pullRequestUrl} /><ProjectOpen url={worktree.projectUrl} /><button className="queue" disabled={!worktree.available || launching} onClick={() => void launch()}>{launching ? <><span className="spinner" />Launching</> : 'Launch agent'}</button></div></section></article>;
 }
 
 function NotificationControl() {
@@ -371,7 +397,7 @@ function DashboardView({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [creatingAgent, setCreatingAgent] = useState(false);
   const [launcherOpen, setLauncherOpen] = useState(false);
   const tabsRef = useRef<HTMLElement | null>(null);
-  const launcherRef = useRef<HTMLSpanElement | null>(null);
+  const { ref: launcherRef, side: launcherSide } = useViewportFlyout(launcherOpen);
   const plusRef = useRef<HTMLButtonElement | null>(null);
   const [plusAlone, setPlusAlone] = useState(false);
   const [launchErrorMessage, setLaunchErrorMessage] = useState('');
@@ -485,7 +511,7 @@ function DashboardView({ onUnauthorized }: { onUnauthorized: () => void }) {
   if (data === undefined) return <LoadingScreen label={unavailable ? 'Reconnecting to console' : 'Syncing console state'} />;
   const item = items[active];
   const stateLabel: Record<AgentState, string> = { working: 'Working', 'prompt-done': 'Prompt done', 'action-required': 'Action required', closed: 'Agent closed' };
-  return <main className="console"><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}status-${entry.state}`} title={stateLabel[entry.state]} aria-label={`${entry.label} — ${stateLabel[entry.state]}`} onClick={() => select(index)}>{entry.label}</button>)}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label="Launch agent" aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button>{launcherOpen && <span className="launcher-menu more-menu"><button onClick={() => void createAgent()}>~ Home</button>{data.worktrees.map(worktree => <button key={worktree.id} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</span>}</span>{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{launchErrorMessage && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}{items.length > 0 ? <section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard agent={item.agent} active={item.state === 'working'} onDeleted={refresh} />}{item?.worktree && <WorktreeCard worktree={item.worktree} onLaunched={launched} />}</section> : <article className="worktree-view"><h2>No sessions</h2></article>}</main>;
+  return <main className="console"><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}status-${entry.state}`} title={stateLabel[entry.state]} aria-label={`${entry.label} — ${stateLabel[entry.state]}`} onClick={() => select(index)}>{entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{Array.from(entry.label).map((letter, letterIndex) => <span className="tab-label-letter" key={`${letter}-${letterIndex}`} style={{ animationDelay: `-${letterIndex * 75}ms` }}>{letter === ' ' ? '\u00a0' : letter}</span>)}</span> : entry.label}</button>)}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label="Launch agent" aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button>{launcherOpen && <span className="launcher-menu more-menu flyout-menu" data-flyout-side={launcherSide}><button onClick={() => void createAgent()}>~ Home</button>{data.worktrees.map(worktree => <button key={worktree.id} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</span>}</span>{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{launchErrorMessage && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}{items.length > 0 ? <section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard agent={item.agent} active={item.state === 'working'} onDeleted={refresh} />}{item?.worktree && <WorktreeCard worktree={item.worktree} onLaunched={launched} />}</section> : <article className="worktree-view"><h2>No sessions</h2></article>}</main>;
 }
 
 function App() {
