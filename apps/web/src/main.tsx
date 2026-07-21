@@ -293,11 +293,17 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
           cacheLogFrame(id, frame);
           if (frame.type === 'reset') {
             if (text === snapshot) return;
-            const hadSnapshot = snapshot.length > 0;
+            const buffer = terminal.buffer.active;
+            const viewportY = buffer.viewportY;
+            const follow = viewportY >= buffer.baseY - 1;
             snapshot = text;
             setLastPrompt(lastPromptFromOutput(snapshot)); onQuestion(questionFromOutput(snapshot)); setHasRendered(true);
-            if (hadSnapshot) return;
-            return terminal.write(text, syncScrollState);
+            terminal.reset();
+            return terminal.write(text, () => {
+              if (follow) terminal.scrollToBottom();
+              else terminal.scrollToLine(Math.min(viewportY, terminal.buffer.active.baseY));
+              syncScrollState();
+            });
           }
           const buffer = terminal.buffer.active;
           const viewportY = buffer.viewportY;
