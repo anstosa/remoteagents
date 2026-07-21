@@ -27,6 +27,8 @@ type SpeechRecognitionConstructor = new () => SpeechRecognitionInstance;
 
 const logSnapshots = new Map<string, string>();
 const promptDrafts = new Map<string, { value: string; pending: boolean }>();
+const terminalInputs = new Map<string, (value: string) => void>();
+const mobileModifiers = new Map<string, { alt: boolean; ctrl: boolean; shift: boolean }>();
 const cacheLogFrame = (id: string, frame: LogFrame) => {
   const text = frame.text ?? '';
   logSnapshots.set(id, frame.type === 'reset' ? text : `${logSnapshots.get(id) ?? ''}${text}`);
@@ -124,11 +126,15 @@ function Prompt({ id, canCancel, cancelling, deleting, onCancel, onDelete, proje
   const [pending, setPending] = useState(() => promptDrafts.get(id)?.pending ?? false);
   useEffect(() => { promptDrafts.set(id, { value, pending }); }, [id, value, pending]);
   const [listening, setListening] = useState(false);
+  const [ctrlActive, setCtrlActive] = useState(false);
+  const [shiftActive, setShiftActive] = useState(false);
+  const [altActive, setAltActive] = useState(false);
   const recognition = useRef<SpeechRecognitionInstance | undefined>(undefined);
   const speechPrefix = useRef('');
   const speechWindow = window as Window & { SpeechRecognition?: SpeechRecognitionConstructor; webkitSpeechRecognition?: SpeechRecognitionConstructor };
   const supportsSpeechRecognition = speechWindow.SpeechRecognition !== undefined || speechWindow.webkitSpeechRecognition !== undefined;
   useEffect(() => () => recognition.current?.abort(), []);
+  useEffect(() => { mobileModifiers.set(id, { alt: altActive, ctrl: ctrlActive, shift: shiftActive }); return () => { mobileModifiers.delete(id); }; }, [id, altActive, ctrlActive, shiftActive]);
   const submit = async () => {
     if (!value || pending) return;
     setPending(true);
@@ -158,9 +164,23 @@ function Prompt({ id, canCancel, cancelling, deleting, onCancel, onDelete, proje
     setListening(true);
     next.start();
   };
+  const toggleModifier = (name: 'alt'|'ctrl'|'shift') => {
+    const setters = { alt: setAltActive, ctrl: setCtrlActive, shift: setShiftActive };
+    const current = mobileModifiers.get(id) ?? { alt: false, ctrl: false, shift: false };
+    mobileModifiers.set(id, { ...current, [name]: !current[name] });
+    setters[name](value => !value);
+  };
+  const mobileKey = (key: 'tab'|'up'|'down'|'left'|'right'|'dollar'|'slash') => {
+    const { alt, ctrl, shift } = mobileModifiers.get(id) ?? { alt: false, ctrl: false, shift: false };
+    const arrows = { up: 'A', down: 'B', right: 'C', left: 'D' };
+    let value = key === 'tab' ? (shift ? '\x1b[Z' : '\t') : key === 'dollar' ? '$' : key === 'slash' ? '/' : (ctrl || shift || alt ? `\x1b[1;${ctrl && shift ? 6 : ctrl && alt ? 7 : shift && alt ? 4 : ctrl ? 5 : shift ? 2 : 3}${arrows[key]}` : `\x1b[${arrows[key]}`);
+    if (alt && (key === 'dollar' || key === 'slash' || key === 'tab')) value = `\x1b${value}`;
+    terminalInputs.get(id)?.(value);
+  };
+  const mobileKeys = <div className="mobile-terminal-keys" aria-label="Terminal keys"><div className="mobile-key-modifiers"><button type="button" aria-label="Tab" onPointerDown={event => { event.preventDefault(); mobileKey('tab'); }}>Tab</button><button type="button" className={shiftActive ? 'active' : ''} aria-pressed={shiftActive} onPointerDown={event => { event.preventDefault(); toggleModifier('shift'); }}>Shift</button><button type="button" className={ctrlActive ? 'active' : ''} aria-pressed={ctrlActive} onPointerDown={event => { event.preventDefault(); toggleModifier('ctrl'); }}>Ctrl</button><button type="button" className={altActive ? 'active' : ''} aria-pressed={altActive} onPointerDown={event => { event.preventDefault(); toggleModifier('alt'); }}>Alt</button></div><div className="mobile-arrow-keys"><button type="button" aria-label="Slash" onPointerDown={event => { event.preventDefault(); mobileKey('slash'); }}>/</button><button type="button" aria-label="Up arrow" onPointerDown={event => { event.preventDefault(); mobileKey('up'); }}><MobileKeyIcon name="up" /></button><button type="button" aria-label="Dollar" onPointerDown={event => { event.preventDefault(); mobileKey('dollar'); }}>$</button><button type="button" aria-label="Left arrow" onPointerDown={event => { event.preventDefault(); mobileKey('left'); }}><MobileKeyIcon name="left" /></button><button type="button" aria-label="Down arrow" onPointerDown={event => { event.preventDefault(); mobileKey('down'); }}><MobileKeyIcon name="down" /></button><button type="button" aria-label="Right arrow" onPointerDown={event => { event.preventDefault(); mobileKey('right'); }}><MobileKeyIcon name="right" /></button></div></div>;
   const stop = <><button className="danger icon-button cancel-agent" hidden={onDelete !== undefined} disabled={!canCancel || cancelling} aria-label="Cancel agent" title="Cancel agent" onClick={onCancel}>{cancelling ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>}</button><button className="danger icon-button delete-agent" hidden={onDelete === undefined} disabled={deleting} aria-label="Delete agent" title="Delete agent" onClick={onDelete}>{deleting ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button></>;
   if (question) return <section className="prompt question-prompt"><div className="question-copy"><strong>Agent question</strong><span>{question.text}</span></div><div className="question-choices">{question.choices.map((choice, index) => <button key={`${index}-${choice}`} className="question-choice" disabled={pending} onClick={() => void answer(index)}><b>{index + 1}</b>{choice}</button>)}</div><div className="prompt-actions">{stop}</div></section>;
-  return <section className="prompt"><textarea aria-label="Prompt" value={value} disabled={pending} onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') { event.preventDefault(); setValue(''); } else if (event.key === 'Tab') { event.preventDefault(); setValue(current => current + '\t'); } else if (event.key === 'Enter') { event.preventDefault(); if (event.ctrlKey || event.shiftKey || window.matchMedia('(max-width: 600px)').matches) setValue(current => current + '\n'); else void submit(); } }} onChange={event => setValue(event.target.value)} /><div className="prompt-actions">{stop}<More id={id} /><PullRequestOpen url={pullRequestUrl} /><ProjectOpen url={projectUrl} />{supportsSpeechRecognition && <button className={`voice icon-button ${listening ? 'listening' : ''}`} type="button" disabled={pending} aria-label={listening ? 'Stop voice input' : 'Start voice input'} title={listening ? 'Stop voice input' : 'Start voice input'} onClick={voice}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm6-3a6 6 0 0 1-12 0m6 6v4m-3 0h6" /></svg></button>}<button className="queue" disabled={pending || !value} onClick={() => void submit()}>{pending ? <><span className="spinner" />Queueing</> : 'Queue prompt'}</button></div></section>;
+  return <section className="prompt"><textarea aria-label="Prompt" value={value} disabled={pending} onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') { event.preventDefault(); setValue(''); } else if (event.key === 'Tab') { event.preventDefault(); setValue(current => current + '\t'); } else if (event.key === 'Enter') { event.preventDefault(); if (event.ctrlKey || event.shiftKey || window.matchMedia('(max-width: 600px)').matches) setValue(current => current + '\n'); else void submit(); } }} onChange={event => setValue(event.target.value)} /><div className="prompt-actions">{stop}<More id={id} /><PullRequestOpen url={pullRequestUrl} /><ProjectOpen url={projectUrl} />{supportsSpeechRecognition && <button className={`voice icon-button ${listening ? 'listening' : ''}`} type="button" disabled={pending} aria-label={listening ? 'Stop voice input' : 'Start voice input'} title={listening ? 'Stop voice input' : 'Start voice input'} onClick={voice}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm6-3a6 6 0 0 1-12 0m6 6v4m-3 0h6" /></svg></button>}<button className="queue" disabled={pending || !value} onClick={() => void submit()}>{pending ? <><span className="spinner" />Queueing</> : 'Queue prompt'}</button></div>{mobileKeys}</section>;
 }
 
 type MobileKeyIconName = 'control'|'shift'|'tab'|'up'|'down'|'left'|'right';
@@ -181,22 +201,6 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
   const [scrolledUp, setScrolledUp] = useState(false);
   const [canPageUp, setCanPageUp] = useState(false);
   const [canPageDown, setCanPageDown] = useState(false);
-  const [ctrlActive, setCtrlActive] = useState(false);
-  const [shiftActive, setShiftActive] = useState(false);
-  const mobileModifiers = useRef({ ctrl: false, shift: false });
-  const sendTerminalInput = useRef<(value: string) => void>(() => {});
-  const toggleModifier = (name: 'ctrl'|'shift') => {
-    mobileModifiers.current[name] = !mobileModifiers.current[name];
-    if (name === 'ctrl') setCtrlActive(mobileModifiers.current.ctrl);
-    else setShiftActive(mobileModifiers.current.shift);
-  };
-  const mobileKey = (key: 'tab'|'up'|'down'|'left'|'right') => {
-    const { ctrl, shift } = mobileModifiers.current;
-    const arrows = { up: 'A', down: 'B', right: 'C', left: 'D' };
-    const value = key === 'tab' ? (shift ? '\x1b[Z' : '\t') : (ctrl || shift ? `\x1b[1;${ctrl && shift ? 6 : ctrl ? 5 : 2}${arrows[key]}` : `\x1b[${arrows[key]}`);
-    sendTerminalInput.current(value);
-    terminalRef.current?.focus();
-  };
   useEffect(() => {
     let socket: WebSocket | undefined;
     let closed = false;
@@ -235,7 +239,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
       if (interactiveSocket?.readyState === WebSocket.OPEN) interactiveSocket.send(JSON.stringify({ v: 1, type: 'input', data: encoded(value) }));
       else { pendingInput.push(value); void connectInteractive(); }
     };
-    sendTerminalInput.current = sendInput;
+    terminalInputs.set(id, sendInput);
     const observer = new ResizeObserver(() => fit.fit());
     observer.observe(host.current!);
     const syncScrollState = () => {
@@ -252,9 +256,9 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
       }
     });
     const inputSubscription = terminal.onData(value => {
-      const { ctrl, shift } = mobileModifiers.current;
+      const { alt, ctrl, shift } = mobileModifiers.get(id) ?? { alt: false, ctrl: false, shift: false };
       const first = value.charAt(0);
-      const modified = ctrl && /^[a-z]$/iu.test(first) ? String.fromCharCode(first.toLowerCase().charCodeAt(0) - 96) : shift && /^[a-z]$/iu.test(first) ? `${first.toUpperCase()}${value.slice(1)}` : value;
+      const modified = `${alt ? '\x1b' : ''}${ctrl && /^[a-z]$/iu.test(first) ? String.fromCharCode(first.toLowerCase().charCodeAt(0) - 96) : shift && /^[a-z]$/iu.test(first) ? `${first.toUpperCase()}${value.slice(1)}` : value}`;
       sendInput(modified);
     });
     const focus = () => { void connectInteractive(); };
@@ -316,7 +320,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
       } catch { setStatus('Reconnecting'); reconnect(); }
     };
     void connect();
-    return () => { closed = true; sendTerminalInput.current = () => {}; if (retry !== undefined) window.clearTimeout(retry); scrollSubscription.dispose(); keySubscription.dispose(); inputSubscription.dispose(); host.current?.removeEventListener('focusin', focus); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; terminal.dispose(); };
+    return () => { closed = true; if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (retry !== undefined) window.clearTimeout(retry); scrollSubscription.dispose(); keySubscription.dispose(); inputSubscription.dispose(); host.current?.removeEventListener('focusin', focus); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; terminal.dispose(); };
   }, [id, onQuestion]);
   useEffect(() => {
     const prompt = promptRef.current;
@@ -331,8 +335,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
   useEffect(() => { if (!promptOverflows) setPromptExpanded(false); }, [promptOverflows]);
   const loading = !hasRendered;
   const loadingLabel = status === 'Live' ? 'Waiting for output' : status;
-  const mobileKeys = <div className="mobile-terminal-keys" aria-label="Terminal keys"><div className="mobile-key-modifiers"><button type="button" className={ctrlActive ? 'active' : ''} aria-label="Toggle Control" aria-pressed={ctrlActive} onPointerDown={event => { event.preventDefault(); toggleModifier('ctrl'); }}><MobileKeyIcon name="control" /></button><button type="button" className={shiftActive ? 'active' : ''} aria-label="Toggle Shift" aria-pressed={shiftActive} onPointerDown={event => { event.preventDefault(); toggleModifier('shift'); }}><MobileKeyIcon name="shift" /></button><button type="button" aria-label="Tab" onPointerDown={event => { event.preventDefault(); mobileKey('tab'); }}><MobileKeyIcon name="tab" /></button></div><div className="mobile-arrow-keys"><button type="button" aria-label="Up arrow" onPointerDown={event => { event.preventDefault(); mobileKey('up'); }}><MobileKeyIcon name="up" /></button><button type="button" aria-label="Left arrow" onPointerDown={event => { event.preventDefault(); mobileKey('left'); }}><MobileKeyIcon name="left" /></button><button type="button" aria-label="Down arrow" onPointerDown={event => { event.preventDefault(); mobileKey('down'); }}><MobileKeyIcon name="down" /></button><button type="button" aria-label="Right arrow" onPointerDown={event => { event.preventDefault(); mobileKey('right'); }}><MobileKeyIcon name="right" /></button></div></div>;
-  return <section className="log-shell"><div className="log"><div className={`log-topbar ${promptOverflows ? 'expandable' : ''} ${promptExpanded ? 'expanded' : ''}`} onClick={() => promptOverflows && setPromptExpanded(expanded => !expanded)}><button className="terminal-toggle" onClick={event => { event.stopPropagation(); onOpenTerminal(); }}>Open terminal</button>{lastPrompt && <span className={`last-prompt ${promptExpanded ? 'expanded' : ''}`} ref={promptRef} title={lastPrompt}><strong>Last prompt:</strong> {lastPrompt}</span>}<span className={`status log-status ${status.toLowerCase()}`}><i />{status}</span></div><div className="log-canvas" ref={host} aria-label="Live log" />{mobileKeys}{loading && <div className="log-loading"><span className="spinner" />{loadingLabel}</div>}<div className="log-controls-bottom">{scrolledUp && <button className="log-control back-to-bottom" onClick={() => terminalRef.current?.scrollToBottom()}>Back to bottom</button>}<div className="page-controls"><button className="log-control page-arrow" aria-label="Page up" title="Page up" disabled={!canPageUp} onClick={() => terminalRef.current?.scrollPages(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" title="Page down" disabled={!canPageDown} onClick={() => terminalRef.current?.scrollPages(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></section>;
+  return <section className="log-shell"><div className="log"><div className={`log-topbar ${promptOverflows ? 'expandable' : ''} ${promptExpanded ? 'expanded' : ''}`} onClick={() => promptOverflows && setPromptExpanded(expanded => !expanded)}><button className="terminal-toggle" onClick={event => { event.stopPropagation(); onOpenTerminal(); }}>Open terminal</button>{lastPrompt && <span className={`last-prompt ${promptExpanded ? 'expanded' : ''}`} ref={promptRef} title={lastPrompt}><strong>Last prompt:</strong> {lastPrompt}</span>}<span className={`status log-status ${status.toLowerCase()}`}><i />{status}</span></div><div className="log-canvas" ref={host} aria-label="Live log" />{loading && <div className="log-loading"><span className="spinner" />{loadingLabel}</div>}<div className="log-controls-bottom">{scrolledUp && <button className="log-control back-to-bottom" onClick={() => terminalRef.current?.scrollToBottom()}>Back to bottom</button>}<div className="page-controls"><button className="log-control page-arrow" aria-label="Page up" title="Page up" disabled={!canPageUp} onClick={() => terminalRef.current?.scrollPages(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" title="Page down" disabled={!canPageDown} onClick={() => terminalRef.current?.scrollPages(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></section>;
 }
 
 function Terminal({ agent }: { agent: Agent }) {
