@@ -1,4 +1,4 @@
-import { Component, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Component, type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -371,21 +371,25 @@ function Terminal({ agent }: { agent: Agent }) {
   return <section><button disabled={connected} onClick={() => void connect()}>Confirm and connect</button><div className="terminal" ref={host} aria-label="Interactive session terminal" /></section>;
 }
 
-type FlyoutSide = 'above' | 'below';
 function useViewportFlyout(open: boolean) {
   const ref = useRef<HTMLSpanElement | null>(null);
-  const [side, setSide] = useState<FlyoutSide>('above');
+  const [style, setStyle] = useState<CSSProperties>({ visibility: 'hidden' });
   useLayoutEffect(() => {
-    if (!open) return;
+    if (!open) { setStyle({ visibility: 'hidden' }); return; }
     const position = () => {
       const anchor = ref.current;
       const flyout = anchor?.querySelector<HTMLElement>('.flyout-menu');
       if (!anchor || !flyout) return;
-      const { top, bottom } = anchor.getBoundingClientRect();
-      const height = flyout.offsetHeight + 8;
-      const above = top;
-      const below = window.innerHeight - bottom;
-      setSide(below >= height || below > above ? 'below' : 'above');
+      const { top, right, bottom } = anchor.getBoundingClientRect();
+      const margin = 8;
+      const gap = 6;
+      const width = Math.min(flyout.offsetWidth, window.innerWidth - margin * 2);
+      const height = Math.min(flyout.offsetHeight, window.innerHeight - margin * 2);
+      const below = window.innerHeight - bottom - gap;
+      const above = top - gap;
+      const flyoutTop = below >= height || below >= above ? bottom + gap : top - height - gap;
+      const left = Math.max(margin, Math.min(right - width, window.innerWidth - width - margin));
+      setStyle({ position: 'fixed', top: Math.max(margin, Math.min(flyoutTop, window.innerHeight - height - margin)), left, right: 'auto', bottom: 'auto', maxHeight: `${Math.max(1, window.innerHeight - margin * 2)}px`, visibility: 'visible' });
     };
     position();
     const observer = new ResizeObserver(position);
@@ -394,16 +398,16 @@ function useViewportFlyout(open: boolean) {
     window.addEventListener('scroll', position, true);
     return () => { observer.disconnect(); window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true); };
   }, [open]);
-  return { ref, side };
+  return { ref, style };
 }
 
 function More({ id }: { id: string }) {
-  const [menuOpen, setMenuOpen] = useState(false); const { ref: menu, side } = useViewportFlyout(menuOpen);
+  const [menuOpen, setMenuOpen] = useState(false); const { ref: menu, style } = useViewportFlyout(menuOpen);
   const [directoryOpen, setDirectoryOpen] = useState(false); const [tree, setTree] = useState<{ root: string; path: string; directories: string[] }>();
   useEffect(() => { if (!menuOpen) return; const close = (event: MouseEvent) => { if (!menu.current?.contains(event.target as Node)) setMenuOpen(false); }; document.addEventListener('mousedown', close); return () => document.removeEventListener('mousedown', close); }, [menuOpen]);
   useEffect(() => { if (!directoryOpen) return; void request(`/api/agents/${encodeURIComponent(id)}/directories`).then(r => r.ok ? r.json() : undefined).then(setTree); }, [directoryOpen, id]);
   const chooseDirectory = () => { setMenuOpen(false); setDirectoryOpen(true); };
-  return <><span className="more-wrap" ref={menu}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} onClick={() => setMenuOpen(value => !value)}>⋮</button>{menuOpen && <div className="more-menu flyout-menu" data-flyout-side={side}><button onClick={chooseDirectory}>Change directory</button></div>}</span>{directoryOpen && <div className="dialog" role="dialog" aria-modal="true"><div><button onClick={() => setDirectoryOpen(false)}>Close</button><h2>Change directory</h2><p>{tree?.path ?? 'Loading directories…'}</p>{tree && <button onClick={() => void request(`/api/agents/${encodeURIComponent(id)}/directory`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: tree.path }) }).then(() => setDirectoryOpen(false))}>Start agent here</button>}{tree?.directories.map(name => <button key={name} onClick={() => void request(`/api/agents/${encodeURIComponent(id)}/directories?path=${encodeURIComponent(`${tree.path}/${name}`)}`).then(r => r.ok && r.json()).then(setTree)}>{name}</button>)}</div></div>}</>;
+  return <><span className="more-wrap" ref={menu}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} onClick={() => setMenuOpen(value => !value)}>⋮</button>{menuOpen && <div className="more-menu flyout-menu" style={style}><button onClick={chooseDirectory}>Change directory</button></div>}</span>{directoryOpen && <div className="dialog" role="dialog" aria-modal="true"><div><button onClick={() => setDirectoryOpen(false)}>Close</button><h2>Change directory</h2><p>{tree?.path ?? 'Loading directories…'}</p>{tree && <button onClick={() => void request(`/api/agents/${encodeURIComponent(id)}/directory`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: tree.path }) }).then(() => setDirectoryOpen(false))}>Start agent here</button>}{tree?.directories.map(name => <button key={name} onClick={() => void request(`/api/agents/${encodeURIComponent(id)}/directories?path=${encodeURIComponent(`${tree.path}/${name}`)}`).then(r => r.ok && r.json()).then(setTree)}>{name}</button>)}</div></div>}</>;
 }
 
 function AgentCard({ agent, active, onDeleted }: { agent: Agent; active: boolean; onDeleted: () => Promise<void> }) {
@@ -468,7 +472,7 @@ function DashboardView({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [creatingAgent, setCreatingAgent] = useState(false);
   const [launcherOpen, setLauncherOpen] = useState(false);
   const tabsRef = useRef<HTMLElement | null>(null);
-  const { ref: launcherRef, side: launcherSide } = useViewportFlyout(launcherOpen);
+  const { ref: launcherRef, style: launcherStyle } = useViewportFlyout(launcherOpen);
   const plusRef = useRef<HTMLButtonElement | null>(null);
   const [plusAlone, setPlusAlone] = useState(false);
   const [launchErrorMessage, setLaunchErrorMessage] = useState('');
@@ -582,7 +586,7 @@ function DashboardView({ onUnauthorized }: { onUnauthorized: () => void }) {
   if (data === undefined) return <LoadingScreen label={unavailable ? 'Reconnecting to console' : 'Syncing console state'} />;
   const item = items[active];
   const stateLabel: Record<AgentState, string> = { working: 'Working', 'prompt-done': 'Prompt done', 'action-required': 'Action required', closed: 'Agent closed' };
-  return <main className="console"><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}status-${entry.state}`} title={stateLabel[entry.state]} aria-label={`${entry.label} — ${stateLabel[entry.state]}`} onClick={() => select(index)}>{entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{Array.from(entry.label).map((letter, letterIndex) => <span className="tab-label-letter" key={`${letter}-${letterIndex}`} style={{ animationDelay: `-${letterIndex * 75}ms` }}>{letter === ' ' ? '\u00a0' : letter}</span>)}</span> : entry.label}</button>)}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label="Launch agent" aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button>{launcherOpen && <span className="launcher-menu more-menu flyout-menu" data-flyout-side={launcherSide}><button onClick={() => void createAgent()}>~ Home</button>{data.worktrees.map(worktree => <button key={worktree.id} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</span>}</span>{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{launchErrorMessage && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}{items.length > 0 ? <section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard agent={item.agent} active={item.state === 'working'} onDeleted={refresh} />}{item?.worktree && <WorktreeCard worktree={item.worktree} onLaunched={launched} />}</section> : <article className="worktree-view"><h2>No sessions</h2></article>}</main>;
+  return <main className="console"><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}status-${entry.state}`} title={stateLabel[entry.state]} aria-label={`${entry.label} — ${stateLabel[entry.state]}`} onClick={() => select(index)}>{entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{Array.from(entry.label).map((letter, letterIndex) => <span className="tab-label-letter" key={`${letter}-${letterIndex}`} style={{ animationDelay: `-${letterIndex * 75}ms` }}>{letter === ' ' ? '\u00a0' : letter}</span>)}</span> : entry.label}</button>)}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label="Launch agent" aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button>{launcherOpen && <span className="launcher-menu more-menu flyout-menu" style={launcherStyle}><button onClick={() => void createAgent()}>~ Home</button>{data.worktrees.map(worktree => <button key={worktree.id} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</span>}</span>{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{launchErrorMessage && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}{items.length > 0 ? <section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard agent={item.agent} active={item.state === 'working'} onDeleted={refresh} />}{item?.worktree && <WorktreeCard worktree={item.worktree} onLaunched={launched} />}</section> : <article className="worktree-view"><h2>No sessions</h2></article>}</main>;
 }
 
 function App() {
