@@ -66,6 +66,17 @@ const request = async (url: string, init: RequestInit = {}) => {
   return fetch(url, { ...init, credentials: 'same-origin', headers });
 };
 
+const showNotification = async (title: string, body: string, tag: string) => {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const options = { body, tag, icon: '/favicon.svg' };
+  if ('serviceWorker' in navigator) {
+    const registration = await navigator.serviceWorker.ready;
+    await registration.showNotification(title, options);
+    return;
+  }
+  new Notification(title, options);
+};
+
 function Login({ done, initialError }: { done: () => void; initialError?: string }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState(initialError ?? '');
@@ -319,6 +330,20 @@ function WorktreeCard({ worktree, onLaunched }: { worktree: Worktree; onLaunched
   return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><div className="log-topbar"><button className="terminal-toggle" disabled>Open terminal</button><span className="status log-status inactive"><i />Inactive</span></div><div className="log-loading inactive">{launching ? <><span className="spinner" />Starting Codex…</> : 'Inactive'}</div><div className="log-controls-bottom"><div className="page-controls"><button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></section><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions"><button className="danger" disabled aria-label="Cancel agent" title="Cancel agent"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" /></svg></button><ProjectOpen url={worktree.projectUrl} /><button className="queue" disabled={!worktree.available || launching} onClick={() => void launch()}>{launching ? <><span className="spinner" />Launching</> : 'Launch agent'}</button></div></section></article>;
 }
 
+function NotificationControl() {
+  const supported = 'Notification' in window;
+  const [permission, setPermission] = useState<NotificationPermission | undefined>(() => supported ? Notification.permission : undefined);
+  const enable = async () => {
+    if (!supported || permission !== 'default') return;
+    const next = await Notification.requestPermission();
+    setPermission(next);
+    if (next === 'granted') await showNotification('Alerts enabled', 'You will be notified when an agent is ready.', 'rac-alerts-enabled');
+  };
+  if (!supported || permission === 'granted') return null;
+  if (permission === 'denied') return <span className="notification-status" title="Enable notifications for this site in your browser settings">Alerts blocked</span>;
+  return <button className="notification-control" type="button" onClick={() => void enable()}>Enable alerts</button>;
+}
+
 function DashboardView({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [data, setData] = useState<Dashboard>();
   const [unavailable, setUnavailable] = useState(false);
@@ -345,15 +370,14 @@ function DashboardView({ onUnauthorized }: { onUnauthorized: () => void }) {
     } catch { setUnavailable(true); }
   };
   useEffect(() => { void refresh(); const timer = window.setInterval(() => void refresh(), 5_000); return () => window.clearInterval(timer); }, []);
-  useEffect(() => { if ('Notification' in window && Notification.permission === 'default') void Notification.requestPermission(); }, []);
   useEffect(() => {
     if (!data) return;
     const next = new Map<string, AgentState>();
     for (const agent of data.agents) {
       const state = agentState(agent);
       const previous = agentStates.current.get(agent.id);
-      if (previous === 'working' && state === 'prompt-done' && 'Notification' in window && Notification.permission === 'granted') {
-        new Notification('Agent finished', { body: `${agent.worktreeLabel ?? agent.title} is ready for another prompt.`, tag: `agent-finished-${agent.id}` });
+      if (previous === 'working' && state === 'prompt-done') {
+        void showNotification('Agent finished', `${agent.worktreeLabel ?? agent.title} is ready for another prompt.`, `agent-finished-${agent.id}`);
       }
       next.set(agent.id, state);
     }
@@ -417,7 +441,7 @@ function DashboardView({ onUnauthorized }: { onUnauthorized: () => void }) {
   if (data === undefined) return <LoadingScreen label={unavailable ? 'Reconnecting to console' : 'Syncing console state'} />;
   const item = items[active];
   const stateLabel: Record<AgentState, string> = { working: 'Working', 'prompt-done': 'Prompt done', 'action-required': 'Action required', closed: 'Agent closed' };
-  return <main className="console"><nav className="tabs" role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}status-${entry.state}`} title={stateLabel[entry.state]} aria-label={`${entry.label} — ${stateLabel[entry.state]}`} onClick={() => select(index)}>{entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{Array.from(entry.label).map((letter, letterIndex) => <span className="tab-label-letter" key={`${letter}-${letterIndex}`} style={{ animationDelay: `-${letterIndex * 75}ms` }}>{letter === ' ' ? '\u00a0' : letter}</span>)}</span> : entry.label}</button>)}<button className="new-agent-tab" type="button" disabled={creatingAgent} aria-label="New agent" title="New agent" onClick={() => void createAgent()}>{creatingAgent ? <span className="spinner" /> : '+'}</button></nav>{launchErrorMessage && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}{items.length > 0 ? <section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard agent={item.agent} active={item.state === 'working'} onDeleted={refresh} />}{item?.worktree && <WorktreeCard worktree={item.worktree} onLaunched={launched} />}</section> : <article className="worktree-view"><h2>No sessions</h2></article>}</main>;
+  return <main className="console"><nav className="tabs" role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}status-${entry.state}`} title={stateLabel[entry.state]} aria-label={`${entry.label} — ${stateLabel[entry.state]}`} onClick={() => select(index)}>{entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{Array.from(entry.label).map((letter, letterIndex) => <span className="tab-label-letter" key={`${letter}-${letterIndex}`} style={{ animationDelay: `-${letterIndex * 75}ms` }}>{letter === ' ' ? '\u00a0' : letter}</span>)}</span> : entry.label}</button>)}<NotificationControl /><button className="new-agent-tab" type="button" disabled={creatingAgent} aria-label="New agent" title="New agent" onClick={() => void createAgent()}>{creatingAgent ? <span className="spinner" /> : '+'}</button></nav>{launchErrorMessage && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}{items.length > 0 ? <section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard agent={item.agent} active={item.state === 'working'} onDeleted={refresh} />}{item?.worktree && <WorktreeCard worktree={item.worktree} onLaunched={launched} />}</section> : <article className="worktree-view"><h2>No sessions</h2></article>}</main>;
 }
 
 function App() {
