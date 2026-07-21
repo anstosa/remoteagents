@@ -64,7 +64,9 @@ export class TmuxAdapter {
     const out = await run(this.binary, ['-S', socket.path, 'capture-pane', '-e', '-p', '-t', pane, '-S', `-${requested}`]);
     if (out.code !== 0) return undefined;
     const lines = out.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
-    const visible = lines.slice(0, window).join('\n');
+    const end = Math.max(0, lines.length - history);
+    const start = Math.max(0, end - window);
+    const visible = lines.slice(start, end).join('\n');
     return { text: safeSnapshot(visible), older: lines.length >= requested };
   }
 

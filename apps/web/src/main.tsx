@@ -272,12 +272,6 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
       setCanPageUp(hasOlder);
       setCanPageDown(historyOffset > 0);
     };
-    const scrollSubscription = terminal.onScroll(syncScrollState);
-    const wheel = (event: WheelEvent) => {
-      if (event.deltaY < 0 && hasOlder) { event.preventDefault(); requestHistory(historyOffset + Math.max(1, terminal.rows)); }
-      else if (event.deltaY > 0 && historyOffset > 0) { event.preventDefault(); requestHistory(Math.max(0, historyOffset - Math.max(1, terminal.rows))); }
-    };
-    host.current!.addEventListener('wheel', wheel, { capture: true, passive: false });
     const keySubscription = terminal.onKey(({ domEvent }) => {
       if ((domEvent.ctrlKey || domEvent.metaKey) && domEvent.key.toLowerCase() === 'c' && terminal.hasSelection()) {
         domEvent.preventDefault();
@@ -356,7 +350,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
       } catch { setStatus('Reconnecting'); reconnect(); }
     };
     void connect();
-    return () => { closed = true; if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (retry !== undefined) window.clearTimeout(retry); scrollSubscription.dispose(); keySubscription.dispose(); inputSubscription.dispose(); host.current?.removeEventListener('focusin', focus); host.current?.removeEventListener('wheel', wheel, true); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; terminal.dispose(); };
+    return () => { closed = true; if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (retry !== undefined) window.clearTimeout(retry); keySubscription.dispose(); inputSubscription.dispose(); host.current?.removeEventListener('focusin', focus); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; terminal.dispose(); };
   }, [id, onQuestion]);
   useEffect(() => {
     const prompt = promptRef.current;
