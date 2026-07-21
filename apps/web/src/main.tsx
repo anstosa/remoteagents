@@ -176,6 +176,22 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
   const [scrolledUp, setScrolledUp] = useState(false);
   const [canPageUp, setCanPageUp] = useState(false);
   const [canPageDown, setCanPageDown] = useState(false);
+  const [ctrlActive, setCtrlActive] = useState(false);
+  const [shiftActive, setShiftActive] = useState(false);
+  const mobileModifiers = useRef({ ctrl: false, shift: false });
+  const sendTerminalInput = useRef<(value: string) => void>(() => {});
+  const toggleModifier = (name: 'ctrl'|'shift') => {
+    mobileModifiers.current[name] = !mobileModifiers.current[name];
+    if (name === 'ctrl') setCtrlActive(mobileModifiers.current.ctrl);
+    else setShiftActive(mobileModifiers.current.shift);
+  };
+  const mobileKey = (key: 'tab'|'up'|'down'|'left'|'right') => {
+    const { ctrl, shift } = mobileModifiers.current;
+    const arrows = { up: 'A', down: 'B', right: 'C', left: 'D' };
+    const value = key === 'tab' ? (shift ? '\x1b[Z' : '\t') : (ctrl || shift ? `\x1b[1;${ctrl && shift ? 6 : ctrl ? 5 : 2}${arrows[key]}` : `\x1b[${arrows[key]}`);
+    sendTerminalInput.current(value);
+    terminalRef.current?.focus();
+  };
   useEffect(() => {
     let socket: WebSocket | undefined;
     let closed = false;
@@ -211,6 +227,11 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
       } catch { interactiveSocket = undefined; }
       finally { connectingInteractive = false; }
     };
+    const sendInput = (value: string) => {
+      if (interactiveSocket?.readyState === WebSocket.OPEN) interactiveSocket.send(JSON.stringify({ v: 1, type: 'input', data: encoded(value) }));
+      else { pendingInput.push(value); void connectInteractive(); }
+    };
+    sendTerminalInput.current = sendInput;
     const observer = new ResizeObserver(() => { fit.fit(); sendResize(); });
     observer.observe(host.current!);
     const syncScrollState = () => {
@@ -227,8 +248,10 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
       }
     });
     const inputSubscription = terminal.onData(value => {
-      if (interactiveSocket?.readyState === WebSocket.OPEN) interactiveSocket.send(JSON.stringify({ v: 1, type: 'input', data: encoded(value) }));
-      else { pendingInput.push(value); void connectInteractive(); }
+      const { ctrl, shift } = mobileModifiers.current;
+      const first = value.charAt(0);
+      const modified = ctrl && /^[a-z]$/iu.test(first) ? String.fromCharCode(first.toLowerCase().charCodeAt(0) - 96) : shift && /^[a-z]$/iu.test(first) ? `${first.toUpperCase()}${value.slice(1)}` : value;
+      sendInput(modified);
     });
     const focus = () => { void connectInteractive(); };
     host.current!.addEventListener('focusin', focus);
@@ -289,7 +312,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
       } catch { setStatus('Reconnecting'); reconnect(); }
     };
     void connect();
-    return () => { closed = true; if (retry !== undefined) window.clearTimeout(retry); scrollSubscription.dispose(); keySubscription.dispose(); inputSubscription.dispose(); host.current?.removeEventListener('focusin', focus); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; terminal.dispose(); };
+    return () => { closed = true; sendTerminalInput.current = () => {}; if (retry !== undefined) window.clearTimeout(retry); scrollSubscription.dispose(); keySubscription.dispose(); inputSubscription.dispose(); host.current?.removeEventListener('focusin', focus); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; terminal.dispose(); };
   }, [id, onQuestion]);
   useEffect(() => {
     const prompt = promptRef.current;
@@ -304,7 +327,8 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
   useEffect(() => { if (!promptOverflows) setPromptExpanded(false); }, [promptOverflows]);
   const loading = !hasRendered;
   const loadingLabel = status === 'Live' ? 'Waiting for output' : status;
-  return <section className="log-shell"><div className="log"><div className={`log-topbar ${promptOverflows ? 'expandable' : ''} ${promptExpanded ? 'expanded' : ''}`} onClick={() => promptOverflows && setPromptExpanded(expanded => !expanded)}><button className="terminal-toggle" onClick={event => { event.stopPropagation(); onOpenTerminal(); }}>Open terminal</button>{lastPrompt && <span className={`last-prompt ${promptExpanded ? 'expanded' : ''}`} ref={promptRef} title={lastPrompt}><strong>Last prompt:</strong> {lastPrompt}</span>}<span className={`status log-status ${status.toLowerCase()}`}><i />{status}</span></div><div className="log-canvas" ref={host} aria-label="Live log" />{loading && <div className="log-loading"><span className="spinner" />{loadingLabel}</div>}<div className="log-controls-bottom">{scrolledUp && <button className="log-control back-to-bottom" onClick={() => terminalRef.current?.scrollToBottom()}>Back to bottom</button>}<div className="page-controls"><button className="log-control page-arrow" aria-label="Page up" title="Page up" disabled={!canPageUp} onClick={() => terminalRef.current?.scrollPages(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" title="Page down" disabled={!canPageDown} onClick={() => terminalRef.current?.scrollPages(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></section>;
+  const mobileKeys = <div className="mobile-terminal-keys" aria-label="Terminal keys"><button type="button" className={ctrlActive ? 'active' : ''} aria-pressed={ctrlActive} onPointerDown={event => { event.preventDefault(); toggleModifier('ctrl'); }}>Ctrl</button><button type="button" className={shiftActive ? 'active' : ''} aria-pressed={shiftActive} onPointerDown={event => { event.preventDefault(); toggleModifier('shift'); }}>⇧</button><button type="button" aria-label="Up arrow" onPointerDown={event => { event.preventDefault(); mobileKey('up'); }}>↑</button><button type="button" aria-label="Left arrow" onPointerDown={event => { event.preventDefault(); mobileKey('left'); }}>←</button><button type="button" aria-label="Down arrow" onPointerDown={event => { event.preventDefault(); mobileKey('down'); }}>↓</button><button type="button" aria-label="Right arrow" onPointerDown={event => { event.preventDefault(); mobileKey('right'); }}>→</button><button type="button" onPointerDown={event => { event.preventDefault(); mobileKey('tab'); }}>Tab</button></div>;
+  return <section className="log-shell"><div className="log"><div className={`log-topbar ${promptOverflows ? 'expandable' : ''} ${promptExpanded ? 'expanded' : ''}`} onClick={() => promptOverflows && setPromptExpanded(expanded => !expanded)}><button className="terminal-toggle" onClick={event => { event.stopPropagation(); onOpenTerminal(); }}>Open terminal</button>{lastPrompt && <span className={`last-prompt ${promptExpanded ? 'expanded' : ''}`} ref={promptRef} title={lastPrompt}><strong>Last prompt:</strong> {lastPrompt}</span>}<span className={`status log-status ${status.toLowerCase()}`}><i />{status}</span></div><div className="log-canvas" ref={host} aria-label="Live log" />{mobileKeys}{loading && <div className="log-loading"><span className="spinner" />{loadingLabel}</div>}<div className="log-controls-bottom">{scrolledUp && <button className="log-control back-to-bottom" onClick={() => terminalRef.current?.scrollToBottom()}>Back to bottom</button>}<div className="page-controls"><button className="log-control page-arrow" aria-label="Page up" title="Page up" disabled={!canPageUp} onClick={() => terminalRef.current?.scrollPages(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" title="Page down" disabled={!canPageDown} onClick={() => terminalRef.current?.scrollPages(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></section>;
 }
 
 function Terminal({ agent }: { agent: Agent }) {
