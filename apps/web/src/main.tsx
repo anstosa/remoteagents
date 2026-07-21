@@ -92,22 +92,37 @@ const copyText = async (value: string) => {
   textarea.remove();
 };
 
-function Login({ done, initialError }: { done: () => void; initialError?: string }) {
+function Login({ done, initialError }: { done: (active: boolean) => void; initialError?: string }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState(initialError ?? '');
   const login = async (event: React.FormEvent) => {
     event.preventDefault();
     const response = await request('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }) });
     if (!response.ok) return setError('Invalid credentials');
-    csrf = (await response.json()).csrfToken;
+    const session = await response.json() as { csrfToken: string; active: boolean };
+    csrf = session.csrfToken;
     setPassword('');
-    done();
+    done(session.active);
   };
   return <main className="auth-screen"><div className="auth-glow" /><form className="auth-card" onSubmit={login}><div className="auth-mark" aria-hidden="true"><span>&gt;_</span></div><div className="auth-heading"><p>REMOTE // AGENTS</p><h1>Console access</h1></div><label className="sr-only">Username<input type="text" name="username" autoComplete="username" tabIndex={-1} /></label><label>Password<input autoFocus type="password" name="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="current-password" /></label>{error && <p className="auth-error" role="alert">{error}</p>}<button className="auth-submit">Authenticate <span aria-hidden="true">↗</span></button></form></main>;
 }
 
 function LoadingScreen({ label = 'Restoring secure session' }: { label?: string }) {
   return <main className="auth-screen loading-screen" aria-live="polite"><div className="auth-glow" /><div className="loading-console"><div className="loading-line"><span className="spinner" />{label}</div><div className="loading-bars" aria-hidden="true"><i /><i /><i /><i /><i /></div></div></main>;
+}
+
+function ControlScreen({ claimed }: { claimed: () => void }) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState('');
+  const takeControl = async () => {
+    setPending(true); setError('');
+    try {
+      const response = await request('/api/auth/take-control', { method: 'POST' });
+      if (!response.ok) throw new Error();
+      claimed();
+    } catch { setError('Unable to take control. Try again.'); setPending(false); }
+  };
+  return <main className="auth-screen loading-screen" aria-live="polite"><div className="auth-glow" /><section className="loading-console console-recovery"><strong>Another client is active. Take control?</strong><span>This client will replace the active client.</span>{error && <span className="auth-error" role="alert">{error}</span>}<button type="button" disabled={pending} onClick={() => void takeControl()}>{pending ? <><span className="spinner" />Taking control</> : 'Take control'}</button></section></main>;
 }
 
 class ConsoleBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
@@ -472,7 +487,7 @@ function NotificationControl() {
   return <button className="notification-control" type="button" onClick={() => void enable()}>Enable alerts</button>;
 }
 
-function DashboardView({ onUnauthorized }: { onUnauthorized: () => void }) {
+function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => void; onInactive: () => void }) {
   const [data, setData] = useState<Dashboard>();
   const [unavailable, setUnavailable] = useState(false);
   const [active, setActive] = useState(0);
@@ -501,6 +516,7 @@ function DashboardView({ onUnauthorized }: { onUnauthorized: () => void }) {
     try {
       const response = await request('/api/dashboard', { signal: AbortSignal.timeout(8_000) });
       if (response.status === 401) return onUnauthorized();
+      if (response.status === 423) return onInactive();
       if (!response.ok) throw new Error('dashboard unavailable');
       const payload: unknown = await response.json();
       if (!isDashboard(payload)) throw new Error('invalid dashboard response');
@@ -597,7 +613,7 @@ function DashboardView({ onUnauthorized }: { onUnauthorized: () => void }) {
 }
 
 function App() {
-  const [state, setState] = useState<'checking' | 'login' | 'ready'>('checking');
+  const [state, setState] = useState<'checking' | 'login' | 'ready' | 'inactive'>('checking');
   const [error, setError] = useState('');
   useEffect(() => {
     const viewport = window.visualViewport;
@@ -618,8 +634,9 @@ function App() {
       try {
         const session = await fetch('/api/auth/session', { credentials: 'same-origin', signal: AbortSignal.timeout(8_000) });
         if (session.ok) {
-          csrf = (await session.json()).csrfToken;
-          if (active) setState('ready');
+          const current = await session.json() as { csrfToken: string; active: boolean };
+          csrf = current.csrfToken;
+          if (active) setState(current.active ? 'ready' : 'inactive');
           return;
         }
         const bootstrap = await fetch('/api/auth/bootstrap', { credentials: 'same-origin', signal: AbortSignal.timeout(8_000) });
@@ -633,7 +650,9 @@ function App() {
     return () => { active = false; };
   }, []);
   if (state === 'checking') return <LoadingScreen />;
-  return state === 'ready' ? <DashboardView onUnauthorized={() => setState('login')} /> : <Login initialError={error} done={() => setState('ready')} />;
+  if (state === 'ready') return <DashboardView onUnauthorized={() => setState('login')} onInactive={() => setState('inactive')} />;
+  if (state === 'inactive') return <ControlScreen claimed={() => setState('ready')} />;
+  return <Login initialError={error} done={active => setState(active ? 'ready' : 'inactive')} />;
 }
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');
 createRoot(document.getElementById('root')!).render(<ConsoleBoundary><App /></ConsoleBoundary>);
