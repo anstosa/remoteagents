@@ -8,7 +8,7 @@ import './styles.css';
 
 type OmxQuestion = { id: string; text: string; choices: string[]; paneId: string };
 type Agent = { id: string; sessionId: string; workspace: string; branch?: string; title: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; projectUrl?: string; pullRequestUrl?: string; question?: OmxQuestion };
-type Worktree = { id: string; label: string; path: string; available: boolean; order: number; projectUrl?: string };
+type Worktree = { id: string; label: string; path: string; available: boolean; pinned: boolean; order: number; projectUrl?: string };
 type Dashboard = { agents: Agent[]; worktrees: Worktree[] };
 const isDashboard = (value: unknown): value is Dashboard => {
   if (value === null || typeof value !== 'object') return false;
@@ -369,6 +369,8 @@ function DashboardView({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [unavailable, setUnavailable] = useState(false);
   const [active, setActive] = useState(0);
   const [creatingAgent, setCreatingAgent] = useState(false);
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  const [showInactive, setShowInactive] = useState(false);
   const [launchErrorMessage, setLaunchErrorMessage] = useState('');
   const [activateAgentId, setActivateAgentId] = useState<string>();
   const tabInitialized = useRef(false);
@@ -423,7 +425,7 @@ function DashboardView({ onUnauthorized }: { onUnauthorized: () => void }) {
   }, [agentIds]);
   const items: DashboardItem[] = data === undefined ? [] : [
     ...data.agents.map(agent => ({ key: `agent-${agent.id}`, label: agentLabel(agent), state: agentState(agent), order: agent.worktreeOrder ?? Number.MAX_SAFE_INTEGER, agent })),
-    ...data.worktrees.map(worktree => ({ key: `worktree-${worktree.id}`, label: worktree.label, state: 'closed' as const, order: worktree.order, worktree }))
+    ...data.worktrees.filter(worktree => worktree.pinned || showInactive).map(worktree => ({ key: `worktree-${worktree.id}`, label: worktree.label, state: 'closed' as const, order: worktree.order, worktree }))
   ].sort((left, right) => left.order - right.order);
   useEffect(() => { setActive(current => Math.min(current, Math.max(items.length - 1, 0))); }, [items.length]);
   const tabKey = items.map(item => item.label).join('\u0000');
@@ -458,10 +460,11 @@ function DashboardView({ onUnauthorized }: { onUnauthorized: () => void }) {
     } catch { setLaunchErrorMessage('Unable to reach the console while launching the agent.'); }
     finally { setCreatingAgent(false); }
   };
+  const launchWorktree = async (worktree: Worktree) => { setLauncherOpen(false); const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/launch`, { method: 'POST' }); if (!response.ok) return setLaunchErrorMessage(await launchError(response)); const payload = await response.json() as { agentId?: unknown }; if (typeof payload.agentId === 'string') launched(payload.agentId); };
   if (data === undefined) return <LoadingScreen label={unavailable ? 'Reconnecting to console' : 'Syncing console state'} />;
   const item = items[active];
   const stateLabel: Record<AgentState, string> = { working: 'Working', 'prompt-done': 'Prompt done', 'action-required': 'Action required', closed: 'Agent closed' };
-  return <main className="console"><nav className="tabs" role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}status-${entry.state}`} title={stateLabel[entry.state]} aria-label={`${entry.label} — ${stateLabel[entry.state]}`} onClick={() => select(index)}>{entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{Array.from(entry.label).map((letter, letterIndex) => <span className="tab-label-letter" key={`${letter}-${letterIndex}`} style={{ animationDelay: `-${letterIndex * 75}ms` }}>{letter === ' ' ? '\u00a0' : letter}</span>)}</span> : entry.label}</button>)}<NotificationControl /><button className="new-agent-tab" type="button" disabled={creatingAgent} aria-label="New agent" title="New agent" onClick={() => void createAgent()}>{creatingAgent ? <span className="spinner" /> : '+'}</button></nav>{launchErrorMessage && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}{items.length > 0 ? <section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard agent={item.agent} active={item.state === 'working'} onDeleted={refresh} />}{item?.worktree && <WorktreeCard worktree={item.worktree} onLaunched={launched} />}</section> : <article className="worktree-view"><h2>No sessions</h2></article>}</main>;
+  return <main className="console"><nav className="tabs" role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}status-${entry.state}`} title={stateLabel[entry.state]} aria-label={`${entry.label} — ${stateLabel[entry.state]}`} onClick={() => select(index)}>{entry.label}</button>)}<NotificationControl /><button type="button" className="inactive-toggle" onClick={() => setShowInactive(value => !value)}>{showInactive ? 'Hide inactive' : 'Show inactive'}</button><span className="launcher"><button className="new-agent-tab" type="button" disabled={creatingAgent} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button>{launcherOpen && <span className="launcher-menu"><button onClick={() => void createAgent()}>~ Home</button>{data.worktrees.map(worktree => <button key={worktree.id} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</span>}</span></nav>{launchErrorMessage && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}{items.length > 0 ? <section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard agent={item.agent} active={item.state === 'working'} onDeleted={refresh} />}{item?.worktree && <WorktreeCard worktree={item.worktree} onLaunched={launched} />}</section> : <article className="worktree-view"><h2>No sessions</h2></article>}</main>;
 }
 
 function App() {
