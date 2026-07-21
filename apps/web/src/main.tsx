@@ -181,16 +181,37 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
     let closed = false;
     let retry: number | undefined;
     let snapshot = '';
+    let interactiveSocket: WebSocket | undefined;
+    let connectingInteractive = false;
+    const pendingInput: string[] = [];
     setHasRendered(false);
     setLastPrompt(undefined);
-    const terminal = new XTerm({ convertEol: true, disableStdin: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 11, scrollback: 800, theme: { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#585b7088', black: '#45475a', red: '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af', blue: '#89b4fa', magenta: '#f5c2e7', cyan: '#94e2d5', white: '#bac2de', brightBlack: '#585b70', brightRed: '#f38ba8', brightGreen: '#a6e3a1', brightYellow: '#f9e2af', brightBlue: '#89b4fa', brightMagenta: '#f5c2e7', brightCyan: '#89dceb', brightWhite: '#a6adc8' } });
+    const terminal = new XTerm({ convertEol: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 11, scrollback: 800, theme: { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#585b7088', black: '#45475a', red: '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af', blue: '#89b4fa', magenta: '#f5c2e7', cyan: '#94e2d5', white: '#bac2de', brightBlack: '#585b70', brightRed: '#f38ba8', brightGreen: '#a6e3a1', brightYellow: '#f9e2af', brightBlue: '#89b4fa', brightMagenta: '#f5c2e7', brightCyan: '#89dceb', brightWhite: '#a6adc8' } });
     terminalRef.current = terminal;
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.loadAddon(new WebLinksAddon((_event, uri) => window.open(uri, '_blank', 'noopener,noreferrer')));
     terminal.open(host.current!);
     fit.fit();
-    const observer = new ResizeObserver(() => fit.fit());
+    const encoded = (value: string) => btoa(String.fromCharCode(...new TextEncoder().encode(value))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const sendResize = () => { if (interactiveSocket?.readyState === WebSocket.OPEN) interactiveSocket.send(JSON.stringify({ v: 1, type: 'resize', cols: terminal.cols, rows: terminal.rows })); };
+    const connectInteractive = async () => {
+      if (closed || connectingInteractive || interactiveSocket !== undefined) return;
+      connectingInteractive = true;
+      try {
+        const response = await request(`/api/agents/${encodeURIComponent(id)}/tickets`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'terminal' }) });
+        if (!response.ok) throw new Error('terminal ticket unavailable');
+        const { ticket } = await response.json();
+        if (closed) return;
+        const ws = new WebSocket(`${location.origin.replace(/^http/, 'ws')}/ws/terminal/${encodeURIComponent(id)}`, ['rac', ticket]);
+        interactiveSocket = ws;
+        ws.onopen = () => { if (closed || interactiveSocket !== ws) return; sendResize(); while (pendingInput.length) ws.send(JSON.stringify({ v: 1, type: 'input', data: encoded(pendingInput.shift()!) })); };
+        ws.onclose = () => { if (interactiveSocket === ws) interactiveSocket = undefined; };
+        ws.onerror = () => ws.close();
+      } catch { interactiveSocket = undefined; }
+      finally { connectingInteractive = false; }
+    };
+    const observer = new ResizeObserver(() => { fit.fit(); sendResize(); });
     observer.observe(host.current!);
     const syncScrollState = () => {
       const buffer = terminal.buffer.active;
@@ -205,6 +226,12 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
         void copyText(terminal.getSelection());
       }
     });
+    const inputSubscription = terminal.onData(value => {
+      if (interactiveSocket?.readyState === WebSocket.OPEN) interactiveSocket.send(JSON.stringify({ v: 1, type: 'input', data: encoded(value) }));
+      else { pendingInput.push(value); void connectInteractive(); }
+    });
+    const focus = () => { void connectInteractive(); };
+    host.current!.addEventListener('focusin', focus);
     const cachedSnapshot = logSnapshots.get(id);
     if (cachedSnapshot) { snapshot = cachedSnapshot; setHasRendered(true); setLastPrompt(lastPromptFromOutput(cachedSnapshot)); onQuestion(questionFromOutput(cachedSnapshot)); terminal.write(cachedSnapshot, syncScrollState); }
     const reconnect = () => {
@@ -262,7 +289,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
       } catch { setStatus('Reconnecting'); reconnect(); }
     };
     void connect();
-    return () => { closed = true; if (retry !== undefined) window.clearTimeout(retry); scrollSubscription.dispose(); keySubscription.dispose(); observer.disconnect(); socket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; terminal.dispose(); };
+    return () => { closed = true; if (retry !== undefined) window.clearTimeout(retry); scrollSubscription.dispose(); keySubscription.dispose(); inputSubscription.dispose(); host.current?.removeEventListener('focusin', focus); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; terminal.dispose(); };
   }, [id, onQuestion]);
   useEffect(() => {
     const prompt = promptRef.current;
