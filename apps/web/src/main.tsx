@@ -1,4 +1,4 @@
-import { Component, type ReactNode, useEffect, useRef, useState } from 'react';
+import { Component, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -371,6 +371,9 @@ function DashboardView({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [creatingAgent, setCreatingAgent] = useState(false);
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
+  const tabsRef = useRef<HTMLElement | null>(null);
+  const plusRef = useRef<HTMLButtonElement | null>(null);
+  const [plusAlone, setPlusAlone] = useState(false);
   const [launchErrorMessage, setLaunchErrorMessage] = useState('');
   const [activateAgentId, setActivateAgentId] = useState<string>();
   const tabInitialized = useRef(false);
@@ -460,11 +463,23 @@ function DashboardView({ onUnauthorized }: { onUnauthorized: () => void }) {
     } catch { setLaunchErrorMessage('Unable to reach the console while launching the agent.'); }
     finally { setCreatingAgent(false); }
   };
+  useLayoutEffect(() => {
+    const measure = () => {
+      const tabs = tabsRef.current; const plus = plusRef.current;
+      if (!tabs || !plus) return;
+      const siblings = Array.from(tabs.children).filter(node => !node.contains(plus) && !(node as HTMLElement).classList.contains('tab-spacer')) as HTMLElement[];
+      setPlusAlone(!siblings.some(node => node.offsetTop === plus.offsetTop));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    if (tabsRef.current) observer.observe(tabsRef.current);
+    return () => observer.disconnect();
+  }, [items.length, showInactive, launcherOpen]);
   const launchWorktree = async (worktree: Worktree) => { setLauncherOpen(false); const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/launch`, { method: 'POST' }); if (!response.ok) return setLaunchErrorMessage(await launchError(response)); const payload = await response.json() as { agentId?: unknown }; if (typeof payload.agentId === 'string') launched(payload.agentId); };
   if (data === undefined) return <LoadingScreen label={unavailable ? 'Reconnecting to console' : 'Syncing console state'} />;
   const item = items[active];
   const stateLabel: Record<AgentState, string> = { working: 'Working', 'prompt-done': 'Prompt done', 'action-required': 'Action required', closed: 'Agent closed' };
-  return <main className="console"><nav className="tabs" role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}status-${entry.state}`} title={stateLabel[entry.state]} aria-label={`${entry.label} — ${stateLabel[entry.state]}`} onClick={() => select(index)}>{entry.label}</button>)}<NotificationControl /><button type="button" className="inactive-toggle" onClick={() => setShowInactive(value => !value)}>{showInactive ? 'Hide inactive' : 'Show inactive'}</button><span className="launcher"><button className="new-agent-tab" type="button" disabled={creatingAgent} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button>{launcherOpen && <span className="launcher-menu"><button onClick={() => void createAgent()}>~ Home</button>{data.worktrees.map(worktree => <button key={worktree.id} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</span>}</span></nav>{launchErrorMessage && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}{items.length > 0 ? <section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard agent={item.agent} active={item.state === 'working'} onDeleted={refresh} />}{item?.worktree && <WorktreeCard worktree={item.worktree} onLaunched={launched} />}</section> : <article className="worktree-view"><h2>No sessions</h2></article>}</main>;
+  return <main className="console"><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}status-${entry.state}`} title={stateLabel[entry.state]} aria-label={`${entry.label} — ${stateLabel[entry.state]}`} onClick={() => select(index)}>{entry.label}</button>)}<NotificationControl /><button type="button" className="inactive-toggle" onClick={() => setShowInactive(value => !value)}>{showInactive ? 'Hide inactive' : 'Show inactive'}</button><span className="launcher"><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button>{launcherOpen && <span className="launcher-menu"><button onClick={() => void createAgent()}>~ Home</button>{data.worktrees.map(worktree => <button key={worktree.id} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</span>}</span>{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{launchErrorMessage && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}{items.length > 0 ? <section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard agent={item.agent} active={item.state === 'working'} onDeleted={refresh} />}{item?.worktree && <WorktreeCard worktree={item.worktree} onLaunched={launched} />}</section> : <article className="worktree-view"><h2>No sessions</h2></article>}</main>;
 }
 
 function App() {
