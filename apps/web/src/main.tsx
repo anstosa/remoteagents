@@ -77,6 +77,18 @@ const showNotification = async (title: string, body: string, tag: string) => {
   new Notification(title, options);
 };
 
+const copyText = async (value: string) => {
+  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value);
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.append(textarea);
+  textarea.select();
+  document.execCommand('copy');
+  textarea.remove();
+};
+
 function Login({ done, initialError }: { done: () => void; initialError?: string }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState(initialError ?? '');
@@ -187,6 +199,12 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
       setCanPageDown(buffer.viewportY < buffer.baseY);
     };
     const scrollSubscription = terminal.onScroll(syncScrollState);
+    const keySubscription = terminal.onKey(({ domEvent }) => {
+      if ((domEvent.ctrlKey || domEvent.metaKey) && domEvent.key.toLowerCase() === 'c' && terminal.hasSelection()) {
+        domEvent.preventDefault();
+        void copyText(terminal.getSelection());
+      }
+    });
     const cachedSnapshot = logSnapshots.get(id);
     if (cachedSnapshot) { setHasRendered(true); setLastPrompt(lastPromptFromOutput(cachedSnapshot)); onQuestion(questionFromOutput(cachedSnapshot)); terminal.write(cachedSnapshot, syncScrollState); }
     const reconnect = () => {
@@ -237,7 +255,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
       } catch { setStatus('Reconnecting'); reconnect(); }
     };
     void connect();
-    return () => { closed = true; if (retry !== undefined) window.clearTimeout(retry); scrollSubscription.dispose(); observer.disconnect(); socket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; terminal.dispose(); };
+    return () => { closed = true; if (retry !== undefined) window.clearTimeout(retry); scrollSubscription.dispose(); keySubscription.dispose(); observer.disconnect(); socket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; terminal.dispose(); };
   }, [id, onQuestion]);
   useEffect(() => {
     const prompt = promptRef.current;
