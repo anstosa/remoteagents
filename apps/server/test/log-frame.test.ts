@@ -15,6 +15,10 @@ describe('log frame generation', () => {
     expect(logFrame('0123456789', '3456789abc')).toEqual({ type: 'append', text: 'abc' });
   });
 
+  it('appends the changed line from a terminal redraw', () => {
+    expect(logFrame('first\nworking', 'first\ncomplete')).toEqual({ type: 'append', text: '\ncomplete' });
+  });
+
   it('marks unrelated non-empty snapshots as a reset', () => {
     expect(logFrame('old output', 'new output')).toEqual({ type: 'reset', text: 'new output' });
   });

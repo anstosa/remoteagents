@@ -33,6 +33,10 @@ export function logFrame(last: string, value: string): LogFrame | undefined {
     const overlapStart = last.lastIndexOf(value.slice(0, size));
     if (overlapStart >= 0 && last.slice(overlapStart) === value.slice(0, last.length - overlapStart)) return { type: 'append', text: value.slice(last.length - overlapStart) };
   }
+  let shared = 0;
+  while (shared < last.length && shared < value.length && last[shared] === value[shared]) shared += 1;
+  const lineStart = value.lastIndexOf('\n', shared);
+  if (lineStart >= 0 && lineStart < value.length - 1) return { type: 'append', text: value.slice(lineStart) };
   return { type: 'reset', text: value };
 }
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
