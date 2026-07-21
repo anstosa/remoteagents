@@ -35,7 +35,8 @@ function safeSnapshot(value: string): string {
     }
     if (character >= '\x20' || character === '\n' || character === '\r' || character === '\t') result += character;
   }
-  return result.replace(/(?:[ \t]*\r?\n)+[ \t]*$/u, '');
+  const trimmed = result.replace(/(?:[ \t]*\r?\n)+[ \t]*$/u, '');
+  return trimmed && `${trimmed.replace(/\r?\n/g, '\x1b[49m\n')}\x1b[49m`;
 }
 
 export class TmuxAdapter {
