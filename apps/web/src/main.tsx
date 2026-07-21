@@ -215,18 +215,17 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
     terminal.open(host.current!);
     fit.fit();
     const encoded = (value: string) => btoa(String.fromCharCode(...new TextEncoder().encode(value))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    const sendResize = () => { if (interactiveSocket?.readyState === WebSocket.OPEN) interactiveSocket.send(JSON.stringify({ v: 1, type: 'resize', cols: terminal.cols, rows: terminal.rows })); };
     const connectInteractive = async () => {
       if (closed || connectingInteractive || interactiveSocket !== undefined) return;
       connectingInteractive = true;
       try {
-        const response = await request(`/api/agents/${encodeURIComponent(id)}/tickets`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'terminal' }) });
+        const response = await request(`/api/agents/${encodeURIComponent(id)}/tickets`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'input' }) });
         if (!response.ok) throw new Error('terminal ticket unavailable');
         const { ticket } = await response.json();
         if (closed) return;
-        const ws = new WebSocket(`${location.origin.replace(/^http/, 'ws')}/ws/terminal/${encodeURIComponent(id)}`, ['rac', ticket]);
+        const ws = new WebSocket(`${location.origin.replace(/^http/, 'ws')}/ws/input/${encodeURIComponent(id)}`, ['rac', ticket]);
         interactiveSocket = ws;
-        ws.onopen = () => { if (closed || interactiveSocket !== ws) return; sendResize(); while (pendingInput.length) ws.send(JSON.stringify({ v: 1, type: 'input', data: encoded(pendingInput.shift()!) })); };
+        ws.onopen = () => { if (closed || interactiveSocket !== ws) return; while (pendingInput.length) ws.send(JSON.stringify({ v: 1, type: 'input', data: encoded(pendingInput.shift()!) })); };
         ws.onclose = () => { if (interactiveSocket === ws) interactiveSocket = undefined; };
         ws.onerror = () => ws.close();
       } catch { interactiveSocket = undefined; }
@@ -237,7 +236,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
       else { pendingInput.push(value); void connectInteractive(); }
     };
     sendTerminalInput.current = sendInput;
-    const observer = new ResizeObserver(() => { fit.fit(); sendResize(); });
+    const observer = new ResizeObserver(() => fit.fit());
     observer.observe(host.current!);
     const syncScrollState = () => {
       const buffer = terminal.buffer.active;

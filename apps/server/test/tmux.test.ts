@@ -25,4 +25,12 @@ describe('TmuxAdapter capture', () => {
 
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-t', '%1', 'Down', 'Down', 'Enter']);
   });
+
+  it('sends literal input without attaching or resizing the tmux session', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+
+    await expect(new TmuxAdapter().input(socket, '%1', '\x1b[A')).resolves.toBe(true);
+
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-l', '-t', '%1', '\x1b[A']);
+  });
 });

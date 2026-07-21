@@ -85,6 +85,11 @@ export class TmuxAdapter {
     return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, 'C-c'])).code === 0;
   }
 
+  async input(socket: SocketRef, pane: string, value: string): Promise<boolean> {
+    if (!paneId.test(pane) || !value || value.length > 65_536 || value.includes('\0')) return false;
+    return (await run(this.binary, ['-S', socket.path, 'send-keys', '-l', '-t', pane, value])).code === 0;
+  }
+
   async close(socket: SocketRef, pane: string): Promise<boolean> {
     return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'kill-pane', '-t', pane])).code === 0;
   }
