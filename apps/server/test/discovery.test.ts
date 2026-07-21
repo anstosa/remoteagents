@@ -1,11 +1,28 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DiscoveryService, omxQuestion } from '../src/discovery/service.js';
+import { DiscoveryService, omxQuestion, ProcSocketFinder } from '../src/discovery/service.js';
 import type { SocketRef, Worktree } from '../src/domain/models.js';
 
 describe('DiscoveryService dashboard', () => {
+  it('discovers tmux sockets directly from the mounted socket directory', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-tmux-'));
+    const socketPath = join(directory, 'default');
+    const server = createServer();
+    const previous = process.env.RAC_HOST_TMUX_DIR;
+    process.env.RAC_HOST_TMUX_DIR = directory;
+    try {
+      await new Promise<void>((resolve, reject) => server.once('error', reject).listen(socketPath, resolve));
+      await expect(new ProcSocketFinder().find()).resolves.toEqual([expect.objectContaining({ path: socketPath })]);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      if (previous === undefined) delete process.env.RAC_HOST_TMUX_DIR; else process.env.RAC_HOST_TMUX_DIR = previous;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('associates host tmux paths with configured worktrees', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const finder = { find: async () => [socket] };
