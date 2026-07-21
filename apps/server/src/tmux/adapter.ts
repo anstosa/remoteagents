@@ -57,6 +57,22 @@ export class TmuxAdapter {
     return out.code === 0 ? safeSnapshot(out.stdout).slice(-96_000) : undefined;
   }
 
+  async captureWindow(socket: SocketRef, pane: string, history: number, rows: number): Promise<{ text: string; older: boolean } | undefined> {
+    if (!paneId.test(pane) || !Number.isInteger(history) || history < 0 || history > 5_000 || !Number.isInteger(rows) || rows < 2 || rows > 300) return undefined;
+    const window = Math.min(300, Math.max(rows * 3, rows + 8));
+    const requested = Math.min(5_000, history + window);
+    const out = await run(this.binary, ['-S', socket.path, 'capture-pane', '-e', '-p', '-t', pane, '-S', `-${requested}`]);
+    if (out.code !== 0) return undefined;
+    const lines = out.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
+    const visible = lines.slice(0, window).join('\n');
+    return { text: safeSnapshot(visible), older: lines.length >= requested };
+  }
+
+  async resize(socket: SocketRef, pane: string, cols: number, rows: number): Promise<boolean> {
+    if (!paneId.test(pane) || !Number.isInteger(cols) || cols < 2 || cols > 500 || !Number.isInteger(rows) || rows < 2 || rows > 300) return false;
+    return (await run(this.binary, ['-S', socket.path, 'resize-pane', '-t', pane, '-x', String(cols), '-y', String(rows)])).code === 0;
+  }
+
   async pastePrompt(socket: SocketRef, pane: string, buffer: string, prompt: string): Promise<boolean> {
     if (!paneId.test(pane) || !/^rac-[a-zA-Z0-9_-]+$/.test(buffer)) return false;
     const load = await run(this.binary, ['-S', socket.path, 'load-buffer', '-b', buffer, '-'], prompt);
