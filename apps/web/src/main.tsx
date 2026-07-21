@@ -123,7 +123,7 @@ function ControlScreen({ claimed }: { claimed: () => void }) {
       claimed();
     } catch { setError('Unable to take control. Try again.'); setPending(false); }
   };
-  return <main className="auth-screen loading-screen" aria-live="polite"><div className="auth-glow" /><section className="loading-console console-recovery"><strong>Another client is active. Take control?</strong><span>This client will replace the active client.</span>{error && <span className="auth-error" role="alert">{error}</span>}<button type="button" disabled={pending} onClick={() => void takeControl()}>{pending ? <><span className="spinner" />Taking control</> : 'Take control'}</button></section></main>;
+  return <main className="auth-screen loading-screen" aria-live="polite"><div className="auth-glow" /><section className="loading-console console-recovery"><strong>Another client is active. Take control?</strong><span>This client will replace the active client.</span>{error && <span className="auth-error" role="alert">{error}</span>}<button type="button" disabled={pending} onClick={() => void takeControl()}>{pending ? <><span className="spinner" />Taking control</> : 'Take control'}</button><NotificationControl /></section></main>;
 }
 
 class ConsoleBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
@@ -494,11 +494,19 @@ function NotificationControl() {
   const [permission, setPermission] = useState<NotificationPermission | undefined>(() => supported ? Notification.permission : undefined);
   const [publicKey, setPublicKey] = useState<string>();
   useEffect(() => { void request('/api/push/public-key').then(response => response.ok ? response.json() : undefined).then((value: { publicKey?: unknown } | undefined) => typeof value?.publicKey === 'string' && setPublicKey(value.publicKey)); }, []);
+  const syncSubscription = async () => {
+    if (!publicKey || !('serviceWorker' in navigator)) return;
+    const registration = await navigator.serviceWorker.ready;
+    const key = Uint8Array.from(atob(publicKey.replace(/-/g, '+').replace(/_/g, '/')), character => character.charCodeAt(0));
+    const subscription = await registration.pushManager.getSubscription() ?? await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+    await request('/api/push/subscriptions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(subscription) });
+  };
+  useEffect(() => { if (permission === 'granted') void syncSubscription(); }, [permission, publicKey]);
   const enable = async () => {
     if (!supported || permission !== 'default' || !publicKey || !('serviceWorker' in navigator)) return;
     const next = await Notification.requestPermission();
     setPermission(next);
-    if (next === 'granted') { const registration = await navigator.serviceWorker.ready; const key = Uint8Array.from(atob(publicKey.replace(/-/g, '+').replace(/_/g, '/')), character => character.charCodeAt(0)); const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key }); await request('/api/push/subscriptions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(subscription) }); await showNotification('Alerts enabled', 'You will be notified when an agent is ready.', 'rac-alerts-enabled'); }
+    if (next === 'granted') { await syncSubscription(); await showNotification('Alerts enabled', 'You will be notified when an agent is ready.', 'rac-alerts-enabled'); }
   };
   if (!supported || !publicKey || permission === 'granted') return null;
   if (permission === 'denied') return <span className="notification-status" title="Enable notifications for this site in your browser settings">Alerts blocked</span>;

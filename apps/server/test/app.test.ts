@@ -27,6 +27,27 @@ describe('client control', () => {
     expect(displaced.statusCode).toBe(423);
     await controlApp.close();
   }, 15_000);
+
+  it('allows every authenticated client to register for push notifications', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const subscribed: unknown[] = [];
+    const push = { enabled: true, publicKey: 'public-key', subscribe: async (subscription: unknown) => { subscribed.push(subscription); return true; } };
+    const pushApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 6).toString('base64url')), push: push as never });
+    const login = async () => {
+      const boot = await pushApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const response = await pushApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      return { response, cookie: String(response.headers['set-cookie']).split(';')[0] };
+    };
+    const active = await login();
+    const inactive = await login();
+    expect(inactive.response.json().active).toBe(false);
+    const key = await pushApp.inject({ method: 'GET', url: '/api/push/public-key', headers: { host: 'agents.example.com', cookie: inactive.cookie } });
+    expect(key.json()).toEqual({ publicKey: 'public-key' });
+    const registration = await pushApp.inject({ method: 'POST', url: '/api/push/subscriptions', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: inactive.cookie, 'x-csrf-token': inactive.response.json().csrfToken }, payload: { endpoint: 'https://push.example.com/subscription', keys: { p256dh: 'key', auth: 'auth' } } });
+    expect(registration.statusCode).toBe(204);
+    expect(subscribed).toHaveLength(1);
+    await pushApp.close();
+  }, 15_000);
 });
 
 describe('agent launches', () => {

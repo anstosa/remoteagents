@@ -59,8 +59,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.post('/api/auth/take-control', async (request) => { const s = session(request, true); control.take(s.id); return { active: true }; });
   app.post('/api/auth/logout', async (request, reply) => { const s = session(request, true); control.release(s.id); auth.logout(s.id); reply.clearCookie(cookieName, { path: '/', secure: true, httpOnly: true, sameSite: 'lax' }); return reply.code(204).send(); });
   app.get('/api/dashboard', async (request) => { controlled(request); return await discovery.dashboard(config.worktrees); });
-  app.get('/api/push/public-key', async (request) => { controlled(request); return push.enabled ? { publicKey: push.publicKey } : { publicKey: undefined }; });
-  app.post('/api/push/subscriptions', async (request, reply) => { controlled(request, true); return await push.subscribe(body(request) as never) ? reply.code(204).send() : reply.code(400).send({ error: 'invalid push subscription' }); });
+  app.get('/api/push/public-key', async (request) => { session(request); return push.enabled ? { publicKey: push.publicKey } : { publicKey: undefined }; });
+  app.post('/api/push/subscriptions', async (request, reply) => { session(request, true); return await push.subscribe(body(request) as never) ? reply.code(204).send() : reply.code(400).send({ error: 'invalid push subscription' }); });
   app.get('/api/agents/:id/directories', async (request, reply) => {
     controlled(request);
     const target = await discovery.target((request.params as { id: string }).id);
