@@ -183,7 +183,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
     let snapshot = '';
     setHasRendered(false);
     setLastPrompt(undefined);
-    const terminal = new XTerm({ convertEol: true, disableStdin: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 11, scrollback: 800, theme: { background: '#11111b', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#585b7088', black: '#45475a', red: '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af', blue: '#89b4fa', magenta: '#f5c2e7', cyan: '#94e2d5', white: '#bac2de', brightBlack: '#585b70', brightRed: '#f38ba8', brightGreen: '#a6e3a1', brightYellow: '#f9e2af', brightBlue: '#89b4fa', brightMagenta: '#f5c2e7', brightCyan: '#89dceb', brightWhite: '#a6adc8' } });
+    const terminal = new XTerm({ convertEol: true, disableStdin: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 11, scrollback: 800, theme: { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#585b7088', black: '#45475a', red: '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af', blue: '#89b4fa', magenta: '#f5c2e7', cyan: '#94e2d5', white: '#bac2de', brightBlack: '#585b70', brightRed: '#f38ba8', brightGreen: '#a6e3a1', brightYellow: '#f9e2af', brightBlue: '#89b4fa', brightMagenta: '#f5c2e7', brightCyan: '#89dceb', brightWhite: '#a6adc8' } });
     terminalRef.current = terminal;
     const fit = new FitAddon();
     terminal.loadAddon(fit);
@@ -206,7 +206,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
       }
     });
     const cachedSnapshot = logSnapshots.get(id);
-    if (cachedSnapshot) { setHasRendered(true); setLastPrompt(lastPromptFromOutput(cachedSnapshot)); onQuestion(questionFromOutput(cachedSnapshot)); terminal.write(cachedSnapshot, syncScrollState); }
+    if (cachedSnapshot) { snapshot = cachedSnapshot; setHasRendered(true); setLastPrompt(lastPromptFromOutput(cachedSnapshot)); onQuestion(questionFromOutput(cachedSnapshot)); terminal.write(cachedSnapshot, syncScrollState); }
     const reconnect = () => {
       if (closed || retry !== undefined) return;
       retry = window.setTimeout(() => {
@@ -230,16 +230,23 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
         ws.onmessage = event => {
           if (closed || socket !== ws) return;
           const frame = JSON.parse(event.data) as LogFrame;
+          const text = frame.text ?? '';
+          if (!text) return;
           cacheLogFrame(id, frame);
-          if (frame.type !== 'reset') { const text = frame.text ?? ''; snapshot += text; setLastPrompt(lastPromptFromOutput(snapshot)); onQuestion(questionFromOutput(snapshot)); if (text) setHasRendered(true); return terminal.write(text, syncScrollState); }
+          if (frame.type === 'reset') {
+            if (text === snapshot) return;
+            const hadSnapshot = snapshot.length > 0;
+            snapshot = text;
+            setLastPrompt(lastPromptFromOutput(snapshot)); onQuestion(questionFromOutput(snapshot)); setHasRendered(true);
+            if (hadSnapshot) return;
+            return terminal.write(text, syncScrollState);
+          }
           const buffer = terminal.buffer.active;
           const viewportY = buffer.viewportY;
           const follow = viewportY >= buffer.baseY - 1;
-          terminal.reset();
-          snapshot = frame.text ?? '';
-          setLastPrompt(lastPromptFromOutput(snapshot)); onQuestion(questionFromOutput(snapshot));
-          setHasRendered(Boolean(frame.text));
-          terminal.write(frame.text ?? '', () => {
+          snapshot += text;
+          setLastPrompt(lastPromptFromOutput(snapshot)); onQuestion(questionFromOutput(snapshot)); setHasRendered(true);
+          terminal.write(text, () => {
             if (follow) terminal.scrollToBottom();
             else terminal.scrollToLine(Math.min(viewportY, terminal.buffer.active.baseY));
             syncScrollState();
@@ -281,7 +288,7 @@ function Terminal({ agent }: { agent: Agent }) {
   const connect = async () => {
     const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/tickets`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'terminal' }) });
     const { ticket } = await response.json();
-    const terminal = new XTerm({ cursorBlink: true, theme: { background: '#11111b', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#585b7088', black: '#45475a', red: '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af', blue: '#89b4fa', magenta: '#f5c2e7', cyan: '#94e2d5', white: '#bac2de', brightBlack: '#585b70', brightRed: '#f38ba8', brightGreen: '#a6e3a1', brightYellow: '#f9e2af', brightBlue: '#89b4fa', brightMagenta: '#f5c2e7', brightCyan: '#89dceb', brightWhite: '#a6adc8' } });
+    const terminal = new XTerm({ cursorBlink: true, theme: { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#585b7088', black: '#45475a', red: '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af', blue: '#89b4fa', magenta: '#f5c2e7', cyan: '#94e2d5', white: '#bac2de', brightBlack: '#585b70', brightRed: '#f38ba8', brightGreen: '#a6e3a1', brightYellow: '#f9e2af', brightBlue: '#89b4fa', brightMagenta: '#f5c2e7', brightCyan: '#89dceb', brightWhite: '#a6adc8' } });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(host.current!);
