@@ -48,7 +48,7 @@ export class PullRequestService {
     const query = new URLSearchParams({ state: 'open', head: `${repository.owner}:${branch}`, per_page: '1' });
     this.token ??= this.getToken();
     const token = await this.token;
-    const response = await this.request(`https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/pulls?${query}`, { headers: { Accept: 'application/vnd.github+json', ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }) }, signal: AbortSignal.timeout(2_000) });
+    const response = await this.request(`https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/pulls?${query}`, { headers: { Accept: 'application/vnd.github+json', ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }) }, signal: AbortSignal.timeout(8_000) });
     if (!response.ok) return undefined;
     const [pullRequest] = await response.json() as Array<{ html_url?: unknown }>;
     if (typeof pullRequest?.html_url !== 'string') return undefined;
