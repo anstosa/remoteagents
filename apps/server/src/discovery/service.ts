@@ -49,10 +49,10 @@ export class DiscoveryService {
   private async discover(): Promise<Agent[]> {
     const sockets = await this.finder.find();
     const panes = (await Promise.all(sockets.map(async (socket) => (await this.tmux.listPanes(socket)).map(pane => ({ ...pane, socket }))))).flat();
-    const agents = (await Promise.all(panes.map(async (pane) => {
+    const agents: Agent[] = (await Promise.all(panes.map(async (pane): Promise<Agent | undefined> => {
       if (!await this.processes.hasCodexDescendant(pane.pid)) return undefined;
       const meta = await gitMeta(pane.path);
-      return { id: `${pane.socket.fingerprint}:${pane.paneId}`, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, workspace: meta.workspace, branch: meta.branch, title: pane.title };
+      return { id: `${pane.socket.fingerprint}:${pane.paneId}`, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, workspace: meta.workspace, ...(meta.branch === undefined ? {} : { branch: meta.branch }), title: pane.title };
     }))).filter((agent): agent is Agent => agent !== undefined);
     this.snapshot = agents;
     this.refreshedAt = Date.now();

@@ -17,12 +17,13 @@ import { PromptService } from './prompts/service.js';
 import { LaunchService } from './launch/service.js';
 import * as pty from 'node-pty';
 import { safeEnv } from './tmux/command.js';
+import { PushService } from './push-service.js';
 
-export type Dependencies = { auth?: AuthService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService };
+export type Dependencies = { auth?: AuthService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; push?: PushService };
 const cookieName = '__Host-rac';
 const body = (request: FastifyRequest): Record<string, unknown> => (request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {});
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const prompts = new PromptService(discovery, tmux, config.worktrees);
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const prompts = new PromptService(discovery, tmux, config.worktrees); const push = deps.push ?? new PushService();
   const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 65_536 }); await app.register(cookie); await app.register(staticPlugin, { root: fileURLToPath(new URL('../../web/dist', import.meta.url)), index: false }); await app.register(rateLimit, { global: false }); await app.register(websocket, { options: { maxPayload: 65_536 } });
   const expectedHost = config.publicOrigin.host;
   const forbidden = () => Object.assign(new Error('forbidden'), { statusCode: 403 });
@@ -37,6 +38,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.post('/api/auth/login', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request, reply) => { browser(request, true); const data = body(request); const preauth = request.headers['x-csrf-token']; if (typeof data.password !== 'string' || typeof preauth !== 'string') return reply.code(401).send({ error: 'invalid credentials' }); const s = await auth.login(data.password, preauth); if (!s) return reply.code(401).send({ error: 'invalid credentials' }); reply.setCookie(cookieName, auth.sign(s), { path: '/', secure: true, httpOnly: true, sameSite: 'lax', signed: false, maxAge: 400 * 24 * 60 * 60 }); return { csrfToken: s.csrf }; });
   app.post('/api/auth/logout', async (request, reply) => { const s = session(request, true); auth.logout(s.id); reply.clearCookie(cookieName, { path: '/', secure: true, httpOnly: true, sameSite: 'lax' }); return reply.code(204).send(); });
   app.get('/api/dashboard', async (request) => { session(request); return await discovery.dashboard(config.worktrees); });
+  app.get('/api/push/public-key', async (request) => { session(request); return push.enabled ? { publicKey: push.publicKey } : { publicKey: undefined }; });
+  app.post('/api/push/subscriptions', async (request, reply) => { session(request, true); return await push.subscribe(body(request) as never) ? reply.code(204).send() : reply.code(400).send({ error: 'invalid push subscription' }); });
   app.get('/api/agents/:id/directories', async (request, reply) => {
     session(request);
     const target = await discovery.target((request.params as { id: string }).id);

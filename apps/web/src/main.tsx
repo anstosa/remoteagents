@@ -333,13 +333,15 @@ function WorktreeCard({ worktree, onLaunched }: { worktree: Worktree; onLaunched
 function NotificationControl() {
   const supported = 'Notification' in window;
   const [permission, setPermission] = useState<NotificationPermission | undefined>(() => supported ? Notification.permission : undefined);
+  const [publicKey, setPublicKey] = useState<string>();
+  useEffect(() => { void request('/api/push/public-key').then(response => response.ok ? response.json() : undefined).then((value: { publicKey?: unknown } | undefined) => typeof value?.publicKey === 'string' && setPublicKey(value.publicKey)); }, []);
   const enable = async () => {
-    if (!supported || permission !== 'default') return;
+    if (!supported || permission !== 'default' || !publicKey || !('serviceWorker' in navigator)) return;
     const next = await Notification.requestPermission();
     setPermission(next);
-    if (next === 'granted') await showNotification('Alerts enabled', 'You will be notified when an agent is ready.', 'rac-alerts-enabled');
+    if (next === 'granted') { const registration = await navigator.serviceWorker.ready; const key = Uint8Array.from(atob(publicKey.replace(/-/g, '+').replace(/_/g, '/')), character => character.charCodeAt(0)); const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key }); await request('/api/push/subscriptions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(subscription) }); await showNotification('Alerts enabled', 'You will be notified when an agent is ready.', 'rac-alerts-enabled'); }
   };
-  if (!supported || permission === 'granted') return null;
+  if (!supported || !publicKey || permission === 'granted') return null;
   if (permission === 'denied') return <span className="notification-status" title="Enable notifications for this site in your browser settings">Alerts blocked</span>;
   return <button className="notification-control" type="button" onClick={() => void enable()}>Enable alerts</button>;
 }
