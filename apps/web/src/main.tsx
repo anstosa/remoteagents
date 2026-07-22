@@ -86,7 +86,7 @@ const request = async (url: string, init: RequestInit = {}) => {
 
 const showNotification = async (title: string, body: string, tag: string) => {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
-  const options = { body, tag, icon: '/favicon.svg' };
+  const options = { body, tag, icon: '/favicon.svg', badge: '/notification-badge.png' };
   if ('serviceWorker' in navigator) {
     const registration = await navigator.serviceWorker.ready;
     await registration.showNotification(title, options);
