@@ -106,6 +106,14 @@ const showNotification = async (title: string, body: string, tag: string) => {
   new Notification(title, options);
 };
 
+const dismissNotification = async (tag: string) => {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    (await registration.getNotifications({ tag })).forEach(notification => notification.close());
+  } catch { /* Notification access must not interfere with tab navigation. */ }
+};
+
 const copyText = async (value: string) => {
   if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value);
   const textarea = document.createElement('textarea');
@@ -665,6 +673,8 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     return () => observer.disconnect();
   }, [items.length, launcherOpen]);
   const launchWorktree = async (worktree: Worktree) => { setLauncherOpen(false); const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/launch`, { method: 'POST' }); if (!response.ok) return setLaunchErrorMessage(await launchError(response)); const payload = await response.json() as { agentId?: unknown }; if (typeof payload.agentId === 'string') launched(payload.agentId); };
+  const selectedAgentId = data === undefined ? undefined : items[active]?.agent?.id;
+  useEffect(() => { if (selectedAgentId !== undefined) void dismissNotification(`agent-finished-${selectedAgentId}`); }, [selectedAgentId]);
   if (data === undefined) return <LoadingScreen label={unavailable ? 'Reconnecting to console' : 'Syncing console state'} />;
   const item = items[active];
   const stateLabel: Record<AgentState, string> = { working: 'Working', 'prompt-done': 'Prompt done', 'action-required': 'Action required', closed: 'Agent closed' };
