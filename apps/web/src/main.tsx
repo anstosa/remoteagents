@@ -72,6 +72,10 @@ const cachedLastPrompt = (id: string, output: string) => {
 };
 
 let csrf = '';
+const currentUiVersion = (() => {
+  const script = document.querySelector<HTMLScriptElement>('script[type="module"][src]');
+  return script === null ? undefined : new URL(script.src).pathname;
+})();
 const request = async (url: string, init: RequestInit = {}) => {
   const headers = new Headers(init.headers);
   if (csrf) headers.set('X-CSRF-Token', csrf);
@@ -662,6 +666,20 @@ function App() {
       viewport?.removeEventListener('resize', updateHeight);
       viewport?.removeEventListener('scroll', updateHeight);
     };
+  }, []);
+  useEffect(() => {
+    if (currentUiVersion === undefined) return;
+    let closed = false;
+    const checkForUpdate = async () => {
+      try {
+        const response = await fetch('/api/ui-version', { cache: 'no-store', signal: AbortSignal.timeout(8_000) });
+        if (!response.ok || closed) return;
+        const payload = await response.json() as { version?: unknown };
+        if (typeof payload.version === 'string' && payload.version !== currentUiVersion) location.reload();
+      } catch { /* Retry at the next interval. */ }
+    };
+    const timer = window.setInterval(() => void checkForUpdate(), 30_000);
+    return () => { closed = true; window.clearInterval(timer); };
   }, []);
   useEffect(() => {
     let active = true;
