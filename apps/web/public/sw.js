@@ -8,7 +8,10 @@ self.addEventListener('notificationclick', event => {
     const url = new URL(event.notification.data?.url ?? '/', self.location.origin).href;
     const existing = await clients.matchAll({ type: 'window', includeUncontrolled: true });
     const client = existing.find(candidate => new URL(candidate.url).origin === self.location.origin);
-    if (client) { await client.navigate(url); return client.focus(); }
+    if (client) {
+      const target = await client.navigate(url).catch(() => client);
+      return (target?.focus() ?? Promise.resolve()).catch(() => clients.openWindow(url));
+    }
     return clients.openWindow(url);
   })());
 });
