@@ -60,14 +60,18 @@ export class TmuxAdapter {
   async captureWindow(socket: SocketRef, pane: string, history: number, rows: number): Promise<{ text: string; older: boolean } | undefined> {
     if (!paneId.test(pane) || !Number.isInteger(history) || history < 0 || history > 5_000 || !Number.isInteger(rows) || rows < 2 || rows > 300) return undefined;
     const window = rows;
-    const requested = Math.min(5_000, history + window);
-    const out = await run(this.binary, ['-S', socket.path, 'capture-pane', '-e', '-p', '-t', pane, '-S', `-${requested}`]);
+    // tmux's -S/-E values are coordinates relative to the visible pane, not
+    // a request for the last N lines. Capture the target viewport plus one
+    // preceding page and take its tail; subtracting `history` again here
+    // moves each click progressively farther than one page.
+    const start = -Math.min(5_000, history + window);
+    const end = -history + window - 1;
+    const out = await run(this.binary, ['-S', socket.path, 'capture-pane', '-e', '-p', '-t', pane, '-S', String(start), '-E', String(end)]);
     if (out.code !== 0) return undefined;
     const lines = out.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
-    const end = Math.max(0, lines.length - history);
-    const start = Math.max(0, end - window);
-    const visible = lines.slice(start, end).join('\n');
-    return { text: safeSnapshot(visible), older: start > 0 };
+    const visibleStart = Math.max(0, lines.length - window);
+    const visible = lines.slice(visibleStart).join('\n');
+    return { text: safeSnapshot(visible), older: visibleStart > 0 };
   }
 
   async resize(socket: SocketRef, pane: string, cols: number, rows: number): Promise<boolean> {
