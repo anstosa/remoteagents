@@ -29,19 +29,34 @@ export class PullRequestService {
   constructor(private readonly command: Command = run, private readonly request: Request = fetch, private readonly now: () => number = Date.now, private readonly getToken: Token = githubToken) {}
 
   async url(workspace: string, branch?: string): Promise<string | undefined> {
+    const cached = await this.lookupCached(workspace, branch);
+    return cached?.pending ?? cached?.value;
+  }
+
+  /**
+   * Dashboard rendering must not wait on GitHub. It can use a previous URL,
+   * start a refresh when needed, and pick up the result on its next poll.
+   */
+  async cachedUrl(workspace: string, branch?: string): Promise<string | undefined> {
+    return (await this.lookupCached(workspace, branch))?.value;
+  }
+
+  private async lookupCached(workspace: string, branch?: string): Promise<{ expiresAt: number; value?: string; pending?: Promise<string | undefined> } | undefined> {
     if (!branch) return undefined;
     const remote = await this.command('/usr/bin/git', ['-C', workspace, 'remote', 'get-url', 'origin']);
     const repository = remote.code === 0 ? githubRepository(remote.stdout) : undefined;
     if (!repository) return undefined;
     const key = `${repository.owner}/${repository.name}:${branch}`;
     const cached = this.cache.get(key);
-    if (cached !== undefined && cached.expiresAt > this.now()) return cached.pending ?? cached.value;
+    if (cached !== undefined && cached.expiresAt > this.now()) return cached;
     const pending = this.lookup(repository, branch).catch(() => undefined).then((value) => {
-      this.cache.set(key, { expiresAt: this.now() + cacheTtlMs, value });
+      const refreshed = { expiresAt: this.now() + cacheTtlMs, ...(value === undefined ? {} : { value }) };
+      this.cache.set(key, refreshed);
       return value;
     });
-    this.cache.set(key, { expiresAt: this.now() + cacheTtlMs, pending });
-    return pending;
+    const refreshing = { expiresAt: this.now() + cacheTtlMs, ...(cached?.value === undefined ? {} : { value: cached.value }), pending };
+    this.cache.set(key, refreshing);
+    return refreshing;
   }
 
   private async lookup(repository: GithubRepository, branch: string): Promise<string | undefined> {
