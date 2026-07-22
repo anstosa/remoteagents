@@ -60,6 +60,13 @@ export class TmuxAdapter {
   async captureWindow(socket: SocketRef, pane: string, history: number, rows: number): Promise<{ text: string; older: boolean } | undefined> {
     if (!paneId.test(pane) || !Number.isInteger(history) || history < 0 || history > 5_000 || !Number.isInteger(rows) || rows < 2 || rows > 300) return undefined;
     const window = rows;
+    // tmux's native capture is the source of truth for the live page. In
+    // particular, do not approximate it with -S/-E coordinates: those can
+    // omit a bottom row after a resize or wrapped terminal line.
+    if (history === 0) {
+      const out = await run(this.binary, ['-S', socket.path, 'capture-pane', '-e', '-p', '-t', pane]);
+      return out.code === 0 ? { text: safeSnapshot(out.stdout), older: false } : undefined;
+    }
     // tmux's -S/-E values are coordinates relative to the visible pane, not
     // a request for the last N lines. Capture the target viewport plus one
     // preceding page and take its tail; subtracting `history` again here

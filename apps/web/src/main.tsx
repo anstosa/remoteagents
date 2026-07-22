@@ -270,7 +270,6 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
     setLastPrompt(lastPrompts.get(id));
     setVisibleFrame(0);
     let historyOffset = 0;
-    let hasOlder = false;
     let requestHistory = (_offset: number) => {};
     const terminalOptions = { convertEol: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 11, scrollback: 0, theme: { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#585b7088', black: '#45475a', red: '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af', blue: '#89b4fa', magenta: '#f5c2e7', cyan: '#94e2d5', white: '#bac2de', brightBlack: '#585b70', brightRed: '#f38ba8', brightGreen: '#a6e3a1', brightYellow: '#f9e2af', brightBlue: '#89b4fa', brightMagenta: '#f5c2e7', brightCyan: '#89dceb', brightWhite: '#a6adc8' } };
     const terminals = [new XTerm(terminalOptions), new XTerm(terminalOptions)];
@@ -304,9 +303,9 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
     // Keep one line in common between page windows so a line at the viewport boundary is never lost while paging.
     const moveHistory = (direction: -1 | 0 | 1) => {
       const step = Math.max(1, terminal.rows - 1);
-      // Keep both controls interactive at the boundaries; requesting the
-      // current page is harmless and avoids a disabled-looking navigation UI.
-      const next = direction < 0 ? (hasOlder ? historyOffset + step : historyOffset) : direction > 0 ? Math.max(0, historyOffset - step) : 0;
+      // Keep both controls interactive at the boundaries. The server clamps
+      // unavailable history to the oldest available page.
+      const next = direction < 0 ? historyOffset + step : direction > 0 ? Math.max(0, historyOffset - step) : 0;
       requestHistory(next);
     };
     logHistoryRequests.set(id, moveHistory);
@@ -363,7 +362,6 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
           const frame = JSON.parse(event.data) as LogFrame;
           const text = frame.text ?? '';
           if (!text) return;
-          hasOlder = frame.older === true;
           if (frame.newer !== true) historyOffset = 0;
           syncScrollState();
           const latest = historyOffset === 0;
