@@ -258,8 +258,6 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
   const [promptExpanded, setPromptExpanded] = useState(false);
   const promptRef = useRef<HTMLSpanElement | null>(null);
   const [scrolledUp, setScrolledUp] = useState(false);
-  const [canPageUp, setCanPageUp] = useState(false);
-  const [canPageDown, setCanPageDown] = useState(false);
   useEffect(() => {
     let socket: WebSocket | undefined;
     let closed = false;
@@ -306,7 +304,10 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
     // Keep one line in common between page windows so a line at the viewport boundary is never lost while paging.
     const moveHistory = (direction: -1 | 0 | 1) => {
       const step = Math.max(1, terminal.rows - 1);
-      requestHistory(direction < 0 ? historyOffset + step : direction > 0 ? Math.max(0, historyOffset - step) : 0);
+      // Keep both controls interactive at the boundaries; requesting the
+      // current page is harmless and avoids a disabled-looking navigation UI.
+      const next = direction < 0 ? (hasOlder ? historyOffset + step : historyOffset) : direction > 0 ? Math.max(0, historyOffset - step) : 0;
+      requestHistory(next);
     };
     logHistoryRequests.set(id, moveHistory);
     const sendViewport = () => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ v: 1, type: 'viewport', cols: terminal.cols, rows: terminal.rows })); };
@@ -314,8 +315,6 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
     observer.observe(canvas.current!);
     const syncScrollState = () => {
       setScrolledUp(historyOffset > 0);
-      setCanPageUp(hasOlder);
-      setCanPageDown(historyOffset > 0);
     };
     const keySubscriptions = terminals.map(candidate => candidate.onKey(({ domEvent }) => {
       if ((domEvent.ctrlKey || domEvent.metaKey) && domEvent.key.toLowerCase() === 'c' && candidate.hasSelection()) {
@@ -419,7 +418,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
   useEffect(() => { if (!promptOverflows) setPromptExpanded(false); }, [promptOverflows]);
   const loading = !hasRendered;
   const loadingLabel = status === 'Live' ? 'Waiting for output' : status;
-  return <section className="log-shell"><div className="log"><div className={`log-topbar ${promptOverflows ? 'expandable' : ''} ${promptExpanded ? 'expanded' : ''}`} onClick={() => promptOverflows && setPromptExpanded(expanded => !expanded)}><button className="terminal-toggle" onClick={event => { event.stopPropagation(); onOpenTerminal(); }}>Open terminal</button>{lastPrompt && <span className={`last-prompt ${promptExpanded ? 'expanded' : ''}`} ref={promptRef} title={lastPrompt}><strong>Last prompt:</strong> {lastPrompt}</span>}<span className={`status log-status ${status.toLowerCase()}`}><i />{status}</span></div><div className="log-canvas" ref={canvas} aria-label="Live log"><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{status !== 'Live' && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading"><span className="spinner" />{loadingLabel}</div>}<div className="log-controls-bottom">{scrolledUp && <button className="log-control back-to-bottom" onClick={() => logHistoryRequests.get(id)?.(0)}>Back to bottom</button>}<div className="page-controls"><button className="log-control page-arrow" aria-label="Page up" title="Page up" disabled={!canPageUp} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" title="Page down" disabled={!canPageDown} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></section>;
+  return <section className="log-shell"><div className="log"><div className={`log-topbar ${promptOverflows ? 'expandable' : ''} ${promptExpanded ? 'expanded' : ''}`} onClick={() => promptOverflows && setPromptExpanded(expanded => !expanded)}><button className="terminal-toggle" onClick={event => { event.stopPropagation(); onOpenTerminal(); }}>Open terminal</button>{lastPrompt && <span className={`last-prompt ${promptExpanded ? 'expanded' : ''}`} ref={promptRef} title={lastPrompt}><strong>Last prompt:</strong> {lastPrompt}</span>}<span className={`status log-status ${status.toLowerCase()}`}><i />{status}</span></div><div className="log-canvas" ref={canvas} aria-label="Live log"><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{status !== 'Live' && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading"><span className="spinner" />{loadingLabel}</div>}<div className="log-controls-bottom">{scrolledUp && <button className="log-control back-to-bottom" onClick={() => logHistoryRequests.get(id)?.(0)}>Back to bottom</button>}<div className="page-controls"><button className="log-control page-arrow" aria-label="Page up" title="Page up" onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" title="Page down" onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></section>;
 }
 
 function Terminal({ agent }: { agent: Agent }) {
