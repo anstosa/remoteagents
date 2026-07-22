@@ -19,6 +19,8 @@ import { LaunchService } from './launch/service.js';
 import * as pty from 'node-pty';
 import { safeEnv } from './tmux/command.js';
 import { PushService } from './push-service.js';
+import { WorktreeCommandService } from './worktree-commands/service.js';
+import { stackActions, type StackAction } from './domain/models.js';
 
 export type Dependencies = { auth?: AuthService; control?: ControlService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; push?: PushService };
 const cookieName = '__Host-rac';
@@ -41,7 +43,7 @@ export function logFrame(last: string, value: string): LogFrame | undefined {
   return { type: 'reset', text: value };
 }
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const prompts = new PromptService(discovery, tmux, config.worktrees); const push = deps.push ?? new PushService();
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const prompts = new PromptService(discovery, tmux, config.worktrees); const push = deps.push ?? new PushService(); const stackCommands = new WorktreeCommandService(config);
   const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 65_536 }); const webRoot = fileURLToPath(new URL('../../web/dist', import.meta.url)); const uiVersion = await readFile(join(webRoot, 'index.html'), 'utf8').then(html => /<script[^>]+src="([^"]+)"/u.exec(html)?.[1]).catch(() => undefined); await app.register(cookie); await app.register(staticPlugin, { root: webRoot, index: false }); await app.register(rateLimit, { global: false }); await app.register(websocket, { options: { maxPayload: 65_536 } });
   const expectedHost = config.publicOrigin.host;
   const forbidden = () => Object.assign(new Error('forbidden'), { statusCode: 403 });
@@ -59,7 +61,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.post('/api/auth/login', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request, reply) => { browser(request, true); const data = body(request); const preauth = request.headers['x-csrf-token']; if (typeof data.password !== 'string' || typeof preauth !== 'string') return reply.code(401).send({ error: 'invalid credentials' }); const s = await auth.login(data.password, preauth); if (!s) return reply.code(401).send({ error: 'invalid credentials' }); reply.setCookie(cookieName, auth.sign(s), { path: '/', secure: true, httpOnly: true, sameSite: 'lax', signed: false, maxAge: 400 * 24 * 60 * 60 }); return { csrfToken: s.csrf, active: control.connect(s.id) }; });
   app.post('/api/auth/take-control', async (request) => { const s = session(request, true); control.take(s.id); return { active: true }; });
   app.post('/api/auth/logout', async (request, reply) => { const s = session(request, true); control.release(s.id); auth.logout(s.id); reply.clearCookie(cookieName, { path: '/', secure: true, httpOnly: true, sameSite: 'lax' }); return reply.code(204).send(); });
-  app.get('/api/dashboard', async (request) => { controlled(request); return await discovery.dashboard(config.worktrees); });
+  app.get('/api/dashboard', async (request) => { controlled(request); const dashboard = await discovery.dashboard(config.worktrees); const controls = new Map(await Promise.all(config.worktrees.map(async worktree => [worktree.id, { actions: stackCommands.actions(worktree), running: await stackCommands.running(worktree) }] as const))); const controlFor = (worktreeId: string | undefined) => worktreeId === undefined ? undefined : controls.get(worktreeId); return { ...dashboard, agents: dashboard.agents.map(agent => ({ ...agent, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }) })), worktrees: dashboard.worktrees.map(worktree => ({ ...worktree, ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }) })) }; });
   app.get('/api/push/public-key', async (request) => { session(request); return push.enabled ? { publicKey: push.publicKey } : { publicKey: undefined }; });
   app.post('/api/push/subscriptions', async (request, reply) => { session(request, true); return await push.subscribe(body(request) as never) ? reply.code(204).send() : reply.code(400).send({ error: 'invalid push subscription' }); });
   app.get('/api/agents/:id/directories', async (request, reply) => {
@@ -107,6 +109,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (!agent) return reply.code(504).send({ error: 'The worktree session started, but Codex did not become ready within 20 seconds.' });
     return reply.code(201).send({ agentId: agent.id });
   });
+  app.post('/api/worktrees/:id/commands/:action', async (request, reply) => { controlled(request, true); const action = (request.params as { action: string }).action; if (!(stackActions as readonly string[]).includes(action) || !await stackCommands.run((request.params as { id: string }).id, action as StackAction)) return reply.code(404).send({ error: 'stack command unavailable' }); return reply.code(202).send(); });
   app.post('/api/agents/launch', async (request, reply) => {
     controlled(request, true);
     const before = new Set((await discovery.dashboard(config.worktrees)).agents.map(agent => agent.id));

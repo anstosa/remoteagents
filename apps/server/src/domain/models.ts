@@ -1,7 +1,10 @@
 export type SocketRef = { fingerprint: string; path: string; device: number; inode: number };
 export type Pane = { paneId: string; sessionId: string; pid: number; path: string; title: string; command: string; socket: SocketRef };
 export type OmxQuestion = { id: string; text: string; choices: string[]; paneId: string };
+export const stackActions = ['start', 'stop', 'build', 'restart', 'migrate'] as const;
+export type StackAction = typeof stackActions[number];
+export type StackCommands = Partial<Record<StackAction | 'status', string>>;
 export type Agent = { id: string; paneId: string; sessionId: string; socketFingerprint: string; workspace: string; branch?: string; title: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; projectUrl?: string; pullRequestUrl?: string; question?: OmxQuestion };
-export type Worktree = { id: string; label: string; path: string; identity: string; hostPath?: string; available: boolean; pinned: boolean; command?: string; launch?: LaunchTemplate; projectUrl?: string };
+export type Worktree = { id: string; label: string; path: string; identity: string; hostPath?: string; available: boolean; pinned: boolean; command?: string; launch?: LaunchTemplate; projectUrl?: string; commands?: StackCommands };
 export type LaunchTemplate = { program: string; args: string[] };
 export type Dashboard = { generation: number; agents: Agent[]; worktrees: Array<Pick<Worktree, 'id'|'label'|'path'|'available'|'pinned'|'projectUrl'> & { order: number; branch?: string; pullRequestUrl?: string }> };
