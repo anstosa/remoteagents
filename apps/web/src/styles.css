@@ -174,3 +174,5 @@ textarea { min-height: 7rem; resize: vertical; font-family: ui-monospace, SFMono
 
 .update-ready { position: fixed; top: .5rem; right: .5rem; z-index: 100; min-height: 2.15rem; padding: .35rem .45rem .35rem .65rem; border-color: color-mix(in srgb, var(--blue) 70%, var(--lavender)); border-radius: .4rem; background: color-mix(in srgb, var(--mantle) 92%, var(--blue)); color: var(--text); box-shadow: 0 .45rem 1.4rem #11111bb8; font: 700 .72rem ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
 .update-ready span { padding: .2rem .38rem; border-radius: .22rem; background: var(--blue); color: var(--crust); }
+
+.more-menu-divider { height: 1px; margin: .25rem .35rem; border: 0; background: color-mix(in srgb, var(--surface-2) 72%, transparent); }
