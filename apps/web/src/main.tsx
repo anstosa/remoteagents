@@ -95,9 +95,9 @@ const request = async (url: string, init: RequestInit = {}) => {
   return fetch(url, { ...init, credentials: 'same-origin', headers });
 };
 
-const showNotification = async (title: string, body: string, tag: string) => {
+const showNotification = async (title: string, body: string, tag: string, url = '/') => {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
-  const options = { body, tag, icon: '/favicon.svg', badge: '/notification-badge.png' };
+  const options = { body, tag, icon: '/favicon.svg', badge: '/notification-badge.png', data: { url } };
   if ('serviceWorker' in navigator) {
     const registration = await navigator.serviceWorker.ready;
     await registration.showNotification(title, options);
@@ -599,7 +599,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       const state = agentState(agent);
       const previous = agentStates.current.get(agent.id);
       if (previous === 'working' && state === 'prompt-done') {
-        void showNotification('Agent finished', `${agent.worktreeLabel ?? agent.title} is ready for another prompt.`, `agent-finished-${agent.id}`);
+        void showNotification('Agent finished', `${agent.worktreeLabel ?? agent.title} is ready for another prompt.`, `agent-finished-${agent.id}`, `/#agent=${encodeURIComponent(agent.id)}`);
       }
       next.set(agent.id, state);
     }
@@ -631,14 +631,15 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const tabKey = items.map(item => item.label).join('\u0000');
   useEffect(() => {
     if (tabInitialized.current || items.length === 0) return;
-    const encoded = location.hash.startsWith('#tab=') ? location.hash.slice(5) : '';
-    let title = '';
-    try { title = decodeURIComponent(encoded); } catch { /* use the current tab */ }
-    const linked = items.findIndex(item => item.label === title);
+    const hash = location.hash;
+    const encoded = hash.startsWith('#agent=') ? hash.slice(7) : hash.startsWith('#tab=') ? hash.slice(5) : '';
+    let target = '';
+    try { target = decodeURIComponent(encoded); } catch { /* use the current tab */ }
+    const linked = hash.startsWith('#agent=') ? items.findIndex(item => item.agent?.id === target) : items.findIndex(item => item.label === target);
     if (linked >= 0) setActive(linked);
     tabInitialized.current = true;
   }, [tabKey]);
-  const select = (index: number) => { const item = items[index]; if (!item) return; history.replaceState(null, '', `${location.pathname}${location.search}#tab=${encodeURIComponent(item.label)}`); setActive(index); };
+  const select = (index: number) => { const item = items[index]; if (!item) return; const target = item.agent === undefined ? `tab=${encodeURIComponent(item.label)}` : `agent=${encodeURIComponent(item.agent.id)}`; history.replaceState(null, '', `${location.pathname}${location.search}#${target}`); setActive(index); };
   useEffect(() => {
     if (activateAgentId === undefined) return;
     const index = items.findIndex(candidate => candidate.agent?.id === activateAgentId);
