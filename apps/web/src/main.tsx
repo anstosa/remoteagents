@@ -303,7 +303,11 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
       else { pendingInput.push(value); void connectInteractive(); }
     };
     terminalInputs.set(id, sendInput);
-    const moveHistory = (direction: -1 | 0 | 1) => requestHistory(direction < 0 ? historyOffset + Math.max(1, terminal.rows) : direction > 0 ? Math.max(0, historyOffset - Math.max(1, terminal.rows)) : 0);
+    // Keep one line in common between page windows so a line at the viewport boundary is never lost while paging.
+    const moveHistory = (direction: -1 | 0 | 1) => {
+      const step = Math.max(1, terminal.rows - 1);
+      requestHistory(direction < 0 ? historyOffset + step : direction > 0 ? Math.max(0, historyOffset - step) : 0);
+    };
     logHistoryRequests.set(id, moveHistory);
     const sendViewport = () => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ v: 1, type: 'viewport', cols: terminal.cols, rows: terminal.rows })); };
     const observer = new ResizeObserver(() => { fits.forEach(fit => fit.fit()); sendViewport(); });

@@ -37,6 +37,15 @@ describe('TmuxAdapter capture', () => {
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'resize-pane', '-t', '%1', '-x', '120', '-y', '36']);
   });
 
+  it('keeps the boundary line when capturing adjacent history pages', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValueOnce({ code: 0, stdout: 'four\nfive\nsix\n', stderr: '' }).mockResolvedValueOnce({ code: 0, stdout: 'one\ntwo\nthree\nfour\nfive\nsix\n', stderr: '' });
+
+    const adapter = new TmuxAdapter();
+    await expect(adapter.captureWindow(socket, '%1', 0, 3)).resolves.toEqual({ text: 'four\x1b[49m\nfive\x1b[49m\nsix\x1b[49m', older: false });
+    await expect(adapter.captureWindow(socket, '%1', 2, 3)).resolves.toEqual({ text: 'two\x1b[49m\nthree\x1b[49m\nfour\x1b[49m', older: true });
+  });
+
   it('sends literal input without attaching or resizing the tmux session', async () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
 

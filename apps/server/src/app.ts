@@ -122,7 +122,86 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return reply.code(201).send({ agentId: agent.id });
   });
   app.post('/api/agents/:id/tickets', async (request, reply) => { const s = controlled(request, true); const kind = body(request).kind; if (kind !== 'input' && kind !== 'logs' && kind !== 'terminal') return reply.code(400).send({ error: 'invalid ticket type' }); const target = await discovery.target((request.params as { id: string }).id); if (!target) return reply.code(404).send({ error: 'target unavailable' }); return { ticket: tickets.mint(s.id, kind as TicketKind, kind === 'terminal' ? target.agent.sessionId : target.agent.id).id }; });
-  app.get('/ws/logs/:id', { websocket: true }, async (socket, request) => { try { const s = controlled(request, false); const ticket = String(request.headers['sec-websocket-protocol'] ?? '').split(',').map(x => x.trim())[1]; const id = (request.params as { id: string }).id; if (!tickets.consume(ticket, s.id, 'logs', id)) throw new Error(); const target = await discovery.target(id); if (!target) throw new Error(); let last = ''; let history = 0; let rows = 36; let cols = 120; let lastResetAt = 0; let polling = false; const poll = async (immediate = false) => { if (polling) return; polling = true; try { if (!control.active(s.id)) return socket.close(1008); const captured = await tmux.captureWindow(target.socket, target.agent.paneId, history, rows); if (captured === undefined) return socket.close(1008); if (!captured.text || captured.text === last) return; const now = Date.now(); if (!immediate && lastResetAt && now - lastResetAt < 750) return; last = captured.text; lastResetAt = now; if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ v: 1, type: 'reset', text: captured.text, older: captured.older, newer: history > 0 })); } finally { polling = false; } }; const timer = setInterval(() => { if (history === 0) void poll(); }, config.pollIntervalMs); socket.on('message', (raw: unknown) => { try { const frame = JSON.parse(String(raw)); if (frame?.v !== 1 || typeof frame?.type !== 'string') throw new Error(); if (frame.type === 'viewport') { if (!Number.isInteger(frame.cols) || !Number.isInteger(frame.rows) || frame.cols < 2 || frame.cols > 500 || frame.rows < 2 || frame.rows > 300) throw new Error(); cols = frame.cols; rows = frame.rows; void (async () => { await tmux.resize(target.socket, target.agent.paneId, cols, rows); last = ''; await poll(true); })(); return; } if (frame.type === 'history') { if (!Number.isInteger(frame.offset) || frame.offset < 0 || frame.offset > 5_000) throw new Error(); history = frame.offset; last = ''; void poll(true); return; } throw new Error(); } catch { socket.close(1008); } }); socket.on('close', () => clearInterval(timer)); await poll(); } catch { socket.close(1008); } });
+  app.get('/ws/logs/:id', { websocket: true }, async (socket, request) => {
+    try {
+      const s = controlled(request, false);
+      const ticket = String(request.headers['sec-websocket-protocol'] ?? '').split(',').map(x => x.trim())[1];
+      const id = (request.params as { id: string }).id;
+      if (!tickets.consume(ticket, s.id, 'logs', id)) throw new Error();
+      const target = await discovery.target(id);
+      if (!target) throw new Error();
+      let last = '';
+      let history = 0;
+      let rows = 36;
+      let cols = 120;
+      let lastResetAt = 0;
+      let polling = false;
+      let pollQueued = false;
+      let viewVersion = 0;
+      const poll = async (immediate = false) => {
+        if (polling) {
+          pollQueued ||= immediate;
+          return;
+        }
+        polling = true;
+        const requestedHistory = history;
+        const requestedRows = rows;
+        const requestedVersion = viewVersion;
+        try {
+          if (!control.active(s.id)) return socket.close(1008);
+          const captured = await tmux.captureWindow(target.socket, target.agent.paneId, requestedHistory, requestedRows);
+          if (captured === undefined) return socket.close(1008);
+          // A page/viewport request may arrive while tmux is capturing the old
+          // window. Never publish that stale window: it makes the next click
+          // appear to skip a page.
+          if (requestedVersion !== viewVersion) {
+            pollQueued = true;
+            return;
+          }
+          if (!captured.text || captured.text === last) return;
+          const now = Date.now();
+          if (!immediate && lastResetAt && now - lastResetAt < 750) return;
+          last = captured.text;
+          lastResetAt = now;
+          if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ v: 1, type: 'reset', text: captured.text, older: captured.older, newer: requestedHistory > 0 }));
+        } finally {
+          polling = false;
+          if (pollQueued) {
+            pollQueued = false;
+            void poll(true);
+          }
+        }
+      };
+      const requestView = (nextHistory: number) => {
+        history = nextHistory;
+        last = '';
+        viewVersion += 1;
+        void poll(true);
+      };
+      const timer = setInterval(() => { if (history === 0) void poll(); }, config.pollIntervalMs);
+      socket.on('message', (raw: unknown) => {
+        try {
+          const frame = JSON.parse(String(raw));
+          if (frame?.v !== 1 || typeof frame?.type !== 'string') throw new Error();
+          if (frame.type === 'viewport') {
+            if (!Number.isInteger(frame.cols) || !Number.isInteger(frame.rows) || frame.cols < 2 || frame.cols > 500 || frame.rows < 2 || frame.rows > 300) throw new Error();
+            cols = frame.cols;
+            rows = frame.rows;
+            void (async () => { await tmux.resize(target.socket, target.agent.paneId, cols, rows); requestView(history); })();
+            return;
+          }
+          if (frame.type === 'history') {
+            if (!Number.isInteger(frame.offset) || frame.offset < 0 || frame.offset > 5_000) throw new Error();
+            requestView(frame.offset);
+            return;
+          }
+          throw new Error();
+        } catch { socket.close(1008); }
+      });
+      socket.on('close', () => clearInterval(timer));
+      await poll();
+    } catch { socket.close(1008); }
+  });
   app.get('/ws/input/:id', { websocket: true }, async (socket, request) => { try { const s = controlled(request, false); const ticket = String(request.headers['sec-websocket-protocol'] ?? '').split(',').map(x => x.trim())[1]; const id = (request.params as { id: string }).id; if (!tickets.consume(ticket, s.id, 'input', id)) throw new Error(); const target = await discovery.target(id); if (!target) throw new Error(); socket.on('message', (raw: unknown) => { try { if (!control.active(s.id)) throw new Error(); const frame = JSON.parse(String(raw)); if (frame?.v !== 1 || frame?.type !== 'input' || typeof frame.data !== 'string' || !/^[A-Za-z0-9_-]*$/.test(frame.data)) throw new Error(); const decoded = Buffer.from(frame.data, 'base64url'); if (!decoded.length || decoded.length > 65_536 || decoded.toString('base64url') !== frame.data) throw new Error(); void tmux.input(target.socket, target.agent.paneId, decoded.toString('utf8')).then(ok => { if (!ok) socket.close(1011); }); } catch { socket.close(1008); } }); } catch { socket.close(1008); } });
   app.get('/ws/terminal/:id', { websocket: true }, async (socket, request) => { try { const s = controlled(request, false); const ticket = String(request.headers['sec-websocket-protocol'] ?? '').split(',').map(x => x.trim())[1]; const target = await discovery.target((request.params as { id: string }).id); if (!target || !tickets.consume(ticket, s.id, 'terminal', target.agent.sessionId)) throw new Error(); const sessionName = target.agent.sessionId.slice(target.agent.socketFingerprint.length + 1); const terminal = pty.spawn(process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux', ['-S', target.socket.path, 'attach-session', '-t', sessionName], { name: 'xterm-256color', cols: 120, rows: 36, cwd: '/', env: safeEnv() as Record<string, string> }); terminal.onData(value => socket.readyState === socket.OPEN && socket.send(JSON.stringify({ v: 1, type: 'output', data: Buffer.from(value).toString('base64url') }))); socket.on('message', (raw: unknown) => { try { if (!control.active(s.id)) throw new Error(); const frame = JSON.parse(String(raw)); if (frame?.v !== 1 || typeof frame?.type !== 'string') throw new Error(); if (frame.type === 'resize') { if (!Number.isInteger(frame.cols) || !Number.isInteger(frame.rows) || frame.cols < 2 || frame.cols > 500 || frame.rows < 2 || frame.rows > 300) throw new Error(); terminal.resize(frame.cols, frame.rows); return; } if (frame.type !== 'input' || typeof frame.data !== 'string' || !/^[A-Za-z0-9_-]*$/.test(frame.data)) throw new Error(); const decoded = Buffer.from(frame.data, 'base64url'); if (decoded.length > 65_536 || decoded.toString('base64url') !== frame.data) throw new Error(); terminal.write(decoded.toString('utf8')); } catch { socket.close(1008); } }); const close = () => terminal.kill(); socket.on('close', close); terminal.onExit(() => socket.close()); } catch { socket.close(1008); } });
   return app;
