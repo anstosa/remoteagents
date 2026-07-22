@@ -30,7 +30,18 @@ type SpeechRecognitionConstructor = new () => SpeechRecognitionInstance;
 
 const logSnapshots = new Map<string, string>();
 const lastPrompts = new Map<string, string>();
-const promptDrafts = new Map<string, { value: string; pending: boolean }>();
+const promptDrafts = new Map<string, string>();
+const promptDraftKey = (id: string) => `remote-agent-console:prompt-draft:${id}`;
+const readPromptDraft = (id: string) => {
+  try { return localStorage.getItem(promptDraftKey(id)) ?? ''; }
+  catch { return ''; }
+};
+const savePromptDraft = (id: string, value: string) => {
+  try {
+    if (value) localStorage.setItem(promptDraftKey(id), value);
+    else localStorage.removeItem(promptDraftKey(id));
+  } catch { /* Private browsing or storage quota must not block prompting. */ }
+};
 const terminalInputs = new Map<string, (value: string) => void>();
 const logHistoryRequests = new Map<string, (direction: -1 | 0 | 1) => void>();
 const mobileModifiers = new Map<string, { alt: boolean; ctrl: boolean; shift: boolean }>();
@@ -153,9 +164,12 @@ function ProjectOpen({ url, disabled = false }: { url?: string; disabled?: boole
 function PullRequestOpen({ url }: { url?: string }) { return url === undefined ? null : <a className="pull-request-open" href={url} target="_blank" rel="noreferrer"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.65 7.65 0 0 1 8 4.73c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" /></svg>PR</a>; }
 
 function Prompt({ id, canCancel, cancelling, deleting, onCancel, onDelete, projectUrl, pullRequestUrl, question, worktreeId, stack }: { id: string; canCancel: boolean; cancelling: boolean; deleting: boolean; onCancel: () => void; onDelete?: () => void; projectUrl?: string; pullRequestUrl?: string; question?: ChoiceQuestion; worktreeId?: string; stack?: Stack }) {
-  const [value, setValue] = useState(() => promptDrafts.get(id)?.value ?? '');
-  const [pending, setPending] = useState(() => promptDrafts.get(id)?.pending ?? false);
-  useEffect(() => { promptDrafts.set(id, { value, pending }); }, [id, value, pending]);
+  const [value, setValue] = useState(() => promptDrafts.get(id) ?? readPromptDraft(id));
+  const [pending, setPending] = useState(false);
+  useEffect(() => {
+    promptDrafts.set(id, value);
+    savePromptDraft(id, value);
+  }, [id, value]);
   const [listening, setListening] = useState(false);
   const [ctrlActive, setCtrlActive] = useState(false);
   const [shiftActive, setShiftActive] = useState(false);
@@ -654,7 +668,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   if (data === undefined) return <LoadingScreen label={unavailable ? 'Reconnecting to console' : 'Syncing console state'} />;
   const item = items[active];
   const stateLabel: Record<AgentState, string> = { working: 'Working', 'prompt-done': 'Prompt done', 'action-required': 'Action required', closed: 'Agent closed' };
-  return <main className="console"><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}status-${entry.state}`} title={stateLabel[entry.state]} aria-label={`${entry.label} — ${stateLabel[entry.state]}`} onClick={() => select(index)}>{entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{Array.from(entry.label).map((letter, letterIndex) => <span className="tab-label-letter" key={`${letter}-${letterIndex}`} style={{ animationDelay: `-${letterIndex * 75}ms` }}>{letter === ' ' ? '\u00a0' : letter}</span>)}</span> : entry.label}</button>)}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label="Launch agent" aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle}><button onClick={() => void createAgent()}>~ Home</button>{data.worktrees.map(worktree => <button key={worktree.id} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{launchErrorMessage && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}{items.length > 0 ? <section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard agent={item.agent} active={item.state === 'working'} onDeleted={refresh} />}{item?.worktree && <WorktreeCard worktree={item.worktree} onLaunched={launched} />}</section> : <article className="worktree-view"><h2>No sessions</h2></article>}</main>;
+  return <main className="console"><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}status-${entry.state}`} title={stateLabel[entry.state]} aria-label={`${entry.label} — ${stateLabel[entry.state]}`} onClick={() => select(index)}>{entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{Array.from(entry.label).map((letter, letterIndex) => <span className="tab-label-letter" key={`${letter}-${letterIndex}`} style={{ animationDelay: `-${letterIndex * 75}ms` }}>{letter === ' ' ? '\u00a0' : letter}</span>)}</span> : entry.label}</button>)}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label="Launch agent" aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle}><button onClick={() => void createAgent()}>~ Home</button>{data.worktrees.map(worktree => <button key={worktree.id} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{launchErrorMessage && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}{items.length > 0 ? <section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} onDeleted={refresh} />}{item?.worktree && <WorktreeCard worktree={item.worktree} onLaunched={launched} />}</section> : <article className="worktree-view"><h2>No sessions</h2></article>}</main>;
 }
 
 function App() {
