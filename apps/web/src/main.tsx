@@ -685,6 +685,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
 function App() {
   const [state, setState] = useState<'checking' | 'login' | 'ready' | 'inactive'>('checking');
   const [error, setError] = useState('');
+  const [updateAvailable, setUpdateAvailable] = useState(false);
   useEffect(() => {
     const viewport = window.visualViewport;
     const updateHeight = () => document.documentElement.style.setProperty('--app-height', `${viewport?.height ?? window.innerHeight}px`);
@@ -706,7 +707,7 @@ function App() {
         const response = await fetch('/api/ui-version', { cache: 'no-store', signal: AbortSignal.timeout(8_000) });
         if (!response.ok || closed) return;
         const payload = await response.json() as { version?: unknown };
-        if (typeof payload.version === 'string' && payload.version !== currentUiVersion) location.reload();
+        if (typeof payload.version === 'string' && payload.version !== currentUiVersion) setUpdateAvailable(true);
       } catch { /* Retry at the next interval. */ }
     };
     const timer = window.setInterval(() => void checkForUpdate(), 30_000);
@@ -748,10 +749,8 @@ function App() {
     window.addEventListener('focus', checkControl);
     return () => window.removeEventListener('focus', checkControl);
   }, [state]);
-  if (state === 'checking') return <LoadingScreen />;
-  if (state === 'ready') return <DashboardView onUnauthorized={() => setState('login')} onInactive={() => setState('inactive')} />;
-  if (state === 'inactive') return <ControlScreen claimed={() => setState('ready')} />;
-  return <Login initialError={error} done={active => setState(active ? 'ready' : 'inactive')} />;
+  const screen = state === 'checking' ? <LoadingScreen /> : state === 'ready' ? <DashboardView onUnauthorized={() => setState('login')} onInactive={() => setState('inactive')} /> : state === 'inactive' ? <ControlScreen claimed={() => setState('ready')} /> : <Login initialError={error} done={active => setState(active ? 'ready' : 'inactive')} />;
+  return <>{screen}{updateAvailable && <button className="update-ready" type="button" onClick={() => location.reload()}>Update available <span>Reload</span></button>}</>;
 }
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');
 createRoot(document.getElementById('root')!).render(<ConsoleBoundary><App /></ConsoleBoundary>);
