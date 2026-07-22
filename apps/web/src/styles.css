@@ -80,7 +80,7 @@ textarea { min-height: 7rem; resize: vertical; font-family: ui-monospace, SFMono
 .panel { min-height: 0; outline-offset: 4px; touch-action: pan-y; }
 .agent-view, .worktree-view { height: 100%; min-height: 0; display: grid; gap: 1rem; overflow: visible; }
 .agent-view { grid-template-rows: minmax(0, 1fr) auto; }
-.agent-view > .prompt, .worktree-view > .prompt { margin: 0 calc(var(--edge) / 2) calc(var(--edge) / 2); }
+.agent-view > .prompt, .worktree-view > .prompt { margin: 0 calc(var(--edge) / 4) calc(var(--edge) / 4); }
 .worktree-view { align-content: start; }
 .agent-view h2, .worktree-view h2 { color: var(--lavender); margin: 0; }
 .agent-view p, .worktree-view p { color: var(--subtext-0); margin: 0; }
@@ -121,9 +121,9 @@ textarea { min-height: 7rem; resize: vertical; font-family: ui-monospace, SFMono
 .status i { width: .45rem; height: .45rem; border-radius: 50%; background: var(--yellow); }
 .status.live { color: var(--green); }.status.live i { background: var(--green); box-shadow: 0 0 .7rem var(--green); }.status.disconnected, .status.unavailable { color: var(--red); }.status.disconnected i, .status.unavailable i { background: var(--red); }
 .status.inactive { color: var(--overlay-0); }.status.inactive i { background: var(--surface-2); }
-.prompt { display: grid; gap: .75rem; }
+.prompt { display: grid; gap: .375rem; }
 .prompt textarea { min-height: 4.5rem; padding: .45rem .55rem; }
-.prompt-actions { display: flex; align-items: center; gap: .75rem; }
+.prompt-actions { display: flex; align-items: center; gap: .375rem; }
 .prompt-actions button, .project-open, .pull-request-open { box-sizing: border-box; height: 2rem; border-radius: .3rem; padding: .4rem .6rem; font-size: .75rem; font-weight: 700; box-shadow: none; }
 .prompt-actions .icon-button { display: inline-grid; flex: 0 0 2rem; width: 2rem; height: 2rem; padding: 0; place-items: center; }
 .prompt-actions .icon-button svg { display: block; width: 1rem; height: 1rem; }
