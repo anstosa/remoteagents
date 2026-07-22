@@ -567,6 +567,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const [launchErrorMessage, setLaunchErrorMessage] = useState('');
   const [activateAgentId, setActivateAgentId] = useState<string>();
   const tabInitialized = useRef(false);
+  const refreshInFlight = useRef(false);
   useEffect(() => {
     if (!launchErrorMessage) return;
     const timer = window.setTimeout(() => setLaunchErrorMessage(''), 5_000);
@@ -580,6 +581,8 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   }, [launcherOpen]);
   const agentStates = useRef(new Map<string, AgentState>());
   const refresh = async () => {
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
     try {
       const response = await request('/api/dashboard', { signal: AbortSignal.timeout(8_000) });
       if (response.status === 401) return onUnauthorized();
@@ -590,6 +593,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       setData(payload);
       setUnavailable(false);
     } catch { setUnavailable(true); }
+    finally { refreshInFlight.current = false; }
   };
   useEffect(() => { void refresh(); const timer = window.setInterval(() => void refresh(), 5_000); return () => window.clearInterval(timer); }, []);
   useEffect(() => {
