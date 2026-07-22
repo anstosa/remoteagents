@@ -20,9 +20,10 @@ import * as pty from 'node-pty';
 import { safeEnv } from './tmux/command.js';
 import { PushService } from './push-service.js';
 import { WorktreeCommandService } from './worktree-commands/service.js';
+import { PullRequestSwitchService } from './pull-requests/switch-service.js';
 import { stackActions, type StackAction } from './domain/models.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; push?: PushService };
+export type Dependencies = { auth?: AuthService; control?: ControlService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; push?: PushService; prSwitch?: PullRequestSwitchService };
 const cookieName = '__Host-rac';
 const body = (request: FastifyRequest): Record<string, unknown> => (request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {});
 type LogFrame = { type: 'append'|'reset'; text: string };
@@ -43,7 +44,7 @@ export function logFrame(last: string, value: string): LogFrame | undefined {
   return { type: 'reset', text: value };
 }
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const prompts = new PromptService(discovery, tmux, config.worktrees); const push = deps.push ?? new PushService(); const stackCommands = new WorktreeCommandService(config);
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const prompts = new PromptService(discovery, tmux, config.worktrees); const push = deps.push ?? new PushService(); const stackCommands = new WorktreeCommandService(config); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux, launch);
   const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 65_536 }); const webRoot = fileURLToPath(new URL('../../web/dist', import.meta.url)); const uiVersion = async () => await readFile(join(webRoot, 'index.html'), 'utf8').then(html => /<script[^>]+src="([^"]+)"/u.exec(html)?.[1]).catch(() => undefined); await app.register(cookie); await app.register(staticPlugin, { root: webRoot, index: false }); await app.register(rateLimit, { global: false }); await app.register(websocket, { options: { maxPayload: 65_536 } });
   const expectedHost = config.publicOrigin.host;
   const forbidden = () => Object.assign(new Error('forbidden'), { statusCode: 403 });
@@ -85,6 +86,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if ((await run(process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux', ['-S', target.socket.path, 'new-session', '-d', '-s', sessionName, '-c', directory, '/bin/bash', '-lc', script])).code !== 0) return reply.code(409).send({ error: 'could not start agent' });
     await tmux.close(target.socket, target.agent.paneId); return reply.code(202).send();
   });
+  app.get('/api/agents/:id/switch-prs', async (request, reply) => { controlled(request); const pullRequests = await prSwitch.available((request.params as { id: string }).id); return pullRequests === undefined ? reply.code(404).send({ error: 'pull request switching unavailable' }) : { pullRequests }; });
+  app.post('/api/agents/:id/switch-pr', async (request, reply) => { controlled(request, true); const number = body(request).number; if (!Number.isInteger(number) || !await prSwitch.switch((request.params as { id: string }).id, number as number)) return reply.code(409).send({ error: 'Unable to switch to that pull request. The worktree must be clean and pushed.' }); return reply.code(202).send(); });
   app.post('/api/agents/:id/prompt', async (request, reply) => { controlled(request, true); const data = body(request); if (typeof data.prompt !== 'string' || !await prompts.submit((request.params as { id: string }).id, data.prompt)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
   app.post('/api/agents/:id/cancel', async (request, reply) => { controlled(request, true); if (!await prompts.cancel((request.params as { id: string }).id)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
   app.delete('/api/agents/:id', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const target = await discovery.target(id); if (!target || config.worktrees.some(worktree => target.agent.workspace === worktree.identity || target.agent.workspace === worktree.hostPath) || !await prompts.close(id)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
