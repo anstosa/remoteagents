@@ -33,22 +33,27 @@ export class PromptService {
     if ((!prompt && attachments.length === 0) || prompt.length > 32_000 || prompt.includes('\0') || attachments.length > maxPromptAttachments) return false;
     const first = await this.discovery.target(agentId);
     if (!first) return false;
-    const staged = await this.stageAttachments(first.agent.workspace, attachments);
+    const workspace = this.workspaceFor(first.agent.workspace);
+    const staged = await this.stageAttachments(workspace, attachments);
     if (staged === undefined) return false;
     const attachmentPrompt = staged.length === 0 ? prompt : `${prompt}${prompt ? '\n\n' : ''}Attached files:\n${staged.map(path => `@${path}`).join('\n')}`;
     const buffer = `rac-${randomBytes(18).toString('base64url')}`;
     if (!await this.tmux.pastePrompt(first.socket, first.agent.paneId, buffer, queueReadyPrompt(attachmentPrompt))) {
-      await this.removeStaged(first.agent.workspace, staged);
+      await this.removeStaged(workspace, staged);
       return false;
     }
     const second = await this.discovery.target(agentId);
     if (!second || second.socket.fingerprint !== first.socket.fingerprint || second.agent.paneId !== first.agent.paneId) {
-      await this.removeStaged(first.agent.workspace, staged);
+      await this.removeStaged(workspace, staged);
       return false;
     }
     const queued = await this.tmux.queue(second.socket, second.agent.paneId);
-    if (!queued) await this.removeStaged(first.agent.workspace, staged);
+    if (!queued) await this.removeStaged(workspace, staged);
     return queued;
+  }
+
+  private workspaceFor(workspace: string): string {
+    return this.worktrees.find(worktree => workspace === worktree.identity || workspace === worktree.hostPath)?.identity ?? workspace;
   }
 
   private async stageAttachments(workspace: string, attachments: PromptAttachment[]): Promise<string[] | undefined> {

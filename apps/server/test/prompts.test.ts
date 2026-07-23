@@ -24,4 +24,20 @@ describe('safe prompt flow',()=>{it('pastes through a generated buffer and uses 
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
+it('maps a discovered host worktree path to its mounted workspace before staging attachments', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'rac-mounted-'));
+  await writeFile(join(workspace, '.gitignore'), 'node_modules/\n');
+  execFileSync('/usr/bin/git', ['init', '--quiet', workspace]);
+  const discoveredAgent = { ...agent, workspace: '/host/worktree' };
+  const pasted: string[] = [];
+  const discovery = { target: async () => ({ agent: discoveredAgent, socket }) };
+  const tmux = { pastePrompt: async (_s: unknown, _p: string, _b: string, prompt: string) => { pasted.push(prompt); return true; }, queue: async () => true, interrupt: async () => true };
+  try {
+    const service = new PromptService(discovery as never, tmux as never, [{ id: 'worktree', label: 'Worktree', path: workspace, identity: workspace, hostPath: '/host/worktree', available: true, pinned: false }]);
+    await expect(service.submit(discoveredAgent.id, 'Read.', [{ name: 'notes.txt', data: Buffer.from('mounted').toString('base64') }])).resolves.toBe(true);
+    const path = /@(node_modules\/[^\s]+)/.exec(pasted[0] ?? '')?.[1];
+    await expect(readFile(join(workspace, path!), 'utf8')).resolves.toBe('mounted');
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
 it('dismisses composer autocomplete before queuing a skill or plugin prompt',async()=>{const pasted:string[]=[];const discovery={target:async()=>({agent,socket})};const tmux={pastePrompt:async(_s:unknown,_p:string,_b:string,p:string)=>{pasted.push(p);return true},queue:async()=>true,interrupt:async()=>true};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'Use $my-plugin')).resolves.toBe(true);await expect(service.submit(agent.id,'/skill already resolved ')).resolves.toBe(true);expect(pasted).toEqual(['Use $my-plugin ','/skill already resolved '])});it('does not queue a stale target',async()=>{let count=0;const discovery={target:async()=>++count===1?{agent,socket}:undefined};const tmux={pastePrompt:async()=>true,queue:async()=>true,interrupt:async()=>true};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'synthetic')).resolves.toBe(false)});it('sends Ctrl-C only to the discovered agent pane',async()=>{const calls:string[][]=[];const discovery={target:async()=>({agent,socket})};const tmux={interrupt:async(_s:unknown,p:string)=>{calls.push(['interrupt',p]);return true}};const service=new PromptService(discovery as never,tmux as never);await expect(service.cancel(agent.id)).resolves.toBe(true);expect(calls).toEqual([['interrupt','%1']])});it('kills only the discovered pane when deleting an agent',async()=>{const calls:string[][]=[];const discovery={target:async()=>({agent,socket})};const tmux={close:async(_s:unknown,p:string)=>{calls.push(['close',p]);return true}};const service=new PromptService(discovery as never,tmux as never);await expect(service.close(agent.id)).resolves.toBe(true);expect(calls).toEqual([['close','%1']])})});
