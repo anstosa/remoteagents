@@ -394,7 +394,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
         requestHistory = offset => {
           historyOffset = Math.max(0, offset);
           syncScrollState();
-          if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ v: 1, type: 'history', offset: historyOffset }));
+          if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ v: 1, type: 'history', offset: historyOffset, cols: terminal.cols, rows: terminal.rows }));
         };
         ws.onopen = () => {
           if (closed || socket !== ws) return;

@@ -200,7 +200,15 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
           }
           if (frame.type === 'history') {
             if (!Number.isInteger(frame.offset) || frame.offset < 0 || frame.offset > 5_000) throw new Error();
-            requestView(frame.offset);
+            const hasViewport = frame.cols !== undefined || frame.rows !== undefined;
+            if (hasViewport && (!Number.isInteger(frame.cols) || !Number.isInteger(frame.rows) || frame.cols < 2 || frame.cols > 500 || frame.rows < 2 || frame.rows > 300)) throw new Error();
+            if (!hasViewport) { requestView(frame.offset); return; }
+            cols = frame.cols;
+            rows = frame.rows;
+            void (async () => {
+              if (!await tmux.resize(target.socket, target.agent.paneId, cols, rows)) return socket.close(1011);
+              requestView(frame.offset);
+            })();
             return;
           }
           throw new Error();
