@@ -34,6 +34,7 @@ describe('TmuxAdapter capture', () => {
     await expect(new TmuxAdapter().resize(socket, '%1', 120, 36)).resolves.toBe(true);
 
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'capture-pane', '-e', '-p', '-t', '%1', '-S', '-5000']);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'resize-window', '-t', '%1', '-x', '120', '-y', '36']);
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'resize-pane', '-t', '%1', '-x', '120', '-y', '36']);
   });
 

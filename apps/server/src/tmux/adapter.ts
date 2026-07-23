@@ -74,6 +74,10 @@ export class TmuxAdapter {
 
   async resize(socket: SocketRef, pane: string, cols: number, rows: number): Promise<boolean> {
     if (!paneId.test(pane) || !Number.isInteger(cols) || cols < 2 || cols > 500 || !Number.isInteger(rows) || rows < 2 || rows > 300) return false;
+    // `resize-pane -x` cannot narrow a pane when its tmux window is wider.
+    // Resize the containing window first so the captured soft-wraps match
+    // the active browser grid, then set the pane's exact output height.
+    if ((await run(this.binary, ['-S', socket.path, 'resize-window', '-t', pane, '-x', String(cols), '-y', String(rows)])).code !== 0) return false;
     return (await run(this.binary, ['-S', socket.path, 'resize-pane', '-t', pane, '-x', String(cols), '-y', String(rows)])).code === 0;
   }
 
