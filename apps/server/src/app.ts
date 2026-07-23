@@ -14,7 +14,7 @@ import { ControlService } from './auth/control.js';
 import { TicketStore, type TicketKind } from './auth/tickets.js';
 import { DiscoveryService } from './discovery/service.js';
 import { TmuxAdapter } from './tmux/adapter.js';
-import { PromptService } from './prompts/service.js';
+import { maxPromptAttachments, maxPromptAttachmentBytes, PromptService, type PromptAttachment } from './prompts/service.js';
 import { LaunchService } from './launch/service.js';
 import * as pty from 'node-pty';
 import { safeEnv } from './tmux/command.js';
@@ -88,7 +88,15 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   });
   app.get('/api/agents/:id/switch-prs', async (request, reply) => { controlled(request); const pullRequests = await prSwitch.available((request.params as { id: string }).id); return pullRequests === undefined ? reply.code(404).send({ error: 'pull request switching unavailable' }) : { pullRequests }; });
   app.post('/api/agents/:id/switch-pr', async (request, reply) => { controlled(request, true); const number = body(request).number; if (!Number.isInteger(number) || !await prSwitch.switch((request.params as { id: string }).id, number as number)) return reply.code(409).send({ error: 'Unable to switch to that pull request. The worktree must be clean and pushed.' }); return reply.code(202).send(); });
-  app.post('/api/agents/:id/prompt', async (request, reply) => { controlled(request, true); const data = body(request); if (typeof data.prompt !== 'string' || !await prompts.submit((request.params as { id: string }).id, data.prompt)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
+  app.post('/api/agents/:id/prompt', { bodyLimit: Math.ceil(maxPromptAttachmentBytes * 1.4) }, async (request, reply) => {
+    controlled(request, true);
+    const data = body(request);
+    const rawAttachments = data.attachments === undefined ? [] : data.attachments;
+    if (typeof data.prompt !== 'string' || !Array.isArray(rawAttachments) || rawAttachments.length > maxPromptAttachments) return reply.code(400).send({ error: 'invalid prompt attachments' });
+    const attachments = rawAttachments.map(value => value && typeof value === 'object' && typeof (value as { name?: unknown }).name === 'string' && typeof (value as { data?: unknown }).data === 'string' ? value as PromptAttachment : undefined);
+    if (attachments.some(attachment => attachment === undefined) || !await prompts.submit((request.params as { id: string }).id, data.prompt, attachments as PromptAttachment[])) return reply.code(404).send({ error: 'target unavailable' });
+    return reply.code(204).send();
+  });
   app.post('/api/agents/:id/cancel', async (request, reply) => { controlled(request, true); if (!await prompts.cancel((request.params as { id: string }).id)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
   app.delete('/api/agents/:id', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const target = await discovery.target(id); if (!target || config.worktrees.some(worktree => target.agent.workspace === worktree.identity || target.agent.workspace === worktree.hostPath) || !await prompts.close(id)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
   app.post('/api/agents/:id/question', async (request, reply) => { controlled(request, true); const index = body(request).index; if (!Number.isInteger(index) || !await prompts.answerOption((request.params as { id: string }).id, index as number)) return reply.code(404).send({ error: 'question unavailable' }); return reply.code(204).send(); });

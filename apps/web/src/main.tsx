@@ -95,6 +95,20 @@ const request = async (url: string, init: RequestInit = {}) => {
   if (csrf) headers.set('X-CSRF-Token', csrf);
   return fetch(url, { ...init, credentials: 'same-origin', headers });
 };
+const maxAttachmentBytes = 8 * 1024 * 1024;
+const maxAttachments = 10;
+const encodeAttachment = async (file: File): Promise<{ name: string; data: string }> => await new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onerror = () => reject(reader.error ?? new Error('Unable to read attachment'));
+  reader.onload = () => {
+    const result = reader.result;
+    if (typeof result !== 'string') return reject(new Error('Unable to read attachment'));
+    const separator = result.indexOf(',');
+    if (separator < 0) return reject(new Error('Unable to read attachment'));
+    resolve({ name: file.name, data: result.slice(separator + 1) });
+  };
+  reader.readAsDataURL(file);
+});
 
 const showNotification = async (title: string, body: string, tag: string, url = '/') => {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
@@ -175,6 +189,9 @@ function PullRequestOpen({ url }: { url?: string }) { return url === undefined ?
 function Prompt({ id, canCancel, cancelling, deleting, onCancel, onDelete, projectUrl, pullRequestUrl, question, worktreeId, stack }: { id: string; canCancel: boolean; cancelling: boolean; deleting: boolean; onCancel: () => void; onDelete?: () => void; projectUrl?: string; pullRequestUrl?: string; question?: ChoiceQuestion; worktreeId?: string; stack?: Stack }) {
   const [value, setValue] = useState(() => promptDrafts.get(id) ?? readPromptDraft(id));
   const [pending, setPending] = useState(false);
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string>();
+  const attachmentInput = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
     promptDrafts.set(id, value);
     savePromptDraft(id, value);
@@ -189,13 +206,25 @@ function Prompt({ id, canCancel, cancelling, deleting, onCancel, onDelete, proje
   const supportsSpeechRecognition = speechWindow.SpeechRecognition !== undefined || speechWindow.webkitSpeechRecognition !== undefined;
   useEffect(() => () => recognition.current?.abort(), []);
   useEffect(() => { mobileModifiers.set(id, { alt: altActive, ctrl: ctrlActive, shift: shiftActive }); return () => { mobileModifiers.delete(id); }; }, [id, altActive, ctrlActive, shiftActive]);
+  const chooseAttachments = (files: FileList | null) => {
+    if (!files) return;
+    const next = [...attachments, ...Array.from(files)];
+    if (next.length > maxAttachments) return setAttachmentError(`Attach up to ${maxAttachments} files.`);
+    if (next.reduce((total, file) => total + file.size, 0) > maxAttachmentBytes) return setAttachmentError('Attachments must total 8 MB or less.');
+    setAttachmentError(undefined);
+    setAttachments(next);
+  };
   const submit = async () => {
-    if (!value || pending) return;
+    if ((!value && attachments.length === 0) || pending) return;
     setPending(true);
+    setAttachmentError(undefined);
     try {
-      const response = await request(`/api/agents/${encodeURIComponent(id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: value }) });
-      if (response.ok) setValue('');
-    } finally { setPending(false); }
+      const payload = await Promise.all(attachments.map(encodeAttachment));
+      const response = await request(`/api/agents/${encodeURIComponent(id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: value, attachments: payload }) });
+      if (response.ok) { setValue(''); setAttachments([]); }
+      else setAttachmentError('Unable to queue the prompt with these attachments.');
+    } catch { setAttachmentError('Unable to read the selected attachments.'); }
+    finally { setPending(false); }
   };
   const answer = async (index: number) => { if (pending) return; setPending(true); try { const url = question?.omxId === undefined ? `/api/agents/${encodeURIComponent(id)}/question` : `/api/agents/${encodeURIComponent(id)}/omx-question`; const body = question?.omxId === undefined ? { index } : { index, questionId: question.omxId }; await request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); } finally { setPending(false); } };
   const voice = () => {
@@ -236,7 +265,7 @@ function Prompt({ id, canCancel, cancelling, deleting, onCancel, onDelete, proje
   const deleteButton = <button className="danger icon-button delete-agent" disabled={deleting} aria-label="Delete agent" title="Delete agent" onClick={onDelete}>{deleting ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button>;
   const stop = onDelete === undefined ? cancelButton : deleteButton;
   if (question) return <section className="prompt question-prompt"><div className="question-copy"><strong>Agent question</strong><span>{question.text}</span></div><div className="question-choices">{question.choices.map((choice, index) => <button key={`${index}-${choice}`} className="question-choice" disabled={pending} onClick={() => void answer(index)}><b>{index + 1}</b>{choice}</button>)}</div><div className="prompt-actions">{stop}</div></section>;
-  return <section className="prompt"><textarea aria-label="Prompt" value={value} disabled={pending} onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') { event.preventDefault(); setValue(''); } else if (event.key === 'Tab') { event.preventDefault(); setValue(current => current + '\t'); } else if (event.key === 'Enter') { event.preventDefault(); if (event.ctrlKey || event.shiftKey || window.matchMedia('(max-width: 600px)').matches) setValue(current => current + '\n'); else void submit(); } }} onChange={event => setValue(event.target.value)} /><div className="prompt-actions">{stop}<span className="prompt-actions-spacer" aria-hidden="true" /><More id={id} worktreeId={worktreeId} stack={stack} /><PullRequestOpen url={pullRequestUrl} /><ProjectOpen url={projectUrl} disabled={stack?.running === false} />{supportsSpeechRecognition && <button className={`voice icon-button ${listening ? 'listening' : ''}`} type="button" disabled={pending} aria-label={listening ? 'Stop voice input' : 'Start voice input'} title={listening ? 'Stop voice input' : 'Start voice input'} onClick={voice}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm6-3a6 6 0 0 1-12 0m6 6v4m-3 0h6" /></svg></button>}<button className="queue" disabled={pending || !value} onClick={() => void submit()}>{pending ? <><span className="spinner" />Queueing</> : 'Queue'}</button></div>{mobileKeys}</section>;
+  return <section className="prompt"><textarea aria-label="Prompt" value={value} disabled={pending} onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') { event.preventDefault(); setValue(''); } else if (event.key === 'Tab') { event.preventDefault(); setValue(current => current + '\t'); } else if (event.key === 'Enter') { event.preventDefault(); if (event.ctrlKey || event.shiftKey || window.matchMedia('(max-width: 600px)').matches) setValue(current => current + '\n'); else void submit(); } }} onChange={event => setValue(event.target.value)} />{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{stop}<span className="prompt-actions-spacer" aria-hidden="true" /><More id={id} worktreeId={worktreeId} stack={stack} /><PullRequestOpen url={pullRequestUrl} /><ProjectOpen url={projectUrl} disabled={stack?.running === false} />{supportsSpeechRecognition && <button className={`voice icon-button ${listening ? 'listening' : ''}`} type="button" disabled={pending} aria-label={listening ? 'Stop voice input' : 'Start voice input'} title={listening ? 'Stop voice input' : 'Start voice input'} onClick={voice}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm6-3a6 6 0 0 1-12 0m6 6v4m-3 0h6" /></svg></button>}<button className="attachment-button icon-button" type="button" disabled={pending} aria-label="Attach files" title="Attach files" onClick={() => attachmentInput.current?.click()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 12 5.7-5.7a3.5 3.5 0 1 1 5 5L11 20a5 5 0 1 1-7-7l8.3-8.3" /></svg></button><button className="queue" disabled={pending || (!value && attachments.length === 0)} onClick={() => void submit()}>{pending ? <><span className="spinner" />Queueing</> : 'Queue'}</button></div>{mobileKeys}</section>;
 }
 
 type MobileKeyIconName = 'control'|'shift'|'tab'|'up'|'down'|'left'|'right';
