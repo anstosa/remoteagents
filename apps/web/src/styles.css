@@ -117,6 +117,9 @@ textarea { min-height: 7rem; resize: vertical; font-family: ui-monospace, SFMono
 .back-to-bottom { position: absolute; left: 50%; transform: translateX(-50%); border-color: var(--lavender); background: linear-gradient(135deg, var(--mauve), var(--blue)); color: var(--crust); opacity: .95; }
 .back-to-bottom:not(:disabled):hover { transform: translateX(-50%) translateY(-1px); }
 .xterm { height: 100%; }
+/* The dashboard pages output explicitly, so xterm never owns scrolling. */
+.xterm .xterm-viewport { overflow: hidden !important; scrollbar-width: none; }
+.xterm .xterm-viewport::-webkit-scrollbar { display: none; }
 .status { display: flex; align-items: center; gap: .35rem; color: var(--subtext-0); }
 .status i { width: .45rem; height: .45rem; border-radius: 50%; background: var(--yellow); }
 .status.live { color: var(--green); }.status.live i { background: var(--green); box-shadow: 0 0 .7rem var(--green); }.status.disconnected, .status.unavailable { color: var(--red); }.status.disconnected i, .status.unavailable i { background: var(--red); }
