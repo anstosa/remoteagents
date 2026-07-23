@@ -302,11 +302,9 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
     terminalInputs.set(id, sendInput);
     // Keep one line in common between page windows so a line at the viewport boundary is never lost while paging.
     const moveHistory = (direction: -1 | 0 | 1) => {
-      // Xterm's grid includes rows covered by the floating status controls
-      // and can briefly lag a viewport resize. Half-page steps keep adjacent
-      // windows well overlapped and prevent a button press from overshooting
-      // more than the currently visible output.
-      const step = Math.max(1, Math.floor(terminal.rows / 2));
+      // Adjacent pages intentionally share five rows, preserving context at
+      // the boundary without turning page navigation into a large jump.
+      const step = Math.max(1, terminal.rows - 5);
       // Keep both controls interactive at the boundaries. The server clamps
       // unavailable history to the oldest available page.
       const next = direction < 0 ? historyOffset + step : direction > 0 ? Math.max(0, historyOffset - step) : 0;
