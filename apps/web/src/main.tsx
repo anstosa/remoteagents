@@ -26,7 +26,8 @@ type ChoiceQuestion = { text: string; choices: string[]; omxId?: string };
 const actionRequired = (agent: Agent) => /action required/i.test(agent.title);
 const agentState = (agent: Agent): AgentState => actionRequired(agent) ? 'action-required' : /^[\u2800-\u28ff]/u.test(agent.title) ? 'working' : 'prompt-done';
 const agentLabel = (agent: Agent) => (agent.worktreeLabel ?? (actionRequired(agent) ? agent.title.replace(/(?:\[\s*.\s*\]\s*)?action required\s*\|?\s*/i, '🚨 ') : agent.title)) || agent.workspace;
-type SpeechRecognitionInstance = { continuous: boolean; interimResults: boolean; lang: string; start: () => void; abort: () => void; onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null; onend: (() => void) | null; onerror: (() => void) | null };
+type SpeechRecognitionResult = ArrayLike<{ transcript: string }> & { isFinal: boolean };
+type SpeechRecognitionInstance = { continuous: boolean; interimResults: boolean; lang: string; start: () => void; abort: () => void; onresult: ((event: { resultIndex: number; results: ArrayLike<SpeechRecognitionResult> }) => void) | null; onend: (() => void) | null; onerror: (() => void) | null };
 type SpeechRecognitionConstructor = new () => SpeechRecognitionInstance;
 
 const logSnapshots = new Map<string, string>();
@@ -202,6 +203,7 @@ function Prompt({ id, canCancel, cancelling, deleting, onCancel, onDelete, proje
   const [altActive, setAltActive] = useState(false);
   const recognition = useRef<SpeechRecognitionInstance | undefined>(undefined);
   const speechPrefix = useRef('');
+  const speechFinal = useRef('');
   const speechWindow = window as Window & { SpeechRecognition?: SpeechRecognitionConstructor; webkitSpeechRecognition?: SpeechRecognitionConstructor };
   const supportsSpeechRecognition = speechWindow.SpeechRecognition !== undefined || speechWindow.webkitSpeechRecognition !== undefined;
   useEffect(() => () => recognition.current?.abort(), []);
@@ -229,7 +231,9 @@ function Prompt({ id, canCancel, cancelling, deleting, onCancel, onDelete, proje
   const answer = async (index: number) => { if (pending) return; setPending(true); try { const url = question?.omxId === undefined ? `/api/agents/${encodeURIComponent(id)}/question` : `/api/agents/${encodeURIComponent(id)}/omx-question`; const body = question?.omxId === undefined ? { index } : { index, questionId: question.omxId }; await request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); } finally { setPending(false); } };
   const voice = () => {
     if (pending || !supportsSpeechRecognition) return;
-    if (listening) return recognition.current?.abort();
+    // Set the ref synchronously, not just React state, so a second tap cannot
+    // start a parallel recognizer before the component rerenders.
+    if (listening || recognition.current !== undefined) return recognition.current?.abort();
     const Recognition = (speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition)!;
     const next = new Recognition();
     recognition.current = next;
@@ -237,8 +241,17 @@ function Prompt({ id, canCancel, cancelling, deleting, onCancel, onDelete, proje
     next.interimResults = true;
     next.lang = navigator.language;
     speechPrefix.current = value;
+    speechFinal.current = '';
     next.onresult = event => {
-      const transcript = Array.from(event.results).map(result => result[0]?.transcript ?? '').join('').trim();
+      let interim = '';
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        const transcript = result?.[0]?.transcript.trim() ?? '';
+        if (!transcript) continue;
+        if (result.isFinal) speechFinal.current = `${speechFinal.current}${speechFinal.current && !/\s$/u.test(speechFinal.current) ? ' ' : ''}${transcript}`;
+        else interim = transcript;
+      }
+      const transcript = `${speechFinal.current}${speechFinal.current && interim ? ' ' : ''}${interim}`;
       if (!transcript) return;
       setValue(`${speechPrefix.current}${speechPrefix.current && !/\s$/u.test(speechPrefix.current) ? ' ' : ''}${transcript}`);
     };
