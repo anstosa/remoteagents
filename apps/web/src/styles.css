@@ -73,7 +73,7 @@ textarea { min-height: 7rem; resize: vertical; font-family: ui-monospace, SFMono
 .tabs button.active { background: linear-gradient(145deg, #454168, #282640 68%, var(--surface-0)); color: var(--text); box-shadow: inset 0 1px #ffffff24, inset 0 0 1.8rem #b4befe16; }
 .tabs button.active::after { background: linear-gradient(90deg, var(--mauve), var(--lavender), var(--blue)); box-shadow: 0 0 .8rem var(--lavender); }
 .tabs button.status-working { border-color: var(--orange); animation: working-border 1.35s ease-in-out infinite; }
-.tabs button.active.status-working { border-color: #fff; }
+.tabs button.active.status-working { border-right-color: color-mix(in srgb, var(--surface-1) 82%, transparent); animation: none; }
 .tabs button.status-action-required { color: var(--red); border: 2px solid var(--red); box-shadow: inset 0 0 1.5rem color-mix(in srgb, var(--red) 18%, transparent), 0 0 .7rem color-mix(in srgb, var(--red) 45%, transparent); }
 .tab-label { display: inline-flex; }
 .tab-label-letter { display: inline-block; animation: working-letter 1.35s ease-in-out infinite; }
