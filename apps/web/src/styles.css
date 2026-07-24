@@ -111,9 +111,11 @@ textarea { min-height: 7rem; resize: vertical; font-family: ui-monospace, SFMono
 .log-controls-bottom { position: absolute; right: var(--edge); bottom: .45rem; left: var(--edge); z-index: 20; display: flex; align-items: end; pointer-events: none; }
 .log-controls-bottom button { pointer-events: auto; }
 .mobile-terminal-keys { display: none; }
-.page-controls { display: grid; gap: .45rem; margin-left: auto; }
-.page-arrow { display: grid; width: 3rem; min-height: 3rem; padding: .25rem; place-items: center; }
-.page-arrow svg { width: 1.4rem; height: 1.4rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.35; }
+.page-controls { position: relative; z-index: 0; display: grid; gap: .375rem; margin-left: auto; pointer-events: auto; }
+/* Absorb near-misses around paging controls instead of focusing the terminal underneath. */
+.page-controls::before { position: absolute; inset: -.375rem; z-index: 0; content: ''; }
+.page-controls .page-arrow { position: relative; z-index: 1; display: grid; width: 2.6rem; min-height: 2.6rem; padding: .25rem; place-items: center; }
+.page-arrow svg { width: 1.2rem; height: 1.2rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.35; }
 .back-to-bottom { position: absolute; left: 50%; transform: translateX(-50%); border-color: var(--lavender); background: linear-gradient(135deg, var(--mauve), var(--blue)); color: var(--crust); opacity: .95; }
 .back-to-bottom:not(:disabled):hover { transform: translateX(-50%) translateY(-1px); }
 .xterm { height: 100%; }
