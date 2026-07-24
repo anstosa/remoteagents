@@ -29,8 +29,9 @@
 }
 
 * { box-sizing: border-box; }
-html, body, #root { height: 100%; overflow: hidden; }
-body { margin: 0; background: radial-gradient(ellipse at top, #302d4b 0, var(--mantle) 40rem, var(--crust) 100%); }
+html, body { width: 100%; height: 100%; overflow: hidden; overscroll-behavior: none; }
+body { position: fixed; inset: 0; margin: 0; background: radial-gradient(ellipse at top, #302d4b 0, var(--mantle) 40rem, var(--crust) 100%); }
+#root { width: 100%; height: var(--app-height, 100dvh); overflow: hidden; }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; background: linear-gradient(135deg, var(--mauve), var(--blue)); border: 1px solid color-mix(in srgb, var(--lavender) 54%, transparent); border-radius: .45rem; padding: .65rem .9rem; color: var(--crust); font-weight: 800; display: inline-flex; gap: .45rem; align-items: center; box-shadow: 0 .35rem 1.1rem #11111b66; transition: filter .15s ease, transform .15s ease; }
 button:not(:disabled):hover { filter: brightness(1.08); transform: translateY(-1px); }
