@@ -171,7 +171,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
           if (!immediate && lastResetAt && now - lastResetAt < 750) return;
           last = captured.text;
           lastResetAt = now;
-          if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ v: 1, type: 'reset', text: captured.text, older: captured.older, newer: requestedHistory > 0 }));
+          if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ v: 1, type: 'reset', text: captured.text, older: captured.older, newer: requestedHistory > 0, ...(captured.lastPrompt === undefined ? {} : { lastPrompt: captured.lastPrompt }) }));
         } finally {
           polling = false;
           if (pollQueued) {

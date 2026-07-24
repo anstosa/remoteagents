@@ -11,6 +11,20 @@ const sessionId = /^\$?[-\w.]+$/;
  * completion menu is open, and replaying those in the browser xterm changes
  * its terminal state instead of just rendering the snapshot.
  */
+export function lastPromptFromHistory(value: string): string | undefined {
+  const lines = value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '').split(/\r?\n/u);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const match = /^›\s+(.+)$/u.exec(lines[index]!);
+    if (!match) continue;
+    const prompt = [match[1]];
+    let continuation = index + 1;
+    while (continuation < lines.length && /^ {2}\S/u.test(lines[continuation]!)) prompt.push(lines[continuation++]!.trim());
+    while (continuation < lines.length && lines[continuation] === '') continuation += 1;
+    if (/^•\s/u.test(lines[continuation] ?? '')) return prompt.join(' ');
+  }
+  return undefined;
+}
+
 function safeSnapshot(value: string): string {
   let result = '';
   for (let index = 0; index < value.length; index += 1) {
@@ -57,7 +71,7 @@ export class TmuxAdapter {
     return out.code === 0 ? safeSnapshot(out.stdout).slice(-96_000) : undefined;
   }
 
-  async captureWindow(socket: SocketRef, pane: string, history: number, rows: number): Promise<{ text: string; older: boolean } | undefined> {
+  async captureWindow(socket: SocketRef, pane: string, history: number, rows: number): Promise<{ text: string; older: boolean; lastPrompt?: string } | undefined> {
     if (!paneId.test(pane) || !Number.isInteger(history) || history < 0 || history > 5_000 || !Number.isInteger(rows) || rows < 2 || rows > 300) return undefined;
     // tmux's -S/-E coordinates shift around wrapped and blank rows. Capture a
     // bounded history snapshot and slice its concrete lines instead, so page
@@ -69,7 +83,8 @@ export class TmuxAdapter {
     const offset = Math.min(history, maximumOffset);
     const end = lines.length - offset;
     const start = Math.max(0, end - rows);
-    return { text: safeSnapshot(lines.slice(start, end).join('\n')), older: start > 0 };
+    const lastPrompt = lastPromptFromHistory(out.stdout);
+    return { text: safeSnapshot(lines.slice(start, end).join('\n')), older: start > 0, ...(lastPrompt === undefined ? {} : { lastPrompt }) };
   }
 
   async resize(socket: SocketRef, pane: string, cols: number, rows: number): Promise<boolean> {

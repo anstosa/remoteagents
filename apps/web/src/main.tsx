@@ -21,7 +21,7 @@ const isDashboard = (value: unknown): value is Dashboard => {
 };
 type AgentState = 'working' | 'prompt-done' | 'action-required' | 'closed';
 type DashboardItem = { key: string; label: string; state: AgentState; order: number; agent?: Agent; worktree?: Worktree };
-type LogFrame = { type: 'append' | 'reset'; text?: string; older?: boolean; newer?: boolean };
+type LogFrame = { type: 'append' | 'reset'; text?: string; older?: boolean; newer?: boolean; lastPrompt?: string };
 type ChoiceQuestion = { text: string; choices: string[]; omxId?: string };
 const actionRequired = (agent: Agent) => /action required/i.test(agent.title);
 const agentState = (agent: Agent): AgentState => actionRequired(agent) ? 'action-required' : /^[\u2800-\u28ff]/u.test(agent.title) ? 'working' : 'prompt-done';
@@ -50,7 +50,8 @@ const mobileModifiers = new Map<string, { alt: boolean; ctrl: boolean; shift: bo
 const cacheLogFrame = (id: string, frame: LogFrame) => {
   const text = frame.text ?? '';
   logSnapshots.set(id, frame.type === 'reset' ? text : `${logSnapshots.get(id) ?? ''}${text}`);
-  cachedLastPrompt(id, logSnapshots.get(id) ?? '');
+  if (frame.lastPrompt !== undefined) lastPrompts.set(id, frame.lastPrompt);
+  else cachedLastPrompt(id, logSnapshots.get(id) ?? '');
 };
 
 const questionFromOutput = (output: string): ChoiceQuestion | undefined => {
@@ -419,6 +420,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
           if (frame.newer !== true) historyOffset = 0;
           syncScrollState();
           const latest = historyOffset === 0;
+          if (frame.lastPrompt !== undefined) setLastPrompt(frame.lastPrompt);
           if (latest) cacheLogFrame(id, frame);
           if (frame.type === 'reset') {
             if (text === snapshot) return;
