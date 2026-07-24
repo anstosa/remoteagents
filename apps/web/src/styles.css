@@ -104,9 +104,9 @@ textarea { min-height: 7rem; resize: vertical; font-family: ui-monospace, SFMono
 .log-topbar.expanded { align-items: flex-start; }
 .terminal-toggle { padding: .3rem .5rem; border-color: var(--surface-1); background: color-mix(in srgb, var(--mantle) 88%, transparent); color: var(--subtext-0); font-size: .7rem; font-weight: 700; box-shadow: none; opacity: .82; }
 .terminal-toggle:hover { color: var(--text); opacity: 1; }
-.last-prompt { flex: 1; min-width: 0; overflow: hidden; color: var(--subtext-0); font-size: .8rem; text-overflow: ellipsis; white-space: nowrap; }
+.last-prompt { flex: 1; min-width: 0; overflow: hidden; padding-right: 6rem; color: var(--subtext-0); font-size: .8rem; text-overflow: ellipsis; white-space: nowrap; }
 .last-prompt.expanded { overflow: visible; text-overflow: clip; white-space: normal; }
-.log-status { flex: none; margin-left: auto; font: 600 .75rem ui-monospace, monospace; letter-spacing: .04em; }
+.log-status { position: absolute; top: .72rem; right: var(--edge); font: 600 .75rem ui-monospace, monospace; letter-spacing: .04em; }
 .log-control { z-index: 20; padding: .3rem .5rem; border-color: var(--surface-1); background: color-mix(in srgb, var(--mantle) 88%, transparent); color: var(--subtext-0); font-size: .7rem; font-weight: 700; box-shadow: none; opacity: .82; }
 .log-control:hover { color: var(--text); opacity: 1; }
 .log-control:disabled { pointer-events: none; }
