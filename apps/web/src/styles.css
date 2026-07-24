@@ -125,7 +125,7 @@ textarea { min-height: 7rem; resize: vertical; font-family: ui-monospace, SFMono
 .status.live { color: var(--green); }.status.live i { background: var(--green); box-shadow: 0 0 .7rem var(--green); }.status.disconnected, .status.unavailable { color: var(--red); }.status.disconnected i, .status.unavailable i { background: var(--red); }
 .status.inactive { color: var(--overlay-0); }.status.inactive i { background: var(--surface-2); }
 .prompt { display: grid; gap: .375rem; }
-.prompt:has(.voice.listening) textarea { outline: 2px solid var(--red); outline-offset: .2rem; box-shadow: 0 0 1rem color-mix(in srgb, var(--red) 58%, transparent), inset 0 0 1rem color-mix(in srgb, var(--red) 16%, transparent); }
+.prompt:has(.voice.listening) textarea { border-color: var(--red); box-shadow: inset 0 0 0 1px var(--red), 0 0 1rem color-mix(in srgb, var(--red) 58%, transparent), inset 0 0 1rem color-mix(in srgb, var(--red) 16%, transparent); }
 .prompt textarea { min-height: 4.5rem; padding: .45rem .55rem; }
 .prompt-actions { display: flex; align-items: center; gap: .375rem; }
 .prompt-actions button, .project-open, .pull-request-open { box-sizing: border-box; height: 2rem; border-radius: .3rem; padding: .4rem .6rem; font-size: .75rem; font-weight: 700; box-shadow: none; }
