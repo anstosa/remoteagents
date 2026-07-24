@@ -99,14 +99,14 @@ textarea { min-height: 7rem; resize: vertical; font-family: ui-monospace, SFMono
 .log-loading.inactive { color: var(--overlay-0); }
 .log-stale-overlay { position: absolute; inset: 0; z-index: 14; overflow: hidden; pointer-events: none; background: linear-gradient(120deg, color-mix(in srgb, var(--crust) 50%, transparent), color-mix(in srgb, var(--mantle) 26%, transparent)), repeating-linear-gradient(0deg, #11111b1a 0 1px, transparent 1px 5px); box-shadow: inset 0 0 5rem #11111bb8, inset 0 0 0 1px color-mix(in srgb, var(--surface-2) 42%, transparent); backdrop-filter: blur(1.75px) saturate(.72) brightness(.82); }
 .log-stale-overlay::after { position: absolute; inset: -20%; content: ''; background: radial-gradient(ellipse at 50% 48%, transparent 25%, #11111b5c 76%); filter: blur(1rem); }
-.log-topbar { position: absolute; top: 0; right: 0; left: 0; z-index: 20; display: flex; align-items: center; gap: .75rem; padding: .45rem var(--edge); background: color-mix(in srgb, var(--crust) 78%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--surface-1) 78%, transparent); backdrop-filter: blur(8px); }
+.log-topbar { position: absolute; top: 0; right: 0; left: 0; z-index: 20; display: flex; align-items: center; gap: .75rem; padding: .45rem .375rem; background: color-mix(in srgb, var(--crust) 78%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--surface-1) 78%, transparent); backdrop-filter: blur(8px); }
 .log-topbar.expandable { cursor: pointer; }
 .log-topbar.expanded { align-items: flex-start; }
 .terminal-toggle { padding: .3rem .5rem; border-color: var(--surface-1); background: color-mix(in srgb, var(--mantle) 88%, transparent); color: var(--subtext-0); font-size: .7rem; font-weight: 700; box-shadow: none; opacity: .82; }
 .terminal-toggle:hover { color: var(--text); opacity: 1; }
 .last-prompt { flex: 1; min-width: 0; overflow: hidden; padding-right: 6rem; color: var(--subtext-0); font-size: .8rem; text-overflow: ellipsis; white-space: nowrap; }
 .last-prompt.expanded { overflow: visible; text-overflow: clip; white-space: normal; }
-.log-status { position: absolute; top: .72rem; right: var(--edge); font: 600 .75rem ui-monospace, monospace; letter-spacing: .04em; }
+.log-status { position: absolute; top: .72rem; right: .375rem; font: 600 .75rem ui-monospace, monospace; letter-spacing: .04em; }
 .log-control { z-index: 20; padding: .3rem .5rem; border-color: var(--surface-1); background: color-mix(in srgb, var(--mantle) 88%, transparent); color: var(--subtext-0); font-size: .7rem; font-weight: 700; box-shadow: none; opacity: .82; }
 .log-control:hover { color: var(--text); opacity: 1; }
 .log-control:disabled { pointer-events: none; }
@@ -195,3 +195,8 @@ textarea { min-height: 7rem; resize: vertical; font-family: ui-monospace, SFMono
 .attachment-button svg { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .prompt-actions .more { font-size: 1.4rem; line-height: 1; }
 .prompt-actions .danger svg { width: 1.35rem; height: 1.35rem; }
+
+.reload-confirmation { display: grid; gap: .75rem; }
+.reload-confirmation h2, .reload-confirmation p { margin: 0; }
+.reload-confirmation p { color: var(--subtext-0); }
+.reload-confirmation-actions { display: flex; justify-content: end; gap: .375rem; }

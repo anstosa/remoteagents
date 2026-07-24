@@ -759,6 +759,7 @@ function App() {
   const [state, setState] = useState<'checking' | 'login' | 'ready' | 'inactive'>('checking');
   const [error, setError] = useState('');
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [reloadConfirmation, setReloadConfirmation] = useState(false);
   useEffect(() => {
     const viewport = window.visualViewport;
     const updateHeight = () => document.documentElement.style.setProperty('--app-height', `${viewport?.height ?? window.innerHeight}px`);
@@ -822,8 +823,8 @@ function App() {
     window.addEventListener('focus', checkControl);
     return () => window.removeEventListener('focus', checkControl);
   }, [state]);
-  const screen = state === 'checking' ? <LoadingScreen /> : state === 'ready' ? <DashboardView onUnauthorized={() => setState('login')} onInactive={() => setState('inactive')} updateAvailable={updateAvailable} onReload={() => location.reload()} /> : state === 'inactive' ? <ControlScreen claimed={() => setState('ready')} /> : <Login initialError={error} done={active => setState(active ? 'ready' : 'inactive')} />;
-  return screen;
+  const screen = state === 'checking' ? <LoadingScreen /> : state === 'ready' ? <DashboardView onUnauthorized={() => setState('login')} onInactive={() => setState('inactive')} updateAvailable={updateAvailable} onReload={() => setReloadConfirmation(true)} /> : state === 'inactive' ? <ControlScreen claimed={() => setState('ready')} /> : <Login initialError={error} done={active => setState(active ? 'ready' : 'inactive')} />;
+  return <>{screen}{reloadConfirmation && <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="reload-confirmation-title"><div className="reload-confirmation"><h2 id="reload-confirmation-title">Reload console?</h2><p>Your saved prompt drafts will be restored after the update loads.</p><div className="reload-confirmation-actions"><button className="danger" type="button" onClick={() => setReloadConfirmation(false)}>Cancel</button><button type="button" onClick={() => location.reload()}>Reload</button></div></div></div>}</>;
 }
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');
 createRoot(document.getElementById('root')!).render(<ConsoleBoundary><App /></ConsoleBoundary>);
