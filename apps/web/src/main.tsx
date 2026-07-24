@@ -460,7 +460,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
   useEffect(() => {
     const prompt = promptRef.current;
     if (!prompt) return;
-    const measure = () => { if (!promptExpanded) setPromptOverflows(prompt.scrollWidth > prompt.clientWidth); };
+    const measure = () => { if (!promptExpanded) setPromptOverflows(prompt.scrollHeight > prompt.clientHeight + 1); };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(prompt);
