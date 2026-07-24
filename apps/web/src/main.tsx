@@ -218,6 +218,9 @@ function Prompt({ id, canCancel, cancelling, deleting, onCancel, onDelete, proje
   };
   const submit = async () => {
     if ((!value && attachments.length === 0) || pending) return;
+    recognition.current?.abort();
+    recognition.current = undefined;
+    setListening(false);
     setPending(true);
     setAttachmentError(undefined);
     try {
@@ -233,7 +236,12 @@ function Prompt({ id, canCancel, cancelling, deleting, onCancel, onDelete, proje
     if (pending || !supportsSpeechRecognition) return;
     // Set the ref synchronously, not just React state, so a second tap cannot
     // start a parallel recognizer before the component rerenders.
-    if (listening || recognition.current !== undefined) return recognition.current?.abort();
+    if (listening || recognition.current !== undefined) {
+      recognition.current?.abort();
+      recognition.current = undefined;
+      setListening(false);
+      return;
+    }
     const Recognition = (speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition)!;
     const next = new Recognition();
     recognition.current = next;
@@ -255,8 +263,10 @@ function Prompt({ id, canCancel, cancelling, deleting, onCancel, onDelete, proje
       if (!transcript) return;
       setValue(`${speechPrefix.current}${speechPrefix.current && !/\s$/u.test(speechPrefix.current) ? ' ' : ''}${transcript}`);
     };
-    next.onend = () => { recognition.current = undefined; setListening(false); };
-    next.onerror = () => { recognition.current = undefined; setListening(false); };
+    // Keep mic mode armed after a natural recognition end. It is dismissed
+    // only by pressing the mic again or by queueing the prompt.
+    next.onend = () => { recognition.current = undefined; };
+    next.onerror = () => { recognition.current = undefined; };
     setListening(true);
     next.start();
   };
