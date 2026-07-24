@@ -189,5 +189,5 @@ textarea { min-height: 7rem; resize: vertical; font-family: ui-monospace, SFMono
 .attachment-button { border-color: var(--surface-1); background: color-mix(in srgb, var(--mantle) 88%, transparent); color: var(--subtext-0); }
 .attachment-button:hover { border-color: var(--lavender); color: var(--text); }
 .attachment-button svg { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
-.prompt-actions .more { font-size: 1.65rem; line-height: 1; }
+.prompt-actions .more { font-size: 1.4rem; line-height: 1; }
 .prompt-actions .danger svg { width: 1.35rem; height: 1.35rem; }
