@@ -55,13 +55,14 @@ function safeSnapshot(value: string): string {
 
 export class TmuxAdapter {
   private readonly binary = process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux';
+  private readonly inputQueues = new Map<string, Promise<boolean>>();
 
   async listPanes(socket: SocketRef): Promise<Pane[]> {
-    const out = await run(this.binary, ['-S', socket.path, 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}']);
+    const out = await run(this.binary, ['-S', socket.path, 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}']);
     if (out.code !== 0) return [];
     return out.stdout.trim().split('\n').filter(Boolean).flatMap((line) => {
-      const [id, session, pid, path, command, title] = line.split('\t');
-      return paneId.test(id) && sessionId.test(session) && /^\d+$/.test(pid) && path ? [{ paneId: id, sessionId: session, pid: Number(pid), path, command: command ?? '', title: title ?? '', socket }] : [];
+      const [id, session, name, pid, path, command, title, displayLabel] = line.split('\t');
+      return paneId.test(id) && sessionId.test(session) && name && /^\d+$/.test(pid) && path ? [{ paneId: id, sessionId: session, sessionName: name, pid: Number(pid), path, command: command ?? '', title: title ?? '', ...(displayLabel ? { displayLabel } : {}), socket }] : [];
     });
   }
 
@@ -128,13 +129,57 @@ export class TmuxAdapter {
     return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, 'C-c'])).code === 0;
   }
 
+  async suspend(socket: SocketRef, pane: string): Promise<boolean> {
+    if (!paneId.test(pane)) return false;
+    const metadata = await run(this.binary, ['-S', socket.path, 'display-message', '-p', '-t', pane, '#{pane_pid}']);
+    const pid = metadata.stdout.trim();
+    if (metadata.code !== 0 || !/^\d+$/u.test(pid)) return false;
+    if ((await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, 'C-z'])).code !== 0) return false;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const current = await run(this.binary, ['-S', socket.path, 'display-message', '-p', '-t', pane, '#{pane_current_command}']);
+      if (current.code === 0 && /^(?:ba|z|fi|da)?sh$/u.test(current.stdout.trim())) return true;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    const resume = `tpgid="$(ps -o tpgid= -p ${pid} | tr -d ' ')" && case "$tpgid" in ''|*[!0-9]*) exit 1;; esac && kill -CONT -- "-$tpgid"`;
+    await run(this.binary, ['-S', socket.path, 'run-shell', resume]);
+    return false;
+  }
+
+  async foreground(socket: SocketRef, pane: string): Promise<boolean> {
+    // Clear any partial shell input before resuming the job suspended by
+    // terminal mode. Use the normal pane input queue so `fg` cannot overtake
+    // keystrokes already sent by the browser.
+    return await this.input(socket, pane, '\x15fg\r');
+  }
+
   async input(socket: SocketRef, pane: string, value: string): Promise<boolean> {
     if (!paneId.test(pane) || !value || value.length > 65_536 || value.includes('\0')) return false;
-    return (await run(this.binary, ['-S', socket.path, 'send-keys', '-l', '-t', pane, value])).code === 0;
+    const key = `${socket.path}\0${pane}`;
+    const previous = this.inputQueues.get(key) ?? Promise.resolve(true);
+    const queued = previous.catch(() => false).then((ready) => ready && this.sendInput(socket, pane, value));
+    this.inputQueues.set(key, queued);
+    try {
+      return await queued;
+    } finally {
+      if (this.inputQueues.get(key) === queued) this.inputQueues.delete(key);
+    }
+  }
+
+  private async sendInput(socket: SocketRef, pane: string, value: string): Promise<boolean> {
+    for (const part of value.split(/(\r\n|\r|\n)/u)) {
+      if (!part) continue;
+      const args = /^(?:\r\n|\r|\n)$/u.test(part) ? ['-S', socket.path, 'send-keys', '-t', pane, 'Enter'] : ['-S', socket.path, 'send-keys', '-l', '-t', pane, part];
+      if ((await run(this.binary, args)).code !== 0) return false;
+    }
+    return true;
   }
 
   async close(socket: SocketRef, pane: string): Promise<boolean> {
     return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'kill-pane', '-t', pane])).code === 0;
+  }
+
+  async closeSession(socket: SocketRef, session: string): Promise<boolean> {
+    return sessionId.test(session) && (await run(this.binary, ['-S', socket.path, 'kill-session', '-t', session])).code === 0;
   }
 
   async attachArgs(socket: SocketRef, session: string): Promise<string[] | undefined> {

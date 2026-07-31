@@ -15,7 +15,7 @@ const sourceSchema = z.object({
   tmux: z.object({ pollIntervalMs: z.number().int().min(250).max(10000).default(500) }).strict().default({}),
   newAgentCommand: command.default('codex'),
   launch: launchSchema.optional(),
-  worktrees: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), label: z.string().max(120).optional(), path: z.string().min(1), hostPath: z.string().startsWith('/').optional(), pinned: z.boolean().default(false), port: z.number().int().min(1).max(65535).optional(), hostname: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/).optional(), command: command.optional(), launch: launchSchema.optional(), commands: stackCommands.optional() }).strict()).min(1).max(100)
+  worktrees: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), label: z.string().max(120).optional(), path: z.string().min(1), hostPath: z.string().startsWith('/').optional(), pinned: z.boolean().default(false), port: z.number().int().min(1).max(65535).optional(), hostname: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/).optional(), command: command.optional(), launch: launchSchema.optional(), commands: stackCommands.optional(), newTask: command.optional() }).strict()).min(1).max(100)
 }).strict();
 export type ConfigInput = z.input<typeof sourceSchema>;
 export type ValidatedConfig = { listen: { host: '127.0.0.1'|'::1'; port: number }; publicOrigin: URL; trustedProxyIps: Set<string>; pollIntervalMs: number; newAgentCommand: string; worktrees: Worktree[] };
@@ -24,6 +24,9 @@ function canonicalOrigin(value: string): URL {
   let url: URL; try { url = new URL(value); } catch { throw new Error('publicOrigin must be an absolute HTTPS URL'); }
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')) throw new Error('publicOrigin must be canonical HTTPS origin only');
   return url;
+}
+function validateNewTask(template: string): void {
+  if (/\{(?!taskId\})/.test(template)) throw new Error('unknown new task placeholder');
 }
 function validateTemplate(template: LaunchTemplate): void {
   if (!template.program.startsWith('/')) throw new Error('launch program must be absolute');
@@ -47,12 +50,13 @@ export async function validateConfig(input: unknown): Promise<ValidatedConfig> {
     if (ids.has(raw.id)) throw new Error('duplicate worktree id'); ids.add(raw.id);
     const path = await realpath(raw.path); const info = await stat(path); if (!info.isDirectory()) throw new Error(`worktree ${raw.id} is not a directory`);
     if (raw.command !== undefined && raw.launch !== undefined) throw new Error(`worktree ${raw.id} cannot define both command and launch`);
+    if (raw.newTask !== undefined) validateNewTask(raw.newTask);
     const launch = raw.command === undefined ? raw.launch ?? parsed.launch : undefined;
     if (raw.command === undefined) { if (!launch) throw new Error(`worktree ${raw.id} must define command or launch`); validateTemplate(launch); await access(launch.program, constants.X_OK); }
     const identity = await gitRoot(path); if (identities.has(identity)) throw new Error('duplicate worktree identity'); identities.add(identity);
     if ((raw.port === undefined) !== (raw.hostname === undefined)) throw new Error(`worktree ${raw.id} must define both port and hostname`);
     const projectUrl = raw.hostname === undefined ? undefined : `https://${raw.hostname}`;
-    worktrees.push({ id: raw.id, label: raw.label ?? raw.id, path, identity, hostPath: raw.hostPath === undefined ? undefined : resolve(raw.hostPath), available: true, pinned: raw.pinned, command: raw.command, launch, projectUrl, ...(raw.commands === undefined ? {} : { commands: raw.commands as StackCommands }) });
+    worktrees.push({ id: raw.id, label: raw.label ?? raw.id, path, identity, hostPath: raw.hostPath === undefined ? undefined : resolve(raw.hostPath), available: true, pinned: raw.pinned, command: raw.command, launch, projectUrl, ...(raw.commands === undefined ? {} : { commands: raw.commands as StackCommands }), ...(raw.newTask === undefined ? {} : { newTask: raw.newTask }) });
   }
   return { listen: { host: parsed.listen.host as '127.0.0.1'|'::1', port: parsed.listen.port }, publicOrigin, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, newAgentCommand: parsed.newAgentCommand, worktrees };
 }

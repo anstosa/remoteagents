@@ -6,24 +6,29 @@ import staticPlugin from '@fastify/static';
 import { fileURLToPath } from 'node:url';
 import { readFile, readdir, realpath } from 'node:fs/promises';
 import { join, relative } from 'node:path';
-import { randomBytes } from 'node:crypto';
 import { run } from './tmux/command.js';
 import type { ValidatedConfig } from './config/schema.js';
 import { AuthService, type Session } from './auth/service.js';
 import { ControlService } from './auth/control.js';
+import { DeviceService } from './auth/devices.js';
 import { TicketStore, type TicketKind } from './auth/tickets.js';
 import { DiscoveryService } from './discovery/service.js';
 import { TmuxAdapter } from './tmux/adapter.js';
 import { maxPromptAttachments, maxPromptAttachmentBytes, PromptService, type PromptAttachment } from './prompts/service.js';
-import { LaunchService } from './launch/service.js';
+import { expandCommand, hostCommand, LaunchService } from './launch/service.js';
+import { interactiveShellBootstrap } from './tmux/interactive-shell.js';
 import * as pty from 'node-pty';
 import { safeEnv } from './tmux/command.js';
 import { PushService } from './push-service.js';
 import { WorktreeCommandService } from './worktree-commands/service.js';
 import { PullRequestSwitchService } from './pull-requests/switch-service.js';
+import { NewTaskService } from './new-task/service.js';
+import { SavedPromptService } from './saved-prompts/service.js';
+import { agentNotificationTag } from './notifications.js';
 import { stackActions, type StackAction } from './domain/models.js';
+import { startNamedReplacementSession, worktreeSessionName } from './tmux/session-name.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; push?: PushService; prSwitch?: PullRequestSwitchService };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; push?: PushService; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService };
 const cookieName = '__Host-rac';
 const body = (request: FastifyRequest): Record<string, unknown> => (request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {});
 type LogFrame = { type: 'append'|'reset'; text: string };
@@ -44,7 +49,7 @@ export function logFrame(last: string, value: string): LogFrame | undefined {
   return { type: 'reset', text: value };
 }
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const prompts = new PromptService(discovery, tmux, config.worktrees); const push = deps.push ?? new PushService(); const stackCommands = new WorktreeCommandService(config); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux, launch);
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const prompts = new PromptService(discovery, tmux, config.worktrees); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const push = deps.push ?? new PushService(); const stackCommands = new WorktreeCommandService(config); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux);
   const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 65_536 }); const webRoot = fileURLToPath(new URL('../../web/dist', import.meta.url)); const uiVersion = async () => await readFile(join(webRoot, 'index.html'), 'utf8').then(html => /<script[^>]+src="([^"]+)"/u.exec(html)?.[1]).catch(() => undefined); await app.register(cookie); await app.register(staticPlugin, { root: webRoot, index: false }); await app.register(rateLimit, { global: false }); await app.register(websocket, { options: { maxPayload: 65_536 } });
   const expectedHost = config.publicOrigin.host;
   const forbidden = () => Object.assign(new Error('forbidden'), { statusCode: 403 });
@@ -53,18 +58,47 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   function browser(request: FastifyRequest, mutation = false): void { if (request.headers.host !== expectedHost) throw forbidden(); if (mutation && request.headers.origin !== config.publicOrigin.origin) throw forbidden(); }
   function session(request: FastifyRequest, mutation = false): Session { browser(request, mutation); const s = auth.get(auth.unsign(request.cookies[cookieName])); if (!s) throw unauthorized(); if (mutation && !auth.csrf(s, request.headers['x-csrf-token'] as string | undefined)) throw forbidden(); return s; }
   function controlled(request: FastifyRequest, mutation = false): Session { const s = session(request, mutation); if (!control.connect(s.id)) throw inactiveClient(); return s; }
+  const sessionState = async (s: Session, active: boolean) => {
+    const owner = control.ownerSessionId();
+    return {
+      csrfToken: s.csrf,
+      active,
+      deviceName: await devices.get(s.id),
+      controllingDeviceName: owner === undefined ? undefined : await devices.get(owner)
+    };
+  };
   app.addHook('onSend', async (_request, reply, payload) => { reply.header('Cache-Control', 'no-store').header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains').header('X-Frame-Options', 'DENY').header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()').header('Cross-Origin-Opener-Policy', 'same-origin').header('Cross-Origin-Resource-Policy', 'same-origin').header('Content-Security-Policy', `default-src 'self'; connect-src 'self' wss://${expectedHost}; style-src 'self' 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`); return payload; });
   app.get('/healthz', async () => ({ ok: true }));
   app.get('/', async (request, reply) => { browser(request); return reply.sendFile('index.html'); });
   app.get('/api/ui-version', async (request) => { browser(request); return { version: await uiVersion() }; });
-  app.get('/api/auth/session', async (request) => { const s = session(request); return { csrfToken: s.csrf, active: control.connect(s.id) }; });
+  app.get('/api/auth/session', async (request) => { const s = session(request); return await sessionState(s, control.connect(s.id)); });
   app.get('/api/auth/bootstrap', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request) => { browser(request); return { csrfToken: auth.bootstrap() }; });
-  app.post('/api/auth/login', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request, reply) => { browser(request, true); const data = body(request); const preauth = request.headers['x-csrf-token']; if (typeof data.password !== 'string' || typeof preauth !== 'string') return reply.code(401).send({ error: 'invalid credentials' }); const s = await auth.login(data.password, preauth); if (!s) return reply.code(401).send({ error: 'invalid credentials' }); reply.setCookie(cookieName, auth.sign(s), { path: '/', secure: true, httpOnly: true, sameSite: 'lax', signed: false, maxAge: 400 * 24 * 60 * 60 }); return { csrfToken: s.csrf, active: control.connect(s.id) }; });
-  app.post('/api/auth/take-control', async (request) => { const s = session(request, true); control.take(s.id); return { active: true }; });
+  app.post('/api/auth/login', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request, reply) => { browser(request, true); const data = body(request); const preauth = request.headers['x-csrf-token']; if (typeof data.password !== 'string' || typeof preauth !== 'string') return reply.code(401).send({ error: 'invalid credentials' }); const s = await auth.login(data.password, preauth); if (!s) return reply.code(401).send({ error: 'invalid credentials' }); reply.setCookie(cookieName, auth.sign(s), { path: '/', secure: true, httpOnly: true, sameSite: 'lax', signed: false, maxAge: 400 * 24 * 60 * 60 }); return await sessionState(s, control.connect(s.id)); });
+  app.post('/api/auth/take-control', async (request, reply) => {
+    const s = session(request, true);
+    const providedName = body(request).deviceName;
+    let deviceName = await devices.get(s.id);
+    if (providedName !== undefined) {
+      if (typeof providedName !== 'string' || await devices.set(s.id, providedName) === undefined) return reply.code(400).send({ error: 'Device name must be between 1 and 64 visible characters.' });
+      deviceName = await devices.get(s.id);
+    }
+    if (deviceName === undefined) return reply.code(400).send({ error: 'Name this device before taking control.' });
+    control.take(s.id);
+    return await sessionState(s, true);
+  });
   app.post('/api/auth/logout', async (request, reply) => { const s = session(request, true); control.release(s.id); auth.logout(s.id); reply.clearCookie(cookieName, { path: '/', secure: true, httpOnly: true, sameSite: 'lax' }); return reply.code(204).send(); });
-  app.get('/api/dashboard', async (request) => { controlled(request); const dashboard = await discovery.dashboard(config.worktrees); const controls = new Map(await Promise.all(config.worktrees.map(async worktree => [worktree.id, { actions: stackCommands.actions(worktree), running: await stackCommands.running(worktree) }] as const))); const controlFor = (worktreeId: string | undefined) => worktreeId === undefined ? undefined : controls.get(worktreeId); return { ...dashboard, agents: dashboard.agents.map(agent => ({ ...agent, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }) })), worktrees: dashboard.worktrees.map(worktree => ({ ...worktree, ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }) })) }; });
+  app.get('/api/dashboard', async (request) => { controlled(request); const dashboard = await discovery.dashboard(config.worktrees); const controls = new Map(await Promise.all(config.worktrees.map(async worktree => [worktree.id, { actions: stackCommands.actions(worktree), ...await stackCommands.state(worktree) }] as const))); const controlFor = (worktreeId: string | undefined) => worktreeId === undefined ? undefined : controls.get(worktreeId); return { ...dashboard, agents: dashboard.agents.map(agent => ({ ...agent, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }) })), worktrees: dashboard.worktrees.map(worktree => ({ ...worktree, ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }) })) }; });
   app.get('/api/push/public-key', async (request) => { session(request); return push.enabled ? { publicKey: push.publicKey } : { publicKey: undefined }; });
   app.post('/api/push/subscriptions', async (request, reply) => { session(request, true); return await push.subscribe(body(request) as never) ? reply.code(204).send() : reply.code(400).send({ error: 'invalid push subscription' }); });
+  app.post('/api/agents/:id/notifications/dismiss', async (request, reply) => {
+    controlled(request, true);
+    const target = await discovery.target((request.params as { id: string }).id);
+    if (!target) return reply.code(404).send({ error: 'target unavailable' });
+    const worktree = config.worktrees.find(candidate => target.agent.workspace === candidate.identity || target.agent.workspace === candidate.hostPath);
+    const scopedAgent = worktree === undefined ? target.agent : { ...target.agent, worktreeId: worktree.id };
+    await push.notify({ kind: 'dismiss', tag: agentNotificationTag(scopedAgent), legacyTag: `agent-status-${target.agent.id}`, ...(worktree === undefined ? {} : { worktreeId: worktree.id }) });
+    return reply.code(204).send();
+  });
   app.get('/api/agents/:id/directories', async (request, reply) => {
     controlled(request);
     const target = await discovery.target((request.params as { id: string }).id);
@@ -82,12 +116,14 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (!target || typeof path !== 'string') return reply.code(404).send({ error: 'target unavailable' });
     const root = await realpath(target.agent.workspace).catch(() => undefined); const directory = await realpath(path).catch(() => undefined);
     if (!root || !directory || (directory !== root && relative(root, directory).startsWith('..'))) return reply.code(400).send({ error: 'directory unavailable' });
-    const sessionName = `rac-${randomBytes(9).toString('hex')}`; const script = `export HOME='/home/ubuntu'\nexport PATH="$HOME/n/bin:/home/linuxbrew/.linuxbrew/bin:$PATH"\ncd -- '${directory.replaceAll("'", "'\\''")}' && exec "$HOME/n/bin/codex"`;
-    if ((await run(process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux', ['-S', target.socket.path, 'new-session', '-d', '-s', sessionName, '-c', directory, '/bin/bash', '-lc', script])).code !== 0) return reply.code(409).send({ error: 'could not start agent' });
+    const binary = process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux'; const sessionName = worktreeSessionName(root); const currentSession = target.agent.sessionId.slice(target.agent.socketFingerprint.length + 1); const script = hostCommand(expandCommand('codex', { identity: directory }), '/home/ubuntu');
+    if (!await startNamedReplacementSession(binary, target.socket.path, currentSession, sessionName, ['-c', directory, '/bin/bash', '-lc', interactiveShellBootstrap(script)])) return reply.code(409).send({ error: 'could not start agent' });
     await tmux.close(target.socket, target.agent.paneId); return reply.code(202).send();
   });
-  app.get('/api/agents/:id/switch-prs', async (request, reply) => { controlled(request); const pullRequests = await prSwitch.available((request.params as { id: string }).id); return pullRequests === undefined ? reply.code(404).send({ error: 'pull request switching unavailable' }) : { pullRequests }; });
+  app.get('/api/agents/:id/switch-prs', async (request, reply) => { controlled(request); const availability = await prSwitch.available((request.params as { id: string }).id); return availability === undefined ? reply.code(404).send({ error: 'pull request switching unavailable' }) : availability; });
   app.post('/api/agents/:id/switch-pr', async (request, reply) => { controlled(request, true); const number = body(request).number; if (!Number.isInteger(number) || !await prSwitch.switch((request.params as { id: string }).id, number as number)) return reply.code(409).send({ error: 'Unable to switch to that pull request. The worktree must be clean and pushed.' }); return reply.code(202).send(); });
+  app.get('/api/agents/:id/new-task', async (request, reply) => { controlled(request); const availability = await newTask.available((request.params as { id: string }).id); return availability === undefined ? reply.code(404).send({ error: 'new task unavailable' }) : availability; });
+  app.post('/api/agents/:id/new-task', async (request, reply) => { controlled(request, true); if (!await newTask.start((request.params as { id: string }).id)) return reply.code(409).send({ error: 'Unable to start a new task. The working copy must be clean and pushed.' }); return reply.code(202).send(); });
   app.post('/api/agents/:id/prompt', { bodyLimit: Math.ceil(maxPromptAttachmentBytes * 1.4) }, async (request, reply) => {
     controlled(request, true);
     const data = body(request);
@@ -97,7 +133,18 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (attachments.some(attachment => attachment === undefined) || !await prompts.submit((request.params as { id: string }).id, data.prompt, attachments as PromptAttachment[])) return reply.code(404).send({ error: 'target unavailable' });
     return reply.code(204).send();
   });
+  const savedPromptKey = async (agentId: string) => {
+    const target = await discovery.target(agentId);
+    if (!target) return undefined;
+    const worktree = config.worktrees.find(candidate => target.agent.workspace === candidate.identity || target.agent.workspace === candidate.hostPath);
+    return worktree === undefined ? agentId : `worktree:${worktree.id}`;
+  };
+  app.get('/api/agents/:id/saved-prompts', async (request, reply) => { controlled(request); const key = await savedPromptKey((request.params as { id: string }).id); if (key === undefined) return reply.code(404).send({ error: 'target unavailable' }); const prompts = await savedPrompts.list(key); return prompts === undefined ? reply.code(400).send({ error: 'invalid agent' }) : { prompts }; });
+  app.post('/api/agents/:id/saved-prompts', async (request, reply) => { controlled(request, true); const key = await savedPromptKey((request.params as { id: string }).id); const prompt = body(request).prompt; if (key === undefined) return reply.code(404).send({ error: 'target unavailable' }); if (typeof prompt !== 'string') return reply.code(400).send({ error: 'invalid prompt' }); const saved = await savedPrompts.save(key, prompt); return saved === undefined ? reply.code(400).send({ error: 'invalid prompt' }) : reply.code(201).send(saved); });
+  app.delete('/api/agents/:id/saved-prompts/:promptId', async (request, reply) => { controlled(request, true); const { id, promptId } = request.params as { id: string; promptId: string }; const key = await savedPromptKey(id); if (key === undefined) return reply.code(404).send({ error: 'target unavailable' }); const prompt = await savedPrompts.consume(key, promptId); return prompt === undefined ? reply.code(404).send({ error: 'saved prompt unavailable' }) : prompt; });
   app.post('/api/agents/:id/cancel', async (request, reply) => { controlled(request, true); if (!await prompts.cancel((request.params as { id: string }).id)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
+  app.post('/api/agents/:id/background', async (request, reply) => { controlled(request, true); const target = await discovery.target((request.params as { id: string }).id); if (!target || !await tmux.suspend(target.socket, target.agent.paneId)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
+  app.post('/api/agents/:id/foreground', async (request, reply) => { controlled(request, true); const target = await discovery.target((request.params as { id: string }).id); if (!target || !await tmux.foreground(target.socket, target.agent.paneId)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
   app.delete('/api/agents/:id', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const target = await discovery.target(id); if (!target || config.worktrees.some(worktree => target.agent.workspace === worktree.identity || target.agent.workspace === worktree.hostPath) || !await prompts.close(id)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
   app.post('/api/agents/:id/deactivate', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const target = await discovery.target(id); const configured = target !== undefined && config.worktrees.some(worktree => target.agent.workspace === worktree.identity || target.agent.workspace === worktree.hostPath); if (!target || !configured || /^[\u2800-\u28ff]/u.test(target.agent.title)) return reply.code(409).send({ error: 'only idle configured agents can be turned off' }); if (!await prompts.close(id)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
   app.post('/api/agents/:id/question', async (request, reply) => { controlled(request, true); const index = body(request).index; if (!Number.isInteger(index) || !await prompts.answerOption((request.params as { id: string }).id, index as number)) return reply.code(404).send({ error: 'question unavailable' }); return reply.code(204).send(); });
@@ -170,9 +217,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
           if (!captured.text || captured.text === last) return;
           const now = Date.now();
           if (!immediate && lastResetAt && now - lastResetAt < 750) return;
+          const frame = requestedHistory === 0 ? logFrame(last, captured.text) : { type: 'reset' as const, text: captured.text };
           last = captured.text;
           lastResetAt = now;
-          if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ v: 1, type: 'reset', text: captured.text, older: captured.older, newer: requestedHistory > 0, ...(captured.lastPrompt === undefined ? {} : { lastPrompt: captured.lastPrompt }) }));
+          if (frame !== undefined && socket.readyState === socket.OPEN) socket.send(JSON.stringify({ v: 1, ...frame, older: captured.older, newer: requestedHistory > 0, ...(captured.lastPrompt === undefined ? {} : { lastPrompt: captured.lastPrompt }) }));
         } finally {
           polling = false;
           if (pollQueued) {

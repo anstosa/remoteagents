@@ -7,7 +7,7 @@ import { omxQuestion } from '../discovery/service.js';
 import type { Worktree } from '../domain/models.js';
 import { run } from '../tmux/command.js';
 
-export const maxPromptAttachmentBytes = 8 * 1024 * 1024;
+export const maxPromptAttachmentBytes = 25 * 1024 * 1024;
 export const maxPromptAttachments = 10;
 export type PromptAttachment = { name: string; data: string };
 

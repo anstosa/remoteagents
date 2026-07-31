@@ -6,7 +6,10 @@ vi.mock('../src/tmux/command.js', () => ({ run }));
 import { TmuxAdapter } from '../src/tmux/adapter.js';
 
 describe('TmuxAdapter capture', () => {
-  beforeEach(() => run.mockResolvedValue({ code: 0, stdout: 'Codex UI\n', stderr: '' }));
+  beforeEach(() => {
+    run.mockReset();
+    run.mockResolvedValue({ code: 0, stdout: 'Codex UI\n', stderr: '' });
+  });
 
   it('captures plain snapshots rather than replayable terminal escape sequences', async () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
@@ -18,12 +21,81 @@ describe('TmuxAdapter capture', () => {
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'capture-pane', '-e', '-p', '-t', '%1', '-S', '-800']);
   });
 
+  it('reports the tmux session name used to distinguish internal command panes', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValueOnce({ code: 0, stdout: '%1\t$1\trac-stack-owen-a1b2c3\t123\t/home/ubuntu/owen\tbash\tstack\t\n', stderr: '' });
+
+    await expect(new TmuxAdapter().listPanes(socket)).resolves.toEqual([{
+      paneId: '%1',
+      sessionId: '$1',
+      sessionName: 'rac-stack-owen-a1b2c3',
+      pid: 123,
+      path: '/home/ubuntu/owen',
+      command: 'bash',
+      title: 'stack',
+      socket
+    }]);
+
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}']);
+  });
+
   it('confirms Codex choices from the initially selected first option', async () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
 
     await expect(new TmuxAdapter().selectOption(socket, '%1', 2)).resolves.toBe(true);
 
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-t', '%1', 'Down', 'Down', 'Enter']);
+  });
+
+  it('suspends the foreground agent so the pane shell can become interactive', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run
+      .mockResolvedValueOnce({ code: 0, stdout: '123\n', stderr: '' })
+      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ code: 0, stdout: 'bash\n', stderr: '' });
+
+    await expect(new TmuxAdapter().suspend(socket, '%1')).resolves.toBe(true);
+
+    expect(run.mock.calls).toEqual([
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'display-message', '-p', '-t', '%1', '#{pane_pid}']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-t', '%1', 'C-z']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'display-message', '-p', '-t', '%1', '#{pane_current_command}']]
+    ]);
+  });
+
+  it('resumes an agent when its pane has no interactive shell to reclaim the terminal', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run
+      .mockResolvedValueOnce({ code: 0, stdout: '123\n', stderr: '' })
+      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+    for (let attempt = 0; attempt < 20; attempt += 1) run.mockResolvedValueOnce({ code: 0, stdout: 'node\n', stderr: '' });
+    run.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+
+    await expect(new TmuxAdapter().suspend(socket, '%1')).resolves.toBe(false);
+
+    expect(run).toHaveBeenLastCalledWith('/usr/bin/tmux', [
+      '-S', '/tmp/tmux', 'run-shell',
+      `tpgid="$(ps -o tpgid= -p 123 | tr -d ' ')" && case "$tpgid" in ''|*[!0-9]*) exit 1;; esac && kill -CONT -- "-$tpgid"`
+    ]);
+  });
+
+  it('clears the shell line and foregrounds the suspended agent job', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+
+    await expect(new TmuxAdapter().foreground(socket, '%1')).resolves.toBe(true);
+
+    expect(run.mock.calls.slice(-2)).toEqual([
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-l', '-t', '%1', '\x15fg']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-t', '%1', 'Enter']]
+    ]);
+  });
+
+  it('closes the entire replaced session so companion HUD panes do not linger', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+
+    await expect(new TmuxAdapter().closeSession(socket, '$1')).resolves.toBe(true);
+
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'kill-session', '-t', '$1']);
   });
 
   it('captures only the requested visible history window and resizes the pane for the active client', async () => {
@@ -54,6 +126,45 @@ describe('TmuxAdapter capture', () => {
     await expect(new TmuxAdapter().input(socket, '%1', '\x1b[A')).resolves.toBe(true);
 
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-l', '-t', '%1', '\x1b[A']);
+  });
+
+  it('submits terminal-mode commands with tmux’s Enter key', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+
+    await expect(new TmuxAdapter().input(socket, '%1', '! git s\r')).resolves.toBe(true);
+
+    expect(run.mock.calls.slice(-2)).toEqual([
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-l', '-t', '%1', '! git s']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-t', '%1', 'Enter']]
+    ]);
+  });
+
+  it('serializes browser input so Enter cannot overtake command text', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    let releaseFirst!: () => void;
+    const firstPending = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    run.mockImplementationOnce(async () => {
+      await firstPending;
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const adapter = new TmuxAdapter();
+
+    const inputs = [
+      adapter.input(socket, '%1', '!'),
+      adapter.input(socket, '%1', ' git status'),
+      adapter.input(socket, '%1', '\r')
+    ];
+
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    releaseFirst();
+    await expect(Promise.all(inputs)).resolves.toEqual([true, true, true]);
+    expect(run.mock.calls).toEqual([
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-l', '-t', '%1', '!']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-l', '-t', '%1', ' git status']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-t', '%1', 'Enter']]
+    ]);
   });
 });
 

@@ -6,12 +6,15 @@ describe('ControlService', () => {
     let now = 1_000;
     const control = new ControlService(() => now, 100);
     expect(control.connect('first')).toBe(true);
+    expect(control.ownerSessionId()).toBe('first');
     expect(control.connect('second')).toBe(false);
     expect(control.active('first')).toBe(true);
     control.take('second');
+    expect(control.ownerSessionId()).toBe('second');
     expect(control.active('first')).toBe(false);
     expect(control.active('second')).toBe(true);
     now += 101;
     expect(control.connect('first')).toBe(true);
+    expect(control.ownerSessionId()).toBe('first');
   });
 });

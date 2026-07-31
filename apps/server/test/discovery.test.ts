@@ -29,13 +29,23 @@ describe('DiscoveryService dashboard', () => {
     const tmux = { listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/host/ferry', title: 'Ferry' }] };
     const processes = { hasCodexDescendant: async () => true };
     const service = new DiscoveryService(finder, tmux as never, processes);
-    const worktrees: Worktree[] = [{ id: 'ferry', label: 'Ferry FYI', path: '/worktrees/ferry', identity: '/worktrees/ferry', hostPath: '/host/ferry', available: true, command: 'codex', projectUrl: 'https://ferry.agents.example.com' }];
+    const worktrees: Worktree[] = [{ id: 'ferry', label: 'Ferry FYI', path: '/worktrees/ferry', identity: '/worktrees/ferry', hostPath: '/host/ferry', available: true, command: 'codex', newTask: 'new {taskId}', projectUrl: 'https://ferry.agents.example.com' }];
 
     const dashboard = await service.dashboard(worktrees);
 
     expect(dashboard.agents).toHaveLength(1);
-    expect(dashboard.agents[0]).toMatchObject({ workspace: '/worktrees/ferry', worktreeId: 'ferry', worktreeLabel: 'Ferry FYI', worktreeOrder: 0, projectUrl: 'https://ferry.agents.example.com' });
+    expect(dashboard.agents[0]).toMatchObject({ workspace: '/worktrees/ferry', worktreeId: 'ferry', worktreeLabel: 'Ferry FYI', worktreeOrder: 0, newTaskConfigured: true, projectUrl: 'https://ferry.agents.example.com' });
     expect(dashboard.worktrees).toEqual([]);
+  });
+
+  it('preserves a custom tmux display label for launched scratch agents', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const finder = { find: async () => [socket] };
+    const tmux = { listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title: 'Codex', displayLabel: '~ Scratch' }] };
+    const processes = { hasCodexDescendant: async () => true };
+    const service = new DiscoveryService(finder, tmux as never, processes);
+
+    await expect(service.dashboard([])).resolves.toMatchObject({ agents: [{ displayLabel: '~ Scratch' }] });
   });
 
   it('coalesces concurrent discovery requests and reuses a fresh snapshot', async () => {
@@ -55,6 +65,29 @@ describe('DiscoveryService dashboard', () => {
     expect(third).toHaveLength(1);
     expect(finds).toBe(1);
     expect(inspections).toBe(1);
+  });
+
+  it('coalesces concurrent dashboard enrichment so slow polls cannot accumulate', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'rac-dashboard-'));
+    let lookups = 0;
+    const pullRequests = {
+      cachedPullRequest: async () => {
+        lookups += 1;
+        await new Promise(resolve => setTimeout(resolve, 10));
+        return undefined;
+      }
+    };
+    const worktrees: Worktree[] = [{ id: 'slow', label: 'Slow', path: workspace, identity: workspace, available: true, command: 'codex' }];
+    const service = new DiscoveryService({ find: async () => [] }, { listPanes: async () => [] } as never, { hasCodexDescendant: async () => false }, pullRequests as never);
+
+    try {
+      const [first, second] = await Promise.all([service.dashboard(worktrees), service.dashboard(worktrees)]);
+      const third = await service.dashboard(worktrees);
+
+      expect(first).toBe(second);
+      expect(third).toBe(first);
+      expect(lookups).toBe(1);
+    } finally { await rm(workspace, { recursive: true, force: true }); }
   });
 
   it('finds a pending OMX question pane associated with its return pane', async () => {

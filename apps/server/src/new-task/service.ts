@@ -1,0 +1,52 @@
+import { randomBytes } from 'node:crypto';
+import { dirname } from 'node:path';
+import type { ValidatedConfig } from '../config/schema.js';
+import type { DiscoveryService } from '../discovery/service.js';
+import type { Worktree } from '../domain/models.js';
+import { cleanAndPushedOrDetached, type GitCommand } from '../git/worktree-state.js';
+import { TmuxAdapter } from '../tmux/adapter.js';
+import { run } from '../tmux/command.js';
+import { interactiveShellBootstrap } from '../tmux/interactive-shell.js';
+import { startNamedReplacementSession, worktreeSessionName } from '../tmux/session-name.js';
+
+export type NewTaskAvailability = { enabled: boolean; reason?: string };
+
+const unavailableReason = 'The working copy must be clean, and any checked-out branch must be pushed before starting a new task.';
+
+const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+const taskId = () => randomBytes(6).toString('base64url');
+
+export class NewTaskService {
+  private readonly tmuxBinary = process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux';
+  constructor(private readonly config: ValidatedConfig, private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly command: GitCommand = run) {}
+
+  async available(agentId: string): Promise<NewTaskAvailability | undefined> {
+    const target = await this.discovery.target(agentId);
+    const worktree = target === undefined ? undefined : this.worktree(target.agent.workspace);
+    if (worktree?.newTask === undefined) return undefined;
+    const enabled = await this.cleanAndPushed(worktree);
+    return enabled ? { enabled } : { enabled, reason: unavailableReason };
+  }
+
+  async start(agentId: string): Promise<boolean> {
+    const target = await this.discovery.target(agentId);
+    const worktree = target === undefined ? undefined : this.worktree(target.agent.workspace);
+    if (target === undefined || worktree?.newTask === undefined || !await this.cleanAndPushed(worktree)) return false;
+    const path = worktree.hostPath ?? worktree.identity;
+    const home = dirname(path);
+    const task = worktree.newTask.replaceAll('{taskId}', taskId());
+    const script = `export HOME=${quote(home)}\nexport PATH="$HOME/n/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH"\nif [ -f "$HOME/.bash_aliases" ]; then shopt -s expand_aliases; source "$HOME/.bash_aliases"; fi\ncd -- ${quote(path)} && eval ${quote(task)}`;
+    const session = worktreeSessionName(path);
+    const currentSession = target.agent.sessionId.slice(target.agent.socketFingerprint.length + 1);
+    if (!await startNamedReplacementSession(this.tmuxBinary, target.socket.path, currentSession, session, ['-c', path, '/bin/bash', '-lc', interactiveShellBootstrap(script)], this.command)) return false;
+    return await this.tmux.closeSession(target.socket, currentSession);
+  }
+
+  private worktree(workspace: string): Worktree | undefined {
+    return this.config.worktrees.find(worktree => workspace === worktree.identity || workspace === worktree.hostPath);
+  }
+
+  private async cleanAndPushed(worktree: Worktree): Promise<boolean> {
+    return await cleanAndPushedOrDetached(worktree.identity, this.command);
+  }
+}

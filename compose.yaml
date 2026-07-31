@@ -18,14 +18,18 @@ services:
       RAC_HOST_TMUX_SOURCE: ${HOST_TMUX_DIR:-${HOME}/.local/state/tmux/tmux-${HOST_UID:-1000}}
       RAC_HOST_UID: ${HOST_UID:-1000}
       RAC_TMUX_BIN: /usr/local/bin/host-tmux
+      RAC_DEVICE_NAMES_FILE: /workspace/.data/device-names.json
+      RAC_SAVED_PROMPTS_FILE: /workspace/.data/saved-prompts.json
     volumes:
       - ./:/workspace:rw
       - ${HOME}/.bash_aliases:/home/node/.bash_aliases:ro
+      - ${HOME}/.gitignore:/home/node/.config/git/ignore:ro
       - ${HOME}/.config/gh/hosts.yml:/home/node/.config/gh/hosts.yml:ro
       - /home/ubuntu/ferry.fyi:/worktrees/ferry.fyi:rw
       # Owen, Dave, and Eric are linked Git worktrees whose .git files point
-      # to this shared metadata directory on the host.
+      # to one of these shared metadata directories on the host.
       - /home/ubuntu/simulation-infra:/home/ubuntu/simulation-infra:ro
+      - /home/ubuntu/cora:/home/ubuntu/cora:ro
       - /home/ubuntu/cora:/worktrees/cora:rw
       - /home/ubuntu/owen:/worktrees/owen:rw
       - /home/ubuntu/dave:/worktrees/dave:rw
@@ -54,7 +58,9 @@ services:
     # remain usable without weakening their host permissions.
     user: "0:0"
     restart: unless-stopped
-    network_mode: host
+    # Share the console's network namespace so this sidecar can reach the
+    # loopback-only origin at 127.0.0.1:8787 on Docker Desktop as well.
+    network_mode: "service:remote-agent-console"
     depends_on:
       remote-agent-console:
         condition: service_healthy

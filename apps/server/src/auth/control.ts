@@ -4,6 +4,7 @@ export class ControlService {
   private prune(): void { if (this.owner !== undefined && this.owner.expires <= this.now()) this.owner = undefined; }
   connect(sessionId: string): boolean { this.prune(); if (this.owner !== undefined && this.owner.sessionId !== sessionId) return false; this.owner = { sessionId, expires: this.now() + this.leaseMs }; return true; }
   take(sessionId: string): void { this.owner = { sessionId, expires: this.now() + this.leaseMs }; }
+  ownerSessionId(): string | undefined { this.prune(); return this.owner?.sessionId; }
   active(sessionId: string): boolean { this.prune(); if (this.owner?.sessionId !== sessionId) return false; this.owner.expires = this.now() + this.leaseMs; return true; }
   release(sessionId: string): void { this.prune(); if (this.owner?.sessionId === sessionId) this.owner = undefined; }
 }

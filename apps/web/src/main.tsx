@@ -1,19 +1,30 @@
-import { Component, type CSSProperties, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Component, type Dispatch, type ReactNode, type SetStateAction, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
+import { createOutputLinkOverlays } from './output-links.js';
+import { containOutputScroll } from './output-scroll.js';
+import { preserveOutputLongPressSelection } from './output-touch.js';
+import { ProjectOpen } from './project-open.js';
+import { PullRequestCard, PullRequestStatusIcon, type PullRequestSummary } from './pull-request-card.js';
+import { type StackAction } from './stack-operations.js';
+import { useShiftArrowTabCycling } from './tab-navigation.js';
+import { useViewportFlyout } from './viewport-flyout.js';
 import './styles.css';
 
 type OmxQuestion = { id: string; text: string; choices: string[]; paneId: string };
-type StackAction = 'start'|'stop'|'build'|'restart'|'migrate';
-type Stack = { actions: StackAction[]; running?: boolean };
+type Stack = { actions: StackAction[]; running?: boolean; transition?: 'starting'|'migrating'; operation?: StackAction; tunnel?: boolean };
 type PullRequestChoice = { number: number; title: string; branch: string; draft: boolean; url: string };
-type Agent = { id: string; sessionId: string; workspace: string; branch?: string; title: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; projectUrl?: string; pullRequestUrl?: string; question?: OmxQuestion; stack?: Stack };
-type Worktree = { id: string; label: string; path: string; available: boolean; pinned: boolean; order: number; projectUrl?: string; pullRequestUrl?: string; stack?: Stack };
-type Dashboard = { agents: Agent[]; worktrees: Worktree[] };
+type PullRequestWorktree = { worktreeId: string; worktreeName: string; agentId?: string };
+type SwitchablePullRequest = PullRequestChoice & { checkedOut: boolean; openIn?: PullRequestWorktree };
+type PullRequestSwitchAvailability = { enabled: boolean; pullRequests: SwitchablePullRequest[] };
+type DashboardTarget = { worktreeId: string; agentId?: string };
+type NewTaskAvailability = { enabled: boolean; reason?: string };
+type Agent = { id: string; sessionId: string; workspace: string; branch?: string; title: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; projectUrl?: string; pullRequest?: PullRequestSummary; question?: OmxQuestion; stack?: Stack };
+type Worktree = { id: string; label: string; path: string; available: boolean; pinned: boolean; order: number; projectUrl?: string; pullRequest?: PullRequestSummary; stack?: Stack };
+type Dashboard = { generation?: number; agents: Agent[]; worktrees: Worktree[] };
 const isDashboard = (value: unknown): value is Dashboard => {
   if (value === null || typeof value !== 'object') return false;
   const dashboard = value as { agents?: unknown; worktrees?: unknown };
@@ -23,9 +34,39 @@ type AgentState = 'working' | 'prompt-done' | 'action-required' | 'closed';
 type DashboardItem = { key: string; label: string; state: AgentState; order: number; agent?: Agent; worktree?: Worktree };
 type LogFrame = { type: 'append' | 'reset'; text?: string; older?: boolean; newer?: boolean; lastPrompt?: string };
 type ChoiceQuestion = { text: string; choices: string[]; omxId?: string };
-const actionRequired = (agent: Agent) => /action required/i.test(agent.title);
+type SavedPrompt = { id: string; text: string };
+type SessionInfo = { csrfToken: string; active: boolean; deviceName?: string; controllingDeviceName?: string };
+type PromptCommand = { value: string; description: string };
+type CommandToken = { start: number; end: number; prefix: '$'|'/'; query: string };
+const skillCommands: PromptCommand[] = [
+  ['address', 'Address unresolved pull-request review threads'], ['ai-slop-cleaner', 'Clean up AI-generated code'], ['analyze', 'Run read-only repository analysis'], ['ask', 'Ask a local external advisor'], ['autopilot', 'Run the autonomous delivery workflow'], ['autoresearch', 'Run validator-gated research'], ['autoresearch-goal', 'Run durable goal-based research'], ['best-practice-research', 'Research upstream best practices'],
+  ['brooks-audit', 'Audit architecture and module dependencies'], ['brooks-debt', 'Assess and prioritize technical debt'], ['brooks-health', 'Create a codebase health dashboard'], ['brooks-review', 'Review code for maintainability decay'], ['brooks-sweep', 'Review and remediate codebase quality'], ['brooks-test', 'Review test quality'], ['cancel', 'Cancel an active OMX workflow'], ['cherry-pick', 'Cherry-pick commits onto this branch'],
+  ['code-review', 'Run a comprehensive code review'], ['commit', 'Commit current changes'], ['configure-notifications', 'Configure OMX notifications'], ['deep-interview', 'Clarify requirements through an interview'], ['deploy-notes', 'Generate deploy changelogs and test plans'], ['design', 'Create or update the repo design document'], ['doctor', 'Diagnose and repair OMX installation'], ['finish', 'Run the finish-PR workflow'],
+  ['fixup', 'Inspect and repair the current pull request'], ['full-review', 'Run the full review and remediation workflow'], ['github:gh-address-comments', 'Address GitHub PR review feedback'], ['github:gh-fix-ci', 'Fix failing GitHub Actions checks'], ['github:github', 'Triage GitHub repositories, PRs, and issues'], ['github:yeet', 'Commit, push, and open a draft PR'], ['hud', 'Show or configure the OMX HUD'], ['imagegen', 'Generate or edit raster images'],
+  ['merge', 'Merge a branch into the current branch'], ['omx-setup', 'Set up and configure OMX'], ['openai-docs', 'Find current OpenAI and Codex documentation'], ['performance-goal', 'Run goal-based performance optimization'], ['pipeline', 'Run a configurable workflow pipeline'], ['plan', 'Create a strategic implementation plan'], ['plugin-creator', 'Create or update a Codex plugin'], ['pr-ci-fix', 'Fix current PR CI failures'],
+  ['pr-cleanup-review', 'Review changed code for cleanup issues'], ['pr-draft', 'Create or update a GitHub draft PR'], ['prometheus-strict', 'Run interview-driven clean-room planning'], ['query', 'Answer with read-only investigation'], ['ralph', 'Run a completion and verification loop'], ['ralplan', 'Create a consensus implementation plan'], ['rebase', 'Rebase this branch onto another branch'], ['release', 'Build and release to target environments'],
+  ['resolve', 'Resolve a merge, rebase, or cherry-pick'], ['review-and-fix', 'Review, fix, commit, and push findings'], ['review-cockpit', 'Generate Neovim review artifacts'], ['sentry:sentry', 'Inspect Sentry issues and events'], ['skill', 'Manage local skills'], ['skill-creator', 'Create or update a Codex skill'], ['skill-installer', 'Install a curated or repository skill'], ['team', 'Coordinate a shared multi-agent task list'],
+  ['test-urls', 'Generate local browser test URLs'], ['ultragoal', 'Run durable repo-native goals'], ['ultraqa', 'Run adversarial end-to-end QA'], ['ultrawork', 'Run high-throughput parallel execution'], ['visual-ralph', 'Iterate a UI against visual references'], ['wiki', 'Manage the persistent project wiki']
+].map(([name, description]) => ({ value: `$${name}`, description }));
+const slashCommands: PromptCommand[] = [
+  { value: '/help', description: 'Show available commands' }, { value: '/skills', description: 'Browse available skills' }, { value: '/status', description: 'Show the current session status' }, { value: '/model', description: 'Choose a model' }, { value: '/compact', description: 'Compact the conversation' }, { value: '/new', description: 'Start a new conversation' }, { value: '/resume', description: 'Resume a conversation' }, { value: '/review', description: 'Review the current changes' }, { value: '/diff', description: 'Show the current diff' }, { value: '/init', description: 'Initialize project guidance' }, { value: '/clear', description: 'Clear the conversation' }, { value: '/quit', description: 'Exit the session' }
+];
+const promptCommands = [...skillCommands, ...slashCommands];
+const monoFontFamily = '"JetBrainsMono Nerd Font", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+const commandTokenAt = (value: string, cursor: number): CommandToken | undefined => {
+  const before = value.slice(0, cursor);
+  const match = /(?:^|\s)([$/])([^\s]*)$/u.exec(before);
+  if (!match) return undefined;
+  const prefix = match[1];
+  if (prefix !== '$' && prefix !== '/') return undefined;
+  const token = `${prefix}${match[2]}`;
+  const suffix = /^\S*/u.exec(value.slice(cursor))?.[0] ?? '';
+  return { start: cursor - token.length, end: cursor + suffix.length, prefix, query: `${match[2]}${suffix}` };
+};
+
+const actionRequired = (agent: Agent) => agent.question !== undefined || /action required/i.test(agent.title);
 const agentState = (agent: Agent): AgentState => actionRequired(agent) ? 'action-required' : /^[\u2800-\u28ff]/u.test(agent.title) ? 'working' : 'prompt-done';
-const agentLabel = (agent: Agent) => (agent.worktreeLabel ?? (actionRequired(agent) ? agent.title.replace(/(?:\[\s*.\s*\]\s*)?action required\s*\|?\s*/i, '🚨 ') : agent.title)) || agent.workspace;
+const agentLabel = (agent: Agent) => (agent.worktreeLabel ?? agent.displayLabel ?? (actionRequired(agent) ? agent.title.replace(/(?:\[\s*.\s*\]\s*)?action required\s*\|?\s*/i, '🚨 ') : agent.title)) || agent.workspace;
 type SpeechRecognitionResult = ArrayLike<{ transcript: string }> & { isFinal: boolean };
 type SpeechRecognitionInstance = { continuous: boolean; interimResults: boolean; lang: string; start: () => void; abort: () => void; onresult: ((event: { resultIndex: number; results: ArrayLike<SpeechRecognitionResult> }) => void) | null; onend: (() => void) | null; onerror: (() => void) | null };
 type SpeechRecognitionConstructor = new () => SpeechRecognitionInstance;
@@ -33,6 +74,7 @@ type SpeechRecognitionConstructor = new () => SpeechRecognitionInstance;
 const logSnapshots = new Map<string, string>();
 const lastPrompts = new Map<string, string>();
 const promptDrafts = new Map<string, string>();
+const promptDraftListeners = new Map<string, Set<() => void>>();
 const promptDraftKey = (id: string) => `remote-agent-console:prompt-draft:${id}`;
 const readPromptDraft = (id: string) => {
   try { return localStorage.getItem(promptDraftKey(id)) ?? ''; }
@@ -44,18 +86,71 @@ const savePromptDraft = (id: string, value: string) => {
     else localStorage.removeItem(promptDraftKey(id));
   } catch { /* Private browsing or storage quota must not block prompting. */ }
 };
+const getPromptDraft = (id: string) => {
+  if (!promptDrafts.has(id)) promptDrafts.set(id, readPromptDraft(id));
+  return promptDrafts.get(id) ?? '';
+};
+const subscribeToPromptDraft = (id: string, listener: () => void) => {
+  const listeners = promptDraftListeners.get(id) ?? new Set();
+  listeners.add(listener);
+  promptDraftListeners.set(id, listeners);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) promptDraftListeners.delete(id);
+  };
+};
+const setPromptDraft = (id: string, next: SetStateAction<string>) => {
+  const current = getPromptDraft(id);
+  const value = typeof next === 'function' ? next(current) : next;
+  if (value === current) return;
+  promptDrafts.set(id, value);
+  savePromptDraft(id, value);
+  promptDraftListeners.get(id)?.forEach(listener => listener());
+};
+const usePromptDraft = (id: string): [string, Dispatch<SetStateAction<string>>] => [
+  useSyncExternalStore(listener => subscribeToPromptDraft(id, listener), () => getPromptDraft(id), () => ''),
+  next => setPromptDraft(id, next)
+];
 const terminalInputs = new Map<string, (value: string) => void>();
+const exitTerminalInput = new Map<string, () => void>();
 const logHistoryRequests = new Map<string, (direction: -1 | 0 | 1) => void>();
 const mobileModifiers = new Map<string, { alt: boolean; ctrl: boolean; shift: boolean }>();
+const pendingOperations = new Set<string>();
+const pendingOperationListeners = new Map<string, Set<() => void>>();
+const subscribeToPendingOperation = (key: string, listener: () => void) => {
+  const listeners = pendingOperationListeners.get(key) ?? new Set();
+  listeners.add(listener);
+  pendingOperationListeners.set(key, listeners);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) pendingOperationListeners.delete(key);
+  };
+};
+const setPendingOperation = (key: string, pending: boolean) => {
+  if (pending === pendingOperations.has(key)) return;
+  if (pending) pendingOperations.add(key);
+  else pendingOperations.delete(key);
+  pendingOperationListeners.get(key)?.forEach(listener => listener());
+};
+const beginPendingOperation = (key: string) => {
+  if (pendingOperations.has(key)) return false;
+  setPendingOperation(key, true);
+  return true;
+};
+const usePendingOperation = (key: string) => useSyncExternalStore(
+  listener => subscribeToPendingOperation(key, listener),
+  () => pendingOperations.has(key),
+  () => false
+);
 const cacheLogFrame = (id: string, frame: LogFrame) => {
   const text = frame.text ?? '';
   logSnapshots.set(id, frame.type === 'reset' ? text : `${logSnapshots.get(id) ?? ''}${text}`);
   if (frame.lastPrompt !== undefined) lastPrompts.set(id, frame.lastPrompt);
-  else cachedLastPrompt(id, logSnapshots.get(id) ?? '');
+  else if (frame.type === 'reset') cachedLastPrompt(id, text);
 };
 
 const questionFromOutput = (output: string): ChoiceQuestion | undefined => {
-  const lines = output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').split('\n').map(line => line.trim()).filter(Boolean);
+  const lines = output.slice(-32_768).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').split('\n').map(line => line.trim()).filter(Boolean);
   for (let start = Math.max(0, lines.length - 20); start < lines.length; start += 1) {
     const choices: string[] = [];
     let end = start;
@@ -68,7 +163,7 @@ const questionFromOutput = (output: string): ChoiceQuestion | undefined => {
 };
 
 const lastPromptFromOutput = (output: string): string | undefined => {
-  const lines = output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').split('\n');
+  const lines = output.slice(-32_768).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').split('\n');
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const match = /^›\s+(.+)$/.exec(lines[index]!);
     if (!match) continue;
@@ -92,13 +187,57 @@ const currentUiVersion = (() => {
   const script = document.querySelector<HTMLScriptElement>('script[type="module"][src]');
   return script === null ? undefined : new URL(script.src).pathname;
 })();
+type ConsoleConnectionListener = (reachable: boolean) => void;
+const consoleConnectionListeners = new Set<ConsoleConnectionListener>();
+const unavailableStatuses = new Set([502, 503, 520, 521, 522, 523, 524, 525, 526, 527, 530]);
+let consoleReachable = true;
+const setConsoleReachable = (reachable: boolean) => {
+  if (reachable === consoleReachable) return;
+  consoleReachable = reachable;
+  consoleConnectionListeners.forEach(listener => listener(reachable));
+};
+const subscribeToConsoleConnection = (listener: ConsoleConnectionListener) => {
+  consoleConnectionListeners.add(listener);
+  return () => {
+    consoleConnectionListeners.delete(listener);
+  };
+};
+const consoleFetch = async (url: string, init: RequestInit = {}) => {
+  try {
+    const response = await fetch(url, init);
+    setConsoleReachable(!unavailableStatuses.has(response.status));
+    return response;
+  } catch (error) {
+    // A caller-owned timeout or cancellation only says that operation took too
+    // long. It does not mean the console or tunnel is unreachable.
+    if (!init.signal?.aborted) setConsoleReachable(false);
+    throw error;
+  }
+};
 const request = async (url: string, init: RequestInit = {}) => {
   const headers = new Headers(init.headers);
   if (csrf) headers.set('X-CSRF-Token', csrf);
-  return fetch(url, { ...init, credentials: 'same-origin', headers });
+  try {
+    return await consoleFetch(url, { ...init, credentials: 'same-origin', headers });
+  } catch {
+    return new Response(JSON.stringify({ error: 'Console unavailable' }), {
+      status: 503,
+      statusText: 'Service Unavailable',
+      headers: { 'content-type': 'application/json' }
+    });
+  }
 };
-const maxAttachmentBytes = 8 * 1024 * 1024;
+const maxAttachmentMegabytes = 25;
+const maxAttachmentBytes = maxAttachmentMegabytes * 1024 * 1024;
 const maxAttachments = 10;
+const mergeSpeechSegments = (current: string, next: string) => {
+  const left = current.trim().split(/\s+/u).filter(Boolean);
+  const right = next.trim().split(/\s+/u).filter(Boolean);
+  const comparable = (word: string) => word.toLocaleLowerCase().replace(/[^\p{L}\p{N}']/gu, '');
+  let overlap = Math.min(left.length, right.length);
+  while (overlap > 0 && !left.slice(-overlap).every((word, index) => comparable(word) === comparable(right[index]!))) overlap -= 1;
+  return [...left, ...right.slice(overlap)].join(' ');
+};
 const encodeAttachment = async (file: File): Promise<{ name: string; data: string }> => await new Promise((resolve, reject) => {
   const reader = new FileReader();
   reader.onerror = () => reject(reader.error ?? new Error('Unable to read attachment'));
@@ -112,9 +251,12 @@ const encodeAttachment = async (file: File): Promise<{ name: string; data: strin
   reader.readAsDataURL(file);
 });
 
-const showNotification = async (title: string, body: string, tag: string, url = '/') => {
+const agentNotificationTag = (agent: Pick<Agent, 'id' | 'worktreeId'>) => agent.worktreeId === undefined ? `agent-status-${agent.id}` : `worktree-status-${agent.worktreeId}`;
+const pageFocused = () => document.visibilityState === 'visible' && document.hasFocus();
+
+const showNotification = async (kind: 'question' | 'finished' | 'system', title: string, body: string, tag: string, url = '/', worktreeId?: string) => {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
-  const options = { body, tag, icon: '/favicon.svg', badge: '/notification-badge.png', data: { url } };
+  const options = { body, tag, icon: '/favicon.svg', badge: '/notification-badge.png', requireInteraction: kind === 'question', data: { url, kind, worktreeId } };
   if ('serviceWorker' in navigator) {
     const registration = await navigator.serviceWorker.ready;
     await registration.showNotification(title, options);
@@ -131,6 +273,12 @@ const dismissNotification = async (tag: string) => {
   } catch { /* Notification access must not interfere with tab navigation. */ }
 };
 
+const dismissAgentNotifications = (agent: Pick<Agent, 'id' | 'worktreeId'>) => {
+  const tags = new Set([agentNotificationTag(agent), `agent-status-${agent.id}`]);
+  for (const tag of tags) void dismissNotification(tag);
+  void request(`/api/agents/${encodeURIComponent(agent.id)}/notifications/dismiss`, { method: 'POST' });
+};
+
 const copyText = async (value: string) => {
   if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value);
   const textarea = document.createElement('textarea');
@@ -143,17 +291,17 @@ const copyText = async (value: string) => {
   textarea.remove();
 };
 
-function Login({ done, initialError }: { done: (active: boolean) => void; initialError?: string }) {
+function Login({ done, initialError }: { done: (session: SessionInfo) => void; initialError?: string }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState(initialError ?? '');
   const login = async (event: React.FormEvent) => {
     event.preventDefault();
     const response = await request('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }) });
     if (!response.ok) return setError('Invalid credentials');
-    const session = await response.json() as { csrfToken: string; active: boolean };
+    const session = await response.json() as SessionInfo;
     csrf = session.csrfToken;
     setPassword('');
-    done(session.active);
+    done(session);
   };
   return <main className="auth-screen"><div className="auth-glow" /><form className="auth-card" onSubmit={login}><div className="auth-mark" aria-hidden="true"><span>&gt;_</span></div><div className="auth-heading"><p>REMOTE // AGENTS</p><h1>Console access</h1></div><label className="sr-only">Username<input type="text" name="username" autoComplete="username" tabIndex={-1} /></label><label>Password<input autoFocus type="password" name="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="current-password" /></label>{error && <p className="auth-error" role="alert">{error}</p>}<button className="auth-submit">Authenticate <span aria-hidden="true">↗</span></button></form></main>;
 }
@@ -162,18 +310,33 @@ function LoadingScreen({ label = 'Restoring secure session' }: { label?: string 
   return <main className="auth-screen loading-screen" aria-live="polite"><div className="auth-glow" /><div className="loading-console"><div className="loading-line"><span className="spinner" />{label}</div><div className="loading-bars" aria-hidden="true"><i /><i /><i /><i /><i /></div></div></main>;
 }
 
-function ControlScreen({ claimed }: { claimed: () => void }) {
+function ReconnectingOverlay() {
+  return <div className="reconnecting-overlay" role="alert" aria-label="Reconnecting to console"><div className="auth-glow" /><div className="loading-console"><div className="loading-line"><span className="spinner" />Reconnecting to console</div><div className="loading-bars" aria-hidden="true"><i /><i /><i /><i /><i /></div></div></div>;
+}
+
+function ControlScreen({ session, claimed }: { session: SessionInfo; claimed: (next: SessionInfo) => void }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
+  const [deviceName, setDeviceName] = useState('');
+  const needsName = session.deviceName === undefined;
+  const namingOnly = session.active && needsName;
   const takeControl = async () => {
+    if (pending || (needsName && !deviceName.trim())) return;
     setPending(true); setError('');
     try {
-      const response = await request('/api/auth/take-control', { method: 'POST' });
-      if (!response.ok) throw new Error();
-      claimed();
-    } catch { setError('Unable to take control. Try again.'); setPending(false); }
+      const response = await request('/api/auth/take-control', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(needsName ? { deviceName } : {}) });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => undefined) as { error?: unknown } | undefined;
+        throw new Error(typeof payload?.error === 'string' ? payload.error : 'Unable to take control. Try again.');
+      }
+      claimed(await response.json() as SessionInfo);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to take control. Try again.');
+      setPending(false);
+    }
   };
-  return <main className="auth-screen loading-screen" aria-live="polite"><div className="auth-glow" /><section className="loading-console console-recovery"><strong>Another client is active. Take control?</strong><span>This client will replace the active client.</span>{error && <span className="auth-error" role="alert">{error}</span>}<button type="button" disabled={pending} onClick={() => void takeControl()}>{pending ? <><span className="spinner" />Taking control</> : 'Take control'}</button><NotificationControl /></section></main>;
+  const controller = session.controllingDeviceName ?? 'Another device';
+  return <main className="auth-screen loading-screen" aria-live="polite"><div className="auth-glow" /><section className="loading-console console-recovery"><strong className={namingOnly ? undefined : 'control-owner'}>{namingOnly ? 'Name this device.' : `${controller} is active`}</strong>{namingOnly && <span>Give this device a name before continuing.</span>}{needsName && <label>Device name<input autoFocus type="text" value={deviceName} maxLength={64} autoComplete="nickname" placeholder="e.g. Kitchen iPad" onChange={event => setDeviceName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && deviceName.trim()) void takeControl(); }} /></label>}{error && <span className="auth-error" role="alert">{error}</span>}<button type="button" disabled={pending || (needsName && !deviceName.trim())} onClick={() => void takeControl()}>{pending ? <><span className="spinner" />{namingOnly ? 'Saving name' : 'Taking control'}</> : namingOnly ? 'Save device name' : 'Take control'}</button><NotificationControl /></section></main>;
 }
 
 class ConsoleBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
@@ -185,26 +348,62 @@ class ConsoleBoundary extends Component<{ children: ReactNode }, { failed: boole
   }
 }
 
-function ProjectOpen({ url, disabled = false }: { url?: string; disabled?: boolean }) { return url === undefined ? null : <a className={`project-open${disabled ? ' disabled' : ''}`} href={url} target="_blank" rel="noreferrer" aria-disabled={disabled} onClick={event => { if (disabled) event.preventDefault(); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6m0-6-9 9M20 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5" /></svg>Open</a>; }
-function PullRequestOpen({ url }: { url?: string }) { return url === undefined ? null : <a className="pull-request-open" href={url} target="_blank" rel="noreferrer"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.65 7.65 0 0 1 8 4.73c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" /></svg>PR</a>; }
-
-function Prompt({ id, canCancel, cancelling, deleting, deactivating, onCancel, onDelete, onDeactivate, projectUrl, pullRequestUrl, question, worktreeId, stack }: { id: string; canCancel: boolean; cancelling: boolean; deleting: boolean; deactivating: boolean; onCancel: () => void; onDelete?: () => void; onDeactivate?: () => void; projectUrl?: string; pullRequestUrl?: string; question?: ChoiceQuestion; worktreeId?: string; stack?: Stack }) {
-  const [value, setValue] = useState(() => promptDrafts.get(id) ?? readPromptDraft(id));
-  const [pending, setPending] = useState(false);
+function Prompt({ id, canCancel, cancelling, deleting, deactivating, swapping, swapped, onCancel, onDelete, onDeactivate, onSwap, onSelectTarget, projectUrl, question, worktreeId, newTaskConfigured, stack }: { id: string; canCancel: boolean; cancelling: boolean; deleting: boolean; deactivating: boolean; swapping: boolean; swapped: boolean; onCancel: () => void; onDelete?: () => void; onDeactivate?: () => void; onSwap: () => void; onSelectTarget: (target: DashboardTarget) => void; projectUrl?: string; question?: ChoiceQuestion; worktreeId?: string; newTaskConfigured?: boolean; stack?: Stack }) {
+  const [value, setValue] = usePromptDraft(id);
+  const [commandToken, setCommandToken] = useState<CommandToken>();
+  const [activeCommand, setActiveCommand] = useState(0);
+  const pendingKey = `prompt:${id}`;
+  const pending = usePendingOperation(pendingKey);
   const [attachments, setAttachments] = useState<File[]>([]);
   const [attachmentError, setAttachmentError] = useState<string>();
+  const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>([]);
+  const [savedPromptsOpen, setSavedPromptsOpen] = useState(false);
+  const [savingPrompt, setSavingPrompt] = useState(false);
+  const [savedConfirmation, setSavedConfirmation] = useState(false);
+  const [consumingSavedPrompt, setConsumingSavedPrompt] = useState<string>();
+  const [savedPromptError, setSavedPromptError] = useState<string>();
+  const savedConfirmationTimer = useRef<number | undefined>(undefined);
   const attachmentInput = useRef<HTMLInputElement | null>(null);
+  const promptInput = useRef<HTMLTextAreaElement | null>(null);
+  const focusPromptAtEnd = useRef(false);
+  const savedPromptGroupRef = useRef<HTMLSpanElement | null>(null);
+  const { anchorRef: savedPromptAnchorRef, flyoutRef: savedPromptFlyoutRef, style: savedPromptFlyoutStyle } = useViewportFlyout(savedPromptsOpen);
+  const commandOptions = commandToken === undefined ? [] : promptCommands.filter(command => command.value.startsWith(commandToken.prefix) && command.value.slice(1).toLocaleLowerCase().includes(commandToken.query.toLocaleLowerCase()));
   useEffect(() => {
-    promptDrafts.set(id, value);
-    savePromptDraft(id, value);
-  }, [id, value]);
+    let cancelled = false;
+    void request(`/api/agents/${encodeURIComponent(id)}/saved-prompts`).then(response => response.ok ? response.json() : undefined).then((payload: unknown) => {
+      if (cancelled || payload === null || typeof payload !== 'object' || !Array.isArray((payload as { prompts?: unknown }).prompts)) return;
+      setSavedPrompts((payload as { prompts: unknown[] }).prompts.filter((prompt): prompt is SavedPrompt => prompt !== null && typeof prompt === 'object' && typeof (prompt as SavedPrompt).id === 'string' && typeof (prompt as SavedPrompt).text === 'string'));
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [id]);
+  useEffect(() => () => {
+    if (savedConfirmationTimer.current !== undefined) window.clearTimeout(savedConfirmationTimer.current);
+  }, []);
+  useEffect(() => {
+    if (!savedPromptsOpen) return;
+    const close = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!savedPromptGroupRef.current?.contains(target) && !savedPromptFlyoutRef.current?.contains(target)) setSavedPromptsOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [savedPromptsOpen, savedPromptFlyoutRef]);
+  useLayoutEffect(() => {
+    if (!focusPromptAtEnd.current) return;
+    focusPromptAtEnd.current = false;
+    const input = promptInput.current;
+    if (!input) return;
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }, [value]);
   const [listening, setListening] = useState(false);
   const [ctrlActive, setCtrlActive] = useState(false);
   const [shiftActive, setShiftActive] = useState(false);
   const [altActive, setAltActive] = useState(false);
   const recognition = useRef<SpeechRecognitionInstance | undefined>(undefined);
   const speechPrefix = useRef('');
-  const speechFinal = useRef('');
+  const speechSegments = useRef(new Map<number, string>());
   const speechWindow = window as Window & { SpeechRecognition?: SpeechRecognitionConstructor; webkitSpeechRecognition?: SpeechRecognitionConstructor };
   const supportsSpeechRecognition = speechWindow.SpeechRecognition !== undefined || speechWindow.webkitSpeechRecognition !== undefined;
   useEffect(() => () => recognition.current?.abort(), []);
@@ -213,16 +412,23 @@ function Prompt({ id, canCancel, cancelling, deleting, deactivating, onCancel, o
     if (!files) return;
     const next = [...attachments, ...Array.from(files)];
     if (next.length > maxAttachments) return setAttachmentError(`Attach up to ${maxAttachments} files.`);
-    if (next.reduce((total, file) => total + file.size, 0) > maxAttachmentBytes) return setAttachmentError('Attachments must total 8 MB or less.');
+    if (next.reduce((total, file) => total + file.size, 0) > maxAttachmentBytes) return setAttachmentError(`Attachments must total ${maxAttachmentMegabytes} MB or less.`);
     setAttachmentError(undefined);
     setAttachments(next);
   };
   const submit = async () => {
-    if ((!value && attachments.length === 0) || pending) return;
+    if (pending || (!swapped && !value && attachments.length === 0)) return;
     recognition.current?.abort();
     recognition.current = undefined;
     setListening(false);
-    setPending(true);
+    if (swapped) {
+      const sendTerminalInput = terminalInputs.get(id);
+      if (sendTerminalInput === undefined) return;
+      sendTerminalInput(`${value}\r`);
+      setValue('');
+      return;
+    }
+    if (!beginPendingOperation(pendingKey)) return;
     setAttachmentError(undefined);
     try {
       const payload = await Promise.all(attachments.map(encodeAttachment));
@@ -230,9 +436,55 @@ function Prompt({ id, canCancel, cancelling, deleting, deactivating, onCancel, o
       if (response.ok) { setValue(''); setAttachments([]); }
       else setAttachmentError('Unable to queue the prompt with these attachments.');
     } catch { setAttachmentError('Unable to read the selected attachments.'); }
-    finally { setPending(false); }
+    finally { setPendingOperation(pendingKey, false); }
   };
-  const answer = async (index: number) => { if (pending) return; setPending(true); try { const url = question?.omxId === undefined ? `/api/agents/${encodeURIComponent(id)}/question` : `/api/agents/${encodeURIComponent(id)}/omx-question`; const body = question?.omxId === undefined ? { index } : { index, questionId: question.omxId }; await request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); } finally { setPending(false); } };
+  const saveCurrentPrompt = async () => {
+    if (pending || savingPrompt || !value.trim()) return;
+    recognition.current?.abort();
+    recognition.current = undefined;
+    setListening(false);
+    setSavingPrompt(true);
+    setSavedPromptError(undefined);
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(id)}/saved-prompts`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: value }) });
+      if (!response.ok) throw new Error();
+      const saved = await response.json() as SavedPrompt;
+      if (typeof saved.id !== 'string' || typeof saved.text !== 'string') throw new Error();
+      setSavedPrompts(current => [saved, ...current]);
+      setValue('');
+      setCommandToken(undefined);
+      setSavedConfirmation(true);
+      if (savedConfirmationTimer.current !== undefined) window.clearTimeout(savedConfirmationTimer.current);
+      savedConfirmationTimer.current = window.setTimeout(() => {
+        savedConfirmationTimer.current = undefined;
+        setSavedConfirmation(false);
+      }, 1_600);
+    } catch {
+      setSavedPromptError('Unable to save this prompt.');
+    } finally {
+      setSavingPrompt(false);
+    }
+  };
+  const useSavedPrompt = async (saved: SavedPrompt) => {
+    if (pending || consumingSavedPrompt !== undefined) return;
+    setConsumingSavedPrompt(saved.id);
+    setSavedPromptError(undefined);
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(id)}/saved-prompts/${encodeURIComponent(saved.id)}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error();
+      const consumed = await response.json() as SavedPrompt;
+      if (typeof consumed.id !== 'string' || typeof consumed.text !== 'string') throw new Error();
+      setSavedPrompts(current => current.filter(prompt => prompt.id !== consumed.id));
+      setSavedPromptsOpen(current => savedPrompts.length > 1 && current);
+      focusPromptAtEnd.current = true;
+      setValue(current => current ? `${current}${/\s$/u.test(current) ? '' : '\n\n'}${consumed.text}` : consumed.text);
+    } catch {
+      setSavedPromptError('Unable to restore this saved prompt.');
+    } finally {
+      setConsumingSavedPrompt(undefined);
+    }
+  };
+  const answer = async (index: number) => { if (pending || !beginPendingOperation(pendingKey)) return; try { const url = question?.omxId === undefined ? `/api/agents/${encodeURIComponent(id)}/question` : `/api/agents/${encodeURIComponent(id)}/omx-question`; const body = question?.omxId === undefined ? { index } : { index, questionId: question.omxId }; await request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); } finally { setPendingOperation(pendingKey, false); } };
   const voice = () => {
     if (pending || !supportsSpeechRecognition) return;
     // Set the ref synchronously, not just React state, so a second tap cannot
@@ -250,17 +502,16 @@ function Prompt({ id, canCancel, cancelling, deleting, deactivating, onCancel, o
     next.interimResults = true;
     next.lang = navigator.language;
     speechPrefix.current = value;
-    speechFinal.current = '';
+    speechSegments.current.clear();
     next.onresult = event => {
-      let interim = '';
+      if (recognition.current !== next) return;
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
         const result = event.results[index];
         const transcript = result?.[0]?.transcript.trim() ?? '';
-        if (!transcript) continue;
-        if (result.isFinal) speechFinal.current = `${speechFinal.current}${speechFinal.current && !/\s$/u.test(speechFinal.current) ? ' ' : ''}${transcript}`;
-        else interim = transcript;
+        if (transcript) speechSegments.current.set(index, transcript);
+        else speechSegments.current.delete(index);
       }
-      const transcript = `${speechFinal.current}${speechFinal.current && interim ? ' ' : ''}${interim}`;
+      const transcript = [...speechSegments.current.entries()].sort(([left], [right]) => left - right).reduce((combined, [, segment]) => mergeSpeechSegments(combined, segment), '');
       if (!transcript) return;
       setValue(`${speechPrefix.current}${speechPrefix.current && !/\s$/u.test(speechPrefix.current) ? ' ' : ''}${transcript}`);
     };
@@ -289,8 +540,31 @@ function Prompt({ id, canCancel, cancelling, deleting, deactivating, onCancel, o
   const deleteButton = <button className="danger icon-button delete-agent" disabled={deleting} aria-label="Delete agent" title="Delete agent" onClick={onDelete}>{deleting ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button>;
   const offButton = <button className="danger icon-button deactivate-agent" disabled={deactivating} aria-label="Turn off worktree agent" title="Turn off worktree agent" onClick={onDeactivate}>{deactivating ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button>;
   const stop = onDeactivate !== undefined ? offButton : onDelete === undefined ? cancelButton : deleteButton;
-  if (question) return <section className="prompt question-prompt"><div className="question-copy"><strong>Agent question</strong><span>{question.text}</span></div><div className="question-choices">{question.choices.map((choice, index) => <button key={`${index}-${choice}`} className="question-choice" disabled={pending} onClick={() => void answer(index)}><b>{index + 1}</b>{choice}</button>)}</div><div className="prompt-actions">{stop}</div></section>;
-  return <section className="prompt"><textarea aria-label="Prompt" value={value} disabled={pending} onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') { event.preventDefault(); setValue(''); } else if (event.key === 'Tab') { event.preventDefault(); setValue(current => current + '\t'); } else if (event.key === 'Enter') { event.preventDefault(); if (event.ctrlKey || event.shiftKey || window.matchMedia('(max-width: 600px)').matches) setValue(current => current + '\n'); else void submit(); } }} onChange={event => setValue(event.target.value)} />{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{stop}<span className="prompt-actions-spacer" aria-hidden="true" /><More id={id} worktreeId={worktreeId} stack={stack} /><PullRequestOpen url={pullRequestUrl} /><ProjectOpen url={projectUrl} disabled={stack?.running === false} />{supportsSpeechRecognition && <button className={`voice icon-button ${listening ? 'listening' : ''}`} type="button" disabled={pending} aria-label={listening ? 'Stop voice input' : 'Start voice input'} title={listening ? 'Stop voice input' : 'Start voice input'} onClick={voice}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm6-3a6 6 0 0 1-12 0m6 6v4m-3 0h6" /></svg></button>}<button className="attachment-button icon-button" type="button" disabled={pending} aria-label="Attach files" title="Attach files" onClick={() => attachmentInput.current?.click()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 12 5.7-5.7a3.5 3.5 0 1 1 5 5L11 20a5 5 0 1 1-7-7l8.3-8.3" /></svg></button><button className="queue" disabled={pending || (!value && attachments.length === 0)} onClick={() => void submit()}>{pending ? <><span className="spinner" />Queueing</> : 'Queue'}</button></div>{mobileKeys}</section>;
+  const swapLabel = swapped ? 'Return to agent output' : 'Swap to terminal';
+  const swap = <button className={`swap-agent icon-button${swapped ? ' active' : ''}`} disabled={swapping} aria-label={swapLabel} title={swapped ? 'Return to agent output' : 'Background agent and show terminal'} onClick={onSwap}>{swapping ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h13m0 0-4-4m4 4-4 4M19 17H6m0 0 4 4m-4-4 4-4" /></svg>}</button>;
+  const selectCommand = (command: PromptCommand) => {
+    if (commandToken === undefined) return;
+    const next = `${value.slice(0, commandToken.start)}${command.value}${value.slice(commandToken.end)}`;
+    const cursor = commandToken.start + command.value.length;
+    setValue(next);
+    setCommandToken(undefined);
+    window.requestAnimationFrame(() => { promptInput.current?.focus(); promptInput.current?.setSelectionRange(cursor, cursor); });
+  };
+  const updatePrompt = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const next = event.target.value;
+    setValue(next);
+    setCommandToken(commandTokenAt(next, event.target.selectionStart ?? next.length));
+    setActiveCommand(0);
+  };
+  const composer = <div className="prompt-composer"><textarea ref={promptInput} aria-label="Prompt" aria-autocomplete="list" aria-expanded={commandToken !== undefined} aria-controls={commandToken === undefined ? undefined : `prompt-commands-${id}`} aria-activedescendant={commandOptions[activeCommand] === undefined ? undefined : `prompt-command-${id}-${activeCommand}`} value={value} disabled={pending} onFocus={() => exitTerminalInput.get(id)?.()} onBlur={() => setCommandToken(undefined)} onKeyDown={event => { if (commandOptions.length > 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.key === 'ArrowDown') { event.preventDefault(); setActiveCommand(current => (current + 1) % commandOptions.length); } else if (commandOptions.length > 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.key === 'ArrowUp') { event.preventDefault(); setActiveCommand(current => (current + commandOptions.length - 1) % commandOptions.length); } else if (commandOptions.length > 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.key === 'Enter') { event.preventDefault(); selectCommand(commandOptions[activeCommand] ?? commandOptions[0]!); } else if (event.key === 'Escape' && commandToken !== undefined) { event.preventDefault(); setCommandToken(undefined); } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') { if (event.currentTarget.selectionStart === event.currentTarget.selectionEnd) { event.preventDefault(); setValue(''); } } else if (event.key === 'Tab') { event.preventDefault(); setValue(current => current + '\t'); } else if (event.key === 'Enter') { event.preventDefault(); if (event.ctrlKey || event.shiftKey || window.matchMedia('(max-width: 600px)').matches) setValue(current => current + '\n'); else void submit(); } }} onChange={updatePrompt} />{commandToken !== undefined && <div className="command-menu" id={`prompt-commands-${id}`} role="listbox" aria-label={`${commandToken.prefix} commands`}>{commandOptions.length > 0 ? commandOptions.map((command, index) => <button key={command.value} id={`prompt-command-${id}-${index}`} type="button" role="option" aria-selected={index === activeCommand} className={index === activeCommand ? 'active' : ''} onMouseDown={event => event.preventDefault()} onClick={() => selectCommand(command)}><code>{command.value}</code><span>{command.description}</span></button>) : <span className="command-menu-empty">No matching commands</span>}</div>}</div>;
+  const savedPanel = savedPromptsOpen && createPortal(<section className="saved-prompts-panel more-menu flyout-menu" ref={savedPromptFlyoutRef} style={savedPromptFlyoutStyle} aria-label="Saved prompts"><div className="saved-prompts-list">{savedPrompts.map(saved => <button key={saved.id} type="button" disabled={consumingSavedPrompt !== undefined} title={saved.text} onClick={() => void useSavedPrompt(saved)}>{consumingSavedPrompt === saved.id ? <span className="spinner" /> : null}<span>{saved.text}</span></button>)}</div></section>, document.body);
+  const savedToggle = savedPrompts.length > 0 ? <button className={`saved-prompts-toggle icon-button${savedPromptsOpen ? ' active' : ''}`} type="button" disabled={pending} aria-label={`Saved prompts (${savedPrompts.length})`} aria-expanded={savedPromptsOpen} title={`${savedPrompts.length} saved prompt${savedPrompts.length === 1 ? '' : 's'}`} onClick={() => setSavedPromptsOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg><span className="saved-prompts-count" aria-hidden="true">{savedPrompts.length}</span></button> : null;
+  const saveLabel = savingPrompt ? 'Saving' : savedConfirmation ? 'Saved' : 'Save';
+  const saveButton = <button className={`save-prompt outline-button icon-button${savedConfirmation ? ' saved' : ''}`} type="button" disabled={pending || savingPrompt || !value.trim()} aria-label={saveLabel} title={saveLabel} onClick={() => void saveCurrentPrompt()}>{savingPrompt ? <span className="spinner" /> : savedConfirmation ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5V3Zm3 0v6h8V3M8 21v-7h8v7" /></svg>}</button>;
+  const saveControls = <><span className={`save-prompt-group${savedToggle === null ? '' : ' has-saved-prompts'}`} ref={element => { savedPromptGroupRef.current = element; savedPromptAnchorRef.current = element; }} role="group" aria-label="Saved prompt controls">{saveButton}{savedToggle}</span>{savedPanel}</>;
+  if (question) return <section className="prompt question-prompt"><div className="question-copy"><strong>Agent question</strong><span>{question.text}</span></div><div className="question-choices">{question.choices.map((choice, index) => <button key={`${index}-${choice}`} className="question-choice" disabled={pending} onClick={() => void answer(index)}><b>{index + 1}</b>{choice}</button>)}</div><div className="prompt-actions">{stop}{swapped && swap}<span className="prompt-actions-spacer" aria-hidden="true" /><More id={id} newTaskConfigured={newTaskConfigured} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onSelectTarget={onSelectTarget} /></div></section>;
+  const queueLabel = swapped ? 'Enter' : pending ? 'Queueing' : 'Queue';
+  return <section className="prompt">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{savedPromptError && <p className="saved-prompt-error" role="alert">{savedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{stop}{swapped && swap}<span className="prompt-actions-spacer" aria-hidden="true" /><More id={id} newTaskConfigured={newTaskConfigured} attachDisabled={pending} onAttach={swapped ? undefined : () => attachmentInput.current?.click()} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onSelectTarget={onSelectTarget} /><ProjectOpen url={projectUrl} stack={stack} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} />{supportsSpeechRecognition && <button className={`voice icon-button ${listening ? 'listening' : ''}`} type="button" disabled={pending} aria-label={listening ? 'Stop voice input' : 'Start voice input'} title={listening ? 'Stop voice input' : 'Start voice input'} onClick={voice}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3M8 22h8" /></svg></button>}{saveControls}<button className="queue icon-button" disabled={pending || (!swapped && !value && attachments.length === 0)} aria-label={queueLabel} title={queueLabel} onClick={() => void submit()}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button></div>{mobileKeys}</section>;
 }
 
 type MobileKeyIconName = 'control'|'shift'|'tab'|'up'|'down'|'left'|'right';
@@ -299,12 +573,14 @@ function MobileKeyIcon({ name }: { name: MobileKeyIconName }) {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d={paths[name]} /></svg>;
 }
 
-function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: () => void; onQuestion: (question: ChoiceQuestion | undefined) => void }) {
+function Log({ id, onQuestion, terminalMode = false }: { id: string; onQuestion: (question: ChoiceQuestion | undefined) => void; terminalMode?: boolean }) {
   const canvas = useRef<HTMLDivElement | null>(null);
   const primaryHost = useRef<HTMLDivElement | null>(null);
   const secondaryHost = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<XTerm | undefined>(undefined);
   const [visibleFrame, setVisibleFrame] = useState<0 | 1>(0);
+  // A Log mounts whenever its tab becomes active. Existing agents therefore
+  // begin by attaching to their live output, not by starting a new process.
   const [status, setStatus] = useState('Connecting');
   const [hasRendered, setHasRendered] = useState(false);
   const [lastPrompt, setLastPrompt] = useState<string>();
@@ -312,6 +588,7 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
   const [promptExpanded, setPromptExpanded] = useState(false);
   const promptRef = useRef<HTMLSpanElement | null>(null);
   const [scrolledUp, setScrolledUp] = useState(false);
+  const [inputActive, setInputActive] = useState(terminalMode);
   useEffect(() => {
     let socket: WebSocket | undefined;
     let closed = false;
@@ -319,19 +596,28 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
     let snapshot = '';
     let interactiveSocket: WebSocket | undefined;
     let connectingInteractive = false;
+    let attemptedLogConnection = false;
+    let pendingRender = false;
+    let renderingSnapshot = false;
+    let flushFrame: number | undefined;
     const pendingInput: string[] = [];
+    setStatus('Connecting');
     setHasRendered(false);
     setLastPrompt(lastPrompts.get(id));
     setVisibleFrame(0);
+    setInputActive(terminalMode);
     let historyOffset = 0;
     let requestHistory = (_offset: number) => {};
-    const terminalOptions = { convertEol: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 11, scrollback: 0, theme: { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#585b7088', black: '#45475a', red: '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af', blue: '#89b4fa', magenta: '#f5c2e7', cyan: '#94e2d5', white: '#bac2de', brightBlack: '#585b70', brightRed: '#f38ba8', brightGreen: '#a6e3a1', brightYellow: '#f9e2af', brightBlue: '#89b4fa', brightMagenta: '#f5c2e7', brightCyan: '#89dceb', brightWhite: '#a6adc8' } };
+    const terminalOptions = { convertEol: true, fontFamily: monoFontFamily, fontSize: 11, scrollback: 0, screenReaderMode: window.matchMedia('(pointer: coarse)').matches, theme: { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#585b7088', black: '#45475a', red: '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af', blue: '#89b4fa', magenta: '#f5c2e7', cyan: '#94e2d5', white: '#bac2de', brightBlack: '#585b70', brightRed: '#f38ba8', brightGreen: '#a6e3a1', brightYellow: '#f9e2af', brightBlue: '#89b4fa', brightMagenta: '#f5c2e7', brightCyan: '#89dceb', brightWhite: '#a6adc8' } };
     const terminals = [new XTerm(terminalOptions), new XTerm(terminalOptions)];
     const fits = [new FitAddon(), new FitAddon()];
+    let suppressOutputFocusUntil = 0;
+    const overlays = createOutputLinkOverlays(canvas.current!, () => { suppressOutputFocusUntil = performance.now() + 250; });
+    const releaseScrollContainment = containOutputScroll(canvas.current!);
     let activeFrame: 0 | 1 = 0;
     let terminal = terminals[activeFrame];
     terminalRef.current = terminal;
-    terminals.forEach((candidate, index) => { candidate.loadAddon(fits[index]); candidate.loadAddon(new WebLinksAddon((_event, uri) => window.open(uri, '_blank', 'noopener,noreferrer'))); candidate.open(index === 0 ? primaryHost.current! : secondaryHost.current!); fits[index].fit(); });
+    terminals.forEach((candidate, index) => { candidate.loadAddon(fits[index]); candidate.open(index === 0 ? primaryHost.current! : secondaryHost.current!); fits[index].fit(); });
     const encoded = (value: string) => btoa(String.fromCharCode(...new TextEncoder().encode(value))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     const connectInteractive = async () => {
       if (closed || connectingInteractive || interactiveSocket !== undefined) return;
@@ -354,6 +640,9 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
       else { pendingInput.push(value); void connectInteractive(); }
     };
     terminalInputs.set(id, sendInput);
+    let outputModeActive = terminalMode;
+    const exitInput = () => { outputModeActive = false; setInputActive(false); terminal.blur(); };
+    exitTerminalInput.set(id, exitInput);
     // Keep one line in common between page windows so a line at the viewport boundary is never lost while paging.
     const moveHistory = (direction: -1 | 0 | 1) => {
       // Adjacent pages intentionally share five rows, preserving context at
@@ -366,16 +655,29 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
     };
     logHistoryRequests.set(id, moveHistory);
     const sendViewport = () => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ v: 1, type: 'viewport', cols: terminal.cols, rows: terminal.rows })); };
-    const observer = new ResizeObserver(() => { fits.forEach(fit => fit.fit()); sendViewport(); });
+    const observer = new ResizeObserver(() => { overlays.clear(); fits.forEach(fit => fit.fit()); window.requestAnimationFrame(() => { if (!closed) overlays.render(terminal); }); sendViewport(); });
     observer.observe(canvas.current!);
     const syncScrollState = () => {
       setScrolledUp(historyOffset > 0);
     };
-    const keySubscriptions = terminals.map(candidate => candidate.onKey(({ domEvent }) => {
-      if ((domEvent.ctrlKey || domEvent.metaKey) && domEvent.key.toLowerCase() === 'c' && candidate.hasSelection()) {
-        domEvent.preventDefault();
+    terminals.forEach(candidate => candidate.attachCustomKeyEventHandler(event => {
+      if (event.type !== 'keydown' || event.key.toLowerCase() !== 'c') return true;
+      if ((event.ctrlKey || event.metaKey) && candidate.hasSelection()) {
+        event.preventDefault();
         void copyText(candidate.getSelection());
+        return false;
       }
+      if (event.ctrlKey && outputModeActive) {
+        event.preventDefault();
+        sendInput('\x03');
+        return false;
+      }
+      return true;
+    }));
+    const selectionActive = () => terminals.some(candidate => candidate.hasSelection());
+    let flushSelectedOutput = () => {};
+    const selectionSubscriptions = terminals.map(candidate => candidate.onSelectionChange(() => {
+      if (!selectionActive()) flushSelectedOutput();
     }));
     const inputSubscriptions = terminals.map(candidate => candidate.onData(value => {
       const { alt, ctrl, shift } = mobileModifiers.get(id) ?? { alt: false, ctrl: false, shift: false };
@@ -383,10 +685,33 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
       const modified = `${alt ? '\x1b' : ''}${ctrl && /^[a-z]$/iu.test(first) ? String.fromCharCode(first.toLowerCase().charCodeAt(0) - 96) : shift && /^[a-z]$/iu.test(first) ? `${first.toUpperCase()}${value.slice(1)}` : value}`;
       sendInput(modified);
     }));
-    const focus = () => { void connectInteractive(); };
-    canvas.current!.addEventListener('focusin', focus);
-    const cachedSnapshot = logSnapshots.get(id);
-    if (cachedSnapshot) { snapshot = cachedSnapshot; setHasRendered(true); setLastPrompt(cachedLastPrompt(id, cachedSnapshot)); onQuestion(questionFromOutput(cachedSnapshot)); terminal.write(cachedSnapshot, syncScrollState); }
+    const focus = () => {
+      if (performance.now() < suppressOutputFocusUntil) {
+        suppressOutputFocusUntil = 0;
+        return;
+      }
+      // Capture native accessibility-tree selection before the click's default
+      // action can collapse it on mobile.
+      const selectedTextAtClick = window.getSelection()?.toString() ?? '';
+      window.setTimeout(() => {
+        const selectedText = window.getSelection()?.toString() ?? '';
+        if (selectedTextAtClick || selectedText || terminals.some(candidate => candidate.hasSelection()) || outputModeActive) return exitInput();
+        outputModeActive = true;
+        setInputActive(true);
+        terminal.focus();
+        void connectInteractive();
+      });
+    };
+    const releaseLongPressSelection = preserveOutputLongPressSelection(canvas.current!, () => {
+      exitInput();
+    });
+    canvas.current!.addEventListener('click', focus);
+    if (terminalMode) {
+      terminal.focus();
+      void connectInteractive();
+    }
+    const cachedSnapshot = terminalMode ? undefined : logSnapshots.get(id);
+    if (cachedSnapshot) { snapshot = cachedSnapshot; setHasRendered(true); setLastPrompt(cachedLastPrompt(id, cachedSnapshot)); onQuestion(questionFromOutput(cachedSnapshot)); terminal.write(cachedSnapshot, () => { overlays.render(terminal); syncScrollState(); }); }
     const reconnect = () => {
       if (closed || retry !== undefined) return;
       retry = window.setTimeout(() => {
@@ -394,8 +719,48 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
         void connect();
       }, 1_000);
     };
+    const renderSnapshot = (ws: WebSocket) => {
+      if (closed || socket !== ws || renderingSnapshot) {
+        pendingRender = true;
+        return;
+      }
+      renderingSnapshot = true;
+      const renderedSnapshot = snapshot;
+      const viewport = `\x1b[H${renderedSnapshot.replace(/\n/g, '\x1b[K\n')}\x1b[K\x1b[J`;
+      const nextFrame: 0 | 1 = activeFrame === 0 ? 1 : 0;
+      const nextTerminal = terminals[nextFrame];
+      nextTerminal.reset();
+      nextTerminal.write(viewport, () => {
+        renderingSnapshot = false;
+        if (closed || socket !== ws) return;
+        if (selectionActive()) {
+          nextTerminal.reset();
+          pendingRender = true;
+          return;
+        }
+        const previousTerminal = terminal;
+        activeFrame = nextFrame;
+        terminal = nextTerminal;
+        terminalRef.current = terminal;
+        overlays.render(terminal);
+        setVisibleFrame(activeFrame);
+        requestAnimationFrame(() => { previousTerminal.reset(); syncScrollState(); });
+        if (snapshot !== renderedSnapshot) pendingRender = true;
+        flushSelectedOutput();
+      });
+    };
+    flushSelectedOutput = () => {
+      if (!pendingRender || selectionActive() || renderingSnapshot || closed || socket === undefined || flushFrame !== undefined) return;
+      flushFrame = window.requestAnimationFrame(() => {
+        flushFrame = undefined;
+        if (!pendingRender || selectionActive() || renderingSnapshot || closed || socket === undefined) return;
+        pendingRender = false;
+        renderSnapshot(socket);
+      });
+    };
     const connect = async () => {
-      setStatus('Connecting');
+      if (attemptedLogConnection) setStatus('Connecting');
+      attemptedLogConnection = true;
       try {
         const response = await request(`/api/agents/${encodeURIComponent(id)}/tickets`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'logs' }) });
         if (!response.ok) throw new Error('ticket unavailable');
@@ -421,49 +786,50 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
           if (frame.newer !== true) historyOffset = 0;
           syncScrollState();
           const latest = historyOffset === 0;
-          if (frame.lastPrompt !== undefined) setLastPrompt(frame.lastPrompt);
-          if (latest) cacheLogFrame(id, frame);
+          if (!terminalMode && frame.lastPrompt !== undefined) setLastPrompt(frame.lastPrompt);
+          if (!terminalMode && latest) cacheLogFrame(id, frame);
           if (frame.type === 'reset') {
             if (text === snapshot) return;
             snapshot = text;
-            if (latest) setLastPrompt(cachedLastPrompt(id, snapshot)); onQuestion(questionFromOutput(snapshot)); setHasRendered(true);
-            const viewport = `\x1b[H${text.replace(/\n/g, '\x1b[K\n')}\x1b[K\x1b[J`;
-            const nextFrame: 0 | 1 = activeFrame === 0 ? 1 : 0;
-            const nextTerminal = terminals[nextFrame];
-            nextTerminal.reset();
-            return nextTerminal.write(viewport, () => {
-              if (closed || socket !== ws) return;
-              const previousTerminal = terminal;
-              activeFrame = nextFrame;
-              terminal = nextTerminal;
-              terminalRef.current = terminal;
-              setVisibleFrame(activeFrame);
-              requestAnimationFrame(() => { previousTerminal.reset(); syncScrollState(); });
-            });
+            if (!terminalMode && latest) setLastPrompt(cachedLastPrompt(id, snapshot));
+            if (!terminalMode) onQuestion(questionFromOutput(snapshot));
+            setHasRendered(true);
+            if (selectionActive() || renderingSnapshot) {
+              pendingRender = true;
+              return;
+            }
+            return renderSnapshot(ws);
           }
           snapshot += text;
-          if (latest) setLastPrompt(cachedLastPrompt(id, snapshot)); onQuestion(questionFromOutput(snapshot)); setHasRendered(true);
+          if (!terminalMode && latest) setLastPrompt(cachedLastPrompt(id, snapshot));
+          if (!terminalMode) onQuestion(questionFromOutput(snapshot));
+          setHasRendered(true);
+          if (selectionActive() || renderingSnapshot) {
+            pendingRender = true;
+            return;
+          }
           terminal.write(text, () => {
             terminal.scrollToBottom();
+            overlays.render(terminal);
             syncScrollState();
           });
         };
         ws.onclose = () => {
           if (closed || socket !== ws) return;
           socket = undefined;
-          setStatus('Reconnecting');
+          setStatus('Connecting');
           reconnect();
         };
         ws.onerror = () => ws.close();
-      } catch { setStatus('Reconnecting'); reconnect(); }
+      } catch { setStatus('Connecting'); reconnect(); }
     };
     void connect();
-    return () => { closed = true; if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (retry !== undefined) window.clearTimeout(retry); keySubscriptions.forEach(subscription => subscription.dispose()); inputSubscriptions.forEach(subscription => subscription.dispose()); canvas.current?.removeEventListener('focusin', focus); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; terminals.forEach(candidate => candidate.dispose()); };
-  }, [id, onQuestion]);
+    return () => { closed = true; if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (retry !== undefined) window.clearTimeout(retry); if (flushFrame !== undefined) window.cancelAnimationFrame(flushFrame); selectionSubscriptions.forEach(subscription => subscription.dispose()); inputSubscriptions.forEach(subscription => subscription.dispose()); canvas.current?.removeEventListener('click', focus); releaseLongPressSelection(); releaseScrollContainment(); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; overlays.clear(); terminals.forEach(candidate => candidate.dispose()); };
+  }, [id, onQuestion, terminalMode]);
   useEffect(() => {
     const prompt = promptRef.current;
-    if (!prompt) return;
-    const measure = () => { if (!promptExpanded) setPromptOverflows(prompt.scrollHeight > prompt.clientHeight + 1); };
+    if (!prompt || promptExpanded) return;
+    const measure = () => setPromptOverflows(prompt.scrollWidth > prompt.clientWidth + 1);
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(prompt);
@@ -472,116 +838,145 @@ function Log({ id, onOpenTerminal, onQuestion }: { id: string; onOpenTerminal: (
   useEffect(() => { setPromptExpanded(false); }, [lastPrompt]);
   useEffect(() => { if (!promptOverflows) setPromptExpanded(false); }, [promptOverflows]);
   const loading = !hasRendered;
-  const loadingLabel = status === 'Live' ? 'Waiting for output' : status;
-  return <section className="log-shell"><div className="log"><div className={`log-topbar ${promptOverflows ? 'expandable' : ''} ${promptExpanded ? 'expanded' : ''}`} onClick={() => promptOverflows && setPromptExpanded(expanded => !expanded)}><button className="terminal-toggle" aria-label="Open terminal" title="Open terminal" onClick={event => { event.stopPropagation(); onOpenTerminal(); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 6 5 6-5 6m7 0h7" /></svg></button>{lastPrompt && <span className={`last-prompt ${promptExpanded ? 'expanded' : ''}`} ref={promptRef} title={lastPrompt}><strong>Last prompt:</strong> {lastPrompt}</span>}<span className={`status log-status ${status.toLowerCase()}`}><i />{status}</span></div><div className="log-canvas" ref={canvas} aria-label="Live log"><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{status !== 'Live' && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading"><span className="spinner" />{loadingLabel}</div>}<div className="log-controls-bottom">{scrolledUp && <button className="log-control back-to-bottom" onClick={() => logHistoryRequests.get(id)?.(0)}>Back to bottom</button>}<div className="page-controls"><button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></section>;
+  const visibleStatus = terminalMode && status === 'Live' ? 'Terminal' : status;
+  const loadingLabel = terminalMode ? 'Connecting to pane' : status === 'Live' ? 'Waiting for output' : status;
+  const togglePrompt = () => { if (promptOverflows) setPromptExpanded(expanded => !expanded); };
+  return <section className="log-shell"><div className={`log${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}`}><div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'}><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{status !== 'Live' && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading"><span className="spinner" />{loadingLabel}</div>}<div className="log-footer">{!terminalMode && <div className="log-controls-bottom">{scrolledUp && <button className="log-control back-to-bottom" onClick={() => logHistoryRequests.get(id)?.(0)}>Back to bottom</button>}<div className="page-controls"><button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div>}</div></div><div className={`log-topbar${promptOverflows ? ' expandable' : ''}${promptExpanded ? ' expanded' : ''}`} onClick={togglePrompt}>{!terminalMode && lastPrompt && <span className={`last-prompt${promptOverflows ? ' expandable' : ''}${promptExpanded ? ' expanded' : ''}`} ref={promptRef} title={lastPrompt} role={promptOverflows ? 'button' : undefined} tabIndex={promptOverflows ? 0 : undefined} aria-expanded={promptOverflows ? promptExpanded : undefined} onKeyDown={event => { if (promptOverflows && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); togglePrompt(); } }}><strong>Last prompt:</strong> {lastPrompt}</span>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}><i />{visibleStatus}</span></div></section>;
 }
 
-function Terminal({ agent }: { agent: Agent }) {
-  const host = useRef<HTMLDivElement | null>(null);
-  const socket = useRef<WebSocket | undefined>(undefined);
-  const [connected, setConnected] = useState(false);
-  useEffect(() => () => socket.current?.close(), []);
-  const connect = async () => {
-    const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/tickets`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'terminal' }) });
-    const { ticket } = await response.json();
-    const terminal = new XTerm({ cursorBlink: true, theme: { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#585b7088', black: '#45475a', red: '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af', blue: '#89b4fa', magenta: '#f5c2e7', cyan: '#94e2d5', white: '#bac2de', brightBlack: '#585b70', brightRed: '#f38ba8', brightGreen: '#a6e3a1', brightYellow: '#f9e2af', brightBlue: '#89b4fa', brightMagenta: '#f5c2e7', brightCyan: '#89dceb', brightWhite: '#a6adc8' } });
-    const fit = new FitAddon();
-    terminal.loadAddon(fit);
-    terminal.open(host.current!);
-    fit.fit();
-    const ws = new WebSocket(`${location.origin.replace(/^http/, 'ws')}/ws/terminal/${encodeURIComponent(agent.id)}`, ['rac', ticket]);
-    socket.current = ws;
-    const bytes = (text: string) => Uint8Array.from(atob(text.replace(/-/g, '+').replace(/_/g, '/')), character => character.charCodeAt(0));
-    const b64 = (text: string) => btoa(String.fromCharCode(...new TextEncoder().encode(text))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    ws.onopen = () => { setConnected(true); ws.send(JSON.stringify({ v: 1, type: 'resize', cols: terminal.cols, rows: terminal.rows })); };
-    ws.onmessage = event => { const frame = JSON.parse(event.data); if (frame.type === 'output') terminal.write(bytes(frame.data)); };
-    terminal.onData(data => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ v: 1, type: 'input', data: b64(data) })));
-    const observer = new ResizeObserver(() => { fit.fit(); if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ v: 1, type: 'resize', cols: terminal.cols, rows: terminal.rows })); });
-    observer.observe(host.current!);
-    ws.onclose = () => { observer.disconnect(); terminal.dispose(); setConnected(false); };
+type MoreMenuIconName = 'attachment'|'directory'|'new-task'|'pull-request'|'swap';
+function MoreMenuIcon({ name }: { name: MoreMenuIconName }) {
+  if (name === 'pull-request') return <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5" /><circle cx="18" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><path d="M6 8.5v7M18 8.5v2.5a7 7 0 0 1-7 7H8.5M15.5 6H13" /></svg>;
+  const paths: Record<Exclude<MoreMenuIconName, 'pull-request'>, string> = {
+    attachment: 'm9 12 5.7-5.7a3.5 3.5 0 1 1 5 5L11 20a5 5 0 1 1-7-7l8.3-8.3',
+    directory: 'M3 7h6l2 2h10v10H3V7Zm0 4h18',
+    'new-task': 'M12 5v14M5 12h14',
+    swap: 'M5 7h13m0 0-4-4m4 4-4 4M19 17H6m0 0 4 4m-4-4 4-4'
   };
-  return <section><button disabled={connected} onClick={() => void connect()}>Confirm and connect</button><div className="terminal" ref={host} aria-label="Interactive session terminal" /></section>;
+  return <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d={paths[name]} /></svg>;
 }
 
-function useViewportFlyout(open: boolean) {
-  const anchorRef = useRef<HTMLSpanElement | null>(null);
-  const flyoutRef = useRef<HTMLDivElement | null>(null);
-  const [style, setStyle] = useState<CSSProperties>({ visibility: 'hidden' });
-  useLayoutEffect(() => {
-    if (!open) { setStyle({ visibility: 'hidden' }); return; }
-    const position = () => {
-      const anchor = anchorRef.current;
-      const flyout = flyoutRef.current;
-      if (!anchor || !flyout) return;
-      const { top, right, bottom } = anchor.getBoundingClientRect();
-      const margin = 8;
-      const gap = 6;
-      const width = Math.min(flyout.offsetWidth, window.innerWidth - margin * 2);
-      const below = window.innerHeight - bottom - gap;
-      const above = top - gap;
-      const side = below >= above ? 'below' : 'above';
-      const maxHeight = Math.max(1, side === 'below' ? below : above);
-      const height = Math.min(flyout.scrollHeight, maxHeight);
-      const flyoutTop = side === 'below' ? bottom + gap : top - height - gap;
-      const left = Math.max(margin, Math.min(right - width, window.innerWidth - width - margin));
-      setStyle({ position: 'fixed', top: flyoutTop, left, right: 'auto', bottom: 'auto', width, maxWidth: `${window.innerWidth - margin * 2}px`, maxHeight: `${maxHeight}px`, visibility: 'visible' });
-    };
-    position();
-    const observer = new ResizeObserver(position);
-    if (anchorRef.current) observer.observe(anchorRef.current);
-    if (flyoutRef.current) observer.observe(flyoutRef.current);
-    window.addEventListener('resize', position);
-    window.addEventListener('scroll', position, true);
-    return () => { observer.disconnect(); window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true); };
-  }, [open]);
-  return { anchorRef, flyoutRef, style };
-}
-
-function More({ id, worktreeId, stack }: { id?: string; worktreeId?: string; stack?: Stack }) {
+function More({ id, newTaskConfigured = false, attachDisabled = false, onAttach, swapDisabled = false, onSwap, onSelectTarget }: { id?: string; newTaskConfigured?: boolean; attachDisabled?: boolean; onAttach?: () => void; swapDisabled?: boolean; onSwap?: () => void; onSelectTarget: (target: DashboardTarget) => void }) {
   const [menuOpen, setMenuOpen] = useState(false); const { anchorRef, flyoutRef, style } = useViewportFlyout(menuOpen);
-  const [directoryOpen, setDirectoryOpen] = useState(false); const [tree, setTree] = useState<{ root: string; path: string; directories: string[] }>(); const [running, setRunning] = useState<StackAction>();
-  const [pullRequests, setPullRequests] = useState<PullRequestChoice[]>(); const [prOpen, setPrOpen] = useState(false); const [switchingPr, setSwitchingPr] = useState<number>();
+  const [directoryOpen, setDirectoryOpen] = useState(false); const [tree, setTree] = useState<{ root: string; path: string; directories: string[] }>();
+  const [prSwitch, setPrSwitch] = useState<PullRequestSwitchAvailability>(); const [loadingPrSwitch, setLoadingPrSwitch] = useState(false); const [switchingPr, setSwitchingPr] = useState<number>();
+  const [newTask, setNewTask] = useState<NewTaskAvailability>(); const [loadingNewTask, setLoadingNewTask] = useState(false); const [startingNewTask, setStartingNewTask] = useState(false);
   useEffect(() => { if (!menuOpen) return; const close = (event: MouseEvent) => { const target = event.target as Node; if (!anchorRef.current?.contains(target) && !flyoutRef.current?.contains(target)) setMenuOpen(false); }; document.addEventListener('mousedown', close); return () => document.removeEventListener('mousedown', close); }, [menuOpen]);
   useEffect(() => { if (!directoryOpen || id === undefined) return; void request(`/api/agents/${encodeURIComponent(id)}/directories`).then(r => r.ok ? r.json() : undefined).then(setTree); }, [directoryOpen, id]);
   useEffect(() => {
-    if (!menuOpen || id === undefined) { setPrOpen(false); return; }
+    if (!menuOpen || id === undefined) { setPrSwitch(undefined); setNewTask(undefined); setLoadingPrSwitch(false); setLoadingNewTask(false); return; }
     let cancelled = false;
-    setPullRequests(undefined);
-    void request(`/api/agents/${encodeURIComponent(id)}/switch-prs`).then(response => response.ok ? response.json() : undefined).then((payload: { pullRequests?: unknown } | undefined) => {
-      if (cancelled || !Array.isArray(payload?.pullRequests)) return;
-      setPullRequests(payload.pullRequests.filter((value): value is PullRequestChoice => value !== null && typeof value === 'object' && Number.isInteger((value as PullRequestChoice).number) && typeof (value as PullRequestChoice).title === 'string' && typeof (value as PullRequestChoice).branch === 'string' && typeof (value as PullRequestChoice).draft === 'boolean' && typeof (value as PullRequestChoice).url === 'string'));
-    }).catch(() => {});
+    setLoadingPrSwitch(true);
+    void request(`/api/agents/${encodeURIComponent(id)}/switch-prs`).then(response => response.ok ? response.json() : undefined).then((payload: unknown) => {
+      if (cancelled) return;
+      if (payload !== null && typeof payload === 'object' && typeof (payload as { enabled?: unknown }).enabled === 'boolean' && Array.isArray((payload as { pullRequests?: unknown }).pullRequests)) {
+        const pullRequests = (payload as { pullRequests: unknown[] }).pullRequests.filter((value): value is SwitchablePullRequest => {
+          if (value === null || typeof value !== 'object' || !Number.isInteger((value as PullRequestChoice).number) || typeof (value as PullRequestChoice).title !== 'string' || typeof (value as PullRequestChoice).branch !== 'string' || typeof (value as PullRequestChoice).draft !== 'boolean' || typeof (value as PullRequestChoice).url !== 'string' || typeof (value as SwitchablePullRequest).checkedOut !== 'boolean') return false;
+          const openIn = (value as SwitchablePullRequest).openIn;
+          return openIn === undefined || (openIn !== null && typeof openIn === 'object' && typeof openIn.worktreeId === 'string' && typeof openIn.worktreeName === 'string' && (openIn.agentId === undefined || typeof openIn.agentId === 'string'));
+        });
+        setPrSwitch({ enabled: (payload as { enabled: boolean }).enabled, pullRequests });
+      }
+      setLoadingPrSwitch(false);
+    }).catch(() => { if (!cancelled) setLoadingPrSwitch(false); });
+    setLoadingNewTask(newTaskConfigured);
+    if (!newTaskConfigured) setNewTask(undefined);
+    if (newTaskConfigured) void request(`/api/agents/${encodeURIComponent(id)}/new-task`).then(response => response.ok ? response.json() : undefined).then((payload: unknown) => {
+      if (cancelled || payload === null || typeof payload !== 'object' || typeof (payload as { enabled?: unknown }).enabled !== 'boolean') throw new Error('invalid new task availability');
+      const availability = payload as { enabled: boolean; reason?: unknown };
+      setNewTask({ enabled: availability.enabled, reason: typeof availability.reason === 'string' ? availability.reason : undefined });
+    }).catch(() => { if (!cancelled) setNewTask({ enabled: false, reason: 'Unable to check whether a new task can start.' }); }).finally(() => { if (!cancelled) setLoadingNewTask(false); });
     return () => { cancelled = true; };
-  }, [menuOpen, id]);
+  }, [menuOpen, id, newTaskConfigured]);
+  const swapToTerminal = () => { setMenuOpen(false); onSwap?.(); };
+  const attachFiles = () => { setMenuOpen(false); window.requestAnimationFrame(() => onAttach?.()); };
   const chooseDirectory = () => { setMenuOpen(false); setDirectoryOpen(true); };
-  const command = async (action: StackAction) => { if (worktreeId === undefined || running !== undefined) return; setRunning(action); try { await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' }); } finally { setRunning(undefined); setMenuOpen(false); } };
   const switchPullRequest = async (number: number) => { if (id === undefined || switchingPr !== undefined) return; setSwitchingPr(number); try { const response = await request(`/api/agents/${encodeURIComponent(id)}/switch-pr`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ number }) }); if (response.ok) setMenuOpen(false); } finally { setSwitchingPr(undefined); } };
-  const labels: Record<StackAction, string> = { start: 'Start stack', stop: 'Stop stack', build: 'Build stack', restart: 'Restart stack', migrate: 'Migrate stack' };
-  const hasActions = (stack?.actions.length ?? 0) > 0;
-  const hasPullRequests = (pullRequests?.length ?? 0) > 0;
-  if (id === undefined && !hasActions) return null;
-  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} onClick={() => setMenuOpen(value => !value)}>⋮</button></span>{menuOpen && createPortal(<div className="more-menu flyout-menu" ref={flyoutRef} style={style}>{id !== undefined && <button onClick={chooseDirectory}>Change directory</button>}{id !== undefined && (hasPullRequests || hasActions) && <hr className="more-menu-divider" />}{hasPullRequests && <button onClick={() => setPrOpen(value => !value)} aria-expanded={prOpen}>Switch to PR</button>}{prOpen && pullRequests?.map(pullRequest => <button key={pullRequest.number} className="switch-pr" disabled={switchingPr !== undefined} onClick={() => void switchPullRequest(pullRequest.number)}>{switchingPr === pullRequest.number ? 'Switching…' : <>{pullRequest.draft ? 'Draft' : 'Open'} #{pullRequest.number}: {pullRequest.title}</>}</button>)}{hasPullRequests && hasActions && <hr className="more-menu-divider" />}{stack?.actions.map(action => <button key={action} disabled={running !== undefined} onClick={() => void command(action)}>{running === action ? 'Running…' : labels[action]}</button>)}</div>, document.body)}{directoryOpen && id !== undefined && <div className="dialog" role="dialog" aria-modal="true"><div><button onClick={() => setDirectoryOpen(false)}>Close</button><h2>Change directory</h2><p>{tree?.path ?? 'Loading directories…'}</p>{tree && <button onClick={() => void request(`/api/agents/${encodeURIComponent(id)}/directory`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: tree.path }) }).then(() => setDirectoryOpen(false))}>Start agent here</button>}{tree?.directories.map(name => <button key={name} onClick={() => void request(`/api/agents/${encodeURIComponent(id)}/directories?path=${encodeURIComponent(`${tree.path}/${name}`)}`).then(r => r.ok && r.json()).then(setTree)}>{name}</button>)}</div></div>}</>;
+  const startNewTask = async () => { if (id === undefined || startingNewTask || !newTask?.enabled) return; setStartingNewTask(true); try { const response = await request(`/api/agents/${encodeURIComponent(id)}/new-task`, { method: 'POST' }); if (response.ok) setMenuOpen(false); } finally { setStartingNewTask(false); } };
+  const hasPullRequestSwitch = prSwitch !== undefined;
+  const hasPullRequestSection = loadingPrSwitch || hasPullRequestSwitch;
+  const hasNewTask = newTaskConfigured;
+  const toggleMenu = () => {
+    if (!menuOpen && id !== undefined) { setPrSwitch(undefined); setNewTask(undefined); setLoadingPrSwitch(true); setLoadingNewTask(newTaskConfigured); }
+    setMenuOpen(open => !open);
+  };
+  const selectWorktree = (target: DashboardTarget) => { setMenuOpen(false); onSelectTarget(target); };
+  if (id === undefined) return null;
+  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} onClick={toggleMenu}>⋮</button></span>{menuOpen && createPortal(<div className={`more-menu flyout-menu${hasPullRequestSection ? ' pr-switch-menu' : ''}`} ref={flyoutRef} style={style}>{onSwap && <button disabled={swapDisabled} onClick={swapToTerminal}><MoreMenuIcon name="swap" />Swap to terminal</button>}{onAttach && <button disabled={attachDisabled} onClick={attachFiles}><MoreMenuIcon name="attachment" />Attach files</button>}<button onClick={chooseDirectory}><MoreMenuIcon name="directory" />Change directory</button>{hasNewTask && <hr className="more-menu-divider" />}{hasNewTask && loadingNewTask && <button className="new-task-loading" disabled><span className="spinner" />New Task</button>}{hasNewTask && newTask && <div className="new-task-option"><button disabled={!newTask.enabled || startingNewTask} onClick={() => void startNewTask()}>{startingNewTask ? <><span className="spinner" />Starting New Task</> : <><MoreMenuIcon name="new-task" />New Task</>}</button>{!newTask.enabled && <span className="more-menu-reason" role="status">{newTask.reason ?? 'New Task is currently unavailable.'}</span>}</div>}{hasPullRequestSection && <hr className="more-menu-divider" />}{loadingPrSwitch && <div className="pr-switch-loading" role="status" aria-label="Loading pull requests"><span className="spinner" />Loading pull requests…</div>}{prSwitch?.pullRequests.map(pullRequest => {
+    const status = pullRequest.draft ? 'draft' : 'open';
+    const label = `#${pullRequest.number}: ${pullRequest.title}`;
+    const unavailableReason = pullRequest.checkedOut ? `Already open in ${pullRequest.openIn?.worktreeName ?? 'another worktree'}` : !prSwitch.enabled ? 'Working copy must be clean and pushed' : label;
+    return <div key={pullRequest.number} className="switch-pr-option"><button className="switch-pr" disabled={switchingPr !== undefined || pullRequest.checkedOut || !prSwitch.enabled} title={unavailableReason} aria-label={label} onClick={() => void switchPullRequest(pullRequest.number)}>{switchingPr === pullRequest.number ? <><span className="spinner" />Switching…</> : <><PullRequestStatusIcon status={status} className="switch-pr-status-icon" /><span className="switch-pr-copy"><strong className={`status-${status}`}>#{pullRequest.number}</strong><span>: {pullRequest.title}</span></span></>}</button><span className="switch-pr-actions">{pullRequest.openIn && <button className="switch-pr-worktree" onClick={() => selectWorktree(pullRequest.openIn!)}>Switch to {pullRequest.openIn.worktreeName}</button>}<a className="switch-pr-external" href={pullRequest.url} target="_blank" rel="noreferrer" aria-label={`Open PR #${pullRequest.number} in GitHub`} title={`Open PR #${pullRequest.number} in GitHub`}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5M19 5l-8 8M19 14v5H5V5h5" /></svg></a></span></div>;
+  })}{prSwitch?.pullRequests.length === 0 && <span className="more-menu-empty">No open pull requests</span>}</div>, document.body)}{directoryOpen && <div className="dialog" role="dialog" aria-modal="true"><div><button onClick={() => setDirectoryOpen(false)}>Close</button><h2>Change directory</h2><p>{tree?.path ?? 'Loading directories…'}</p>{tree && <button onClick={() => void request(`/api/agents/${encodeURIComponent(id)}/directory`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: tree.path }) }).then(() => setDirectoryOpen(false))}>Start agent here</button>}{tree?.directories.map(name => <button key={name} onClick={() => void request(`/api/agents/${encodeURIComponent(id)}/directories?path=${encodeURIComponent(`${tree.path}/${name}`)}`).then(r => r.ok && r.json()).then(setTree)}>{name}</button>)}</div></div>}</>;
 }
 
-function AgentCard({ agent, active, onDeleted }: { agent: Agent; active: boolean; onDeleted: () => Promise<void> }) {
+function AgentCard({ agent, active, tabBar, onDeleted, onSelectTarget }: { agent: Agent; active: boolean; tabBar: ReactNode; onDeleted: () => Promise<void>; onSelectTarget: (target: DashboardTarget) => void }) {
   const [terminal, setTerminal] = useState(false);
+  const terminalTransition = useRef<'agent'|'backgrounding'|'terminal'|'foregrounding'>('agent');
+  const mounted = useRef(true);
   const [cancelling, setCancelling] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deactivating, setDeactivating] = useState(false);
+  const [swapping, setSwapping] = useState(false);
   const [question, setQuestion] = useState<ChoiceQuestion>();
   const cancel = async () => { if (cancelling) return; setCancelling(true); try { await request(`/api/agents/${encodeURIComponent(agent.id)}/cancel`, { method: 'POST' }); } finally { setCancelling(false); } };
   const remove = async () => { if (deleting) return; setDeleting(true); try { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}`, { method: 'DELETE' }); if (response.ok) await onDeleted(); } finally { setDeleting(false); } };
   const deactivate = async () => { if (deactivating) return; setDeactivating(true); try { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/deactivate`, { method: 'POST' }); if (response.ok) await onDeleted(); } finally { setDeactivating(false); } };
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (terminalTransition.current !== 'terminal') return;
+      terminalTransition.current = 'foregrounding';
+      void request(`/api/agents/${encodeURIComponent(agent.id)}/foreground`, { method: 'POST' }).catch(() => undefined).finally(() => { terminalTransition.current = 'agent'; });
+    };
+  }, [agent.id]);
+  const swap = async () => {
+    if (swapping) return;
+    setSwapping(true);
+    try {
+      if (terminal) {
+        terminalTransition.current = 'foregrounding';
+        const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/foreground`, { method: 'POST' });
+        if (response.ok) {
+          terminalTransition.current = 'agent';
+          if (mounted.current) setTerminal(false);
+        } else {
+          terminalTransition.current = 'terminal';
+        }
+        return;
+      }
+      terminalTransition.current = 'backgrounding';
+      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/background`, { method: 'POST' });
+      if (!response.ok) {
+        terminalTransition.current = 'agent';
+        return;
+      }
+      if (!mounted.current) {
+        terminalTransition.current = 'foregrounding';
+        await request(`/api/agents/${encodeURIComponent(agent.id)}/foreground`, { method: 'POST' });
+        terminalTransition.current = 'agent';
+        return;
+      }
+      terminalTransition.current = 'terminal';
+      setTerminal(true);
+    } catch {
+      terminalTransition.current = terminal ? 'terminal' : 'agent';
+    } finally {
+      if (mounted.current) setSwapping(false);
+    }
+  };
   const omxQuestion = agent.question === undefined ? undefined : { text: agent.question.text, choices: agent.question.choices, omxId: agent.question.id };
-  return <article className="agent-view"><Log id={agent.id} onOpenTerminal={() => setTerminal(true)} onQuestion={setQuestion} /><Prompt id={agent.id} canCancel={active} cancelling={cancelling} deleting={deleting} deactivating={deactivating} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} projectUrl={agent.projectUrl} pullRequestUrl={agent.pullRequestUrl} question={omxQuestion ?? question} worktreeId={agent.worktreeId} stack={agent.stack} />{terminal && <div className="dialog" role="dialog" aria-modal="true"><div><button onClick={() => setTerminal(false)}>Close</button><Terminal agent={agent} /></div></div>}</article>;
+  return <article className="agent-view"><Log id={agent.id} onQuestion={setQuestion} terminalMode={terminal} />{tabBar}<PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => (await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) })).ok} /><Prompt id={agent.id} canCancel={active} cancelling={cancelling} deleting={deleting} deactivating={deactivating} swapping={swapping} swapped={terminal} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSwap={() => void swap()} onSelectTarget={onSelectTarget} projectUrl={agent.projectUrl} question={omxQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} stack={agent.stack} /></article>;
 }
 
 function launchError(response: Response): Promise<string> {
   return response.json().then((body: { error?: unknown }) => typeof body.error === 'string' ? body.error : `Launch failed (${response.status}).`).catch(() => `Launch failed (${response.status}).`);
 }
 
-function WorktreeCard({ worktree, onLaunched }: { worktree: Worktree; onLaunched: (agentId: string) => void }) {
-  const [launching, setLaunching] = useState(false);
+function WorktreeCard({ worktree, tabBar, onLaunched }: { worktree: Worktree; tabBar: ReactNode; onLaunched: (agentId: string, sourceItemKey: string) => void }) {
+  const launchKey = `worktree-launch:${worktree.id}`;
+  const launching = usePendingOperation(launchKey);
   const [error, setError] = useState('');
   useEffect(() => {
     if (!error) return;
@@ -589,19 +984,18 @@ function WorktreeCard({ worktree, onLaunched }: { worktree: Worktree; onLaunched
     return () => window.clearTimeout(timer);
   }, [error]);
   const launch = async () => {
-    if (!worktree.available || launching) return;
+    if (!worktree.available || launching || !beginPendingOperation(launchKey)) return;
     setError('');
-    setLaunching(true);
     try {
       const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/launch`, { method: 'POST' });
       if (!response.ok) return setError(await launchError(response));
       const payload = await response.json() as { agentId?: unknown };
       if (typeof payload.agentId !== 'string') return setError('The agent started but could not be opened.');
-      onLaunched(payload.agentId);
+      onLaunched(payload.agentId, `worktree-${worktree.id}`);
     } catch { setError('Unable to reach the console while launching the agent.'); }
-    finally { setLaunching(false); }
+    finally { setPendingOperation(launchKey, false); }
   };
-  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><div className="log-topbar"><button className="terminal-toggle" disabled aria-label="Open terminal" title="Open terminal"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 6 5 6-5 6m7 0h7" /></svg></button><span className="status log-status inactive"><i />Inactive</span></div><div className="log-loading inactive">{launching ? <><span className="spinner" />Starting Codex…</> : 'Inactive'}</div><div className="log-controls-bottom"><div className="page-controls"><button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></section><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions"><span className="prompt-actions-spacer" aria-hidden="true" /><More worktreeId={worktree.id} stack={worktree.stack} /><PullRequestOpen url={worktree.pullRequestUrl} /><ProjectOpen url={worktree.projectUrl} disabled={worktree.stack?.running === false} /><button className="queue" disabled={!worktree.available || launching} onClick={() => void launch()}>{launching ? <><span className="spinner" />Launching</> : 'Launch agent'}</button></div></section></article>;
+  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><div className="log-loading inactive">{launching ? <><span className="spinner" />Starting Codex…</> : 'Inactive'}</div><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls"><button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div><div className="log-topbar"><span className="status log-status inactive"><i />Inactive</span></div></section>{tabBar}<PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions"><span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} /><button className="queue" disabled={!worktree.available || launching} onClick={() => void launch()}>{launching ? <><span className="spinner" />Launching</> : 'Launch agent'}</button></div></section></article>;
 }
 
 function NotificationControl() {
@@ -621,7 +1015,7 @@ function NotificationControl() {
     if (!supported || permission !== 'default' || !publicKey || !('serviceWorker' in navigator)) return;
     const next = await Notification.requestPermission();
     setPermission(next);
-    if (next === 'granted') { await syncSubscription(); await showNotification('Alerts enabled', 'You will be notified when an agent is ready.', 'rac-alerts-enabled'); }
+    if (next === 'granted') { await syncSubscription(); await showNotification('system', 'Alerts enabled', 'You will be notified when an agent is ready.', 'rac-alerts-enabled'); }
   };
   if (!supported || !publicKey || permission === 'granted') return null;
   if (permission === 'denied') return <span className="notification-status" title="Enable notifications for this site in your browser settings">Alerts blocked</span>;
@@ -642,6 +1036,8 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
   const [activateAgentId, setActivateAgentId] = useState<string>();
   const tabInitialized = useRef(false);
   const refreshInFlight = useRef(false);
+  const dashboardContent = useRef('');
+  const selectedItemKey = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!launchErrorMessage) return;
     const timer = window.setTimeout(() => setLaunchErrorMessage(''), 5_000);
@@ -654,6 +1050,7 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
     return () => document.removeEventListener('mousedown', close);
   }, [launcherOpen]);
   const agentStates = useRef(new Map<string, AgentState>());
+  const pendingCompletions = useRef(new Map<string, { due: number; timer: number }>());
   const refresh = async () => {
     if (refreshInFlight.current) return;
     refreshInFlight.current = true;
@@ -664,22 +1061,58 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
       if (!response.ok) throw new Error('dashboard unavailable');
       const payload: unknown = await response.json();
       if (!isDashboard(payload)) throw new Error('invalid dashboard response');
-      setData(payload);
+      const content = JSON.stringify([payload.agents, payload.worktrees]);
+      if (content !== dashboardContent.current) {
+        dashboardContent.current = content;
+        setData(payload);
+      }
       setUnavailable(false);
     } catch { setUnavailable(true); }
     finally { refreshInFlight.current = false; }
   };
   useEffect(() => { void refresh(); const timer = window.setInterval(() => void refresh(), 5_000); return () => window.clearInterval(timer); }, []);
+  useEffect(() => () => {
+    for (const pending of pendingCompletions.current.values()) window.clearTimeout(pending.timer);
+    pendingCompletions.current.clear();
+  }, []);
   useEffect(() => {
     if (!data) return;
     const next = new Map<string, AgentState>();
+    const observed = new Set<string>();
     for (const agent of data.agents) {
       const state = agentState(agent);
       const previous = agentStates.current.get(agent.id);
-      if (previous === 'working' && state === 'prompt-done') {
-        void showNotification('Agent finished', `${agent.worktreeLabel ?? agent.title} is ready for another prompt.`, `agent-finished-${agent.id}`, `/#agent=${encodeURIComponent(agent.id)}`);
+      const tag = agentNotificationTag(agent);
+      const label = agent.worktreeLabel ?? agent.displayLabel ?? agent.title;
+      const focused = selectedItemKey.current === `agent-${agent.id}` && pageFocused();
+      observed.add(agent.id);
+      const pendingCompletion = pendingCompletions.current.get(agent.id);
+      if (state !== 'prompt-done' && pendingCompletion !== undefined) {
+        window.clearTimeout(pendingCompletion.timer);
+        pendingCompletions.current.delete(agent.id);
       }
+      if (previous !== undefined && previous !== 'action-required' && state === 'action-required') {
+        const body = agent.question === undefined ? `${label} is waiting for your response.` : `${label}: ${agent.question.text}`;
+        if (focused) dismissAgentNotifications(agent);
+        else void showNotification('question', 'Agent has a question', body, tag, `/#agent=${encodeURIComponent(agent.id)}`, agent.worktreeId);
+      }
+      if (previous === 'working' && state === 'prompt-done') {
+        const delay = 2_000;
+        const timer = window.setTimeout(() => void refresh(), delay);
+        pendingCompletions.current.set(agent.id, { due: Date.now() + delay, timer });
+      } else if (state === 'prompt-done' && pendingCompletion !== undefined && Date.now() >= pendingCompletion.due) {
+        window.clearTimeout(pendingCompletion.timer);
+        pendingCompletions.current.delete(agent.id);
+        if (focused) dismissAgentNotifications(agent);
+        else void showNotification('finished', 'Agent finished', `${label} is ready for another prompt.`, tag, `/#agent=${encodeURIComponent(agent.id)}`, agent.worktreeId);
+      }
+      if (previous === 'action-required' && state === 'working') void dismissNotification(tag);
       next.set(agent.id, state);
+    }
+    for (const [agentId, pending] of pendingCompletions.current) {
+      if (observed.has(agentId)) continue;
+      window.clearTimeout(pending.timer);
+      pendingCompletions.current.delete(agentId);
     }
     agentStates.current = next;
   }, [data]);
@@ -705,6 +1138,8 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
     ...data.agents.map(agent => ({ key: `agent-${agent.id}`, label: agentLabel(agent), state: agentState(agent), order: agent.worktreeOrder ?? Number.MAX_SAFE_INTEGER, agent })),
     ...data.worktrees.filter(worktree => worktree.pinned).map(worktree => ({ key: `worktree-${worktree.id}`, label: worktree.label, state: 'closed' as const, order: worktree.order, worktree }))
   ].sort((left, right) => left.order - right.order);
+  const activeItemKey = items[active]?.key;
+  selectedItemKey.current = activeItemKey;
   useEffect(() => { setActive(current => Math.min(current, Math.max(items.length - 1, 0))); }, [items.length]);
   const tabKey = items.map(item => item.label).join('\u0000');
   useEffect(() => {
@@ -717,7 +1152,8 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
     if (linked >= 0) setActive(linked);
     tabInitialized.current = true;
   }, [tabKey]);
-  const select = (index: number) => { const item = items[index]; if (!item) return; const target = item.agent === undefined ? `tab=${encodeURIComponent(item.label)}` : `agent=${encodeURIComponent(item.agent.id)}`; history.replaceState(null, '', `${location.pathname}${location.search}#${target}`); setActive(index); };
+  const select = (index: number) => { const item = items[index]; if (!item) return; selectedItemKey.current = item.key; const target = item.agent === undefined ? `tab=${encodeURIComponent(item.label)}` : `agent=${encodeURIComponent(item.agent.id)}`; history.replaceState(null, '', `${location.pathname}${location.search}#${target}`); setActive(index); };
+  useShiftArrowTabCycling(active, items.length, select);
   useEffect(() => {
     if (activateAgentId === undefined) return;
     const index = items.findIndex(candidate => candidate.agent?.id === activateAgentId);
@@ -725,7 +1161,11 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
     select(index);
     setActivateAgentId(undefined);
   }, [activateAgentId, tabKey]);
-  const launched = (agentId: string) => { setLaunchErrorMessage(''); setActivateAgentId(agentId); void refresh(); };
+  const launched = (agentId: string, sourceItemKey?: string) => {
+    setLaunchErrorMessage('');
+    if (sourceItemKey === undefined || selectedItemKey.current === sourceItemKey) setActivateAgentId(agentId);
+    void refresh();
+  };
   const createAgent = async () => {
     if (creatingAgent) return;
     setLaunchErrorMessage('');
@@ -750,39 +1190,126 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
     const observer = new ResizeObserver(measure);
     if (tabsRef.current) observer.observe(tabsRef.current);
     return () => observer.disconnect();
-  }, [items.length, launcherOpen]);
+  }, [items.length, launcherOpen, activeItemKey]);
   const launchWorktree = async (worktree: Worktree) => { setLauncherOpen(false); const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/launch`, { method: 'POST' }); if (!response.ok) return setLaunchErrorMessage(await launchError(response)); const payload = await response.json() as { agentId?: unknown }; if (typeof payload.agentId === 'string') launched(payload.agentId); };
-  const selectedAgentId = data === undefined ? undefined : items[active]?.agent?.id;
-  useEffect(() => { if (selectedAgentId !== undefined) void dismissNotification(`agent-finished-${selectedAgentId}`); }, [selectedAgentId]);
+  const selectTarget = (target: DashboardTarget) => {
+    const index = items.findIndex(candidate => (target.agentId !== undefined && candidate.agent?.id === target.agentId) || candidate.agent?.worktreeId === target.worktreeId || candidate.worktree?.id === target.worktreeId);
+    if (index >= 0) return select(index);
+    const worktree = data?.worktrees.find(candidate => candidate.id === target.worktreeId);
+    if (worktree !== undefined) void launchWorktree(worktree);
+  };
+  const selectedAgent = data === undefined ? undefined : items[active]?.agent;
+  const selectedAgentId = selectedAgent?.id;
+  const selectedWorktreeId = selectedAgent?.worktreeId;
+  useEffect(() => {
+    if (selectedAgentId === undefined) return;
+    const dismiss = () => { if (pageFocused()) dismissAgentNotifications({ id: selectedAgentId, worktreeId: selectedWorktreeId }); };
+    dismiss();
+    window.addEventListener('focus', dismiss);
+    document.addEventListener('visibilitychange', dismiss);
+    return () => { window.removeEventListener('focus', dismiss); document.removeEventListener('visibilitychange', dismiss); };
+  }, [selectedAgentId, selectedWorktreeId]);
   if (data === undefined) return <LoadingScreen label={unavailable ? 'Reconnecting to console' : 'Syncing console state'} />;
   const item = items[active];
   const stateLabel: Record<AgentState, string> = { working: 'Working', 'prompt-done': 'Prompt done', 'action-required': 'Action required', closed: 'Agent closed' };
-  return <main className="console"><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}status-${entry.state}`} title={stateLabel[entry.state]} aria-label={`${entry.label} — ${stateLabel[entry.state]}`} onClick={() => select(index)}>{entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{Array.from(entry.label).map((letter, letterIndex) => <span className="tab-label-letter" key={`${letter}-${letterIndex}`} style={{ animationDelay: `-${letterIndex * 75}ms` }}>{letter === ' ' ? '\u00a0' : letter}</span>)}</span> : entry.label}</button>)}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label="Launch agent" aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle}><button onClick={() => void createAgent()}>~ Home</button>{data.worktrees.map(worktree => <button key={worktree.id} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{launchErrorMessage && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}{items.length > 0 ? <section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{updateAvailable && <button className="update-ready" type="button" onClick={onReload}>Update available <span>Reload</span></button>}{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} onDeleted={refresh} />}{item?.worktree && <WorktreeCard worktree={item.worktree} onLaunched={launched} />}</section> : <article className="worktree-view"><h2>No sessions</h2></article>}</main>;
+  const tabBar = <><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}status-${entry.state}`} title={stateLabel[entry.state]} aria-label={`${entry.label} — ${stateLabel[entry.state]}`} onClick={() => select(index)}>{entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>)}<NotificationControl />{updateAvailable && <button className="update-ready" type="button" onClick={onReload}>Update available <span>Reload</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label="Launch agent" aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle}><button onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{launchErrorMessage && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
+  if (items.length === 0) return <main className="console"><article className="worktree-view">{tabBar}<h2>No sessions</h2></article></main>;
+  return <main className="console"><section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} onDeleted={refresh} onSelectTarget={selectTarget} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} onLaunched={launched} />}</section></main>;
 }
 
 function App() {
-  const [state, setState] = useState<'checking' | 'login' | 'ready' | 'inactive'>('checking');
+  const [state, setState] = useState<'checking' | 'login' | 'naming' | 'ready' | 'inactive'>('checking');
+  const [sessionInfo, setSessionInfo] = useState<SessionInfo>();
   const [error, setError] = useState('');
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const [reconnecting, setReconnecting] = useState(!consoleReachable);
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
+  const applySession = useCallback((current: SessionInfo) => {
+    csrf = current.csrfToken;
+    setSessionInfo(current);
+    setState(current.active ? current.deviceName === undefined ? 'naming' : 'ready' : 'inactive');
+  }, []);
+  const refreshSession = useCallback(async () => {
+    try {
+      const response = await consoleFetch('/api/auth/session', { credentials: 'same-origin', signal: AbortSignal.timeout(8_000) });
+      if (response.status === 401) {
+        setSessionInfo(undefined);
+        setState('login');
+        return;
+      }
+      if (response.ok) applySession(await response.json() as SessionInfo);
+    } catch { /* keep the current screen while the reconnect overlay handles availability */ }
+  }, [applySession]);
   useEffect(() => {
     const viewport = window.visualViewport;
-    const updateHeight = () => document.documentElement.style.setProperty('--app-height', `${viewport?.height ?? window.innerHeight}px`);
+    const root = document.documentElement;
+    let unobstructedHeight = Math.max(window.innerHeight, root.clientHeight, viewport?.height ?? 0);
+    const editableFocused = () => {
+      const element = document.activeElement;
+      if (element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) return !element.disabled;
+      if (element instanceof HTMLInputElement) return !element.disabled && !element.readOnly && !['button', 'checkbox', 'file', 'hidden', 'radio', 'range', 'reset', 'submit'].includes(element.type);
+      return element instanceof HTMLElement && element.isContentEditable;
+    };
+    const updateHeight = () => {
+      const visibleHeight = viewport?.height ?? window.innerHeight;
+      const focused = editableFocused();
+      const currentLayoutHeight = Math.max(window.innerHeight, root.clientHeight);
+      if (!focused) unobstructedHeight = Math.max(currentLayoutHeight, visibleHeight);
+      const touchDevice = navigator.maxTouchPoints > 0 || window.matchMedia('(pointer: coarse)').matches;
+      const layoutHeight = Math.max(currentLayoutHeight, touchDevice ? unobstructedHeight : 0);
+      const keyboardInset = layoutHeight - visibleHeight;
+      root.style.setProperty('--app-height', `${visibleHeight}px`);
+      root.classList.toggle('software-keyboard-open', focused && keyboardInset >= Math.max(120, layoutHeight * .15));
+    };
+    const updateAfterFocus = () => window.requestAnimationFrame(updateHeight);
     updateHeight();
     window.addEventListener('resize', updateHeight);
     viewport?.addEventListener('resize', updateHeight);
     viewport?.addEventListener('scroll', updateHeight);
+    document.addEventListener('focusin', updateAfterFocus);
+    document.addEventListener('focusout', updateAfterFocus);
     return () => {
       window.removeEventListener('resize', updateHeight);
       viewport?.removeEventListener('resize', updateHeight);
       viewport?.removeEventListener('scroll', updateHeight);
+      document.removeEventListener('focusin', updateAfterFocus);
+      document.removeEventListener('focusout', updateAfterFocus);
+      root.classList.remove('software-keyboard-open');
     };
   }, []);
+  useEffect(() => {
+    return subscribeToConsoleConnection(reachable => {
+      setReconnecting(!reachable);
+      if (reachable) setReconnectAttempt(attempt => attempt + 1);
+    });
+  }, []);
+  useEffect(() => {
+    if (!reconnecting) return;
+    let closed = false;
+    let timer: number | undefined;
+    const probe = async () => {
+      try {
+        const response = await fetch('/healthz', { cache: 'no-store', signal: AbortSignal.timeout(4_000) });
+        if (response.ok) {
+          setConsoleReachable(true);
+          return;
+        }
+      } catch { /* Keep the overlay visible and retry. */ }
+      if (!closed) timer = window.setTimeout(() => void probe(), 1_000);
+    };
+    void probe();
+    return () => {
+      closed = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [reconnecting]);
   useEffect(() => {
     if (currentUiVersion === undefined) return;
     let closed = false;
     const checkForUpdate = async () => {
       try {
-        const response = await fetch('/api/ui-version', { cache: 'no-store', signal: AbortSignal.timeout(8_000) });
+        const response = await consoleFetch('/api/ui-version', { cache: 'no-store', signal: AbortSignal.timeout(8_000) });
         if (!response.ok || closed) return;
         const payload = await response.json() as { version?: unknown };
         if (typeof payload.version === 'string' && payload.version !== currentUiVersion) setUpdateAvailable(true);
@@ -794,15 +1321,15 @@ function App() {
   useEffect(() => {
     let active = true;
     void (async () => {
+      if (active) setError('');
       try {
-        const session = await fetch('/api/auth/session', { credentials: 'same-origin', signal: AbortSignal.timeout(8_000) });
+        const session = await consoleFetch('/api/auth/session', { credentials: 'same-origin', signal: AbortSignal.timeout(8_000) });
         if (session.ok) {
-          const current = await session.json() as { csrfToken: string; active: boolean };
-          csrf = current.csrfToken;
-          if (active) setState(current.active ? 'ready' : 'inactive');
+          const current = await session.json() as SessionInfo;
+          if (active) applySession(current);
           return;
         }
-        const bootstrap = await fetch('/api/auth/bootstrap', { credentials: 'same-origin', signal: AbortSignal.timeout(8_000) });
+        const bootstrap = await consoleFetch('/api/auth/bootstrap', { credentials: 'same-origin', signal: AbortSignal.timeout(8_000) });
         if (!bootstrap.ok) throw new Error('bootstrap unavailable');
         csrf = (await bootstrap.json()).csrfToken;
       } catch {
@@ -811,24 +1338,28 @@ function App() {
       if (active) setState('login');
     })();
     return () => { active = false; };
-  }, []);
+  }, [applySession, reconnectAttempt]);
   useEffect(() => {
-    if (state !== 'ready') return;
-    const checkControl = async () => {
-      try {
-        const response = await fetch('/api/auth/session', { credentials: 'same-origin', signal: AbortSignal.timeout(8_000) });
-        if (response.status === 401) return setState('login');
-        if (!response.ok) return;
-        const session = await response.json() as { csrfToken: string; active: boolean };
-        csrf = session.csrfToken;
-        if (!session.active) setState('inactive');
-      } catch { /* keep the active console visible while reconnecting */ }
-    };
+    if (state === 'checking' || state === 'login') return;
+    const checkControl = () => void refreshSession();
     window.addEventListener('focus', checkControl);
     return () => window.removeEventListener('focus', checkControl);
-  }, [state]);
-  const screen = state === 'checking' ? <LoadingScreen /> : state === 'ready' ? <DashboardView onUnauthorized={() => setState('login')} onInactive={() => setState('inactive')} updateAvailable={updateAvailable} onReload={() => location.reload()} /> : state === 'inactive' ? <ControlScreen claimed={() => setState('ready')} /> : <Login initialError={error} done={active => setState(active ? 'ready' : 'inactive')} />;
-  return screen;
+  }, [refreshSession, state]);
+  const reload = () => {
+    if (reloading) return;
+    setReloading(true);
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => location.reload()));
+  };
+  const screen = reloading
+    ? <LoadingScreen label="Reloading" />
+    : state === 'checking'
+      ? <LoadingScreen />
+      : state === 'ready'
+        ? <DashboardView onUnauthorized={() => { setSessionInfo(undefined); setState('login'); }} onInactive={() => { setState('checking'); void refreshSession(); }} updateAvailable={updateAvailable} onReload={reload} />
+        : (state === 'inactive' || state === 'naming') && sessionInfo !== undefined
+          ? <ControlScreen session={sessionInfo} claimed={applySession} />
+          : <Login initialError={error} done={applySession} />;
+  return <>{screen}{reconnecting && <ReconnectingOverlay />}</>;
 }
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');
 createRoot(document.getElementById('root')!).render(<ConsoleBoundary><App /></ConsoleBoundary>);

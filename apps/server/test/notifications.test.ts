@@ -1,0 +1,92 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { Agent } from '../src/domain/models.js';
+import { AgentNotificationCoordinator, agentAttentionState, agentNotification, type AgentNotification } from '../src/notifications.js';
+
+const agent = (overrides: Partial<Agent> = {}): Agent => ({
+  id: 'socket:%1',
+  paneId: '%1',
+  sessionId: '$1',
+  socketFingerprint: 'socket',
+  workspace: '/workspace',
+  title: 'Ready',
+  worktreeId: 'eric',
+  worktreeLabel: 'Eric',
+  ...overrides
+});
+
+describe('agent notifications', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('distinguishes questions from completed work', () => {
+    const questioning = agent({ title: '⠋ Working', question: { id: 'question-1', text: 'Deploy now?', choices: ['Yes', 'No'], paneId: '%2' } });
+
+    expect(agentAttentionState(questioning)).toBe('question');
+    expect(agentNotification('working', 'question', questioning)).toEqual({
+      kind: 'question',
+      title: 'Agent has a question',
+      body: 'Eric: Deploy now?',
+      tag: 'worktree-status-eric',
+      url: '/#agent=socket%3A%251',
+      worktreeId: 'eric'
+    });
+    expect(agentNotification('working', 'finished', agent())).toEqual({
+      kind: 'finished',
+      title: 'Agent finished',
+      body: 'Eric is ready for another prompt.',
+      tag: 'worktree-status-eric',
+      url: '/#agent=socket%3A%251',
+      worktreeId: 'eric'
+    });
+  });
+
+  it('does not misreport an action-required transition as completion', () => {
+    const questioning = agent({ title: 'Action required | Approve command' });
+
+    expect(agentAttentionState(questioning)).toBe('question');
+    expect(agentNotification('working', 'question', questioning)?.body).toBe('Eric is waiting for your response.');
+    expect(agentNotification('question', 'finished', agent())).toBeUndefined();
+  });
+
+  it('suppresses completion when another queued prompt starts during the grace period', async () => {
+    vi.useFakeTimers();
+    const delivered: AgentNotification[] = [];
+    const coordinator = new AgentNotificationCoordinator(notification => delivered.push(notification), 2_000);
+
+    coordinator.observe(agent({ title: '⠋ Working' }));
+    coordinator.observe(agent({ title: 'Ready' }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    coordinator.observe(agent({ title: '⠙ Working' }));
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(delivered).toEqual([]);
+    coordinator.stop();
+  });
+
+  it('delivers completion after the agent remains finished', async () => {
+    vi.useFakeTimers();
+    const delivered: AgentNotification[] = [];
+    const coordinator = new AgentNotificationCoordinator(notification => delivered.push(notification), 2_000);
+
+    coordinator.observe(agent({ title: '⠋ Working' }));
+    coordinator.observe(agent({ title: 'Ready' }));
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]?.kind).toBe('finished');
+    coordinator.stop();
+  });
+
+  it('cancels pending completion when the agent disappears', async () => {
+    vi.useFakeTimers();
+    const delivered: AgentNotification[] = [];
+    const coordinator = new AgentNotificationCoordinator(notification => delivered.push(notification), 2_000);
+
+    coordinator.observe(agent({ title: '⠋ Working' }));
+    coordinator.observe(agent({ title: 'Ready' }));
+    coordinator.retain([]);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(delivered).toEqual([]);
+    coordinator.stop();
+  });
+});

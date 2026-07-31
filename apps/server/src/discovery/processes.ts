@@ -1,8 +1,19 @@
 import { readFile, readdir } from 'node:fs/promises';
 const allowed = /^(codex|omx)(?:\.js)?$/i;
+const codex = /^codex(?:\.js)?$/i;
+const node = /^(?:node|nodejs)(?:\.exe)?$/i;
+
+export function isAgentCommand(comm: string, cmdline: string): boolean {
+  if (allowed.test(comm)) return true;
+  const args = cmdline.split('\0').filter(Boolean);
+  const program = args[0]?.split('/').pop() ?? '';
+  if (allowed.test(program)) return true;
+  return node.test(program) && args.slice(1).some(arg => codex.test(arg.split('/').pop() ?? ''));
+}
+
 export interface ProcessInspector { hasCodexDescendant(pid: number): Promise<boolean>; }
 export class ProcInspector implements ProcessInspector {
   private readonly procRoot = process.env.RAC_HOST_PROC ?? '/proc';
-  async hasCodexDescendant(root: number): Promise<boolean> { const pending = [root], seen = new Set<number>(); while (pending.length && seen.size < 256) { const pid = pending.pop()!; if (seen.has(pid)) continue; seen.add(pid); try { const comm = (await readFile(`${this.procRoot}/${pid}/comm`, 'utf8')).trim(); if (allowed.test(comm)) return true; const cmd = (await readFile(`${this.procRoot}/${pid}/cmdline`, 'utf8')).split('\0')[0].split('/').pop() ?? ''; if (allowed.test(cmd)) return true; const children = (await readFile(`${this.procRoot}/${pid}/task/${pid}/children`, 'utf8')).trim().split(/\s+/).filter(Boolean).map(Number); for (const child of children) if (Number.isInteger(child) && child > 0) pending.push(child); } catch { /* exited/unreadable is not an agent */ } } return false; }
+  async hasCodexDescendant(root: number): Promise<boolean> { const pending = [root], seen = new Set<number>(); while (pending.length && seen.size < 256) { const pid = pending.pop()!; if (seen.has(pid)) continue; seen.add(pid); try { const comm = (await readFile(`${this.procRoot}/${pid}/comm`, 'utf8')).trim(); const cmdline = await readFile(`${this.procRoot}/${pid}/cmdline`, 'utf8'); if (isAgentCommand(comm, cmdline)) return true; const children = (await readFile(`${this.procRoot}/${pid}/task/${pid}/children`, 'utf8')).trim().split(/\s+/).filter(Boolean).map(Number); for (const child of children) if (Number.isInteger(child) && child > 0) pending.push(child); } catch { /* exited/unreadable is not an agent */ } } return false; }
 }
 export async function tmuxServerPids(uid: number): Promise<number[]> { const procRoot = process.env.RAC_HOST_PROC ?? '/proc'; const entries = await readdir(procRoot, { withFileTypes: true }); const found: number[] = []; for (const entry of entries) { if (!/^\d+$/.test(entry.name)) continue; try { const status = await readFile(`${procRoot}/${entry.name}/status`, 'utf8'); if (!new RegExp(`^Uid:\\s+${uid}\\b`, 'm').test(status)) continue; const cmd = await readFile(`${procRoot}/${entry.name}/cmdline`, 'utf8'); if (/\btmux(?::|\0).*server|tmux: server/.test(cmd)) found.push(Number(entry.name)); } catch { } } return found; }

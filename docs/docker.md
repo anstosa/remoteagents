@@ -26,9 +26,12 @@ that worktree instead of appearing as a duplicate idle card.
    JSON. Wrap the Argon2 value in single quotes because its `$` characters
    otherwise trigger Compose variable interpolation.
 2. Update `config/remote-agent-console.docker.json`: set `publicOrigin` to the
-   canonical HTTPS origin (for example, `https://agents.santosa.family`) and
+   canonical HTTPS origin (for example, `https://agents.santosa.dev`) and
    adjust each worktree's `path`, `hostPath`, and `command` or the `/workspace`
-   mount if needed. Set `HOST_UID` in `.env` if the host tmux server is not
+   mount if needed. Set an optional `newTask` command to expose **New Task**
+   for that worktree; `{taskId}` is replaced with an 8-character URL-safe
+   random task ID. The command runs only when the working copy is clean and
+   fully pushed. Set `HOST_UID` in `.env` if the host tmux server is not
    owned by UID 1000.
 3. Copy `config/cloudflared.example.yml` to `config/cloudflared.yml`. Set the
    tunnel UUID and the same hostname in both `hostname` and `httpHostHeader`.
@@ -62,6 +65,10 @@ the alias name directly:
 { "id": "main", "path": "/workspace", "command": "codex" }
 { "id": "research", "path": "/workspace/research", "command": "alex" }
 ```
+
+All console-managed Codex launch paths, including worktree launch, scratch
+launch, and change directory, resolve `codex` through this alias rather than
+executing the installed binary directly.
 
 Aliases are trusted shell code and must work inside the container: use
 container paths (such as `/workspace`) and ensure their executables are present

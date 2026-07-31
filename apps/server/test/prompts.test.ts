@@ -3,8 +3,11 @@ import { execFileSync } from 'node:child_process';
 import { readFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PromptService } from '../src/prompts/service.js';
+import { maxPromptAttachmentBytes, PromptService } from '../src/prompts/service.js';
 const socket={fingerprint:'socket',path:'/tmp/sock',device:1,inode:1}; const agent={id:'socket:%1',paneId:'%1',sessionId:'socket:$1',socketFingerprint:'socket',workspace:'/tmp',title:''};
+it('allows prompt attachments totaling 25 MiB', () => {
+  expect(maxPromptAttachmentBytes).toBe(25 * 1024 * 1024);
+});
 describe('safe prompt flow',()=>{it('pastes through a generated buffer and uses Tab to queue after the active turn',async()=>{const calls:string[][]=[];const discovery={target:async()=>({agent,socket})};const tmux={pastePrompt:async(_s:unknown,_p:string,b:string,p:string)=>{calls.push(['paste',b,p]);return true},queue:async(_s:unknown,p:string)=>{calls.push(['tab',p]);return true},interrupt:async()=>true};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'hello; $(not-a-command)')).resolves.toBe(true);expect(calls[0]?.[0]).toBe('paste');expect(calls[0]?.[2]).toBe('hello; $(not-a-command) ');expect(calls.slice(1)).toEqual([['tab','%1']]);expect(calls[0]?.[1]).toMatch(/^rac-/)});it('stages attached files in a Git-ignored location and references each one in the queued prompt', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'rac-attachments-'));
   await writeFile(join(workspace, '.gitignore'), 'node_modules/\n');

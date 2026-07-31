@@ -34,8 +34,21 @@ paths and project-local tooling:
 {
   "id": "my-project",
   "path": "/absolute/path/to/project",
-  "command": "/usr/local/bin/codex"
+  "command": "codex"
 }
+```
+
+The `codex` command is resolved through the operator's sourced
+`~/.bash_aliases`. This keeps console-launched worktree, scratch, and
+change-directory sessions on the same Codex/OMX launch policy as interactive
+shell sessions.
+
+An optional `newTask` command adds a **New Task** action for a worktree. It
+uses `{taskId}` for an 8-character URL-safe random ID and is enabled only when
+the working copy is clean and fully pushed. For example:
+
+```json
+{ "newTask": "detach && new {taskId}" }
 ```
 
 The legacy `launch` template remains supported for existing configurations. A

@@ -76,6 +76,8 @@ export class DiscoveryService {
   private generation = 0; private snapshot: Agent[] = [];
   private refreshedAt = 0;
   private refreshInFlight?: Promise<Agent[]>;
+  private dashboardSnapshot?: { worktrees: Worktree[]; refreshedAt: number; value: Dashboard };
+  private dashboardRefreshInFlight?: { worktrees: Worktree[]; value: Promise<Dashboard> };
   private static readonly refreshCacheMs = 2_000;
   constructor(private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly tmux = new TmuxAdapter(), private readonly processes: ProcessInspector = new ProcInspector(), private readonly pullRequests = new PullRequestService()) {}
   async refresh(): Promise<Agent[]> {
@@ -90,7 +92,7 @@ export class DiscoveryService {
     const agents: Agent[] = (await Promise.all(panes.map(async (pane): Promise<Agent | undefined> => {
       if (!await this.processes.hasCodexDescendant(pane.pid)) return undefined;
       const meta = await gitMeta(pane.path);
-      return { id: `${pane.socket.fingerprint}:${pane.paneId}`, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, workspace: meta.workspace, ...(meta.branch === undefined ? {} : { branch: meta.branch }), title: pane.title };
+      return { id: `${pane.socket.fingerprint}:${pane.paneId}`, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, workspace: meta.workspace, ...(meta.branch === undefined ? {} : { branch: meta.branch }), title: pane.title, ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }) };
     }))).filter((agent): agent is Agent => agent !== undefined);
     this.snapshot = agents;
     this.refreshedAt = Date.now();
@@ -98,5 +100,46 @@ export class DiscoveryService {
     return agents;
   }
   async target(id: string): Promise<{ agent: Agent; socket: SocketRef } | undefined> { await this.refresh(); const agent = this.snapshot.find(a => a.id === id); if (!agent) return undefined; const socket = (await this.finder.find()).find(s => s.fingerprint === agent.socketFingerprint); return socket ? { agent, socket } : undefined; }
-  async dashboard(worktrees: Worktree[]): Promise<Dashboard> { const discovered = await this.refresh(); const agents = await Promise.all(discovered.map(async (agent) => { const order = worktrees.findIndex((candidate) => agent.workspace === candidate.identity || agent.workspace === candidate.hostPath); const worktree = order < 0 ? undefined : worktrees[order]; const workspace = worktree?.identity ?? agent.workspace; const [meta, question] = await Promise.all([worktree === undefined ? Promise.resolve({ workspace, branch: agent.branch }) : gitMeta(workspace), omxQuestion(workspace, agent.paneId)]); const branch = meta.branch ?? agent.branch; const pullRequestUrl = await this.pullRequests.cachedUrl(meta.workspace, branch); const details = worktree === undefined ? { ...agent, branch } : { ...agent, branch, workspace: worktree.identity, worktreeId: worktree.id, worktreeLabel: worktree.label, worktreeOrder: order, projectUrl: worktree.projectUrl }; return { ...details, ...(pullRequestUrl === undefined ? {} : { pullRequestUrl }), ...(question === undefined ? {} : { question }) }; })); const active = new Set(agents.map(a => a.workspace)); const inactive = await Promise.all(worktrees.filter(worktree => !active.has(worktree.identity)).map(async (worktree) => { const meta = await gitMeta(worktree.identity); const pullRequestUrl = await this.pullRequests.cachedUrl(meta.workspace, meta.branch); return { id: worktree.id, label: worktree.label, path: worktree.path, available: worktree.available, pinned: worktree.pinned, projectUrl: worktree.projectUrl, order: worktrees.indexOf(worktree), ...(meta.branch === undefined ? {} : { branch: meta.branch }), ...(pullRequestUrl === undefined ? {} : { pullRequestUrl }) }; })); return { generation: this.generation, agents, worktrees: inactive }; }
+  async dashboard(worktrees: Worktree[]): Promise<Dashboard> {
+    const cached = this.dashboardSnapshot;
+    if (cached?.worktrees === worktrees && Date.now() - cached.refreshedAt < DiscoveryService.refreshCacheMs) return cached.value;
+    const active = this.dashboardRefreshInFlight;
+    if (active?.worktrees === worktrees) return active.value;
+    const value = this.buildDashboard(worktrees)
+      .then(dashboard => {
+        this.dashboardSnapshot = { worktrees, refreshedAt: Date.now(), value: dashboard };
+        return dashboard;
+      })
+      .finally(() => {
+        if (this.dashboardRefreshInFlight?.value === value) this.dashboardRefreshInFlight = undefined;
+      });
+    this.dashboardRefreshInFlight = { worktrees, value };
+    return value;
+  }
+
+  private async buildDashboard(worktrees: Worktree[]): Promise<Dashboard> {
+    const discovered = await this.refresh();
+    const agents = await Promise.all(discovered.map(async (agent) => {
+      const order = worktrees.findIndex(candidate => agent.workspace === candidate.identity || agent.workspace === candidate.hostPath);
+      const worktree = order < 0 ? undefined : worktrees[order];
+      const workspace = worktree?.identity ?? agent.workspace;
+      const [meta, question] = await Promise.all([
+        worktree === undefined ? Promise.resolve({ workspace, branch: agent.branch }) : gitMeta(workspace),
+        omxQuestion(workspace, agent.paneId)
+      ]);
+      const branch = meta.branch ?? agent.branch;
+      const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, branch);
+      const details = worktree === undefined
+        ? { ...agent, branch }
+        : { ...agent, branch, workspace: worktree.identity, worktreeId: worktree.id, worktreeLabel: worktree.label, worktreeOrder: order, ...(worktree.newTask === undefined ? {} : { newTaskConfigured: true }), projectUrl: worktree.projectUrl };
+      return { ...details, ...(pullRequest === undefined ? {} : { pullRequest }), ...(question === undefined ? {} : { question }) };
+    }));
+    const active = new Set(agents.map(agent => agent.workspace));
+    const inactive = await Promise.all(worktrees.filter(worktree => !active.has(worktree.identity)).map(async (worktree) => {
+      const meta = await gitMeta(worktree.identity);
+      const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, meta.branch);
+      return { id: worktree.id, label: worktree.label, path: worktree.path, available: worktree.available, pinned: worktree.pinned, projectUrl: worktree.projectUrl, order: worktrees.indexOf(worktree), ...(meta.branch === undefined ? {} : { branch: meta.branch }), ...(pullRequest === undefined ? {} : { pullRequest }) };
+    }));
+    return { generation: this.generation, agents, worktrees: inactive };
+  }
 }
