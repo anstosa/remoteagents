@@ -11,7 +11,8 @@ type Token = () => Promise<string | undefined>;
 
 type GithubRepository = { owner: string; name: string };
 type PullRequestCandidate = PullRequestSummary & { headSha?: string };
-export type PullRequestChoice = { number: number; title: string; branch: string; draft: boolean; url: string };
+type PullRequestChoiceCandidate = PullRequestChoice & { headSha?: string };
+export type PullRequestChoice = { number: number; title: string; branch: string; draft: boolean; url: string; checks?: PullRequestCheckStatus; issues?: PullRequestIssues };
 const cacheTtlMs = 60_000;
 const failingCheckConclusions = new Set(['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
 
@@ -52,18 +53,27 @@ export class PullRequestService {
     if (!response?.ok) return undefined;
     const pulls = await response.json().catch(() => undefined);
     if (!Array.isArray(pulls)) return undefined;
-    return pulls.flatMap((pull): PullRequestChoice[] => {
+    const choices = pulls.flatMap((pull): PullRequestChoiceCandidate[] => {
       if (pull === null || typeof pull !== 'object') return [];
-      const value = pull as { number?: unknown; title?: unknown; draft?: unknown; html_url?: unknown; user?: { login?: unknown }; head?: { ref?: unknown } };
+      const value = pull as { number?: unknown; title?: unknown; draft?: unknown; html_url?: unknown; user?: { login?: unknown }; head?: { ref?: unknown; sha?: unknown } };
       if (!Number.isInteger(value.number) || (value.number as number) < 1 || typeof value.title !== 'string' || typeof value.head?.ref !== 'string' || typeof value.user?.login !== 'string' || value.user.login !== viewer || typeof value.html_url !== 'string') return [];
       try {
         const url = new URL(value.html_url);
-        return url.protocol === 'https:' && url.hostname === 'github.com' ? [{ number: value.number as number, title: value.title, branch: value.head.ref, draft: value.draft === true, url: url.href }] : [];
+        return url.protocol === 'https:' && url.hostname === 'github.com' ? [{ number: value.number as number, title: value.title, branch: value.head.ref, draft: value.draft === true, url: url.href, ...(typeof value.head.sha === 'string' && /^[a-f0-9]{40}$/iu.test(value.head.sha) ? { headSha: value.head.sha } : {}) }] : [];
       } catch { return []; }
     });
+    return await Promise.all(choices.map(async ({ headSha, ...choice }) => {
+      const { checks, issues } = await this.issueStatus(repository, choice.number, headSha, token);
+      return { ...choice, checks, ...(Object.keys(issues).length === 0 ? {} : { issues }) };
+    }));
   }
 
   async supports(workspace: string): Promise<boolean> { return await this.repository(workspace) !== undefined; }
+
+  async actionsUrl(workspace: string): Promise<string | undefined> {
+    const repository = await this.repository(workspace);
+    return repository === undefined ? undefined : `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/actions`;
+  }
 
   /**
    * Dashboard rendering must not wait on GitHub. It can use a previous URL,

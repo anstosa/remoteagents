@@ -48,6 +48,22 @@ describe('DiscoveryService dashboard', () => {
     await expect(service.dashboard([])).resolves.toMatchObject({ agents: [{ displayLabel: '~ Scratch' }] });
   });
 
+  it('does not expose OMX team workers as dashboard agents', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const finder = { find: async () => [socket] };
+    const tmux = { listPanes: async () => [
+      { paneId: '%1', sessionId: '$0', pid: 123, path: '/host/cora', title: 'Cora' },
+      { paneId: '%2', sessionId: '$0', pid: 124, path: '/host/cora/.omx/team/signup/worktrees/worker-1', title: 'worker-1' },
+      { paneId: '%3', sessionId: '$0', pid: 125, path: '/host/cora', title: 'worker-2', startCommand: "exec /bin/sh '/tmp/run/.omx/state/team/signup/runtime/worker-2-startup.sh'" }
+    ] };
+    const processes = { hasCodexDescendant: async () => true };
+    const service = new DiscoveryService(finder, tmux as never, processes);
+
+    const dashboard = await service.dashboard([]);
+
+    expect(dashboard.agents).toEqual([expect.objectContaining({ paneId: '%1', title: 'Cora' })]);
+  });
+
   it('coalesces concurrent discovery requests and reuses a fresh snapshot', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     let finds = 0;

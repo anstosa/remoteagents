@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('broadcasts dismissal when a worktree agent becomes the focused UI', async ({ page }) => {
+test('dismisses a newly selected agent tab but waits for prompt focus on the already active tab', async ({ page }) => {
   const remoteDismissals: string[] = [];
   await page.addInitScript(() => {
     const localDismissals: string[] = [];
@@ -19,8 +19,8 @@ test('broadcasts dismissal when a worktree agent becomes the focused UI', async 
     const url = new URL(request.url());
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [
-      { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' },
-      { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/owen', worktreeId: 'owen', worktreeLabel: 'Owen', worktreeOrder: 1, title: 'Ready' }
+      { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready', unread: true },
+      { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/owen', worktreeId: 'owen', worktreeLabel: 'Owen', worktreeOrder: 1, title: 'Ready', unread: true }
     ], worktrees: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
@@ -34,12 +34,21 @@ test('broadcasts dismissal when a worktree agent becomes the focused UI', async 
 
   await page.goto('/');
   await page.bringToFront();
+  await expect.poll(() => remoteDismissals).toEqual([]);
+  const activeUnread = page.getByRole('tab', { name: 'Cora — Prompt done — Unread' });
+  await expect(activeUnread).toHaveClass(/unread/u);
+  await page.getByRole('textbox', { name: 'Prompt' }).focus();
+  await expect(page.getByRole('tab', { name: 'Cora — Prompt done' })).not.toHaveClass(/unread/u);
   await expect.poll(() => remoteDismissals).toContain('/api/agents/agent-1/notifications/dismiss');
-  await page.getByRole('tab', { name: /^Owen/u }).click();
+  const unread = page.getByRole('tab', { name: 'Owen — Prompt done — Unread' });
+  await expect(unread).toHaveClass(/unread/u);
+  await expect(unread).toHaveCSS('animation-name', 'tab-unread-success');
+  await unread.click();
+  await expect(page.getByRole('tab', { name: 'Owen — Prompt done' })).not.toHaveClass(/unread/u);
   await expect.poll(() => remoteDismissals).toContain('/api/agents/agent-2/notifications/dismiss');
   await expect.poll(async () => await page.evaluate(() => (
     window as unknown as { __localDismissals: string[] }
-  ).__localDismissals)).toEqual(expect.arrayContaining(['worktree-status-cora', 'agent-status-agent-1', 'worktree-status-owen', 'agent-status-agent-2']));
+  ).__localDismissals)).toEqual(expect.arrayContaining(['worktree-status-owen', 'agent-status-agent-2']));
 });
 
 test('service worker closes matching worktree notifications without showing another alert', async ({ page }) => {

@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
-test('Ctrl+C sends one interrupt while output input mode is active', async ({ page }) => {
+test('output input mode forwards control keys without losing focus', async ({ page }) => {
+  test.setTimeout(60_000);
   await page.addInitScript(() => {
     const frames: Array<{ url: string; data: string }> = [];
     class MockWebSocket {
@@ -65,4 +66,42 @@ test('Ctrl+C sends one interrupt while output input mode is active', async ({ pa
     return frames.filter(frame => frame.url.includes('/ws/input/')).length;
   });
   expect(frameCount).toBe(1);
+
+  // Output mode owns Ctrl+C even if browser chrome or a non-editable control
+  // temporarily takes focus away from xterm.
+  await page.getByRole('button', { name: 'Page up' }).focus();
+  await page.keyboard.press('Control+c');
+  await expect.poll(async () => (await page.evaluate(() => {
+    const frames = (window as Window & { __terminalSocketFrames?: Array<{ url: string; data: string }> }).__terminalSocketFrames ?? [];
+    return frames.filter(candidate => candidate.url.includes('/ws/input/'));
+  })).length).toBe(2);
+
+  await page.locator('.terminal-frame.active .xterm-helper-textarea').focus();
+
+  await page.keyboard.press('Tab');
+  await expect(page.locator('.xterm-helper-textarea:focus')).toHaveCount(1);
+  await page.keyboard.press('Shift+Tab');
+  await expect(page.locator('.xterm-helper-textarea:focus')).toHaveCount(1);
+
+  await expect.poll(async () => page.evaluate(() => {
+    const frames = (window as Window & { __terminalSocketFrames?: Array<{ url: string; data: string }> }).__terminalSocketFrames ?? [];
+    return frames.filter(candidate => candidate.url.includes('/ws/input/')).map(candidate => JSON.parse(candidate.data) as { data: string });
+  })).toHaveLength(4);
+
+  // The mobile Ctrl latch must produce ETX from the next software-keyboard c.
+  await page.setViewportSize({ width: 428, height: 900 });
+  await expect(page.getByLabel('Terminal keys')).toBeVisible();
+  await page.locator('.terminal-frame.active .xterm-helper-textarea').focus();
+  await page.getByRole('button', { name: 'Ctrl', exact: true }).click();
+  await page.keyboard.press('c');
+  await expect.poll(async () => (await page.evaluate(() => {
+    const frames = (window as Window & { __terminalSocketFrames?: Array<{ url: string; data: string }> }).__terminalSocketFrames ?? [];
+    return frames.filter(candidate => candidate.url.includes('/ws/input/'));
+  })).length).toBe(5);
+
+  const controlFrames = await page.evaluate(() => {
+    const frames = (window as Window & { __terminalSocketFrames?: Array<{ url: string; data: string }> }).__terminalSocketFrames ?? [];
+    return frames.filter(candidate => candidate.url.includes('/ws/input/')).map(candidate => JSON.parse(candidate.data) as { data: string });
+  });
+  expect(controlFrames.map(controlFrame => Buffer.from(controlFrame.data, 'base64url').toString('utf8'))).toEqual(['\x03', '\x03', '\t', '\x1b[Z', '\x03']);
 });

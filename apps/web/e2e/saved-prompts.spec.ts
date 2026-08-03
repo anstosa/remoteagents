@@ -48,7 +48,7 @@ test('saves prompts per agent and consumes a saved prompt back into the composer
   await expect(savedToggle).toBeEnabled();
   await savedToggle.click();
   const savedPanel = page.locator('.saved-prompts-panel');
-  const savedRow = page.getByRole('button', { name: longSavedPrompt });
+  const savedRow = page.getByRole('button', { name: longSavedPrompt, exact: true });
   await expect(savedPanel).toBeVisible();
   await expect(savedPanel).toHaveClass(/more-menu/u);
   await expect(savedPanel.getByText('Select one to move it back into the prompt.')).toHaveCount(0);
@@ -86,7 +86,7 @@ test('saves prompts per agent and consumes a saved prompt back into the composer
   await prompt.fill('Summarize the release risks.');
   await expect(saveGroup.locator('+ .queue')).toHaveAttribute('aria-label', 'Queue');
   await expect(saveGroup.locator('+ .queue')).toHaveText('');
-  await save.click();
+  await prompt.press('Control+s');
 
   const confirmed = saveGroup.getByRole('button', { name: 'Saved', exact: true });
   await expect(confirmed).toHaveClass(/saved/u);
@@ -96,4 +96,78 @@ test('saves prompts per agent and consumes a saved prompt back into the composer
   await expect(restoredToggle).toBeEnabled();
   await expect(restoredToggle.locator('.saved-prompts-count')).toHaveText('1');
   expect(saved).toEqual([{ id: 'saved-prompt-002', text: 'Summarize the release risks.' }]);
+});
+
+test('closes the saved prompts flyout after selecting one of several drafts', async ({ page }) => {
+  const saved = [
+    { id: 'saved-prompt-001', text: 'First saved draft' },
+    { id: 'saved-prompt-002', text: 'Second saved draft' }
+  ];
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready' }], worktrees: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: saved } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts/saved-prompt-001' && request.method() === 'DELETE') return route.fulfill({ json: saved[0] });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Saved prompts (2)' }).click();
+  const panel = page.locator('.saved-prompts-panel');
+  await expect(panel).toBeVisible();
+  await panel.getByRole('button', { name: 'First saved draft', exact: true }).click();
+
+  await expect(panel).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Saved prompts (1)' })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Prompt' })).toHaveValue('First saved draft');
+});
+
+test('queues a saved draft from its purple send button before deleting it', async ({ page }) => {
+  const savedDraft = { id: 'saved-prompt-001', text: 'Queue this saved draft' };
+  let saved = [savedDraft];
+  const calls: string[] = [];
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready' }], worktrees: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: saved } });
+    if (url.pathname === '/api/agents/agent-1/prompt' && request.method() === 'POST') {
+      calls.push(`queue:${(request.postDataJSON() as { prompt: string }).prompt}`);
+      return route.fulfill({ status: 204 });
+    }
+    if (url.pathname === `/api/agents/agent-1/saved-prompts/${savedDraft.id}` && request.method() === 'DELETE') {
+      calls.push(`delete:${savedDraft.id}`);
+      saved = [];
+      return route.fulfill({ json: savedDraft });
+    }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  const prompt = page.getByRole('textbox', { name: 'Prompt' });
+  await prompt.fill('Keep this composer text');
+  await page.getByRole('button', { name: 'Saved prompts (1)' }).click();
+  const panel = page.locator('.saved-prompts-panel');
+  const restore = panel.getByRole('button', { name: savedDraft.text, exact: true });
+  const send = panel.getByRole('button', { name: `Queue saved draft: ${savedDraft.text}` });
+  await expect(send.locator('svg')).toHaveCount(1);
+  await expect(send).toHaveCSS('color', 'rgb(203, 166, 247)');
+  const [restoreBounds, sendBounds] = await Promise.all([restore.boundingBox(), send.boundingBox()]);
+  expect(restoreBounds).not.toBeNull();
+  expect(sendBounds).not.toBeNull();
+  expect(sendBounds!.x).toBeGreaterThanOrEqual(restoreBounds!.x + restoreBounds!.width - 1);
+
+  await send.click();
+
+  await expect.poll(() => calls).toEqual([`queue:${savedDraft.text}`, `delete:${savedDraft.id}`]);
+  await expect(prompt).toHaveValue('Keep this composer text');
+  await expect(page.getByRole('button', { name: 'Saved prompts (1)' })).toHaveCount(0);
+  expect(saved).toEqual([]);
 });

@@ -7,16 +7,16 @@ describe('log frame generation', () => {
     expect(logFrame('existing output', '   \n\t')).toBeUndefined();
   });
 
-  it('appends snapshots that retain the existing output', () => {
-    expect(logFrame('one\ntwo', 'one\ntwo\nthree')).toEqual({ type: 'append', text: '\nthree' });
+  it('replaces snapshots that retain the existing output', () => {
+    expect(logFrame('one\ntwo', 'one\ntwo\nthree')).toEqual({ type: 'reset', text: 'one\ntwo\nthree' });
   });
 
-  it('appends after a rolling tmux capture window', () => {
-    expect(logFrame('0123456789', '3456789abc')).toEqual({ type: 'append', text: 'abc' });
+  it('replaces a rolling tmux capture window as one complete frame', () => {
+    expect(logFrame('0123456789', '3456789abc')).toEqual({ type: 'reset', text: '3456789abc' });
   });
 
-  it('appends the changed line from a terminal redraw', () => {
-    expect(logFrame('first\nworking', 'first\ncomplete')).toEqual({ type: 'append', text: '\ncomplete' });
+  it('resets when a terminal redraw changes already-rendered content', () => {
+    expect(logFrame('first\nworking', 'first\ncomplete')).toEqual({ type: 'reset', text: 'first\ncomplete' });
   });
 
   it('marks unrelated non-empty snapshots as a reset', () => {

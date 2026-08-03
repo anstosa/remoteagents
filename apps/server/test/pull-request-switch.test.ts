@@ -11,6 +11,18 @@ const choices = [{ number: 7, title: 'Draft work', branch: 'feature/draft', draf
 const cleanCommand = async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('status') ? '' : 'refs/remotes/origin/feature/current\n' });
 
 describe('pull request switching', () => {
+  it('finds GitHub Actions for configured worktrees and scratch repositories', async () => {
+    const requested: string[] = [];
+    const pulls = { actionsUrl: async (workspace: string) => { requested.push(workspace); return 'https://github.com/octo/repo/actions'; } };
+    const configured = new PullRequestSwitchService(config, { target: async () => ({ agent, socket }) } as never, {} as never, pulls as never, cleanCommand);
+    const scratchAgent = { ...agent, workspace: '/scratch/repo' };
+    const scratch = new PullRequestSwitchService(config, { target: async () => ({ agent: scratchAgent, socket }) } as never, {} as never, pulls as never, cleanCommand);
+
+    await expect(configured.actionsUrl(agent.id)).resolves.toBe('https://github.com/octo/repo/actions');
+    await expect(scratch.actionsUrl(scratchAgent.id)).resolves.toBe('https://github.com/octo/repo/actions');
+    expect(requested).toEqual([worktree.identity, scratchAgent.workspace]);
+  });
+
   it('marks a pull request unavailable when another agent has its branch checked out', async () => {
     const discovery = { target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent, { ...agent, id: 'agent-2', branch: 'feature/draft', worktreeId: 'delta', worktreeLabel: 'Delta' }], worktrees: [] }) };
     const pulls = { supports: async () => true, ownOpen: async () => choices };

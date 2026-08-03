@@ -1,5 +1,5 @@
 export type SocketRef = { fingerprint: string; path: string; device: number; inode: number };
-export type Pane = { paneId: string; sessionId: string; sessionName?: string; pid: number; path: string; title: string; displayLabel?: string; command: string; socket: SocketRef };
+export type Pane = { paneId: string; sessionId: string; sessionName?: string; pid: number; path: string; title: string; displayLabel?: string; command: string; startCommand?: string; socket: SocketRef };
 export type OmxQuestion = { id: string; text: string; choices: string[]; paneId: string };
 export type PullRequestIssues = { mergeConflicts?: boolean; failingChecks?: boolean; unresolvedComments?: boolean };
 export type PullRequestCheckStatus = 'passed' | 'pending' | 'failed';
@@ -10,4 +10,6 @@ export type StackCommands = Partial<Record<StackAction | 'status', string>>;
 export type Agent = { id: string; paneId: string; sessionId: string; socketFingerprint: string; workspace: string; branch?: string; title: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; projectUrl?: string; pullRequest?: PullRequestSummary; question?: OmxQuestion };
 export type Worktree = { id: string; label: string; path: string; identity: string; hostPath?: string; available: boolean; pinned: boolean; command?: string; launch?: LaunchTemplate; projectUrl?: string; commands?: StackCommands; newTask?: string };
 export type LaunchTemplate = { program: string; args: string[] };
+export type CleanupTargetKind = 'orphan-worker' | 'stale-agent' | 'hud-pane' | 'hud-process';
+export type CleanupTarget = { id: string; kind: CleanupTargetKind; label: string; detail: string };
 export type Dashboard = { generation: number; agents: Agent[]; worktrees: Array<Pick<Worktree, 'id'|'label'|'path'|'available'|'pinned'|'projectUrl'> & { order: number; branch?: string; pullRequest?: PullRequestSummary }> };

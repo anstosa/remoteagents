@@ -4,8 +4,8 @@ import rateLimit from '@fastify/rate-limit';
 import websocket from '@fastify/websocket';
 import staticPlugin from '@fastify/static';
 import { fileURLToPath } from 'node:url';
-import { readFile, readdir, realpath } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { run } from './tmux/command.js';
 import type { ValidatedConfig } from './config/schema.js';
 import { AuthService, type Session } from './auth/service.js';
@@ -15,8 +15,7 @@ import { TicketStore, type TicketKind } from './auth/tickets.js';
 import { DiscoveryService } from './discovery/service.js';
 import { TmuxAdapter } from './tmux/adapter.js';
 import { maxPromptAttachments, maxPromptAttachmentBytes, PromptService, type PromptAttachment } from './prompts/service.js';
-import { expandCommand, hostCommand, LaunchService } from './launch/service.js';
-import { interactiveShellBootstrap } from './tmux/interactive-shell.js';
+import { LaunchService } from './launch/service.js';
 import * as pty from 'node-pty';
 import { safeEnv } from './tmux/command.js';
 import { PushService } from './push-service.js';
@@ -24,32 +23,27 @@ import { WorktreeCommandService } from './worktree-commands/service.js';
 import { PullRequestSwitchService } from './pull-requests/switch-service.js';
 import { NewTaskService } from './new-task/service.js';
 import { SavedPromptService } from './saved-prompts/service.js';
-import { agentNotificationTag } from './notifications.js';
+import { AgentNotificationCoordinator, agentNotificationTag } from './notifications.js';
 import { stackActions, type StackAction } from './domain/models.js';
-import { startNamedReplacementSession, worktreeSessionName } from './tmux/session-name.js';
+import { SkillService } from './skills/service.js';
+import { LatestViewportScheduler, PaneViewportCoordinator } from './logs/viewport-scheduler.js';
+import { DashboardUpdates, type DashboardPayload } from './dashboard/updates.js';
+import { WorktreeNoteService } from './notes/service.js';
+import { CleanupService } from './cleanup/service.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; push?: PushService; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; notes?: WorktreeNoteService; skills?: SkillService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload> };
 const cookieName = '__Host-rac';
 const body = (request: FastifyRequest): Record<string, unknown> => (request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {});
 type LogFrame = { type: 'append'|'reset'; text: string };
 export function logFrame(last: string, value: string): LogFrame | undefined {
   if (!value.trim() || value === last) return undefined;
-  if (!last) return { type: 'reset', text: value };
-  if (value.startsWith(last)) return { type: 'append', text: value.slice(last.length) };
-  const limit = Math.min(last.length, value.length, 2_048);
-  if (last.startsWith(value.slice(0, limit))) return { type: 'reset', text: value };
-  for (let size = limit; size > 0; size -= 1) {
-    const overlapStart = last.lastIndexOf(value.slice(0, size));
-    if (overlapStart >= 0 && last.slice(overlapStart) === value.slice(0, last.length - overlapStart)) return { type: 'append', text: value.slice(last.length - overlapStart) };
-  }
-  let shared = 0;
-  while (shared < last.length && shared < value.length && last[shared] === value[shared]) shared += 1;
-  const lineStart = value.lastIndexOf('\n', shared);
-  if (lineStart >= 0 && lineStart < value.length - 1) return { type: 'append', text: value.slice(lineStart) };
+  // Captures are complete viewport frames. Replaying a guessed suffix can
+  // preserve cells that tmux already redrew, producing a mixed old/new frame.
   return { type: 'reset', text: value };
 }
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const prompts = new PromptService(discovery, tmux, config.worktrees); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const push = deps.push ?? new PushService(); const stackCommands = new WorktreeCommandService(config); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux);
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const prompts = new PromptService(discovery, tmux, config.worktrees); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const notes = deps.notes ?? new WorktreeNoteService(); const skills = deps.skills ?? new SkillService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = new WorktreeCommandService(config); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.worktrees, dashboard.cleanupPending]));
+  const paneViewports = new PaneViewportCoordinator();
   const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 65_536 }); const webRoot = fileURLToPath(new URL('../../web/dist', import.meta.url)); const uiVersion = async () => await readFile(join(webRoot, 'index.html'), 'utf8').then(html => /<script[^>]+src="([^"]+)"/u.exec(html)?.[1]).catch(() => undefined); await app.register(cookie); await app.register(staticPlugin, { root: webRoot, index: false }); await app.register(rateLimit, { global: false }); await app.register(websocket, { options: { maxPayload: 65_536 } });
   const expectedHost = config.publicOrigin.host;
   const forbidden = () => Object.assign(new Error('forbidden'), { statusCode: 403 });
@@ -67,6 +61,15 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       controllingDeviceName: owner === undefined ? undefined : await devices.get(owner)
     };
   };
+  const dashboard = async (): Promise<DashboardPayload> => {
+    const discovered = await discovery.dashboard(config.worktrees);
+    for (const agent of discovered.agents) notifications.observe(agent);
+    notifications.retain(discovered.agents);
+    const controls = new Map(await Promise.all(config.worktrees.map(async worktree => [worktree.id, { actions: stackCommands.actions(worktree), ...await stackCommands.state(worktree) }] as const)));
+    const controlFor = (worktreeId: string | undefined) => worktreeId === undefined ? undefined : controls.get(worktreeId);
+    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }) })), worktrees: discovered.worktrees.map(worktree => ({ ...worktree, ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }) })), cleanupPending: cleanup.pending().length };
+  };
+  dashboardUpdates.setLoader(dashboard);
   app.addHook('onSend', async (_request, reply, payload) => { reply.header('Cache-Control', 'no-store').header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains').header('X-Frame-Options', 'DENY').header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()').header('Cross-Origin-Opener-Policy', 'same-origin').header('Cross-Origin-Resource-Policy', 'same-origin').header('Content-Security-Policy', `default-src 'self'; connect-src 'self' wss://${expectedHost}; style-src 'self' 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`); return payload; });
   app.get('/healthz', async () => ({ ok: true }));
   app.get('/', async (request, reply) => { browser(request); return reply.sendFile('index.html'); });
@@ -87,7 +90,21 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return await sessionState(s, true);
   });
   app.post('/api/auth/logout', async (request, reply) => { const s = session(request, true); control.release(s.id); auth.logout(s.id); reply.clearCookie(cookieName, { path: '/', secure: true, httpOnly: true, sameSite: 'lax' }); return reply.code(204).send(); });
-  app.get('/api/dashboard', async (request) => { controlled(request); const dashboard = await discovery.dashboard(config.worktrees); const controls = new Map(await Promise.all(config.worktrees.map(async worktree => [worktree.id, { actions: stackCommands.actions(worktree), ...await stackCommands.state(worktree) }] as const))); const controlFor = (worktreeId: string | undefined) => worktreeId === undefined ? undefined : controls.get(worktreeId); return { ...dashboard, agents: dashboard.agents.map(agent => ({ ...agent, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }) })), worktrees: dashboard.worktrees.map(worktree => ({ ...worktree, ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }) })) }; });
+  app.get('/api/dashboard', async (request) => { controlled(request); return await dashboardUpdates.refresh(); });
+  app.post('/api/dashboard/ticket', async (request) => { const s = controlled(request, true); return { ticket: tickets.mint(s.id, 'dashboard', 'dashboard').id }; });
+  app.get('/api/cleanup', async (request) => { controlled(request); const targets = await cleanup.scan(); await dashboardUpdates.refresh().catch(() => undefined); return { targets }; });
+  app.post('/api/cleanup', async (request, reply) => {
+    controlled(request, true);
+    const targets = await cleanup.cleanup(body(request).targetIds);
+    if (targets === undefined) return reply.code(400).send({ error: 'invalid cleanup targets' });
+    await dashboardUpdates.refresh().catch(() => undefined);
+    return { targets };
+  });
+  const configuredWorktree = (id: string) => config.worktrees.find(worktree => worktree.id === id);
+  app.get('/api/worktrees/:id/notes', async (request, reply) => { controlled(request); const id = (request.params as { id: string }).id; if (configuredWorktree(id) === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const stored = await notes.list(id); return stored === undefined ? reply.code(400).send({ error: 'invalid worktree' }) : { notes: stored }; });
+  app.post('/api/worktrees/:id/notes', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; if (configuredWorktree(id) === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const note = await notes.create(id); return note === undefined ? reply.code(409).send({ error: 'note limit reached' }) : reply.code(201).send(note); });
+  app.put('/api/worktrees/:id/notes/:noteId', { bodyLimit: 128_000 }, async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const text = body(request).text; if (configuredWorktree(id) === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof text !== 'string' || text.length > 30_000 || text.includes('\0')) return reply.code(400).send({ error: 'invalid note' }); const note = await notes.update(id, noteId, text); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
+  app.delete('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; if (configuredWorktree(id) === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const note = await notes.delete(id, noteId); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
   app.get('/api/push/public-key', async (request) => { session(request); return push.enabled ? { publicKey: push.publicKey } : { publicKey: undefined }; });
   app.post('/api/push/subscriptions', async (request, reply) => { session(request, true); return await push.subscribe(body(request) as never) ? reply.code(204).send() : reply.code(400).send({ error: 'invalid push subscription' }); });
   app.post('/api/agents/:id/notifications/dismiss', async (request, reply) => {
@@ -96,31 +113,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (!target) return reply.code(404).send({ error: 'target unavailable' });
     const worktree = config.worktrees.find(candidate => target.agent.workspace === candidate.identity || target.agent.workspace === candidate.hostPath);
     const scopedAgent = worktree === undefined ? target.agent : { ...target.agent, worktreeId: worktree.id };
+    notifications.view(scopedAgent);
     await push.notify({ kind: 'dismiss', tag: agentNotificationTag(scopedAgent), legacyTag: `agent-status-${target.agent.id}`, ...(worktree === undefined ? {} : { worktreeId: worktree.id }) });
     return reply.code(204).send();
   });
-  app.get('/api/agents/:id/directories', async (request, reply) => {
-    controlled(request);
-    const target = await discovery.target((request.params as { id: string }).id);
-    if (!target) return reply.code(404).send({ error: 'target unavailable' });
-    const query = request.query as { path?: unknown };
-    const root = await realpath(target.agent.workspace).catch(() => undefined);
-    const requested = typeof query.path === 'string' ? await realpath(query.path).catch(() => undefined) : root;
-    if (!root || !requested || (requested !== root && relative(root, requested).startsWith('..'))) return reply.code(400).send({ error: 'directory unavailable' });
-    const directories = await readdir(requested, { withFileTypes: true }).then(entries => entries.filter(entry => entry.isDirectory() && !entry.name.startsWith('.')).map(entry => entry.name).sort()).catch(() => undefined);
-    if (!directories) return reply.code(404).send({ error: 'directory unavailable' });
-    return { root, path: requested, directories };
-  });
-  app.post('/api/agents/:id/directory', async (request, reply) => {
-    controlled(request, true); const target = await discovery.target((request.params as { id: string }).id); const path = body(request).path;
-    if (!target || typeof path !== 'string') return reply.code(404).send({ error: 'target unavailable' });
-    const root = await realpath(target.agent.workspace).catch(() => undefined); const directory = await realpath(path).catch(() => undefined);
-    if (!root || !directory || (directory !== root && relative(root, directory).startsWith('..'))) return reply.code(400).send({ error: 'directory unavailable' });
-    const binary = process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux'; const sessionName = worktreeSessionName(root); const currentSession = target.agent.sessionId.slice(target.agent.socketFingerprint.length + 1); const script = hostCommand(expandCommand('codex', { identity: directory }), '/home/ubuntu');
-    if (!await startNamedReplacementSession(binary, target.socket.path, currentSession, sessionName, ['-c', directory, '/bin/bash', '-lc', interactiveShellBootstrap(script)])) return reply.code(409).send({ error: 'could not start agent' });
-    await tmux.close(target.socket, target.agent.paneId); return reply.code(202).send();
-  });
   app.get('/api/agents/:id/switch-prs', async (request, reply) => { controlled(request); const availability = await prSwitch.available((request.params as { id: string }).id); return availability === undefined ? reply.code(404).send({ error: 'pull request switching unavailable' }) : availability; });
+  app.get('/api/agents/:id/github-actions', async (request, reply) => { controlled(request); const url = await prSwitch.actionsUrl((request.params as { id: string }).id); return url === undefined ? reply.code(404).send({ error: 'GitHub Actions unavailable' }) : { url }; });
   app.post('/api/agents/:id/switch-pr', async (request, reply) => { controlled(request, true); const number = body(request).number; if (!Number.isInteger(number) || !await prSwitch.switch((request.params as { id: string }).id, number as number)) return reply.code(409).send({ error: 'Unable to switch to that pull request. The worktree must be clean and pushed.' }); return reply.code(202).send(); });
   app.get('/api/agents/:id/new-task', async (request, reply) => { controlled(request); const availability = await newTask.available((request.params as { id: string }).id); return availability === undefined ? reply.code(404).send({ error: 'new task unavailable' }) : availability; });
   app.post('/api/agents/:id/new-task', async (request, reply) => { controlled(request, true); if (!await newTask.start((request.params as { id: string }).id)) return reply.code(409).send({ error: 'Unable to start a new task. The working copy must be clean and pushed.' }); return reply.code(202).send(); });
@@ -140,10 +138,26 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return worktree === undefined ? agentId : `worktree:${worktree.id}`;
   };
   app.get('/api/agents/:id/saved-prompts', async (request, reply) => { controlled(request); const key = await savedPromptKey((request.params as { id: string }).id); if (key === undefined) return reply.code(404).send({ error: 'target unavailable' }); const prompts = await savedPrompts.list(key); return prompts === undefined ? reply.code(400).send({ error: 'invalid agent' }) : { prompts }; });
+  app.get('/api/agents/:id/skills', async (request, reply) => {
+    controlled(request);
+    const target = await discovery.target((request.params as { id: string }).id);
+    if (!target) return reply.code(404).send({ error: 'target unavailable' });
+    const worktree = config.worktrees.find(candidate => target.agent.workspace === candidate.identity || target.agent.workspace === candidate.hostPath);
+    return { skills: await skills.list(worktree?.path ?? target.agent.workspace) };
+  });
   app.post('/api/agents/:id/saved-prompts', async (request, reply) => { controlled(request, true); const key = await savedPromptKey((request.params as { id: string }).id); const prompt = body(request).prompt; if (key === undefined) return reply.code(404).send({ error: 'target unavailable' }); if (typeof prompt !== 'string') return reply.code(400).send({ error: 'invalid prompt' }); const saved = await savedPrompts.save(key, prompt); return saved === undefined ? reply.code(400).send({ error: 'invalid prompt' }) : reply.code(201).send(saved); });
   app.delete('/api/agents/:id/saved-prompts/:promptId', async (request, reply) => { controlled(request, true); const { id, promptId } = request.params as { id: string; promptId: string }; const key = await savedPromptKey(id); if (key === undefined) return reply.code(404).send({ error: 'target unavailable' }); const prompt = await savedPrompts.consume(key, promptId); return prompt === undefined ? reply.code(404).send({ error: 'saved prompt unavailable' }) : prompt; });
   app.post('/api/agents/:id/cancel', async (request, reply) => { controlled(request, true); if (!await prompts.cancel((request.params as { id: string }).id)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
   app.post('/api/agents/:id/background', async (request, reply) => { controlled(request, true); const target = await discovery.target((request.params as { id: string }).id); if (!target || !await tmux.suspend(target.socket, target.agent.paneId)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
+  app.post('/api/agents/:id/review', async (request, reply) => {
+    controlled(request, true);
+    const target = await discovery.target((request.params as { id: string }).id);
+    if (!target || !await tmux.suspend(target.socket, target.agent.paneId)) return reply.code(404).send({ error: 'target unavailable' });
+    if (await tmux.input(target.socket, target.agent.paneId, '\x15review; fg\r')) return reply.code(204).send();
+    await tmux.foreground(target.socket, target.agent.paneId);
+    return reply.code(500).send({ error: 'review unavailable' });
+  });
+  app.post('/api/agents/:id/review/close', async (request, reply) => { controlled(request, true); const target = await discovery.target((request.params as { id: string }).id); if (!target || !await tmux.quitReview(target.socket, target.agent.paneId)) return reply.code(404).send({ error: 'review unavailable' }); return reply.code(204).send(); });
   app.post('/api/agents/:id/foreground', async (request, reply) => { controlled(request, true); const target = await discovery.target((request.params as { id: string }).id); if (!target || !await tmux.foreground(target.socket, target.agent.paneId)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
   app.delete('/api/agents/:id', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const target = await discovery.target(id); if (!target || config.worktrees.some(worktree => target.agent.workspace === worktree.identity || target.agent.workspace === worktree.hostPath) || !await prompts.close(id)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
   app.post('/api/agents/:id/deactivate', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const target = await discovery.target(id); const configured = target !== undefined && config.worktrees.some(worktree => target.agent.workspace === worktree.identity || target.agent.workspace === worktree.hostPath); if (!target || !configured || /^[\u2800-\u28ff]/u.test(target.agent.title)) return reply.code(409).send({ error: 'only idle configured agents can be turned off' }); if (!await prompts.close(id)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
@@ -178,6 +192,21 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return reply.code(201).send({ agentId: agent.id });
   });
   app.post('/api/agents/:id/tickets', async (request, reply) => { const s = controlled(request, true); const kind = body(request).kind; if (kind !== 'input' && kind !== 'logs' && kind !== 'terminal') return reply.code(400).send({ error: 'invalid ticket type' }); const target = await discovery.target((request.params as { id: string }).id); if (!target) return reply.code(404).send({ error: 'target unavailable' }); return { ticket: tickets.mint(s.id, kind as TicketKind, kind === 'terminal' ? target.agent.sessionId : target.agent.id).id }; });
+  app.get('/ws/dashboard', { websocket: true }, async (socket, request) => {
+    try {
+      const s = controlled(request, false);
+      const ticket = String(request.headers['sec-websocket-protocol'] ?? '').split(',').map(value => value.trim())[1];
+      if (!tickets.consume(ticket, s.id, 'dashboard', 'dashboard')) throw new Error();
+      const send = (value: DashboardPayload) => {
+        if (!control.active(s.id)) return socket.close(1008);
+        if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ v: 1, type: 'dashboard', dashboard: value }));
+      };
+      const unsubscribe = dashboardUpdates.subscribe(send);
+      const lease = setInterval(() => { if (!control.active(s.id)) socket.close(1008); }, 5_000);
+      socket.on('close', () => { clearInterval(lease); unsubscribe(); });
+      void dashboardUpdates.refresh().catch(() => {});
+    } catch { socket.close(1008); }
+  });
   app.get('/ws/logs/:id', { websocket: true }, async (socket, request) => {
     try {
       const s = controlled(request, false);
@@ -186,6 +215,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       if (!tickets.consume(ticket, s.id, 'logs', id)) throw new Error();
       const target = await discovery.target(id);
       if (!target) throw new Error();
+      let paneViewport: ReturnType<typeof paneViewports.acquire> | undefined;
+      const viewportLease = () => paneViewport ??= paneViewports.acquire(
+        `${target.socket.fingerprint}:${target.agent.paneId}`,
+        () => tmux.size(target.socket, target.agent.paneId),
+        (nextCols, nextRows) => tmux.resize(target.socket, target.agent.paneId, nextCols, nextRows)
+      );
       let last = '';
       let history = 0;
       let rows = 36;
@@ -235,6 +270,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         viewVersion += 1;
         void poll(true);
       };
+      const viewport = new LatestViewportScheduler(
+        (nextCols, nextRows) => viewportLease().resize(nextCols, nextRows),
+        requestView
+      );
       const timer = setInterval(() => { if (history === 0) void poll(); }, config.pollIntervalMs);
       socket.on('message', (raw: unknown) => {
         try {
@@ -244,7 +283,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
             if (!Number.isInteger(frame.cols) || !Number.isInteger(frame.rows) || frame.cols < 2 || frame.cols > 500 || frame.rows < 2 || frame.rows > 300) throw new Error();
             cols = frame.cols;
             rows = frame.rows;
-            void (async () => { await tmux.resize(target.socket, target.agent.paneId, cols, rows); requestView(history); })();
+            void viewport.schedule({ cols, rows, history, onFailure: () => socket.close(1011) });
             return;
           }
           if (frame.type === 'history') {
@@ -254,20 +293,18 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
             if (!hasViewport) { requestView(frame.offset); return; }
             cols = frame.cols;
             rows = frame.rows;
-            void (async () => {
-              if (!await tmux.resize(target.socket, target.agent.paneId, cols, rows)) return socket.close(1011);
-              requestView(frame.offset);
-            })();
+            void viewport.schedule({ cols, rows, history: frame.offset, onFailure: () => socket.close(1011) });
             return;
           }
           throw new Error();
         } catch { socket.close(1008); }
       });
-      socket.on('close', () => clearInterval(timer));
+      socket.on('close', () => { clearInterval(timer); if (paneViewport !== undefined) void paneViewport.release(); });
       await poll();
     } catch { socket.close(1008); }
   });
   app.get('/ws/input/:id', { websocket: true }, async (socket, request) => { try { const s = controlled(request, false); const ticket = String(request.headers['sec-websocket-protocol'] ?? '').split(',').map(x => x.trim())[1]; const id = (request.params as { id: string }).id; if (!tickets.consume(ticket, s.id, 'input', id)) throw new Error(); const target = await discovery.target(id); if (!target) throw new Error(); socket.on('message', (raw: unknown) => { try { if (!control.active(s.id)) throw new Error(); const frame = JSON.parse(String(raw)); if (frame?.v !== 1 || frame?.type !== 'input' || typeof frame.data !== 'string' || !/^[A-Za-z0-9_-]*$/.test(frame.data)) throw new Error(); const decoded = Buffer.from(frame.data, 'base64url'); if (!decoded.length || decoded.length > 65_536 || decoded.toString('base64url') !== frame.data) throw new Error(); void tmux.input(target.socket, target.agent.paneId, decoded.toString('utf8')).then(ok => { if (!ok) socket.close(1011); }); } catch { socket.close(1008); } }); } catch { socket.close(1008); } });
   app.get('/ws/terminal/:id', { websocket: true }, async (socket, request) => { try { const s = controlled(request, false); const ticket = String(request.headers['sec-websocket-protocol'] ?? '').split(',').map(x => x.trim())[1]; const target = await discovery.target((request.params as { id: string }).id); if (!target || !tickets.consume(ticket, s.id, 'terminal', target.agent.sessionId)) throw new Error(); const sessionName = target.agent.sessionId.slice(target.agent.socketFingerprint.length + 1); const terminal = pty.spawn(process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux', ['-S', target.socket.path, 'attach-session', '-t', sessionName], { name: 'xterm-256color', cols: 120, rows: 36, cwd: '/', env: safeEnv() as Record<string, string> }); terminal.onData(value => socket.readyState === socket.OPEN && socket.send(JSON.stringify({ v: 1, type: 'output', data: Buffer.from(value).toString('base64url') }))); socket.on('message', (raw: unknown) => { try { if (!control.active(s.id)) throw new Error(); const frame = JSON.parse(String(raw)); if (frame?.v !== 1 || typeof frame?.type !== 'string') throw new Error(); if (frame.type === 'resize') { if (!Number.isInteger(frame.cols) || !Number.isInteger(frame.rows) || frame.cols < 2 || frame.cols > 500 || frame.rows < 2 || frame.rows > 300) throw new Error(); terminal.resize(frame.cols, frame.rows); return; } if (frame.type !== 'input' || typeof frame.data !== 'string' || !/^[A-Za-z0-9_-]*$/.test(frame.data)) throw new Error(); const decoded = Buffer.from(frame.data, 'base64url'); if (decoded.length > 65_536 || decoded.toString('base64url') !== frame.data) throw new Error(); terminal.write(decoded.toString('utf8')); } catch { socket.close(1008); } }); const close = () => terminal.kill(); socket.on('close', close); terminal.onExit(() => socket.close()); } catch { socket.close(1008); } });
+  app.addHook('onClose', async () => { await paneViewports.restoreAll(); dashboardUpdates.close(); });
   return app;
 }

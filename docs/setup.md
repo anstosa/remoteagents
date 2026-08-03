@@ -38,10 +38,11 @@ paths and project-local tooling:
 }
 ```
 
-The `codex` command is resolved through the operator's sourced
-`~/.bash_aliases`. This keeps console-launched worktree, scratch, and
-change-directory sessions on the same Codex/OMX launch policy as interactive
-shell sessions.
+The `codex` command is resolved from an interactive Homebrew zsh shell after
+loading the operator's `~/.zshenv` and `~/.zshrc` (which may in turn source
+`~/.bash_aliases`). This keeps console-launched worktree, scratch,
+change-directory, and new-task sessions on the same Codex/OMX launch policy as
+operator-opened zsh sessions.
 
 An optional `newTask` command adds a **New Task** action for a worktree. It
 uses `{taskId}` for an 8-character URL-safe random ID and is enabled only when

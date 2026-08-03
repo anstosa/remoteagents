@@ -1,40 +1,50 @@
-import { Component, type Dispatch, type ReactNode, type SetStateAction, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { Component, type Dispatch, type ReactNode, type SetStateAction, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
+import { BoundedTextCache, nextLiveSnapshot } from './client-cache.js';
+import { createAnimationFrameTextBatcher, pollWhileVisible } from './client-scheduling.js';
 import { createOutputLinkOverlays } from './output-links.js';
 import { containOutputScroll } from './output-scroll.js';
 import { preserveOutputLongPressSelection } from './output-touch.js';
 import { ProjectOpen } from './project-open.js';
-import { PullRequestCard, PullRequestStatusIcon, type PullRequestSummary } from './pull-request-card.js';
+import { PullRequestCard, PullRequestIndicators, PullRequestStatusIcon, type PullRequestSummary } from './pull-request-card.js';
 import { type StackAction } from './stack-operations.js';
-import { useShiftArrowTabCycling } from './tab-navigation.js';
+import { isPromptKeyboardTarget, useShiftArrowTabCycling } from './tab-navigation.js';
 import { useViewportFlyout } from './viewport-flyout.js';
 import './styles.css';
 
 type OmxQuestion = { id: string; text: string; choices: string[]; paneId: string };
 type Stack = { actions: StackAction[]; running?: boolean; transition?: 'starting'|'migrating'; operation?: StackAction; tunnel?: boolean };
-type PullRequestChoice = { number: number; title: string; branch: string; draft: boolean; url: string };
+type PullRequestChoice = { number: number; title: string; branch: string; draft: boolean; url: string } & Pick<PullRequestSummary, 'checks' | 'issues'>;
 type PullRequestWorktree = { worktreeId: string; worktreeName: string; agentId?: string };
 type SwitchablePullRequest = PullRequestChoice & { checkedOut: boolean; openIn?: PullRequestWorktree };
 type PullRequestSwitchAvailability = { enabled: boolean; pullRequests: SwitchablePullRequest[] };
 type DashboardTarget = { worktreeId: string; agentId?: string };
 type NewTaskAvailability = { enabled: boolean; reason?: string };
-type Agent = { id: string; sessionId: string; workspace: string; branch?: string; title: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; projectUrl?: string; pullRequest?: PullRequestSummary; question?: OmxQuestion; stack?: Stack };
+type CleanupTarget = { id: string; kind: 'orphan-worker'|'stale-agent'|'hud-pane'|'hud-process'; label: string; detail: string };
+type Agent = { id: string; sessionId: string; workspace: string; branch?: string; title: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; projectUrl?: string; pullRequest?: PullRequestSummary; question?: OmxQuestion; stack?: Stack; unread?: boolean };
 type Worktree = { id: string; label: string; path: string; available: boolean; pinned: boolean; order: number; projectUrl?: string; pullRequest?: PullRequestSummary; stack?: Stack };
-type Dashboard = { generation?: number; agents: Agent[]; worktrees: Worktree[] };
+type Dashboard = { generation?: number; agents: Agent[]; worktrees: Worktree[]; cleanupPending?: number };
 const isDashboard = (value: unknown): value is Dashboard => {
   if (value === null || typeof value !== 'object') return false;
-  const dashboard = value as { agents?: unknown; worktrees?: unknown };
-  return Array.isArray(dashboard.agents) && Array.isArray(dashboard.worktrees);
+  const dashboard = value as { agents?: unknown; worktrees?: unknown; cleanupPending?: unknown };
+  return Array.isArray(dashboard.agents) && Array.isArray(dashboard.worktrees) && (dashboard.cleanupPending === undefined || (Number.isInteger(dashboard.cleanupPending) && (dashboard.cleanupPending as number) >= 0));
 };
+const isDashboardFrame = (value: unknown): value is { v: 1; type: 'dashboard'; dashboard: Dashboard } => value !== null && typeof value === 'object' && (value as { v?: unknown }).v === 1 && (value as { type?: unknown }).type === 'dashboard' && isDashboard((value as { dashboard?: unknown }).dashboard);
+const isCleanupTarget = (value: unknown): value is CleanupTarget => value !== null && typeof value === 'object'
+  && typeof (value as CleanupTarget).id === 'string'
+  && ['orphan-worker', 'stale-agent', 'hud-pane', 'hud-process'].includes((value as CleanupTarget).kind)
+  && typeof (value as CleanupTarget).label === 'string'
+  && typeof (value as CleanupTarget).detail === 'string';
 type AgentState = 'working' | 'prompt-done' | 'action-required' | 'closed';
-type DashboardItem = { key: string; label: string; state: AgentState; order: number; agent?: Agent; worktree?: Worktree };
+type DashboardItem = { key: string; label: string; state: AgentState; order: number; unread: boolean; agent?: Agent; worktree?: Worktree };
 type LogFrame = { type: 'append' | 'reset'; text?: string; older?: boolean; newer?: boolean; lastPrompt?: string };
 type ChoiceQuestion = { text: string; choices: string[]; omxId?: string };
 type SavedPrompt = { id: string; text: string };
+type WorktreeNote = { id: string; text: string };
 type SessionInfo = { csrfToken: string; active: boolean; deviceName?: string; controllingDeviceName?: string };
 type PromptCommand = { value: string; description: string };
 type CommandToken = { start: number; end: number; prefix: '$'|'/'; query: string };
@@ -51,7 +61,11 @@ const skillCommands: PromptCommand[] = [
 const slashCommands: PromptCommand[] = [
   { value: '/help', description: 'Show available commands' }, { value: '/skills', description: 'Browse available skills' }, { value: '/status', description: 'Show the current session status' }, { value: '/model', description: 'Choose a model' }, { value: '/compact', description: 'Compact the conversation' }, { value: '/new', description: 'Start a new conversation' }, { value: '/resume', description: 'Resume a conversation' }, { value: '/review', description: 'Review the current changes' }, { value: '/diff', description: 'Show the current diff' }, { value: '/init', description: 'Initialize project guidance' }, { value: '/clear', description: 'Clear the conversation' }, { value: '/quit', description: 'Exit the session' }
 ];
-const promptCommands = [...skillCommands, ...slashCommands];
+const mergeSkillCommands = (additional: PromptCommand[]) => {
+  const commands = new Map(skillCommands.map(command => [command.value, command]));
+  for (const command of additional) commands.set(command.value, command);
+  return [...commands.values()].sort((left, right) => left.value.localeCompare(right.value));
+};
 const monoFontFamily = '"JetBrainsMono Nerd Font", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
 const commandTokenAt = (value: string, cursor: number): CommandToken | undefined => {
   const before = value.slice(0, cursor);
@@ -71,7 +85,7 @@ type SpeechRecognitionResult = ArrayLike<{ transcript: string }> & { isFinal: bo
 type SpeechRecognitionInstance = { continuous: boolean; interimResults: boolean; lang: string; start: () => void; abort: () => void; onresult: ((event: { resultIndex: number; results: ArrayLike<SpeechRecognitionResult> }) => void) | null; onend: (() => void) | null; onerror: (() => void) | null };
 type SpeechRecognitionConstructor = new () => SpeechRecognitionInstance;
 
-const logSnapshots = new Map<string, string>();
+const logSnapshots = new BoundedTextCache(64, 64 * 1024);
 const lastPrompts = new Map<string, string>();
 const promptDrafts = new Map<string, string>();
 const promptDraftListeners = new Map<string, Set<() => void>>();
@@ -115,8 +129,11 @@ const terminalInputs = new Map<string, (value: string) => void>();
 const exitTerminalInput = new Map<string, () => void>();
 const logHistoryRequests = new Map<string, (direction: -1 | 0 | 1) => void>();
 const mobileModifiers = new Map<string, { alt: boolean; ctrl: boolean; shift: boolean }>();
+const retainedReviewAgents = new Set<string>();
 const pendingOperations = new Set<string>();
 const pendingOperationListeners = new Map<string, Set<() => void>>();
+const pendingNewTaskSources = new Map<string, string>();
+const newTaskOperationKey = (worktreeId: string) => `new-task:${worktreeId}`;
 const subscribeToPendingOperation = (key: string, listener: () => void) => {
   const listeners = pendingOperationListeners.get(key) ?? new Set();
   listeners.add(listener);
@@ -144,7 +161,8 @@ const usePendingOperation = (key: string) => useSyncExternalStore(
 );
 const cacheLogFrame = (id: string, frame: LogFrame) => {
   const text = frame.text ?? '';
-  logSnapshots.set(id, frame.type === 'reset' ? text : `${logSnapshots.get(id) ?? ''}${text}`);
+  if (frame.type === 'reset') logSnapshots.set(id, text);
+  else logSnapshots.append(id, text);
   if (frame.lastPrompt !== undefined) lastPrompts.set(id, frame.lastPrompt);
   else if (frame.type === 'reset') cachedLastPrompt(id, text);
 };
@@ -214,11 +232,12 @@ const consoleFetch = async (url: string, init: RequestInit = {}) => {
     throw error;
   }
 };
-const request = async (url: string, init: RequestInit = {}) => {
+const request = async (url: string, init: RequestInit = {}, observeReachability = true) => {
   const headers = new Headers(init.headers);
   if (csrf) headers.set('X-CSRF-Token', csrf);
   try {
-    return await consoleFetch(url, { ...init, credentials: 'same-origin', headers });
+    const options = { ...init, credentials: 'same-origin' as const, headers };
+    return await (observeReachability ? consoleFetch(url, options) : fetch(url, options));
   } catch {
     return new Response(JSON.stringify({ error: 'Console unavailable' }), {
       status: 503,
@@ -237,6 +256,17 @@ const mergeSpeechSegments = (current: string, next: string) => {
   let overlap = Math.min(left.length, right.length);
   while (overlap > 0 && !left.slice(-overlap).every((word, index) => comparable(word) === comparable(right[index]!))) overlap -= 1;
   return [...left, ...right.slice(overlap)].join(' ');
+};
+const fitPromptInput = (input: HTMLTextAreaElement) => {
+  const style = getComputedStyle(input);
+  const lineHeight = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.2;
+  const borderHeight = Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
+  const minHeight = Number.parseFloat(style.minHeight) || 0;
+  input.style.minHeight = '0';
+  input.style.height = '0';
+  const contentHeight = input.scrollHeight;
+  input.style.removeProperty('min-height');
+  input.style.height = `${Math.max(minHeight, contentHeight + lineHeight + borderHeight)}px`;
 };
 const encodeAttachment = async (file: File): Promise<{ name: string; data: string }> => await new Promise((resolve, reject) => {
   const reader = new FileReader();
@@ -290,6 +320,7 @@ const copyText = async (value: string) => {
   document.execCommand('copy');
   textarea.remove();
 };
+const selectionCopyFlashMs = 600;
 
 function Login({ done, initialError }: { done: (session: SessionInfo) => void; initialError?: string }) {
   const [password, setPassword] = useState('');
@@ -348,10 +379,11 @@ class ConsoleBoundary extends Component<{ children: ReactNode }, { failed: boole
   }
 }
 
-function Prompt({ id, canCancel, cancelling, deleting, deactivating, swapping, swapped, onCancel, onDelete, onDeactivate, onSwap, onSelectTarget, projectUrl, question, worktreeId, newTaskConfigured, stack }: { id: string; canCancel: boolean; cancelling: boolean; deleting: boolean; deactivating: boolean; swapping: boolean; swapped: boolean; onCancel: () => void; onDelete?: () => void; onDeactivate?: () => void; onSwap: () => void; onSelectTarget: (target: DashboardTarget) => void; projectUrl?: string; question?: ChoiceQuestion; worktreeId?: string; newTaskConfigured?: boolean; stack?: Stack }) {
+function Prompt({ id, canCancel, cancelling, deleting, deactivating, swapping, swapped, reviewing, onCancel, onDelete, onDeactivate, onSwap, onReview, onSelectTarget, onPromptFocus, projectUrl, question, worktreeId, newTaskConfigured, stack }: { id: string; canCancel: boolean; cancelling: boolean; deleting: boolean; deactivating: boolean; swapping: boolean; swapped: boolean; reviewing: boolean; onCancel: () => void; onDelete?: () => void; onDeactivate?: () => void; onSwap: () => void; onReview: () => void; onSelectTarget: (target: DashboardTarget) => void; onPromptFocus: () => void; projectUrl?: string; question?: ChoiceQuestion; worktreeId?: string; newTaskConfigured?: boolean; stack?: Stack }) {
   const [value, setValue] = usePromptDraft(id);
   const [commandToken, setCommandToken] = useState<CommandToken>();
   const [activeCommand, setActiveCommand] = useState(0);
+  const [projectSkillCommands, setProjectSkillCommands] = useState<PromptCommand[]>([]);
   const pendingKey = `prompt:${id}`;
   const pending = usePendingOperation(pendingKey);
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -360,15 +392,31 @@ function Prompt({ id, canCancel, cancelling, deleting, deactivating, swapping, s
   const [savedPromptsOpen, setSavedPromptsOpen] = useState(false);
   const [savingPrompt, setSavingPrompt] = useState(false);
   const [savedConfirmation, setSavedConfirmation] = useState(false);
-  const [consumingSavedPrompt, setConsumingSavedPrompt] = useState<string>();
+  const [savedPromptAction, setSavedPromptAction] = useState<{ id: string; kind: 'restore' | 'send' }>();
   const [savedPromptError, setSavedPromptError] = useState<string>();
   const savedConfirmationTimer = useRef<number | undefined>(undefined);
+  const copiedSelectionTimer = useRef<number | undefined>(undefined);
   const attachmentInput = useRef<HTMLInputElement | null>(null);
   const promptInput = useRef<HTMLTextAreaElement | null>(null);
   const focusPromptAtEnd = useRef(false);
   const savedPromptGroupRef = useRef<HTMLSpanElement | null>(null);
   const { anchorRef: savedPromptAnchorRef, flyoutRef: savedPromptFlyoutRef, style: savedPromptFlyoutStyle } = useViewportFlyout(savedPromptsOpen);
+  const promptCommands = useMemo(() => [...mergeSkillCommands(projectSkillCommands), ...slashCommands], [projectSkillCommands]);
   const commandOptions = commandToken === undefined ? [] : promptCommands.filter(command => command.value.startsWith(commandToken.prefix) && command.value.slice(1).toLocaleLowerCase().includes(commandToken.query.toLocaleLowerCase()));
+  useEffect(() => {
+    let cancelled = false;
+    setProjectSkillCommands([]);
+    void request(`/api/agents/${encodeURIComponent(id)}/skills`).then(response => response.ok ? response.json() : undefined).then((payload: unknown) => {
+      if (cancelled || payload === null || typeof payload !== 'object' || !Array.isArray((payload as { skills?: unknown }).skills)) return;
+      const commands = (payload as { skills: unknown[] }).skills.flatMap(skill => {
+        if (skill === null || typeof skill !== 'object') return [];
+        const { name, description } = skill as { name?: unknown; description?: unknown };
+        return typeof name === 'string' && /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/u.test(name) && typeof description === 'string' ? [{ value: `$${name}`, description }] : [];
+      });
+      setProjectSkillCommands(commands);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [id]);
   useEffect(() => {
     let cancelled = false;
     void request(`/api/agents/${encodeURIComponent(id)}/saved-prompts`).then(response => response.ok ? response.json() : undefined).then((payload: unknown) => {
@@ -379,6 +427,7 @@ function Prompt({ id, canCancel, cancelling, deleting, deactivating, swapping, s
   }, [id]);
   useEffect(() => () => {
     if (savedConfirmationTimer.current !== undefined) window.clearTimeout(savedConfirmationTimer.current);
+    if (copiedSelectionTimer.current !== undefined) window.clearTimeout(copiedSelectionTimer.current);
   }, []);
   useEffect(() => {
     if (!savedPromptsOpen) return;
@@ -397,6 +446,23 @@ function Prompt({ id, canCancel, cancelling, deleting, deactivating, swapping, s
     input.focus();
     input.setSelectionRange(input.value.length, input.value.length);
   }, [value]);
+  useLayoutEffect(() => {
+    const input = promptInput.current;
+    if (input !== null) fitPromptInput(input);
+  }, [value]);
+  useLayoutEffect(() => {
+    const input = promptInput.current;
+    const composer = input?.parentElement;
+    if (input === null || input === undefined || composer === null || composer === undefined) return;
+    let width = composer.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (composer.clientWidth === width) return;
+      width = composer.clientWidth;
+      fitPromptInput(input);
+    });
+    observer.observe(composer);
+    return () => observer.disconnect();
+  }, []);
   const [listening, setListening] = useState(false);
   const [ctrlActive, setCtrlActive] = useState(false);
   const [shiftActive, setShiftActive] = useState(false);
@@ -408,13 +474,37 @@ function Prompt({ id, canCancel, cancelling, deleting, deactivating, swapping, s
   const supportsSpeechRecognition = speechWindow.SpeechRecognition !== undefined || speechWindow.webkitSpeechRecognition !== undefined;
   useEffect(() => () => recognition.current?.abort(), []);
   useEffect(() => { mobileModifiers.set(id, { alt: altActive, ctrl: ctrlActive, shift: shiftActive }); return () => { mobileModifiers.delete(id); }; }, [id, altActive, ctrlActive, shiftActive]);
-  const chooseAttachments = (files: FileList | null) => {
+  const chooseAttachments = (files: FileList | File[] | null) => {
     if (!files) return;
     const next = [...attachments, ...Array.from(files)];
     if (next.length > maxAttachments) return setAttachmentError(`Attach up to ${maxAttachments} files.`);
     if (next.reduce((total, file) => total + file.size, 0) > maxAttachmentBytes) return setAttachmentError(`Attachments must total ${maxAttachmentMegabytes} MB or less.`);
     setAttachmentError(undefined);
     setAttachments(next);
+  };
+  const pasteAttachments = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const images = Array.from(event.clipboardData.items).flatMap((item, index) => {
+      if (item.kind !== 'file' || !item.type.startsWith('image/')) return [];
+      const image = item.getAsFile();
+      if (image === null) return [];
+      const subtype = image.type.slice('image/'.length).toLowerCase();
+      const extension = subtype === 'jpeg' ? 'jpg' : /^[a-z0-9]+$/u.test(subtype) ? subtype : 'png';
+      const name = image.name || `pasted-image-${index + 1}.${extension}`;
+      return [new File([image], name, { type: image.type, lastModified: image.lastModified })];
+    });
+    if (images.length === 0) return;
+    event.preventDefault();
+    chooseAttachments(images);
+  };
+  const flashCopiedPromptSelection = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const input = event.currentTarget;
+    if (input.selectionStart === input.selectionEnd) return;
+    input.classList.add('selection-copied');
+    if (copiedSelectionTimer.current !== undefined) window.clearTimeout(copiedSelectionTimer.current);
+    copiedSelectionTimer.current = window.setTimeout(() => {
+      copiedSelectionTimer.current = undefined;
+      input.classList.remove('selection-copied');
+    }, selectionCopyFlashMs);
   };
   const submit = async () => {
     if (pending || (!swapped && !value && attachments.length === 0)) return;
@@ -429,13 +519,27 @@ function Prompt({ id, canCancel, cancelling, deleting, deactivating, swapping, s
       return;
     }
     if (!beginPendingOperation(pendingKey)) return;
+    const submittedValue = value;
+    const submittedAttachments = attachments;
+    const restoreSubmission = () => {
+      setValue(current => submittedValue ? current ? `${submittedValue}\n\n${current}` : submittedValue : current);
+      setAttachments(current => [...submittedAttachments, ...current]);
+    };
+    setValue('');
+    setAttachments([]);
+    setCommandToken(undefined);
     setAttachmentError(undefined);
     try {
-      const payload = await Promise.all(attachments.map(encodeAttachment));
-      const response = await request(`/api/agents/${encodeURIComponent(id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: value, attachments: payload }) });
-      if (response.ok) { setValue(''); setAttachments([]); }
-      else setAttachmentError('Unable to queue the prompt with these attachments.');
-    } catch { setAttachmentError('Unable to read the selected attachments.'); }
+      const payload = await Promise.all(submittedAttachments.map(encodeAttachment));
+      const response = await request(`/api/agents/${encodeURIComponent(id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: submittedValue, attachments: payload }) });
+      if (!response.ok) {
+        restoreSubmission();
+        setAttachmentError('Unable to queue the prompt with these attachments.');
+      }
+    } catch {
+      restoreSubmission();
+      setAttachmentError('Unable to read the selected attachments.');
+    }
     finally { setPendingOperation(pendingKey, false); }
   };
   const saveCurrentPrompt = async () => {
@@ -465,23 +569,45 @@ function Prompt({ id, canCancel, cancelling, deleting, deactivating, swapping, s
       setSavingPrompt(false);
     }
   };
+  const deleteSavedPrompt = async (saved: SavedPrompt) => {
+    const response = await request(`/api/agents/${encodeURIComponent(id)}/saved-prompts/${encodeURIComponent(saved.id)}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error();
+    const consumed = await response.json() as SavedPrompt;
+    if (typeof consumed.id !== 'string' || typeof consumed.text !== 'string') throw new Error();
+    setSavedPrompts(current => current.filter(prompt => prompt.id !== consumed.id));
+    return consumed;
+  };
   const useSavedPrompt = async (saved: SavedPrompt) => {
-    if (pending || consumingSavedPrompt !== undefined) return;
-    setConsumingSavedPrompt(saved.id);
+    if (pending || savedPromptAction !== undefined) return;
+    setSavedPromptAction({ id: saved.id, kind: 'restore' });
     setSavedPromptError(undefined);
     try {
-      const response = await request(`/api/agents/${encodeURIComponent(id)}/saved-prompts/${encodeURIComponent(saved.id)}`, { method: 'DELETE' });
-      if (!response.ok) throw new Error();
-      const consumed = await response.json() as SavedPrompt;
-      if (typeof consumed.id !== 'string' || typeof consumed.text !== 'string') throw new Error();
-      setSavedPrompts(current => current.filter(prompt => prompt.id !== consumed.id));
-      setSavedPromptsOpen(current => savedPrompts.length > 1 && current);
+      const consumed = await deleteSavedPrompt(saved);
+      setSavedPromptsOpen(false);
       focusPromptAtEnd.current = true;
       setValue(current => current ? `${current}${/\s$/u.test(current) ? '' : '\n\n'}${consumed.text}` : consumed.text);
     } catch {
       setSavedPromptError('Unable to restore this saved prompt.');
     } finally {
-      setConsumingSavedPrompt(undefined);
+      setSavedPromptAction(undefined);
+    }
+  };
+  const sendSavedPrompt = async (saved: SavedPrompt) => {
+    if (pending || savedPromptAction !== undefined || !beginPendingOperation(pendingKey)) return;
+    setSavedPromptAction({ id: saved.id, kind: 'send' });
+    setSavedPromptError(undefined);
+    let queued = false;
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: saved.text, attachments: [] }) });
+      if (!response.ok) throw new Error();
+      queued = true;
+      await deleteSavedPrompt(saved);
+      setSavedPromptsOpen(false);
+    } catch {
+      setSavedPromptError(queued ? 'Draft was queued, but could not be removed from saved.' : 'Unable to queue this saved prompt.');
+    } finally {
+      setSavedPromptAction(undefined);
+      setPendingOperation(pendingKey, false);
     }
   };
   const answer = async (index: number) => { if (pending || !beginPendingOperation(pendingKey)) return; try { const url = question?.omxId === undefined ? `/api/agents/${encodeURIComponent(id)}/question` : `/api/agents/${encodeURIComponent(id)}/omx-question`; const body = question?.omxId === undefined ? { index } : { index, questionId: question.omxId }; await request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); } finally { setPendingOperation(pendingKey, false); } };
@@ -540,8 +666,8 @@ function Prompt({ id, canCancel, cancelling, deleting, deactivating, swapping, s
   const deleteButton = <button className="danger icon-button delete-agent" disabled={deleting} aria-label="Delete agent" title="Delete agent" onClick={onDelete}>{deleting ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button>;
   const offButton = <button className="danger icon-button deactivate-agent" disabled={deactivating} aria-label="Turn off worktree agent" title="Turn off worktree agent" onClick={onDeactivate}>{deactivating ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button>;
   const stop = onDeactivate !== undefined ? offButton : onDelete === undefined ? cancelButton : deleteButton;
-  const swapLabel = swapped ? 'Return to agent output' : 'Swap to terminal';
-  const swap = <button className={`swap-agent icon-button${swapped ? ' active' : ''}`} disabled={swapping} aria-label={swapLabel} title={swapped ? 'Return to agent output' : 'Background agent and show terminal'} onClick={onSwap}>{swapping ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h13m0 0-4-4m4 4-4 4M19 17H6m0 0 4 4m-4-4 4-4" /></svg>}</button>;
+  const swapLabel = reviewing ? 'Close review' : swapped ? 'Return to agent output' : 'Swap to terminal';
+  const swap = <button className={`swap-agent icon-button${swapped ? ' active' : ''}`} disabled={swapping} aria-label={swapLabel} title={reviewing ? 'Close review and foreground agent' : swapped ? 'Return to agent output' : 'Background agent and show terminal'} onClick={onSwap}>{swapping ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h13m0 0-4-4m4 4-4 4M19 17H6m0 0 4 4m-4-4 4-4" /></svg>}</button>;
   const selectCommand = (command: PromptCommand) => {
     if (commandToken === undefined) return;
     const next = `${value.slice(0, commandToken.start)}${command.value}${value.slice(commandToken.end)}`;
@@ -556,15 +682,15 @@ function Prompt({ id, canCancel, cancelling, deleting, deactivating, swapping, s
     setCommandToken(commandTokenAt(next, event.target.selectionStart ?? next.length));
     setActiveCommand(0);
   };
-  const composer = <div className="prompt-composer"><textarea ref={promptInput} aria-label="Prompt" aria-autocomplete="list" aria-expanded={commandToken !== undefined} aria-controls={commandToken === undefined ? undefined : `prompt-commands-${id}`} aria-activedescendant={commandOptions[activeCommand] === undefined ? undefined : `prompt-command-${id}-${activeCommand}`} value={value} disabled={pending} onFocus={() => exitTerminalInput.get(id)?.()} onBlur={() => setCommandToken(undefined)} onKeyDown={event => { if (commandOptions.length > 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.key === 'ArrowDown') { event.preventDefault(); setActiveCommand(current => (current + 1) % commandOptions.length); } else if (commandOptions.length > 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.key === 'ArrowUp') { event.preventDefault(); setActiveCommand(current => (current + commandOptions.length - 1) % commandOptions.length); } else if (commandOptions.length > 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.key === 'Enter') { event.preventDefault(); selectCommand(commandOptions[activeCommand] ?? commandOptions[0]!); } else if (event.key === 'Escape' && commandToken !== undefined) { event.preventDefault(); setCommandToken(undefined); } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') { if (event.currentTarget.selectionStart === event.currentTarget.selectionEnd) { event.preventDefault(); setValue(''); } } else if (event.key === 'Tab') { event.preventDefault(); setValue(current => current + '\t'); } else if (event.key === 'Enter') { event.preventDefault(); if (event.ctrlKey || event.shiftKey || window.matchMedia('(max-width: 600px)').matches) setValue(current => current + '\n'); else void submit(); } }} onChange={updatePrompt} />{commandToken !== undefined && <div className="command-menu" id={`prompt-commands-${id}`} role="listbox" aria-label={`${commandToken.prefix} commands`}>{commandOptions.length > 0 ? commandOptions.map((command, index) => <button key={command.value} id={`prompt-command-${id}-${index}`} type="button" role="option" aria-selected={index === activeCommand} className={index === activeCommand ? 'active' : ''} onMouseDown={event => event.preventDefault()} onClick={() => selectCommand(command)}><code>{command.value}</code><span>{command.description}</span></button>) : <span className="command-menu-empty">No matching commands</span>}</div>}</div>;
-  const savedPanel = savedPromptsOpen && createPortal(<section className="saved-prompts-panel more-menu flyout-menu" ref={savedPromptFlyoutRef} style={savedPromptFlyoutStyle} aria-label="Saved prompts"><div className="saved-prompts-list">{savedPrompts.map(saved => <button key={saved.id} type="button" disabled={consumingSavedPrompt !== undefined} title={saved.text} onClick={() => void useSavedPrompt(saved)}>{consumingSavedPrompt === saved.id ? <span className="spinner" /> : null}<span>{saved.text}</span></button>)}</div></section>, document.body);
+  const composer = <div className="prompt-composer"><textarea ref={promptInput} aria-label="Prompt" aria-autocomplete="list" aria-expanded={commandToken !== undefined} aria-controls={commandToken === undefined ? undefined : `prompt-commands-${id}`} aria-activedescendant={commandOptions[activeCommand] === undefined ? undefined : `prompt-command-${id}-${activeCommand}`} value={value} onFocus={() => { exitTerminalInput.get(id)?.(); onPromptFocus(); }} onBlur={() => setCommandToken(undefined)} onCopy={flashCopiedPromptSelection} onPaste={pasteAttachments} onKeyDown={event => { if (commandOptions.length > 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.key === 'ArrowDown') { event.preventDefault(); setActiveCommand(current => (current + 1) % commandOptions.length); } else if (commandOptions.length > 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.key === 'ArrowUp') { event.preventDefault(); setActiveCommand(current => (current + commandOptions.length - 1) % commandOptions.length); } else if (commandOptions.length > 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.key === 'Enter') { event.preventDefault(); selectCommand(commandOptions[activeCommand] ?? commandOptions[0]!); } else if (event.key === 'Escape' && commandToken !== undefined) { event.preventDefault(); setCommandToken(undefined); } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void saveCurrentPrompt(); } else if (event.key === 'Tab') { event.preventDefault(); setValue(current => current + '\t'); } else if (event.key === 'Enter') { event.preventDefault(); if (event.ctrlKey || event.shiftKey || window.matchMedia('(max-width: 600px)').matches) setValue(current => current + '\n'); else void submit(); } }} onChange={updatePrompt} />{commandToken !== undefined && <div className="command-menu" id={`prompt-commands-${id}`} role="listbox" aria-label={`${commandToken.prefix} commands`}>{commandOptions.length > 0 ? commandOptions.map((command, index) => <button key={command.value} id={`prompt-command-${id}-${index}`} type="button" role="option" aria-selected={index === activeCommand} className={index === activeCommand ? 'active' : ''} onMouseDown={event => event.preventDefault()} onClick={() => selectCommand(command)}><code>{command.value}</code><span>{command.description}</span></button>) : <span className="command-menu-empty">No matching commands</span>}</div>}</div>;
+  const savedPanel = savedPromptsOpen && createPortal(<section className="saved-prompts-panel more-menu flyout-menu" ref={savedPromptFlyoutRef} style={savedPromptFlyoutStyle} aria-label="Saved prompts"><div className="saved-prompts-list">{savedPrompts.map(saved => <div className="saved-prompt-item" key={saved.id}><button className="saved-prompt-restore" type="button" disabled={savedPromptAction !== undefined} title={saved.text} onClick={() => void useSavedPrompt(saved)}>{savedPromptAction?.id === saved.id && savedPromptAction.kind === 'restore' ? <span className="spinner" /> : null}<span>{saved.text}</span></button><button className="saved-prompt-send" type="button" disabled={savedPromptAction !== undefined} aria-label={`Queue saved draft: ${saved.text}`} title="Queue saved draft" onClick={() => void sendSavedPrompt(saved)}>{savedPromptAction?.id === saved.id && savedPromptAction.kind === 'send' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button></div>)}</div></section>, document.body);
   const savedToggle = savedPrompts.length > 0 ? <button className={`saved-prompts-toggle icon-button${savedPromptsOpen ? ' active' : ''}`} type="button" disabled={pending} aria-label={`Saved prompts (${savedPrompts.length})`} aria-expanded={savedPromptsOpen} title={`${savedPrompts.length} saved prompt${savedPrompts.length === 1 ? '' : 's'}`} onClick={() => setSavedPromptsOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg><span className="saved-prompts-count" aria-hidden="true">{savedPrompts.length}</span></button> : null;
   const saveLabel = savingPrompt ? 'Saving' : savedConfirmation ? 'Saved' : 'Save';
   const saveButton = <button className={`save-prompt outline-button icon-button${savedConfirmation ? ' saved' : ''}`} type="button" disabled={pending || savingPrompt || !value.trim()} aria-label={saveLabel} title={saveLabel} onClick={() => void saveCurrentPrompt()}>{savingPrompt ? <span className="spinner" /> : savedConfirmation ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5V3Zm3 0v6h8V3M8 21v-7h8v7" /></svg>}</button>;
   const saveControls = <><span className={`save-prompt-group${savedToggle === null ? '' : ' has-saved-prompts'}`} ref={element => { savedPromptGroupRef.current = element; savedPromptAnchorRef.current = element; }} role="group" aria-label="Saved prompt controls">{saveButton}{savedToggle}</span>{savedPanel}</>;
-  if (question) return <section className="prompt question-prompt"><div className="question-copy"><strong>Agent question</strong><span>{question.text}</span></div><div className="question-choices">{question.choices.map((choice, index) => <button key={`${index}-${choice}`} className="question-choice" disabled={pending} onClick={() => void answer(index)}><b>{index + 1}</b>{choice}</button>)}</div><div className="prompt-actions">{stop}{swapped && swap}<span className="prompt-actions-spacer" aria-hidden="true" /><More id={id} newTaskConfigured={newTaskConfigured} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onSelectTarget={onSelectTarget} /></div></section>;
+  if (question) return <section className="prompt question-prompt"><div className="question-copy"><strong>Agent question</strong><span>{question.text}</span></div><div className="question-choices">{question.choices.map((choice, index) => <button key={`${index}-${choice}`} className="question-choice" disabled={pending} onClick={() => void answer(index)}><b>{index + 1}</b>{choice}</button>)}</div><div className="prompt-actions">{stop}{swapped && swap}<span className="prompt-actions-spacer" aria-hidden="true" /><More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onReview={swapped ? undefined : onReview} onSelectTarget={onSelectTarget} /></div></section>;
   const queueLabel = swapped ? 'Enter' : pending ? 'Queueing' : 'Queue';
-  return <section className="prompt">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{savedPromptError && <p className="saved-prompt-error" role="alert">{savedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{stop}{swapped && swap}<span className="prompt-actions-spacer" aria-hidden="true" /><More id={id} newTaskConfigured={newTaskConfigured} attachDisabled={pending} onAttach={swapped ? undefined : () => attachmentInput.current?.click()} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onSelectTarget={onSelectTarget} /><ProjectOpen url={projectUrl} stack={stack} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} />{supportsSpeechRecognition && <button className={`voice icon-button ${listening ? 'listening' : ''}`} type="button" disabled={pending} aria-label={listening ? 'Stop voice input' : 'Start voice input'} title={listening ? 'Stop voice input' : 'Start voice input'} onClick={voice}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3M8 22h8" /></svg></button>}{saveControls}<button className="queue icon-button" disabled={pending || (!swapped && !value && attachments.length === 0)} aria-label={queueLabel} title={queueLabel} onClick={() => void submit()}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button></div>{mobileKeys}</section>;
+  return <section className="prompt">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{savedPromptError && <p className="saved-prompt-error" role="alert">{savedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{stop}{swapped && swap}<span className="prompt-actions-spacer" aria-hidden="true" /><More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} attachDisabled={pending} onAttach={swapped ? undefined : () => attachmentInput.current?.click()} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onReview={swapped ? undefined : onReview} onSelectTarget={onSelectTarget} /><ProjectOpen url={projectUrl} stack={stack} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} />{supportsSpeechRecognition && <button className={`voice icon-button ${listening ? 'listening' : ''}`} type="button" disabled={pending} aria-label={listening ? 'Stop voice input' : 'Start voice input'} title={listening ? 'Stop voice input' : 'Start voice input'} onClick={voice}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3M8 22h8" /></svg></button>}{saveControls}<button className="queue icon-button" disabled={pending || (!swapped && !value && attachments.length === 0)} aria-label={queueLabel} title={queueLabel} onClick={() => void submit()}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button></div>{mobileKeys}</section>;
 }
 
 type MobileKeyIconName = 'control'|'shift'|'tab'|'up'|'down'|'left'|'right';
@@ -573,7 +699,316 @@ function MobileKeyIcon({ name }: { name: MobileKeyIconName }) {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d={paths[name]} /></svg>;
 }
 
-function Log({ id, onQuestion, terminalMode = false }: { id: string; onQuestion: (question: ChoiceQuestion | undefined) => void; terminalMode?: boolean }) {
+const isWorktreeNote = (value: unknown): value is WorktreeNote => value !== null && typeof value === 'object' && typeof (value as WorktreeNote).id === 'string' && typeof (value as WorktreeNote).text === 'string';
+const notePreview = (text: string) => {
+  const words = text.trim().split(/\s+/u).filter(Boolean);
+  return `${words.length === 0 ? 'Blank note' : words.slice(0, 6).join(' ')}…`;
+};
+const appendTextBlock = (current: string, text: string) => `${current}${current ? current.endsWith('\n\n') ? '' : current.endsWith('\n') ? '\n' : '\n\n' : ''}${text}`;
+
+function useWorktreeNotes(worktreeId?: string, agentId?: string) {
+  const [notes, setNotes] = useState<WorktreeNote[]>();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [activeNote, setActiveNote] = useState<WorktreeNote>();
+  const [draft, setDraft] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [copyState, setCopyState] = useState<'idle'|'copied'|'error'>('idle');
+  const [sendState, setSendState] = useState<'idle'|'sending'|'queued'|'error'>('idle');
+  const [dirtyCount, setDirtyCount] = useState(0);
+  const [saveStatus, setSaveStatus] = useState<'saved'|'saving'|'error'>('saved');
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const saveTimer = useRef<number | undefined>(undefined);
+  const activeNoteRef = useRef<WorktreeNote | undefined>(undefined);
+  const draftRef = useRef('');
+  const acknowledgedTexts = useRef(new Map<string, string>());
+  const dirtyTexts = useRef(new Map<string, string>());
+  const queuedTexts = useRef(new Map<string, string>());
+  const failedNotes = useRef(new Set<string>());
+  const saveVersions = useRef(new Map<string, number>());
+  const saveQueue = useRef(Promise.resolve());
+  const actionStatusTimer = useRef<number | undefined>(undefined);
+  const promptPendingKey = `prompt:${agentId ?? 'unavailable'}`;
+  const promptPending = usePendingOperation(promptPendingKey);
+
+  const clearActionStatusLater = () => {
+    if (actionStatusTimer.current !== undefined) window.clearTimeout(actionStatusTimer.current);
+    actionStatusTimer.current = window.setTimeout(() => {
+      actionStatusTimer.current = undefined;
+      setCopyState('idle');
+      setSendState('idle');
+    }, 1_600);
+  };
+
+  const persist = useCallback((noteId: string, text: string, immediate = false) => {
+    if (worktreeId === undefined || (!immediate && queuedTexts.current.get(noteId) === text)) return;
+    queuedTexts.current.set(noteId, text);
+    const version = (saveVersions.current.get(noteId) ?? 0) + 1;
+    saveVersions.current.set(noteId, version);
+    if (activeNoteRef.current?.id === noteId) setSaveStatus('saving');
+    const save = async () => {
+      if (!immediate && saveVersions.current.get(noteId) !== version) return;
+      try {
+        const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/notes/${encodeURIComponent(noteId)}`, { method: 'PUT', keepalive: true, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
+        if (!response.ok) throw new Error('note save failed');
+        const saved: unknown = await response.json();
+        if (!isWorktreeNote(saved)) throw new Error('invalid saved note');
+        if (saveVersions.current.get(noteId) !== version) return;
+        acknowledgedTexts.current.set(noteId, text);
+        if (queuedTexts.current.get(noteId) === text) queuedTexts.current.delete(noteId);
+        if (dirtyTexts.current.get(noteId) === text) dirtyTexts.current.delete(noteId);
+        if (!dirtyTexts.current.has(noteId)) failedNotes.current.delete(noteId);
+        setDirtyCount(dirtyTexts.current.size);
+        setNotes(current => current?.map(note => note.id === saved.id && !dirtyTexts.current.has(noteId) ? saved : note));
+        if (activeNoteRef.current?.id === noteId) setSaveStatus(dirtyTexts.current.has(noteId) ? failedNotes.current.has(noteId) ? 'error' : 'saving' : 'saved');
+      } catch {
+        if (saveVersions.current.get(noteId) !== version) return;
+        if (queuedTexts.current.get(noteId) === text) queuedTexts.current.delete(noteId);
+        if (dirtyTexts.current.get(noteId) === text) {
+          failedNotes.current.add(noteId);
+          setDirtyCount(dirtyTexts.current.size);
+          if (activeNoteRef.current?.id === noteId) setSaveStatus('error');
+        }
+      }
+    };
+    if (immediate) void save();
+    else saveQueue.current = saveQueue.current.then(save, save);
+  }, [worktreeId]);
+
+  const flush = useCallback(() => {
+    if (saveTimer.current !== undefined) window.clearTimeout(saveTimer.current);
+    saveTimer.current = undefined;
+    const note = activeNoteRef.current;
+    const text = note === undefined ? undefined : dirtyTexts.current.get(note.id);
+    if (note !== undefined && text !== undefined) persist(note.id, text);
+  }, [persist]);
+  const flushAll = useCallback((immediate = false) => {
+    if (immediate) {
+      if (saveTimer.current !== undefined) window.clearTimeout(saveTimer.current);
+      saveTimer.current = undefined;
+    } else flush();
+    for (const [noteId, text] of dirtyTexts.current) persist(noteId, text, immediate);
+  }, [flush, persist]);
+
+  useEffect(() => {
+    const pageHiding = () => flushAll(true);
+    window.addEventListener('pagehide', pageHiding);
+    return () => {
+      window.removeEventListener('pagehide', pageHiding);
+      flushAll(true);
+    };
+  }, [flushAll]);
+  useEffect(() => () => {
+    if (actionStatusTimer.current !== undefined) window.clearTimeout(actionStatusTimer.current);
+  }, []);
+  useEffect(() => {
+    setNotes(undefined);
+    setMenuOpen(false);
+    setActiveNote(undefined);
+    activeNoteRef.current = undefined;
+    draftRef.current = '';
+    acknowledgedTexts.current.clear();
+    dirtyTexts.current.clear();
+    queuedTexts.current.clear();
+    failedNotes.current.clear();
+    saveVersions.current.clear();
+    setCopyState('idle');
+    setSendState('idle');
+    setDirtyCount(0);
+  }, [worktreeId, agentId]);
+  useEffect(() => {
+    if (worktreeId === undefined) return;
+    let cancelled = false;
+    setLoading(true);
+    void request(`/api/worktrees/${encodeURIComponent(worktreeId)}/notes`).then(async response => {
+      if (!response.ok) throw new Error();
+      const payload: unknown = await response.json();
+      if (payload === null || typeof payload !== 'object' || !Array.isArray((payload as { notes?: unknown }).notes)) throw new Error();
+      const loaded = (payload as { notes: unknown[] }).notes.filter(isWorktreeNote);
+      if (cancelled) return;
+      for (const note of loaded) acknowledgedTexts.current.set(note.id, note.text);
+      setNotes(loaded);
+    }).catch(() => {
+      if (!cancelled) setSaveStatus('error');
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [worktreeId]);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (event: MouseEvent) => { if (!anchorRef.current?.contains(event.target as Node)) setMenuOpen(false); };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [menuOpen]);
+  useLayoutEffect(() => { if (activeNote !== undefined) editorRef.current?.focus(); }, [activeNote?.id]);
+
+  const restoreTriggerFocus = () => window.requestAnimationFrame(() => triggerRef.current?.focus());
+  const open = (note: WorktreeNote) => {
+    flush();
+    const text = dirtyTexts.current.get(note.id) ?? note.text;
+    const opened = { ...note, text };
+    activeNoteRef.current = opened;
+    draftRef.current = text;
+    if (!acknowledgedTexts.current.has(note.id)) acknowledgedTexts.current.set(note.id, note.text);
+    setDraft(text);
+    setActiveNote(opened);
+    setCopyState('idle');
+    setSendState('idle');
+    setSaveStatus(failedNotes.current.has(note.id) ? 'error' : dirtyTexts.current.has(note.id) ? 'saving' : 'saved');
+    setMenuOpen(false);
+    if (dirtyTexts.current.has(note.id)) persist(note.id, text);
+  };
+  const updateDraft = (note: WorktreeNote, text: string) => {
+    draftRef.current = text;
+    activeNoteRef.current = { ...note, text };
+    setDraft(text);
+    setCopyState('idle');
+    setSendState('idle');
+    setNotes(current => current?.map(candidate => candidate.id === note.id ? { ...candidate, text } : candidate));
+    if (saveTimer.current !== undefined) window.clearTimeout(saveTimer.current);
+    failedNotes.current.delete(note.id);
+    const clean = text === acknowledgedTexts.current.get(note.id) && queuedTexts.current.get(note.id) === undefined;
+    if (clean) {
+      dirtyTexts.current.delete(note.id);
+      saveTimer.current = undefined;
+      setDirtyCount(dirtyTexts.current.size);
+      setSaveStatus('saved');
+      return;
+    }
+    dirtyTexts.current.set(note.id, text);
+    setDirtyCount(dirtyTexts.current.size);
+    setSaveStatus('saving');
+    saveTimer.current = window.setTimeout(() => {
+      saveTimer.current = undefined;
+      persist(note.id, dirtyTexts.current.get(note.id) ?? draftRef.current);
+    }, 500);
+  };
+  const load = async () => {
+    if (worktreeId === undefined) return undefined;
+    if (notes !== undefined) return notes;
+    setLoading(true);
+    try {
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/notes`);
+      if (!response.ok) throw new Error();
+      const payload: unknown = await response.json();
+      if (payload === null || typeof payload !== 'object' || !Array.isArray((payload as { notes?: unknown }).notes)) throw new Error();
+      const loaded = (payload as { notes: unknown[] }).notes.filter(isWorktreeNote);
+      for (const note of loaded) acknowledgedTexts.current.set(note.id, note.text);
+      setNotes(loaded);
+      return loaded;
+    } catch {
+      setSaveStatus('error');
+      return undefined;
+    } finally { setLoading(false); }
+  };
+  const create = async (text = '') => {
+    if (worktreeId === undefined || loading) return;
+    setLoading(true);
+    try {
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/notes`, { method: 'POST' });
+      const note: unknown = response.ok ? await response.json() : undefined;
+      if (!isWorktreeNote(note)) throw new Error();
+      acknowledgedTexts.current.set(note.id, note.text);
+      setNotes(current => [note, ...(current ?? [])]);
+      open(note);
+      if (text) updateDraft(note, text);
+    } catch { setSaveStatus('error'); }
+    finally { setLoading(false); }
+  };
+  const toggle = async () => {
+    if (menuOpen) return setMenuOpen(false);
+    const loaded = await load();
+    if (loaded === undefined) return;
+    if (loaded.length === 0) return await create();
+    setMenuOpen(true);
+  };
+  const changeDraft = (text: string) => {
+    const note = activeNoteRef.current;
+    if (note === undefined) return;
+    updateDraft(note, text);
+  };
+  const appendToActive = (text: string) => {
+    const note = activeNoteRef.current;
+    const next = appendTextBlock(draftRef.current, text);
+    if (note === undefined || !text || next.length > 30_000) return;
+    updateDraft(note, next);
+  };
+  const canAppendToActive = (text: string) => activeNoteRef.current !== undefined && appendTextBlock(draftRef.current, text).length <= 30_000;
+  const copy = async () => {
+    try {
+      await copyText(draftRef.current);
+      setCopyState('copied');
+    } catch {
+      setCopyState('error');
+    }
+    clearActionStatusLater();
+  };
+  const send = async () => {
+    const prompt = draftRef.current;
+    if (agentId === undefined || !prompt.trim() || deleting || sendState === 'sending' || !beginPendingOperation(promptPendingKey)) return;
+    flush();
+    setSendState('sending');
+    setCopyState('idle');
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(agentId)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt, attachments: [] }) });
+      if (!response.ok) throw new Error();
+      setSendState('queued');
+      clearActionStatusLater();
+    } catch {
+      setSendState('error');
+    } finally {
+      setPendingOperation(promptPendingKey, false);
+    }
+  };
+  const remove = () => {
+    const note = activeNoteRef.current;
+    if (worktreeId === undefined || note === undefined || deleting) return;
+    if (saveTimer.current !== undefined) window.clearTimeout(saveTimer.current);
+    saveTimer.current = undefined;
+    setDeleting(true);
+    saveQueue.current = saveQueue.current.then(async () => {
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/notes/${encodeURIComponent(note.id)}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error();
+      acknowledgedTexts.current.delete(note.id);
+      dirtyTexts.current.delete(note.id);
+      queuedTexts.current.delete(note.id);
+      failedNotes.current.delete(note.id);
+      saveVersions.current.delete(note.id);
+      setDirtyCount(dirtyTexts.current.size);
+      setNotes(current => current?.filter(candidate => candidate.id !== note.id));
+      activeNoteRef.current = undefined;
+      setActiveNote(undefined);
+      restoreTriggerFocus();
+    }).catch(() => {
+      if (dirtyTexts.current.has(note.id)) failedNotes.current.add(note.id);
+      setDirtyCount(dirtyTexts.current.size);
+      setSaveStatus('error');
+    }).finally(() => setDeleting(false));
+  };
+  const close = () => {
+    if (!draftRef.current.trim()) {
+      remove();
+      return;
+    }
+    flush();
+    activeNoteRef.current = undefined;
+    setActiveNote(undefined);
+    restoreTriggerFocus();
+  };
+
+  if (worktreeId === undefined) return { active: false, appendToActive, canAppendToActive, canCreate: false, control: null, createWithText: create, pane: null };
+  const noteCount = notes?.length ?? 0;
+  const notesLabel = dirtyCount === 0 ? `Notes (${noteCount})` : `Notes (${noteCount}; ${dirtyCount} unsaved)`;
+  const control = <div className="notes-control" ref={anchorRef}><button ref={triggerRef} className={`log-control page-arrow notes-toggle${menuOpen || activeNote !== undefined ? ' active' : ''}${dirtyCount > 0 ? ' unsaved' : ''}`} aria-label={notesLabel} title={notesLabel} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}{noteCount > 0 && <span className="saved-prompts-count notes-count" aria-hidden="true">{noteCount}</span>}</button>{menuOpen && <div className="notes-menu" aria-label="Worktree notes">{notes?.map(note => <button key={note.id} className="log-control note-choice" title={note.text || 'Blank note'} onClick={() => open(note)}>{notePreview(note.text)}</button>)}<button className="log-control new-note" onClick={() => void create()}>+ New note</button></div>}</div>;
+  const actionStatus = copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : sendState === 'queued' ? 'Queued' : sendState === 'error' ? 'Queue failed' : '';
+  const pane = activeNote === undefined ? null : <section className="note-pane" role="dialog" aria-label="Worktree note" onKeyDown={event => { if (event.key === 'Escape' && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><header><strong>Worktree note</strong><span className={`note-save-status ${saveStatus}`} role={saveStatus === 'error' ? 'alert' : 'status'} aria-live={saveStatus === 'error' ? 'assertive' : 'polite'}>{saveStatus === 'saving' ? 'Saving…' : saveStatus === 'error' ? 'Unable to save' : 'Saved'}</span>{actionStatus && <span className={`note-action-status${copyState === 'error' || sendState === 'error' ? ' error' : ''}`} role={copyState === 'error' || sendState === 'error' ? 'alert' : 'status'}>{actionStatus}</span>}<button className="note-copy" type="button" disabled={deleting} onClick={() => void copy()}>{copyState === 'copied' ? 'Copied' : 'Copy'}</button><button className="note-send" type="button" disabled={agentId === undefined || deleting || promptPending || !draft.trim()} aria-label="Send note as prompt" title={agentId === undefined ? 'Launch an agent to send this note' : 'Send note as prompt'} onClick={() => void send()}>{sendState === 'sending' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button><button className="note-delete" type="button" disabled={deleting || sendState === 'sending'} aria-label="Delete note" title="Delete note" onClick={remove}>{deleting ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button><button className="note-close" type="button" disabled={deleting || sendState === 'sending'} aria-label="Close note" title="Close note" onClick={close}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header><textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} /></section>;
+  return { active: activeNote !== undefined, appendToActive, canAppendToActive, canCreate: !loading, control, createWithText: create, pane };
+}
+
+function Log({ id, worktreeId, onQuestion, cleanupControl, terminalMode = false, reviewMode = false, processingLabel }: { id: string; worktreeId?: string; onQuestion: (question: ChoiceQuestion | undefined) => void; cleanupControl?: ReactNode; terminalMode?: boolean; reviewMode?: boolean; processingLabel?: string }) {
   const canvas = useRef<HTMLDivElement | null>(null);
   const primaryHost = useRef<HTMLDivElement | null>(null);
   const secondaryHost = useRef<HTMLDivElement | null>(null);
@@ -589,6 +1024,10 @@ function Log({ id, onQuestion, terminalMode = false }: { id: string; onQuestion:
   const promptRef = useRef<HTMLSpanElement | null>(null);
   const [scrolledUp, setScrolledUp] = useState(false);
   const [inputActive, setInputActive] = useState(terminalMode);
+  const [selectionActive, setSelectionActive] = useState(false);
+  const [selectionToolbar, setSelectionToolbar] = useState<{ text: string; top: number }>();
+  const copyOutputSelectionRef = useRef<(value: string) => Promise<void>>(copyText);
+  const worktreeNotes = useWorktreeNotes(worktreeId, id);
   useEffect(() => {
     let socket: WebSocket | undefined;
     let closed = false;
@@ -600,15 +1039,24 @@ function Log({ id, onQuestion, terminalMode = false }: { id: string; onQuestion:
     let pendingRender = false;
     let renderingSnapshot = false;
     let flushFrame: number | undefined;
+    let resizeFrame: number | undefined;
+    let overlayFrame: number | undefined;
+    let analysisFrame: number | undefined;
+    let analyzeLastPrompt = false;
+    let latestAnalysisSnapshot = '';
+    let copiedSelectionTimer: number | undefined;
     const pendingInput: string[] = [];
     setStatus('Connecting');
     setHasRendered(false);
     setLastPrompt(lastPrompts.get(id));
     setVisibleFrame(0);
     setInputActive(terminalMode);
+    setSelectionActive(false);
+    setSelectionToolbar(undefined);
     let historyOffset = 0;
     let requestHistory = (_offset: number) => {};
-    const terminalOptions = { convertEol: true, fontFamily: monoFontFamily, fontSize: 11, scrollback: 0, screenReaderMode: window.matchMedia('(pointer: coarse)').matches, theme: { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#585b7088', black: '#45475a', red: '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af', blue: '#89b4fa', magenta: '#f5c2e7', cyan: '#94e2d5', white: '#bac2de', brightBlack: '#585b70', brightRed: '#f38ba8', brightGreen: '#a6e3a1', brightYellow: '#f9e2af', brightBlue: '#89b4fa', brightMagenta: '#f5c2e7', brightCyan: '#89dceb', brightWhite: '#a6adc8' } };
+    const terminalTheme = { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#cba6f7', selectionForeground: '#11111b', black: '#45475a', red: '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af', blue: '#89b4fa', magenta: '#f5c2e7', cyan: '#94e2d5', white: '#bac2de', brightBlack: '#585b70', brightRed: '#f38ba8', brightGreen: '#a6e3a1', brightYellow: '#f9e2af', brightBlue: '#89b4fa', brightMagenta: '#f5c2e7', brightCyan: '#89dceb', brightWhite: '#a6adc8' };
+    const terminalOptions = { convertEol: true, fontFamily: monoFontFamily, fontSize: 11, scrollback: 0, screenReaderMode: window.matchMedia('(pointer: coarse)').matches, theme: terminalTheme };
     const terminals = [new XTerm(terminalOptions), new XTerm(terminalOptions)];
     const fits = [new FitAddon(), new FitAddon()];
     let suppressOutputFocusUntil = 0;
@@ -617,7 +1065,24 @@ function Log({ id, onQuestion, terminalMode = false }: { id: string; onQuestion:
     let activeFrame: 0 | 1 = 0;
     let terminal = terminals[activeFrame];
     terminalRef.current = terminal;
-    terminals.forEach((candidate, index) => { candidate.loadAddon(fits[index]); candidate.open(index === 0 ? primaryHost.current! : secondaryHost.current!); fits[index].fit(); });
+    terminals.forEach((candidate, index) => {
+      candidate.loadAddon(fits[index]);
+      candidate.open(index === 0 ? primaryHost.current! : secondaryHost.current!);
+      Object.assign(candidate.element!.style, {
+        fontFamily: monoFontFamily,
+        fontKerning: 'none',
+        fontSize: `${terminalOptions.fontSize}px`,
+        fontWeight: 'normal'
+      });
+      fits[index].fit();
+    });
+    const scheduleOverlayRender = () => {
+      if (overlayFrame !== undefined) return;
+      overlayFrame = window.requestAnimationFrame(() => {
+        overlayFrame = undefined;
+        if (!closed) overlays.render(terminal);
+      });
+    };
     const encoded = (value: string) => btoa(String.fromCharCode(...new TextEncoder().encode(value))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     const connectInteractive = async () => {
       if (closed || connectingInteractive || interactiveSocket !== undefined) return;
@@ -655,36 +1120,162 @@ function Log({ id, onQuestion, terminalMode = false }: { id: string; onQuestion:
     };
     logHistoryRequests.set(id, moveHistory);
     const sendViewport = () => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ v: 1, type: 'viewport', cols: terminal.cols, rows: terminal.rows })); };
-    const observer = new ResizeObserver(() => { overlays.clear(); fits.forEach(fit => fit.fit()); window.requestAnimationFrame(() => { if (!closed) overlays.render(terminal); }); sendViewport(); });
+    const scheduleViewport = () => {
+      if (resizeFrame !== undefined) return;
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = undefined;
+        if (closed) return;
+        overlays.clear();
+        fits.forEach(fit => fit.fit());
+        scheduleOverlayRender();
+        sendViewport();
+      });
+    };
+    const observer = new ResizeObserver(scheduleViewport);
     observer.observe(canvas.current!);
+    window.addEventListener('resize', scheduleViewport);
+    window.visualViewport?.addEventListener('resize', scheduleViewport);
+    const syncVisibleViewport = () => { if (document.visibilityState === 'visible') scheduleViewport(); };
+    document.addEventListener('visibilitychange', syncVisibleViewport);
+    window.addEventListener('pageshow', scheduleViewport);
     const syncScrollState = () => {
       setScrolledUp(historyOffset > 0);
     };
+    const terminalSelectionActive = () => terminals.some(candidate => candidate.hasSelection());
+    const nativeSelectionActive = () => {
+      const selection = window.getSelection();
+      if (selection === null || selection.isCollapsed) return false;
+      return [selection.anchorNode, selection.focusNode].some(node => node !== null && canvas.current?.contains(node));
+    };
+    const selectedOutput = () => {
+      const selectedTerminal = terminals.find(candidate => candidate.hasSelection());
+      if (selectedTerminal !== undefined) return selectedTerminal.getSelection();
+      return nativeSelectionActive() ? window.getSelection()?.toString() ?? '' : '';
+    };
+    const flashCopiedOutputSelection = () => {
+      const log = canvas.current?.parentElement;
+      log?.classList.add('selection-copied');
+      terminals.filter(candidate => candidate.hasSelection()).forEach(candidate => {
+        candidate.options.theme = { ...terminalTheme, selectionBackground: '#a6e3a1', selectionInactiveBackground: '#a6e3a1' };
+      });
+      if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer);
+      copiedSelectionTimer = window.setTimeout(() => {
+        copiedSelectionTimer = undefined;
+        log?.classList.remove('selection-copied');
+        terminals.forEach(candidate => { candidate.options.theme = { ...terminalTheme }; });
+      }, selectionCopyFlashMs);
+    };
+    const copyOutputSelection = async (value: string) => {
+      await copyText(value);
+      if (!closed) flashCopiedOutputSelection();
+    };
+    copyOutputSelectionRef.current = copyOutputSelection;
     terminals.forEach(candidate => candidate.attachCustomKeyEventHandler(event => {
-      if (event.type !== 'keydown' || event.key.toLowerCase() !== 'c') return true;
-      if ((event.ctrlKey || event.metaKey) && candidate.hasSelection()) {
+      if (event.type !== 'keydown') return true;
+      if (event.key === 'Tab' && outputModeActive) {
         event.preventDefault();
-        void copyText(candidate.getSelection());
+        event.stopPropagation();
+        sendInput(event.shiftKey ? '\x1b[Z' : '\t');
         return false;
       }
-      if (event.ctrlKey && outputModeActive) {
+      if (event.key.toLowerCase() !== 'c') return true;
+      if ((event.ctrlKey || event.metaKey) && candidate.hasSelection()) {
         event.preventDefault();
-        sendInput('\x03');
+        void copyOutputSelection(candidate.getSelection());
         return false;
       }
       return true;
     }));
-    const selectionActive = () => terminals.some(candidate => candidate.hasSelection());
+    const interruptOutput = (event: KeyboardEvent) => {
+      const controlC = event.key.toLowerCase() === 'c' || event.code === 'KeyC';
+      if (!outputModeActive || !event.ctrlKey || event.shiftKey || event.metaKey || event.altKey || !controlC || selectedOutput()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      sendInput('\x03');
+    };
+    const copySelectionShortcut = (event: KeyboardEvent) => {
+      if (isPromptKeyboardTarget(event.target)) return;
+      const key = event.key.toLowerCase();
+      const yank = key === 'y' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+      const terminalCopy = key === 'c' && event.ctrlKey && event.shiftKey && !event.metaKey && !event.altKey;
+      if (!yank && !terminalCopy) return;
+      const selected = selectedOutput();
+      if (!selected) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void copyOutputSelection(selected);
+    };
+    const nativeOutputCopied = () => { if (nativeSelectionActive()) flashCopiedOutputSelection(); };
+    let outputSelectionActive = false;
+    const syncSelectionMode = () => {
+      const nativeActive = nativeSelectionActive();
+      outputSelectionActive = terminalSelectionActive() || nativeActive;
+      setSelectionActive(outputSelectionActive);
+      if (!nativeActive) return setSelectionToolbar(undefined);
+      const selection = window.getSelection();
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : undefined;
+      const rectangles = range === undefined ? [] : Array.from(range.getClientRects());
+      const bounds = rectangles.at(-1) ?? range?.getBoundingClientRect();
+      const text = selection?.toString() ?? '';
+      if (!text || bounds === undefined) return setSelectionToolbar(undefined);
+      setSelectionToolbar({ text, top: Math.min(window.innerHeight - 48, bounds.bottom + 8) });
+    };
+    const clearOutputSelection = () => {
+      terminals.forEach(candidate => candidate.clearSelection());
+      if (nativeSelectionActive()) window.getSelection()?.removeAllRanges();
+      outputSelectionActive = false;
+      setSelectionActive(false);
+      setSelectionToolbar(undefined);
+    };
     let flushSelectedOutput = () => {};
+    const scheduleOutputAnalysis = (latest: boolean) => {
+      if (terminalMode) return;
+      if (latest) {
+        analyzeLastPrompt = true;
+        latestAnalysisSnapshot = snapshot;
+      }
+      if (analysisFrame !== undefined) return;
+      analysisFrame = window.requestAnimationFrame(() => {
+        analysisFrame = undefined;
+        if (closed) return;
+        if (analyzeLastPrompt) setLastPrompt(cachedLastPrompt(id, latestAnalysisSnapshot));
+        analyzeLastPrompt = false;
+        onQuestion(questionFromOutput(snapshot));
+      });
+    };
+    const appendWrites = createAnimationFrameTextBatcher(text => {
+      if (closed || socket === undefined) return;
+      if (terminalSelectionActive() || renderingSnapshot) {
+        pendingRender = true;
+        return;
+      }
+      terminal.write(text, () => {
+        terminal.scrollToBottom();
+        scheduleOverlayRender();
+        syncScrollState();
+      });
+    }, undefined, undefined, 1_000_000);
     const selectionSubscriptions = terminals.map(candidate => candidate.onSelectionChange(() => {
-      if (!selectionActive()) flushSelectedOutput();
+      syncSelectionMode();
+      if (!terminalSelectionActive()) flushSelectedOutput();
     }));
+    document.addEventListener('selectionchange', syncSelectionMode);
+    window.addEventListener('keydown', interruptOutput, true);
+    document.addEventListener('keydown', copySelectionShortcut, true);
+    document.addEventListener('copy', nativeOutputCopied);
     const inputSubscriptions = terminals.map(candidate => candidate.onData(value => {
       const { alt, ctrl, shift } = mobileModifiers.get(id) ?? { alt: false, ctrl: false, shift: false };
       const first = value.charAt(0);
       const modified = `${alt ? '\x1b' : ''}${ctrl && /^[a-z]$/iu.test(first) ? String.fromCharCode(first.toLowerCase().charCodeAt(0) - 96) : shift && /^[a-z]$/iu.test(first) ? `${first.toUpperCase()}${value.slice(1)}` : value}`;
       sendInput(modified);
     }));
+    let selectionModeAtPointerDown = false;
+    const captureSelectionMode = () => {
+      // Pointer-down capture runs before the browser collapses a native range.
+      // Remember that the tap began in selection mode so its later click cannot
+      // fall through and activate terminal input.
+      selectionModeAtPointerDown = outputSelectionActive || terminalSelectionActive() || nativeSelectionActive();
+    };
     const focus = () => {
       if (performance.now() < suppressOutputFocusUntil) {
         suppressOutputFocusUntil = 0;
@@ -693,25 +1284,37 @@ function Log({ id, onQuestion, terminalMode = false }: { id: string; onQuestion:
       // Capture native accessibility-tree selection before the click's default
       // action can collapse it on mobile.
       const selectedTextAtClick = window.getSelection()?.toString() ?? '';
-      window.setTimeout(() => {
-        const selectedText = window.getSelection()?.toString() ?? '';
-        if (selectedTextAtClick || selectedText || terminals.some(candidate => candidate.hasSelection()) || outputModeActive) return exitInput();
-        outputModeActive = true;
-        setInputActive(true);
-        terminal.focus();
-        void connectInteractive();
-      });
+      const exitSelectionMode = selectionModeAtPointerDown || outputSelectionActive || Boolean(selectedTextAtClick);
+      selectionModeAtPointerDown = false;
+      if (exitSelectionMode) {
+        clearOutputSelection();
+        return exitInput();
+      }
+      if (selectedTextAtClick || terminalSelectionActive() || outputModeActive) return exitInput();
+      outputModeActive = true;
+      setInputActive(true);
+      // Mobile browsers only open and retain the software keyboard when the
+      // terminal textarea is focused synchronously from the user's tap.
+      terminal.focus();
+      void connectInteractive();
     };
     const releaseLongPressSelection = preserveOutputLongPressSelection(canvas.current!, () => {
       exitInput();
     });
+    canvas.current!.addEventListener('pointerdown', captureSelectionMode, true);
     canvas.current!.addEventListener('click', focus);
     if (terminalMode) {
       terminal.focus();
       void connectInteractive();
     }
     const cachedSnapshot = terminalMode ? undefined : logSnapshots.get(id);
-    if (cachedSnapshot) { snapshot = cachedSnapshot; setHasRendered(true); setLastPrompt(cachedLastPrompt(id, cachedSnapshot)); onQuestion(questionFromOutput(cachedSnapshot)); terminal.write(cachedSnapshot, () => { overlays.render(terminal); syncScrollState(); }); }
+    let outputRendered = false;
+    const markRendered = () => {
+      if (outputRendered) return;
+      outputRendered = true;
+      setHasRendered(true);
+    };
+    if (cachedSnapshot) { snapshot = cachedSnapshot; markRendered(); setLastPrompt(cachedLastPrompt(id, cachedSnapshot)); onQuestion(questionFromOutput(cachedSnapshot)); terminal.write(cachedSnapshot, () => { scheduleOverlayRender(); syncScrollState(); }); }
     const reconnect = () => {
       if (closed || retry !== undefined) return;
       retry = window.setTimeout(() => {
@@ -727,22 +1330,39 @@ function Log({ id, onQuestion, terminalMode = false }: { id: string; onQuestion:
       renderingSnapshot = true;
       const renderedSnapshot = snapshot;
       const viewport = `\x1b[H${renderedSnapshot.replace(/\n/g, '\x1b[K\n')}\x1b[K\x1b[J`;
-      const nextFrame: 0 | 1 = activeFrame === 0 ? 1 : 0;
+      // Keep the currently focused xterm mounted while output input is active.
+      // Hiding its frame during the normal double-buffer swap dismisses mobile
+      // software keyboards even though the helper textarea remains focused.
+      const preserveFocusedFrame = outputModeActive;
+      const nextFrame: 0 | 1 = preserveFocusedFrame ? activeFrame : activeFrame === 0 ? 1 : 0;
       const nextTerminal = terminals[nextFrame];
       nextTerminal.reset();
       nextTerminal.write(viewport, () => {
         renderingSnapshot = false;
         if (closed || socket !== ws) return;
-        if (selectionActive()) {
+        if (terminalSelectionActive()) {
           nextTerminal.reset();
           pendingRender = true;
           return;
+        }
+        // Input may have become active while the inactive frame was rendering.
+        // Discard that frame and redraw into the focused terminal instead.
+        if (outputModeActive && nextTerminal !== terminal) {
+          nextTerminal.reset();
+          pendingRender = true;
+          return flushSelectedOutput();
+        }
+        if (preserveFocusedFrame) {
+          scheduleOverlayRender();
+          syncScrollState();
+          if (snapshot !== renderedSnapshot) pendingRender = true;
+          return flushSelectedOutput();
         }
         const previousTerminal = terminal;
         activeFrame = nextFrame;
         terminal = nextTerminal;
         terminalRef.current = terminal;
-        overlays.render(terminal);
+        scheduleOverlayRender();
         setVisibleFrame(activeFrame);
         requestAnimationFrame(() => { previousTerminal.reset(); syncScrollState(); });
         if (snapshot !== renderedSnapshot) pendingRender = true;
@@ -750,10 +1370,10 @@ function Log({ id, onQuestion, terminalMode = false }: { id: string; onQuestion:
       });
     };
     flushSelectedOutput = () => {
-      if (!pendingRender || selectionActive() || renderingSnapshot || closed || socket === undefined || flushFrame !== undefined) return;
+      if (!pendingRender || terminalSelectionActive() || renderingSnapshot || closed || socket === undefined || flushFrame !== undefined) return;
       flushFrame = window.requestAnimationFrame(() => {
         flushFrame = undefined;
-        if (!pendingRender || selectionActive() || renderingSnapshot || closed || socket === undefined) return;
+        if (!pendingRender || terminalSelectionActive() || renderingSnapshot || closed || socket === undefined) return;
         pendingRender = false;
         renderSnapshot(socket);
       });
@@ -776,7 +1396,7 @@ function Log({ id, onQuestion, terminalMode = false }: { id: string; onQuestion:
         ws.onopen = () => {
           if (closed || socket !== ws) return;
           setStatus('Live');
-          sendViewport();
+          scheduleViewport();
         };
         ws.onmessage = event => {
           if (closed || socket !== ws) return;
@@ -790,33 +1410,33 @@ function Log({ id, onQuestion, terminalMode = false }: { id: string; onQuestion:
           if (!terminalMode && latest) cacheLogFrame(id, frame);
           if (frame.type === 'reset') {
             if (text === snapshot) return;
-            snapshot = text;
-            if (!terminalMode && latest) setLastPrompt(cachedLastPrompt(id, snapshot));
-            if (!terminalMode) onQuestion(questionFromOutput(snapshot));
-            setHasRendered(true);
-            if (selectionActive() || renderingSnapshot) {
+            appendWrites.clear();
+            snapshot = nextLiveSnapshot(snapshot, frame.type, text);
+            scheduleOutputAnalysis(latest);
+            markRendered();
+            if (terminalSelectionActive() || renderingSnapshot) {
               pendingRender = true;
               return;
             }
             return renderSnapshot(ws);
           }
-          snapshot += text;
-          if (!terminalMode && latest) setLastPrompt(cachedLastPrompt(id, snapshot));
-          if (!terminalMode) onQuestion(questionFromOutput(snapshot));
-          setHasRendered(true);
-          if (selectionActive() || renderingSnapshot) {
+          snapshot = nextLiveSnapshot(snapshot, frame.type, text);
+          scheduleOutputAnalysis(latest);
+          markRendered();
+          if (terminalSelectionActive() || renderingSnapshot) {
             pendingRender = true;
             return;
           }
-          terminal.write(text, () => {
-            terminal.scrollToBottom();
-            overlays.render(terminal);
-            syncScrollState();
-          });
+          if (!appendWrites.push(text)) {
+            appendWrites.clear();
+            pendingRender = true;
+            flushSelectedOutput();
+          }
         };
         ws.onclose = () => {
           if (closed || socket !== ws) return;
           socket = undefined;
+          appendWrites.clear();
           setStatus('Connecting');
           reconnect();
         };
@@ -824,7 +1444,7 @@ function Log({ id, onQuestion, terminalMode = false }: { id: string; onQuestion:
       } catch { setStatus('Connecting'); reconnect(); }
     };
     void connect();
-    return () => { closed = true; if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (retry !== undefined) window.clearTimeout(retry); if (flushFrame !== undefined) window.cancelAnimationFrame(flushFrame); selectionSubscriptions.forEach(subscription => subscription.dispose()); inputSubscriptions.forEach(subscription => subscription.dispose()); canvas.current?.removeEventListener('click', focus); releaseLongPressSelection(); releaseScrollContainment(); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; overlays.clear(); terminals.forEach(candidate => candidate.dispose()); };
+    return () => { closed = true; appendWrites.clear(); if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (retry !== undefined) window.clearTimeout(retry); if (flushFrame !== undefined) window.cancelAnimationFrame(flushFrame); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (overlayFrame !== undefined) window.cancelAnimationFrame(overlayFrame); if (analysisFrame !== undefined) window.cancelAnimationFrame(analysisFrame); if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer); selectionSubscriptions.forEach(subscription => subscription.dispose()); inputSubscriptions.forEach(subscription => subscription.dispose()); window.removeEventListener('resize', scheduleViewport); window.visualViewport?.removeEventListener('resize', scheduleViewport); document.removeEventListener('visibilitychange', syncVisibleViewport); window.removeEventListener('pageshow', scheduleViewport); document.removeEventListener('selectionchange', syncSelectionMode); window.removeEventListener('keydown', interruptOutput, true); document.removeEventListener('keydown', copySelectionShortcut, true); document.removeEventListener('copy', nativeOutputCopied); canvas.current?.parentElement?.classList.remove('selection-copied'); canvas.current?.removeEventListener('pointerdown', captureSelectionMode, true); canvas.current?.removeEventListener('click', focus); releaseLongPressSelection(); releaseScrollContainment(); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; overlays.clear(); terminals.forEach(candidate => candidate.dispose()); };
   }, [id, onQuestion, terminalMode]);
   useEffect(() => {
     const prompt = promptRef.current;
@@ -837,48 +1457,72 @@ function Log({ id, onQuestion, terminalMode = false }: { id: string; onQuestion:
   }, [lastPrompt, promptExpanded]);
   useEffect(() => { setPromptExpanded(false); }, [lastPrompt]);
   useEffect(() => { if (!promptOverflows) setPromptExpanded(false); }, [promptOverflows]);
-  const loading = !hasRendered;
-  const visibleStatus = terminalMode && status === 'Live' ? 'Terminal' : status;
-  const loadingLabel = terminalMode ? 'Connecting to pane' : status === 'Live' ? 'Waiting for output' : status;
+  const processing = processingLabel !== undefined;
+  const loading = !hasRendered || processing;
+  const visibleStatus = processing ? 'Starting' : terminalMode && status === 'Live' ? 'Terminal' : status;
+  const loadingLabel = processingLabel ?? (terminalMode ? 'Connecting to pane' : status === 'Live' ? 'Waiting for output' : status);
+  const selectionActions = selectionToolbar === undefined ? null : createPortal(<div className="output-selection-toolbar" role="toolbar" aria-label="Output selection actions" style={{ top: selectionToolbar.top }} onPointerDown={event => event.preventDefault()}>
+    <button type="button" disabled={!worktreeNotes.canCreate || selectionToolbar.text.length > 30_000} onClick={() => void worktreeNotes.createWithText(selectionToolbar.text)}>Create note</button>
+    {worktreeNotes.active && <button type="button" disabled={!worktreeNotes.canAppendToActive(selectionToolbar.text)} onClick={() => worktreeNotes.appendToActive(selectionToolbar.text)}>Append to note</button>}
+    <button type="button" onClick={() => setPromptDraft(id, current => appendTextBlock(current, selectionToolbar.text))}>Add to prompt</button>
+    <button type="button" onClick={() => void copyOutputSelectionRef.current(selectionToolbar.text)}>Copy</button>
+  </div>, document.body);
   const togglePrompt = () => { if (promptOverflows) setPromptExpanded(expanded => !expanded); };
-  return <section className="log-shell"><div className={`log${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}`}><div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'}><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{status !== 'Live' && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading"><span className="spinner" />{loadingLabel}</div>}<div className="log-footer">{!terminalMode && <div className="log-controls-bottom">{scrolledUp && <button className="log-control back-to-bottom" onClick={() => logHistoryRequests.get(id)?.(0)}>Back to bottom</button>}<div className="page-controls"><button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div>}</div></div><div className={`log-topbar${promptOverflows ? ' expandable' : ''}${promptExpanded ? ' expanded' : ''}`} onClick={togglePrompt}>{!terminalMode && lastPrompt && <span className={`last-prompt${promptOverflows ? ' expandable' : ''}${promptExpanded ? ' expanded' : ''}`} ref={promptRef} title={lastPrompt} role={promptOverflows ? 'button' : undefined} tabIndex={promptOverflows ? 0 : undefined} aria-expanded={promptOverflows ? promptExpanded : undefined} onKeyDown={event => { if (promptOverflows && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); togglePrompt(); } }}><strong>Last prompt:</strong> {lastPrompt}</span>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}><i />{visibleStatus}</span></div></section>;
+  return <section className="log-shell"><div className={`log${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'}><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{reviewMode && <div className="review-navigation" role="group" aria-label="Review navigation"><button type="button" onPointerDown={event => event.preventDefault()} onClick={() => terminalInputs.get(id)?.('\x1b[Z')}>Back</button><button type="button" onPointerDown={event => event.preventDefault()} onClick={() => terminalInputs.get(id)?.('\t')}>Next</button></div>}{worktreeNotes.pane}{(status !== 'Live' || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" />{loadingLabel}</div>}<div className="log-footer">{(!terminalMode || reviewMode) && <div className="log-controls-bottom">{scrolledUp && <button className="log-control back-to-bottom" onClick={() => logHistoryRequests.get(id)?.(0)}>Back to bottom</button>}<div className="page-controls">{cleanupControl}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div>}</div></div>{selectionActions}<div className={`log-topbar${promptOverflows ? ' expandable' : ''}${promptExpanded ? ' expanded' : ''}`} onClick={togglePrompt}>{!terminalMode && lastPrompt && <span className={`last-prompt${promptOverflows ? ' expandable' : ''}${promptExpanded ? ' expanded' : ''}`} ref={promptRef} title={lastPrompt} role={promptOverflows ? 'button' : undefined} tabIndex={promptOverflows ? 0 : undefined} aria-expanded={promptOverflows ? promptExpanded : undefined} onKeyDown={event => { if (promptOverflows && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); togglePrompt(); } }}><strong>Last prompt:</strong> {lastPrompt}</span>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}><i />{visibleStatus}</span></div></section>;
 }
 
-type MoreMenuIconName = 'attachment'|'directory'|'new-task'|'pull-request'|'swap';
+type MoreMenuIconName = 'actions'|'attachment'|'new-task'|'pull-request'|'review'|'swap';
 function MoreMenuIcon({ name }: { name: MoreMenuIconName }) {
   if (name === 'pull-request') return <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5" /><circle cx="18" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><path d="M6 8.5v7M18 8.5v2.5a7 7 0 0 1-7 7H8.5M15.5 6H13" /></svg>;
   const paths: Record<Exclude<MoreMenuIconName, 'pull-request'>, string> = {
+    actions: 'M8 5v14l11-7L8 5ZM4 5h1M4 12h1M4 19h1',
     attachment: 'm9 12 5.7-5.7a3.5 3.5 0 1 1 5 5L11 20a5 5 0 1 1-7-7l8.3-8.3',
-    directory: 'M3 7h6l2 2h10v10H3V7Zm0 4h18',
     'new-task': 'M12 5v14M5 12h14',
+    review: 'M4 5h16v14H4V5Zm4 4h8M8 13h5m4.5 1.5 1.5 1.5-3 3',
     swap: 'M5 7h13m0 0-4-4m4 4-4 4M19 17H6m0 0 4 4m-4-4 4-4'
   };
   return <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d={paths[name]} /></svg>;
 }
 
-function More({ id, newTaskConfigured = false, attachDisabled = false, onAttach, swapDisabled = false, onSwap, onSelectTarget }: { id?: string; newTaskConfigured?: boolean; attachDisabled?: boolean; onAttach?: () => void; swapDisabled?: boolean; onSwap?: () => void; onSelectTarget: (target: DashboardTarget) => void }) {
+function More({ id, worktreeId, newTaskConfigured = false, attachDisabled = false, onAttach, swapDisabled = false, onSwap, onReview, onSelectTarget }: { id?: string; worktreeId?: string; newTaskConfigured?: boolean; attachDisabled?: boolean; onAttach?: () => void; swapDisabled?: boolean; onSwap?: () => void; onReview?: () => void; onSelectTarget: (target: DashboardTarget) => void }) {
   const [menuOpen, setMenuOpen] = useState(false); const { anchorRef, flyoutRef, style } = useViewportFlyout(menuOpen);
-  const [directoryOpen, setDirectoryOpen] = useState(false); const [tree, setTree] = useState<{ root: string; path: string; directories: string[] }>();
-  const [prSwitch, setPrSwitch] = useState<PullRequestSwitchAvailability>(); const [loadingPrSwitch, setLoadingPrSwitch] = useState(false); const [switchingPr, setSwitchingPr] = useState<number>();
-  const [newTask, setNewTask] = useState<NewTaskAvailability>(); const [loadingNewTask, setLoadingNewTask] = useState(false); const [startingNewTask, setStartingNewTask] = useState(false);
+  const [prSwitch, setPrSwitch] = useState<PullRequestSwitchAvailability>(); const [prSwitchLoaded, setPrSwitchLoaded] = useState(false); const [loadingPrSwitch, setLoadingPrSwitch] = useState(false); const [switchingPr, setSwitchingPr] = useState<number>();
+  const [githubActionsUrl, setGithubActionsUrl] = useState<string>(); const [loadingGithubActions, setLoadingGithubActions] = useState(false);
+  const [newTask, setNewTask] = useState<NewTaskAvailability>(); const [loadingNewTask, setLoadingNewTask] = useState(false);
+  const newTaskKey = newTaskOperationKey(worktreeId ?? id ?? 'unavailable');
+  const startingNewTask = usePendingOperation(newTaskKey);
   useEffect(() => { if (!menuOpen) return; const close = (event: MouseEvent) => { const target = event.target as Node; if (!anchorRef.current?.contains(target) && !flyoutRef.current?.contains(target)) setMenuOpen(false); }; document.addEventListener('mousedown', close); return () => document.removeEventListener('mousedown', close); }, [menuOpen]);
-  useEffect(() => { if (!directoryOpen || id === undefined) return; void request(`/api/agents/${encodeURIComponent(id)}/directories`).then(r => r.ok ? r.json() : undefined).then(setTree); }, [directoryOpen, id]);
   useEffect(() => {
-    if (!menuOpen || id === undefined) { setPrSwitch(undefined); setNewTask(undefined); setLoadingPrSwitch(false); setLoadingNewTask(false); return; }
+    if (!menuOpen || id === undefined) return;
     let cancelled = false;
     setLoadingPrSwitch(true);
+    setLoadingGithubActions(true);
+    void request(`/api/agents/${encodeURIComponent(id)}/github-actions`).then(response => response.ok ? response.json() : undefined).then((payload: unknown) => {
+      if (cancelled) return;
+      if (payload === null || typeof payload !== 'object' || typeof (payload as { url?: unknown }).url !== 'string') return setGithubActionsUrl(undefined);
+      try {
+        const url = new URL((payload as { url: string }).url);
+        if (url.protocol === 'https:' && url.hostname === 'github.com' && url.pathname.endsWith('/actions')) setGithubActionsUrl(url.href);
+        else setGithubActionsUrl(undefined);
+      } catch { setGithubActionsUrl(undefined); }
+    }).catch(() => { if (!cancelled) setGithubActionsUrl(undefined); }).finally(() => { if (!cancelled) setLoadingGithubActions(false); });
     void request(`/api/agents/${encodeURIComponent(id)}/switch-prs`).then(response => response.ok ? response.json() : undefined).then((payload: unknown) => {
       if (cancelled) return;
       if (payload !== null && typeof payload === 'object' && typeof (payload as { enabled?: unknown }).enabled === 'boolean' && Array.isArray((payload as { pullRequests?: unknown }).pullRequests)) {
         const pullRequests = (payload as { pullRequests: unknown[] }).pullRequests.filter((value): value is SwitchablePullRequest => {
           if (value === null || typeof value !== 'object' || !Number.isInteger((value as PullRequestChoice).number) || typeof (value as PullRequestChoice).title !== 'string' || typeof (value as PullRequestChoice).branch !== 'string' || typeof (value as PullRequestChoice).draft !== 'boolean' || typeof (value as PullRequestChoice).url !== 'string' || typeof (value as SwitchablePullRequest).checkedOut !== 'boolean') return false;
+          const checks = (value as PullRequestChoice).checks;
+          if (checks !== undefined && checks !== 'passed' && checks !== 'pending' && checks !== 'failed') return false;
+          const issues = (value as PullRequestChoice).issues;
+          if (issues !== undefined && (issues === null || typeof issues !== 'object' || Object.entries(issues).some(([name, enabled]) => !['mergeConflicts', 'failingChecks', 'unresolvedComments'].includes(name) || typeof enabled !== 'boolean'))) return false;
           const openIn = (value as SwitchablePullRequest).openIn;
           return openIn === undefined || (openIn !== null && typeof openIn === 'object' && typeof openIn.worktreeId === 'string' && typeof openIn.worktreeName === 'string' && (openIn.agentId === undefined || typeof openIn.agentId === 'string'));
         });
         setPrSwitch({ enabled: (payload as { enabled: boolean }).enabled, pullRequests });
       }
+      setPrSwitchLoaded(true);
       setLoadingPrSwitch(false);
-    }).catch(() => { if (!cancelled) setLoadingPrSwitch(false); });
+    }).catch(() => { if (!cancelled) { setPrSwitchLoaded(true); setLoadingPrSwitch(false); } });
     setLoadingNewTask(newTaskConfigured);
     if (!newTaskConfigured) setNewTask(undefined);
     if (newTaskConfigured) void request(`/api/agents/${encodeURIComponent(id)}/new-task`).then(response => response.ok ? response.json() : undefined).then((payload: unknown) => {
@@ -889,94 +1533,134 @@ function More({ id, newTaskConfigured = false, attachDisabled = false, onAttach,
     return () => { cancelled = true; };
   }, [menuOpen, id, newTaskConfigured]);
   const swapToTerminal = () => { setMenuOpen(false); onSwap?.(); };
+  const startReview = () => { setMenuOpen(false); onReview?.(); };
   const attachFiles = () => { setMenuOpen(false); window.requestAnimationFrame(() => onAttach?.()); };
-  const chooseDirectory = () => { setMenuOpen(false); setDirectoryOpen(true); };
   const switchPullRequest = async (number: number) => { if (id === undefined || switchingPr !== undefined) return; setSwitchingPr(number); try { const response = await request(`/api/agents/${encodeURIComponent(id)}/switch-pr`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ number }) }); if (response.ok) setMenuOpen(false); } finally { setSwitchingPr(undefined); } };
-  const startNewTask = async () => { if (id === undefined || startingNewTask || !newTask?.enabled) return; setStartingNewTask(true); try { const response = await request(`/api/agents/${encodeURIComponent(id)}/new-task`, { method: 'POST' }); if (response.ok) setMenuOpen(false); } finally { setStartingNewTask(false); } };
-  const hasPullRequestSwitch = prSwitch !== undefined;
-  const hasPullRequestSection = loadingPrSwitch || hasPullRequestSwitch;
-  const hasNewTask = newTaskConfigured;
+  const clearNewTask = () => {
+    if (worktreeId !== undefined && pendingNewTaskSources.get(worktreeId) === id) pendingNewTaskSources.delete(worktreeId);
+    setPendingOperation(newTaskKey, false);
+  };
+  const startNewTask = async () => {
+    if (id === undefined || startingNewTask || !newTask?.enabled || !beginPendingOperation(newTaskKey)) return;
+    if (worktreeId !== undefined) pendingNewTaskSources.set(worktreeId, id);
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(id)}/new-task`, { method: 'POST' });
+      if (!response.ok) {
+        clearNewTask();
+        setNewTask({ enabled: false, reason: 'Unable to start a new task.' });
+        return;
+      }
+      setMenuOpen(false);
+      window.setTimeout(() => {
+        if (worktreeId !== undefined && pendingNewTaskSources.get(worktreeId) !== id) return;
+        clearNewTask();
+      }, 30_000);
+    } catch {
+      clearNewTask();
+      setNewTask({ enabled: false, reason: 'Unable to start a new task.' });
+    }
+  };
   const toggleMenu = () => {
-    if (!menuOpen && id !== undefined) { setPrSwitch(undefined); setNewTask(undefined); setLoadingPrSwitch(true); setLoadingNewTask(newTaskConfigured); }
+    if (!menuOpen && id !== undefined) { setLoadingPrSwitch(true); setLoadingGithubActions(true); setLoadingNewTask(newTaskConfigured); }
     setMenuOpen(open => !open);
   };
   const selectWorktree = (target: DashboardTarget) => { setMenuOpen(false); onSelectTarget(target); };
   if (id === undefined) return null;
-  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} onClick={toggleMenu}>⋮</button></span>{menuOpen && createPortal(<div className={`more-menu flyout-menu${hasPullRequestSection ? ' pr-switch-menu' : ''}`} ref={flyoutRef} style={style}>{onSwap && <button disabled={swapDisabled} onClick={swapToTerminal}><MoreMenuIcon name="swap" />Swap to terminal</button>}{onAttach && <button disabled={attachDisabled} onClick={attachFiles}><MoreMenuIcon name="attachment" />Attach files</button>}<button onClick={chooseDirectory}><MoreMenuIcon name="directory" />Change directory</button>{hasNewTask && <hr className="more-menu-divider" />}{hasNewTask && loadingNewTask && <button className="new-task-loading" disabled><span className="spinner" />New Task</button>}{hasNewTask && newTask && <div className="new-task-option"><button disabled={!newTask.enabled || startingNewTask} onClick={() => void startNewTask()}>{startingNewTask ? <><span className="spinner" />Starting New Task</> : <><MoreMenuIcon name="new-task" />New Task</>}</button>{!newTask.enabled && <span className="more-menu-reason" role="status">{newTask.reason ?? 'New Task is currently unavailable.'}</span>}</div>}{hasPullRequestSection && <hr className="more-menu-divider" />}{loadingPrSwitch && <div className="pr-switch-loading" role="status" aria-label="Loading pull requests"><span className="spinner" />Loading pull requests…</div>}{prSwitch?.pullRequests.map(pullRequest => {
+  const newTaskReason = !newTaskConfigured ? 'Not configured for this worktree.' : newTask === undefined ? 'Checking availability…' : newTask.enabled ? 'Start a fresh task for this worktree.' : newTask.reason ?? 'New Task is currently unavailable.';
+  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} onClick={toggleMenu}>⋮</button></span>{menuOpen && createPortal(<div className="more-menu flyout-menu pr-switch-menu" ref={flyoutRef} style={style} aria-busy={loadingPrSwitch || loadingGithubActions || loadingNewTask}><button className="pr-switch-heading" type="button" role={loadingPrSwitch ? 'status' : undefined} aria-label={loadingPrSwitch ? 'Loading pull requests' : 'Pull requests'} disabled>{loadingPrSwitch ? <span className="spinner" /> : <MoreMenuIcon name="pull-request" />}Pull requests</button>{prSwitch?.pullRequests.map(pullRequest => {
     const status = pullRequest.draft ? 'draft' : 'open';
     const label = `#${pullRequest.number}: ${pullRequest.title}`;
     const unavailableReason = pullRequest.checkedOut ? `Already open in ${pullRequest.openIn?.worktreeName ?? 'another worktree'}` : !prSwitch.enabled ? 'Working copy must be clean and pushed' : label;
-    return <div key={pullRequest.number} className="switch-pr-option"><button className="switch-pr" disabled={switchingPr !== undefined || pullRequest.checkedOut || !prSwitch.enabled} title={unavailableReason} aria-label={label} onClick={() => void switchPullRequest(pullRequest.number)}>{switchingPr === pullRequest.number ? <><span className="spinner" />Switching…</> : <><PullRequestStatusIcon status={status} className="switch-pr-status-icon" /><span className="switch-pr-copy"><strong className={`status-${status}`}>#{pullRequest.number}</strong><span>: {pullRequest.title}</span></span></>}</button><span className="switch-pr-actions">{pullRequest.openIn && <button className="switch-pr-worktree" onClick={() => selectWorktree(pullRequest.openIn!)}>Switch to {pullRequest.openIn.worktreeName}</button>}<a className="switch-pr-external" href={pullRequest.url} target="_blank" rel="noreferrer" aria-label={`Open PR #${pullRequest.number} in GitHub`} title={`Open PR #${pullRequest.number} in GitHub`}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5M19 5l-8 8M19 14v5H5V5h5" /></svg></a></span></div>;
-  })}{prSwitch?.pullRequests.length === 0 && <span className="more-menu-empty">No open pull requests</span>}</div>, document.body)}{directoryOpen && <div className="dialog" role="dialog" aria-modal="true"><div><button onClick={() => setDirectoryOpen(false)}>Close</button><h2>Change directory</h2><p>{tree?.path ?? 'Loading directories…'}</p>{tree && <button onClick={() => void request(`/api/agents/${encodeURIComponent(id)}/directory`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: tree.path }) }).then(() => setDirectoryOpen(false))}>Start agent here</button>}{tree?.directories.map(name => <button key={name} onClick={() => void request(`/api/agents/${encodeURIComponent(id)}/directories?path=${encodeURIComponent(`${tree.path}/${name}`)}`).then(r => r.ok && r.json()).then(setTree)}>{name}</button>)}</div></div>}</>;
+    return <div key={pullRequest.number} className="switch-pr-option"><button className="switch-pr" disabled={loadingPrSwitch || switchingPr !== undefined || pullRequest.checkedOut || !prSwitch.enabled} title={unavailableReason} aria-label={label} onClick={() => void switchPullRequest(pullRequest.number)}>{switchingPr === pullRequest.number ? <><span className="spinner" />Switching…</> : <span className="switch-pr-copy"><strong className={`status-${status}`}>#{pullRequest.number}</strong><span>: {pullRequest.title}</span></span>}</button><span className="switch-pr-actions"><PullRequestStatusIcon status={status} className="switch-pr-status-icon" /><PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} /><a className="switch-pr-action switch-pr-external outline-button" href={pullRequest.url} target="_blank" rel="noreferrer" aria-label={`Open PR #${pullRequest.number} in GitHub`} title={`Open PR #${pullRequest.number} in GitHub`}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5M19 5l-8 8M19 14v5H5V5h5" /></svg><span>Open in GitHub</span></a>{pullRequest.openIn && <button className="switch-pr-action switch-pr-worktree outline-button" onClick={() => selectWorktree(pullRequest.openIn!)}>Switch to {pullRequest.openIn.worktreeName}</button>}</span></div>;
+  })}{prSwitchLoaded && prSwitch === undefined && <button className="more-menu-empty" type="button" role="status" aria-label="Pull requests unavailable" disabled>Pull requests unavailable</button>}{prSwitch?.pullRequests.length === 0 && <button className="more-menu-empty" type="button" role="status" aria-label="No open pull requests" disabled>No open pull requests</button>}<hr className="more-menu-divider" /><button disabled={onSwap === undefined || swapDisabled} onClick={swapToTerminal}><MoreMenuIcon name="swap" />Swap to terminal</button><button disabled={onReview === undefined || swapDisabled} onClick={startReview}><MoreMenuIcon name="review" />Review</button><button disabled={onAttach === undefined || attachDisabled} onClick={attachFiles}><MoreMenuIcon name="attachment" />Attach files</button>{loadingGithubActions ? <button className="github-actions-loading" type="button" disabled><span className="spinner" />GitHub Actions</button> : githubActionsUrl === undefined ? <button type="button" disabled title="GitHub Actions unavailable"><MoreMenuIcon name="actions" />GitHub Actions</button> : <a className="more-menu-link" href={githubActionsUrl} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)}><MoreMenuIcon name="actions" />GitHub Actions</a>}<div className="new-task-option"><button disabled={!newTaskConfigured || loadingNewTask || !newTask?.enabled || startingNewTask} onClick={() => void startNewTask()}>{loadingNewTask || startingNewTask ? <><span className="spinner" />{startingNewTask ? 'Starting New Task' : 'New Task'}</> : <><MoreMenuIcon name="new-task" />New Task</>}</button><span className="more-menu-reason" role="status">{newTaskReason}</span></div></div>, document.body)}</>;
 }
 
-function AgentCard({ agent, active, tabBar, onDeleted, onSelectTarget }: { agent: Agent; active: boolean; tabBar: ReactNode; onDeleted: () => Promise<void>; onSelectTarget: (target: DashboardTarget) => void }) {
-  const [terminal, setTerminal] = useState(false);
-  const terminalTransition = useRef<'agent'|'backgrounding'|'terminal'|'foregrounding'>('agent');
+function AgentCard({ agent, active, tabBar, cleanupControl, onDeleted, onSelectTarget, onPromptFocus }: { agent: Agent; active: boolean; tabBar: ReactNode; cleanupControl?: ReactNode; onDeleted: () => Promise<void>; onSelectTarget: (target: DashboardTarget) => void; onPromptFocus: () => void }) {
+  const retainedReview = retainedReviewAgents.has(agent.id);
+  const [paneMode, setPaneMode] = useState<'agent'|'terminal'|'review'>(retainedReview ? 'review' : 'agent');
+  const terminalTransition = useRef<'agent'|'backgrounding'|'terminal'|'review'|'returning'>(retainedReview ? 'review' : 'agent');
   const mounted = useRef(true);
   const [cancelling, setCancelling] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deactivating, setDeactivating] = useState(false);
   const [swapping, setSwapping] = useState(false);
   const [question, setQuestion] = useState<ChoiceQuestion>();
+  const startingNewTask = usePendingOperation(newTaskOperationKey(agent.worktreeId ?? agent.id));
   const cancel = async () => { if (cancelling) return; setCancelling(true); try { await request(`/api/agents/${encodeURIComponent(agent.id)}/cancel`, { method: 'POST' }); } finally { setCancelling(false); } };
-  const remove = async () => { if (deleting) return; setDeleting(true); try { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}`, { method: 'DELETE' }); if (response.ok) await onDeleted(); } finally { setDeleting(false); } };
-  const deactivate = async () => { if (deactivating) return; setDeactivating(true); try { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/deactivate`, { method: 'POST' }); if (response.ok) await onDeleted(); } finally { setDeactivating(false); } };
+  const remove = async () => { if (deleting) return; setDeleting(true); try { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}`, { method: 'DELETE' }); if (response.ok) { retainedReviewAgents.delete(agent.id); await onDeleted(); } } finally { setDeleting(false); } };
+  const deactivate = async () => { if (deactivating) return; setDeactivating(true); try { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/deactivate`, { method: 'POST' }); if (response.ok) { retainedReviewAgents.delete(agent.id); await onDeleted(); } } finally { setDeactivating(false); } };
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
-      if (terminalTransition.current !== 'terminal') return;
-      terminalTransition.current = 'foregrounding';
-      void request(`/api/agents/${encodeURIComponent(agent.id)}/foreground`, { method: 'POST' }).catch(() => undefined).finally(() => { terminalTransition.current = 'agent'; });
+      const mode = terminalTransition.current;
+      if (mode === 'review' && retainedReviewAgents.has(agent.id)) return;
+      if (mode !== 'terminal' && mode !== 'review') return;
+      terminalTransition.current = 'returning';
+      const endpoint = mode === 'review' ? 'review/close' : 'foreground';
+      void request(`/api/agents/${encodeURIComponent(agent.id)}/${endpoint}`, { method: 'POST' }).catch(() => undefined).finally(() => { terminalTransition.current = 'agent'; });
     };
   }, [agent.id]);
-  const swap = async () => {
+  const changePaneMode = async (nextMode: 'agent'|'terminal'|'review') => {
     if (swapping) return;
     setSwapping(true);
     try {
-      if (terminal) {
-        terminalTransition.current = 'foregrounding';
-        const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/foreground`, { method: 'POST' });
+      if (paneMode !== 'agent') {
+        terminalTransition.current = 'returning';
+        const endpoint = paneMode === 'review' ? 'review/close' : 'foreground';
+        const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/${endpoint}`, { method: 'POST' });
         if (response.ok) {
+          retainedReviewAgents.delete(agent.id);
           terminalTransition.current = 'agent';
-          if (mounted.current) setTerminal(false);
+          if (mounted.current) setPaneMode('agent');
         } else {
-          terminalTransition.current = 'terminal';
+          terminalTransition.current = paneMode;
         }
         return;
       }
+      if (nextMode === 'agent') return;
       terminalTransition.current = 'backgrounding';
-      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/background`, { method: 'POST' });
+      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/${nextMode === 'review' ? 'review' : 'background'}`, { method: 'POST' });
       if (!response.ok) {
         terminalTransition.current = 'agent';
         return;
       }
       if (!mounted.current) {
-        terminalTransition.current = 'foregrounding';
+        if (nextMode === 'review') {
+          retainedReviewAgents.add(agent.id);
+          terminalTransition.current = 'review';
+          return;
+        }
+        terminalTransition.current = 'returning';
         await request(`/api/agents/${encodeURIComponent(agent.id)}/foreground`, { method: 'POST' });
         terminalTransition.current = 'agent';
         return;
       }
-      terminalTransition.current = 'terminal';
-      setTerminal(true);
+      if (nextMode === 'review') retainedReviewAgents.add(agent.id);
+      terminalTransition.current = nextMode;
+      setPaneMode(nextMode);
     } catch {
-      terminalTransition.current = terminal ? 'terminal' : 'agent';
+      terminalTransition.current = paneMode;
     } finally {
       if (mounted.current) setSwapping(false);
     }
   };
+  const swapped = paneMode !== 'agent';
+  const reviewing = paneMode === 'review';
   const omxQuestion = agent.question === undefined ? undefined : { text: agent.question.text, choices: agent.question.choices, omxId: agent.question.id };
-  return <article className="agent-view"><Log id={agent.id} onQuestion={setQuestion} terminalMode={terminal} />{tabBar}<PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => (await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) })).ok} /><Prompt id={agent.id} canCancel={active} cancelling={cancelling} deleting={deleting} deactivating={deactivating} swapping={swapping} swapped={terminal} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSwap={() => void swap()} onSelectTarget={onSelectTarget} projectUrl={agent.projectUrl} question={omxQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} stack={agent.stack} /></article>;
+  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} onQuestion={setQuestion} cleanupControl={cleanupControl} terminalMode={swapped} reviewMode={reviewing} processingLabel={startingNewTask ? 'Starting new task' : undefined} />{tabBar}<PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => (await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) })).ok} /><Prompt id={agent.id} canCancel={active} cancelling={cancelling} deleting={deleting} deactivating={deactivating} swapping={swapping} swapped={swapped} reviewing={reviewing} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSwap={() => void changePaneMode('terminal')} onReview={() => void changePaneMode('review')} onSelectTarget={onSelectTarget} onPromptFocus={onPromptFocus} projectUrl={agent.projectUrl} question={omxQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} stack={agent.stack} /></article>;
 }
 
 function launchError(response: Response): Promise<string> {
   return response.json().then((body: { error?: unknown }) => typeof body.error === 'string' ? body.error : `Launch failed (${response.status}).`).catch(() => `Launch failed (${response.status}).`);
 }
 
-function WorktreeCard({ worktree, tabBar, onLaunched }: { worktree: Worktree; tabBar: ReactNode; onLaunched: (agentId: string, sourceItemKey: string) => void }) {
+function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched }: { worktree: Worktree; tabBar: ReactNode; cleanupControl?: ReactNode; onLaunched: (agentId: string, sourceItemKey: string) => void }) {
   const launchKey = `worktree-launch:${worktree.id}`;
   const launching = usePendingOperation(launchKey);
+  const startingNewTask = usePendingOperation(newTaskOperationKey(worktree.id));
+  const processing = launching || startingNewTask;
+  const worktreeNotes = useWorktreeNotes(worktree.id);
   const [error, setError] = useState('');
   useEffect(() => {
     if (!error) return;
@@ -984,7 +1668,7 @@ function WorktreeCard({ worktree, tabBar, onLaunched }: { worktree: Worktree; ta
     return () => window.clearTimeout(timer);
   }, [error]);
   const launch = async () => {
-    if (!worktree.available || launching || !beginPendingOperation(launchKey)) return;
+    if (!worktree.available || processing || !beginPendingOperation(launchKey)) return;
     setError('');
     try {
       const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/launch`, { method: 'POST' });
@@ -995,7 +1679,7 @@ function WorktreeCard({ worktree, tabBar, onLaunched }: { worktree: Worktree; ta
     } catch { setError('Unable to reach the console while launching the agent.'); }
     finally { setPendingOperation(launchKey, false); }
   };
-  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><div className="log-loading inactive">{launching ? <><span className="spinner" />Starting Codex…</> : 'Inactive'}</div><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls"><button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div><div className="log-topbar"><span className="status log-status inactive"><i />Inactive</span></div></section>{tabBar}<PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions"><span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} /><button className="queue" disabled={!worktree.available || launching} onClick={() => void launch()}>{launching ? <><span className="spinner" />Launching</> : 'Launch agent'}</button></div></section></article>;
+  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log">{worktreeNotes.pane}<div className="log-loading inactive" role={startingNewTask ? 'status' : undefined} aria-label={startingNewTask ? 'Starting new task' : undefined}>{startingNewTask ? <><span className="spinner" />Starting new task…</> : launching ? <><span className="spinner" />Starting Codex…</> : 'Inactive'}</div><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div><div className="log-topbar"><span className={`status log-status ${startingNewTask ? 'connecting' : 'inactive'}`}><i />{startingNewTask ? 'Starting' : 'Inactive'}</span></div></section>{tabBar}<PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions"><span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} /><button className="queue" disabled={!worktree.available || processing} onClick={() => void launch()}>{startingNewTask ? <><span className="spinner" />Starting new task</> : launching ? <><span className="spinner" />Launching</> : 'Launch agent'}</button></div></section></article>;
 }
 
 function NotificationControl() {
@@ -1034,10 +1718,26 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
   const [plusAlone, setPlusAlone] = useState(false);
   const [launchErrorMessage, setLaunchErrorMessage] = useState('');
   const [activateAgentId, setActivateAgentId] = useState<string>();
+  const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [cleanupTargets, setCleanupTargets] = useState<CleanupTarget[]>([]);
+  const [cleanupChecked, setCleanupChecked] = useState<Set<string>>(() => new Set());
+  const [cleanupLoading, setCleanupLoading] = useState(false);
+  const [cleanupError, setCleanupError] = useState('');
+  const cleanupTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const previousCleanupCount = useRef(0);
   const tabInitialized = useRef(false);
   const refreshInFlight = useRef(false);
+  const dashboardPushFreshUntil = useRef(0);
+  const dashboardPushSynchronized = useRef(false);
   const dashboardContent = useRef('');
   const selectedItemKey = useRef<string | undefined>(undefined);
+  const viewAgent = useCallback((agent: Pick<Agent, 'id' | 'worktreeId'>) => {
+    setData(current => {
+      if (current === undefined || !current.agents.some(candidate => candidate.id === agent.id && candidate.unread)) return current;
+      return { ...current, agents: current.agents.map(candidate => candidate.id === agent.id ? { ...candidate, unread: false } : candidate) };
+    });
+    dismissAgentNotifications(agent);
+  }, []);
   useEffect(() => {
     if (!launchErrorMessage) return;
     const timer = window.setTimeout(() => setLaunchErrorMessage(''), 5_000);
@@ -1051,7 +1751,26 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
   }, [launcherOpen]);
   const agentStates = useRef(new Map<string, AgentState>());
   const pendingCompletions = useRef(new Map<string, { due: number; timer: number }>());
-  const refresh = async () => {
+  const applyDashboard = useCallback((payload: Dashboard) => {
+    const activeAgentIds = new Set(payload.agents.map(agent => agent.id));
+    logSnapshots.retain(activeAgentIds);
+    for (const id of lastPrompts.keys()) if (!activeAgentIds.has(id)) lastPrompts.delete(id);
+    for (const id of promptDrafts.keys()) if (!activeAgentIds.has(id)) promptDrafts.delete(id);
+    const activeWorktreeIds = new Set(payload.worktrees.map(worktree => worktree.id));
+    for (const [worktreeId, sourceAgentId] of pendingNewTaskSources) {
+      const replacement = payload.agents.find(agent => agent.worktreeId === worktreeId && agent.id !== sourceAgentId);
+      if (replacement === undefined && activeWorktreeIds.has(worktreeId)) continue;
+      pendingNewTaskSources.delete(worktreeId);
+      setPendingOperation(newTaskOperationKey(worktreeId), false);
+    }
+    const content = JSON.stringify([payload.agents, payload.worktrees, payload.cleanupPending ?? 0]);
+    if (content !== dashboardContent.current || pendingCompletions.current.size > 0) {
+      dashboardContent.current = content;
+      setData(payload);
+    }
+    setUnavailable(false);
+  }, []);
+  const refresh = useCallback(async () => {
     if (refreshInFlight.current) return;
     refreshInFlight.current = true;
     try {
@@ -1061,16 +1780,142 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
       if (!response.ok) throw new Error('dashboard unavailable');
       const payload: unknown = await response.json();
       if (!isDashboard(payload)) throw new Error('invalid dashboard response');
-      const content = JSON.stringify([payload.agents, payload.worktrees]);
-      if (content !== dashboardContent.current) {
-        dashboardContent.current = content;
-        setData(payload);
-      }
-      setUnavailable(false);
+      applyDashboard(payload);
+      if (dashboardPushSynchronized.current) dashboardPushFreshUntil.current = Date.now() + 60_000;
     } catch { setUnavailable(true); }
     finally { refreshInFlight.current = false; }
-  };
-  useEffect(() => { void refresh(); const timer = window.setInterval(() => void refresh(), 5_000); return () => window.clearInterval(timer); }, []);
+  }, [applyDashboard, onInactive, onUnauthorized]);
+  const closeCleanup = useCallback(() => {
+    setCleanupOpen(false);
+    setCleanupError('');
+    if (location.hash === '#cleanup') history.replaceState(null, '', `${location.pathname}${location.search}`);
+    void dismissNotification('runtime-cleanup');
+    window.requestAnimationFrame(() => cleanupTriggerRef.current?.focus());
+  }, []);
+  const openCleanup = useCallback(async () => {
+    setCleanupOpen(true);
+    setCleanupLoading(true);
+    setCleanupError('');
+    try {
+      const response = await request('/api/cleanup');
+      if (!response.ok) throw new Error();
+      const payload: unknown = await response.json();
+      const targets = payload !== null && typeof payload === 'object' && Array.isArray((payload as { targets?: unknown }).targets)
+        ? (payload as { targets: unknown[] }).targets.filter(isCleanupTarget)
+        : undefined;
+      if (targets === undefined || targets.length !== (payload as { targets: unknown[] }).targets.length) throw new Error();
+      setCleanupTargets(targets);
+      setCleanupChecked(new Set(targets.map(target => target.id)));
+    } catch {
+      setCleanupTargets([]);
+      setCleanupChecked(new Set());
+      setCleanupError('Unable to load cleanup targets.');
+    } finally {
+      setCleanupLoading(false);
+    }
+  }, []);
+  const resolveCleanup = useCallback(async () => {
+    if (cleanupLoading) return;
+    setCleanupLoading(true);
+    setCleanupError('');
+    try {
+      const response = await request('/api/cleanup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ targetIds: [...cleanupChecked] }) });
+      if (!response.ok) throw new Error();
+      const payload: unknown = await response.json();
+      const targets = payload !== null && typeof payload === 'object' && Array.isArray((payload as { targets?: unknown }).targets)
+        ? (payload as { targets: unknown[] }).targets.filter(isCleanupTarget)
+        : undefined;
+      if (targets === undefined || targets.length !== (payload as { targets: unknown[] }).targets.length) throw new Error();
+      if (targets.length === 0) closeCleanup();
+      else {
+        setCleanupTargets(targets);
+        setCleanupChecked(new Set(targets.map(target => target.id)));
+        setCleanupError('Some selected targets could not be cleaned up.');
+      }
+      await refresh();
+    } catch {
+      setCleanupError('Cleanup failed. No unresolved targets were dismissed.');
+    } finally {
+      setCleanupLoading(false);
+    }
+  }, [cleanupChecked, cleanupLoading, closeCleanup, refresh]);
+  useEffect(() => {
+    const count = data?.cleanupPending ?? 0;
+    if (count > 0 && previousCleanupCount.current === 0) void showNotification('system', 'Runtime cleanup available', `${count} stale runtime ${count === 1 ? 'target is' : 'targets are'} ready to clean up.`, 'runtime-cleanup', '/#cleanup');
+    if (count === 0 && previousCleanupCount.current > 0) void dismissNotification('runtime-cleanup');
+    previousCleanupCount.current = count;
+  }, [data?.cleanupPending]);
+  useEffect(() => {
+    const openFromHash = () => {
+      if (location.hash === '#cleanup' && (data?.cleanupPending ?? 0) > 0 && !cleanupOpen) void openCleanup();
+    };
+    openFromHash();
+    window.addEventListener('hashchange', openFromHash);
+    return () => window.removeEventListener('hashchange', openFromHash);
+  }, [cleanupOpen, data?.cleanupPending, openCleanup]);
+  useEffect(() => {
+    if (!cleanupOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (isPromptKeyboardTarget(event.target) || event.key !== 'Escape' || cleanupLoading) return;
+      event.preventDefault();
+      closeCleanup();
+    };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [cleanupLoading, cleanupOpen, closeCleanup]);
+  useEffect(() => pollWhileVisible(() => Date.now() < dashboardPushFreshUntil.current ? undefined : refresh(), 5_000, true, 30_000), [refresh]);
+  useEffect(() => {
+    let closed = false;
+    let socket: WebSocket | undefined;
+    let retry: number | undefined;
+    let retryDelay = 500;
+    const reconnect = () => {
+      if (closed || retry !== undefined) return;
+      retry = window.setTimeout(() => {
+        retry = undefined;
+        void connect();
+      }, retryDelay);
+      retryDelay = Math.min(retryDelay * 2, 15_000);
+    };
+    const connect = async () => {
+      if (closed) return;
+      try {
+        const response = await request('/api/dashboard/ticket', { method: 'POST' }, false);
+        if (!response.ok) return reconnect();
+        const payload = await response.json() as { ticket?: unknown };
+        if (closed || typeof payload.ticket !== 'string') return reconnect();
+        const ws = new WebSocket(`${location.origin.replace(/^http/, 'ws')}/ws/dashboard`, ['rac', payload.ticket]);
+        socket = ws;
+        ws.onmessage = event => {
+          if (closed || socket !== ws) return;
+          try {
+            const frame: unknown = JSON.parse(event.data);
+            if (!isDashboardFrame(frame)) throw new Error();
+            dashboardPushSynchronized.current = true;
+            dashboardPushFreshUntil.current = Date.now() + 60_000;
+            retryDelay = 500;
+            applyDashboard(frame.dashboard);
+          } catch { ws.close(); }
+        };
+        ws.onclose = () => {
+          if (socket !== ws) return;
+          socket = undefined;
+          dashboardPushSynchronized.current = false;
+          dashboardPushFreshUntil.current = 0;
+          reconnect();
+        };
+        ws.onerror = () => ws.close();
+      } catch { reconnect(); }
+    };
+    void connect();
+    return () => {
+      closed = true;
+      dashboardPushSynchronized.current = false;
+      dashboardPushFreshUntil.current = 0;
+      if (retry !== undefined) window.clearTimeout(retry);
+      socket?.close();
+    };
+  }, [applyDashboard]);
   useEffect(() => () => {
     for (const pending of pendingCompletions.current.values()) window.clearTimeout(pending.timer);
     pendingCompletions.current.clear();
@@ -1103,8 +1948,7 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
       } else if (state === 'prompt-done' && pendingCompletion !== undefined && Date.now() >= pendingCompletion.due) {
         window.clearTimeout(pendingCompletion.timer);
         pendingCompletions.current.delete(agent.id);
-        if (focused) dismissAgentNotifications(agent);
-        else void showNotification('finished', 'Agent finished', `${label} is ready for another prompt.`, tag, `/#agent=${encodeURIComponent(agent.id)}`, agent.worktreeId);
+        void showNotification('finished', 'Agent finished', `${label} is ready for another prompt.`, tag, `/#agent=${encodeURIComponent(agent.id)}`, agent.worktreeId);
       }
       if (previous === 'action-required' && state === 'working') void dismissNotification(tag);
       next.set(agent.id, state);
@@ -1115,7 +1959,7 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
       pendingCompletions.current.delete(agentId);
     }
     agentStates.current = next;
-  }, [data]);
+  }, [data, viewAgent]);
   const agentIds = data?.agents.map(agent => agent.id).join('\u0000') ?? '';
   useEffect(() => {
     if (!data) return;
@@ -1129,14 +1973,14 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
         if (closed) return;
         const socket = new WebSocket(`${location.origin.replace(/^http/, 'ws')}/ws/logs/${encodeURIComponent(agent.id)}`, ['rac', ticket]);
         sockets.push(socket);
-        socket.onmessage = event => { cacheLogFrame(agent.id, JSON.parse(event.data) as LogFrame); socket.close(); };
+        socket.onmessage = event => { if (!closed) cacheLogFrame(agent.id, JSON.parse(event.data) as LogFrame); socket.close(); };
       }).catch(() => {});
     }
     return () => { closed = true; sockets.forEach(socket => socket.close()); };
   }, [agentIds]);
   const items: DashboardItem[] = data === undefined ? [] : [
-    ...data.agents.map(agent => ({ key: `agent-${agent.id}`, label: agentLabel(agent), state: agentState(agent), order: agent.worktreeOrder ?? Number.MAX_SAFE_INTEGER, agent })),
-    ...data.worktrees.filter(worktree => worktree.pinned).map(worktree => ({ key: `worktree-${worktree.id}`, label: worktree.label, state: 'closed' as const, order: worktree.order, worktree }))
+    ...data.agents.map(agent => ({ key: `agent-${agent.id}`, label: agentLabel(agent), state: agentState(agent), order: agent.worktreeOrder ?? Number.MAX_SAFE_INTEGER, unread: agent.unread === true, agent })),
+    ...data.worktrees.filter(worktree => worktree.pinned).map(worktree => ({ key: `worktree-${worktree.id}`, label: worktree.label, state: 'closed' as const, order: worktree.order, unread: false, worktree }))
   ].sort((left, right) => left.order - right.order);
   const activeItemKey = items[active]?.key;
   selectedItemKey.current = activeItemKey;
@@ -1152,7 +1996,7 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
     if (linked >= 0) setActive(linked);
     tabInitialized.current = true;
   }, [tabKey]);
-  const select = (index: number) => { const item = items[index]; if (!item) return; selectedItemKey.current = item.key; const target = item.agent === undefined ? `tab=${encodeURIComponent(item.label)}` : `agent=${encodeURIComponent(item.agent.id)}`; history.replaceState(null, '', `${location.pathname}${location.search}#${target}`); setActive(index); };
+  const select = (index: number) => { const item = items[index]; if (!item) return; const changed = selectedItemKey.current !== item.key; selectedItemKey.current = item.key; if (changed && item.agent !== undefined) viewAgent(item.agent); const target = item.agent === undefined ? `tab=${encodeURIComponent(item.label)}` : `agent=${encodeURIComponent(item.agent.id)}`; history.replaceState(null, '', `${location.pathname}${location.search}#${target}`); setActive(index); };
   useShiftArrowTabCycling(active, items.length, select);
   useEffect(() => {
     if (activateAgentId === undefined) return;
@@ -1198,23 +2042,21 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
     const worktree = data?.worktrees.find(candidate => candidate.id === target.worktreeId);
     if (worktree !== undefined) void launchWorktree(worktree);
   };
-  const selectedAgent = data === undefined ? undefined : items[active]?.agent;
-  const selectedAgentId = selectedAgent?.id;
-  const selectedWorktreeId = selectedAgent?.worktreeId;
-  useEffect(() => {
-    if (selectedAgentId === undefined) return;
-    const dismiss = () => { if (pageFocused()) dismissAgentNotifications({ id: selectedAgentId, worktreeId: selectedWorktreeId }); };
-    dismiss();
-    window.addEventListener('focus', dismiss);
-    document.addEventListener('visibilitychange', dismiss);
-    return () => { window.removeEventListener('focus', dismiss); document.removeEventListener('visibilitychange', dismiss); };
-  }, [selectedAgentId, selectedWorktreeId]);
   if (data === undefined) return <LoadingScreen label={unavailable ? 'Reconnecting to console' : 'Syncing console state'} />;
   const item = items[active];
+  const cleanupCount = data.cleanupPending ?? 0;
+  const cleanupControl = cleanupCount === 0 ? null : <button ref={cleanupTriggerRef} className="log-control page-arrow cleanup-toggle" aria-label={`Review ${cleanupCount} cleanup ${cleanupCount === 1 ? 'target' : 'targets'}`} title="Review runtime cleanup" aria-haspopup="dialog" aria-expanded={cleanupOpen} onPointerDown={event => event.preventDefault()} onClick={() => void openCleanup()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 4 6 6M16.5 6.5 9 14m-2.5-1.5 5 5M9 14l-5 2 4 4 2-5M4 16l4 4" /></svg><span className="saved-prompts-count cleanup-count" aria-hidden="true">{cleanupCount}</span></button>;
+  const cleanupKindLabel: Record<CleanupTarget['kind'], string> = {
+    'orphan-worker': 'Orphaned worker',
+    'stale-agent': 'Stale agent',
+    'hud-pane': 'HUD watcher window',
+    'hud-process': 'HUD watcher'
+  };
+  const cleanupDialog = !cleanupOpen ? null : createPortal(<div className="dialog cleanup-dialog" role="dialog" aria-modal="true" aria-labelledby="cleanup-title"><div><header className="cleanup-header"><div><h2 id="cleanup-title">Runtime cleanup</h2><p>Select the stale runtime items to clean up. Unchecked items will be dismissed.</p></div><button className="cleanup-close" type="button" aria-label="Close cleanup" disabled={cleanupLoading} onClick={closeCleanup}>×</button></header>{cleanupLoading && cleanupTargets.length === 0 ? <p className="cleanup-loading" role="status"><span className="spinner" />Searching for cleanup targets…</p> : cleanupTargets.length === 0 ? <p className="cleanup-empty">No cleanup targets remain.</p> : <fieldset className="cleanup-targets" disabled={cleanupLoading}><legend className="sr-only">Cleanup targets</legend>{cleanupTargets.map(target => <label key={target.id} className="cleanup-target"><input type="checkbox" checked={cleanupChecked.has(target.id)} onChange={event => setCleanupChecked(current => { const next = new Set(current); if (event.target.checked) next.add(target.id); else next.delete(target.id); return next; })} /><span><strong><small>{cleanupKindLabel[target.kind]}</small>{target.label}</strong><span>{target.detail}</span></span></label>)}</fieldset>}{cleanupError && <p className="cleanup-error" role="alert">{cleanupError}</p>}<footer className="cleanup-actions"><span>{cleanupTargets.length === 0 ? 'Nothing selected' : `${cleanupChecked.size} of ${cleanupTargets.length} selected`}</span><button type="button" disabled={cleanupLoading || cleanupError === 'Unable to load cleanup targets.'} onClick={() => void resolveCleanup()}>{cleanupLoading ? <><span className="spinner" />Working…</> : cleanupChecked.size === 0 ? 'Dismiss all' : 'Cleanup'}</button></footer></div></div>, document.body);
   const stateLabel: Record<AgentState, string> = { working: 'Working', 'prompt-done': 'Prompt done', 'action-required': 'Action required', closed: 'Agent closed' };
-  const tabBar = <><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}status-${entry.state}`} title={stateLabel[entry.state]} aria-label={`${entry.label} — ${stateLabel[entry.state]}`} onClick={() => select(index)}>{entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>)}<NotificationControl />{updateAvailable && <button className="update-ready" type="button" onClick={onReload}>Update available <span>Reload</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label="Launch agent" aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle}><button onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{launchErrorMessage && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
-  if (items.length === 0) return <main className="console"><article className="worktree-view">{tabBar}<h2>No sessions</h2></article></main>;
-  return <main className="console"><section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} onDeleted={refresh} onSelectTarget={selectTarget} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} onLaunched={launched} />}</section></main>;
+  const tabBar = <><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}status-${entry.state}${entry.unread ? ' unread' : ''}`} title={`${stateLabel[entry.state]}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${stateLabel[entry.state]}${entry.unread ? ' — Unread' : ''}`} onClick={() => select(index)}>{entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>)}<NotificationControl />{updateAvailable && <button className="update-ready" type="button" onClick={onReload}>Update available <span>Reload</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label="Launch agent" aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle}><button onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{launchErrorMessage && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
+  if (items.length === 0) return <main className="console"><article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}</article></main>;
+  return <main className="console"><section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={launched} />}</section>{cleanupDialog}</main>;
 }
 
 function App() {
@@ -1315,8 +2157,8 @@ function App() {
         if (typeof payload.version === 'string' && payload.version !== currentUiVersion) setUpdateAvailable(true);
       } catch { /* Retry at the next interval. */ }
     };
-    const timer = window.setInterval(() => void checkForUpdate(), 30_000);
-    return () => { closed = true; window.clearInterval(timer); };
+    const stopPolling = pollWhileVisible(checkForUpdate, 30_000, false);
+    return () => { closed = true; stopPolling(); };
   }, []);
   useEffect(() => {
     let active = true;

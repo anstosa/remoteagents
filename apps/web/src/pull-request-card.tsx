@@ -30,6 +30,13 @@ function IssueIcon({ issue }: { issue: DisplayIssueName }) {
   return <i className={`pull-request-issue issue-${issue}`} role="img" aria-label={issueLabels[issue]} title={issueLabels[issue]}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={path} /></svg></i>;
 }
 
+export function PullRequestIndicators({ checks, issues: issueFlags }: Pick<PullRequestSummary, 'checks' | 'issues'>) {
+  const issueNames = (Object.keys(issueFlags ?? {}) as IssueName[]).filter(issue => issueFlags?.[issue] === true);
+  const issues = issueNames.filter((issue): issue is DisplayIssueName => issue !== 'failingChecks');
+  const checkStatus = checks ?? (issueFlags?.failingChecks === true ? 'failed' : 'pending');
+  return <span className="pull-request-issues" aria-label="Pull request status"><CheckStatusIcon status={checkStatus} />{issues.map(issue => <IssueIcon key={issue} issue={issue} />)}</span>;
+}
+
 export function PullRequestCard({ pullRequest, onFixup }: { pullRequest?: PullRequestSummary; onFixup?: () => Promise<boolean> }) {
   const [queueing, setQueueing] = useState(false);
   const [queued, setQueued] = useState(false);
@@ -39,8 +46,6 @@ export function PullRequestCard({ pullRequest, onFixup }: { pullRequest?: PullRe
   }, []);
   if (pullRequest === undefined) return null;
   const issueNames = (Object.keys(pullRequest.issues ?? {}) as IssueName[]).filter(issue => pullRequest.issues?.[issue] === true);
-  const issues = issueNames.filter((issue): issue is DisplayIssueName => issue !== 'failingChecks');
-  const checks = pullRequest.checks ?? (pullRequest.issues?.failingChecks === true ? 'failed' : 'pending');
   const hasIssues = issueNames.length > 0;
   const label = `${statusLabel[pullRequest.status]} pull request #${pullRequest.number}: ${pullRequest.title}`;
   const queueFixup = async () => {
@@ -58,5 +63,5 @@ export function PullRequestCard({ pullRequest, onFixup }: { pullRequest?: PullRe
       setQueueing(false);
     }
   };
-  return <div className={`pull-request-card status-${pullRequest.status}`}><a className="pull-request-card-main" href={pullRequest.url} target="_blank" rel="noreferrer" aria-label={label} title={label}><PullRequestStatusIcon status={pullRequest.status} className="pull-request-card-icon" /><strong>#{pullRequest.number}</strong><span>{pullRequest.title}</span></a><span className="pull-request-issues" aria-label="Pull request status"><CheckStatusIcon status={checks} />{issues.map(issue => <IssueIcon key={issue} issue={issue} />)}</span>{hasIssues && onFixup !== undefined && <button className={`pull-request-fixup${queued ? ' queued' : ''}`} type="button" disabled={queueing} aria-label="Queue $fixup" title="Queue $fixup" onClick={() => void queueFixup()}>{queueing ? <span className="spinner" /> : queued ? <><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>Queued</> : '$fixup'}</button>}</div>;
+  return <div className={`pull-request-card status-${pullRequest.status}`}><a className="pull-request-card-main" href={pullRequest.url} target="_blank" rel="noreferrer" aria-label={label} title={label}><PullRequestStatusIcon status={pullRequest.status} className="pull-request-card-icon" /><strong>#{pullRequest.number}</strong><span>{pullRequest.title}</span></a><PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} />{hasIssues && onFixup !== undefined && <button className={`pull-request-fixup${queued ? ' queued' : ''}`} type="button" disabled={queueing} aria-label="Queue $fixup" title="Queue $fixup" onClick={() => void queueFixup()}>{queueing ? <span className="spinner" /> : queued ? <><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>Queued</> : '$fixup'}</button>}</div>;
 }

@@ -55,11 +55,13 @@ that worktree instead of appearing as a duplicate idle card.
    docker compose exec remote-agent-console codex login
    ```
 
-## Worktree aliases
+## Agent shell configuration
 
-The Compose service mounts `${HOME}/.bash_aliases` into the container and every
-custom worktree command sources it before execution. Configure commands with
-the alias name directly:
+The Compose service mounts `${HOME}/.zshenv`, `${HOME}/.zprofile`,
+`${HOME}/.zshrc`, and `${HOME}/.bash_aliases` into the container. Console-managed
+agents start from interactive Homebrew zsh shells, which load the operator's
+normal zsh configuration before running the configured command. Configure
+commands with an alias name directly:
 
 ```json
 { "id": "main", "path": "/workspace", "command": "codex" }
@@ -67,10 +69,10 @@ the alias name directly:
 ```
 
 All console-managed Codex launch paths, including worktree launch, scratch
-launch, and change directory, resolve `codex` through this alias rather than
-executing the installed binary directly.
+launch, change directory, and new task, therefore use the same zsh functions,
+aliases, PATH, and hooks as an operator-opened terminal.
 
-Aliases are trusted shell code and must work inside the container: use
+Shell configuration is trusted code and must work inside the container: use
 container paths (such as `/workspace`) and ensure their executables are present
 in the image. Changes apply to the next worktree launch; no rebuild is needed.
 

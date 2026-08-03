@@ -73,6 +73,42 @@ describe('agent notifications', () => {
 
     expect(delivered).toHaveLength(1);
     expect(delivered[0]?.kind).toBe('finished');
+    expect(coordinator.isUnread(agent())).toBe(true);
+    const replacement = agent({ id: 'socket:%2', paneId: '%2' });
+    expect(coordinator.isUnread(replacement)).toBe(true);
+    coordinator.view(replacement);
+    expect(coordinator.isUnread(agent())).toBe(false);
+    coordinator.stop();
+  });
+
+  it('clears the unread completion when a queued prompt starts', async () => {
+    vi.useFakeTimers();
+    const delivered: AgentNotification[] = [];
+    const coordinator = new AgentNotificationCoordinator(notification => delivered.push(notification), 2_000);
+
+    coordinator.observe(agent({ title: '⠋ Working' }));
+    coordinator.observe(agent({ title: 'Ready' }));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(coordinator.isUnread(agent())).toBe(true);
+
+    coordinator.observe(agent({ title: '⠙ Working' }));
+
+    expect(coordinator.isUnread(agent())).toBe(false);
+    coordinator.stop();
+  });
+
+  it('does not mark a completion unread when it is viewed during the grace period', async () => {
+    vi.useFakeTimers();
+    const delivered: AgentNotification[] = [];
+    const coordinator = new AgentNotificationCoordinator(notification => delivered.push(notification), 2_000);
+
+    coordinator.observe(agent({ title: '⠋ Working' }));
+    coordinator.observe(agent({ title: 'Ready' }));
+    coordinator.view(agent());
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(coordinator.isUnread(agent())).toBe(false);
+    expect(delivered).toEqual([]);
     coordinator.stop();
   });
 

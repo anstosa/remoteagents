@@ -8,6 +8,14 @@ describe('GitHub pull request lookup', () => {
     expect(githubRepository('https://example.com/octo/repo.git')).toBeUndefined();
   });
 
+  it('builds the repository Actions URL only for GitHub origins', async () => {
+    const github = new PullRequestService(async () => ({ code: 0, stdout: 'git@github.com:octo/repo.git\n' }));
+    const other = new PullRequestService(async () => ({ code: 0, stdout: 'https://example.com/octo/repo.git\n' }));
+
+    await expect(github.actionsUrl('/workspace')).resolves.toBe('https://github.com/octo/repo/actions');
+    await expect(other.actionsUrl('/workspace')).resolves.toBeUndefined();
+  });
+
   it('returns an open pull request URL and caches the request', async () => {
     const requests: string[] = [];
     const service = new PullRequestService(async () => ({ code: 0, stdout: 'git@github.com:octo/repo.git\n' }), async (url, init) => {
@@ -69,15 +77,20 @@ describe('GitHub pull request lookup', () => {
   });
 
   it('lists the current user’s open and draft pull requests', async () => {
+    const sha = 'c'.repeat(40);
     const service = new PullRequestService(async () => ({ code: 0, stdout: 'git@github.com:octo/repo.git\n' }), async (url) => {
       if (url.endsWith('/user')) return { ok: true, json: async () => ({ login: 'me' }) };
+      if (url.endsWith('/pulls/7')) return { ok: true, json: async () => ({ mergeable: false, mergeable_state: 'dirty' }) };
+      if (url.includes('/check-runs')) return { ok: true, json: async () => ({ check_runs: [{ status: 'completed', conclusion: 'failure' }] }) };
+      if (url.endsWith('/status')) return { ok: true, json: async () => ({ statuses: [] }) };
+      if (url.endsWith('/graphql')) return { ok: true, json: async () => ({ data: { repository: { pullRequest: { reviewThreads: { nodes: [{ isResolved: false, isOutdated: false }] } } } } }) };
       return { ok: true, json: async () => [
-        { number: 7, title: 'Draft work', draft: true, html_url: 'https://github.com/octo/repo/pull/7', user: { login: 'me' }, head: { ref: 'feature/draft' } },
+        { number: 7, title: 'Draft work', draft: true, html_url: 'https://github.com/octo/repo/pull/7', user: { login: 'me' }, head: { ref: 'feature/draft', sha } },
         { number: 8, title: 'Other user', draft: false, html_url: 'https://github.com/octo/repo/pull/8', user: { login: 'someone-else' }, head: { ref: 'feature/other' } }
       ] };
     }, undefined, () => 'private-token');
 
-    await expect(service.ownOpen('/workspace')).resolves.toEqual([{ number: 7, title: 'Draft work', draft: true, url: 'https://github.com/octo/repo/pull/7', branch: 'feature/draft' }]);
+    await expect(service.ownOpen('/workspace')).resolves.toEqual([{ number: 7, title: 'Draft work', draft: true, url: 'https://github.com/octo/repo/pull/7', branch: 'feature/draft', checks: 'failed', issues: { mergeConflicts: true, failingChecks: true, unresolvedComments: true } }]);
   });
 
   it('caches rich draft, open, and merged pull request details for the dashboard', async () => {

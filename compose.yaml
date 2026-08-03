@@ -20,9 +20,13 @@ services:
       RAC_TMUX_BIN: /usr/local/bin/host-tmux
       RAC_DEVICE_NAMES_FILE: /workspace/.data/device-names.json
       RAC_SAVED_PROMPTS_FILE: /workspace/.data/saved-prompts.json
+      RAC_NOTES_FILE: /workspace/.data/notes.json
     volumes:
       - ./:/workspace:rw
       - ${HOME}/.bash_aliases:/home/node/.bash_aliases:ro
+      - ${HOME}/.zshenv:/home/node/.zshenv:ro
+      - ${HOME}/.zprofile:/home/node/.zprofile:ro
+      - ${HOME}/.zshrc:/home/node/.zshrc:ro
       - ${HOME}/.gitignore:/home/node/.config/git/ignore:ro
       - ${HOME}/.config/gh/hosts.yml:/home/node/.config/gh/hosts.yml:ro
       - /home/ubuntu/ferry.fyi:/worktrees/ferry.fyi:rw

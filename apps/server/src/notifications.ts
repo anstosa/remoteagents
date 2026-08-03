@@ -9,13 +9,21 @@ export type AgentNotification = {
   url: string;
   worktreeId?: string;
 };
+export type CleanupNotification = {
+  kind: 'cleanup';
+  title: string;
+  body: string;
+  tag: 'runtime-cleanup';
+  url: '/#cleanup';
+};
 export type NotificationDismissal = { kind: 'dismiss'; tag: string; legacyTag: string; worktreeId?: string };
-export type PushMessage = AgentNotification | NotificationDismissal;
+export type PushMessage = AgentNotification | CleanupNotification | NotificationDismissal;
 
 type NotificationDelivery = (notification: AgentNotification) => void | Promise<void>;
 
 const workingTitle = /^[\u2800-\u28ff]/u;
 const actionRequiredTitle = /action required/iu;
+const attentionKey = (agent: Pick<Agent, 'id' | 'worktreeId'>) => agent.worktreeId === undefined ? `agent:${agent.id}` : `worktree:${agent.worktreeId}`;
 
 export function agentAttentionState(agent: Agent): AgentAttentionState {
   if (agent.question !== undefined || actionRequiredTitle.test(agent.title)) return 'question';
@@ -45,15 +53,20 @@ export function agentNotification(previous: AgentAttentionState | undefined, cur
 export class AgentNotificationCoordinator {
   private readonly states = new Map<string, AgentAttentionState>();
   private readonly pendingCompletions = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly unread = new Set<string>();
 
   constructor(private readonly deliver: NotificationDelivery, private readonly completionDelayMs = 2_000) {}
 
   observe(agent: Agent): void {
+    const key = attentionKey(agent);
     const current = agentAttentionState(agent);
-    const previous = this.states.get(agent.id);
-    this.states.set(agent.id, current);
+    const previous = this.states.get(key);
+    this.states.set(key, current);
 
-    if (current !== 'finished') this.cancelCompletion(agent.id);
+    if (current !== 'finished') {
+      this.cancelCompletion(key);
+      this.unread.delete(key);
+    }
     const notification = agentNotification(previous, current, agent);
     if (notification === undefined) return;
     if (notification.kind === 'question') {
@@ -61,26 +74,40 @@ export class AgentNotificationCoordinator {
       return;
     }
 
-    this.cancelCompletion(agent.id);
+    this.cancelCompletion(key);
     const timer = setTimeout(() => {
-      this.pendingCompletions.delete(agent.id);
-      if (this.states.get(agent.id) === 'finished') this.deliverSafely(notification);
+      this.pendingCompletions.delete(key);
+      if (this.states.get(key) !== 'finished') return;
+      this.unread.add(key);
+      this.deliverSafely(notification);
     }, this.completionDelayMs);
-    this.pendingCompletions.set(agent.id, timer);
+    this.pendingCompletions.set(key, timer);
   }
 
-  retain(agentIds: Iterable<string>): void {
-    const retained = new Set(agentIds);
-    for (const agentId of this.states.keys()) {
-      if (retained.has(agentId)) continue;
-      this.cancelCompletion(agentId);
-      this.states.delete(agentId);
+  isUnread(agent: Pick<Agent, 'id' | 'worktreeId'>): boolean {
+    return this.unread.has(attentionKey(agent));
+  }
+
+  view(agent: Pick<Agent, 'id' | 'worktreeId'>): void {
+    const key = attentionKey(agent);
+    this.unread.delete(key);
+    this.cancelCompletion(key);
+  }
+
+  retain(agents: Iterable<Pick<Agent, 'id' | 'worktreeId'>>): void {
+    const retained = new Set(Array.from(agents, attentionKey));
+    for (const key of this.states.keys()) {
+      if (retained.has(key)) continue;
+      this.cancelCompletion(key);
+      this.states.delete(key);
+      this.unread.delete(key);
     }
   }
 
   stop(): void {
     for (const timer of this.pendingCompletions.values()) clearTimeout(timer);
     this.pendingCompletions.clear();
+    this.unread.clear();
   }
 
   private cancelCompletion(agentId: string): void {

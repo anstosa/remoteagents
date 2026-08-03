@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('uses a static working-tab indicator without continuous animation', async ({ page }) => {
+test('uses one CSS label animation per working tab without per-letter DOM', async ({ page }) => {
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -28,5 +28,6 @@ test('uses a static working-tab indicator without continuous animation', async (
   await expect(page.locator('.tab-label-letter')).toHaveCount(0);
 
   const animations = await page.evaluate(() => Array.from(document.querySelectorAll('.tab-label')).flatMap(element => element.getAnimations()));
-  expect(animations).toHaveLength(0);
+  expect(animations).toHaveLength(3);
+  expect(await page.locator('.tab-label').evaluateAll(labels => labels.map(label => getComputedStyle(label).animationName))).toEqual(['tab-working-text-glow', 'tab-working-text-glow', 'tab-working-text-glow']);
 });

@@ -37,8 +37,9 @@ export class PromptService {
     const staged = await this.stageAttachments(workspace, attachments);
     if (staged === undefined) return false;
     const attachmentPrompt = staged.length === 0 ? prompt : `${prompt}${prompt ? '\n\n' : ''}Attached files:\n${staged.map(path => `@${path}`).join('\n')}`;
+    const shellMode = attachments.length === 0 && prompt.startsWith('!');
     const buffer = `rac-${randomBytes(18).toString('base64url')}`;
-    if (!await this.tmux.pastePrompt(first.socket, first.agent.paneId, buffer, queueReadyPrompt(attachmentPrompt))) {
+    if (!await this.tmux.pastePrompt(first.socket, first.agent.paneId, buffer, shellMode ? attachmentPrompt : queueReadyPrompt(attachmentPrompt))) {
       await this.removeStaged(workspace, staged);
       return false;
     }
@@ -47,9 +48,11 @@ export class PromptService {
       await this.removeStaged(workspace, staged);
       return false;
     }
-    const queued = await this.tmux.queue(second.socket, second.agent.paneId);
-    if (!queued) await this.removeStaged(workspace, staged);
-    return queued;
+    // Codex queues regular prompts with Tab, while its `!` shell mode submits
+    // with Enter. Tab only completes shell input and leaves the command open.
+    const submitted = shellMode ? await this.tmux.enter(second.socket, second.agent.paneId) : await this.tmux.queue(second.socket, second.agent.paneId);
+    if (!submitted) await this.removeStaged(workspace, staged);
+    return submitted;
   }
 
   private workspaceFor(workspace: string): string {

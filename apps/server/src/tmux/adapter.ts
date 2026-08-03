@@ -53,16 +53,29 @@ function safeSnapshot(value: string): string {
   return trimmed && `${trimmed.replace(/\r?\n/g, '\x1b[49m\n')}\x1b[49m`;
 }
 
+function bottomAlignedWindow(lines: string[], rows: number): string[] {
+  // tmux returns unused rows after the pane content. Move that space above
+  // the content so a short browser frame remains anchored to the bottom.
+  let contentEnd = lines.length;
+  while (contentEnd > 0) {
+    const visible = safeSnapshot(lines[contentEnd - 1]!).replace(/\x1b\[[0-?]*[ -/]*m/gu, '').trim();
+    if (visible) break;
+    contentEnd -= 1;
+  }
+  const content = lines.slice(0, contentEnd);
+  return [...Array.from({ length: Math.max(0, rows - content.length) }, () => ''), ...content];
+}
+
 export class TmuxAdapter {
   private readonly binary = process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux';
   private readonly inputQueues = new Map<string, Promise<boolean>>();
 
   async listPanes(socket: SocketRef): Promise<Pane[]> {
-    const out = await run(this.binary, ['-S', socket.path, 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}']);
+    const out = await run(this.binary, ['-S', socket.path, 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}']);
     if (out.code !== 0) return [];
     return out.stdout.trim().split('\n').filter(Boolean).flatMap((line) => {
-      const [id, session, name, pid, path, command, title, displayLabel] = line.split('\t');
-      return paneId.test(id) && sessionId.test(session) && name && /^\d+$/.test(pid) && path ? [{ paneId: id, sessionId: session, sessionName: name, pid: Number(pid), path, command: command ?? '', title: title ?? '', ...(displayLabel ? { displayLabel } : {}), socket }] : [];
+      const [id, session, name, pid, path, command, title, displayLabel, startCommand] = line.split('\t');
+      return paneId.test(id) && sessionId.test(session) && name && /^\d+$/.test(pid) && path ? [{ paneId: id, sessionId: session, sessionName: name, pid: Number(pid), path, command: command ?? '', title: title ?? '', ...(displayLabel ? { displayLabel } : {}), ...(startCommand ? { startCommand } : {}), socket }] : [];
     });
   }
 
@@ -85,7 +98,8 @@ export class TmuxAdapter {
     const end = lines.length - offset;
     const start = Math.max(0, end - rows);
     const lastPrompt = lastPromptFromHistory(out.stdout);
-    return { text: safeSnapshot(lines.slice(start, end).join('\n')), older: start > 0, ...(lastPrompt === undefined ? {} : { lastPrompt }) };
+    const window = bottomAlignedWindow(lines.slice(start, end), rows);
+    return { text: safeSnapshot(window.join('\n')), older: start > 0, ...(lastPrompt === undefined ? {} : { lastPrompt }) };
   }
 
   async resize(socket: SocketRef, pane: string, cols: number, rows: number): Promise<boolean> {
@@ -95,6 +109,16 @@ export class TmuxAdapter {
     // the active browser grid, then set the pane's exact output height.
     if ((await run(this.binary, ['-S', socket.path, 'resize-window', '-t', pane, '-x', String(cols), '-y', String(rows)])).code !== 0) return false;
     return (await run(this.binary, ['-S', socket.path, 'resize-pane', '-t', pane, '-x', String(cols), '-y', String(rows)])).code === 0;
+  }
+
+  async size(socket: SocketRef, pane: string): Promise<{ cols: number; rows: number } | undefined> {
+    if (!paneId.test(pane)) return undefined;
+    const out = await run(this.binary, ['-S', socket.path, 'display-message', '-p', '-t', pane, '#{pane_width}\t#{pane_height}']);
+    const match = /^(\d+)\t(\d+)$/u.exec(out.stdout.trim());
+    if (out.code !== 0 || match === null) return undefined;
+    const cols = Number(match[1]);
+    const rows = Number(match[2]);
+    return cols >= 2 && cols <= 500 && rows >= 2 && rows <= 300 ? { cols, rows } : undefined;
   }
 
   async pastePrompt(socket: SocketRef, pane: string, buffer: string, prompt: string): Promise<boolean> {
@@ -152,6 +176,17 @@ export class TmuxAdapter {
     return await this.input(socket, pane, '\x15fg\r');
   }
 
+  async quitReview(socket: SocketRef, pane: string): Promise<boolean> {
+    if (!paneId.test(pane)) return false;
+    const current = await run(this.binary, ['-S', socket.path, 'display-message', '-p', '-t', pane, '#{pane_current_command}']);
+    if (current.code !== 0) return false;
+    // The review command resumes the suspended agent after Neovim exits. If
+    // the user already quit Neovim directly, do not type a quit command into
+    // the resumed agent.
+    if (!/^(?:n?vim|view)$/u.test(current.stdout.trim())) return true;
+    return await this.input(socket, pane, '\x1b:qa!\r');
+  }
+
   async input(socket: SocketRef, pane: string, value: string): Promise<boolean> {
     if (!paneId.test(pane) || !value || value.length > 65_536 || value.includes('\0')) return false;
     const key = `${socket.path}\0${pane}`;
@@ -166,9 +201,13 @@ export class TmuxAdapter {
   }
 
   private async sendInput(socket: SocketRef, pane: string, value: string): Promise<boolean> {
-    for (const part of value.split(/(\r\n|\r|\n)/u)) {
+    for (const part of value.split(/(\r\n|\r|\n|\x03)/u)) {
       if (!part) continue;
-      const args = /^(?:\r\n|\r|\n)$/u.test(part) ? ['-S', socket.path, 'send-keys', '-t', pane, 'Enter'] : ['-S', socket.path, 'send-keys', '-l', '-t', pane, part];
+      const args = /^(?:\r\n|\r|\n)$/u.test(part)
+        ? ['-S', socket.path, 'send-keys', '-t', pane, 'Enter']
+        : part === '\x03'
+          ? ['-S', socket.path, 'send-keys', '-t', pane, 'C-c']
+          : ['-S', socket.path, 'send-keys', '-l', '-t', pane, part];
       if ((await run(this.binary, args)).code !== 0) return false;
     }
     return true;
@@ -176,6 +215,11 @@ export class TmuxAdapter {
 
   async close(socket: SocketRef, pane: string): Promise<boolean> {
     return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'kill-pane', '-t', pane])).code === 0;
+  }
+
+  async terminateHostProcess(socket: SocketRef, pid: number): Promise<boolean> {
+    if (!Number.isSafeInteger(pid) || pid <= 1) return false;
+    return (await run(this.binary, ['-S', socket.path, 'run-shell', `kill -TERM -- ${pid}`])).code === 0;
   }
 
   async closeSession(socket: SocketRef, session: string): Promise<boolean> {

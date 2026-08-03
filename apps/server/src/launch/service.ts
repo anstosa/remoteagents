@@ -5,7 +5,7 @@ import type { ValidatedConfig } from '../config/schema.js';
 import { expandLaunch } from '../config/schema.js';
 import { run } from '../tmux/command.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
-import { interactiveShellBootstrap } from '../tmux/interactive-shell.js';
+import { hostInteractiveShell, interactiveShell, interactiveShellBootstrap } from '../tmux/interactive-shell.js';
 import { startNamedReplacementSession, worktreeSessionName } from '../tmux/session-name.js';
 import { ProcSocketFinder, type SocketFinder } from '../discovery/service.js';
 import type { Pane, SocketRef, Worktree } from '../domain/models.js';
@@ -13,7 +13,7 @@ import type { Pane, SocketRef, Worktree } from '../domain/models.js';
 export function expandCommand(command: string, worktree: Pick<Worktree, 'identity'>): string {
   const directory = `'${worktree.identity.replaceAll("'", "'\\''")}'`;
   const script = `'${command.replaceAll("'", "'\\''")}'`;
-  return `if [ -f "$HOME/.bash_aliases" ]; then shopt -s expand_aliases; source "$HOME/.bash_aliases"; fi\ncd -- ${directory} && eval ${script}`;
+  return `cd -- ${directory} && eval ${script}`;
 }
 
 export function expandHomeCommand(command: string, home: string): string {
@@ -35,7 +35,7 @@ export class LaunchService {
     for (const socket of await this.finder.find()) for (const pane of await this.panes.listPanes(socket)) {
       if (!roots.some(root => pane.path === root || pane.path.startsWith(`${root}/`))) continue;
       if (pane.sessionName?.startsWith('rac-stack-')) continue;
-      if (!/^(?:ba|z|fi)?sh$/u.test(pane.command)) continue;
+      if (pane.command !== 'zsh') continue;
       return { socket, pane };
     }
     return undefined;
@@ -55,13 +55,13 @@ export class LaunchService {
       const home = hostPath === undefined ? process.env.HOME ?? '/' : dirname(hostPath);
       const command = expandHomeCommand(this.config.newAgentCommand, home);
       if (this.hostSocket !== undefined) {
-        if ((await run(this.tmux, ['-S', this.hostSocket, 'new-session', '-d', '-s', session, '-c', home, '/bin/bash', '-lc', interactiveShellBootstrap(hostCommand(command, home))])).code !== 0) return false;
+        if ((await run(this.tmux, ['-S', this.hostSocket, 'new-session', '-d', '-s', session, '-c', home, hostInteractiveShell, '-lc', interactiveShellBootstrap(hostCommand(command, home), home, hostInteractiveShell)])).code !== 0) return false;
         return await this.labelScratchSession(session);
       }
       await mkdir(this.root, { recursive: true, mode: 0o700 });
       const descriptor = join(this.root, `${id}.json`);
       const handle = await open(descriptor, 'wx', 0o600);
-      await handle.writeFile(JSON.stringify({ program: '/bin/bash', args: ['-lc', command], cwd: home }));
+      await handle.writeFile(JSON.stringify({ program: interactiveShell, args: ['-lc', interactiveShellBootstrap(command)], cwd: home }));
       await handle.close();
       const runner = new URL('./runner.js', import.meta.url).pathname;
       const created = await run(this.tmux, ['new-session', '-d', '-s', session, process.execPath, runner, descriptor]);
@@ -88,14 +88,14 @@ export class LaunchService {
       if (this.hostSocket !== undefined && worktree.command !== undefined) {
         const hostWorktree = { ...worktree, identity: worktree.hostPath ?? worktree.identity };
         const home = dirname(hostWorktree.identity);
-        const tail = ['-c', hostWorktree.identity, '/bin/bash', '-lc', interactiveShellBootstrap(hostCommand(expandCommand(worktree.command, hostWorktree), home))];
+        const tail = ['-c', hostWorktree.identity, hostInteractiveShell, '-lc', interactiveShellBootstrap(hostCommand(expandCommand(worktree.command, hostWorktree), home), home, hostInteractiveShell)];
         return await startNamedReplacementSession(this.tmux, this.hostSocket, session, session, tail);
       }
       await mkdir(this.root, { recursive: true, mode: 0o700 });
       const descriptor = join(this.root, `${id}.json`);
       const payload = worktree.command === undefined
         ? { program: worktree.launch!.program, args: expandLaunch(worktree.launch!, worktree), cwd: worktree.identity }
-        : { program: '/bin/bash', args: ['-c', expandCommand(worktree.command, worktree)], cwd: worktree.identity };
+        : { program: interactiveShell, args: ['-lc', interactiveShellBootstrap(expandCommand(worktree.command, worktree))], cwd: worktree.identity };
       const handle = await open(descriptor, 'wx', 0o600);
       await handle.writeFile(JSON.stringify(payload));
       await handle.close();

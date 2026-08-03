@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import argon2 from 'argon2';
 import { buildApp } from '../src/app.js';
 import { AuthService } from '../src/auth/service.js';
+import { AgentNotificationCoordinator } from '../src/notifications.js';
 import type { ValidatedConfig } from '../src/config/schema.js';
 const config: ValidatedConfig = { listen:{host:'127.0.0.1',port:8787},publicOrigin:new URL('https://agents.example.com'),trustedProxyIps:new Set(['127.0.0.1']),pollIntervalMs:500,newAgentCommand:'codex',worktrees:[] };
 describe('HTTP security boundary',()=>{let app:Awaited<ReturnType<typeof buildApp>>;afterEach(async()=>{await app?.close()});it('serves the browser application and its build version for the canonical host',async()=>{const hash=await argon2.hash('synthetic-password',{type:argon2.argon2id});app=await buildApp(config,{auth:new AuthService(hash,Buffer.alloc(32,2).toString('base64url'))});const response=await app.inject({method:'GET',url:'/',headers:{host:'agents.example.com'}});expect(response.statusCode).toBe(200);expect(response.headers['content-type']).toContain('text/html');expect(response.body).toContain('<!doctype html>');const version=await app.inject({method:'GET',url:'/api/ui-version',headers:{host:'agents.example.com'}});expect(version.statusCode).toBe(200);expect(version.json().version).toMatch(/^\/assets\/index-[\w-]+\.js$/)}, 15_000);it('requires canonical Host and Origin and creates a secure host cookie',async()=>{const hash=await argon2.hash('synthetic-password',{type:argon2.argon2id});app=await buildApp(config,{auth:new AuthService(hash,Buffer.alloc(32,2).toString('base64url'))});const bad=await app.inject({method:'GET',url:'/api/auth/bootstrap',headers:{host:'evil.example'}});expect(bad.statusCode).toBe(403);const boot=await app.inject({method:'GET',url:'/api/auth/bootstrap',headers:{host:'agents.example.com'}});const token=boot.json().csrfToken;const denied=await app.inject({method:'POST',url:'/api/auth/login',headers:{host:'agents.example.com','x-csrf-token':token},payload:{password:'synthetic-password'}});expect(denied.statusCode).toBe(403);const ok=await app.inject({method:'POST',url:'/api/auth/login',headers:{host:'agents.example.com',origin:'https://agents.example.com','x-csrf-token':token},payload:{password:'synthetic-password'}});expect(ok.statusCode).toBe(200);expect(ok.headers['set-cookie']).toContain('__Host-rac=');expect(ok.headers['set-cookie']).toContain('HttpOnly');expect(ok.headers['set-cookie']).toContain('Secure');expect(ok.headers['content-security-policy']).toContain("default-src 'self'")}, 15_000)});
@@ -34,11 +35,16 @@ describe('client control', () => {
     expect(first.response.json().deviceName).toBeUndefined();
     expect(unnamedFirst.statusCode).toBe(400);
     expect(namedFirst.json()).toMatchObject({ active: true, deviceName: 'Studio Mac', controllingDeviceName: 'Studio Mac' });
+    const dashboardTicket = await controlApp.inject({ method: 'POST', url: '/api/dashboard/ticket', headers: firstHeaders });
+    expect(dashboardTicket.statusCode).toBe(200);
+    expect(dashboardTicket.json().ticket).toMatch(/^[A-Za-z0-9_-]+$/u);
     expect(second.response.json().active).toBe(false);
     expect(second.response.json().controllingDeviceName).toBe('Studio Mac');
-    const blocked = await controlApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: 'agents.example.com', cookie: second.cookie } });
-    expect(blocked.statusCode).toBe(423);
     const secondHeaders = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: second.cookie, 'x-csrf-token': second.response.json().csrfToken };
+    const blocked = await controlApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: 'agents.example.com', cookie: second.cookie } });
+    const blockedTicket = await controlApp.inject({ method: 'POST', url: '/api/dashboard/ticket', headers: secondHeaders });
+    expect(blocked.statusCode).toBe(423);
+    expect(blockedTicket.statusCode).toBe(423);
     const unnamedSecond = await controlApp.inject({ method: 'POST', url: '/api/auth/take-control', headers: secondHeaders });
     const take = await controlApp.inject({ method: 'POST', url: '/api/auth/take-control', headers: secondHeaders, payload: { deviceName: 'Kitchen iPad' } });
     expect(unnamedSecond.statusCode).toBe(400);
@@ -55,10 +61,15 @@ describe('client control', () => {
     const subscribed: unknown[] = [];
     const messages: unknown[] = [];
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, command: 'codex' };
-    const agent = { id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' };
+    const agent = { id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready' };
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const push = { enabled: true, publicKey: 'public-key', subscribe: async (subscription: unknown) => { subscribed.push(subscription); return true; }, notify: async (message: unknown) => { messages.push(message); } };
-    const pushApp = await buildApp({ ...config, worktrees: [worktree] }, { auth: new AuthService(hash, Buffer.alloc(32, 6).toString('base64url')), discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined } as never, push: push as never });
+    const notifications = new AgentNotificationCoordinator(() => {}, 0);
+    notifications.observe({ ...agent, title: '⠋ Working' });
+    notifications.observe(agent);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const discovery = { target: async (id: string) => id === agent.id ? { agent, socket } : undefined, dashboard: async () => ({ generation: 1, agents: [agent], worktrees: [] }) };
+    const pushApp = await buildApp({ ...config, worktrees: [worktree] }, { auth: new AuthService(hash, Buffer.alloc(32, 6).toString('base64url')), discovery: discovery as never, push: push as never, notifications });
     const login = async () => {
       const boot = await pushApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
       const response = await pushApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
@@ -70,11 +81,16 @@ describe('client control', () => {
     const key = await pushApp.inject({ method: 'GET', url: '/api/push/public-key', headers: { host: 'agents.example.com', cookie: inactive.cookie } });
     expect(key.json()).toEqual({ publicKey: 'public-key' });
     const registration = await pushApp.inject({ method: 'POST', url: '/api/push/subscriptions', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: inactive.cookie, 'x-csrf-token': inactive.response.json().csrfToken }, payload: { endpoint: 'https://push.example.com/subscription', keys: { p256dh: 'key', auth: 'auth' } } });
+    const unreadDashboard = await pushApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: 'agents.example.com', cookie: active.cookie } });
     const dismissal = await pushApp.inject({ method: 'POST', url: `/api/agents/${encodeURIComponent(agent.id)}/notifications/dismiss`, headers: { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: active.cookie, 'x-csrf-token': active.response.json().csrfToken } });
+    const viewedDashboard = await pushApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: 'agents.example.com', cookie: active.cookie } });
     expect(registration.statusCode).toBe(204);
     expect(subscribed).toHaveLength(1);
+    expect(unreadDashboard.json().agents[0].unread).toBe(true);
     expect(dismissal.statusCode).toBe(204);
+    expect(viewedDashboard.json().agents[0].unread).toBe(false);
     expect(messages).toEqual([{ kind: 'dismiss', tag: 'worktree-status-cora', legacyTag: 'agent-status-socket:%1', worktreeId: 'cora' }]);
+    notifications.stop();
     await pushApp.close();
   }, 15_000);
 });
@@ -140,24 +156,37 @@ describe('agent terminal swap', () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const suspended: Array<{ pane: string; path: string }> = [];
     const foregrounded: Array<{ pane: string; path: string }> = [];
+    const closedReviews: Array<{ pane: string; path: string }> = [];
+    const inputs: Array<{ pane: string; path: string; value: string }> = [];
     const swapApp = await buildApp(config, {
       auth: new AuthService(hash, Buffer.alloc(32, 8).toString('base64url')),
       discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined } as never,
       tmux: {
         suspend: async (targetSocket: typeof socket, pane: string) => { suspended.push({ pane, path: targetSocket.path }); return true; },
-        foreground: async (targetSocket: typeof socket, pane: string) => { foregrounded.push({ pane, path: targetSocket.path }); return true; }
-      } as never
+        foreground: async (targetSocket: typeof socket, pane: string) => { foregrounded.push({ pane, path: targetSocket.path }); return true; },
+        quitReview: async (targetSocket: typeof socket, pane: string) => { closedReviews.push({ pane, path: targetSocket.path }); return true; },
+        input: async (targetSocket: typeof socket, pane: string, value: string) => { inputs.push({ pane, path: targetSocket.path, value }); return true; }
+      } as never,
+      prSwitch: { actionsUrl: async (id: string) => id === agent.id ? 'https://github.com/octo/repo/actions' : undefined } as never
     });
     try {
       const boot = await swapApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
       const login = await swapApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
       const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
       const background = await swapApp.inject({ method: 'POST', url: `/api/agents/${agent.id}/background`, headers });
+      const review = await swapApp.inject({ method: 'POST', url: `/api/agents/${agent.id}/review`, headers });
+      const closeReview = await swapApp.inject({ method: 'POST', url: `/api/agents/${agent.id}/review/close`, headers });
       const foreground = await swapApp.inject({ method: 'POST', url: `/api/agents/${agent.id}/foreground`, headers });
+      const actions = await swapApp.inject({ method: 'GET', url: `/api/agents/${agent.id}/github-actions`, headers: { host: headers.host, cookie: headers.cookie } });
 
       expect(background.statusCode).toBe(204);
+      expect(review.statusCode).toBe(204);
+      expect(closeReview.statusCode).toBe(204);
       expect(foreground.statusCode).toBe(204);
-      expect(suspended).toEqual([{ pane: '%1', path: '/tmp/tmux' }]);
+      expect(actions.json()).toEqual({ url: 'https://github.com/octo/repo/actions' });
+      expect(suspended).toEqual([{ pane: '%1', path: '/tmp/tmux' }, { pane: '%1', path: '/tmp/tmux' }]);
+      expect(inputs).toEqual([{ pane: '%1', path: '/tmp/tmux', value: '\x15review; fg\r' }]);
+      expect(closedReviews).toEqual([{ pane: '%1', path: '/tmp/tmux' }]);
       expect(foregrounded).toEqual([{ pane: '%1', path: '/tmp/tmux' }]);
     } finally { await swapApp.close(); }
   }, 15_000);
@@ -201,5 +230,40 @@ describe('saved prompt API', () => {
     } finally {
       await savedApp.close();
     }
+  }, 15_000);
+});
+
+describe('worktree notes API', () => {
+  it('lists, creates, updates, and deletes notes for the configured worktree', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, command: 'codex' };
+    const stored = [{ id: 'note-identifier-001', text: 'Existing note' }];
+    const keys: string[] = [];
+    const notes = {
+      list: async (key: string) => { keys.push(`list:${key}`); return [...stored]; },
+      create: async (key: string) => { keys.push(`create:${key}`); const note = { id: 'note-identifier-002', text: '' }; stored.unshift(note); return note; },
+      update: async (key: string, noteId: string, text: string) => { keys.push(`update:${key}:${noteId}`); const note = stored.find(candidate => candidate.id === noteId); if (note === undefined) return undefined; note.text = text; return { ...note }; },
+      delete: async (key: string, noteId: string) => { keys.push(`delete:${key}:${noteId}`); const index = stored.findIndex(candidate => candidate.id === noteId); return index < 0 ? undefined : stored.splice(index, 1)[0]; }
+    };
+    const notesApp = await buildApp({ ...config, worktrees: [worktree] }, { auth: new AuthService(hash, Buffer.alloc(32, 10).toString('base64url')), notes: notes as never });
+    try {
+      const boot = await notesApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await notesApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+
+      const listed = await notesApp.inject({ method: 'GET', url: '/api/worktrees/cora/notes', headers: { host: headers.host, cookie: headers.cookie } });
+      const created = await notesApp.inject({ method: 'POST', url: '/api/worktrees/cora/notes', headers });
+      const updated = await notesApp.inject({ method: 'PUT', url: '/api/worktrees/cora/notes/note-identifier-002', headers, payload: { text: 'Autosaved note' } });
+      const deleted = await notesApp.inject({ method: 'DELETE', url: '/api/worktrees/cora/notes/note-identifier-001', headers });
+      const missing = await notesApp.inject({ method: 'GET', url: '/api/worktrees/missing/notes', headers: { host: headers.host, cookie: headers.cookie } });
+
+      expect(listed.json()).toEqual({ notes: [{ id: 'note-identifier-001', text: 'Existing note' }] });
+      expect(created.statusCode).toBe(201);
+      expect(created.json()).toEqual({ id: 'note-identifier-002', text: '' });
+      expect(updated.json()).toEqual({ id: 'note-identifier-002', text: 'Autosaved note' });
+      expect(deleted.json()).toEqual({ id: 'note-identifier-001', text: 'Existing note' });
+      expect(missing.statusCode).toBe(404);
+      expect(keys).toEqual(['list:cora', 'create:cora', 'update:cora:note-identifier-002', 'delete:cora:note-identifier-001']);
+    } finally { await notesApp.close(); }
   }, 15_000);
 });

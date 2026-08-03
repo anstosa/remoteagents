@@ -42,6 +42,13 @@ export class PullRequestSwitchService {
     };
   }
 
+  async actionsUrl(agentId: string): Promise<string | undefined> {
+    const target = await this.discovery.target(agentId);
+    if (target === undefined) return undefined;
+    const worktree = this.worktree(target.agent.workspace);
+    return await this.pullRequests.actionsUrl(worktree?.identity ?? target.agent.workspace);
+  }
+
   async switch(agentId: string, number: number): Promise<boolean> {
     if (!Number.isInteger(number) || number < 1) return false;
     const available = await this.available(agentId);

@@ -72,6 +72,9 @@ export async function omxQuestion(workspace: string, paneId: string) {
   }
   return undefined;
 }
+const omxWorkerWorktree = /(?:^|\/)\.omx\/team\/[^/]+\/worktrees\/worker-\d+(?:\/|$)/u;
+const omxWorkerStartup = /(?:^|\/)\.omx\/state\/team\/[^/]+\/runtime\/worker-\d+-startup\.sh(?:['"\s]|$)/u;
+export const isOmxWorkerPane = (pane: Pane) => omxWorkerWorktree.test(pane.path) || omxWorkerStartup.test(pane.startCommand ?? '');
 export class DiscoveryService {
   private generation = 0; private snapshot: Agent[] = [];
   private refreshedAt = 0;
@@ -80,8 +83,8 @@ export class DiscoveryService {
   private dashboardRefreshInFlight?: { worktrees: Worktree[]; value: Promise<Dashboard> };
   private static readonly refreshCacheMs = 2_000;
   constructor(private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly tmux = new TmuxAdapter(), private readonly processes: ProcessInspector = new ProcInspector(), private readonly pullRequests = new PullRequestService()) {}
-  async refresh(): Promise<Agent[]> {
-    if (Date.now() - this.refreshedAt < DiscoveryService.refreshCacheMs) return this.snapshot;
+  async refresh(force = false): Promise<Agent[]> {
+    if (!force && Date.now() - this.refreshedAt < DiscoveryService.refreshCacheMs) return this.snapshot;
     if (this.refreshInFlight) return this.refreshInFlight;
     this.refreshInFlight = this.discover().finally(() => { this.refreshInFlight = undefined; });
     return this.refreshInFlight;
@@ -89,7 +92,7 @@ export class DiscoveryService {
   private async discover(): Promise<Agent[]> {
     const sockets = await this.finder.find();
     const panes = (await Promise.all(sockets.map(async (socket) => (await this.tmux.listPanes(socket)).map(pane => ({ ...pane, socket }))))).flat();
-    const agents: Agent[] = (await Promise.all(panes.map(async (pane): Promise<Agent | undefined> => {
+    const agents: Agent[] = (await Promise.all(panes.filter(pane => !isOmxWorkerPane(pane)).map(async (pane): Promise<Agent | undefined> => {
       if (!await this.processes.hasCodexDescendant(pane.pid)) return undefined;
       const meta = await gitMeta(pane.path);
       return { id: `${pane.socket.fingerprint}:${pane.paneId}`, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, workspace: meta.workspace, ...(meta.branch === undefined ? {} : { branch: meta.branch }), title: pane.title, ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }) };

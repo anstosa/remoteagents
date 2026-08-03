@@ -23,7 +23,7 @@ describe('TmuxAdapter capture', () => {
 
   it('reports the tmux session name used to distinguish internal command panes', async () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
-    run.mockResolvedValueOnce({ code: 0, stdout: '%1\t$1\trac-stack-owen-a1b2c3\t123\t/home/ubuntu/owen\tbash\tstack\t\n', stderr: '' });
+    run.mockResolvedValueOnce({ code: 0, stdout: "%1\t$1\trac-stack-owen-a1b2c3\t123\t/home/ubuntu/owen\tbash\tstack\t\texec /bin/bash -lc 'echo ready'\n", stderr: '' });
 
     await expect(new TmuxAdapter().listPanes(socket)).resolves.toEqual([{
       paneId: '%1',
@@ -33,10 +33,11 @@ describe('TmuxAdapter capture', () => {
       path: '/home/ubuntu/owen',
       command: 'bash',
       title: 'stack',
+      startCommand: "exec /bin/bash -lc 'echo ready'",
       socket
     }]);
 
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}']);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}']);
   });
 
   it('confirms Codex choices from the initially selected first option', async () => {
@@ -90,12 +91,55 @@ describe('TmuxAdapter capture', () => {
     ]);
   });
 
+  it('reads the current pane dimensions before a temporary browser resize', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValueOnce({ code: 0, stdout: '220\t80\n', stderr: '' });
+
+    await expect(new TmuxAdapter().size(socket, '%1')).resolves.toEqual({ cols: 220, rows: 80 });
+
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'display-message', '-p', '-t', '%1', '#{pane_width}\t#{pane_height}']);
+  });
+
+  it('quits Neovim review mode instead of foregrounding over it', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValueOnce({ code: 0, stdout: 'nvim\n', stderr: '' });
+
+    await expect(new TmuxAdapter().quitReview(socket, '%1')).resolves.toBe(true);
+
+    expect(run.mock.calls.slice(-3)).toEqual([
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'display-message', '-p', '-t', '%1', '#{pane_current_command}']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-l', '-t', '%1', '\x1b:qa!']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-t', '%1', 'Enter']]
+    ]);
+  });
+
+  it('treats an already-closed review as complete without typing into the resumed agent', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValueOnce({ code: 0, stdout: 'node\n', stderr: '' });
+
+    await expect(new TmuxAdapter().quitReview(socket, '%1')).resolves.toBe(true);
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'display-message', '-p', '-t', '%1', '#{pane_current_command}']);
+  });
+
   it('closes the entire replaced session so companion HUD panes do not linger', async () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
 
     await expect(new TmuxAdapter().closeSession(socket, '$1')).resolves.toBe(true);
 
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'kill-session', '-t', '$1']);
+  });
+
+  it('terminates only a validated numeric host pid through the tmux server', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    const adapter = new TmuxAdapter();
+
+    await expect(adapter.terminateHostProcess(socket, 4321)).resolves.toBe(true);
+    await expect(adapter.terminateHostProcess(socket, Number.NaN)).resolves.toBe(false);
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'run-shell', 'kill -TERM -- 4321']);
   });
 
   it('captures only the requested visible history window and resizes the pane for the active client', async () => {
@@ -108,6 +152,16 @@ describe('TmuxAdapter capture', () => {
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'capture-pane', '-e', '-p', '-t', '%1', '-S', '-5000']);
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'resize-window', '-t', '%1', '-x', '120', '-y', '36']);
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'resize-pane', '-t', '%1', '-x', '120', '-y', '36']);
+  });
+
+  it('moves unused rows above a short capture so the frame stays bottom aligned', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValue({ code: 0, stdout: 'first\nsecond\n\n\n', stderr: '' });
+
+    await expect(new TmuxAdapter().captureWindow(socket, '%1', 0, 4)).resolves.toEqual({
+      text: '\x1b[49m\n\x1b[49m\nfirst\x1b[49m\nsecond\x1b[49m',
+      older: false
+    });
   });
 
   it('slices concrete history lines so adjacent pages preserve their boundary', async () => {
@@ -126,6 +180,14 @@ describe('TmuxAdapter capture', () => {
     await expect(new TmuxAdapter().input(socket, '%1', '\x1b[A')).resolves.toBe(true);
 
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-l', '-t', '%1', '\x1b[A']);
+  });
+
+  it('sends Ctrl+C as an explicit tmux key', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+
+    await expect(new TmuxAdapter().input(socket, '%1', '\x03')).resolves.toBe(true);
+
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-t', '%1', 'C-c']);
   });
 
   it('submits terminal-mode commands with tmux’s Enter key', async () => {

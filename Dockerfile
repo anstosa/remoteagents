@@ -22,7 +22,7 @@ ENV HOME=/home/node \
     NODE_ENV=production
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y ca-certificates git tmux \
+    && apt-get install --no-install-recommends -y ca-certificates git tmux zsh \
     && npm install --global "@openai/codex@${CODEX_VERSION}" \
     && printf '%s\n' '#!/bin/sh' 'exec /host-lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 --library-path /host-lib/x86_64-linux-gnu:/home/linuxbrew/.linuxbrew/lib:/home/linuxbrew/.linuxbrew/opt/utf8proc/lib:/home/linuxbrew/.linuxbrew/opt/ncurses/lib:/home/linuxbrew/.linuxbrew/opt/libevent/lib /home/linuxbrew/.linuxbrew/bin/tmux "$@"' > /usr/local/bin/host-tmux \
     && chmod 755 /usr/local/bin/host-tmux \

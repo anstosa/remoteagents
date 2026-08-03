@@ -16,11 +16,10 @@ afterEach(() => {
 });
 
 describe('LaunchService', () => {
-  it('launches configured Codex worktrees through the sourced shell alias', () => {
+  it('launches configured Codex worktrees through the interactive zsh environment', () => {
     const command = expandCommand('codex', { identity: '/worktrees/cora' });
 
-    expect(command).toContain('source "$HOME/.bash_aliases"');
-    expect(command).toContain("cd -- '/worktrees/cora' && eval 'codex'");
+    expect(command).toBe("cd -- '/worktrees/cora' && eval 'codex'");
     expect(command).not.toContain('RAC_CODEX_BIN');
     expect(command).not.toContain('$HOME/n/bin/codex');
   });
@@ -36,6 +35,7 @@ describe('LaunchService', () => {
 
     await expect(service.launchHome()).resolves.toBe(true);
 
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['/home/linuxbrew/.linuxbrew/bin/zsh', '-lc', expect.stringContaining('source "$HOME/.zshrc"')]));
     expect(run).toHaveBeenLastCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', expect.stringMatching(/^rac-[\w-]+$/u), '@rac_display_label', scratchLabel]);
   });
 
@@ -108,6 +108,24 @@ describe('LaunchService', () => {
     await expect(service.launch('alex')).resolves.toBe(true);
     expect(calls[0]).toMatchObject(['paste', '%4', expect.stringMatching(/^rac-launch-/), 'alex']);
     expect(calls[1]).toEqual(['enter', '%4']);
+  });
+
+  it('does not start an agent from an existing Bash pane', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const worktree: Worktree = { id: 'owen', label: 'Owen', path: '/worktrees/owen', identity: '/worktrees/owen', hostPath: '/home/ubuntu/owen', available: true, command: 'codex' };
+    const panes = {
+      listPanes: async () => [{ paneId: '%4', sessionId: '$1', sessionName: 'operator-bash', pid: 123, path: '/home/ubuntu/owen', command: 'bash', title: '', socket }],
+      pastePrompt: vi.fn(),
+      enter: vi.fn()
+    };
+    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [socket] }, panes as never);
+
+    await expect(service.launch('owen')).resolves.toBe(true);
+
+    expect(panes.pastePrompt).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['/home/linuxbrew/.linuxbrew/bin/zsh', '-lc', expect.stringContaining('source "$HOME/.zshrc"')]));
   });
 
   it('does not launch Owen inside a transient stack command session', async () => {
