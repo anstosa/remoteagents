@@ -66,10 +66,32 @@ test('creates, previews, edits, autosaves, and deletes per-worktree notes', asyn
   await expect(notesButton.locator('.notes-count')).toHaveText('1');
   await expect(editor).toHaveValue('');
   await pane.evaluate(async element => await Promise.all(element.getAnimations().map(animation => animation.finished)));
-  const [paneBounds, outputBounds] = await Promise.all([pane.boundingBox(), page.locator('.log').boundingBox()]);
-  expect(paneBounds!.y).toBeCloseTo(outputBounds!.y, 0);
-  expect(paneBounds!.height / outputBounds!.height).toBeGreaterThan(0.45);
-  expect(paneBounds!.height / outputBounds!.height).toBeLessThan(0.55);
+  const outputPane = page.locator('.log-output');
+  const [paneBounds, outputBounds, outputPaneBounds] = await Promise.all([pane.boundingBox(), page.locator('.log').boundingBox(), outputPane.boundingBox()]);
+  expect(outputBounds!.width).toBeGreaterThan(outputBounds!.height);
+  expect(outputPaneBounds!.x).toBeCloseTo(outputBounds!.x, 0);
+  expect(paneBounds!.x).toBeCloseTo(outputPaneBounds!.x + outputPaneBounds!.width, 0);
+  expect(outputPaneBounds!.width / outputBounds!.width).toBeGreaterThan(0.45);
+  expect(outputPaneBounds!.width / outputBounds!.width).toBeLessThan(0.55);
+  expect(paneBounds!.width / outputBounds!.width).toBeGreaterThan(0.45);
+  expect(paneBounds!.width / outputBounds!.width).toBeLessThan(0.55);
+  expect(paneBounds!.height / outputBounds!.height).toBeGreaterThan(0.95);
+  expect(outputPaneBounds!.height / outputBounds!.height).toBeGreaterThan(0.95);
+
+  const expandNote = page.getByRole('button', { name: 'Expand note' });
+  await expect(expandNote).toHaveAttribute('aria-pressed', 'false');
+  await expandNote.click();
+  await expect(page.getByRole('button', { name: 'Restore note' })).toHaveAttribute('aria-pressed', 'true');
+  const expandedBounds = await pane.boundingBox();
+  expect(expandedBounds!.height / outputBounds!.height).toBeGreaterThan(0.95);
+  expect(expandedBounds!.width / outputBounds!.width).toBeGreaterThan(0.95);
+  await expect(outputPane).toBeHidden();
+  await page.getByRole('button', { name: 'Restore note' }).click();
+  await expect(page.getByRole('button', { name: 'Expand note' })).toHaveAttribute('aria-pressed', 'false');
+  const restoredBounds = await pane.boundingBox();
+  expect(restoredBounds!.width / outputBounds!.width).toBeGreaterThan(0.45);
+  expect(restoredBounds!.width / outputBounds!.width).toBeLessThan(0.55);
+  await expect(outputPane).toBeVisible();
 
   await editor.fill('Remember to review the migration plan carefully');
   await expect.poll(() => savedTexts).toContain('Remember to review the migration plan carefully');
@@ -93,6 +115,8 @@ test('creates, previews, edits, autosaves, and deletes per-worktree notes', asyn
   await page.getByRole('button', { name: 'Second useful reminder…' }).click();
   await expect.poll(() => savedTexts).toContain('Second useful reminder');
   await expect(page.getByText('Saved', { exact: true })).toBeVisible();
+  await page.getByLabel('Note preview').click();
+  await expect(editor).toBeFocused();
   await editor.press('Escape');
   await expect(pane).toHaveCount(0);
   await expect(notesButton).toBeFocused();
@@ -101,6 +125,7 @@ test('creates, previews, edits, autosaves, and deletes per-worktree notes', asyn
   await expect(page.locator('.notes-menu .note-choice')).toHaveCount(2);
   await expect(notesButton.locator('.notes-count')).toHaveText('2');
   await page.getByRole('button', { name: 'Second useful reminder…' }).click();
+  await page.getByLabel('Note preview').click();
   await expect(editor).toHaveValue('Second useful reminder');
   failNextSave = true;
   await editor.fill('Second useful reminder with a dirty delete');
@@ -109,10 +134,11 @@ test('creates, previews, edits, autosaves, and deletes per-worktree notes', asyn
   await page.getByRole('button', { name: 'Delete note' }).click();
   await expect.poll(() => failedDeletes).toBe(1);
   await expect(page.getByText('Unable to save', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Notes (2; 1 unsaved)' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Notes (2)' })).toBeVisible();
   await page.getByRole('button', { name: 'Close note' }).click();
   await notesButton.click();
   await page.getByRole('button', { name: 'Second useful reminder with a dirty…' }).click();
+  await page.getByLabel('Note preview').click();
   await expect(editor).toHaveValue('Second useful reminder with a dirty delete');
   await expect.poll(() => savedTexts).toContain('Second useful reminder with a dirty delete');
   await expect(page.getByText('Saved', { exact: true })).toBeVisible();
@@ -121,4 +147,59 @@ test('creates, previews, edits, autosaves, and deletes per-worktree notes', asyn
   await expect(notesButton).toBeFocused();
   await expect(notesButton.locator('.notes-count')).toHaveText('1');
   expect(notes).toEqual([{ id: 'note-identifier-001', text: 'Remember to review the migration plan carefully before unload' }]);
+});
+
+test('switches sticky notes between vertical and horizontal output splits', async ({ page }) => {
+  const note = { id: 'note-identifier-001', text: 'Keep this note beside the output.' };
+  await page.setViewportSize({ width: 428, height: 952 });
+  await page.route('**/api/**', route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready' }], worktrees: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
+    if (url.pathname === '/api/worktrees/cora/notes' && request.method() === 'GET') return route.fulfill({ json: { notes: [note] } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Notes (1)' }).click();
+  await page.getByRole('button', { name: 'Keep this note beside the output.…' }).click();
+  const log = page.locator('.log');
+  const output = page.locator('.log-output');
+  const outputStatus = output.locator('> .log-status');
+  const pane = page.getByRole('dialog', { name: 'Worktree note' });
+  await pane.evaluate(async element => await Promise.all(element.getAnimations().map(animation => animation.finished)));
+  await expect(outputStatus).toHaveCount(1);
+  await expect(page.locator('.log > .log-status')).toHaveCount(0);
+
+  const vertical = await Promise.all([log.boundingBox(), output.boundingBox(), pane.boundingBox(), outputStatus.boundingBox()]);
+  expect(vertical[0]!.width).toBeLessThan(vertical[0]!.height);
+  expect(vertical[1]!.x).toBeCloseTo(vertical[0]!.x, 0);
+  expect(vertical[2]!.x).toBeCloseTo(vertical[0]!.x, 0);
+  expect(vertical[2]!.y).toBeCloseTo(vertical[1]!.y + vertical[1]!.height, 0);
+  expect(vertical[1]!.width / vertical[0]!.width).toBeGreaterThan(0.95);
+  expect(vertical[2]!.width / vertical[0]!.width).toBeGreaterThan(0.95);
+  expect(vertical[3]!.x + vertical[3]!.width).toBeLessThanOrEqual(vertical[1]!.x + vertical[1]!.width);
+  expect(vertical[1]!.x + vertical[1]!.width - vertical[3]!.x - vertical[3]!.width).toBeLessThanOrEqual(10);
+  expect(vertical[3]!.y).toBeGreaterThanOrEqual(vertical[1]!.y);
+  expect(vertical[3]!.y - vertical[1]!.y).toBeLessThanOrEqual(10);
+
+  await page.setViewportSize({ width: 1_000, height: 600 });
+  await expect.poll(async () => {
+    const bounds = await log.boundingBox();
+    return bounds === null ? false : bounds.width > bounds.height;
+  }).toBe(true);
+  const horizontal = await Promise.all([log.boundingBox(), output.boundingBox(), pane.boundingBox(), outputStatus.boundingBox()]);
+  expect(horizontal[1]!.y).toBeCloseTo(horizontal[0]!.y, 0);
+  expect(horizontal[2]!.y).toBeCloseTo(horizontal[0]!.y, 0);
+  expect(horizontal[2]!.x).toBeCloseTo(horizontal[1]!.x + horizontal[1]!.width, 0);
+  expect(horizontal[1]!.height / horizontal[0]!.height).toBeGreaterThan(0.95);
+  expect(horizontal[2]!.height / horizontal[0]!.height).toBeGreaterThan(0.95);
+  expect(horizontal[3]!.x + horizontal[3]!.width).toBeLessThanOrEqual(horizontal[1]!.x + horizontal[1]!.width);
+  expect(horizontal[1]!.x + horizontal[1]!.width - horizontal[3]!.x - horizontal[3]!.width).toBeLessThanOrEqual(10);
+  expect(horizontal[3]!.y).toBeGreaterThanOrEqual(horizontal[1]!.y);
+  expect(horizontal[3]!.y - horizontal[1]!.y).toBeLessThanOrEqual(10);
 });

@@ -33,6 +33,7 @@ type PaneViewportEntry = {
 
 export type PaneViewportLease = {
   resize: (cols: number, rows: number) => Promise<boolean>;
+  ensure: (cols: number, rows: number) => Promise<{ ok: boolean; resized: boolean }>;
   release: () => Promise<void>;
 };
 
@@ -49,6 +50,7 @@ export class PaneViewportCoordinator {
     this.entries.set(key, entry);
     return {
       resize: (cols, rows) => this.resize(key, entry, owner, cols, rows),
+      ensure: (cols, rows) => this.ensure(key, entry, owner, cols, rows),
       release: () => this.release(key, entry, owner)
     };
   }
@@ -70,6 +72,17 @@ export class PaneViewportCoordinator {
       if (current === undefined || entry.owner !== owner) return false;
       entry.restore = { cols: Math.max(current.cols, cols), rows: Math.max(current.rows, rows) };
       return await entry.apply(cols, rows).catch(() => false);
+    });
+  }
+
+  private ensure(key: string, entry: PaneViewportEntry, owner: symbol, cols: number, rows: number): Promise<{ ok: boolean; resized: boolean }> {
+    return this.enqueue(entry, async () => {
+      if (this.entries.get(key) !== entry || entry.owner !== owner) return { ok: false, resized: false };
+      const current = await entry.read().catch(() => undefined);
+      if (current === undefined || entry.owner !== owner) return { ok: false, resized: false };
+      if (current.cols === cols && current.rows === rows) return { ok: true, resized: false };
+      const resized = await entry.apply(cols, rows).catch(() => false);
+      return { ok: resized, resized };
     });
   }
 

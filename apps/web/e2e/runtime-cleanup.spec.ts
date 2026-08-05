@@ -50,6 +50,8 @@ test('reviews hourly runtime cleanup targets from the alert and glowing cleanup 
   const cleanupButton = page.getByRole('button', { name: 'Review 4 cleanup targets' });
   await expect(cleanupButton).toBeVisible();
   await expect(cleanupButton).toHaveClass(/cleanup-toggle/);
+  await expect(cleanupButton.locator('svg.broom-icon')).toBeVisible();
+  await expect(cleanupButton.locator('svg.broom-icon')).toHaveCSS('fill', 'rgb(249, 226, 175)');
   await expect(cleanupButton.locator('.cleanup-count')).toHaveText('4');
   await expect(dialog.getByText('Orphaned worker')).toBeVisible();
   await expect(dialog.getByText('Stale agent')).toBeVisible();

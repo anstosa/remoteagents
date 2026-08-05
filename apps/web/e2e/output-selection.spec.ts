@@ -1,5 +1,76 @@
 import { expect, test } from '@playwright/test';
 
+test('shows selection actions for xterm canvas selections', async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.addInitScript(() => {
+    class MockWebSocket {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSED = 3;
+      readonly url: string;
+      readyState = MockWebSocket.CONNECTING;
+      onopen: ((event: Event) => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      constructor(url: string | URL) {
+        this.url = String(url);
+        window.setTimeout(() => {
+          if (this.readyState !== MockWebSocket.CONNECTING) return;
+          this.readyState = MockWebSocket.OPEN;
+          this.onopen?.(new Event('open'));
+          if (this.url.includes('/ws/logs/')) this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'reset', text: 'Selectable output text\n' }) }));
+        });
+      }
+      send() {}
+      close() {
+        if (this.readyState === MockWebSocket.CLOSED) return;
+        this.readyState = MockWebSocket.CLOSED;
+        this.onclose?.(new CloseEvent('close'));
+      }
+    }
+    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
+  });
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/workspace', title: 'Ready' }], worktrees: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'terminal-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await expect(page.getByLabel('Live log')).toBeVisible();
+  await expect(page.locator('.terminal-frame.active .xterm-screen')).toBeVisible();
+  const screen = page.locator('.terminal-frame.active .xterm-screen');
+  const selectedRow = page.locator('.terminal-frame.active .xterm-rows > div', { hasText: 'Selectable output text' });
+  const [screenBounds, selectedRowBounds, cell] = await Promise.all([
+    screen.boundingBox(),
+    selectedRow.boundingBox(),
+    page.locator('.terminal-frame.active .xterm-char-measure-element').first().evaluate(element => {
+      const bounds = element.getBoundingClientRect();
+      return { width: bounds.width / (element.textContent?.length ?? 1), height: bounds.height };
+    })
+  ]);
+  expect(screenBounds).not.toBeNull();
+  expect(selectedRowBounds).not.toBeNull();
+  const y = selectedRowBounds!.y + cell.height / 2;
+  await page.mouse.move(screenBounds!.x + cell.width, y);
+  await page.mouse.down();
+  await page.mouse.move(screenBounds!.x + cell.width * 10, y, { steps: 4 });
+  await page.mouse.up();
+
+  const toolbar = page.getByRole('toolbar', { name: 'Output selection actions' });
+  await expect(page.locator('.log')).toHaveClass(/selection-active/u);
+  await expect(toolbar).toBeVisible();
+  await expect(toolbar.getByRole('button', { name: 'Add to prompt' })).toBeVisible();
+  await toolbar.getByRole('button', { name: 'Add to prompt' }).click();
+  await expect(page.getByRole('textbox', { name: 'Prompt' })).not.toHaveValue('');
+});
+
 test('long press selects mobile output without entering terminal input mode', async ({ browser }) => {
   test.setTimeout(60_000);
   const context = await browser.newContext({
@@ -160,7 +231,10 @@ test('long press selects mobile output without entering terminal input mode', as
   await selectionToolbar.getByRole('button', { name: 'Copy' }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('Selectable');
   await selectionToolbar.getByRole('button', { name: 'Create note' }).click();
+  const notePreview = page.getByLabel('Note preview');
+  await expect(notePreview).toContainText('Selectable');
   const noteEditor = page.getByRole('textbox', { name: 'Note content' });
+  await notePreview.click();
   await expect(noteEditor).toHaveValue('Selectable');
   await expect.poll(() => savedNotes).toContain('Selectable');
   await selectableRow.evaluate(row => {
@@ -220,9 +294,10 @@ test('long press selects mobile output without entering terminal input mode', as
     document.dispatchEvent(new Event('selectionchange'));
   });
   const log = page.locator('.log');
+  const outputPane = page.locator('.log-output');
   await expect(log).toHaveClass(/selection-active/u);
   await expect(page.locator('.log-canvas')).toHaveCSS('filter', 'none');
-  const selectionTreatment = await log.evaluate(element => {
+  const selectionTreatment = await outputPane.evaluate(element => {
     const border = getComputedStyle(element, '::after');
     const highlight = getComputedStyle(document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Prompt"]')!, '::selection');
     return { borderColor: border.borderTopColor, glow: border.boxShadow, highlight: highlight.backgroundColor };
@@ -230,6 +305,9 @@ test('long press selects mobile output without entering terminal input mode', as
   expect(selectionTreatment.borderColor).toBe('rgb(184, 184, 184)');
   expect(selectionTreatment.glow).toContain('rgba(208, 208, 208');
   expect(selectionTreatment.highlight).toBe('rgb(203, 166, 247)');
+  expect(await log.evaluate(element => getComputedStyle(element, '::after').content)).toBe('none');
+  const [selectedOutputBounds, selectedNoteBounds] = await Promise.all([outputPane.boundingBox(), page.getByRole('dialog', { name: 'Worktree note' }).boundingBox()]);
+  expect(selectedOutputBounds!.y + selectedOutputBounds!.height).toBeCloseTo(selectedNoteBounds!.y, 0);
   await page.keyboard.press('y');
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('Selected terminal output');
   await expect(log).toHaveClass(/selection-copied/u);
@@ -269,6 +347,13 @@ test('long press selects mobile output without entering terminal input mode', as
   await dispatchPointer('pointerup', 2);
   await page.locator('.log-canvas').dispatchEvent('click', { bubbles: true, clientX: 80, clientY: 160 });
   await expect(page.locator('.log')).toHaveClass(/input-active/u);
+  const inputTreatment = await outputPane.evaluate(element => {
+    const border = getComputedStyle(element, '::after');
+    return { borderColor: border.borderTopColor, glow: border.boxShadow };
+  });
+  expect(inputTreatment.borderColor).toBe('rgb(137, 220, 235)');
+  expect(inputTreatment.glow).not.toBe('none');
+  expect(inputTreatment.glow).toContain('inset');
   await expect(page.locator('.prompt-composer')).toBeHidden();
   await expect(page.locator('.mobile-terminal-keys')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Back to prompt' })).toHaveCount(0);

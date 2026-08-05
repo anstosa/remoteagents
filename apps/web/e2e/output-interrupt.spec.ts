@@ -69,12 +69,25 @@ test('output input mode forwards control keys without losing focus', async ({ pa
 
   // Output mode owns Ctrl+C even if browser chrome or a non-editable control
   // temporarily takes focus away from xterm.
-  await page.getByRole('button', { name: 'Page up' }).focus();
+  const pageUp = page.getByRole('button', { name: 'Page up' });
+  await pageUp.focus();
   await page.keyboard.press('Control+c');
   await expect.poll(async () => (await page.evaluate(() => {
     const frames = (window as Window & { __terminalSocketFrames?: Array<{ url: string; data: string }> }).__terminalSocketFrames ?? [];
     return frames.filter(candidate => candidate.url.includes('/ws/input/'));
   })).length).toBe(2);
+
+  await pageUp.click();
+  const backToBottom = page.getByRole('button', { name: 'Back to bottom' });
+  const pageDown = page.getByRole('button', { name: 'Page down' });
+  await expect(backToBottom).toBeVisible();
+  await expect(backToBottom.locator('svg')).toBeVisible();
+  await expect(backToBottom).toHaveText('');
+  const [backToBottomBounds, pageDownBounds] = await Promise.all([backToBottom.boundingBox(), pageDown.boundingBox()]);
+  expect(backToBottomBounds!.x).toBeLessThan(pageDownBounds!.x);
+  expect(backToBottomBounds!.y).toBeCloseTo(pageDownBounds!.y, 0);
+  await backToBottom.click();
+  await expect(backToBottom).toBeHidden();
 
   await page.locator('.terminal-frame.active .xterm-helper-textarea').focus();
 

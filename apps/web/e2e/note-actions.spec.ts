@@ -39,10 +39,17 @@ test('copies a note and sends its current contents as a prompt', async ({ page }
   const editor = dialog.getByRole('textbox', { name: 'Note content' });
   await editor.fill('Use this exact note as the next prompt.');
 
-  await dialog.getByRole('button', { name: 'Copy', exact: true }).click();
-  await expect(dialog.getByRole('button', { name: 'Copied', exact: true })).toBeVisible();
+  const copyButton = dialog.getByRole('button', { name: 'Copy note' });
+  await expect(copyButton).toHaveText('');
+  await expect(copyButton.locator('svg')).toBeVisible();
+  await copyButton.click();
+  const copiedButton = dialog.getByRole('button', { name: 'Note copied' });
+  await expect(copiedButton).toHaveText('');
+  await expect(copiedButton.locator('path')).toHaveAttribute('d', 'm5 12 4 4L19 6');
+  await expect(dialog.getByText('Copied', { exact: true })).toHaveCount(0);
   copied = await page.evaluate(() => (window as unknown as { __copiedNote: string }).__copiedNote);
   expect(copied).toBe('Use this exact note as the next prompt.');
+  await expect(dialog.getByRole('button', { name: 'Copy note' })).toBeVisible({ timeout: 3_000 });
 
   const send = dialog.getByRole('button', { name: 'Send note as prompt' });
   await expect(send.locator('svg')).toBeVisible();

@@ -87,4 +87,22 @@ describe('pane viewport coordination', () => {
 
     expect(applied).toEqual([[62, 41], [307, 70], [307, 80]]);
   });
+
+  it('repairs pane geometry changed by an external tmux layout manager', async () => {
+    const applied: Array<[number, number]> = [];
+    let current = { cols: 220, rows: 80 };
+    const coordinator = new PaneViewportCoordinator();
+    const lease = coordinator.acquire('socket:%1', async () => current, async (cols, rows) => {
+      applied.push([cols, rows]);
+      current = { cols, rows };
+      return true;
+    });
+
+    await expect(lease.resize(160, 50)).resolves.toBe(true);
+    current = { cols: 80, rows: 54 };
+    await expect(lease.ensure(160, 50)).resolves.toEqual({ ok: true, resized: true });
+    await expect(lease.ensure(160, 50)).resolves.toEqual({ ok: true, resized: false });
+
+    expect(applied).toEqual([[160, 50], [160, 50]]);
+  });
 });

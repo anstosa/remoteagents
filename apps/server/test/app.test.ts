@@ -4,6 +4,10 @@ import { buildApp } from '../src/app.js';
 import { AuthService } from '../src/auth/service.js';
 import { AgentNotificationCoordinator } from '../src/notifications.js';
 import type { ValidatedConfig } from '../src/config/schema.js';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { QueuedPromptService } from '../src/prompts/queue.js';
 const config: ValidatedConfig = { listen:{host:'127.0.0.1',port:8787},publicOrigin:new URL('https://agents.example.com'),trustedProxyIps:new Set(['127.0.0.1']),pollIntervalMs:500,newAgentCommand:'codex',worktrees:[] };
 describe('HTTP security boundary',()=>{let app:Awaited<ReturnType<typeof buildApp>>;afterEach(async()=>{await app?.close()});it('serves the browser application and its build version for the canonical host',async()=>{const hash=await argon2.hash('synthetic-password',{type:argon2.argon2id});app=await buildApp(config,{auth:new AuthService(hash,Buffer.alloc(32,2).toString('base64url'))});const response=await app.inject({method:'GET',url:'/',headers:{host:'agents.example.com'}});expect(response.statusCode).toBe(200);expect(response.headers['content-type']).toContain('text/html');expect(response.body).toContain('<!doctype html>');const version=await app.inject({method:'GET',url:'/api/ui-version',headers:{host:'agents.example.com'}});expect(version.statusCode).toBe(200);expect(version.json().version).toMatch(/^\/assets\/index-[\w-]+\.js$/)}, 15_000);it('requires canonical Host and Origin and creates a secure host cookie',async()=>{const hash=await argon2.hash('synthetic-password',{type:argon2.argon2id});app=await buildApp(config,{auth:new AuthService(hash,Buffer.alloc(32,2).toString('base64url'))});const bad=await app.inject({method:'GET',url:'/api/auth/bootstrap',headers:{host:'evil.example'}});expect(bad.statusCode).toBe(403);const boot=await app.inject({method:'GET',url:'/api/auth/bootstrap',headers:{host:'agents.example.com'}});const token=boot.json().csrfToken;const denied=await app.inject({method:'POST',url:'/api/auth/login',headers:{host:'agents.example.com','x-csrf-token':token},payload:{password:'synthetic-password'}});expect(denied.statusCode).toBe(403);const ok=await app.inject({method:'POST',url:'/api/auth/login',headers:{host:'agents.example.com',origin:'https://agents.example.com','x-csrf-token':token},payload:{password:'synthetic-password'}});expect(ok.statusCode).toBe(200);expect(ok.headers['set-cookie']).toContain('__Host-rac=');expect(ok.headers['set-cookie']).toContain('HttpOnly');expect(ok.headers['set-cookie']).toContain('Secure');expect(ok.headers['content-security-policy']).toContain("default-src 'self'")}, 15_000)});
 
@@ -192,6 +196,45 @@ describe('agent terminal swap', () => {
   }, 15_000);
 });
 
+describe('queued prompt API', () => {
+  it('lists, reorders, edits, and cancels prompts waiting behind a busy agent', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-queued-prompt-api-'));
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, command: 'codex' };
+    const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '⠋ Working' };
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    const queuedApp = await buildApp({ ...config, worktrees: [worktree] }, {
+      auth: new AuthService(hash, Buffer.alloc(32, 11).toString('base64url')),
+      discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined } as never,
+      queuedPrompts: new QueuedPromptService(join(directory, 'queue.json'))
+    });
+    try {
+      const boot = await queuedApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await queuedApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      await queuedApp.inject({ method: 'POST', url: '/api/agents/agent-1/prompt', headers, payload: { prompt: 'First prompt', attachments: [] } });
+      await queuedApp.inject({ method: 'POST', url: '/api/agents/agent-1/prompt', headers, payload: { prompt: 'Second prompt', attachments: [] } });
+
+      const listed = await queuedApp.inject({ method: 'GET', url: '/api/agents/agent-1/queued-prompts', headers: { host: headers.host, cookie: headers.cookie } });
+      const [first, second] = listed.json().prompts as Array<{ id: string; text: string }>;
+      const moved = await queuedApp.inject({ method: 'POST', url: `/api/agents/agent-1/queued-prompts/${second!.id}/move`, headers, payload: { direction: 'earlier' } });
+      const edited = await queuedApp.inject({ method: 'PUT', url: `/api/agents/agent-1/queued-prompts/${second!.id}`, headers, payload: { prompt: 'Edited second prompt' } });
+      const cancelled = await queuedApp.inject({ method: 'DELETE', url: `/api/agents/agent-1/queued-prompts/${first!.id}`, headers });
+      const remaining = await queuedApp.inject({ method: 'GET', url: '/api/agents/agent-1/queued-prompts', headers: { host: headers.host, cookie: headers.cookie } });
+
+      expect(listed.statusCode).toBe(200);
+      expect([first?.text, second?.text]).toEqual(['First prompt', 'Second prompt']);
+      expect(moved.json().prompts.map((prompt: { id: string }) => prompt.id)).toEqual([second!.id, first!.id]);
+      expect(edited.json()).toMatchObject({ id: second!.id, text: 'Edited second prompt' });
+      expect(cancelled.statusCode).toBe(204);
+      expect(remaining.json().prompts).toMatchObject([{ id: second!.id, text: 'Edited second prompt' }]);
+    } finally {
+      await queuedApp.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
+});
+
 describe('saved prompt API', () => {
   it('keeps prompts with a configured worktree when its agent pane changes', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
@@ -203,14 +246,18 @@ describe('saved prompt API', () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const prompts = [{ id: 'saved-prompt-001', text: 'Review this change.' }];
     const keys: string[] = [];
+    const queued: string[] = [];
     const savedPrompts = {
       list: async (key: string) => { keys.push(key); return key === 'worktree:cora' ? [...prompts] : undefined; },
-      save: async (key: string, text: string) => { keys.push(key); return key === 'worktree:cora' ? { id: 'saved-prompt-002', text } : undefined; },
+      save: async (key: string, text: string, attachments: Array<{ name: string; data: string }>) => { keys.push(key); return key === 'worktree:cora' ? { id: 'saved-prompt-002', text, attachments: attachments.map(attachment => ({ name: attachment.name, size: Buffer.from(attachment.data, 'base64').length })) } : undefined; },
+      get: async (key: string, promptId: string) => { keys.push(key); return key === 'worktree:cora' ? prompts.find(prompt => prompt.id === promptId) : undefined; },
+      consumeOnSuccess: async (key: string, promptId: string, use: (prompt: { id: string; text: string }) => Promise<boolean>) => { keys.push(key); const prompt = key === 'worktree:cora' ? prompts.find(candidate => candidate.id === promptId) : undefined; return prompt === undefined ? 'missing' : await use(prompt) ? 'consumed' : 'failed'; },
       consume: async (key: string, promptId: string) => { keys.push(key); return key === 'worktree:cora' ? prompts.find(prompt => prompt.id === promptId) : undefined; }
     };
     const savedApp = await buildApp({ ...config, worktrees: [worktree] }, {
       auth: new AuthService(hash, Buffer.alloc(32, 9).toString('base64url')),
       discovery: { target: async (id: string) => { const agent = agents.find(candidate => candidate.id === id); return agent === undefined ? undefined : { agent, socket }; } } as never,
+      tmux: { pastePrompt: async (_socket: unknown, _paneId: string, _buffer: string, prompt: string) => { queued.push(prompt); return true; }, queue: async () => true } as never,
       savedPrompts: savedPrompts as never
     });
     try {
@@ -219,16 +266,62 @@ describe('saved prompt API', () => {
       const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
 
       const listed = await savedApp.inject({ method: 'GET', url: '/api/agents/agent-2/saved-prompts', headers: { host: headers.host, cookie: headers.cookie } });
-      const created = await savedApp.inject({ method: 'POST', url: '/api/agents/agent-1/saved-prompts', headers, payload: { prompt: 'Summarize this branch.' } });
+      const created = await savedApp.inject({ method: 'POST', url: '/api/agents/agent-1/saved-prompts', headers, payload: { prompt: 'Summarize this branch.', attachments: [{ name: 'context.txt', data: Buffer.from('context').toString('base64') }] } });
+      const queuedSaved = await savedApp.inject({ method: 'POST', url: '/api/agents/agent-2/saved-prompts/saved-prompt-001/queue', headers });
       const consumed = await savedApp.inject({ method: 'DELETE', url: '/api/agents/agent-1/saved-prompts/saved-prompt-001', headers });
 
       expect(listed.json()).toEqual({ prompts });
       expect(created.statusCode).toBe(201);
-      expect(created.json()).toEqual({ id: 'saved-prompt-002', text: 'Summarize this branch.' });
+      expect(created.json()).toEqual({ id: 'saved-prompt-002', text: 'Summarize this branch.', attachments: [{ name: 'context.txt', size: 7 }] });
+      expect(queuedSaved.statusCode).toBe(204);
+      expect(queued).toEqual(['Review this change. ']);
       expect(consumed.json()).toEqual(prompts[0]);
-      expect(keys).toEqual(['worktree:cora', 'worktree:cora', 'worktree:cora']);
+      expect(keys).toEqual(['worktree:cora', 'worktree:cora', 'worktree:cora', 'worktree:cora']);
     } finally {
       await savedApp.close();
+    }
+  }, 15_000);
+});
+
+describe('prompt history API', () => {
+  it('records and lists history by configured worktree when the agent pane changes', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, command: 'codex' };
+    const agents = [
+      { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' },
+      { id: 'agent-2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' }
+    ];
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    const stored: Array<{ id: string; text: string; createdAt: string }> = [];
+    const keys: string[] = [];
+    const promptHistory = {
+      list: async (key: string) => { keys.push(`list:${key}`); return [...stored]; },
+      record: async (key: string, text: string) => {
+        keys.push(`record:${key}`);
+        const entry = { id: 'prompt-history-001', text, createdAt: '2026-08-04T01:00:00.000Z' };
+        stored.unshift(entry);
+        return entry;
+      }
+    };
+    const historyApp = await buildApp({ ...config, worktrees: [worktree] }, {
+      auth: new AuthService(hash, Buffer.alloc(32, 10).toString('base64url')),
+      discovery: { target: async (id: string) => { const agent = agents.find(candidate => candidate.id === id); return agent === undefined ? undefined : { agent, socket }; } } as never,
+      tmux: { pastePrompt: async () => true, queue: async () => true } as never,
+      promptHistory: promptHistory as never
+    });
+    try {
+      const boot = await historyApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await historyApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+
+      const queued = await historyApp.inject({ method: 'POST', url: '/api/agents/agent-1/prompt', headers, payload: { prompt: 'Review this branch.' } });
+      const listed = await historyApp.inject({ method: 'GET', url: '/api/agents/agent-2/prompt-history', headers: { host: headers.host, cookie: headers.cookie } });
+
+      expect(queued.statusCode).toBe(204);
+      expect(listed.json()).toEqual({ prompts: stored });
+      expect(keys).toEqual(['record:worktree:cora', 'list:worktree:cora']);
+    } finally {
+      await historyApp.close();
     }
   }, 15_000);
 });

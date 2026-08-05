@@ -3,10 +3,74 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DiscoveryService, omxQuestion, ProcSocketFinder } from '../src/discovery/service.js';
+import { addUntrackedLineStats, DiscoveryService, gitStatusSummary, omxQuestion, ProcSocketFinder } from '../src/discovery/service.js';
 import type { SocketRef, Worktree } from '../src/domain/models.js';
 
 describe('DiscoveryService dashboard', () => {
+  it('summarizes staged, unstaged, untracked, and conflicted worktree files', () => {
+    expect(gitStatusSummary(' M modified.ts\nM  staged.ts\nMM both.ts\n?? new.ts\nUU conflict.ts\nR  old.ts -> renamed.ts\n')).toEqual({
+      files: 6,
+      staged: 3,
+      unstaged: 2,
+      untracked: 1,
+      conflicted: 1,
+      changes: [
+        { code: ' M', path: 'modified.ts' },
+        { code: 'M ', path: 'staged.ts' },
+        { code: 'MM', path: 'both.ts' },
+        { code: '??', path: 'new.ts' },
+        { code: 'UU', path: 'conflict.ts' },
+        { code: 'R ', path: 'renamed.ts', originalPath: 'old.ts' }
+      ]
+    });
+    expect(gitStatusSummary('')).toEqual({ files: 0, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, changes: [] });
+  });
+
+  it('preserves spaces and rename origins from nul-delimited porcelain output', () => {
+    expect(gitStatusSummary(
+      'R  new name.ts\0old name.ts\0?? untracked file.md\0',
+      ['4\t2\t\0old name.ts\0new name.ts\0']
+    )).toMatchObject({
+      files: 2,
+      staged: 1,
+      untracked: 1,
+      changes: [
+        { code: 'R ', path: 'new name.ts', originalPath: 'old name.ts', additions: 4, deletions: 2 },
+        { code: '??', path: 'untracked file.md' }
+      ]
+    });
+  });
+
+  it('combines line changes from multiple numstat passes and leaves binary counts unavailable', () => {
+    expect(gitStatusSummary(
+      'MM mixed.ts\0 M binary.png\0',
+      ['3\t1\tmixed.ts\0-\t-\tbinary.png\0', '2\t4\tmixed.ts\0']
+    ).changes).toEqual([
+      { code: 'MM', path: 'mixed.ts', additions: 5, deletions: 5 },
+      { code: ' M', path: 'binary.png' }
+    ]);
+  });
+
+  it('bounds untracked line-stat enrichment by file count and aggregate bytes', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'rac-untracked-stats-'));
+    try {
+      await Promise.all([
+        writeFile(join(workspace, 'one.txt'), 'one\ntwo\n'),
+        writeFile(join(workspace, 'two.txt'), 'three\nfour\n'),
+        writeFile(join(workspace, 'three.txt'), 'five\nsix\n')
+      ]);
+      const summary = gitStatusSummary('?? one.txt\n?? two.txt\n?? three.txt\n');
+
+      await addUntrackedLineStats(workspace, summary, { files: 2, bytes: 16, bytesPerFile: 16 });
+
+      expect(summary.changes).toEqual([
+        { code: '??', path: 'one.txt', additions: 2, deletions: 0 },
+        { code: '??', path: 'two.txt' },
+        { code: '??', path: 'three.txt' }
+      ]);
+    } finally { await rm(workspace, { recursive: true, force: true }); }
+  });
+
   it('discovers tmux sockets directly from the mounted socket directory', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-tmux-'));
     const socketPath = join(directory, 'default');
@@ -29,12 +93,12 @@ describe('DiscoveryService dashboard', () => {
     const tmux = { listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/host/ferry', title: 'Ferry' }] };
     const processes = { hasCodexDescendant: async () => true };
     const service = new DiscoveryService(finder, tmux as never, processes);
-    const worktrees: Worktree[] = [{ id: 'ferry', label: 'Ferry FYI', path: '/worktrees/ferry', identity: '/worktrees/ferry', hostPath: '/host/ferry', available: true, command: 'codex', newTask: 'new {taskId}', projectUrl: 'https://ferry.agents.example.com' }];
+    const worktrees: Worktree[] = [{ id: 'ferry', label: 'Ferry FYI', path: '/worktrees/ferry', identity: '/worktrees/ferry', hostPath: '/host/ferry', available: true, command: 'codex', newTask: 'new {taskId}', push: { label: 'Commit/Push', prompt: '$push' }, projectUrl: 'https://ferry.agents.example.com' }];
 
     const dashboard = await service.dashboard(worktrees);
 
     expect(dashboard.agents).toHaveLength(1);
-    expect(dashboard.agents[0]).toMatchObject({ workspace: '/worktrees/ferry', worktreeId: 'ferry', worktreeLabel: 'Ferry FYI', worktreeOrder: 0, newTaskConfigured: true, projectUrl: 'https://ferry.agents.example.com' });
+    expect(dashboard.agents[0]).toMatchObject({ workspace: '/worktrees/ferry', worktreeId: 'ferry', worktreeLabel: 'Ferry FYI', worktreeOrder: 0, newTaskConfigured: true, push: { label: 'Commit/Push', prompt: '$push' }, projectUrl: 'https://ferry.agents.example.com' });
     expect(dashboard.worktrees).toEqual([]);
   });
 

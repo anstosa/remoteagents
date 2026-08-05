@@ -6,10 +6,11 @@ import { TmuxAdapter } from '../tmux/adapter.js';
 import { omxQuestion } from '../discovery/service.js';
 import type { Worktree } from '../domain/models.js';
 import { run } from '../tmux/command.js';
-
-export const maxPromptAttachmentBytes = 25 * 1024 * 1024;
-export const maxPromptAttachments = 10;
-export type PromptAttachment = { name: string; data: string };
+import type { PromptHistoryService } from '../prompt-history/service.js';
+import { agentAttentionState } from '../notifications.js';
+import { QueuedPromptService, type QueuedPromptSummary } from './queue.js';
+import { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentData, promptAttachmentName, validPrompt, validPromptAttachments, type PromptAttachment } from './validation.js';
+export { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentBytes, validPromptAttachments, type PromptAttachment } from './validation.js';
 
 /**
  * Tab is Codex's queue key.  Its completion menu owns Tab while the composer
@@ -17,22 +18,70 @@ export type PromptAttachment = { name: string; data: string };
  * space dismisses that menu without changing the submitted prompt's meaning.
  */
 const queueReadyPrompt = (prompt: string) => /\s$/u.test(prompt) ? prompt : `${prompt} `;
-const attachmentName = (value: string): string | undefined => {
-  const name = value.trim();
-  return name && name.length <= 240 && !/[\\/\0\r\n]/u.test(name) ? name : undefined;
-};
-const attachmentData = (value: string): Buffer | undefined => {
-  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value)) return undefined;
-  const decoded = Buffer.from(value, 'base64');
-  return decoded.length > 0 && decoded.toString('base64') === value ? decoded : undefined;
-};
-
 export class PromptService {
-  constructor(private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly worktrees: Worktree[] = []) {}
+  private readonly phases = new Map<string, { state: 'awaiting-start' | 'working'; changedAt: number }>();
+  private readonly dispatching = new Set<string>();
+
+  constructor(private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly worktrees: Worktree[] = [], private readonly history?: PromptHistoryService, private readonly queued?: QueuedPromptService) {}
+
   async submit(agentId: string, prompt: string, attachments: PromptAttachment[] = []): Promise<boolean> {
-    if ((!prompt && attachments.length === 0) || prompt.length > 32_000 || prompt.includes('\0') || attachments.length > maxPromptAttachments) return false;
+    if (!validPrompt(prompt, attachments)) return false;
     const first = await this.discovery.target(agentId);
     if (!first) return false;
+    const scope = this.historyScope(first.agent.workspace, agentId);
+    const waiting = await this.queued?.list(scope);
+    if (this.queued !== undefined && (agentAttentionState(first.agent) !== 'finished' || this.phases.has(scope) || (waiting?.length ?? 0) > 0)) return await this.queued.enqueue(scope, prompt, attachments) !== undefined;
+    return await this.send(agentId, prompt, attachments);
+  }
+
+  async listQueued(agentId: string): Promise<QueuedPromptSummary[] | undefined> {
+    const target = await this.discovery.target(agentId);
+    return target === undefined || this.queued === undefined ? undefined : await this.queued.list(this.historyScope(target.agent.workspace, agentId));
+  }
+
+  async updateQueued(agentId: string, promptId: string, text: string): Promise<QueuedPromptSummary | undefined> {
+    const target = await this.discovery.target(agentId);
+    return target === undefined || this.queued === undefined ? undefined : await this.queued.update(this.historyScope(target.agent.workspace, agentId), promptId, text);
+  }
+
+  async moveQueued(agentId: string, promptId: string, direction: 'earlier' | 'later'): Promise<QueuedPromptSummary[] | undefined> {
+    const target = await this.discovery.target(agentId);
+    return target === undefined || this.queued === undefined ? undefined : await this.queued.move(this.historyScope(target.agent.workspace, agentId), promptId, direction);
+  }
+
+  async removeQueued(agentId: string, promptId: string): Promise<boolean> {
+    const target = await this.discovery.target(agentId);
+    return target !== undefined && this.queued !== undefined && await this.queued.remove(this.historyScope(target.agent.workspace, agentId), promptId) !== undefined;
+  }
+
+  async observe(agent: Parameters<typeof agentAttentionState>[0]): Promise<void> {
+    const scope = this.historyScope(agent.workspace, agent.id);
+    const busy = agentAttentionState(agent) !== 'finished';
+    const phase = this.phases.get(scope);
+    if (busy) {
+      if (phase?.state === 'awaiting-start') this.phases.set(scope, { state: 'working', changedAt: Date.now() });
+      return;
+    }
+    if (phase?.state === 'working' || phase?.state === 'awaiting-start' && Date.now() - phase.changedAt >= 10_000) this.phases.delete(scope);
+    else if (phase !== undefined) return;
+    await this.dispatch(agent.id, scope);
+  }
+
+  private async dispatch(agentId: string, scope: string): Promise<void> {
+    if (this.dispatching.has(scope) || this.phases.has(scope)) return;
+    this.dispatching.add(scope);
+    try {
+      const prompt = await this.queued?.next(scope);
+      if (prompt !== undefined && await this.send(agentId, prompt.text, prompt.attachments ?? [])) {
+        await this.queued?.remove(scope, prompt.id);
+      }
+    } finally { this.dispatching.delete(scope); }
+  }
+
+  private async send(agentId: string, prompt: string, attachments: PromptAttachment[]): Promise<boolean> {
+    const first = await this.discovery.target(agentId);
+    if (!first) return false;
+    const scope = this.historyScope(first.agent.workspace, agentId);
     const workspace = this.workspaceFor(first.agent.workspace);
     const staged = await this.stageAttachments(workspace, attachments);
     if (staged === undefined) return false;
@@ -52,6 +101,10 @@ export class PromptService {
     // with Enter. Tab only completes shell input and leaves the command open.
     const submitted = shellMode ? await this.tmux.enter(second.socket, second.agent.paneId) : await this.tmux.queue(second.socket, second.agent.paneId);
     if (!submitted) await this.removeStaged(workspace, staged);
+    else {
+      if (this.queued !== undefined) this.phases.set(scope, { state: 'awaiting-start', changedAt: Date.now() });
+      await this.history?.record(scope, attachmentPrompt).catch(() => undefined);
+    }
     return submitted;
   }
 
@@ -59,13 +112,18 @@ export class PromptService {
     return this.worktrees.find(worktree => workspace === worktree.identity || workspace === worktree.hostPath)?.identity ?? workspace;
   }
 
+  private historyScope(workspace: string, agentId: string): string {
+    const worktree = this.worktrees.find(candidate => workspace === candidate.identity || workspace === candidate.hostPath);
+    return worktree === undefined ? `agent:${agentId}` : `worktree:${worktree.id}`;
+  }
+
   private async stageAttachments(workspace: string, attachments: PromptAttachment[]): Promise<string[] | undefined> {
     if (attachments.length === 0) return [];
     const files: Array<{ name: string; data: Buffer }> = [];
     let total = 0;
     for (const attachment of attachments) {
-      const name = attachmentName(attachment.name);
-      const data = attachmentData(attachment.data);
+      const name = promptAttachmentName(attachment.name);
+      const data = promptAttachmentData(attachment.data);
       if (!name || !data || files.some(file => file.name === name)) return undefined;
       total += data.length;
       if (total > maxPromptAttachmentBytes) return undefined;

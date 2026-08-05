@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { run } = vi.hoisted(() => ({ run: vi.fn() }));
 vi.mock('../src/tmux/command.js', () => ({ run }));
 
-import { TmuxAdapter } from '../src/tmux/adapter.js';
+import { latestCompletedAssistantMessage, TmuxAdapter } from '../src/tmux/adapter.js';
 
 describe('TmuxAdapter capture', () => {
   beforeEach(() => {
@@ -144,14 +144,54 @@ describe('TmuxAdapter capture', () => {
 
   it('captures only the requested visible history window and resizes the pane for the active client', async () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
-    run.mockResolvedValueOnce({ code: 0, stdout: 'old\ncurrent\n', stderr: '' }).mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+    run
+      .mockResolvedValueOnce({ code: 0, stdout: 'old\ncurrent\n', stderr: '' })
+      .mockResolvedValueOnce({ code: 0, stdout: '120\t36\t120\t36\n', stderr: '' });
 
     await expect(new TmuxAdapter().captureWindow(socket, '%1', 0, 2)).resolves.toEqual({ text: 'old\x1b[49m\ncurrent\x1b[49m', older: false });
     await expect(new TmuxAdapter().resize(socket, '%1', 120, 36)).resolves.toBe(true);
 
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'capture-pane', '-e', '-p', '-t', '%1', '-S', '-5000']);
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'resize-window', '-t', '%1', '-x', '120', '-y', '36']);
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'resize-pane', '-t', '%1', '-x', '120', '-y', '36']);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'display-message', '-p', '-t', '%1', '#{window_width}\t#{window_height}\t#{pane_width}\t#{pane_height}']);
+    expect(run).not.toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['resize-window']));
+  });
+
+  it('accounts for companion panes when matching the browser output height', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run
+      .mockResolvedValueOnce({ code: 0, stdout: '120\t45\t120\t36\n', stderr: '' })
+      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ code: 0, stdout: '160\t59\t160\t50\n', stderr: '' });
+
+    await expect(new TmuxAdapter().resize(socket, '%1', 160, 50)).resolves.toBe(true);
+
+    expect(run.mock.calls).toEqual([
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'display-message', '-p', '-t', '%1', '#{window_width}\t#{window_height}\t#{pane_width}\t#{pane_height}']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'resize-window', '-t', '%1', '-x', '160', '-y', '59']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'resize-pane', '-t', '%1', '-x', '160', '-y', '50']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'display-message', '-p', '-t', '%1', '#{window_width}\t#{window_height}\t#{pane_width}\t#{pane_height}']]
+    ]);
+  });
+
+  it('corrects a successful tmux resize that was still clamped by a tiled layout', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run
+      .mockResolvedValueOnce({ code: 0, stdout: '120\t45\t120\t36\n', stderr: '' })
+      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ code: 0, stdout: '160\t59\t160\t48\n', stderr: '' })
+      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ code: 0, stdout: '160\t61\t160\t50\n', stderr: '' });
+
+    await expect(new TmuxAdapter().resize(socket, '%1', 160, 50)).resolves.toBe(true);
+
+    expect(run.mock.calls.slice(4)).toEqual([
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'resize-window', '-t', '%1', '-x', '160', '-y', '61']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'resize-pane', '-t', '%1', '-x', '160', '-y', '50']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'display-message', '-p', '-t', '%1', '#{window_width}\t#{window_height}\t#{pane_width}\t#{pane_height}']]
+    ]);
   });
 
   it('moves unused rows above a short capture so the frame stays bottom aligned', async () => {
@@ -236,5 +276,39 @@ describe('TmuxAdapter prompt history', () => {
     run.mockResolvedValueOnce({ code: 0, stdout: '› summarize this repository\n• Working\noutput that is no longer visible\nlatest output\n', stderr: '' });
 
     await expect(new TmuxAdapter().captureWindow(socket, '%1', 0, 2)).resolves.toEqual({ text: 'output that is no longer visible\x1b[49m\nlatest output\x1b[49m', older: true, lastPrompt: 'summarize this repository' });
+  });
+
+  it('includes a completed assistant response only when it is longer than the viewport', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    const response = ['• Summary', '', '  - First detail', '  - Second detail', '  - Third detail', '─ Worked for 5s', '', '› Implement {feature}', ''];
+    run.mockResolvedValueOnce({ code: 0, stdout: response.join('\n'), stderr: '' });
+
+    await expect(new TmuxAdapter().captureWindow(socket, '%1', 0, 3)).resolves.toMatchObject({
+      latestAssistantMessage: 'Summary\n\n- First detail\n- Second detail\n- Third detail'
+    });
+  });
+
+  it('turns green inline highlights into Markdown code without formatting links', () => {
+    const history = [
+      '• Run \x1b[38;5;6mpnpm test\x1b[39m, then inspect \x1b[36mconfig.json\x1b[39m.',
+      '  Open \x1b[4m\x1b[38;5;6mhttps://example.com/results\x1b[0m for the report.',
+      '─ Worked for 3s',
+      ''
+    ].join('\n');
+
+    expect(latestCompletedAssistantMessage(history)?.text).toBe('Run `pnpm test`, then inspect `config.json`.\nOpen https://example.com/results for the report.');
+  });
+
+  it('does not include a completed assistant response that fits in the viewport', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValueOnce({ code: 0, stdout: ['• Summary', '  One detail', '  Another detail', '─ Worked for 2s', ''].join('\n'), stderr: '' });
+
+    await expect(new TmuxAdapter().captureWindow(socket, '%1', 0, 3)).resolves.not.toHaveProperty('latestAssistantMessage');
+  });
+
+  it('does not report the previous completion after a newer response starts', () => {
+    const history = ['• Previous response', '─ Worked for 2s', '', '› New request', '', '• Working on it', ''].join('\n');
+
+    expect(latestCompletedAssistantMessage(history)).toBeUndefined();
   });
 });

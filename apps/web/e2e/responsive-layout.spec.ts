@@ -14,7 +14,7 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
           { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/owen', displayLabel: '🥔 Owen', title: 'Ready' },
           { id: 'agent-3', sessionId: 'socket:$3', workspace: '/worktrees/dave', displayLabel: '🥔 Dave', title: 'Ready' },
           { id: 'agent-4', sessionId: 'socket:$4', workspace: '/worktrees/eric', displayLabel: '🥔 Eric', title: 'Ready' },
-          { id: 'agent-5', sessionId: 'socket:$5', workspace: '/worktrees/remote-agents', displayLabel: '📱 Remote Agents', title: 'Ready', projectUrl: 'https://project.example.com', stack: { actions: ['start', 'build'], tunnel: true }, pullRequest: { number: 42, title: 'Move the worktree tabs', status: 'open', url: 'https://github.com/octo/repo/pull/42' } }
+          { id: 'agent-5', sessionId: 'socket:$5', workspace: '/worktrees/remote-agents', branch: 'feature/output-git-summary', gitStatus: { files: 3, staged: 1, unstaged: 2, untracked: 1, conflicted: 0 }, displayLabel: '📱 Remote Agents', title: 'Ready', projectUrl: 'https://project.example.com', stack: { actions: ['start', 'build'], tunnel: true }, pullRequest: { number: 42, title: 'Move the worktree tabs', status: 'open', url: 'https://github.com/octo/repo/pull/42' } }
         ],
         worktrees: []
       }
@@ -31,12 +31,12 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   await activeTab.click();
   await expect(activeTab).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByLabel('Live log')).toBeVisible();
-  await page.locator('.log-topbar').evaluate(element => {
-    const prompt = document.createElement('span');
-    prompt.className = 'last-prompt';
-    prompt.textContent = `Last prompt: ${'A deliberately long prompt that must remain on one line. '.repeat(8)}`;
-    element.prepend(prompt);
-  });
+  const gitStatus = page.getByLabel('Git status: feature/output-git-summary; 3 changes (1 staged file, 2 unstaged files, 1 untracked file)');
+  await expect(gitStatus).toBeVisible();
+  await gitStatus.click();
+  await expect(page.getByRole('region', { name: 'Changed files' })).toContainText('Changed-file details unavailable');
+  await page.getByRole('button', { name: 'Collapse git status' }).click();
+  await expect(page.locator('.log-status i')).toHaveCount(0);
 
   const layout = await page.evaluate(() => {
     const bounds = (selector: string) => {
@@ -54,10 +54,13 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
         return { top: style.borderTopWidth, bottom: style.borderBottomWidth };
       })(),
       outputFooter: bounds('.log-topbar'),
-      lastPrompt: bounds('.last-prompt'),
-      lastPromptStyle: (() => {
-        const style = getComputedStyle(document.querySelector<HTMLElement>('.last-prompt')!);
-        return { lineHeight: Number.parseFloat(style.lineHeight), whiteSpace: style.whiteSpace };
+      gitSummary: bounds('.git-status-summary'),
+      gitBranch: bounds('.git-branch'),
+      gitBranchFlexGrow: getComputedStyle(document.querySelector<HTMLElement>('.git-branch')!).flexGrow,
+      logStatus: bounds('.log-status'),
+      logStatusStyle: (() => {
+        const style = getComputedStyle(document.querySelector<HTMLElement>('.log-status')!);
+        return { position: style.position, boxShadow: style.boxShadow, backgroundColor: style.backgroundColor, color: style.color, backdropFilter: style.backdropFilter };
       })(),
       pullRequest: bounds('.pull-request-card'),
       tabs: bounds('.tabs'),
@@ -77,8 +80,16 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   expect(Math.abs(layout.output.width - layout.viewportWidth)).toBeLessThanOrEqual(1);
   expect(layout.outputBorder).toEqual({ top: '0px', bottom: '1px' });
   expect(Math.abs(layout.outputFooter.top - layout.output.bottom)).toBeLessThanOrEqual(1);
-  expect(layout.lastPrompt.height).toBeLessThanOrEqual(layout.lastPromptStyle.lineHeight + 1);
-  expect(layout.lastPromptStyle.whiteSpace).toBe('nowrap');
+  expect(layout.gitBranchFlexGrow).toBe('1');
+  expect(layout.gitSummary.width).toBeGreaterThan(layout.gitBranch.width);
+  expect(layout.outputFooter.right - layout.gitSummary.right).toBeLessThanOrEqual(8);
+  expect(layout.logStatusStyle.position).toBe('absolute');
+  expect(layout.logStatusStyle.boxShadow).not.toBe('none');
+  expect(layout.logStatusStyle.backgroundColor).toBe('rgb(249, 226, 175)');
+  expect(layout.logStatusStyle.color).toBe('rgb(17, 17, 27)');
+  expect(layout.logStatusStyle.backdropFilter).toBe('none');
+  expect(layout.logStatus.top).toBeGreaterThanOrEqual(layout.output.top);
+  expect(layout.output.right - layout.logStatus.right).toBeLessThanOrEqual(10);
   expect(Math.abs(layout.tabs.top - layout.outputFooter.bottom)).toBeLessThanOrEqual(1);
   await expect(page.locator('.log > .log-topbar')).toHaveCount(0);
   await expect(page.locator('.log + .log-topbar')).toHaveCount(1);

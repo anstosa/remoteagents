@@ -52,6 +52,14 @@ the working copy is clean and fully pushed. For example:
 { "newTask": "detach && new {taskId}" }
 ```
 
+Every agent flyout includes a prompt action that defaults to **Commit/Push**
+and queues `review, commit, and push`. Override its button label and queued
+prompt per worktree with `push`:
+
+```json
+{ "push": { "label": "Finish and PR", "prompt": "$finish" } }
+```
+
 The legacy `launch` template remains supported for existing configurations. A
 worktree must define either `command` or `launch` (or inherit the top-level
 `launch`); it cannot define both.

@@ -15,6 +15,7 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
           sessionId: 'socket:$1',
           workspace: '/worktrees/cora',
           title: 'Ready',
+          push: { label: 'Finish and PR', prompt: '$finish' },
           newTaskConfigured: true
         }],
         worktrees: []
@@ -65,14 +66,15 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
 
   const menu = page.locator('.more-menu');
   await expect(page.locator('.prompt-actions > .swap-agent')).toHaveCount(0);
-  const loadingPlaceholder = menu.getByRole('status', { name: 'Loading pull requests' });
-  const loadingSpinner = loadingPlaceholder.locator('.spinner');
+  const pullRequestHeading = menu.getByRole('button', { name: 'Pull requests', exact: true });
+  const loadingPlaceholder = menu.getByRole('status', { name: 'Loading pull requests…', exact: true });
+  const loadingSpinner = pullRequestHeading.locator('.spinner');
   const attachMenuItem = menu.getByRole('button', { name: 'Attach files', exact: true });
   const menuIcon = attachMenuItem.locator('.more-menu-icon');
   await expect(loadingPlaceholder).toBeVisible();
-  await expect(loadingPlaceholder).toBeDisabled();
+  await expect(pullRequestHeading).toBeDisabled();
   const swapItem = menu.getByRole('button', { name: 'Swap to terminal', exact: true });
-  const [pullRequestHeadingBox, swapBox, stableItemBefore] = await Promise.all([loadingPlaceholder.boundingBox(), swapItem.boundingBox(), attachMenuItem.boundingBox()]);
+  const [pullRequestHeadingBox, swapBox, stableItemBefore] = await Promise.all([pullRequestHeading.boundingBox(), swapItem.boundingBox(), attachMenuItem.boundingBox()]);
   expect(pullRequestHeadingBox).not.toBeNull();
   expect(swapBox).not.toBeNull();
   expect(stableItemBefore).not.toBeNull();
@@ -82,7 +84,7 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
     return { width: style.width, height: style.height };
   })));
   expect(spinnerSize).toEqual(iconSize);
-  const [loadingLayout, menuItemLayout] = await Promise.all([loadingPlaceholder, attachMenuItem].map(async item => await item.evaluate(element => {
+  const [loadingLayout, menuItemLayout] = await Promise.all([pullRequestHeading, attachMenuItem].map(async item => await item.evaluate(element => {
     const style = getComputedStyle(element);
     return {
       tagName: element.tagName,
@@ -96,7 +98,7 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
     };
   })));
   expect(loadingLayout).toEqual(menuItemLayout);
-  for (const label of ['Swap to terminal', 'Review', 'Attach files']) {
+  for (const label of ['Swap to terminal', 'Review', 'Finish and PR', 'Attach files']) {
     const item = menu.getByRole('button', { name: label, exact: true });
     await expect(item).toBeVisible();
     await expect(item.locator('.more-menu-icon')).toHaveCount(1);
@@ -150,7 +152,7 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
   await moreOptions.click();
   await expect(menu).toBeHidden();
   await moreOptions.click();
-  await expect(menu.getByRole('status', { name: 'Loading pull requests' })).toBeVisible();
+  await expect(menu.getByRole('status', { name: 'Loading pull requests…', exact: true })).toBeVisible();
   await expect(pullRequest).toBeVisible();
   await expect(pullRequest).toBeDisabled();
   await expect(pullRequest).toBeEnabled();
@@ -174,6 +176,42 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
 
   await expect(menu).toBeHidden();
   await expect(page.getByLabel('Selected attachments')).toContainText('notes.txt');
+});
+
+test('queues the configured push prompt and falls back to the default action', async ({ page }) => {
+  let push: { label: string; prompt: string } | undefined = { label: 'Finish and PR', prompt: '$finish' };
+  const queued: string[] = [];
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: queued.length + 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready', ...(push === undefined ? {} : { push }) }], worktrees: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
+    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [] } });
+    if (url.pathname === '/api/agents/agent-1/prompt' && request.method() === 'POST') {
+      const body = request.postDataJSON() as { prompt: string; attachments: unknown[] };
+      expect(body.attachments).toEqual([]);
+      queued.push(body.prompt);
+      return route.fulfill({ status: 202, json: { ok: true } });
+    }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'More options' }).click();
+  const custom = page.locator('.more-menu').getByRole('button', { name: 'Finish and PR', exact: true });
+  await expect(custom.locator('.more-menu-icon')).toBeVisible();
+  await custom.click();
+  await expect.poll(() => queued).toEqual(['$finish']);
+  await expect(page.locator('.more-menu')).toBeHidden();
+
+  push = undefined;
+  await page.reload();
+  await page.getByRole('button', { name: 'More options' }).click();
+  await page.locator('.more-menu').getByRole('button', { name: 'Commit/Push', exact: true }).click();
+  await expect.poll(() => queued).toEqual(['$finish', 'review, commit, and push']);
 });
 
 test('shows every pull request target while keeping external and worktree actions available', async ({ page }) => {
@@ -233,7 +271,7 @@ test('shows every pull request target while keeping external and worktree action
   await expect(menu).toBeHidden();
 });
 
-test('formats the empty pull request state as a standard flyout item', async ({ page }) => {
+test('formats the empty pull request state like the New Task description', async ({ page }) => {
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -249,8 +287,8 @@ test('formats the empty pull request state as a standard flyout item', async ({ 
   await page.goto('/');
   await page.getByRole('button', { name: 'More options' }).click();
   const menu = page.locator('.more-menu');
-  const empty = menu.getByRole('status', { name: 'No open pull requests' });
-  const standardItem = menu.getByRole('button', { name: 'Attach files' });
+  const empty = menu.getByRole('status', { name: 'No open pull requests.', exact: true });
+  const newTaskDescription = menu.locator('.new-task-option .more-menu-reason');
   await expect(menu.getByRole('link', { name: 'GitHub Actions' })).toHaveCount(0);
   const unavailableActions = menu.getByRole('button', { name: 'GitHub Actions' });
   const unavailableNewTask = menu.getByRole('button', { name: 'New Task', exact: true });
@@ -259,19 +297,16 @@ test('formats the empty pull request state as a standard flyout item', async ({ 
   await expect(unavailableNewTask).toBeVisible();
   await expect(unavailableNewTask).toBeDisabled();
   await expect(empty).toBeVisible();
-  await expect(empty).toBeDisabled();
-  const [emptyLayout, standardLayout] = await Promise.all([empty, standardItem].map(async item => await item.evaluate(element => {
+  const [emptyLayout, descriptionLayout] = await Promise.all([empty, newTaskDescription].map(async item => await item.evaluate(element => {
     const style = getComputedStyle(element);
     return {
-      tagName: element.tagName,
       display: style.display,
-      alignItems: style.alignItems,
-      justifyContent: style.justifyContent,
-      gap: style.gap,
+      color: style.color,
       padding: style.padding,
       font: style.font,
-      letterSpacing: style.letterSpacing
+      letterSpacing: style.letterSpacing,
+      whiteSpace: style.whiteSpace
     };
   })));
-  expect(emptyLayout).toEqual(standardLayout);
+  expect(emptyLayout).toEqual(descriptionLayout);
 });

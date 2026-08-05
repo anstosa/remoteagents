@@ -1,8 +1,8 @@
 import { expect, test } from '@playwright/test';
 
 test('saves prompts per agent and consumes a saved prompt back into the composer', async ({ page }) => {
-  const longSavedPrompt = 'Review the latest changes and summarize every user-facing risk, deployment concern, compatibility issue, and follow-up action before the release.';
-  let saved = [{ id: 'saved-prompt-001', text: longSavedPrompt }];
+  const savedPromptText = 'Review the release risks.';
+  let saved = [{ id: 'saved-prompt-001', text: savedPromptText }];
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -48,15 +48,17 @@ test('saves prompts per agent and consumes a saved prompt back into the composer
   await expect(savedToggle).toBeEnabled();
   await savedToggle.click();
   const savedPanel = page.locator('.saved-prompts-panel');
-  const savedRow = page.getByRole('button', { name: longSavedPrompt, exact: true });
+  const savedRow = page.getByRole('button', { name: savedPromptText, exact: true });
   await expect(savedPanel).toBeVisible();
   await expect(savedPanel).toHaveClass(/more-menu/u);
+  await expect(savedPanel.locator('header strong')).toHaveText('Saved prompts');
+  await expect(savedPanel.locator('.saved-prompt-position')).toHaveCount(0);
   await expect(savedPanel.getByText('Select one to move it back into the prompt.')).toHaveCount(0);
-  const [panelBounds, rowBounds] = await Promise.all([savedPanel.boundingBox(), savedRow.boundingBox()]);
+  const [panelBounds, rowBounds, viewportWidth] = await Promise.all([savedPanel.boundingBox(), savedRow.boundingBox(), page.evaluate(() => innerWidth)]);
   expect(panelBounds).not.toBeNull();
   expect(rowBounds).not.toBeNull();
-  expect(panelBounds!.width).toBeGreaterThan(24 * 16);
-  expect(panelBounds!.width).toBeLessThanOrEqual(1280);
+  expect(panelBounds!.width).toBeGreaterThanOrEqual(viewportWidth - 17);
+  expect(panelBounds!.width).toBeLessThanOrEqual(viewportWidth - 15);
   expect(rowBounds!.height).toBeLessThanOrEqual(56);
   expect(await savedRow.evaluate(element => {
     const style = getComputedStyle(element);
@@ -70,13 +72,13 @@ test('saves prompts per agent and consumes a saved prompt back into the composer
     background: 'rgba(0, 0, 0, 0)',
     borderWidth: '0px',
     boxShadow: 'none',
-    paddingBlock: '10.4px 10.4px'
+    paddingBlock: '11.2px 11.2px'
   });
   await savedRow.hover();
   await expect(savedRow).toHaveCSS('background-color', 'rgb(49, 50, 68)');
   await savedRow.click();
 
-  await expect(prompt).toHaveValue(longSavedPrompt);
+  await expect(prompt).toHaveValue(savedPromptText);
   await expect(saveGroup.locator('.saved-prompts-toggle')).toHaveCount(0);
   expect(await save.evaluate(element => {
     const style = getComputedStyle(element);
@@ -84,8 +86,8 @@ test('saves prompts per agent and consumes a saved prompt back into the composer
   })).toBe(true);
 
   await prompt.fill('Summarize the release risks.');
-  await expect(saveGroup.locator('+ .queue')).toHaveAttribute('aria-label', 'Queue');
-  await expect(saveGroup.locator('+ .queue')).toHaveText('');
+  await expect(saveGroup.locator('+ .queue-prompt-group .queue')).toHaveAttribute('aria-label', 'Queue');
+  await expect(saveGroup.locator('+ .queue-prompt-group .queue')).toHaveText('');
   await prompt.press('Control+s');
 
   const confirmed = saveGroup.getByRole('button', { name: 'Saved', exact: true });
@@ -126,7 +128,7 @@ test('closes the saved prompts flyout after selecting one of several drafts', as
   await expect(page.getByRole('textbox', { name: 'Prompt' })).toHaveValue('First saved draft');
 });
 
-test('queues a saved draft from its purple send button before deleting it', async ({ page }) => {
+test('queues a saved draft from its purple send button through the saved-prompt endpoint', async ({ page }) => {
   const savedDraft = { id: 'saved-prompt-001', text: 'Queue this saved draft' };
   let saved = [savedDraft];
   const calls: string[] = [];
@@ -138,14 +140,10 @@ test('queues a saved draft from its purple send button before deleting it', asyn
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: saved } });
-    if (url.pathname === '/api/agents/agent-1/prompt' && request.method() === 'POST') {
-      calls.push(`queue:${(request.postDataJSON() as { prompt: string }).prompt}`);
-      return route.fulfill({ status: 204 });
-    }
-    if (url.pathname === `/api/agents/agent-1/saved-prompts/${savedDraft.id}` && request.method() === 'DELETE') {
-      calls.push(`delete:${savedDraft.id}`);
+    if (url.pathname === `/api/agents/agent-1/saved-prompts/${savedDraft.id}/queue` && request.method() === 'POST') {
+      calls.push(`queue:${savedDraft.id}`);
       saved = [];
-      return route.fulfill({ json: savedDraft });
+      return route.fulfill({ status: 204 });
     }
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
@@ -166,8 +164,114 @@ test('queues a saved draft from its purple send button before deleting it', asyn
 
   await send.click();
 
-  await expect.poll(() => calls).toEqual([`queue:${savedDraft.text}`, `delete:${savedDraft.id}`]);
+  await expect.poll(() => calls).toEqual([`queue:${savedDraft.id}`]);
   await expect(prompt).toHaveValue('Keep this composer text');
   await expect(page.getByRole('button', { name: 'Saved prompts (1)' })).toHaveCount(0);
   expect(saved).toEqual([]);
+});
+
+test('deletes a saved draft from its red trash button without changing the composer', async ({ page }) => {
+  const savedDraft = { id: 'saved-prompt-001', text: 'Delete this saved draft' };
+  let saved = [savedDraft];
+  const calls: string[] = [];
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready' }], worktrees: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: saved } });
+    if (url.pathname === `/api/agents/agent-1/saved-prompts/${savedDraft.id}` && request.method() === 'DELETE') {
+      calls.push(`delete:${savedDraft.id}`);
+      saved = [];
+      return route.fulfill({ json: savedDraft });
+    }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  const prompt = page.getByRole('textbox', { name: 'Prompt' });
+  await prompt.fill('Keep this composer text');
+  await page.getByRole('button', { name: 'Saved prompts (1)' }).click();
+  const panel = page.locator('.saved-prompts-panel');
+  const restore = panel.getByRole('button', { name: savedDraft.text, exact: true });
+  const send = panel.getByRole('button', { name: `Queue saved draft: ${savedDraft.text}` });
+  const remove = panel.getByRole('button', { name: `Delete saved draft: ${savedDraft.text}` });
+  await expect(remove.locator('svg')).toHaveCount(1);
+  await expect(remove).toHaveCSS('color', 'rgb(243, 139, 168)');
+  const [restoreBounds, sendBounds, deleteBounds] = await Promise.all([restore.boundingBox(), send.boundingBox(), remove.boundingBox()]);
+  expect(restoreBounds).not.toBeNull();
+  expect(sendBounds).not.toBeNull();
+  expect(deleteBounds).not.toBeNull();
+  expect(sendBounds!.x).toBeGreaterThanOrEqual(restoreBounds!.x + restoreBounds!.width - 1);
+  expect(deleteBounds!.x).toBeGreaterThanOrEqual(sendBounds!.x + sendBounds!.width - 1);
+
+  await remove.click();
+
+  await expect.poll(() => calls).toEqual([`delete:${savedDraft.id}`]);
+  await expect(prompt).toHaveValue('Keep this composer text');
+  await expect(panel).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Saved prompts (1)' })).toHaveCount(0);
+  expect(saved).toEqual([]);
+});
+
+test('saves attachment bytes, shows their names, and restores them into the composer', async ({ page }) => {
+  const attachmentData = Buffer.from('saved context').toString('base64');
+  let saved: Array<{ id: string; text: string; attachments: Array<{ name: string; size: number }> }> = [];
+  let savedRequest: unknown;
+  let queuedRequest: unknown;
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready' }], worktrees: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: saved } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'POST') {
+      savedRequest = request.postDataJSON();
+      const created = { id: 'saved-prompt-attachment-001', text: 'Keep this context', attachments: [{ name: 'context.txt', size: 13 }] };
+      saved = [created];
+      return route.fulfill({ status: 201, json: created });
+    }
+    if (url.pathname === '/api/agents/agent-1/saved-prompts/saved-prompt-attachment-001' && request.method() === 'DELETE') {
+      saved = [];
+      return route.fulfill({ json: { id: 'saved-prompt-attachment-001', text: 'Keep this context', attachments: [{ name: 'context.txt', data: attachmentData }] } });
+    }
+    if (url.pathname === '/api/agents/agent-1/prompt' && request.method() === 'POST') {
+      queuedRequest = request.postDataJSON();
+      return route.fulfill({ status: 204 });
+    }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  const prompt = page.getByRole('textbox', { name: 'Prompt' });
+  await prompt.fill('Keep this context');
+  const defaultAllowed = await prompt.evaluate(element => {
+    const clipboard = new DataTransfer();
+    clipboard.items.add(new File(['saved context'], 'context.txt', { type: 'text/plain' }));
+    return element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: clipboard }));
+  });
+  expect(defaultAllowed).toBe(true);
+  const fileChooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'More' }).click();
+  await page.getByRole('button', { name: 'Attach files', exact: true }).click();
+  await (await fileChooser).setFiles({ name: 'context.txt', mimeType: 'text/plain', buffer: Buffer.from('saved context') });
+  await expect(page.getByLabel('Selected attachments')).toContainText('context.txt');
+
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect.poll(() => savedRequest).toEqual({ prompt: 'Keep this context', attachments: [{ name: 'context.txt', data: attachmentData }] });
+  await expect(prompt).toHaveValue('');
+  await expect(page.getByLabel('Selected attachments')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Saved prompts (1)' }).click();
+  await expect(page.locator('.saved-prompt-copy small')).toHaveText('context.txt');
+  await page.locator('.saved-prompt-restore').click();
+  await expect(prompt).toHaveValue('Keep this context');
+  await expect(page.getByLabel('Selected attachments')).toContainText('context.txt');
+
+  await page.getByRole('button', { name: 'Queue' }).click();
+  await expect.poll(() => queuedRequest).toEqual({ prompt: 'Keep this context', attachments: [{ name: 'context.txt', data: attachmentData }] });
 });

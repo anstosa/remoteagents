@@ -1,0 +1,114 @@
+import { expect, test } from '@playwright/test';
+
+test('offers each long latest assistant response once and saves it as an open note', async ({ page }) => {
+  const notes: Array<{ id: string; text: string }> = [];
+  const savedTexts: string[] = [];
+  let created = 0;
+  await page.addInitScript(() => {
+    const sockets: MockWebSocket[] = [];
+    class MockWebSocket {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+      readonly url: string;
+      readyState = MockWebSocket.CONNECTING;
+      onopen: ((event: Event) => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      constructor(url: string | URL) {
+        this.url = String(url);
+        sockets.push(this);
+        window.setTimeout(() => {
+          if (this.readyState !== MockWebSocket.CONNECTING) return;
+          this.readyState = MockWebSocket.OPEN;
+          this.onopen?.(new Event('open'));
+        });
+      }
+      send() {}
+      close() {
+        if (this.readyState === MockWebSocket.CLOSED) return;
+        this.readyState = MockWebSocket.CLOSED;
+        this.onclose?.(new CloseEvent('close'));
+      }
+    }
+    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
+    Object.defineProperty(window, '__emitLogFrame', {
+      value: (frame: { text: string; latestAssistantMessage?: string }) => sockets.find(socket => socket.url.includes('/ws/logs/'))?.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ v: 1, type: 'reset', ...frame }) }))
+    });
+  });
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready' }], worktrees: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
+    if (url.pathname === '/api/worktrees/cora/notes' && request.method() === 'GET') return route.fulfill({ json: { notes } });
+    if (url.pathname === '/api/worktrees/cora/notes' && request.method() === 'POST') {
+      const note = { id: `note-identifier-00${++created}`, text: '' };
+      notes.unshift(note);
+      return route.fulfill({ status: 201, json: note });
+    }
+    const noteMatch = /^\/api\/worktrees\/cora\/notes\/([^/]+)$/u.exec(url.pathname);
+    if (noteMatch && request.method() === 'PUT') {
+      const note = notes.find(candidate => candidate.id === noteMatch[1])!;
+      note.text = (request.postDataJSON() as { text: string }).text;
+      savedTexts.push(note.text);
+      return route.fulfill({ json: note });
+    }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  const notesButton = page.getByRole('button', { name: 'Notes' });
+  await expect(notesButton).toBeEnabled();
+  const emit = async (text: string, latestAssistantMessage?: string) => await page.evaluate(([nextText, message]) => (
+    window as unknown as { __emitLogFrame: (frame: { text: string; latestAssistantMessage?: string }) => void }
+  ).__emitLogFrame({ text: nextText, ...(message === undefined ? {} : { latestAssistantMessage: message }) }), [text, latestAssistantMessage] as const);
+
+  await emit('Short response');
+  await expect(notesButton).not.toHaveClass(/latest-response-available/u);
+
+  const firstResponse = ['Summary', '', '- Run `pnpm test` before saving', ...Array.from({ length: 24 }, (_, index) => `- Detail ${index + 1}`)].join('\n');
+  await emit('Long response complete', firstResponse);
+  await expect(notesButton).toHaveClass(/latest-response-available/u);
+  const dot = await notesButton.evaluate(element => {
+    const style = getComputedStyle(element, '::before');
+    return { content: style.content, left: Number.parseFloat(style.left), top: Number.parseFloat(style.top), width: Number.parseFloat(style.width) };
+  });
+  expect(dot.content).not.toBe('none');
+  expect(dot.left).toBeLessThan(8);
+  expect(dot.top).toBeLessThan(8);
+  expect(dot.width).toBeGreaterThan(0);
+
+  await notesButton.click();
+  const saveLatest = page.getByRole('button', { name: 'Save latest response' });
+  await expect(saveLatest).toBeVisible();
+  await saveLatest.click();
+  const preview = page.getByLabel('Note preview');
+  await expect(preview).toContainText('Summary');
+  await expect(preview).toContainText('Detail 1');
+  await expect(preview.locator('code')).toHaveText('pnpm test');
+  await expect(page.getByRole('textbox', { name: 'Note content' })).toHaveCount(0);
+  await preview.click();
+  const editor = page.getByRole('textbox', { name: 'Note content' });
+  await expect(editor).toHaveValue(firstResponse);
+  await expect(notesButton).not.toHaveClass(/latest-response-available/u);
+  await expect.poll(() => savedTexts).toContain(firstResponse);
+
+  await page.getByRole('button', { name: 'Close note' }).click();
+  await emit('Same completed response refreshed', firstResponse);
+  await expect(notesButton).not.toHaveClass(/latest-response-available/u);
+  await notesButton.click();
+  await expect(page.getByRole('button', { name: 'Save latest response' })).toHaveCount(0);
+  await notesButton.click();
+
+  const secondResponse = `${firstResponse}\n- New completion`;
+  await emit('A different long response complete', secondResponse);
+  await expect(notesButton).toHaveClass(/latest-response-available/u);
+  await notesButton.click();
+  await expect(page.getByRole('button', { name: 'Save latest response' })).toBeVisible();
+});

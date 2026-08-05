@@ -25,7 +25,6 @@ test('uses consistent prompt control styles while preserving destructive and que
       <div class="prompt-actions">
         <button class="swap-agent icon-button" aria-label="Swap"></button>
         <button class="more icon-button" aria-label="More"></button>
-        <button class="voice icon-button" aria-label="Voice"></button>
         <span class="project-open-group has-stack-actions">
           <a class="project-open status-healthy" href="#"><i></i>Open</a>
           <button class="project-stack-toggle icon-button" aria-label="Stack"></button>
@@ -40,7 +39,7 @@ test('uses consistent prompt control styles while preserving destructive and que
     </section>
   `);
 
-  const neutral = ['Swap', 'More', 'Voice', 'Open', 'Stack'].map(name => page.getByRole(name === 'Open' ? 'link' : 'button', { name }));
+  const neutral = ['Swap', 'More', 'Open', 'Stack'].map(name => page.getByRole(name === 'Open' ? 'link' : 'button', { name }));
   await expect.poll(async () => {
     const styles = await Promise.all(neutral.map(readStyle));
     return [

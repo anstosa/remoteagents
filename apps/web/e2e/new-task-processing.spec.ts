@@ -36,14 +36,18 @@ test('keeps a new-task processing indicator visible until the replacement agent 
 
   const processing = page.getByRole('status', { name: 'Starting new task' });
   await expect(processing).toBeVisible();
+  await expect(processing).toContainText('preparing a fresh agent');
+  await expect(page.getByRole('status').filter({ hasText: 'Starting a new task' })).toContainText('You can keep using other tabs');
+  await expect(page.getByRole('tab', { name: 'Cora — Starting new task' })).toHaveAttribute('aria-busy', 'true');
 
   oldAgentGone = true;
   const requestsBeforeRemoval = dashboardRequests;
   await expect.poll(() => dashboardRequests, { timeout: 10_000 }).toBeGreaterThan(requestsBeforeRemoval);
-  await expect(page.getByRole('tab', { name: 'Cora — Agent closed' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Cora — Starting new task' })).toBeVisible();
   await expect(processing).toBeVisible();
 
   finishNewTask();
   await expect(page.getByRole('tab', { name: 'Cora — Prompt done' })).toHaveAttribute('aria-selected', 'true', { timeout: 10_000 });
   await expect(processing).toHaveCount(0);
+  await expect(page.getByRole('status').filter({ hasText: 'New task is ready' })).toContainText('ready for a fresh prompt');
 });

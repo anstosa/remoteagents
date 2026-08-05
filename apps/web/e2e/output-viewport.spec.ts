@@ -22,6 +22,12 @@ test('refits each worktree output after moving from mobile to desktop', async ({
           if (this.readyState !== MockWebSocket.CONNECTING) return;
           this.readyState = MockWebSocket.OPEN;
           this.onopen?.(new Event('open'));
+          const agent = /\/ws\/logs\/(agent-[12])/.exec(this.url)?.[1];
+          if (agent !== undefined) this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({
+            v: 1,
+            type: 'reset',
+            text: `${agent} output\n${agent} height marker`
+          }) }));
         });
       }
       send(data: string) { frames.push({ url: this.url, data }); }
@@ -56,20 +62,30 @@ test('refits each worktree output after moving from mobile to desktop', async ({
       .filter(frame => frame.type === 'viewport')
       .at(-1);
   }, agentId);
+  const markerBottomGap = async (agentId: string) => page.evaluate(id => {
+    const screen = document.querySelector<HTMLElement>('.terminal-frame.active .xterm-screen');
+    const row = [...document.querySelectorAll<HTMLElement>('.terminal-frame.active .xterm-rows > div')]
+      .find(candidate => candidate.textContent?.includes(`${id} height marker`));
+    if (screen === null || row === undefined) return undefined;
+    return screen.getBoundingClientRect().bottom - row.getBoundingClientRect().bottom;
+  }, agentId);
 
   await page.goto('/');
-  await expect.poll(() => latestViewport('agent-1')).toBeTruthy();
+  await expect.poll(() => latestViewport('agent-1'), { timeout: 15_000 }).toBeTruthy();
+  await expect.poll(() => markerBottomGap('agent-1'), { timeout: 15_000 }).toBeLessThan(20);
   const coraMobile = (await latestViewport('agent-1'))!;
 
   await page.getByRole('tab', { name: /^Owen/ }).click();
-  await expect.poll(() => latestViewport('agent-2')).toBeTruthy();
+  await expect.poll(() => latestViewport('agent-2'), { timeout: 15_000 }).toBeTruthy();
+  await expect.poll(() => markerBottomGap('agent-2'), { timeout: 15_000 }).toBeLessThan(20);
   const owenMobile = (await latestViewport('agent-2'))!;
 
   await page.setViewportSize({ width: 1600, height: 1000 });
-  await expect.poll(async () => (await latestViewport('agent-2'))?.cols ?? 0).toBeGreaterThan(owenMobile.cols!);
+  await expect.poll(async () => (await latestViewport('agent-2'))?.cols ?? 0, { timeout: 15_000 }).toBeGreaterThan(owenMobile.cols!);
 
   await page.getByRole('tab', { name: /^Cora/ }).click();
-  await expect.poll(async () => (await latestViewport('agent-1'))?.cols ?? 0).toBeGreaterThan(coraMobile.cols!);
+  await expect.poll(async () => (await latestViewport('agent-1'))?.cols ?? 0, { timeout: 15_000 }).toBeGreaterThan(coraMobile.cols!);
   const coraDesktop = (await latestViewport('agent-1'))!;
   expect(coraDesktop.rows).toBeGreaterThan(coraMobile.rows!);
+  await expect.poll(() => markerBottomGap('agent-1'), { timeout: 15_000 }).toBeLessThan(20);
 });

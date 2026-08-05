@@ -6,7 +6,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "tsc --noEmit",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "screenshots:readme": "node scripts/capture-readme-screenshots.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",

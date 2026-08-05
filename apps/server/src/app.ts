@@ -15,6 +15,7 @@ import { TicketStore, type TicketKind } from './auth/tickets.js';
 import { DiscoveryService } from './discovery/service.js';
 import { TmuxAdapter } from './tmux/adapter.js';
 import { maxPromptAttachments, maxPromptAttachmentBytes, PromptService, type PromptAttachment } from './prompts/service.js';
+import { QueuedPromptService } from './prompts/queue.js';
 import { LaunchService } from './launch/service.js';
 import * as pty from 'node-pty';
 import { safeEnv } from './tmux/command.js';
@@ -30,10 +31,17 @@ import { LatestViewportScheduler, PaneViewportCoordinator } from './logs/viewpor
 import { DashboardUpdates, type DashboardPayload } from './dashboard/updates.js';
 import { WorktreeNoteService } from './notes/service.js';
 import { CleanupService } from './cleanup/service.js';
+import { PromptHistoryService } from './prompt-history/service.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; notes?: WorktreeNoteService; skills?: SkillService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload> };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; skills?: SkillService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload> };
 const cookieName = '__Host-rac';
 const body = (request: FastifyRequest): Record<string, unknown> => (request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {});
+const promptAttachments = (value: unknown): PromptAttachment[] | undefined => {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > maxPromptAttachments) return undefined;
+  const attachments = value.map(candidate => candidate !== null && typeof candidate === 'object' && typeof (candidate as { name?: unknown }).name === 'string' && typeof (candidate as { data?: unknown }).data === 'string' ? candidate as PromptAttachment : undefined);
+  return attachments.some(attachment => attachment === undefined) ? undefined : attachments as PromptAttachment[];
+};
 type LogFrame = { type: 'append'|'reset'; text: string };
 export function logFrame(last: string, value: string): LogFrame | undefined {
   if (!value.trim() || value === last) return undefined;
@@ -42,7 +50,7 @@ export function logFrame(last: string, value: string): LogFrame | undefined {
   return { type: 'reset', text: value };
 }
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const prompts = new PromptService(discovery, tmux, config.worktrees); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const notes = deps.notes ?? new WorktreeNoteService(); const skills = deps.skills ?? new SkillService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = new WorktreeCommandService(config); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.worktrees, dashboard.cleanupPending]));
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const prompts = new PromptService(discovery, tmux, config.worktrees, promptHistory, queuedPrompts); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const notes = deps.notes ?? new WorktreeNoteService(); const skills = deps.skills ?? new SkillService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = new WorktreeCommandService(config); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.worktrees, dashboard.cleanupPending]));
   const paneViewports = new PaneViewportCoordinator();
   const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 65_536 }); const webRoot = fileURLToPath(new URL('../../web/dist', import.meta.url)); const uiVersion = async () => await readFile(join(webRoot, 'index.html'), 'utf8').then(html => /<script[^>]+src="([^"]+)"/u.exec(html)?.[1]).catch(() => undefined); await app.register(cookie); await app.register(staticPlugin, { root: webRoot, index: false }); await app.register(rateLimit, { global: false }); await app.register(websocket, { options: { maxPayload: 65_536 } });
   const expectedHost = config.publicOrigin.host;
@@ -63,6 +71,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   };
   const dashboard = async (): Promise<DashboardPayload> => {
     const discovered = await discovery.dashboard(config.worktrees);
+    await Promise.all(discovered.agents.map(agent => prompts.observe(agent).catch(() => undefined)));
     for (const agent of discovered.agents) notifications.observe(agent);
     notifications.retain(discovered.agents);
     const controls = new Map(await Promise.all(config.worktrees.map(async worktree => [worktree.id, { actions: stackCommands.actions(worktree), ...await stackCommands.state(worktree) }] as const)));
@@ -122,20 +131,28 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.post('/api/agents/:id/switch-pr', async (request, reply) => { controlled(request, true); const number = body(request).number; if (!Number.isInteger(number) || !await prSwitch.switch((request.params as { id: string }).id, number as number)) return reply.code(409).send({ error: 'Unable to switch to that pull request. The worktree must be clean and pushed.' }); return reply.code(202).send(); });
   app.get('/api/agents/:id/new-task', async (request, reply) => { controlled(request); const availability = await newTask.available((request.params as { id: string }).id); return availability === undefined ? reply.code(404).send({ error: 'new task unavailable' }) : availability; });
   app.post('/api/agents/:id/new-task', async (request, reply) => { controlled(request, true); if (!await newTask.start((request.params as { id: string }).id)) return reply.code(409).send({ error: 'Unable to start a new task. The working copy must be clean and pushed.' }); return reply.code(202).send(); });
-  app.post('/api/agents/:id/prompt', { bodyLimit: Math.ceil(maxPromptAttachmentBytes * 1.4) }, async (request, reply) => {
-    controlled(request, true);
-    const data = body(request);
-    const rawAttachments = data.attachments === undefined ? [] : data.attachments;
-    if (typeof data.prompt !== 'string' || !Array.isArray(rawAttachments) || rawAttachments.length > maxPromptAttachments) return reply.code(400).send({ error: 'invalid prompt attachments' });
-    const attachments = rawAttachments.map(value => value && typeof value === 'object' && typeof (value as { name?: unknown }).name === 'string' && typeof (value as { data?: unknown }).data === 'string' ? value as PromptAttachment : undefined);
-    if (attachments.some(attachment => attachment === undefined) || !await prompts.submit((request.params as { id: string }).id, data.prompt, attachments as PromptAttachment[])) return reply.code(404).send({ error: 'target unavailable' });
-    return reply.code(204).send();
-  });
-  const savedPromptKey = async (agentId: string) => {
+  const promptStorageKey = async (agentId: string) => {
     const target = await discovery.target(agentId);
     if (!target) return undefined;
     const worktree = config.worktrees.find(candidate => target.agent.workspace === candidate.identity || target.agent.workspace === candidate.hostPath);
-    return worktree === undefined ? agentId : `worktree:${worktree.id}`;
+    return worktree === undefined ? `agent:${agentId}` : `worktree:${worktree.id}`;
+  };
+  app.post('/api/agents/:id/prompt', { bodyLimit: Math.ceil(maxPromptAttachmentBytes * 1.4) }, async (request, reply) => {
+    controlled(request, true);
+    const data = body(request);
+    const attachments = promptAttachments(data.attachments);
+    if (typeof data.prompt !== 'string' || attachments === undefined) return reply.code(400).send({ error: 'invalid prompt attachments' });
+    if (!await prompts.submit((request.params as { id: string }).id, data.prompt, attachments)) return reply.code(404).send({ error: 'target unavailable' });
+    return reply.code(204).send();
+  });
+  app.get('/api/agents/:id/prompt-history', async (request, reply) => { controlled(request); const key = await promptStorageKey((request.params as { id: string }).id); if (key === undefined) return reply.code(404).send({ error: 'target unavailable' }); const prompts = await promptHistory.list(key); return prompts === undefined ? reply.code(400).send({ error: 'invalid prompt history scope' }) : { prompts }; });
+  app.get('/api/agents/:id/queued-prompts', async (request, reply) => { controlled(request); const queued = await prompts.listQueued((request.params as { id: string }).id); return queued === undefined ? reply.code(404).send({ error: 'target unavailable' }) : { prompts: queued }; });
+  app.put('/api/agents/:id/queued-prompts/:promptId', async (request, reply) => { controlled(request, true); const { id, promptId } = request.params as { id: string; promptId: string }; const text = body(request).prompt; if (typeof text !== 'string') return reply.code(400).send({ error: 'invalid prompt' }); const prompt = await prompts.updateQueued(id, promptId, text); return prompt === undefined ? reply.code(404).send({ error: 'queued prompt unavailable' }) : prompt; });
+  app.post('/api/agents/:id/queued-prompts/:promptId/move', async (request, reply) => { controlled(request, true); const { id, promptId } = request.params as { id: string; promptId: string }; const direction = body(request).direction; if (direction !== 'earlier' && direction !== 'later') return reply.code(400).send({ error: 'invalid queue direction' }); const queued = await prompts.moveQueued(id, promptId, direction); return queued === undefined ? reply.code(404).send({ error: 'queued prompt unavailable' }) : { prompts: queued }; });
+  app.delete('/api/agents/:id/queued-prompts/:promptId', async (request, reply) => { controlled(request, true); const { id, promptId } = request.params as { id: string; promptId: string }; return await prompts.removeQueued(id, promptId) ? reply.code(204).send() : reply.code(404).send({ error: 'queued prompt unavailable' }); });
+  const savedPromptKey = async (agentId: string) => {
+    const key = await promptStorageKey(agentId);
+    return key?.startsWith('agent:') ? key.slice('agent:'.length) : key;
   };
   app.get('/api/agents/:id/saved-prompts', async (request, reply) => { controlled(request); const key = await savedPromptKey((request.params as { id: string }).id); if (key === undefined) return reply.code(404).send({ error: 'target unavailable' }); const prompts = await savedPrompts.list(key); return prompts === undefined ? reply.code(400).send({ error: 'invalid agent' }) : { prompts }; });
   app.get('/api/agents/:id/skills', async (request, reply) => {
@@ -145,7 +162,17 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const worktree = config.worktrees.find(candidate => target.agent.workspace === candidate.identity || target.agent.workspace === candidate.hostPath);
     return { skills: await skills.list(worktree?.path ?? target.agent.workspace) };
   });
-  app.post('/api/agents/:id/saved-prompts', async (request, reply) => { controlled(request, true); const key = await savedPromptKey((request.params as { id: string }).id); const prompt = body(request).prompt; if (key === undefined) return reply.code(404).send({ error: 'target unavailable' }); if (typeof prompt !== 'string') return reply.code(400).send({ error: 'invalid prompt' }); const saved = await savedPrompts.save(key, prompt); return saved === undefined ? reply.code(400).send({ error: 'invalid prompt' }) : reply.code(201).send(saved); });
+  app.post('/api/agents/:id/saved-prompts', { bodyLimit: Math.ceil(maxPromptAttachmentBytes * 1.4) }, async (request, reply) => { controlled(request, true); const key = await savedPromptKey((request.params as { id: string }).id); const data = body(request); const attachments = promptAttachments(data.attachments); if (key === undefined) return reply.code(404).send({ error: 'target unavailable' }); if (typeof data.prompt !== 'string' || attachments === undefined) return reply.code(400).send({ error: 'invalid prompt' }); const saved = await savedPrompts.save(key, data.prompt, attachments); return saved === undefined ? reply.code(400).send({ error: 'invalid prompt' }) : reply.code(201).send(saved); });
+  app.post('/api/agents/:id/saved-prompts/:promptId/queue', async (request, reply) => {
+    controlled(request, true);
+    const { id, promptId } = request.params as { id: string; promptId: string };
+    const key = await savedPromptKey(id);
+    if (key === undefined) return reply.code(404).send({ error: 'target unavailable' });
+    const result = await savedPrompts.consumeOnSuccess(key, promptId, saved => prompts.submit(id, saved.text, saved.attachments ?? []));
+    if (result === 'missing') return reply.code(404).send({ error: 'saved prompt unavailable' });
+    if (result === 'failed') return reply.code(409).send({ error: 'unable to queue saved prompt' });
+    return reply.code(204).send();
+  });
   app.delete('/api/agents/:id/saved-prompts/:promptId', async (request, reply) => { controlled(request, true); const { id, promptId } = request.params as { id: string; promptId: string }; const key = await savedPromptKey(id); if (key === undefined) return reply.code(404).send({ error: 'target unavailable' }); const prompt = await savedPrompts.consume(key, promptId); return prompt === undefined ? reply.code(404).send({ error: 'saved prompt unavailable' }) : prompt; });
   app.post('/api/agents/:id/cancel', async (request, reply) => { controlled(request, true); if (!await prompts.cancel((request.params as { id: string }).id)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
   app.post('/api/agents/:id/background', async (request, reply) => { controlled(request, true); const target = await discovery.target((request.params as { id: string }).id); if (!target || !await tmux.suspend(target.socket, target.agent.paneId)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
@@ -228,6 +255,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       let lastResetAt = 0;
       let polling = false;
       let pollQueued = false;
+      let viewportEstablished = false;
+      let viewportRefreshing = false;
       let viewVersion = 0;
       const poll = async (immediate = false) => {
         if (polling) {
@@ -255,7 +284,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
           const frame = requestedHistory === 0 ? logFrame(last, captured.text) : { type: 'reset' as const, text: captured.text };
           last = captured.text;
           lastResetAt = now;
-          if (frame !== undefined && socket.readyState === socket.OPEN) socket.send(JSON.stringify({ v: 1, ...frame, older: captured.older, newer: requestedHistory > 0, ...(captured.lastPrompt === undefined ? {} : { lastPrompt: captured.lastPrompt }) }));
+          if (frame !== undefined && socket.readyState === socket.OPEN) socket.send(JSON.stringify({ v: 1, ...frame, older: captured.older, newer: requestedHistory > 0, ...(captured.lastPrompt === undefined ? {} : { lastPrompt: captured.lastPrompt }), ...(captured.latestAssistantMessage === undefined ? {} : { latestAssistantMessage: captured.latestAssistantMessage }) }));
         } finally {
           polling = false;
           if (pollQueued) {
@@ -274,7 +303,24 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         (nextCols, nextRows) => viewportLease().resize(nextCols, nextRows),
         requestView
       );
-      const timer = setInterval(() => { if (history === 0) void poll(); }, config.pollIntervalMs);
+      const refresh = async () => {
+        if (viewportRefreshing) return;
+        viewportRefreshing = true;
+        try {
+          if (viewportEstablished) {
+            const ensured = await viewportLease().ensure(cols, rows);
+            if (!ensured.ok) return socket.close(1011);
+            if (ensured.resized) {
+              requestView(history);
+              return;
+            }
+          }
+          if (history === 0) await poll();
+        } finally {
+          viewportRefreshing = false;
+        }
+      };
+      const timer = setInterval(() => { void refresh(); }, config.pollIntervalMs);
       socket.on('message', (raw: unknown) => {
         try {
           const frame = JSON.parse(String(raw));
@@ -283,6 +329,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
             if (!Number.isInteger(frame.cols) || !Number.isInteger(frame.rows) || frame.cols < 2 || frame.cols > 500 || frame.rows < 2 || frame.rows > 300) throw new Error();
             cols = frame.cols;
             rows = frame.rows;
+            viewportEstablished = true;
             void viewport.schedule({ cols, rows, history, onFailure: () => socket.close(1011) });
             return;
           }
@@ -293,6 +340,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
             if (!hasViewport) { requestView(frame.offset); return; }
             cols = frame.cols;
             rows = frame.rows;
+            viewportEstablished = true;
             void viewport.schedule({ cols, rows, history: frame.offset, onFailure: () => socket.close(1011) });
             return;
           }

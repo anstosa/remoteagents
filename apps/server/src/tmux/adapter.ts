@@ -25,6 +25,76 @@ export function lastPromptFromHistory(value: string): string | undefined {
   return undefined;
 }
 
+const assistantMarkdown = (value: string) => {
+  const withoutOsc = value.replace(/\x1b\](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\)/gu, '');
+  const sgr = /\x1b\[([0-9;]*)m/gu;
+  let markdown = '';
+  let cursor = 0;
+  let codeColor = false;
+  let underlined = false;
+  let codeOpen = false;
+  const syncCode = () => {
+    const next = codeColor && !underlined;
+    if (next !== codeOpen) markdown += '`';
+    codeOpen = next;
+  };
+  for (const match of withoutOsc.matchAll(sgr)) {
+    markdown += withoutOsc.slice(cursor, match.index);
+    const parameters = (match[1] || '0').split(';').map(Number);
+    for (let index = 0; index < parameters.length; index += 1) {
+      const parameter = parameters[index]!;
+      if (parameter === 0) { codeColor = false; underlined = false; }
+      else if (parameter === 4) underlined = true;
+      else if (parameter === 24) underlined = false;
+      else if (parameter === 39) codeColor = false;
+      else if (parameter === 36) codeColor = true;
+      else if ((parameter >= 30 && parameter <= 37) || (parameter >= 90 && parameter <= 97)) codeColor = false;
+      else if (parameter === 38 && parameters[index + 1] === 5 && parameters[index + 2] !== undefined) {
+        codeColor = parameters[index + 2] === 6;
+        index += 2;
+      } else if (parameter === 38 && parameters[index + 1] === 2 && parameters[index + 4] !== undefined) {
+        codeColor = false;
+        index += 4;
+      }
+    }
+    syncCode();
+    cursor = (match.index ?? 0) + match[0].length;
+  }
+  markdown += withoutOsc.slice(cursor);
+  if (codeOpen) markdown += '`';
+  return markdown.replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '').replace(/\r/gu, '');
+};
+
+export function latestCompletedAssistantMessage(value: string): { text: string; rows: number } | undefined {
+  const lines = assistantMarkdown(value).split('\n');
+  let completedAt = -1;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (/^─ Worked for\b/u.test(lines[index]!)) { completedAt = index; break; }
+  }
+  if (completedAt < 0) return undefined;
+
+  // A submitted prompt after this completion means a newer response is in
+  // progress. Keep the previous completion from being offered as "latest".
+  for (let index = completedAt + 1; index < lines.length; index += 1) {
+    if (!/^›\s+\S/u.test(lines[index]!)) continue;
+    let following = index + 1;
+    while (following < lines.length && /^ {2}\S/u.test(lines[following]!)) following += 1;
+    while (following < lines.length && lines[following] === '') following += 1;
+    if (/^•(?:\s|$)/u.test(lines[following] ?? '')) return undefined;
+  }
+
+  let start = completedAt - 1;
+  while (start >= 0 && !/^•(?:\s|$)/u.test(lines[start]!)) start -= 1;
+  if (start < 0) return undefined;
+  let contentEnd = completedAt;
+  while (contentEnd > start && !lines[contentEnd - 1]!.trim()) contentEnd -= 1;
+  const rendered = lines.slice(start, contentEnd);
+  rendered[0] = rendered[0]!.replace(/^•\s?/u, '');
+  for (let index = 1; index < rendered.length; index += 1) rendered[index] = rendered[index]!.replace(/^ {2}/u, '');
+  const text = rendered.join('\n').trim();
+  return text ? { text, rows: contentEnd - start } : undefined;
+}
+
 function safeSnapshot(value: string): string {
   let result = '';
   for (let index = 0; index < value.length; index += 1) {
@@ -85,7 +155,7 @@ export class TmuxAdapter {
     return out.code === 0 ? safeSnapshot(out.stdout).slice(-96_000) : undefined;
   }
 
-  async captureWindow(socket: SocketRef, pane: string, history: number, rows: number): Promise<{ text: string; older: boolean; lastPrompt?: string } | undefined> {
+  async captureWindow(socket: SocketRef, pane: string, history: number, rows: number): Promise<{ text: string; older: boolean; lastPrompt?: string; latestAssistantMessage?: string } | undefined> {
     if (!paneId.test(pane) || !Number.isInteger(history) || history < 0 || history > 5_000 || !Number.isInteger(rows) || rows < 2 || rows > 300) return undefined;
     // tmux's -S/-E coordinates shift around wrapped and blank rows. Capture a
     // bounded history snapshot and slice its concrete lines instead, so page
@@ -98,17 +168,48 @@ export class TmuxAdapter {
     const end = lines.length - offset;
     const start = Math.max(0, end - rows);
     const lastPrompt = lastPromptFromHistory(out.stdout);
+    const assistantMessage = latestCompletedAssistantMessage(out.stdout);
+    const latestAssistantMessage = assistantMessage !== undefined && assistantMessage.rows > rows && assistantMessage.text.length <= 30_000 ? assistantMessage.text : undefined;
     const window = bottomAlignedWindow(lines.slice(start, end), rows);
-    return { text: safeSnapshot(window.join('\n')), older: start > 0, ...(lastPrompt === undefined ? {} : { lastPrompt }) };
+    return { text: safeSnapshot(window.join('\n')), older: start > 0, ...(lastPrompt === undefined ? {} : { lastPrompt }), ...(latestAssistantMessage === undefined ? {} : { latestAssistantMessage }) };
   }
 
   async resize(socket: SocketRef, pane: string, cols: number, rows: number): Promise<boolean> {
     if (!paneId.test(pane) || !Number.isInteger(cols) || cols < 2 || cols > 500 || !Number.isInteger(rows) || rows < 2 || rows > 300) return false;
-    // `resize-pane -x` cannot narrow a pane when its tmux window is wider.
-    // Resize the containing window first so the captured soft-wraps match
-    // the active browser grid, then set the pane's exact output height.
-    if ((await run(this.binary, ['-S', socket.path, 'resize-window', '-t', pane, '-x', String(cols), '-y', String(rows)])).code !== 0) return false;
-    return (await run(this.binary, ['-S', socket.path, 'resize-pane', '-t', pane, '-x', String(cols), '-y', String(rows)])).code === 0;
+    const readLayout = async () => {
+      const out = await run(this.binary, ['-S', socket.path, 'display-message', '-p', '-t', pane, '#{window_width}\t#{window_height}\t#{pane_width}\t#{pane_height}']);
+      const match = /^(\d+)\t(\d+)\t(\d+)\t(\d+)$/u.exec(out.stdout.trim());
+      if (out.code !== 0 || match === null) return undefined;
+      return { windowCols: Number(match[1]), windowRows: Number(match[2]), paneCols: Number(match[3]), paneRows: Number(match[4]) };
+    };
+    const apply = async (windowCols: number, windowRows: number) => {
+      if (windowCols < 2 || windowRows < 2) return false;
+      if ((await run(this.binary, ['-S', socket.path, 'resize-window', '-t', pane, '-x', String(windowCols), '-y', String(windowRows)])).code !== 0) return false;
+      return (await run(this.binary, ['-S', socket.path, 'resize-pane', '-t', pane, '-x', String(cols), '-y', String(rows)])).code === 0;
+    };
+
+    const before = await readLayout();
+    if (before === undefined) return false;
+    if (before.paneCols === cols && before.paneRows === rows) return true;
+
+    // A worktree window can contain HUD or worker panes. Those panes and their
+    // borders consume part of the window, so making the whole window the same
+    // size as the browser leaves the agent pane too short. Preserve the
+    // non-agent portion of each axis and size the target pane exactly.
+    const extraCols = Math.max(0, before.windowCols - before.paneCols);
+    const extraRows = Math.max(0, before.windowRows - before.paneRows);
+    if (!await apply(cols + extraCols, rows + extraRows)) return false;
+
+    const after = await readLayout();
+    if (after === undefined) return false;
+    if (after.paneCols === cols && after.paneRows === rows) return true;
+
+    // Some tiled layouts redistribute space during the first window resize.
+    // Correct once using the observed delta rather than accepting tmux's
+    // successful-but-clamped resize-pane result.
+    if (!await apply(after.windowCols + cols - after.paneCols, after.windowRows + rows - after.paneRows)) return false;
+    const corrected = await readLayout();
+    return corrected?.paneCols === cols && corrected.paneRows === rows;
   }
 
   async size(socket: SocketRef, pane: string): Promise<{ cols: number; rows: number } | undefined> {
