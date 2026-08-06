@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test.use({ hasTouch: true });
 
-test('expands prompt and git toolbar sections independently without a last-prompt label', async ({ page }) => {
+test('opens prompt history from the last prompt while git status expands independently', async ({ page }) => {
   const longPrompt = 'Review every changed service and explain the deployment risk before making any edits. '.repeat(8);
   const overflowChanges = Array.from({ length: 47 }, (_, index) => ({ code: ' M', path: `apps/server/src/generated-${index}.ts`, additions: 1, deletions: 0 }));
   await page.setViewportSize({ width: 428, height: 952 });
@@ -62,20 +62,28 @@ test('expands prompt and git toolbar sections independently without a last-promp
   await expect(promptText).toHaveCSS('white-space', 'nowrap');
   expect(await promptText.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
   const collapsedHeight = await toolbar.evaluate(element => element.getBoundingClientRect().height);
+  const workspaceTabHeight = await page.locator('.tabs button[role="tab"]').first().evaluate(element => element.getBoundingClientRect().height);
+  expect(collapsedHeight).toBeCloseTo(workspaceTabHeight, 0);
 
   await prompt.click();
   await expect(prompt).toHaveAttribute('aria-expanded', 'true');
-  await expect(git).toHaveCount(0);
-  expect(await toolbar.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThan(collapsedHeight * 2);
+  const history = page.getByLabel('Prompt history', { exact: true });
+  await expect(history).toBeVisible();
+  await expect(history).toContainText(longPrompt);
+  await expect(git).toBeVisible();
+  expect(await toolbar.evaluate(element => element.getBoundingClientRect().height)).toBeCloseTo(collapsedHeight, 0);
 
   await prompt.click();
+  await expect(prompt).toHaveAttribute('aria-expanded', 'false');
+  await expect(history).toBeHidden();
+  await page.setViewportSize({ width: 428, height: 420 });
   const collapsedGit = page.getByRole('button', { name: /^Git status:/u });
   await collapsedGit.tap();
   const expandedGit = page.getByRole('button', { name: /^Git status:/u });
   const changedFiles = page.getByRole('region', { name: 'Changed files' });
   await expect(expandedGit).toHaveAttribute('aria-expanded', 'true');
-  await expect(prompt).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Prompt history (1)' })).toHaveCount(0);
+  await expect(prompt).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Prompt history (1)' })).toBeVisible();
   await expect(changedFiles).toContainText('2 staged files · 51 unstaged files · 1 untracked file');
   await expect(changedFiles).toContainText('apps/server/src/app.ts');
   await expect(changedFiles).toContainText('apps/web/src/main.tsx');
@@ -87,22 +95,36 @@ test('expands prompt and git toolbar sections independently without a last-promp
   await expect(implementation.locator('.git-status-file').first()).toContainText('apps/server/src/app.ts+12−3');
   await expect(supporting.locator('.git-status-group-header')).toContainText('4 files+32−8');
   await expect(supporting.locator('.git-status-file').first()).toContainText('apps/web/e2e/last-prompt.spec.ts+16−5');
+  const zeroDeletion = implementation.locator('.git-status-file', { hasText: 'apps/server/src/generated-0.ts' });
+  await expect(zeroDeletion.locator('.git-lines-added')).toHaveText('+1');
+  await expect(zeroDeletion.locator('.git-lines-deleted')).toBeEmpty();
+  const textSizes = await changedFiles.evaluate(element => ({
+    group: getComputedStyle(element.querySelector<HTMLElement>('.git-status-group-header')!).fontSize,
+    file: getComputedStyle(element.querySelector<HTMLElement>('.git-status-file')!).fontSize
+  }));
+  expect(textSizes).toEqual({ group: '16px', file: '9.92px' });
+  const lineColumns = await changedFiles.locator('.git-status-group-lines, .git-status-file-lines').evaluateAll(elements => elements.slice(0, 8).map(element => {
+    const added = element.querySelector<HTMLElement>('.git-lines-added')!.getBoundingClientRect();
+    const deleted = element.querySelector<HTMLElement>('.git-lines-deleted')!.getBoundingClientRect();
+    return { addedRight: added.right, deletedLeft: deleted.left };
+  }));
+  expect(new Set(lineColumns.map(columns => columns.addedRight.toFixed(1))).size).toBe(1);
+  expect(new Set(lineColumns.map(columns => columns.deletedLeft.toFixed(1))).size).toBe(1);
   const groups = await changedFiles.locator('.git-status-group').evaluateAll(elements => elements.map(element => element.getAttribute('aria-label')));
   expect(groups).toEqual(['Implementation files', 'Tests & documentation files']);
-  const overflow = await changedFiles.evaluate(element => ({ clientHeight: element.clientHeight, scrollHeight: element.scrollHeight }));
+  const changesHeader = changedFiles.locator('.git-status-panel-header');
+  const changesContent = changedFiles.locator('.git-status-files');
+  await expect(changesHeader).toHaveCSS('position', 'sticky');
+  await expect(changesContent).toHaveCSS('overflow-y', 'auto');
+  const overflow = await changesContent.evaluate(element => ({ clientHeight: element.clientHeight, scrollHeight: element.scrollHeight }));
   expect(overflow.scrollHeight).toBeGreaterThan(overflow.clientHeight);
   const placement = await Promise.all([changedFiles, expandedGit].map(locator => locator.evaluate(element => { const bounds = element.getBoundingClientRect(); return { top: bounds.top, bottom: bounds.bottom }; })));
-  expect(placement[0]!.top).toBeGreaterThanOrEqual(0);
+  expect(placement[0]!.top).toBeCloseTo(0, 0);
   expect(placement[0]!.bottom).toBeLessThanOrEqual(placement[1]!.top);
-  const panelBounds = await changedFiles.boundingBox();
-  const touch = await page.context().newCDPSession(page);
-  const x = panelBounds!.x + panelBounds!.width / 2;
-  const startY = panelBounds!.y + panelBounds!.height - 50;
-  const endY = panelBounds!.y + 100;
-  await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y: startY }] });
-  await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: endY }] });
-  await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-  expect(await changedFiles.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  const headerTop = (await changesHeader.boundingBox())!.y;
+  await changesContent.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  expect(await changesContent.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  expect((await changesHeader.boundingBox())!.y).toBeCloseTo(headerTop, 0);
 
   await page.getByRole('button', { name: 'Collapse git status' }).tap();
   await expect(changedFiles).toHaveCount(0);

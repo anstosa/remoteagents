@@ -28,7 +28,7 @@ type PromptAction = { label: string; prompt: string };
 type GitStatusChange = { code: string; path: string; originalPath?: string; additions?: number; deletions?: number };
 type GitStatusSummary = { files: number; staged: number; unstaged: number; untracked: number; conflicted: number; changes?: GitStatusChange[] };
 type NewTaskAvailability = { enabled: boolean; reason?: string };
-type OperationFeedback = { id: number; tone: 'pending'|'success'|'error'; message: string; detail: string };
+type OperationFeedback = { id: number; tone: 'pending'|'success'|'error'; message: string; detail: string; worktreeId?: string };
 type CleanupTarget = { id: string; kind: 'orphan-worker'|'stale-agent'|'hud-pane'|'hud-process'; label: string; detail: string };
 type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; title: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: OmxQuestion; stack?: Stack; unread?: boolean };
 type Worktree = { id: string; label: string; path: string; branch?: string; gitStatus?: GitStatusSummary; available: boolean; pinned: boolean; order: number; projectUrl?: string; pullRequest?: PullRequestSummary; stack?: Stack };
@@ -46,7 +46,7 @@ const isCleanupTarget = (value: unknown): value is CleanupTarget => value !== nu
   && typeof (value as CleanupTarget).detail === 'string';
 type AgentState = 'working' | 'prompt-done' | 'action-required' | 'closed';
 type DashboardItem = { key: string; label: string; state: AgentState; order: number; unread: boolean; operation?: 'launching'|'deactivating'|'new-task'; agent?: Agent; worktree?: Worktree };
-type LogFrame = { type: 'append' | 'reset'; text?: string; older?: boolean; newer?: boolean; lastPrompt?: string; latestAssistantMessage?: string };
+type LogFrame = { type: 'append' | 'reset'; text?: string; older?: boolean; newer?: boolean; lastPrompt?: string; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean };
 type ChoiceQuestion = { text: string; choices: string[]; omxId?: string };
 type SavedPromptAttachment = { name: string; size?: number; data?: string };
 type SavedPrompt = { id: string; text: string; attachments?: SavedPromptAttachment[] };
@@ -115,6 +115,7 @@ type SpeechRecognitionConstructor = new () => SpeechRecognitionInstance;
 const logSnapshots = new BoundedTextCache(64, 64 * 1024);
 const lastPrompts = new Map<string, string>();
 const latestAssistantMessages = new Map<string, string>();
+const overflowingLatestAssistantMessages = new Set<string>();
 const promptDrafts = new Map<string, string>();
 const promptDraftListeners = new Map<string, Set<() => void>>();
 const promptDraftKey = (id: string) => `remote-agent-console:prompt-draft:${id}`;
@@ -158,7 +159,32 @@ const exitTerminalInput = new Map<string, () => void>();
 const logHistoryRequests = new Map<string, (direction: -1 | 0 | 1) => void>();
 const mobileModifiers = new Map<string, { alt: boolean; ctrl: boolean; shift: boolean }>();
 const retainedReviewAgents = new Set<string>();
-const retainedWorktreeNoteViews = new Map<string, { noteId: string; expanded: boolean }>();
+type WorktreeNoteView = { noteId: string; expanded: boolean };
+const retainedWorktreeNoteViews = new Map<string, WorktreeNoteView>();
+const worktreeNoteViewKey = (worktreeId: string) => `rac.note-view:${worktreeId}`;
+const getWorktreeNoteView = (worktreeId: string) => {
+  const retained = retainedWorktreeNoteViews.get(worktreeId);
+  if (retained !== undefined) return retained;
+  try {
+    const stored = JSON.parse(localStorage.getItem(worktreeNoteViewKey(worktreeId)) ?? 'null') as Partial<WorktreeNoteView> | null;
+    if (stored !== null && typeof stored.noteId === 'string' && typeof stored.expanded === 'boolean') {
+      const view = { noteId: stored.noteId, expanded: stored.expanded };
+      retainedWorktreeNoteViews.set(worktreeId, view);
+      return view;
+    }
+  } catch { /* browser storage is optional */ }
+  return undefined;
+};
+const setWorktreeNoteView = (worktreeId: string, view: WorktreeNoteView) => {
+  retainedWorktreeNoteViews.set(worktreeId, view);
+  try { localStorage.setItem(worktreeNoteViewKey(worktreeId), JSON.stringify(view)); }
+  catch { /* browser storage is optional */ }
+};
+const clearWorktreeNoteView = (worktreeId: string) => {
+  retainedWorktreeNoteViews.delete(worktreeId);
+  try { localStorage.removeItem(worktreeNoteViewKey(worktreeId)); }
+  catch { /* browser storage is optional */ }
+};
 const pendingOperations = new Set<string>();
 const pendingOperationListeners = new Map<string, Set<() => void>>();
 const pendingNewTaskSources = new Map<string, string>();
@@ -198,16 +224,28 @@ const cacheLogFrame = (id: string, frame: LogFrame) => {
   if (frame.lastPrompt !== undefined) lastPrompts.set(id, frame.lastPrompt);
   if (frame.latestAssistantMessage === undefined) latestAssistantMessages.delete(id);
   else latestAssistantMessages.set(id, frame.latestAssistantMessage);
+  if (frame.latestAssistantMessageOverflows === true) overflowingLatestAssistantMessages.add(id);
+  else overflowingLatestAssistantMessages.delete(id);
 };
 
 const questionFromOutput = (output: string): ChoiceQuestion | undefined => {
   const lines = output.slice(-32_768).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').split('\n').map(line => line.trim()).filter(Boolean);
   for (let start = Math.max(0, lines.length - 20); start < lines.length; start += 1) {
     const choices: string[] = [];
+    let interactive = false;
     let end = start;
-    while (end < lines.length) { const match = /^(?:[›❯>]\s*)?(\d+)[.)]\s+(.+)$/.exec(lines[end]!); if (!match) break; choices.push(match[2]!); end += 1; }
+    while (end < lines.length) {
+      const match = /^(?:[›❯>]\s*)?(?:\[([ xX])\]\s*)?(\d+)[.)]\s+(.+)$/.exec(lines[end]!);
+      if (!match) break;
+      interactive ||= match[1] !== undefined;
+      choices.push(match[3]!);
+      end += 1;
+    }
     if (choices.length < 2) continue;
-    const question = lines.slice(Math.max(0, start - 4), start).reverse().find(line => /[?]$|^(?:question|select|choose)\b/i.test(line));
+    const context = lines.slice(Math.max(0, start - 4), start).reverse();
+    const question = interactive
+      ? context.find(line => !/^question \d+ of \d+$/i.test(line))
+      : context.find(line => /[?]$|^(?:question|select|choose)\b/i.test(line));
     if (question) return { text: question.replace(/^[›❯>]\s*/, ''), choices };
   }
   return undefined;
@@ -413,7 +451,7 @@ class ConsoleBoundary extends Component<{ children: ReactNode }, { failed: boole
   }
 }
 
-function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting, deactivating, swapping, swapped, reviewing, onCancel, onDelete, onDeactivate, onSwap, onReview, onSelectTarget, onPromptFocus, onOperationFeedback, projectUrl, question, worktreeId, newTaskConfigured, pushAction, stack }: { id: string; history: PromptHistoryEntry[]; onHistoryChanged: () => Promise<void>; canCancel: boolean; cancelling: boolean; deleting: boolean; deactivating: boolean; swapping: boolean; swapped: boolean; reviewing: boolean; onCancel: () => void; onDelete?: () => void; onDeactivate?: () => void; onSwap: () => void; onReview: () => void; onSelectTarget: (target: DashboardTarget) => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; projectUrl?: string; question?: ChoiceQuestion; worktreeId?: string; newTaskConfigured?: boolean; pushAction?: PromptAction; stack?: Stack }) {
+function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting, deactivating, swapping, swapped, reviewing, onCancel, onDelete, onDeactivate, onSwap, onReview, onSelectTarget, onPromptFocus, onOperationFeedback, projectUrl, browserOpen, onBrowserToggle, question, worktreeId, newTaskConfigured, pushAction, stack }: { id: string; history: PromptHistoryEntry[]; onHistoryChanged: () => Promise<void>; canCancel: boolean; cancelling: boolean; deleting: boolean; deactivating: boolean; swapping: boolean; swapped: boolean; reviewing: boolean; onCancel: () => void; onDelete?: () => void; onDeactivate?: () => void; onSwap: () => void; onReview: () => void; onSelectTarget: (target: DashboardTarget) => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; projectUrl?: string; browserOpen?: boolean; onBrowserToggle?: () => void; question?: ChoiceQuestion; worktreeId?: string; newTaskConfigured?: boolean; pushAction?: PromptAction; stack?: Stack }) {
   const [value, setValue] = usePromptDraft(id);
   const [commandToken, setCommandToken] = useState<CommandToken>();
   const [activeCommand, setActiveCommand] = useState(0);
@@ -430,7 +468,7 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
   const [savedPromptError, setSavedPromptError] = useState<string>();
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
   const [queuedPromptsOpen, setQueuedPromptsOpen] = useState(false);
-  const [queuedPromptAction, setQueuedPromptAction] = useState<{ id: string; kind: 'cancel' | 'edit' | 'move' }>();
+  const [queuedPromptAction, setQueuedPromptAction] = useState<{ id: string; kind: 'cancel' | 'edit' | 'move' | 'save' }>();
   const [queuedPromptEdit, setQueuedPromptEdit] = useState<{ id: string; text: string }>();
   const [queuedPromptError, setQueuedPromptError] = useState<string>();
   const savedConfirmationTimer = useRef<number | undefined>(undefined);
@@ -749,7 +787,27 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
     } catch { setQueuedPromptError('Unable to cancel this queued prompt.'); }
     finally { setQueuedPromptAction(undefined); }
   };
-  const saveQueuedPrompt = async (queued: QueuedPrompt) => {
+  const moveQueuedPromptToSaved = async (queued: QueuedPrompt) => {
+    if (queuedPromptAction !== undefined) return;
+    setQueuedPromptAction({ id: queued.id, kind: 'save' });
+    setQueuedPromptError(undefined);
+    setSavedPromptError(undefined);
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(id)}/queued-prompts/${encodeURIComponent(queued.id)}/save`, { method: 'POST' });
+      if (!response.ok) throw new Error();
+      const saved: unknown = await response.json();
+      if (!isSavedPrompt(saved)) throw new Error();
+      setSavedPrompts(current => [saved, ...current]);
+      setQueuedPrompts(current => {
+        const remaining = current.filter(prompt => prompt.id !== queued.id);
+        if (remaining.length === 0) setQueuedPromptsOpen(false);
+        return remaining;
+      });
+      if (queuedPromptEdit?.id === queued.id) setQueuedPromptEdit(undefined);
+    } catch { setQueuedPromptError('Unable to save this queued prompt.'); }
+    finally { setQueuedPromptAction(undefined); }
+  };
+  const saveQueuedPromptEdit = async (queued: QueuedPrompt) => {
     if (queuedPromptAction !== undefined || queuedPromptEdit?.id !== queued.id) return;
     setQueuedPromptAction({ id: queued.id, kind: 'edit' });
     setQueuedPromptError(undefined);
@@ -906,10 +964,10 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
   const saveControls = <><span className={`save-prompt-group${savedToggle === null ? '' : ' has-saved-prompts'}`} ref={element => { savedPromptGroupRef.current = element; savedPromptAnchorRef.current = element; }} role="group" aria-label="Saved prompt controls">{saveButton}{savedToggle}</span>{savedPanel}</>;
   if (question) return <section className="prompt question-prompt"><div className="question-copy"><strong>Agent question</strong><span>{question.text}</span></div><div className="question-choices">{question.choices.map((choice, index) => <button key={`${index}-${choice}`} className="question-choice" disabled={pending} onClick={() => void answer(index)}><b>{index + 1}</b>{choice}</button>)}</div><div className="prompt-actions">{stop}{swapped && swap}<span className="prompt-actions-spacer" aria-hidden="true" /><More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} pushAction={pushAction} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onReview={swapped ? undefined : onReview} onPromptQueued={onHistoryChanged} onSelectTarget={onSelectTarget} onOperationFeedback={onOperationFeedback} /></div></section>;
   const queueLabel = swapped ? 'Enter' : pending ? 'Queueing' : 'Queue';
-  const queuePanel = queuedPromptsOpen && createPortal(<section className="queued-prompts-panel more-menu flyout-menu" ref={queuedPromptFlyoutRef} style={queuedPromptFlyoutStyle} aria-label="Queued prompts"><header><strong>Queued prompts</strong></header>{queuedPromptError && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<div className="queued-prompts-list">{queuedPrompts.map((queued, index) => { const label = queued.text || queued.attachments?.map(attachment => attachment.name).join(', ') || 'Attachments only'; const editing = queuedPromptEdit?.id === queued.id; const busy = queuedPromptAction !== undefined; return <div className={`queued-prompt-item${editing ? ' editing' : ''}`} key={queued.id}><span className="queued-prompt-order"><strong className="queued-prompt-position" aria-label={`Queue position ${index + 1}`}>{index + 1}</strong><span className="queued-prompt-order-buttons"><button type="button" disabled={busy || index === 0} aria-label={`Move queued prompt earlier: ${label}`} title="Move earlier" onClick={() => void moveQueuedPrompt(queued, 'earlier')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button type="button" disabled={busy || index === queuedPrompts.length - 1} aria-label={`Move queued prompt later: ${label}`} title="Move later" onClick={() => void moveQueuedPrompt(queued, 'later')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></span></span>{editing ? <textarea aria-label={`Edit queued prompt: ${label}`} value={queuedPromptEdit.text} maxLength={32_000} autoFocus onChange={event => setQueuedPromptEdit({ id: queued.id, text: event.target.value })} /> : <button className="queued-prompt-copy" type="button" disabled={busy} title={label} onClick={() => setQueuedPromptEdit({ id: queued.id, text: queued.text })}><span>{queued.text || 'Attachments only'}</span>{queued.attachments?.length ? <small>{queued.attachments.map(attachment => attachment.name).join(', ')}</small> : null}</button>}<span className="queued-prompt-actions">{editing ? <><button type="button" disabled={busy || !queuedPromptEdit.text.trim() && queued.attachments === undefined} aria-label={`Save queued prompt: ${label}`} title="Save changes" onClick={() => void saveQueuedPrompt(queued)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={busy} aria-label={`Stop editing queued prompt: ${label}`} title="Stop editing" onClick={() => setQueuedPromptEdit(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></> : <button type="button" disabled={busy} aria-label={`Edit queued prompt: ${label}`} title="Edit prompt" onClick={() => setQueuedPromptEdit({ id: queued.id, text: queued.text })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4Zm10-13 3 3" /></svg></button>}<button className="queued-prompt-cancel" type="button" disabled={busy} aria-label={`Cancel queued prompt: ${label}`} title="Cancel queued prompt" onClick={() => void cancelQueuedPrompt(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'cancel' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button></span></div>; })}</div></section>, document.body);
+  const queuePanel = queuedPromptsOpen && createPortal(<section className="queued-prompts-panel more-menu flyout-menu" ref={queuedPromptFlyoutRef} style={queuedPromptFlyoutStyle} aria-label="Queued prompts"><header><strong>Queued prompts</strong></header>{queuedPromptError && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<div className="queued-prompts-list">{queuedPrompts.map((queued, index) => { const label = queued.text || queued.attachments?.map(attachment => attachment.name).join(', ') || 'Attachments only'; const editing = queuedPromptEdit?.id === queued.id; const busy = queuedPromptAction !== undefined; return <div className={`queued-prompt-item${editing ? ' editing' : ''}`} key={queued.id}><span className="queued-prompt-order"><strong className="queued-prompt-position" aria-label={`Queue position ${index + 1}`}>{index + 1}</strong><span className="queued-prompt-order-buttons"><button type="button" disabled={busy || index === 0} aria-label={`Move queued prompt earlier: ${label}`} title="Move earlier" onClick={() => void moveQueuedPrompt(queued, 'earlier')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button type="button" disabled={busy || index === queuedPrompts.length - 1} aria-label={`Move queued prompt later: ${label}`} title="Move later" onClick={() => void moveQueuedPrompt(queued, 'later')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></span></span>{editing ? <textarea aria-label={`Edit queued prompt: ${label}`} value={queuedPromptEdit.text} maxLength={32_000} autoFocus onChange={event => setQueuedPromptEdit({ id: queued.id, text: event.target.value })} /> : <button className="queued-prompt-copy" type="button" disabled={busy} title={label} onClick={() => setQueuedPromptEdit({ id: queued.id, text: queued.text })}><span>{queued.text || 'Attachments only'}</span>{queued.attachments?.length ? <small>{queued.attachments.map(attachment => attachment.name).join(', ')}</small> : null}</button>}<span className="queued-prompt-actions">{editing ? <><button type="button" disabled={busy || !queuedPromptEdit.text.trim() && queued.attachments === undefined} aria-label={`Save queued prompt changes: ${label}`} title="Save changes" onClick={() => void saveQueuedPromptEdit(queued)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={busy} aria-label={`Stop editing queued prompt: ${label}`} title="Stop editing" onClick={() => setQueuedPromptEdit(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></> : <button type="button" disabled={busy} aria-label={`Save queued prompt: ${label}`} title="Move to saved prompts" onClick={() => void moveQueuedPromptToSaved(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'save' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5V3Zm3 0v6h8V3M8 21v-7h8v7" /></svg>}</button>}<button className="queued-prompt-cancel" type="button" disabled={busy} aria-label={`Cancel queued prompt: ${label}`} title="Cancel queued prompt" onClick={() => void cancelQueuedPrompt(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'cancel' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button></span></div>; })}</div></section>, document.body);
   const queuedToggle = !swapped && queuedPrompts.length > 0 ? <button className={`queued-prompts-toggle icon-button${queuedPromptsOpen ? ' active' : ''}`} type="button" disabled={pending} aria-label={`Queued prompts (${queuedPrompts.length})`} aria-expanded={queuedPromptsOpen} title={`${queuedPrompts.length} queued prompt${queuedPrompts.length === 1 ? '' : 's'}`} onClick={() => setQueuedPromptsOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg><span className="saved-prompts-count queued-prompts-count" aria-hidden="true">{queuedPrompts.length}</span></button> : null;
   const queueControls = <><span className={`queue-prompt-group${queuedToggle === null ? '' : ' has-queued-prompts'}`} ref={element => { queuedPromptGroupRef.current = element; queuedPromptAnchorRef.current = element; }} role="group" aria-label="Queue controls"><button className="queue icon-button" disabled={pending || (!swapped && !value && attachments.length === 0)} aria-label={queueLabel} title={queueLabel} onClick={() => void submit()}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button>{queuedToggle}</span>{queuePanel}</>;
-  return <section className="prompt">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{savedPromptError && <p className="saved-prompt-error" role="alert">{savedPromptError}</p>}{queuedPromptError && !queuedPromptsOpen && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{stop}{swapped && swap}<span className="prompt-actions-spacer" aria-hidden="true" /><More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} pushAction={pushAction} attachDisabled={pending} onAttach={swapped ? undefined : () => attachmentInput.current?.click()} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onReview={swapped ? undefined : onReview} onPromptQueued={onHistoryChanged} onSelectTarget={onSelectTarget} onOperationFeedback={onOperationFeedback} /><ProjectOpen url={projectUrl} stack={stack} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} />{saveControls}{queueControls}</div>{mobileKeys}</section>;
+  return <section className="prompt">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{savedPromptError && <p className="saved-prompt-error" role="alert">{savedPromptError}</p>}{queuedPromptError && !queuedPromptsOpen && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{stop}{swapped && swap}<span className="prompt-actions-spacer" aria-hidden="true" /><More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} pushAction={pushAction} attachDisabled={pending} onAttach={swapped ? undefined : () => attachmentInput.current?.click()} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onReview={swapped ? undefined : onReview} onPromptQueued={onHistoryChanged} onSelectTarget={onSelectTarget} onOperationFeedback={onOperationFeedback} /><ProjectOpen url={projectUrl} stack={stack} browserOpen={browserOpen} onBrowserToggle={onBrowserToggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} />{saveControls}{queueControls}</div>{mobileKeys}</section>;
 }
 
 type MobileKeyIconName = 'control'|'shift'|'tab'|'up'|'down'|'left'|'right';
@@ -929,7 +987,7 @@ const bottomAlignedSnapshot = (value: string, rows: number) => {
   return `${'\n'.repeat(Math.max(0, rows - renderedRows))}${value}`;
 };
 
-function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistantMessage?: string, onPromptQueued?: () => void | Promise<void>) {
+function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistantMessage?: string, latestAssistantMessageOverflows = false, onPromptQueued?: () => void | Promise<void>) {
   const [notes, setNotes] = useState<WorktreeNote[]>();
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeNote, setActiveNote] = useState<WorktreeNote>();
@@ -945,6 +1003,8 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const selectionAtPointerDown = useRef(false);
   const saveTimer = useRef<number | undefined>(undefined);
   const activeNoteRef = useRef<WorktreeNote | undefined>(undefined);
   const draftRef = useRef('');
@@ -955,6 +1015,8 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   const saveVersions = useRef(new Map<string, number>());
   const saveQueue = useRef(Promise.resolve());
   const actionStatusTimer = useRef<number | undefined>(undefined);
+  const selectionCopiedTimer = useRef<number | undefined>(undefined);
+  const [selectionToolbar, setSelectionToolbar] = useState<{ text: string; top: number }>();
   const promptPendingKey = `prompt:${agentId ?? 'unavailable'}`;
   const promptPending = usePendingOperation(promptPendingKey);
 
@@ -1027,9 +1089,10 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   }, [flushAll]);
   useEffect(() => () => {
     if (actionStatusTimer.current !== undefined) window.clearTimeout(actionStatusTimer.current);
+    if (selectionCopiedTimer.current !== undefined) window.clearTimeout(selectionCopiedTimer.current);
   }, []);
   useEffect(() => {
-    const retained = worktreeId === undefined ? undefined : retainedWorktreeNoteViews.get(worktreeId);
+    const retained = worktreeId === undefined ? undefined : getWorktreeNoteView(worktreeId);
     setNotes(undefined);
     setMenuOpen(false);
     setActiveNote(undefined);
@@ -1058,10 +1121,10 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
       if (cancelled) return;
       for (const note of loaded) acknowledgedTexts.current.set(note.id, note.text);
       setNotes(loaded);
-      const retained = retainedWorktreeNoteViews.get(worktreeId);
+      const retained = getWorktreeNoteView(worktreeId);
       if (retained !== undefined) {
         const note = loaded.find(candidate => candidate.id === retained.noteId);
-        if (note === undefined) retainedWorktreeNoteViews.delete(worktreeId);
+        if (note === undefined) clearWorktreeNoteView(worktreeId);
         else {
           activeNoteRef.current = note;
           draftRef.current = note.text;
@@ -1085,20 +1148,48 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     return () => document.removeEventListener('mousedown', close);
   }, [menuOpen]);
   useLayoutEffect(() => { if (activeNote !== undefined && editing) editorRef.current?.focus(); }, [activeNote?.id, editing]);
+  useEffect(() => {
+    setSelectionToolbar(undefined);
+    const preview = previewRef.current;
+    if (preview === null || activeNote === undefined || editing) return;
+    const syncSelection = () => {
+      const selection = window.getSelection();
+      if (selection === null || selection.isCollapsed || selection.rangeCount === 0 || selection.anchorNode === null || selection.focusNode === null || !preview.contains(selection.anchorNode) || !preview.contains(selection.focusNode)) {
+        setSelectionToolbar(undefined);
+        return;
+      }
+      const range = selection.getRangeAt(0);
+      const bounds = Array.from(range.getClientRects()).at(-1) ?? range.getBoundingClientRect();
+      const text = selection.toString();
+      if (!text) return setSelectionToolbar(undefined);
+      setSelectionToolbar({ text, top: Math.max(8, Math.min(window.innerHeight - 48, bounds.bottom + 8)) });
+    };
+    document.addEventListener('selectionchange', syncSelection);
+    preview.addEventListener('scroll', syncSelection);
+    window.addEventListener('resize', syncSelection);
+    syncSelection();
+    return () => {
+      document.removeEventListener('selectionchange', syncSelection);
+      preview.removeEventListener('scroll', syncSelection);
+      window.removeEventListener('resize', syncSelection);
+    };
+  }, [activeNote?.id, editing]);
 
   const restoreTriggerFocus = () => window.requestAnimationFrame(() => triggerRef.current?.focus());
   const open = (note: WorktreeNote, edit?: boolean) => {
     flush();
     const text = dirtyTexts.current.get(note.id) ?? note.text;
     const opened = { ...note, text };
+    const editingOnOpen = edit ?? !text.trim();
+    const expandOnOpen = editingOnOpen && window.matchMedia('(max-width: 600px)').matches;
     activeNoteRef.current = opened;
     draftRef.current = text;
     if (!acknowledgedTexts.current.has(note.id)) acknowledgedTexts.current.set(note.id, note.text);
     setDraft(text);
     setActiveNote(opened);
-    setExpanded(false);
-    if (worktreeId !== undefined) retainedWorktreeNoteViews.set(worktreeId, { noteId: note.id, expanded: false });
-    setEditing(edit ?? !text.trim());
+    setExpanded(expandOnOpen);
+    if (worktreeId !== undefined) setWorktreeNoteView(worktreeId, { noteId: note.id, expanded: expandOnOpen });
+    setEditing(editingOnOpen);
     setCopyState('idle');
     setSendState('idle');
     setSaveStatus(failedNotes.current.has(note.id) ? 'error' : dirtyTexts.current.has(note.id) ? 'saving' : 'saved');
@@ -1166,8 +1257,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     if (menuOpen) return setMenuOpen(false);
     const loaded = await load();
     if (loaded === undefined) return;
-    const latestAvailable = latestAssistantMessage !== undefined && latestAssistantMessage.length <= 30_000 && !loaded.some(note => note.text === latestAssistantMessage);
-    if (loaded.length === 0 && !latestAvailable) return await create();
+    if (loaded.length === 0 && latestAssistantMessage === undefined) return await create();
     setMenuOpen(true);
   };
   const changeDraft = (text: string) => {
@@ -1190,6 +1280,16 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
       setCopyState('error');
     }
     clearActionStatusLater();
+  };
+  const copySelection = async (text: string) => {
+    await copyText(text);
+    const preview = previewRef.current;
+    preview?.classList.add('selection-copied');
+    if (selectionCopiedTimer.current !== undefined) window.clearTimeout(selectionCopiedTimer.current);
+    selectionCopiedTimer.current = window.setTimeout(() => {
+      selectionCopiedTimer.current = undefined;
+      preview?.classList.remove('selection-copied');
+    }, selectionCopyFlashMs);
   };
   const send = async () => {
     const prompt = draftRef.current;
@@ -1226,7 +1326,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
       setDirtyCount(dirtyTexts.current.size);
       setNotes(current => current?.filter(candidate => candidate.id !== note.id));
       activeNoteRef.current = undefined;
-      retainedWorktreeNoteViews.delete(worktreeId);
+      clearWorktreeNoteView(worktreeId);
       setActiveNote(undefined);
       setExpanded(false);
       setEditing(false);
@@ -1244,26 +1344,101 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     }
     flush();
     activeNoteRef.current = undefined;
-    if (worktreeId !== undefined) retainedWorktreeNoteViews.delete(worktreeId);
+    if (worktreeId !== undefined) clearWorktreeNoteView(worktreeId);
     setActiveNote(undefined);
     setExpanded(false);
     setEditing(false);
     restoreTriggerFocus();
   };
 
-  if (worktreeId === undefined) return { active: false, appendToActive, canAppendToActive, canCreate: false, control: null, createWithText: create, pane: null };
+  if (worktreeId === undefined) return { active: false, expanded: false, appendToActive, canAppendToActive, canCreate: false, control: null, createWithText: create, pane: null };
   const noteCount = notes?.length ?? 0;
   const latestResponseAvailable = notes !== undefined && latestAssistantMessage !== undefined && latestAssistantMessage.length <= 30_000 && !notes.some(note => note.text === latestAssistantMessage);
+  const highlightLatestResponse = latestResponseAvailable && latestAssistantMessageOverflows;
   const notesLabel = dirtyCount === 0 ? `Notes (${noteCount})` : `Notes (${noteCount}; ${dirtyCount} unsaved)`;
-  const control = <div className="notes-control" ref={anchorRef}><button ref={triggerRef} className={`log-control page-arrow notes-toggle${menuOpen || activeNote !== undefined ? ' active' : ''}${dirtyCount > 0 ? ' unsaved' : ''}${latestResponseAvailable ? ' latest-response-available' : ''}`} aria-label={notesLabel} title={notesLabel} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}{noteCount > 0 && <span className="saved-prompts-count notes-count" aria-hidden="true">{noteCount}</span>}</button>{menuOpen && <div className="notes-menu" aria-label="Worktree notes">{latestResponseAvailable && <button className="log-control save-latest-response" onClick={() => void create(latestAssistantMessage)}>Save latest response</button>}{notes?.map(note => <button key={note.id} className="log-control note-choice" title={note.text || 'Blank note'} onClick={() => open(note)}>{notePreview(note.text)}</button>)}<button className="log-control new-note" onClick={() => void create()}>+ New note</button></div>}</div>;
+  const control = <div className="notes-control" ref={anchorRef}><button ref={triggerRef} className={`log-control page-arrow notes-toggle${menuOpen || activeNote !== undefined ? ' active' : ''}${dirtyCount > 0 ? ' unsaved' : ''}${highlightLatestResponse ? ' latest-response-available' : ''}`} aria-label={notesLabel} title={notesLabel} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}{noteCount > 0 && <span className="saved-prompts-count notes-count" aria-hidden="true">{noteCount}</span>}</button>{menuOpen && <div className="notes-menu" aria-label="Worktree notes"><button className="log-control save-latest-response" disabled={!latestResponseAvailable} onClick={() => { if (latestAssistantMessage !== undefined) void create(latestAssistantMessage); }}>Save latest response</button>{notes?.map(note => <button key={note.id} className="log-control note-choice" title={note.text || 'Blank note'} onClick={() => open(note)}>{notePreview(note.text)}</button>)}<button className="log-control new-note" onClick={() => void create()}>+ New note</button></div>}</div>;
   const actionStatus = copyState === 'error' ? 'Copy failed' : sendState === 'queued' ? 'Queued' : sendState === 'error' ? 'Queue failed' : '';
   const toggleExpanded = () => setExpanded(value => {
     const next = !value;
-    if (worktreeId !== undefined && activeNote !== undefined) retainedWorktreeNoteViews.set(worktreeId, { noteId: activeNote.id, expanded: next });
+    if (worktreeId !== undefined && activeNote !== undefined) setWorktreeNoteView(worktreeId, { noteId: activeNote.id, expanded: next });
     return next;
   });
-  const pane = activeNote === undefined ? null : <section className={`note-pane${expanded ? ' expanded' : ''}`} role="dialog" aria-label="Worktree note" onKeyDown={event => { if (event.key === 'Escape' && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><header><strong>Worktree note</strong><span className={`note-save-status ${saveStatus}`} role={saveStatus === 'error' ? 'alert' : 'status'} aria-live={saveStatus === 'error' ? 'assertive' : 'polite'}>{saveStatus === 'saving' ? 'Saving…' : saveStatus === 'error' ? 'Unable to save' : 'Saved'}</span>{actionStatus && <span className={`note-action-status${copyState === 'error' || sendState === 'error' ? ' error' : ''}`} role={copyState === 'error' || sendState === 'error' ? 'alert' : 'status'}>{actionStatus}</span>}<button className={`note-copy${copyState === 'copied' ? ' copied' : ''}`} type="button" disabled={deleting} aria-label={copyState === 'copied' ? 'Note copied' : 'Copy note'} title={copyState === 'copied' ? 'Copied' : 'Copy note'} onClick={() => void copy()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={copyState === 'copied' ? 'm5 12 4 4L19 6' : 'M9 9h10v10H9zM5 15H4V5h10v1'} /></svg></button><button className="note-send" type="button" disabled={agentId === undefined || deleting || promptPending || !draft.trim()} aria-label="Send note as prompt" title={agentId === undefined ? 'Launch an agent to send this note' : 'Send note as prompt'} onClick={() => void send()}>{sendState === 'sending' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button><button className="note-delete" type="button" disabled={deleting || sendState === 'sending'} aria-label="Delete note" title="Delete note" onClick={remove}>{deleting ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button><button className="note-expand" type="button" disabled={deleting || sendState === 'sending'} aria-label={expanded ? 'Restore note' : 'Expand note'} title={expanded ? 'Restore note' : 'Expand note'} aria-pressed={expanded} onClick={toggleExpanded}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="note-close" type="button" disabled={deleting || sendState === 'sending'} aria-label="Close note" title="Close note" onClick={close}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); if (draftRef.current.trim()) setEditing(false); }} /> : <NoteMarkdown text={draft} onEdit={() => setEditing(true)} />}</section>;
-  return { active: activeNote !== undefined, appendToActive, canAppendToActive, canCreate: !loading, control, createWithText: create, pane };
+  const inferEditing = (target: EventTarget | null) => {
+    if (target instanceof Element && target.closest('a, button, input')) {
+      selectionAtPointerDown.current = false;
+      return;
+    }
+    const selected = window.getSelection()?.toString() ?? '';
+    if (selectionAtPointerDown.current || selected) {
+      selectionAtPointerDown.current = false;
+      return;
+    }
+    if (window.matchMedia('(max-width: 600px)').matches) {
+      setExpanded(true);
+      if (worktreeId !== undefined && activeNote !== undefined) setWorktreeNoteView(worktreeId, { noteId: activeNote.id, expanded: true });
+    }
+    setEditing(true);
+  };
+  const selectionActions = activeNote === undefined || selectionToolbar === undefined ? null : createPortal(<div className="output-selection-toolbar note-selection-toolbar" role="toolbar" aria-label="Note selection actions" style={{ top: selectionToolbar.top }} onPointerDown={event => event.preventDefault()}>
+    <button type="button" disabled={agentId === undefined} onClick={() => { if (agentId !== undefined) setPromptDraft(agentId, current => appendTextBlock(current, selectionToolbar.text)); }}>Add to prompt</button>
+    <button type="button" onClick={() => void copySelection(selectionToolbar.text)}>Copy</button>
+  </div>, document.body);
+  const pane = activeNote === undefined ? null : <><section className={`note-pane${expanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onKeyDown={event => { if (event.key === 'Escape' && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><header className="note-toolbar" role="toolbar" aria-label="Note actions"><strong>Note</strong>{saveStatus === 'error' && <span className="note-save-status error" role="alert" aria-live="assertive">Unable to save</span>}{actionStatus && <span className={`note-action-status${copyState === 'error' || sendState === 'error' ? ' error' : ''}`} role={copyState === 'error' || sendState === 'error' ? 'alert' : 'status'}>{actionStatus}</span>}<button className={`note-copy${copyState === 'copied' ? ' copied' : ''}`} type="button" disabled={deleting} aria-label={copyState === 'copied' ? 'Note copied' : 'Copy note'} title={copyState === 'copied' ? 'Copied' : 'Copy note'} onClick={() => void copy()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={copyState === 'copied' ? 'm5 12 4 4L19 6' : 'M9 9h10v10H9zM5 15H4V5h10v1'} /></svg></button><button className="note-send" type="button" disabled={agentId === undefined || deleting || promptPending || !draft.trim()} aria-label="Send note as prompt" title={agentId === undefined ? 'Launch an agent to send this note' : 'Send note as prompt'} onClick={() => void send()}>{sendState === 'sending' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button><button className="note-delete" type="button" disabled={deleting || sendState === 'sending'} aria-label="Delete note" title="Delete note" onClick={remove}>{deleting ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button><button className="note-expand" type="button" disabled={deleting || sendState === 'sending'} aria-label={expanded ? 'Restore note' : 'Expand note'} title={expanded ? 'Restore note' : 'Expand note'} aria-pressed={expanded} onClick={toggleExpanded}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="note-close" type="button" disabled={deleting || sendState === 'sending'} aria-label="Close note" title="Close note" onClick={close}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}</>;
+  return { active: activeNote !== undefined, expanded: activeNote !== undefined && expanded, appendToActive, canAppendToActive, canCreate: !loading, control, createWithText: create, pane };
+}
+
+const desktopBrowserQuery = '(min-width: 769px)';
+const browserViewportKey = (worktreeId: string) => `rac.browser-viewport:${worktreeId}`;
+const browserSplitKey = (worktreeId: string) => `rac.browser-split:${worktreeId}`;
+const savedBrowserMobile = (worktreeId?: string) => {
+  if (worktreeId === undefined) return false;
+  try { return localStorage.getItem(browserViewportKey(worktreeId)) === 'mobile'; }
+  catch { return false; }
+};
+const saveBrowserMobile = (worktreeId: string | undefined, mobile: boolean) => {
+  if (worktreeId === undefined) return;
+  try { localStorage.setItem(browserViewportKey(worktreeId), mobile ? 'mobile' : 'desktop'); }
+  catch { /* browser storage is optional */ }
+};
+const savedBrowserSplit = (worktreeId?: string) => {
+  if (worktreeId === undefined) return false;
+  try { return localStorage.getItem(browserSplitKey(worktreeId)) === 'open'; }
+  catch { return false; }
+};
+const saveBrowserSplit = (worktreeId: string | undefined, open: boolean) => {
+  if (worktreeId === undefined) return;
+  try { localStorage.setItem(browserSplitKey(worktreeId), open ? 'open' : 'closed'); }
+  catch { /* browser storage is optional */ }
+};
+function useProjectBrowser(url?: string, worktreeId?: string) {
+  const [open, setOpen] = useState(() => url !== undefined && window.matchMedia(desktopBrowserQuery).matches && savedBrowserSplit(worktreeId));
+  useEffect(() => {
+    const desktop = window.matchMedia(desktopBrowserQuery);
+    const enforceDesktop = () => {
+      if (!desktop.matches || url === undefined) setOpen(false);
+      else if (worktreeId !== undefined) setOpen(savedBrowserSplit(worktreeId));
+    };
+    desktop.addEventListener('change', enforceDesktop);
+    enforceDesktop();
+    return () => desktop.removeEventListener('change', enforceDesktop);
+  }, [url, worktreeId]);
+  return {
+    open: open && url !== undefined,
+    url: open ? url : undefined,
+    toggle: () => {
+      if (url === undefined || !window.matchMedia(desktopBrowserQuery).matches) return;
+      setOpen(value => { const next = !value; saveBrowserSplit(worktreeId, next); return next; });
+    },
+    close: () => { saveBrowserSplit(worktreeId, false); setOpen(false); }
+  };
+}
+
+function ProjectBrowserPane({ url, worktreeId, onClose }: { url: string; worktreeId?: string; onClose: () => void }) {
+  const [reload, setReload] = useState(0);
+  const [expanded, setExpanded] = useState(false);
+  const [mobile, setMobile] = useState(() => savedBrowserMobile(worktreeId));
+  const toggleMobile = () => setMobile(value => { const next = !value; saveBrowserMobile(worktreeId, next); return next; });
+  return <section className={`browser-pane ${mobile ? 'mobile' : 'desktop'}${expanded ? ' expanded' : ''}`} role="dialog" aria-label="Browser" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); if (expanded) setExpanded(false); else onClose(); } }}><header className="browser-toolbar" role="toolbar" aria-label="Browser actions"><strong>Browser</strong><button className="browser-device-toggle" type="button" aria-label={mobile ? 'Use desktop viewport' : 'Use mobile viewport'} aria-pressed={mobile} title={mobile ? 'Desktop viewport' : 'Mobile viewport'} onClick={toggleMobile}><svg viewBox="0 0 24 24" aria-hidden="true">{mobile ? <><rect x="3" y="5" width="18" height="13" rx="1" /><path d="M8 21h8M12 18v3" /></> : <><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M10 5h4M11 19h2" /></>}</svg></button><button className="browser-refresh" type="button" aria-label="Refresh browser" title="Refresh" onClick={() => setReload(value => value + 1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" /></svg></button><button className="browser-expand" type="button" aria-label={expanded ? 'Exit browser fullscreen' : 'Enter browser fullscreen'} aria-pressed={expanded} title={expanded ? 'Exit fullscreen' : 'Fullscreen'} onClick={() => setExpanded(value => !value)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="browser-close" type="button" aria-label="Close browser" title="Close" onClick={onClose}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header><div className={`browser-frame-shell ${mobile ? 'mobile' : 'desktop'}`}><iframe key={reload} src={url} title="Project browser" referrerPolicy="no-referrer" /></div></section>;
 }
 
 const gitCountLabel = (count: number, label: string) => `${count} ${label}${count === 1 ? '' : 's'}`;
@@ -1280,7 +1455,8 @@ const gitSupportingFile = (path: string) => {
 };
 const gitLineTotals = (changes: GitStatusChange[]) => changes.reduce((totals, change) => ({ additions: totals.additions + (change.additions ?? 0), deletions: totals.deletions + (change.deletions ?? 0) }), { additions: 0, deletions: 0 });
 function GitLineSummary({ additions, deletions, className }: { additions: number; deletions: number; className: string }) {
-  return <span className={className} aria-label={`${gitCountLabel(additions, 'line')} added, ${gitCountLabel(deletions, 'line')} removed`}><span className="git-lines-added">+{additions}</span><span className="git-lines-deleted">−{deletions}</span></span>;
+  const label = [additions > 0 ? `${gitCountLabel(additions, 'line')} added` : undefined, deletions > 0 ? `${gitCountLabel(deletions, 'line')} removed` : undefined].filter(Boolean).join(', ') || 'No lines added or removed';
+  return <span className={className} aria-label={label}><span className="git-lines-added">{additions > 0 ? `+${additions}` : ''}</span><span className="git-lines-deleted">{deletions > 0 ? `−${deletions}` : ''}</span></span>;
 }
 function GitChangeGroup({ label, changes }: { label: string; changes: GitStatusChange[] }) {
   if (changes.length === 0) return null;
@@ -1289,6 +1465,35 @@ function GitChangeGroup({ label, changes }: { label: string; changes: GitStatusC
 }
 function GitStatus({ branch, summary, expanded = false, onToggle }: { branch?: string; summary?: GitStatusSummary; expanded?: boolean; onToggle?: () => void }) {
   const lastTouchToggle = useRef<number | undefined>(undefined);
+  const wrapRef = useRef<HTMLSpanElement | null>(null);
+  const [panelMaxHeight, setPanelMaxHeight] = useState(0);
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    if (!expanded || wrap === null) return;
+    const syncPanelHeight = () => {
+      const viewport = window.visualViewport;
+      const viewportTop = viewport?.offsetTop ?? 0;
+      const rootFontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+      const available = wrap.getBoundingClientRect().top - viewportTop - rootFontSize * .7 - 8;
+      setPanelMaxHeight(Math.max(0, Math.floor(available + 8)));
+    };
+    const observer = new ResizeObserver(syncPanelHeight);
+    observer.observe(wrap);
+    const shell = wrap.closest('.log-shell');
+    if (shell !== null) observer.observe(shell);
+    window.addEventListener('resize', syncPanelHeight);
+    window.addEventListener('scroll', syncPanelHeight, true);
+    window.visualViewport?.addEventListener('resize', syncPanelHeight);
+    window.visualViewport?.addEventListener('scroll', syncPanelHeight);
+    syncPanelHeight();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', syncPanelHeight);
+      window.removeEventListener('scroll', syncPanelHeight, true);
+      window.visualViewport?.removeEventListener('resize', syncPanelHeight);
+      window.visualViewport?.removeEventListener('scroll', syncPanelHeight);
+    };
+  }, [expanded]);
   if (branch === undefined) return null;
   const state = summary === undefined ? 'unavailable' : summary.files === 0 ? 'clean' : summary.conflicted > 0 ? 'conflicted' : 'dirty';
   const stateLabel = summary === undefined
@@ -1317,10 +1522,10 @@ function GitStatus({ branch, summary, expanded = false, onToggle }: { branch?: s
   const clickToggle = () => {
     if (lastTouchToggle.current === undefined || performance.now() - lastTouchToggle.current > 700) onToggle?.();
   };
-  return <span className={`git-status-wrap${expanded ? ' expanded' : ''}`}><button className={`git-status-summary ${state}`} type="button" aria-label={label} aria-expanded={expanded} title={label} onPointerDown={pointerToggle} onClick={clickToggle}><span className="git-branch">{branch}</span><span className="git-status-separator" aria-hidden="true">·</span><span className="git-worktree-state">{stateLabel}</span></button>{expanded && <span className="git-status-panel" role="region" aria-label="Changed files"><span className="git-status-panel-header"><span><strong>Changed files</strong>{details.length > 0 && <small className="git-status-details">{details.join(' · ')}</small>}</span><button className="git-status-close" type="button" aria-label="Collapse git status" title="Collapse git status" onPointerDown={pointerToggle} onClick={clickToggle}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></span>{changedFiles !== undefined && changedFiles.length > 0 ? <span className="git-status-files"><GitChangeGroup label="Implementation" changes={implementationChanges} /><GitChangeGroup label="Tests & documentation" changes={supportingChanges} /></span> : <span className="git-status-empty">{emptyLabel}</span>}</span>}</span>;
+  return <span ref={wrapRef} className={`git-status-wrap${expanded ? ' expanded' : ''}`}><button className={`git-status-summary ${state}`} type="button" aria-label={label} aria-expanded={expanded} title={label} onPointerDown={pointerToggle} onClick={clickToggle}><span className="git-branch">{branch}</span><span className="git-status-separator" aria-hidden="true">·</span><span className="git-worktree-state">{stateLabel}</span></button>{expanded && <span className="git-status-panel" role="region" aria-label="Changed files" style={{ maxHeight: panelMaxHeight }}><span className="git-status-panel-header"><span><strong>Changed files</strong>{details.length > 0 && <small className="git-status-details">{details.join(' · ')}</small>}</span><button className="git-status-close" type="button" aria-label="Collapse git status" title="Collapse git status" onPointerDown={pointerToggle} onClick={clickToggle}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></span>{changedFiles !== undefined && changedFiles.length > 0 ? <span className="git-status-files"><GitChangeGroup label="Implementation" changes={implementationChanges} /><GitChangeGroup label="Tests & documentation" changes={supportingChanges} /></span> : <span className="git-status-empty">{emptyLabel}</span>}</span>}</span>;
 }
 
-function Log({ id, worktreeId, branch, gitStatus, history, refreshHistory, onQuestion, cleanupControl, terminalMode = false, reviewMode = false, processingLabel, processingDetail }: { id: string; worktreeId?: string; branch?: string; gitStatus?: GitStatusSummary; history: PromptHistoryEntry[]; refreshHistory: () => Promise<void>; onQuestion: (question: ChoiceQuestion | undefined) => void; cleanupControl?: ReactNode; terminalMode?: boolean; reviewMode?: boolean; processingLabel?: string; processingDetail?: string }) {
+function Log({ id, worktreeId, branch, gitStatus, history, refreshHistory, onQuestion, cleanupControl, browserUrl, onBrowserClose, terminalMode = false, reviewMode = false, processingLabel, processingDetail }: { id: string; worktreeId?: string; branch?: string; gitStatus?: GitStatusSummary; history: PromptHistoryEntry[]; refreshHistory: () => Promise<void>; onQuestion: (question: ChoiceQuestion | undefined) => void; cleanupControl?: ReactNode; browserUrl?: string; onBrowserClose?: () => void; terminalMode?: boolean; reviewMode?: boolean; processingLabel?: string; processingDetail?: string }) {
   const canvas = useRef<HTMLDivElement | null>(null);
   const primaryHost = useRef<HTMLDivElement | null>(null);
   const secondaryHost = useRef<HTMLDivElement | null>(null);
@@ -1332,28 +1537,36 @@ function Log({ id, worktreeId, branch, gitStatus, history, refreshHistory, onQue
   const [hasRendered, setHasRendered] = useState(false);
   const [lastPrompt, setLastPrompt] = useState<string>();
   const [latestAssistantMessage, setLatestAssistantMessage] = useState<string>();
+  const [latestAssistantMessageOverflows, setLatestAssistantMessageOverflows] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [toolbarExpanded, setToolbarExpanded] = useState<'prompt' | 'git'>();
+  const [toolbarExpanded, setToolbarExpanded] = useState<'git'>();
   const { anchorRef: historyAnchorRef, flyoutRef: historyFlyoutRef, style: historyFlyoutStyle } = useViewportFlyout(historyOpen);
   const historyListRef = useRef<HTMLDivElement | null>(null);
+  const lastPromptRef = useRef<HTMLButtonElement | null>(null);
   const [scrolledUp, setScrolledUp] = useState(false);
   const [inputActive, setInputActive] = useState(terminalMode);
   const [selectionActive, setSelectionActive] = useState(false);
   const [selectionToolbar, setSelectionToolbar] = useState<{ text: string; top: number }>();
   const copyOutputSelectionRef = useRef<(value: string) => Promise<void>>(copyText);
-  const worktreeNotes = useWorktreeNotes(worktreeId, id, latestAssistantMessage, refreshHistory);
+  const worktreeNotes = useWorktreeNotes(worktreeId, id, latestAssistantMessage, latestAssistantMessageOverflows, refreshHistory);
   useEffect(() => {
     if (!historyOpen) return;
     const close = (event: MouseEvent) => {
       const target = event.target as Node;
-      if (!historyAnchorRef.current?.contains(target) && !historyFlyoutRef.current?.contains(target)) setHistoryOpen(false);
+      if (!historyAnchorRef.current?.contains(target) && !lastPromptRef.current?.contains(target) && !historyFlyoutRef.current?.contains(target)) setHistoryOpen(false);
     };
     document.addEventListener('mousedown', close);
     return () => document.removeEventListener('mousedown', close);
   }, [historyOpen, historyAnchorRef, historyFlyoutRef]);
   useLayoutEffect(() => {
     if (!historyOpen || historyListRef.current === null) return;
-    historyListRef.current.scrollTop = historyListRef.current.scrollHeight;
+    const list = historyListRef.current;
+    const scrollToLatest = () => { list.scrollTop = list.scrollHeight; };
+    scrollToLatest();
+    const frame = window.requestAnimationFrame(scrollToLatest);
+    const observer = new ResizeObserver(scrollToLatest);
+    observer.observe(list);
+    return () => { window.cancelAnimationFrame(frame); observer.disconnect(); };
   }, [historyOpen, history]);
   useEffect(() => {
     let socket: WebSocket | undefined;
@@ -1369,7 +1582,11 @@ function Log({ id, worktreeId, branch, gitStatus, history, refreshHistory, onQue
     let resizeFrame: number | undefined;
     let overlayFrame: number | undefined;
     let analysisFrame: number | undefined;
+    let connectedPaintFrame: number | undefined;
+    let connectedPaintConfirmationFrame: number | undefined;
     let copiedSelectionTimer: number | undefined;
+    let awaitingConnectedPaint = true;
+    let connectionUpdateVersion = 0;
     let rerenderAfterResize = () => {};
     const pendingInput: string[] = [];
     setStatus('Connecting');
@@ -1377,6 +1594,7 @@ function Log({ id, worktreeId, branch, gitStatus, history, refreshHistory, onQue
     setLastPrompt(lastPrompts.get(id));
     setToolbarExpanded(undefined);
     setLatestAssistantMessage(latestAssistantMessages.get(id));
+    setLatestAssistantMessageOverflows(overflowingLatestAssistantMessages.has(id));
     setVisibleFrame(0);
     setInputActive(terminalMode);
     setSelectionActive(false);
@@ -1581,7 +1799,9 @@ function Log({ id, worktreeId, branch, gitStatus, history, refreshHistory, onQue
       });
     };
     const appendWrites = createAnimationFrameTextBatcher(text => {
-      if (closed || socket === undefined) return;
+      const paintedSocket = socket;
+      const paintedConnectionVersion = connectionUpdateVersion;
+      if (closed || paintedSocket === undefined) return;
       if (terminalSelectionActive() || renderingSnapshot) {
         pendingRender = true;
         return;
@@ -1590,6 +1810,7 @@ function Log({ id, worktreeId, branch, gitStatus, history, refreshHistory, onQue
         terminal.scrollToBottom();
         scheduleOverlayRender();
         syncScrollState();
+        revealConnectedOutput(paintedSocket, paintedConnectionVersion);
       });
     }, undefined, undefined, 1_000_000);
     const selectionSubscriptions = terminals.map(candidate => candidate.onSelectionChange(() => {
@@ -1651,6 +1872,29 @@ function Log({ id, worktreeId, branch, gitStatus, history, refreshHistory, onQue
       outputRendered = true;
       setHasRendered(true);
     };
+    const cancelConnectedPaint = () => {
+      if (connectedPaintFrame !== undefined) window.cancelAnimationFrame(connectedPaintFrame);
+      if (connectedPaintConfirmationFrame !== undefined) window.cancelAnimationFrame(connectedPaintConfirmationFrame);
+      connectedPaintFrame = undefined;
+      connectedPaintConfirmationFrame = undefined;
+    };
+    const revealConnectedOutput = (ws: WebSocket, paintedConnectionVersion: number) => {
+      if (!awaitingConnectedPaint || paintedConnectionVersion === 0 || closed || socket !== ws || connectedPaintFrame !== undefined || connectedPaintConfirmationFrame !== undefined) return;
+      // Keep the connecting treatment through the first frame that contains
+      // fresh output. The nested animation frame runs after that DOM update
+      // has had an opportunity to paint, so Live never precedes the output.
+      connectedPaintFrame = window.requestAnimationFrame(() => {
+        connectedPaintFrame = undefined;
+        connectedPaintConfirmationFrame = window.requestAnimationFrame(() => {
+          connectedPaintConfirmationFrame = undefined;
+          if (closed || socket !== ws || !awaitingConnectedPaint) return;
+          awaitingConnectedPaint = false;
+          connectionUpdateVersion = 0;
+          markRendered();
+          setStatus('Live');
+        });
+      });
+    };
     if (cachedSnapshot) { snapshot = cachedSnapshot; markRendered(); onQuestion(questionFromOutput(cachedSnapshot)); terminal.write(cachedSnapshot, () => { scheduleOverlayRender(); syncScrollState(); }); }
     const reconnect = () => {
       if (closed || retry !== undefined) return;
@@ -1666,6 +1910,7 @@ function Log({ id, worktreeId, branch, gitStatus, history, refreshHistory, onQue
       }
       renderingSnapshot = true;
       const renderedSnapshot = snapshot;
+      const renderedConnectionVersion = connectionUpdateVersion;
       // Keep the currently focused xterm mounted while output input is active.
       // Hiding its frame during the normal double-buffer swap dismisses mobile
       // software keyboards even though the helper textarea remains focused.
@@ -1692,6 +1937,7 @@ function Log({ id, worktreeId, branch, gitStatus, history, refreshHistory, onQue
         if (preserveFocusedFrame) {
           scheduleOverlayRender();
           syncScrollState();
+          revealConnectedOutput(ws, renderedConnectionVersion);
           if (snapshot !== renderedSnapshot) pendingRender = true;
           return flushSelectedOutput();
         }
@@ -1701,6 +1947,7 @@ function Log({ id, worktreeId, branch, gitStatus, history, refreshHistory, onQue
         terminalRef.current = terminal;
         scheduleOverlayRender();
         setVisibleFrame(activeFrame);
+        revealConnectedOutput(ws, renderedConnectionVersion);
         requestAnimationFrame(() => { previousTerminal.reset(); syncScrollState(); });
         if (snapshot !== renderedSnapshot) pendingRender = true;
         flushSelectedOutput();
@@ -1721,7 +1968,12 @@ function Log({ id, worktreeId, branch, gitStatus, history, refreshHistory, onQue
       flushSelectedOutput();
     };
     const connect = async () => {
-      if (attemptedLogConnection) setStatus('Connecting');
+      if (attemptedLogConnection) {
+        awaitingConnectedPaint = true;
+        connectionUpdateVersion = 0;
+        cancelConnectedPaint();
+        setStatus('Connecting');
+      }
       attemptedLogConnection = true;
       try {
         const response = await request(`/api/agents/${encodeURIComponent(id)}/tickets`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'logs' }) });
@@ -1737,7 +1989,6 @@ function Log({ id, worktreeId, branch, gitStatus, history, refreshHistory, onQue
         };
         ws.onopen = () => {
           if (closed || socket !== ws) return;
-          setStatus('Live');
           scheduleViewport();
         };
         ws.onmessage = event => {
@@ -1745,18 +1996,21 @@ function Log({ id, worktreeId, branch, gitStatus, history, refreshHistory, onQue
           const frame = JSON.parse(event.data) as LogFrame;
           const text = frame.text ?? '';
           if (!text) return;
+          if (awaitingConnectedPaint) connectionUpdateVersion += 1;
           if (frame.newer !== true) historyOffset = 0;
           syncScrollState();
           const latest = historyOffset === 0;
           if (!terminalMode && latest && frame.lastPrompt !== undefined) setLastPrompt(frame.lastPrompt);
-          if (!terminalMode && latest) setLatestAssistantMessage(frame.latestAssistantMessage);
+          if (!terminalMode && latest) {
+            setLatestAssistantMessage(frame.latestAssistantMessage);
+            setLatestAssistantMessageOverflows(frame.latestAssistantMessageOverflows === true);
+          }
           if (!terminalMode && latest) cacheLogFrame(id, frame);
           if (frame.type === 'reset') {
-            if (text === snapshot) return;
+            if (text === snapshot && !awaitingConnectedPaint) return;
             appendWrites.clear();
             snapshot = nextLiveSnapshot(snapshot, frame.type, text);
             scheduleOutputAnalysis();
-            markRendered();
             if (outputSelectionPresent() || renderingSnapshot) {
               pendingRender = true;
               return;
@@ -1765,7 +2019,6 @@ function Log({ id, worktreeId, branch, gitStatus, history, refreshHistory, onQue
           }
           snapshot = nextLiveSnapshot(snapshot, frame.type, text);
           scheduleOutputAnalysis();
-          markRendered();
           if (outputSelectionPresent() || renderingSnapshot) {
             pendingRender = true;
             return;
@@ -1780,6 +2033,9 @@ function Log({ id, worktreeId, branch, gitStatus, history, refreshHistory, onQue
           if (closed || socket !== ws) return;
           socket = undefined;
           appendWrites.clear();
+          awaitingConnectedPaint = true;
+          connectionUpdateVersion = 0;
+          cancelConnectedPaint();
           setStatus('Connecting');
           reconnect();
         };
@@ -1787,13 +2043,13 @@ function Log({ id, worktreeId, branch, gitStatus, history, refreshHistory, onQue
       } catch { setStatus('Connecting'); reconnect(); }
     };
     void connect();
-    return () => { closed = true; appendWrites.clear(); if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (retry !== undefined) window.clearTimeout(retry); if (flushFrame !== undefined) window.cancelAnimationFrame(flushFrame); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (overlayFrame !== undefined) window.cancelAnimationFrame(overlayFrame); if (analysisFrame !== undefined) window.cancelAnimationFrame(analysisFrame); if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer); selectionSubscriptions.forEach(subscription => subscription.dispose()); inputSubscriptions.forEach(subscription => subscription.dispose()); window.removeEventListener('resize', scheduleViewport); window.visualViewport?.removeEventListener('resize', scheduleViewport); document.removeEventListener('visibilitychange', syncVisibleViewport); window.removeEventListener('pageshow', scheduleViewport); document.removeEventListener('selectionchange', syncSelectionMode); window.removeEventListener('keydown', interruptOutput, true); document.removeEventListener('keydown', copySelectionShortcut, true); document.removeEventListener('copy', nativeOutputCopied); canvas.current?.closest('.log')?.classList.remove('selection-copied'); canvas.current?.removeEventListener('pointerdown', captureSelectionMode, true); canvas.current?.removeEventListener('click', focus); releaseLongPressSelection(); releaseScrollContainment(); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; overlays.clear(); terminals.forEach(candidate => candidate.dispose()); };
+    return () => { closed = true; appendWrites.clear(); cancelConnectedPaint(); if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (retry !== undefined) window.clearTimeout(retry); if (flushFrame !== undefined) window.cancelAnimationFrame(flushFrame); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (overlayFrame !== undefined) window.cancelAnimationFrame(overlayFrame); if (analysisFrame !== undefined) window.cancelAnimationFrame(analysisFrame); if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer); selectionSubscriptions.forEach(subscription => subscription.dispose()); inputSubscriptions.forEach(subscription => subscription.dispose()); window.removeEventListener('resize', scheduleViewport); window.visualViewport?.removeEventListener('resize', scheduleViewport); document.removeEventListener('visibilitychange', syncVisibleViewport); window.removeEventListener('pageshow', scheduleViewport); document.removeEventListener('selectionchange', syncSelectionMode); window.removeEventListener('keydown', interruptOutput, true); document.removeEventListener('keydown', copySelectionShortcut, true); document.removeEventListener('copy', nativeOutputCopied); canvas.current?.closest('.log')?.classList.remove('selection-copied'); canvas.current?.removeEventListener('pointerdown', captureSelectionMode, true); canvas.current?.removeEventListener('click', focus); releaseLongPressSelection(); releaseScrollContainment(); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; overlays.clear(); terminals.forEach(candidate => candidate.dispose()); };
   }, [id, onQuestion, terminalMode]);
   const processing = processingLabel !== undefined;
   const loading = !hasRendered || processing;
   const visibleStatus = processing ? 'Starting' : terminalMode && status === 'Live' ? 'Terminal' : status;
   const loadingLabel = processingLabel ?? (terminalMode ? 'Connecting to pane' : status === 'Live' ? 'Waiting for output' : status);
-  const selectionActions = selectionToolbar === undefined ? null : createPortal(<div className="output-selection-toolbar" role="toolbar" aria-label="Output selection actions" style={{ top: selectionToolbar.top }} onPointerDown={event => event.preventDefault()}>
+  const selectionActions = selectionToolbar === undefined || worktreeNotes.expanded ? null : createPortal(<div className="output-selection-toolbar" role="toolbar" aria-label="Output selection actions" style={{ top: selectionToolbar.top }} onPointerDown={event => event.preventDefault()}>
     <button type="button" disabled={!worktreeNotes.canCreate || selectionToolbar.text.length > 30_000} onClick={() => void worktreeNotes.createWithText(selectionToolbar.text)}>Create note</button>
     {worktreeNotes.active && <button type="button" disabled={!worktreeNotes.canAppendToActive(selectionToolbar.text)} onClick={() => worktreeNotes.appendToActive(selectionToolbar.text)}>Append to note</button>}
     <button type="button" onClick={() => setPromptDraft(id, current => appendTextBlock(current, selectionToolbar.text))}>Add to prompt</button>
@@ -1809,11 +2065,13 @@ function Log({ id, worktreeId, branch, gitStatus, history, refreshHistory, onQue
     });
   };
   const historyPanel = historyOpen && createPortal(<section className="prompt-history-menu more-menu flyout-menu" ref={historyFlyoutRef} style={historyFlyoutStyle} aria-label="Prompt history"><header><strong>Prompt history</strong><span>{history.length}</span></header><div className="prompt-history-list" ref={historyListRef}>{history.length === 0 ? <p>No prompts have been queued for this worktree yet.</p> : [...history].reverse().map(entry => <button key={entry.id} type="button" title={entry.text} onClick={() => useHistoryEntry(entry)}><span>{entry.text}</span><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time></button>)}</div></section>, document.body);
-  const historyToggle = !terminalMode ? <><span className="prompt-history-anchor" ref={historyAnchorRef}><button className={`prompt-history-toggle${historyOpen ? ' active' : ''}`} type="button" aria-label={`Prompt history (${history.length})`} title="Prompt history" aria-expanded={historyOpen} onClick={event => { event.stopPropagation(); const open = !historyOpen; setHistoryOpen(open); if (open) void refreshHistory(); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5M12 7v5l3 2" /></svg></button></span>{historyPanel}</> : null;
-  const promptSection = !terminalMode && toolbarExpanded !== 'git' ? <div className={`toolbar-prompt-group${toolbarExpanded === 'prompt' ? ' expanded' : ''}`}>{historyToggle}{lastPrompt !== undefined && <button className={`toolbar-prompt${toolbarExpanded === 'prompt' ? ' expanded' : ''}`} type="button" aria-label="Last prompt" aria-expanded={toolbarExpanded === 'prompt'} title={lastPrompt} onClick={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'prompt' ? undefined : 'prompt'); }}><span className="toolbar-prompt-text">{lastPrompt}</span></button>}</div> : null;
-  const gitSection = toolbarExpanded !== 'prompt' ? <GitStatus branch={branch} summary={gitStatus} expanded={toolbarExpanded === 'git'} onToggle={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'git' ? undefined : 'git'); }} /> : null;
+  const toggleHistory = () => { const open = !historyOpen; setHistoryOpen(open); if (open) { setToolbarExpanded(undefined); void refreshHistory(); } };
+  const historyToggle = !terminalMode ? <><span className="prompt-history-anchor" ref={historyAnchorRef}><button className={`prompt-history-toggle${historyOpen ? ' active' : ''}`} type="button" aria-label={`Prompt history (${history.length})`} title="Prompt history" aria-expanded={historyOpen} onClick={event => { event.stopPropagation(); toggleHistory(); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5M12 7v5l3 2" /></svg></button></span>{historyPanel}</> : null;
+  const promptSection = !terminalMode ? <div className="toolbar-prompt-group">{historyToggle}{lastPrompt !== undefined && <button ref={lastPromptRef} className="toolbar-prompt" type="button" aria-label="Last prompt" aria-expanded={historyOpen} title={lastPrompt} onClick={toggleHistory}><span className="toolbar-prompt-text">{lastPrompt}</span></button>}</div> : null;
+  const gitSection = <GitStatus branch={branch} summary={gitStatus} expanded={toolbarExpanded === 'git'} onToggle={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'git' ? undefined : 'git'); }} />;
   const output = <div className="log-output"><div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'}><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{reviewMode && <div className="review-navigation" role="group" aria-label="Review navigation"><button type="button" onPointerDown={event => event.preventDefault()} onClick={() => terminalInputs.get(id)?.('\x1b[Z')}>Back</button><button type="button" onPointerDown={event => event.preventDefault()} onClick={() => terminalInputs.get(id)?.('\t')}>Next</button></div>}{(status !== 'Live' || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{(!terminalMode || reviewMode) && <div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><div className="page-down-controls">{scrolledUp && <button className="log-control page-arrow back-to-bottom" aria-label="Back to bottom" title="Back to bottom" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(0)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19h14M6 8l6 6 6-6" /></svg></button>}<button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div>}</div></div>;
-  return <section className="log-shell"><div className={`log${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><div className={`log-split${worktreeNotes.active ? ' has-note' : ''}`}>{output}{worktreeNotes.pane}</div></div>{selectionActions}<div className={`log-topbar${toolbarExpanded === undefined ? '' : ' expanded'}`}>{promptSection}{gitSection}</div></section>;
+  const browserPane = browserUrl === undefined || onBrowserClose === undefined ? null : <ProjectBrowserPane url={browserUrl} worktreeId={worktreeId} onClose={onBrowserClose} />;
+  return <section className="log-shell"><div className={`log${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><div className={`log-split${browserPane !== null ? ' has-browser' : worktreeNotes.active ? ' has-note' : ''}`}>{output}{browserPane ?? worktreeNotes.pane}</div></div>{selectionActions}<div className={`log-topbar${toolbarExpanded === undefined ? '' : ' expanded'}`}>{promptSection}{gitSection}</div></section>;
 }
 
 type MoreMenuIconName = 'actions'|'attachment'|'new-task'|'pull-request'|'push'|'review'|'swap';
@@ -1898,26 +2156,26 @@ function More({ id, worktreeId, newTaskConfigured = false, pushAction = defaultP
   const startNewTask = async () => {
     if (id === undefined || startingNewTask || !newTask?.enabled || !beginPendingOperation(newTaskKey)) return;
     if (worktreeId !== undefined) pendingNewTaskSources.set(worktreeId, id);
-    onOperationFeedback({ tone: 'pending', message: 'Starting a new task…', detail: 'Closing the current session and preparing a fresh agent. You can keep using other tabs.' });
+    setMenuOpen(false);
+    onOperationFeedback({ tone: 'pending', message: 'Starting a new task…', detail: 'Closing the current session and preparing a fresh agent. You can keep using other tabs.', worktreeId });
     try {
       const response = await request(`/api/agents/${encodeURIComponent(id)}/new-task`, { method: 'POST' });
       if (!response.ok) {
         clearNewTask();
         setNewTask({ enabled: false, reason: 'Unable to start a new task.' });
-        onOperationFeedback({ tone: 'error', message: 'New task did not start', detail: await launchError(response) });
+        onOperationFeedback({ tone: 'error', message: 'New task did not start', detail: await launchError(response), worktreeId });
         return;
       }
-      setMenuOpen(false);
       window.setTimeout(() => {
         if (worktreeId === undefined) return clearNewTask();
         if (pendingNewTaskSources.get(worktreeId) !== id) return;
         clearNewTask();
-        onOperationFeedback({ tone: 'error', message: 'New task is taking longer than expected', detail: 'No fresh agent appeared within 30 seconds. Check the worktree status before trying again.' });
+        onOperationFeedback({ tone: 'error', message: 'New task is taking longer than expected', detail: 'No fresh agent appeared within 30 seconds. Check the worktree status before trying again.', worktreeId });
       }, 30_000);
     } catch {
       clearNewTask();
       setNewTask({ enabled: false, reason: 'Unable to start a new task.' });
-      onOperationFeedback({ tone: 'error', message: 'New task did not start', detail: 'The console could not be reached. The current agent is unchanged.' });
+      onOperationFeedback({ tone: 'error', message: 'New task did not start', detail: 'The console could not be reached. The current agent is unchanged.', worktreeId });
     }
   };
   const toggleMenu = () => {
@@ -1947,6 +2205,7 @@ function AgentCard({ agent, active, tabBar, cleanupControl, onDeleted, onSelectT
   const [swapping, setSwapping] = useState(false);
   const [question, setQuestion] = useState<ChoiceQuestion>();
   const promptHistory = usePromptHistory(agent.id);
+  const projectBrowser = useProjectBrowser(agent.projectUrl, agent.worktreeId);
   const startingNewTask = usePendingOperation(newTaskOperationKey(agent.worktreeId ?? agent.id));
   const cancel = async () => { if (cancelling) return; setCancelling(true); try { await request(`/api/agents/${encodeURIComponent(agent.id)}/cancel`, { method: 'POST' }); } finally { setCancelling(false); } };
   const remove = async () => {
@@ -1966,14 +2225,14 @@ function AgentCard({ agent, active, tabBar, cleanupControl, onDeleted, onSelectT
     if (deactivating || agent.worktreeId === undefined || !beginPendingOperation(deactivateOperationKey(agent.worktreeId))) return;
     setDeactivating(true);
     const label = agent.worktreeLabel ?? agentLabel(agent);
-    onOperationFeedback({ tone: 'pending', message: `Turning off ${label}…`, detail: 'Stopping the agent while keeping the worktree available to start again.' });
+    onOperationFeedback({ tone: 'pending', message: `Turning off ${label}…`, detail: 'Stopping the agent while keeping the worktree available to start again.', worktreeId: agent.worktreeId });
     try {
       const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/deactivate`, { method: 'POST' });
-      if (!response.ok) return onOperationFeedback({ tone: 'error', message: `${label} could not be turned off`, detail: await launchError(response) });
+      if (!response.ok) return onOperationFeedback({ tone: 'error', message: `${label} could not be turned off`, detail: await launchError(response), worktreeId: agent.worktreeId });
       retainedReviewAgents.delete(agent.id);
       await onDeleted();
-      onOperationFeedback({ tone: 'success', message: `${label} is off`, detail: 'The worktree is still available. Use Launch agent whenever you want to turn it back on.' });
-    } catch { onOperationFeedback({ tone: 'error', message: `${label} could not be turned off`, detail: 'The console could not be reached. The agent may still be running.' }); }
+      onOperationFeedback({ tone: 'success', message: `${label} is off`, detail: 'The worktree is still available. Use Launch agent whenever you want to turn it back on.', worktreeId: agent.worktreeId });
+    } catch { onOperationFeedback({ tone: 'error', message: `${label} could not be turned off`, detail: 'The console could not be reached. The agent may still be running.', worktreeId: agent.worktreeId }); }
     finally {
       setPendingOperation(deactivateOperationKey(agent.worktreeId), false);
       setDeactivating(false);
@@ -2038,7 +2297,7 @@ function AgentCard({ agent, active, tabBar, cleanupControl, onDeleted, onSelectT
   const swapped = paneMode !== 'agent';
   const reviewing = paneMode === 'review';
   const omxQuestion = agent.question === undefined ? undefined : { text: agent.question.text, choices: agent.question.choices, omxId: agent.question.id };
-  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} terminalMode={swapped} reviewMode={reviewing} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />{tabBar}<PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) }); if (response.ok) await promptHistory.refresh(); return response.ok; }} /><Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} deactivating={deactivating} swapping={swapping} swapped={swapped} reviewing={reviewing} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSwap={() => void changePaneMode('terminal')} onReview={() => void changePaneMode('review')} onSelectTarget={onSelectTarget} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} question={omxQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} pushAction={agent.push} stack={agent.stack} /></article>;
+  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} onBrowserClose={projectBrowser.close} terminalMode={swapped} reviewMode={reviewing} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />{tabBar}<PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) }); if (response.ok) await promptHistory.refresh(); return response.ok; }} /><Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} deactivating={deactivating} swapping={swapping} swapped={swapped} reviewing={reviewing} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSwap={() => void changePaneMode('terminal')} onReview={() => void changePaneMode('review')} onSelectTarget={onSelectTarget} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={omxQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} pushAction={agent.push} stack={agent.stack} /></article>;
 }
 
 function launchError(response: Response): Promise<string> {
@@ -2051,6 +2310,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperatio
   const startingNewTask = usePendingOperation(newTaskOperationKey(worktree.id));
   const processing = launching || startingNewTask;
   const worktreeNotes = useWorktreeNotes(worktree.id);
+  const projectBrowser = useProjectBrowser(worktree.projectUrl, worktree.id);
   const [gitExpanded, setGitExpanded] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => {
@@ -2061,31 +2321,31 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperatio
   const launch = async () => {
     if (!worktree.available || processing || !beginPendingOperation(launchKey)) return;
     setError('');
-    onOperationFeedback({ tone: 'pending', message: `Starting ${worktree.label}…`, detail: 'Launching Codex and waiting for the agent session to become ready.' });
+    onOperationFeedback({ tone: 'pending', message: `Starting ${worktree.label}…`, detail: 'Launching Codex and waiting for the agent session to become ready.', worktreeId: worktree.id });
     try {
       const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/launch`, { method: 'POST' });
       if (!response.ok) {
         const message = await launchError(response);
         setError(message);
-        return onOperationFeedback({ tone: 'error', message: `${worktree.label} could not start`, detail: message });
+        return onOperationFeedback({ tone: 'error', message: `${worktree.label} could not start`, detail: message, worktreeId: worktree.id });
       }
       const payload = await response.json() as { agentId?: unknown };
       if (typeof payload.agentId !== 'string') {
         const message = 'The agent started but could not be opened.';
         setError(message);
-        return onOperationFeedback({ tone: 'error', message: `${worktree.label} could not be opened`, detail: message });
+        return onOperationFeedback({ tone: 'error', message: `${worktree.label} could not be opened`, detail: message, worktreeId: worktree.id });
       }
       onLaunched(payload.agentId, `worktree-${worktree.id}`);
-      onOperationFeedback({ tone: 'success', message: `${worktree.label} is starting`, detail: 'The new agent session is ready and its output is connecting.' });
+      onOperationFeedback({ tone: 'success', message: `${worktree.label} is starting`, detail: 'The new agent session is ready and its output is connecting.', worktreeId: worktree.id });
     } catch {
       const message = 'Unable to reach the console while launching the agent.';
       setError(message);
-      onOperationFeedback({ tone: 'error', message: `${worktree.label} could not start`, detail: message });
+      onOperationFeedback({ tone: 'error', message: `${worktree.label} could not start`, detail: message, worktreeId: worktree.id });
     }
     finally { setPendingOperation(launchKey, false); }
   };
   const output = <div className="log-output"><div className="log-loading inactive" role={processing ? 'status' : undefined} aria-label={startingNewTask ? 'Starting new task' : launching ? `Starting ${worktree.label}` : undefined}>{processing ? <span className="spinner" /> : null}<strong>{startingNewTask ? 'Starting new task…' : launching ? 'Starting Codex…' : 'Agent is off'}</strong><span>{startingNewTask ? 'Waiting for the fresh agent session to become ready.' : launching ? 'Creating the agent session and connecting its output.' : 'This worktree is available. Launch an agent when you are ready to continue.'}</span></div><span className={`status log-status ${processing ? 'connecting' : 'inactive'}`}>{processing ? 'Starting' : 'Off'}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div>;
-  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><div className={`log-split${worktreeNotes.active ? ' has-note' : ''}`}>{output}{worktreeNotes.pane}</div></div><div className={`log-topbar${gitExpanded ? ' expanded' : ''}`}><GitStatus branch={worktree.branch} summary={worktree.gitStatus} expanded={gitExpanded} onToggle={() => setGitExpanded(value => !value)} /></div></section>{tabBar}<PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions"><span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} /><button className="queue" disabled={!worktree.available || processing} onClick={() => void launch()}>{startingNewTask ? <><span className="spinner" />Starting new task</> : launching ? <><span className="spinner" />Launching</> : 'Launch agent'}</button></div></section></article>;
+  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><div className={`log-split${projectBrowser.open ? ' has-browser' : worktreeNotes.active ? ' has-note' : ''}`}>{output}{projectBrowser.url === undefined ? worktreeNotes.pane : <ProjectBrowserPane url={projectBrowser.url} worktreeId={worktree.id} onClose={projectBrowser.close} />}</div></div><div className={`log-topbar${gitExpanded ? ' expanded' : ''}`}><GitStatus branch={worktree.branch} summary={worktree.gitStatus} expanded={gitExpanded} onToggle={() => setGitExpanded(value => !value)} /></div></section>{tabBar}<PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions"><span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} /><button className="queue" disabled={!worktree.available || processing} onClick={() => void launch()}>{startingNewTask ? <><span className="spinner" />Starting new task</> : launching ? <><span className="spinner" />Launching</> : 'Launch agent'}</button></div></section></article>;
 }
 
 function NotificationControl() {
@@ -2183,6 +2443,7 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
     logSnapshots.retain(activeAgentIds);
     for (const id of lastPrompts.keys()) if (!activeAgentIds.has(id)) lastPrompts.delete(id);
     for (const id of latestAssistantMessages.keys()) if (!activeAgentIds.has(id)) latestAssistantMessages.delete(id);
+    for (const id of overflowingLatestAssistantMessages) if (!activeAgentIds.has(id)) overflowingLatestAssistantMessages.delete(id);
     for (const id of promptDrafts.keys()) if (!activeAgentIds.has(id)) promptDrafts.delete(id);
     const activeWorktreeIds = new Set(payload.worktrees.map(worktree => worktree.id));
     for (const [worktreeId, sourceAgentId] of pendingNewTaskSources) {
@@ -2190,7 +2451,7 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
       if (replacement === undefined && activeWorktreeIds.has(worktreeId)) continue;
       pendingNewTaskSources.delete(worktreeId);
       setPendingOperation(newTaskOperationKey(worktreeId), false);
-      if (replacement !== undefined) showOperationFeedback({ tone: 'success', message: 'New task is ready', detail: `${replacement.worktreeLabel ?? agentLabel(replacement)} is ready for a fresh prompt.` });
+      if (replacement !== undefined) showOperationFeedback({ tone: 'success', message: 'New task is ready', detail: `${replacement.worktreeLabel ?? agentLabel(replacement)} is ready for a fresh prompt.`, worktreeId });
     }
     const content = JSON.stringify([payload.agents, payload.worktrees, payload.cleanupPending ?? 0]);
     if (content !== dashboardContent.current || pendingCompletions.current.size > 0) {
@@ -2492,26 +2753,26 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
     setLauncherOpen(false);
     setCreatingAgent(true);
     setLaunchErrorMessage('');
-    showOperationFeedback({ tone: 'pending', message: `Starting ${worktree.label}…`, detail: 'Launching Codex and waiting for the agent session to become ready.' });
+    showOperationFeedback({ tone: 'pending', message: `Starting ${worktree.label}…`, detail: 'Launching Codex and waiting for the agent session to become ready.', worktreeId: worktree.id });
     try {
       const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/launch`, { method: 'POST' });
       if (!response.ok) {
         const message = await launchError(response);
         setLaunchErrorMessage(message);
-        return showOperationFeedback({ tone: 'error', message: `${worktree.label} could not start`, detail: message });
+        return showOperationFeedback({ tone: 'error', message: `${worktree.label} could not start`, detail: message, worktreeId: worktree.id });
       }
       const payload = await response.json() as { agentId?: unknown };
       if (typeof payload.agentId !== 'string') {
         const message = 'The agent started but could not be opened.';
         setLaunchErrorMessage(message);
-        return showOperationFeedback({ tone: 'error', message: `${worktree.label} could not be opened`, detail: message });
+        return showOperationFeedback({ tone: 'error', message: `${worktree.label} could not be opened`, detail: message, worktreeId: worktree.id });
       }
       launched(payload.agentId);
-      showOperationFeedback({ tone: 'success', message: `${worktree.label} started`, detail: 'The new agent session is ready and its output is connecting.' });
+      showOperationFeedback({ tone: 'success', message: `${worktree.label} started`, detail: 'The new agent session is ready and its output is connecting.', worktreeId: worktree.id });
     } catch {
       const message = 'Unable to reach the console while launching the agent.';
       setLaunchErrorMessage(message);
-      showOperationFeedback({ tone: 'error', message: `${worktree.label} could not start`, detail: message });
+      showOperationFeedback({ tone: 'error', message: `${worktree.label} could not start`, detail: message, worktreeId: worktree.id });
     } finally {
       setPendingOperation(key, false);
       setCreatingAgent(false);
@@ -2536,11 +2797,13 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
   const cleanupDialog = !cleanupOpen ? null : createPortal(<div className="dialog cleanup-dialog" role="dialog" aria-modal="true" aria-labelledby="cleanup-title"><div><header className="cleanup-header"><div><h2 id="cleanup-title">Runtime cleanup</h2><p>Select the stale runtime items to clean up. Unchecked items will be dismissed.</p></div><button className="cleanup-close" type="button" aria-label="Close cleanup" disabled={cleanupLoading} onClick={closeCleanup}>×</button></header>{cleanupLoading && cleanupTargets.length === 0 ? <p className="cleanup-loading" role="status"><span className="spinner" />Searching for cleanup targets…</p> : cleanupTargets.length === 0 ? <p className="cleanup-empty">No cleanup targets remain.</p> : <fieldset className="cleanup-targets" disabled={cleanupLoading}><legend className="sr-only">Cleanup targets</legend>{cleanupTargets.map(target => <label key={target.id} className="cleanup-target"><input type="checkbox" checked={cleanupChecked.has(target.id)} onChange={event => setCleanupChecked(current => { const next = new Set(current); if (event.target.checked) next.add(target.id); else next.delete(target.id); return next; })} /><span><strong><small>{cleanupKindLabel[target.kind]}</small>{target.label}</strong><span>{target.detail}</span></span></label>)}</fieldset>}{cleanupError && <p className="cleanup-error" role="alert">{cleanupError}</p>}<footer className="cleanup-actions"><span>{cleanupTargets.length === 0 ? 'Nothing selected' : `${cleanupChecked.size} of ${cleanupTargets.length} selected`}</span><button type="button" disabled={cleanupLoading || cleanupError === 'Unable to load cleanup targets.'} onClick={() => void resolveCleanup()}>{cleanupLoading ? <><span className="spinner" />Working…</> : cleanupChecked.size === 0 ? 'Dismiss all' : 'Cleanup'}</button></footer></div></div>, document.body);
   const stateLabel: Record<AgentState, string> = { working: 'Working', 'prompt-done': 'Prompt done', 'action-required': 'Action required', closed: 'Agent closed' };
   const operationLabel = (operation: DashboardItem['operation']) => operation === 'launching' ? 'Starting agent' : operation === 'deactivating' ? 'Turning off' : operation === 'new-task' ? 'Starting new task' : undefined;
+  const activeWorktreeId = item?.agent?.worktreeId ?? item?.worktree?.id;
+  const visibleOperationFeedback = operationFeedback?.worktreeId === undefined || operationFeedback.worktreeId === activeWorktreeId ? operationFeedback : undefined;
   const tabBar = <><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => {
     const transition = operationLabel(entry.operation);
     const label = transition ?? stateLabel[entry.state];
     return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{transition !== undefined ? <span className="tab-transition-label"><span>{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
-  })}<NotificationControl />{updateAvailable && <button className="update-ready" type="button" onClick={onReload}>Update available <span>Reload</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle}><button disabled={creatingAgent} onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} disabled={creatingAgent || pendingOperations.has(launchOperationKey(worktree.id))} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{operationFeedback && <OperationFeedbackBanner feedback={operationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{launchErrorMessage && operationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
+  })}<NotificationControl />{updateAvailable && <button className="update-ready" type="button" onClick={onReload}>Update available <span>Reload</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle}><button disabled={creatingAgent} onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} disabled={creatingAgent || pendingOperations.has(launchOperationKey(worktree.id))} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{launchErrorMessage && operationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
   if (items.length === 0) return <main className="console"><article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}</article></main>;
   return <main className="console"><section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={launched} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}</main>;
 }

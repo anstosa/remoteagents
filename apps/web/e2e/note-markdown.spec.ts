@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('renders saved notes as markdown and focuses into source editing', async ({ page }) => {
+test('renders saved notes with stable lists, links, selection actions, and inferred select/edit modes', async ({ page }) => {
   const markdown = [
     '# Release notes',
     '',
@@ -8,6 +8,15 @@ test('renders saved notes as markdown and focuses into source editing', async ({
     '',
     '- First item',
     '- [x] Verified',
+    '',
+    '1. First ordered item',
+    '',
+    '2. Second ordered item',
+    '   with a continuation line',
+    '3. Third ordered item',
+    '   - Nested detail',
+    '',
+    'Bare links work at https://example.com/bare and www.example.org/docs.',
     '',
     '> Important',
     '',
@@ -36,6 +45,13 @@ test('renders saved notes as markdown and focuses into source editing', async ({
   ].join('\n');
   const note = { id: 'note-identifier-001', text: markdown };
 
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async (value: string) => { (window as unknown as { __copiedNoteSelection: string }).__copiedNoteSelection = value; } }
+    });
+    Object.defineProperty(window, '__copiedNoteSelection', { configurable: true, writable: true, value: '' });
+  });
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -58,13 +74,26 @@ test('renders saved notes as markdown and focuses into source editing', async ({
 
   const preview = page.getByLabel('Note preview');
   await expect(preview).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Note' })).toContainText('Note');
+  await expect(page.getByRole('dialog', { name: 'Worktree note' })).toHaveCount(0);
+  await expect(page.getByText('Saved', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^(?:Edit|Select) note$/u })).toHaveCount(0);
   const outputFontSize = await page.locator('.terminal-frame.active .xterm').evaluate(element => getComputedStyle(element).fontSize);
   await expect(preview).toHaveCSS('font-size', outputFontSize);
   await expect(page.getByRole('textbox', { name: 'Note content' })).toHaveCount(0);
   await expect(preview.getByRole('heading', { name: 'Release notes', level: 1 })).toBeVisible();
   await expect(preview.locator('strong')).toHaveText('carefully');
   await expect(preview.getByRole('link', { name: 'the guide' })).toHaveAttribute('href', 'https://example.com/docs');
-  await expect(preview.getByRole('listitem')).toHaveCount(2);
+  await expect(preview.getByRole('link', { name: 'https://example.com/bare' })).toHaveAttribute('href', 'https://example.com/bare');
+  await expect(preview.getByRole('link', { name: 'www.example.org/docs' })).toHaveAttribute('href', 'https://www.example.org/docs');
+  await expect(preview.locator(':scope > ul > li')).toHaveCount(2);
+  await expect(preview.locator(':scope > ol')).toHaveCount(1);
+  await expect(preview.locator(':scope > ol > li')).toHaveText([
+    'First ordered item',
+    'Second ordered item with a continuation line',
+    'Third ordered itemNested detail'
+  ]);
+  await expect(preview.locator(':scope > ol > li').nth(2).locator('ul > li')).toHaveText('Nested detail');
   await expect(preview.getByRole('checkbox')).toBeChecked();
   await expect(preview.locator('blockquote')).toHaveText('Important');
   await expect(preview.locator('pre code')).toHaveText('const ready = true;');
@@ -78,7 +107,37 @@ test('renders saved notes as markdown and focuses into source editing', async ({
   await expect(table.getByRole('row').nth(1).getByRole('cell')).toHaveText(['Remote/mobile supervision', 'Browser, PWA, voice, software keyboard, push alerts', 'Strong; better than most terminal-only tools']);
   await expect(table.getByRole('row').nth(2).getByRole('cell')).toHaveText(['Existing-session discovery', 'Automatically finds Codex/OMX tmux sessions', 'Major advantage; many competitors only understand sessions they created']);
   await expect(table.getByRole('row').nth(3).getByRole('cell')).toHaveText(['Durable history', 'Notes and saved prompts', 'Behind']);
+  const scrollRange = await preview.evaluate(element => element.scrollHeight - element.clientHeight);
+  expect(scrollRange).toBeGreaterThan(0);
+  await preview.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect.poll(() => preview.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  await preview.evaluate(element => { element.scrollTop = 0; });
 
+  await preview.locator('p').first().evaluate(element => {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    document.dispatchEvent(new Event('selectionchange'));
+  });
+  await expect(page.getByRole('textbox', { name: 'Note content' })).toHaveCount(0);
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toContain('Review carefully');
+  const selectionActions = page.getByRole('toolbar', { name: 'Note selection actions' });
+  await expect(selectionActions).toBeVisible();
+  await expect(selectionActions.getByRole('button', { name: 'Create note' })).toHaveCount(0);
+  await expect(selectionActions.getByRole('button', { name: 'Append to note' })).toHaveCount(0);
+  await expect(selectionActions.getByRole('button', { name: 'Add to prompt' })).toBeVisible();
+  await expect(selectionActions.getByRole('button', { name: 'Copy' })).toBeVisible();
+  await selectionActions.getByRole('button', { name: 'Add to prompt' }).click();
+  await expect(page.getByRole('textbox', { name: 'Prompt' })).toHaveValue('Review carefully and use the guide.');
+  await selectionActions.getByRole('button', { name: 'Copy' }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __copiedNoteSelection: string }).__copiedNoteSelection)).toBe('Review carefully and use the guide.');
+  await expect(preview).toHaveClass(/selection-copied/u);
+  await expect(preview).not.toHaveClass(/selection-copied/u);
+
+  await preview.click();
+  await expect(preview).toBeVisible();
   await preview.click();
   const editor = page.getByRole('textbox', { name: 'Note content' });
   await expect(editor).toBeFocused();
@@ -86,4 +145,12 @@ test('renders saved notes as markdown and focuses into source editing', async ({
   await expect(editor).toHaveValue(markdown);
   await page.getByRole('button', { name: 'Copy note' }).focus();
   await expect(preview).toBeVisible();
+
+  await page.setViewportSize({ width: 240, height: 640 });
+  const toolbar = page.getByRole('toolbar', { name: 'Note actions' });
+  await expect(toolbar).toHaveCSS('overflow-x', 'auto');
+  const overflow = await toolbar.evaluate(element => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
+  expect(overflow.scrollWidth).toBeGreaterThan(overflow.clientWidth);
+  await toolbar.evaluate(element => { element.scrollLeft = element.scrollWidth; });
+  expect(await toolbar.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
 });

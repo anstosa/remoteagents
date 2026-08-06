@@ -39,7 +39,6 @@ test('keeps a new-task processing indicator visible until the replacement agent 
   await expect(processing).toContainText('preparing a fresh agent');
   await expect(page.getByRole('status').filter({ hasText: 'Starting a new task' })).toContainText('You can keep using other tabs');
   await expect(page.getByRole('tab', { name: 'Cora — Starting new task' })).toHaveAttribute('aria-busy', 'true');
-
   oldAgentGone = true;
   const requestsBeforeRemoval = dashboardRequests;
   await expect.poll(() => dashboardRequests, { timeout: 10_000 }).toBeGreaterThan(requestsBeforeRemoval);
@@ -50,4 +49,42 @@ test('keeps a new-task processing indicator visible until the replacement agent 
   await expect(page.getByRole('tab', { name: 'Cora — Prompt done' })).toHaveAttribute('aria-selected', 'true', { timeout: 10_000 });
   await expect(processing).toHaveCount(0);
   await expect(page.getByRole('status').filter({ hasText: 'New task is ready' })).toContainText('ready for a fresh prompt');
+});
+
+test('shows the new-task banner only on its worktree', async ({ page }) => {
+  let finishNewTask!: () => void;
+  const newTaskFinished = new Promise<void>(resolve => { finishNewTask = resolve; });
+
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: {
+      generation: 1,
+      agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, newTaskConfigured: true, title: 'Ready' }],
+      worktrees: [{ id: 'delta', label: 'Delta', path: '/worktrees/delta', available: true, pinned: true, order: 1 }]
+    } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
+    if (url.pathname === '/api/agents/agent-1/new-task' && request.method() === 'GET') return route.fulfill({ json: { enabled: true } });
+    if (url.pathname === '/api/agents/agent-1/new-task' && request.method() === 'POST') {
+      await newTaskFinished;
+      return route.fulfill({ status: 202 });
+    }
+    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [] } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'More options' }).click();
+  await page.locator('.more-menu').getByRole('button', { name: 'New Task', exact: true }).click();
+
+  const banner = page.getByRole('status').filter({ hasText: 'Starting a new task' });
+  await expect(banner).toBeVisible();
+  await page.getByRole('tab', { name: 'Delta — Agent closed' }).click();
+  await expect(banner).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Cora — Starting new task' }).click();
+  await expect(banner).toBeVisible();
+  finishNewTask();
 });

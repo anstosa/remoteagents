@@ -155,7 +155,7 @@ export class TmuxAdapter {
     return out.code === 0 ? safeSnapshot(out.stdout).slice(-96_000) : undefined;
   }
 
-  async captureWindow(socket: SocketRef, pane: string, history: number, rows: number): Promise<{ text: string; older: boolean; lastPrompt?: string; latestAssistantMessage?: string } | undefined> {
+  async captureWindow(socket: SocketRef, pane: string, history: number, rows: number): Promise<{ text: string; older: boolean; lastPrompt?: string; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean } | undefined> {
     if (!paneId.test(pane) || !Number.isInteger(history) || history < 0 || history > 5_000 || !Number.isInteger(rows) || rows < 2 || rows > 300) return undefined;
     // tmux's -S/-E coordinates shift around wrapped and blank rows. Capture a
     // bounded history snapshot and slice its concrete lines instead, so page
@@ -169,9 +169,10 @@ export class TmuxAdapter {
     const start = Math.max(0, end - rows);
     const lastPrompt = lastPromptFromHistory(out.stdout);
     const assistantMessage = latestCompletedAssistantMessage(out.stdout);
-    const latestAssistantMessage = assistantMessage !== undefined && assistantMessage.rows > rows && assistantMessage.text.length <= 30_000 ? assistantMessage.text : undefined;
+    const latestAssistantMessage = assistantMessage !== undefined && assistantMessage.text.length <= 30_000 ? assistantMessage.text : undefined;
+    const latestAssistantMessageOverflows = assistantMessage === undefined || latestAssistantMessage === undefined ? undefined : assistantMessage.rows > rows;
     const window = bottomAlignedWindow(lines.slice(start, end), rows);
-    return { text: safeSnapshot(window.join('\n')), older: start > 0, ...(lastPrompt === undefined ? {} : { lastPrompt }), ...(latestAssistantMessage === undefined ? {} : { latestAssistantMessage }) };
+    return { text: safeSnapshot(window.join('\n')), older: start > 0, ...(lastPrompt === undefined ? {} : { lastPrompt }), ...(latestAssistantMessage === undefined ? {} : { latestAssistantMessage, latestAssistantMessageOverflows }) };
   }
 
   async resize(socket: SocketRef, pane: string, cols: number, rows: number): Promise<boolean> {

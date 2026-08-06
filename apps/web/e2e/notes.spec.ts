@@ -60,7 +60,7 @@ test('creates, previews, edits, autosaves, and deletes per-worktree notes', asyn
   expect(notesBounds!.y).toBeLessThan(pageUpBounds!.y);
 
   await notesButton.click();
-  const pane = page.getByRole('dialog', { name: 'Worktree note' });
+  const pane = page.getByRole('dialog', { name: 'Note' });
   const editor = page.getByRole('textbox', { name: 'Note content' });
   await expect(pane).toBeVisible();
   await expect(notesButton.locator('.notes-count')).toHaveText('1');
@@ -93,9 +93,10 @@ test('creates, previews, edits, autosaves, and deletes per-worktree notes', asyn
   expect(restoredBounds!.width / outputBounds!.width).toBeLessThan(0.55);
   await expect(outputPane).toBeVisible();
 
+  await page.getByLabel('Note preview').click();
   await editor.fill('Remember to review the migration plan carefully');
   await expect.poll(() => savedTexts).toContain('Remember to review the migration plan carefully');
-  await expect(page.getByText('Saved', { exact: true })).toBeVisible();
+  await expect(page.getByText('Saved', { exact: true })).toHaveCount(0);
   await editor.fill('Remember to review the migration plan carefully before unload');
   await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
   await expect.poll(() => savedTexts).toContain('Remember to review the migration plan carefully before unload');
@@ -114,7 +115,7 @@ test('creates, previews, edits, autosaves, and deletes per-worktree notes', asyn
   await notesButton.click();
   await page.getByRole('button', { name: 'Second useful reminder…' }).click();
   await expect.poll(() => savedTexts).toContain('Second useful reminder');
-  await expect(page.getByText('Saved', { exact: true })).toBeVisible();
+  await expect(page.getByText('Saved', { exact: true })).toHaveCount(0);
   await page.getByLabel('Note preview').click();
   await expect(editor).toBeFocused();
   await editor.press('Escape');
@@ -141,7 +142,7 @@ test('creates, previews, edits, autosaves, and deletes per-worktree notes', asyn
   await page.getByLabel('Note preview').click();
   await expect(editor).toHaveValue('Second useful reminder with a dirty delete');
   await expect.poll(() => savedTexts).toContain('Second useful reminder with a dirty delete');
-  await expect(page.getByText('Saved', { exact: true })).toBeVisible();
+  await expect(page.getByText('Saved', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Delete note' }).click();
   await expect(pane).toHaveCount(0);
   await expect(notesButton).toBeFocused();
@@ -170,7 +171,7 @@ test('switches sticky notes between vertical and horizontal output splits', asyn
   const log = page.locator('.log');
   const output = page.locator('.log-output');
   const outputStatus = output.locator('> .log-status');
-  const pane = page.getByRole('dialog', { name: 'Worktree note' });
+  const pane = page.getByRole('dialog', { name: 'Note' });
   await pane.evaluate(async element => await Promise.all(element.getAnimations().map(animation => animation.finished)));
   await expect(outputStatus).toHaveCount(1);
   await expect(page.locator('.log > .log-status')).toHaveCount(0);
@@ -186,6 +187,15 @@ test('switches sticky notes between vertical and horizontal output splits', asyn
   expect(vertical[1]!.x + vertical[1]!.width - vertical[3]!.x - vertical[3]!.width).toBeLessThanOrEqual(10);
   expect(vertical[3]!.y).toBeGreaterThanOrEqual(vertical[1]!.y);
   expect(vertical[3]!.y - vertical[1]!.y).toBeLessThanOrEqual(10);
+
+  await page.getByLabel('Note preview').click();
+  await expect(page.getByRole('textbox', { name: 'Note content' })).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Restore note' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(output).toBeHidden();
+  await page.getByRole('button', { name: 'Restore note' }).click();
+  await expect(page.getByLabel('Note preview')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Expand note' })).toHaveAttribute('aria-pressed', 'false');
+  await expect(output).toBeVisible();
 
   await page.setViewportSize({ width: 1_000, height: 600 });
   await expect.poll(async () => {

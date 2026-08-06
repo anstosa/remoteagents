@@ -6,6 +6,7 @@ test('manages waiting prompts from the clock control connected to Queue', async 
     { id: 'queued-prompt-001', text: 'First queued prompt', createdAt: '2026-08-04T01:00:00.000Z' },
     { id: 'queued-prompt-002', text: 'Second queued prompt', createdAt: '2026-08-04T01:01:00.000Z', attachments: [{ name: 'context.txt', size: 7 }] }
   ];
+  const saved: Array<{ id: string; text: string; attachments?: Array<{ name: string; size: number }> }> = [];
   await page.addInitScript(() => {
     class MockWebSocket {
       static readonly CONNECTING = 0;
@@ -30,9 +31,18 @@ test('manages waiting prompts from the clock control connected to Queue', async 
     if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', title: '⠋ Working' }], worktrees: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
-    if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: saved } });
     if (url.pathname === '/api/agents/agent-1/prompt-history') return route.fulfill({ json: { prompts: [] } });
     if (url.pathname === '/api/agents/agent-1/queued-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: queued } });
+    const saveMatch = /^\/api\/agents\/agent-1\/queued-prompts\/([^/]+)\/save$/u.exec(url.pathname);
+    if (saveMatch && request.method() === 'POST') {
+      const index = queued.findIndex(prompt => prompt.id === saveMatch[1]);
+      if (index < 0) return route.fulfill({ status: 404, json: { error: 'missing' } });
+      const [prompt] = queued.splice(index, 1);
+      const savedPrompt = { id: `saved-${prompt!.id}`, text: prompt!.text, ...('attachments' in prompt! ? { attachments: prompt!.attachments } : {}) };
+      saved.unshift(savedPrompt);
+      return route.fulfill({ status: 201, json: savedPrompt });
+    }
     const match = /^\/api\/agents\/agent-1\/queued-prompts\/([^/]+)(\/move)?$/u.exec(url.pathname);
     if (match?.[2] === '/move' && request.method() === 'POST') {
       const index = queued.findIndex(prompt => prompt.id === match[1]);
@@ -86,15 +96,18 @@ test('manages waiting prompts from the clock control connected to Queue', async 
   await page.getByRole('button', { name: 'Move queued prompt earlier: Second queued prompt' }).click();
   await expect(copies.first()).toContainText('Second queued prompt');
   await expect(positions).toHaveText(['1', '2']);
-  await page.getByRole('button', { name: 'Edit queued prompt: Second queued prompt', exact: true }).click();
+  await copies.first().click();
   const editor = page.getByRole('textbox', { name: 'Edit queued prompt: Second queued prompt' });
   await editor.fill('Edited queued prompt');
-  await page.getByRole('button', { name: 'Save queued prompt: Second queued prompt' }).click();
+  await page.getByRole('button', { name: 'Save queued prompt changes: Second queued prompt' }).click();
   await expect(copies.first()).toContainText('Edited queued prompt');
 
-  await page.getByRole('button', { name: 'Cancel queued prompt: Edited queued prompt' }).click();
+  await page.getByRole('button', { name: 'Save queued prompt: Edited queued prompt' }).click();
   await expect(page.getByRole('button', { name: 'Queued prompts (1)' })).toBeVisible();
   await expect(copies).toHaveCount(1);
+  await page.getByRole('button', { name: 'Saved prompts (1)' }).click();
+  await expect(page.getByLabel('Saved prompts', { exact: true })).toContainText('Edited queued prompt');
+  expect(requested).toContain('POST /api/agents/agent-1/queued-prompts/queued-prompt-002/save');
 
   await page.getByRole('textbox', { name: 'Prompt' }).fill('Third queued prompt');
   await queue.click();
@@ -103,4 +116,7 @@ test('manages waiting prompts from the clock control connected to Queue', async 
   if (!await menu.isVisible()) await updatedClock.click();
   await expect(menu).toBeVisible();
   await expect(copies.last()).toContainText('Third queued prompt');
+  await page.getByRole('button', { name: 'Cancel queued prompt: First queued prompt' }).click();
+  await expect(page.getByRole('button', { name: 'Queued prompts (1)' })).toBeVisible();
+  await expect(copies).toHaveCount(1);
 });

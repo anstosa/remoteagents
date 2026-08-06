@@ -54,6 +54,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const paneViewports = new PaneViewportCoordinator();
   const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 65_536 }); const webRoot = fileURLToPath(new URL('../../web/dist', import.meta.url)); const uiVersion = async () => await readFile(join(webRoot, 'index.html'), 'utf8').then(html => /<script[^>]+src="([^"]+)"/u.exec(html)?.[1]).catch(() => undefined); await app.register(cookie); await app.register(staticPlugin, { root: webRoot, index: false }); await app.register(rateLimit, { global: false }); await app.register(websocket, { options: { maxPayload: 65_536 } });
   const expectedHost = config.publicOrigin.host;
+  const projectFrameSources = [...new Set(config.worktrees.flatMap(worktree => worktree.projectUrl === undefined ? [] : [new URL(worktree.projectUrl).origin]))];
+  const frameSourcePolicy = `frame-src 'self'${projectFrameSources.length === 0 ? '' : ` ${projectFrameSources.join(' ')}`}`;
   const forbidden = () => Object.assign(new Error('forbidden'), { statusCode: 403 });
   const unauthorized = () => Object.assign(new Error('unauthorized'), { statusCode: 401 });
   const inactiveClient = () => Object.assign(new Error('another client is active'), { statusCode: 423 });
@@ -79,7 +81,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }) })), worktrees: discovered.worktrees.map(worktree => ({ ...worktree, ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }) })), cleanupPending: cleanup.pending().length };
   };
   dashboardUpdates.setLoader(dashboard);
-  app.addHook('onSend', async (_request, reply, payload) => { reply.header('Cache-Control', 'no-store').header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains').header('X-Frame-Options', 'DENY').header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()').header('Cross-Origin-Opener-Policy', 'same-origin').header('Cross-Origin-Resource-Policy', 'same-origin').header('Content-Security-Policy', `default-src 'self'; connect-src 'self' wss://${expectedHost}; style-src 'self' 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`); return payload; });
+  app.addHook('onSend', async (_request, reply, payload) => { reply.header('Cache-Control', 'no-store').header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains').header('X-Frame-Options', 'DENY').header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()').header('Cross-Origin-Opener-Policy', 'same-origin').header('Cross-Origin-Resource-Policy', 'same-origin').header('Content-Security-Policy', `default-src 'self'; connect-src 'self' wss://${expectedHost}; style-src 'self' 'unsafe-inline'; ${frameSourcePolicy}; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`); return payload; });
   app.get('/healthz', async () => ({ ok: true }));
   app.get('/', async (request, reply) => { browser(request); return reply.sendFile('index.html'); });
   app.get('/api/ui-version', async (request) => { browser(request); return { version: await uiVersion() }; });
@@ -163,6 +165,20 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return { skills: await skills.list(worktree?.path ?? target.agent.workspace) };
   });
   app.post('/api/agents/:id/saved-prompts', { bodyLimit: Math.ceil(maxPromptAttachmentBytes * 1.4) }, async (request, reply) => { controlled(request, true); const key = await savedPromptKey((request.params as { id: string }).id); const data = body(request); const attachments = promptAttachments(data.attachments); if (key === undefined) return reply.code(404).send({ error: 'target unavailable' }); if (typeof data.prompt !== 'string' || attachments === undefined) return reply.code(400).send({ error: 'invalid prompt' }); const saved = await savedPrompts.save(key, data.prompt, attachments); return saved === undefined ? reply.code(400).send({ error: 'invalid prompt' }) : reply.code(201).send(saved); });
+  app.post('/api/agents/:id/queued-prompts/:promptId/save', async (request, reply) => {
+    controlled(request, true);
+    const { id, promptId } = request.params as { id: string; promptId: string };
+    const [queueKey, savedKey] = await Promise.all([promptStorageKey(id), savedPromptKey(id)]);
+    if (queueKey === undefined || savedKey === undefined) return reply.code(404).send({ error: 'target unavailable' });
+    let saved: Awaited<ReturnType<SavedPromptService['save']>>;
+    const result = await queuedPrompts.consumeOnSuccess(queueKey, promptId, async queued => {
+      saved = await savedPrompts.save(savedKey, queued.text, queued.attachments ?? []);
+      return saved !== undefined;
+    });
+    if (result === 'missing') return reply.code(404).send({ error: 'queued prompt unavailable' });
+    if (result === 'failed' || saved === undefined) return reply.code(409).send({ error: 'unable to save queued prompt' });
+    return reply.code(201).send(saved);
+  });
   app.post('/api/agents/:id/saved-prompts/:promptId/queue', async (request, reply) => {
     controlled(request, true);
     const { id, promptId } = request.params as { id: string; promptId: string };
@@ -284,7 +300,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
           const frame = requestedHistory === 0 ? logFrame(last, captured.text) : { type: 'reset' as const, text: captured.text };
           last = captured.text;
           lastResetAt = now;
-          if (frame !== undefined && socket.readyState === socket.OPEN) socket.send(JSON.stringify({ v: 1, ...frame, older: captured.older, newer: requestedHistory > 0, ...(captured.lastPrompt === undefined ? {} : { lastPrompt: captured.lastPrompt }), ...(captured.latestAssistantMessage === undefined ? {} : { latestAssistantMessage: captured.latestAssistantMessage }) }));
+          if (frame !== undefined && socket.readyState === socket.OPEN) socket.send(JSON.stringify({ v: 1, ...frame, older: captured.older, newer: requestedHistory > 0, ...(captured.lastPrompt === undefined ? {} : { lastPrompt: captured.lastPrompt }), ...(captured.latestAssistantMessage === undefined ? {} : { latestAssistantMessage: captured.latestAssistantMessage, latestAssistantMessageOverflows: captured.latestAssistantMessageOverflows }) }));
         } finally {
           polling = false;
           if (pollQueued) {

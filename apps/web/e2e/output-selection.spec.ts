@@ -44,6 +44,7 @@ test('shows selection actions for xterm canvas selections', async ({ page }) => 
 
   await page.goto('/');
   await expect(page.getByLabel('Live log')).toBeVisible();
+  await expect(page.locator('.log-status')).toHaveText('Live');
   await expect(page.locator('.terminal-frame.active .xterm-screen')).toBeVisible();
   const screen = page.locator('.terminal-frame.active .xterm-screen');
   const selectedRow = page.locator('.terminal-frame.active .xterm-rows > div', { hasText: 'Selectable output text' });
@@ -236,6 +237,10 @@ test('long press selects mobile output without entering terminal input mode', as
   const noteEditor = page.getByRole('textbox', { name: 'Note content' });
   await notePreview.click();
   await expect(noteEditor).toHaveValue('Selectable');
+  const restoreNote = page.getByRole('button', { name: 'Restore note' });
+  await expect(restoreNote).toHaveAttribute('aria-pressed', 'true');
+  await restoreNote.click();
+  await expect(page.getByRole('button', { name: 'Expand note' })).toHaveAttribute('aria-pressed', 'false');
   await expect.poll(() => savedNotes).toContain('Selectable');
   await selectableRow.evaluate(row => {
     const text = row.firstChild!;
@@ -250,7 +255,7 @@ test('long press selects mobile output without entering terminal input mode', as
   });
   await expect(selectionToolbar.getByRole('button', { name: 'Append to note' })).toBeVisible();
   await selectionToolbar.getByRole('button', { name: 'Append to note' }).click();
-  await expect(noteEditor).toHaveValue('Selectable\n\nSelectable');
+  await expect.poll(() => savedNotes).toContain('Selectable\n\nSelectable');
   await selectableRow.evaluate(row => {
     const text = row.firstChild!;
     const start = 'Prefix text before '.length;
@@ -306,7 +311,7 @@ test('long press selects mobile output without entering terminal input mode', as
   expect(selectionTreatment.glow).toContain('rgba(208, 208, 208');
   expect(selectionTreatment.highlight).toBe('rgb(203, 166, 247)');
   expect(await log.evaluate(element => getComputedStyle(element, '::after').content)).toBe('none');
-  const [selectedOutputBounds, selectedNoteBounds] = await Promise.all([outputPane.boundingBox(), page.getByRole('dialog', { name: 'Worktree note' }).boundingBox()]);
+  const [selectedOutputBounds, selectedNoteBounds] = await Promise.all([outputPane.boundingBox(), page.getByRole('dialog', { name: 'Note' }).boundingBox()]);
   expect(selectedOutputBounds!.y + selectedOutputBounds!.height).toBeCloseTo(selectedNoteBounds!.y, 0);
   await page.keyboard.press('y');
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('Selected terminal output');

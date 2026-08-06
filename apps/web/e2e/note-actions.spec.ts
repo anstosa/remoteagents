@@ -35,7 +35,7 @@ test('copies a note and sends its current contents as a prompt', async ({ page }
 
   await page.goto('/');
   await page.getByRole('button', { name: 'Notes (0)' }).click();
-  const dialog = page.getByRole('dialog', { name: 'Worktree note' });
+  const dialog = page.getByRole('dialog', { name: 'Note' });
   const editor = dialog.getByRole('textbox', { name: 'Note content' });
   await editor.fill('Use this exact note as the next prompt.');
 

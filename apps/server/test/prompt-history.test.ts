@@ -33,4 +33,18 @@ describe('PromptHistoryService', () => {
       await expect(service.list('worktree:cora')).rejects.toThrow('invalid prompt history file');
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
+
+  it('lists only the 50 most recent prompts', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-prompt-history-limit-'));
+    const file = join(directory, 'history.json');
+    try {
+      const service = new PromptHistoryService(file);
+      for (let index = 1; index <= 55; index += 1) await service.record('worktree:cora', `Prompt ${index}`);
+
+      const history = await service.list('worktree:cora');
+      expect(history).toHaveLength(50);
+      expect(history?.at(0)?.text).toBe('Prompt 55');
+      expect(history?.at(-1)?.text).toBe('Prompt 6');
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
 });

@@ -278,13 +278,14 @@ describe('TmuxAdapter prompt history', () => {
     await expect(new TmuxAdapter().captureWindow(socket, '%1', 0, 2)).resolves.toEqual({ text: 'output that is no longer visible\x1b[49m\nlatest output\x1b[49m', older: true, lastPrompt: 'summarize this repository' });
   });
 
-  it('includes a completed assistant response only when it is longer than the viewport', async () => {
+  it('includes a completed assistant response and marks it when it is longer than the viewport', async () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const response = ['• Summary', '', '  - First detail', '  - Second detail', '  - Third detail', '─ Worked for 5s', '', '› Implement {feature}', ''];
     run.mockResolvedValueOnce({ code: 0, stdout: response.join('\n'), stderr: '' });
 
     await expect(new TmuxAdapter().captureWindow(socket, '%1', 0, 3)).resolves.toMatchObject({
-      latestAssistantMessage: 'Summary\n\n- First detail\n- Second detail\n- Third detail'
+      latestAssistantMessage: 'Summary\n\n- First detail\n- Second detail\n- Third detail',
+      latestAssistantMessageOverflows: true
     });
   });
 
@@ -299,11 +300,14 @@ describe('TmuxAdapter prompt history', () => {
     expect(latestCompletedAssistantMessage(history)?.text).toBe('Run `pnpm test`, then inspect `config.json`.\nOpen https://example.com/results for the report.');
   });
 
-  it('does not include a completed assistant response that fits in the viewport', async () => {
+  it('includes a completed assistant response that fits in the viewport without marking it as overflowing', async () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     run.mockResolvedValueOnce({ code: 0, stdout: ['• Summary', '  One detail', '  Another detail', '─ Worked for 2s', ''].join('\n'), stderr: '' });
 
-    await expect(new TmuxAdapter().captureWindow(socket, '%1', 0, 3)).resolves.not.toHaveProperty('latestAssistantMessage');
+    await expect(new TmuxAdapter().captureWindow(socket, '%1', 0, 3)).resolves.toMatchObject({
+      latestAssistantMessage: 'Summary\nOne detail\nAnother detail',
+      latestAssistantMessageOverflows: false
+    });
   });
 
   it('does not report the previous completion after a newer response starts', () => {

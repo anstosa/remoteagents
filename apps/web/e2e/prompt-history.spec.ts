@@ -53,11 +53,15 @@ test('shows worktree prompt history and cycles it from the composer', async ({ p
   await expect(historyToggle).toBeVisible();
   await historyToggle.click();
   const historyMenu = page.getByLabel('Prompt history', { exact: true });
+  const historyHeader = historyMenu.locator('header');
+  const historyList = historyMenu.locator('.prompt-history-list');
   await expect(historyMenu).toBeVisible();
+  await expect(historyHeader).toHaveCSS('position', 'sticky');
+  await expect(historyList).toHaveCSS('overflow-y', 'auto');
   await expect(historyMenu.getByRole('button')).toHaveCount(2);
   await expect(historyMenu.getByRole('button').first()).toContainText('First prompt');
   await expect(historyMenu.getByRole('button').last()).toContainText('Second prompt');
-  await expect.poll(() => historyMenu.locator('.prompt-history-list').evaluate(element => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))).toBeLessThanOrEqual(1);
+  await expect.poll(() => historyList.evaluate(element => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))).toBeLessThanOrEqual(1);
 
   const composer = page.getByRole('textbox', { name: 'Prompt' });
   await composer.click();

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('offers each long latest assistant response once and saves it as an open note', async ({ page }) => {
+test('always offers the latest response and only highlights replies longer than the screen', async ({ page }) => {
   const notes: Array<{ id: string; text: string }> = [];
   const savedTexts: string[] = [];
   let created = 0;
@@ -35,7 +35,7 @@ test('offers each long latest assistant response once and saves it as an open no
     }
     Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
     Object.defineProperty(window, '__emitLogFrame', {
-      value: (frame: { text: string; latestAssistantMessage?: string }) => sockets.find(socket => socket.url.includes('/ws/logs/'))?.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ v: 1, type: 'reset', ...frame }) }))
+      value: (frame: { text: string; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean }) => sockets.find(socket => socket.url.includes('/ws/logs/'))?.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ v: 1, type: 'reset', ...frame }) }))
     });
   });
   await page.route('**/api/**', async route => {
@@ -64,16 +64,20 @@ test('offers each long latest assistant response once and saves it as an open no
 
   await page.goto('/');
   const notesButton = page.getByRole('button', { name: 'Notes' });
-  await expect(notesButton).toBeEnabled();
-  const emit = async (text: string, latestAssistantMessage?: string) => await page.evaluate(([nextText, message]) => (
-    window as unknown as { __emitLogFrame: (frame: { text: string; latestAssistantMessage?: string }) => void }
-  ).__emitLogFrame({ text: nextText, ...(message === undefined ? {} : { latestAssistantMessage: message }) }), [text, latestAssistantMessage] as const);
+  await expect(notesButton).toBeEnabled({ timeout: 15_000 });
+  const emit = async (text: string, latestAssistantMessage?: string, latestAssistantMessageOverflows?: boolean) => await page.evaluate(([nextText, message, overflows]) => (
+    window as unknown as { __emitLogFrame: (frame: { text: string; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean }) => void }
+  ).__emitLogFrame({ text: nextText, ...(message === undefined ? {} : { latestAssistantMessage: message, latestAssistantMessageOverflows: overflows }) }), [text, latestAssistantMessage, latestAssistantMessageOverflows] as const);
 
-  await emit('Short response');
+  const saveLatest = page.getByRole('button', { name: 'Save latest response' });
+  await emit('Short response complete', 'Short response', false);
   await expect(notesButton).not.toHaveClass(/latest-response-available/u);
+  await notesButton.click();
+  await expect(saveLatest).toBeEnabled();
+  await notesButton.click();
 
   const firstResponse = ['Summary', '', '- Run `pnpm test` before saving', ...Array.from({ length: 24 }, (_, index) => `- Detail ${index + 1}`)].join('\n');
-  await emit('Long response complete', firstResponse);
+  await emit('Long response complete', firstResponse, true);
   await expect(notesButton).toHaveClass(/latest-response-available/u);
   const dot = await notesButton.evaluate(element => {
     const style = getComputedStyle(element, '::before');
@@ -85,7 +89,6 @@ test('offers each long latest assistant response once and saves it as an open no
   expect(dot.width).toBeGreaterThan(0);
 
   await notesButton.click();
-  const saveLatest = page.getByRole('button', { name: 'Save latest response' });
   await expect(saveLatest).toBeVisible();
   await saveLatest.click();
   const preview = page.getByLabel('Note preview');
@@ -100,14 +103,15 @@ test('offers each long latest assistant response once and saves it as an open no
   await expect.poll(() => savedTexts).toContain(firstResponse);
 
   await page.getByRole('button', { name: 'Close note' }).click();
-  await emit('Same completed response refreshed', firstResponse);
+  await emit('Same completed response refreshed', firstResponse, true);
   await expect(notesButton).not.toHaveClass(/latest-response-available/u);
   await notesButton.click();
-  await expect(page.getByRole('button', { name: 'Save latest response' })).toHaveCount(0);
+  await expect(saveLatest).toBeVisible();
+  await expect(saveLatest).toBeDisabled();
   await notesButton.click();
 
   const secondResponse = `${firstResponse}\n- New completion`;
-  await emit('A different long response complete', secondResponse);
+  await emit('A different long response complete', secondResponse, true);
   await expect(notesButton).toHaveClass(/latest-response-available/u);
   await notesButton.click();
   await expect(page.getByRole('button', { name: 'Save latest response' })).toBeVisible();

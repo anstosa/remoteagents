@@ -1,6 +1,7 @@
 import type { IBufferRange, Terminal as XTerm } from '@xterm/xterm';
 
 const outputUrl = /(https?|HTTPS?):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~\[\]`()<>]/;
+const outputUrlContinuation = /^[^\s"'!*(){}|\\^<>`]/;
 
 export type OutputLink = { uri: string; range: IBufferRange };
 export type OutputLinkSegment = { column: number; row: number; columns: number };
@@ -28,13 +29,33 @@ const outputLinkPosition = (terminal: XTerm, initialLine: number, initialColumn:
   return [line, column];
 };
 
+const lineEndsAtRightEdge = (terminal: XTerm, line: number) => {
+  const row = terminal.buffer.active.getLine(line);
+  const cell = row?.getCell((row.length ?? 0) - 1);
+  return cell !== undefined && cell.getWidth() > 0 && cell.getChars() !== '';
+};
+
+const urlReachesEnd = (text: string) => {
+  const matcher = new RegExp(outputUrl.source, 'g');
+  for (let match = matcher.exec(text); match !== null; match = matcher.exec(text)) {
+    if (match.index + match[0].length === text.length) return true;
+  }
+  return false;
+};
+
 export const terminalOutputLinks = (terminal: XTerm): OutputLink[] => {
   const buffer = terminal.buffer.active;
   const links: OutputLink[] = [];
   for (let first = 0; first < buffer.length;) {
     let last = first;
-    while (buffer.getLine(last + 1)?.isWrapped) last += 1;
-    const text = Array.from({ length: last - first + 1 }, (_, index) => buffer.getLine(first + index)?.translateToString(true) ?? '').join('');
+    let text = buffer.getLine(first)?.translateToString(true) ?? '';
+    while (last + 1 < buffer.length) {
+      const next = buffer.getLine(last + 1);
+      const nextText = next?.translateToString(true) ?? '';
+      if (!next?.isWrapped && !(lineEndsAtRightEdge(terminal, last) && urlReachesEnd(text) && outputUrlContinuation.test(nextText))) break;
+      last += 1;
+      text += nextText;
+    }
     const matcher = new RegExp(outputUrl.source, 'g');
     for (let match = matcher.exec(text); match !== null; match = matcher.exec(text)) {
       const [startLine, startColumn] = outputLinkPosition(terminal, first, 0, match.index);

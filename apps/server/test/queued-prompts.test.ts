@@ -33,4 +33,24 @@ describe('QueuedPromptService', () => {
       await expect(new QueuedPromptService(file).list('worktree:cora')).resolves.toMatchObject([{ id: second!.id, text: 'Edited second prompt' }]);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
+
+  it('only removes a queued prompt after its consumer succeeds', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-consume-queued-prompts-'));
+    const file = join(directory, 'queue.json');
+    try {
+      const service = new QueuedPromptService(file);
+      const attachment = { name: 'context.txt', data: Buffer.from('context').toString('base64') };
+      const prompt = await service.enqueue('worktree:cora', 'Save this prompt', [attachment]);
+
+      await expect(service.consumeOnSuccess('worktree:cora', prompt!.id, async queued => {
+        expect(queued).toMatchObject({ text: 'Save this prompt', attachments: [attachment] });
+        return false;
+      })).resolves.toBe('failed');
+      await expect(service.list('worktree:cora')).resolves.toHaveLength(1);
+
+      await expect(service.consumeOnSuccess('worktree:cora', prompt!.id, async () => true)).resolves.toBe('consumed');
+      await expect(service.list('worktree:cora')).resolves.toEqual([]);
+      await expect(service.consumeOnSuccess('worktree:cora', prompt!.id, async () => true)).resolves.toBe('missing');
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
 });

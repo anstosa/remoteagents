@@ -34,15 +34,22 @@ test('joins stack controls onto Open and runs actions from its dropdown', async 
 
   const root = page.locator('#control-root');
   const open = root.getByRole('link', { name: 'Open' });
+  const browser = root.getByRole('button', { name: 'Open project in split view' });
   const toggle = root.getByRole('button', { name: 'Stack controls' });
-  await expect(root.locator('.project-open + .project-stack-toggle')).toHaveCount(1);
-  const [openBounds, toggleBounds] = await Promise.all([open.boundingBox(), toggle.boundingBox()]);
+  await expect(root.locator('.project-open + .project-browser-toggle + .project-stack-toggle')).toHaveCount(1);
+  const [openBounds, browserBounds, toggleBounds] = await Promise.all([open.boundingBox(), browser.boundingBox(), toggle.boundingBox()]);
   expect(openBounds).not.toBeNull();
+  expect(browserBounds).not.toBeNull();
   expect(toggleBounds).not.toBeNull();
-  expect(Math.abs(openBounds!.x + openBounds!.width - toggleBounds!.x)).toBeLessThanOrEqual(1);
+  expect(Math.abs(openBounds!.x + openBounds!.width - browserBounds!.x)).toBeLessThanOrEqual(1);
+  expect(Math.abs(browserBounds!.x + browserBounds!.width - toggleBounds!.x)).toBeLessThanOrEqual(1);
   expect(Math.abs(openBounds!.y - toggleBounds!.y)).toBeLessThanOrEqual(1);
   expect(Math.abs(openBounds!.height - toggleBounds!.height)).toBeLessThanOrEqual(1);
+  expect(Math.abs(browserBounds!.width - browserBounds!.height)).toBeLessThanOrEqual(1);
   expect(Math.abs(toggleBounds!.width - toggleBounds!.height)).toBeLessThanOrEqual(1);
+
+  await browser.click();
+  await expect(root).toHaveAttribute('data-browser', 'open');
 
   await toggle.click();
   await expect(page.getByRole('button', { name: 'Start stack', exact: true })).toBeVisible();

@@ -8,8 +8,21 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { QueuedPromptService } from '../src/prompts/queue.js';
+import { SavedPromptService } from '../src/saved-prompts/service.js';
 const config: ValidatedConfig = { listen:{host:'127.0.0.1',port:8787},publicOrigin:new URL('https://agents.example.com'),trustedProxyIps:new Set(['127.0.0.1']),pollIntervalMs:500,newAgentCommand:'codex',worktrees:[] };
 describe('HTTP security boundary',()=>{let app:Awaited<ReturnType<typeof buildApp>>;afterEach(async()=>{await app?.close()});it('serves the browser application and its build version for the canonical host',async()=>{const hash=await argon2.hash('synthetic-password',{type:argon2.argon2id});app=await buildApp(config,{auth:new AuthService(hash,Buffer.alloc(32,2).toString('base64url'))});const response=await app.inject({method:'GET',url:'/',headers:{host:'agents.example.com'}});expect(response.statusCode).toBe(200);expect(response.headers['content-type']).toContain('text/html');expect(response.body).toContain('<!doctype html>');const version=await app.inject({method:'GET',url:'/api/ui-version',headers:{host:'agents.example.com'}});expect(version.statusCode).toBe(200);expect(version.json().version).toMatch(/^\/assets\/index-[\w-]+\.js$/)}, 15_000);it('requires canonical Host and Origin and creates a secure host cookie',async()=>{const hash=await argon2.hash('synthetic-password',{type:argon2.argon2id});app=await buildApp(config,{auth:new AuthService(hash,Buffer.alloc(32,2).toString('base64url'))});const bad=await app.inject({method:'GET',url:'/api/auth/bootstrap',headers:{host:'evil.example'}});expect(bad.statusCode).toBe(403);const boot=await app.inject({method:'GET',url:'/api/auth/bootstrap',headers:{host:'agents.example.com'}});const token=boot.json().csrfToken;const denied=await app.inject({method:'POST',url:'/api/auth/login',headers:{host:'agents.example.com','x-csrf-token':token},payload:{password:'synthetic-password'}});expect(denied.statusCode).toBe(403);const ok=await app.inject({method:'POST',url:'/api/auth/login',headers:{host:'agents.example.com',origin:'https://agents.example.com','x-csrf-token':token},payload:{password:'synthetic-password'}});expect(ok.statusCode).toBe(200);expect(ok.headers['set-cookie']).toContain('__Host-rac=');expect(ok.headers['set-cookie']).toContain('HttpOnly');expect(ok.headers['set-cookie']).toContain('Secure');expect(ok.headers['content-security-policy']).toContain("default-src 'self'")}, 15_000)});
+
+describe('project browser security boundary', () => {
+  it('limits iframe sources to configured project origins', async () => {
+    const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false, command: 'codex', projectUrl: 'https://project.example.com' };
+    const app = await buildApp({ ...config, worktrees: [worktree] }, { auth: new AuthService('$argon2id$unused', Buffer.alloc(32, 13).toString('base64url')) });
+    try {
+      const response = await app.inject({ method: 'GET', url: '/', headers: { host: 'agents.example.com' } });
+      expect(response.headers['content-security-policy']).toContain("frame-src 'self' https://project.example.com");
+      expect(response.headers['content-security-policy']).not.toContain('evil.example.com');
+    } finally { await app.close(); }
+  });
+});
 
 describe('client control', () => {
   it('automatically activates the first client and lets another client take control', async () => {
@@ -228,6 +241,40 @@ describe('queued prompt API', () => {
       expect(edited.json()).toMatchObject({ id: second!.id, text: 'Edited second prompt' });
       expect(cancelled.statusCode).toBe(204);
       expect(remaining.json().prompts).toMatchObject([{ id: second!.id, text: 'Edited second prompt' }]);
+    } finally {
+      await queuedApp.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it('moves a queued prompt and its attachments into saved prompts', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-save-queued-prompt-api-'));
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, command: 'codex' };
+    const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '⠋ Working' };
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    const queuedApp = await buildApp({ ...config, worktrees: [worktree] }, {
+      auth: new AuthService(hash, Buffer.alloc(32, 12).toString('base64url')),
+      discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined } as never,
+      queuedPrompts: new QueuedPromptService(join(directory, 'queue.json')),
+      savedPrompts: new SavedPromptService(join(directory, 'saved.json'))
+    });
+    try {
+      const boot = await queuedApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await queuedApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      await queuedApp.inject({ method: 'POST', url: '/api/agents/agent-1/prompt', headers, payload: { prompt: 'Save this prompt', attachments: [{ name: 'context.txt', data: Buffer.from('context').toString('base64') }] } });
+      const listed = await queuedApp.inject({ method: 'GET', url: '/api/agents/agent-1/queued-prompts', headers: { host: headers.host, cookie: headers.cookie } });
+      const [queued] = listed.json().prompts as Array<{ id: string }>;
+
+      const saved = await queuedApp.inject({ method: 'POST', url: `/api/agents/agent-1/queued-prompts/${queued!.id}/save`, headers });
+      const remaining = await queuedApp.inject({ method: 'GET', url: '/api/agents/agent-1/queued-prompts', headers: { host: headers.host, cookie: headers.cookie } });
+      const savedPrompts = await queuedApp.inject({ method: 'GET', url: '/api/agents/agent-1/saved-prompts', headers: { host: headers.host, cookie: headers.cookie } });
+
+      expect(saved.statusCode).toBe(201);
+      expect(saved.json()).toMatchObject({ text: 'Save this prompt', attachments: [{ name: 'context.txt', size: 7 }] });
+      expect(remaining.json()).toEqual({ prompts: [] });
+      expect(savedPrompts.json()).toMatchObject({ prompts: [{ text: 'Save this prompt', attachments: [{ name: 'context.txt', size: 7 }] }] });
     } finally {
       await queuedApp.close();
       await rm(directory, { recursive: true, force: true });

@@ -25,6 +25,28 @@ test('clips output link overlays to the visible viewport', () => {
   ]);
 });
 
+test('opens the complete target for links split across captured terminal rows', async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<div id="output-links"></div>');
+  await page.evaluate(async () => {
+    const { renderCapturedWrappedOutputLink } = await import('/e2e/output-links-fixture.ts');
+    await renderCapturedWrappedOutputLink(document.querySelector<HTMLElement>('#output-links')!);
+  });
+  const container = page.locator('#output-links');
+  await expect(container).toHaveAttribute('data-ready', 'true');
+  const uri = await container.getAttribute('data-uri');
+  expect(uri).not.toBeNull();
+  const links = page.locator('.output-link-overlay');
+  await expect(links).toHaveCount(2);
+  await expect(links.first()).toHaveAttribute('href', uri!);
+  await expect(links.last()).toHaveAttribute('href', uri!);
+  const popupPromise = page.waitForEvent('popup');
+  await links.last().click();
+  const popup = await popupPromise;
+  await expect(popup).toHaveURL(uri!);
+  await popup.close();
+});
+
 test('keeps native output links stable, clickable, and available to the context menu', async ({ page }) => {
   await page.goto('/');
   await page.setContent('<div id="output-links"></div>');

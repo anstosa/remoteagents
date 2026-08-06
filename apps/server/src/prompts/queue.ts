@@ -98,6 +98,19 @@ export class QueuedPromptService {
     });
   }
 
+  async consumeOnSuccess(scope: string, id: string, use: (prompt: QueuedPrompt) => Promise<boolean>): Promise<'missing' | 'failed' | 'consumed'> {
+    if (!validScope(scope) || !validId(id)) return 'missing';
+    return await this.mutate(async stored => {
+      const queue = stored[scope];
+      const index = queue?.findIndex(prompt => prompt.id === id) ?? -1;
+      if (queue === undefined || index < 0) return 'missing';
+      if (!await use(queue[index]!)) return 'failed';
+      queue.splice(index, 1);
+      if (queue.length === 0) delete stored[scope];
+      return 'consumed';
+    }, result => result === 'consumed');
+  }
+
   async next(scope: string): Promise<QueuedPrompt | undefined> {
     if (!validScope(scope)) return undefined;
     await this.mutation;

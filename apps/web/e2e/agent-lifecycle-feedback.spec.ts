@@ -15,8 +15,8 @@ test('keeps agent on/off progress visible across lifecycle transitions', async (
     if (url.pathname === '/api/dashboard') {
       return route.fulfill({
         json: agentRunning
-          ? { generation: 1, agents: [{ id: agentId, sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' }], worktrees: [] }
-          : { generation: 2, agents: [], worktrees: [{ id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: true, order: 0 }] }
+          ? { generation: 1, agents: [{ id: agentId, sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' }], worktrees: [{ id: 'delta', label: 'Delta', path: '/worktrees/delta', available: true, pinned: true, order: 1 }] }
+          : { generation: 2, agents: [], worktrees: [{ id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: true, order: 0 }, { id: 'delta', label: 'Delta', path: '/worktrees/delta', available: true, pinned: true, order: 1 }] }
       });
     }
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
@@ -44,6 +44,10 @@ test('keeps agent on/off progress visible across lifecycle transitions', async (
   await expect(pendingOff).toContainText('Stopping the agent while keeping the worktree available');
   await expect(page.getByRole('tab', { name: 'Cora — Turning off' })).toHaveAttribute('aria-busy', 'true');
   await expect(page.getByRole('button', { name: 'Turn off worktree agent' })).toBeDisabled();
+  await page.getByRole('tab', { name: 'Delta — Agent closed' }).click();
+  await expect(pendingOff).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Cora — Turning off' }).click();
+  await expect(pendingOff).toBeVisible();
 
   finishDeactivate();
   const offSuccess = page.getByRole('status').filter({ hasText: 'Cora is off' });
@@ -56,6 +60,10 @@ test('keeps agent on/off progress visible across lifecycle transitions', async (
   await expect(pendingLaunch).toContainText('waiting for the agent session to become ready');
   await expect(page.getByRole('tab', { name: 'Cora — Starting agent' })).toHaveAttribute('aria-busy', 'true');
   await expect(page.getByText('Starting Codex…', { exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'Delta — Agent closed' }).click();
+  await expect(pendingLaunch).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Cora — Starting agent' }).click();
+  await expect(pendingLaunch).toBeVisible();
 
   finishLaunch();
   await expect(page.getByRole('status').filter({ hasText: 'Cora is starting' })).toContainText('output is connecting');

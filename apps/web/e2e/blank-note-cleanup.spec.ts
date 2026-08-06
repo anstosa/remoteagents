@@ -40,7 +40,7 @@ test('deletes empty and whitespace-only notes when they are closed', async ({ pa
   await notesButton.click();
   await page.getByRole('button', { name: 'Close note' }).click();
   await expect.poll(() => deleted).toEqual(['note-identifier-001']);
-  await expect(page.getByRole('dialog', { name: 'Worktree note' })).toHaveCount(0);
+  await expect(page.getByRole('dialog', { name: 'Note' })).toHaveCount(0);
   await expect(notesButton).toBeFocused();
 
   await notesButton.click();
@@ -48,6 +48,6 @@ test('deletes empty and whitespace-only notes when they are closed', async ({ pa
   await editor.fill('   \n\t');
   await editor.press('Escape');
   await expect.poll(() => deleted).toEqual(['note-identifier-001', 'note-identifier-002']);
-  await expect(page.getByRole('dialog', { name: 'Worktree note' })).toHaveCount(0);
+  await expect(page.getByRole('dialog', { name: 'Note' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Notes (0)' })).toBeFocused();
 });

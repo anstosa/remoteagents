@@ -7,6 +7,7 @@ type StoredHistory = Record<string, PromptHistoryEntry[]>;
 
 const maxScopes = 500;
 const maxEntriesPerScope = 2_000;
+const listedEntriesPerScope = 50;
 const maxTotalTextLength = 10_000_000;
 const validScope = (value: string) => value.length > 0 && value.length <= 240 && !value.includes('\0');
 const validText = (value: string) => value.trim().length > 0 && value.length <= 64_000 && !value.includes('\0');
@@ -30,7 +31,7 @@ export class PromptHistoryService {
   async list(scope: string): Promise<PromptHistoryEntry[] | undefined> {
     if (!validScope(scope)) return undefined;
     await this.mutation;
-    return [...((await this.read())[scope] ?? [])];
+    return ((await this.read())[scope] ?? []).slice(0, listedEntriesPerScope);
   }
 
   async record(scope: string, text: string): Promise<PromptHistoryEntry | undefined> {
