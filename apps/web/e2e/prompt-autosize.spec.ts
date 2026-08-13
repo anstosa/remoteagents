@@ -60,3 +60,14 @@ test('caps the prompt at half the viewport and scrolls overflowing content', asy
   expect(dimensions.scrollHeight).toBeGreaterThan(dimensions.height);
   expect(dimensions.overflowY).toBe('auto');
 });
+
+// verify contextual prompt glyphs
+test('enables contextual ligatures in the prompt composer', async ({ page }) => {
+  await page.setContent('<section class="prompt"><textarea aria-label="Prompt">-&gt; -- =&gt;</textarea></section>');
+  await page.addStyleTag({ path: 'src/styles.css' });
+
+  const prompt = page.getByRole('textbox', { name: 'Prompt' });
+  await expect(prompt).toHaveCSS('font-variant-ligatures', 'contextual');
+  await expect(prompt).toHaveCSS('font-feature-settings', '"calt"');
+  await expect(prompt).toHaveCSS('text-rendering', 'optimizelegibility');
+});

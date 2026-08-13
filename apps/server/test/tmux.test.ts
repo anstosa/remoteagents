@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { run } = vi.hoisted(() => ({ run: vi.fn() }));
 vi.mock('../src/tmux/command.js', () => ({ run }));
 
-import { latestCompletedAssistantMessage, TmuxAdapter } from '../src/tmux/adapter.js';
+import { latestAgentMessageFromHistory, latestCompletedAssistantMessage, TmuxAdapter } from '../src/tmux/adapter.js';
 
 describe('TmuxAdapter capture', () => {
   beforeEach(() => {
@@ -98,29 +98,6 @@ describe('TmuxAdapter capture', () => {
     await expect(new TmuxAdapter().size(socket, '%1')).resolves.toEqual({ cols: 220, rows: 80 });
 
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'display-message', '-p', '-t', '%1', '#{pane_width}\t#{pane_height}']);
-  });
-
-  it('quits Neovim review mode instead of foregrounding over it', async () => {
-    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
-    run.mockResolvedValueOnce({ code: 0, stdout: 'nvim\n', stderr: '' });
-
-    await expect(new TmuxAdapter().quitReview(socket, '%1')).resolves.toBe(true);
-
-    expect(run.mock.calls.slice(-3)).toEqual([
-      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'display-message', '-p', '-t', '%1', '#{pane_current_command}']],
-      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-l', '-t', '%1', '\x1b:qa!']],
-      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-t', '%1', 'Enter']]
-    ]);
-  });
-
-  it('treats an already-closed review as complete without typing into the resumed agent', async () => {
-    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
-    run.mockResolvedValueOnce({ code: 0, stdout: 'node\n', stderr: '' });
-
-    await expect(new TmuxAdapter().quitReview(socket, '%1')).resolves.toBe(true);
-
-    expect(run).toHaveBeenCalledTimes(1);
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'display-message', '-p', '-t', '%1', '#{pane_current_command}']);
   });
 
   it('closes the entire replaced session so companion HUD panes do not linger', async () => {
@@ -275,7 +252,46 @@ describe('TmuxAdapter prompt history', () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     run.mockResolvedValueOnce({ code: 0, stdout: '› summarize this repository\n• Working\noutput that is no longer visible\nlatest output\n', stderr: '' });
 
-    await expect(new TmuxAdapter().captureWindow(socket, '%1', 0, 2)).resolves.toEqual({ text: 'output that is no longer visible\x1b[49m\nlatest output\x1b[49m', older: true, lastPrompt: 'summarize this repository' });
+    await expect(new TmuxAdapter().captureWindow(socket, '%1', 0, 2)).resolves.toEqual({ text: 'output that is no longer visible\x1b[49m\nlatest output\x1b[49m', older: true, lastPrompt: 'summarize this repository', latestAgentMessage: '• Working\noutput that is no longer visible\nlatest output' });
+  });
+
+  it('captures the complete latest agent message when its question choices exceed the viewport', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    const history = ['older output', '› choose a deployment target', '', '• Checking environments', '', 'Where should OMX deploy?', '› 1. Staging', '  2. Production', '  3. Preview', '  4. Cancel', ''].join('\n');
+    run.mockResolvedValueOnce({ code: 0, stdout: history, stderr: '' });
+
+    expect(latestAgentMessageFromHistory(history)).toBe('• Checking environments\n\nWhere should OMX deploy?\n› 1. Staging\n  2. Production\n  3. Preview\n  4. Cancel');
+    await expect(new TmuxAdapter().captureWindow(socket, '%1', 0, 3)).resolves.toMatchObject({
+      text: '  2. Production\x1b[49m\n  3. Preview\x1b[49m\n  4. Cancel\x1b[49m',
+      latestAgentMessage: '• Checking environments\n\nWhere should OMX deploy?\n› 1. Staging\n  2. Production\n  3. Preview\n  4. Cancel'
+    });
+  });
+
+  it('retains the selected first multi-select answer', () => {
+    const history = ['› choose cleanup targets', '', 'Which targets should be cleaned?', '› [x] 1. Build output', '  [ ] 2. Test cache', '  [ ] 3. None', ''].join('\n');
+
+    expect(latestAgentMessageFromHistory(history)).toBe('Which targets should be cleaned?\n› [x] 1. Build output\n  [ ] 2. Test cache\n  [ ] 3. None');
+  });
+
+  it('retains the cyan selected first answer without treating it as a prompt', () => {
+    const history = [
+      '› switch from Sendgrid to SES',
+      '',
+      'Which From address should Auth0 use for verification and account emails?',
+      '› \x1b[38;5;6m1. noreply@ferry.fyi (Recommended)\x1b[39m',
+      '  2. ansel@santosa.family',
+      '  3. admin@whidbey.fyi',
+      '  4. None of the above',
+      ''
+    ].join('\n');
+
+    expect(latestAgentMessageFromHistory(history)).toBe([
+      'Which From address should Auth0 use for verification and account emails?',
+      '› 1. noreply@ferry.fyi (Recommended)',
+      '  2. ansel@santosa.family',
+      '  3. admin@whidbey.fyi',
+      '  4. None of the above'
+    ].join('\n'));
   });
 
   it('includes a completed assistant response and marks it when it is longer than the viewport', async () => {

@@ -18,11 +18,13 @@ services:
       RAC_HOST_TMUX_SOURCE: ${HOST_TMUX_DIR:-${HOME}/.local/state/tmux/tmux-${HOST_UID:-1000}}
       RAC_HOST_UID: ${HOST_UID:-1000}
       RAC_TMUX_BIN: /usr/local/bin/host-tmux
+      RAC_PROJECT_PROXY_HOST: host.docker.internal
       RAC_DEVICE_NAMES_FILE: /workspace/.data/device-names.json
       RAC_SAVED_PROMPTS_FILE: /workspace/.data/saved-prompts.json
       RAC_PROMPT_HISTORY_FILE: /workspace/.data/prompt-history.json
       RAC_QUEUED_PROMPTS_FILE: /workspace/.data/queued-prompts.json
       RAC_NOTES_FILE: /workspace/.data/notes.json
+      RAC_REVIEW_TOURS_FILE: /workspace/.data/review-tours.json
     volumes:
       - ./:/workspace:rw
       - ${HOME}/.bash_aliases:/home/node/.bash_aliases:ro
@@ -32,6 +34,8 @@ services:
       - ${HOME}/.gitignore:/home/node/.config/git/ignore:ro
       - ${HOME}/.config/gh/hosts.yml:/home/node/.config/gh/hosts.yml:ro
       - /home/ubuntu/actionable:/worktrees/actionable:rw
+      # standalone cascadia sanctuaries checkout
+      - /home/ubuntu/cascadiasanctuaries.org:/worktrees/cascadiasanctuaries.org:rw
       - /home/ubuntu/ferry.fyi:/worktrees/ferry.fyi:rw
       # Owen, Dave, and Eric are linked Git worktrees whose .git files point
       # to one of these shared metadata directories on the host.

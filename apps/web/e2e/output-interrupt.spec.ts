@@ -104,6 +104,18 @@ test('output input mode forwards control keys without losing focus', async ({ pa
   // The mobile Ctrl latch must produce ETX from the next software-keyboard c.
   await page.setViewportSize({ width: 428, height: 900 });
   await expect(page.getByLabel('Terminal keys')).toBeVisible();
+  // direct controls occupy the leftmost vertical column
+  const [controlBounds, modifierBounds, arrowBounds, escBounds, ctrlCBounds] = await Promise.all([
+    page.locator('.mobile-control-keys').boundingBox(),
+    page.locator('.mobile-key-modifiers').boundingBox(),
+    page.locator('.mobile-arrow-keys').boundingBox(),
+    page.getByRole('button', { name: 'Esc', exact: true }).boundingBox(),
+    page.getByRole('button', { name: 'Ctrl+C', exact: true }).boundingBox(),
+  ]);
+  expect(controlBounds!.x).toBeLessThan(modifierBounds!.x);
+  expect(modifierBounds!.x).toBeLessThan(arrowBounds!.x);
+  expect(escBounds!.x).toBeCloseTo(ctrlCBounds!.x, 0);
+  expect(escBounds!.y).toBeLessThan(ctrlCBounds!.y);
   await page.locator('.terminal-frame.active .xterm-helper-textarea').focus();
   await page.getByRole('button', { name: 'Ctrl', exact: true }).click();
   await page.keyboard.press('c');
@@ -112,9 +124,16 @@ test('output input mode forwards control keys without losing focus', async ({ pa
     return frames.filter(candidate => candidate.url.includes('/ws/input/'));
   })).length).toBe(5);
 
+  await page.getByRole('button', { name: 'Esc', exact: true }).click();
+  await page.getByRole('button', { name: 'Ctrl+C', exact: true }).click();
+  await expect.poll(async () => (await page.evaluate(() => {
+    const frames = (window as Window & { __terminalSocketFrames?: Array<{ url: string; data: string }> }).__terminalSocketFrames ?? [];
+    return frames.filter(candidate => candidate.url.includes('/ws/input/'));
+  })).length).toBe(7);
+
   const controlFrames = await page.evaluate(() => {
     const frames = (window as Window & { __terminalSocketFrames?: Array<{ url: string; data: string }> }).__terminalSocketFrames ?? [];
     return frames.filter(candidate => candidate.url.includes('/ws/input/')).map(candidate => JSON.parse(candidate.data) as { data: string });
   });
-  expect(controlFrames.map(controlFrame => Buffer.from(controlFrame.data, 'base64url').toString('utf8'))).toEqual(['\x03', '\x03', '\t', '\x1b[Z', '\x03']);
+  expect(controlFrames.map(controlFrame => Buffer.from(controlFrame.data, 'base64url').toString('utf8'))).toEqual(['\x03', '\x03', '\t', '\x1b[Z', '\x03', '\x1b', '\x03']);
 });

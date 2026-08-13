@@ -35,7 +35,8 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   await expect(gitStatus).toBeVisible();
   await gitStatus.click();
   await expect(page.getByRole('region', { name: 'Changed files' })).toContainText('Changed-file details unavailable');
-  await page.getByRole('button', { name: 'Collapse git status' }).click();
+  await expect(page.getByRole('button', { name: 'Collapse git status' })).toHaveCount(0);
+  await gitStatus.click();
   await expect(page.locator('.log-status i')).toHaveCount(0);
 
   const layout = await page.evaluate(() => {

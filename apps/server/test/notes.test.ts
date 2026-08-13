@@ -10,18 +10,19 @@ describe('worktree notes', () => {
     const file = join(directory, 'notes.json');
     try {
       const service = new WorktreeNoteService(file);
-      const first = await service.create('cora');
+      const first = await service.create('cora', 'Assistant setup');
       const second = await service.create('cora');
       await service.create('owen');
       await Promise.all([
         service.update('cora', first!.id, 'First draft'),
         service.update('cora', first!.id, 'Latest draft')
       ]);
+      await service.rename('cora', first!.id, 'Deployment checklist');
 
-      await expect(service.list('cora')).resolves.toEqual([second, { ...first, text: 'Latest draft' }]);
+      await expect(service.list('cora')).resolves.toEqual([second, { ...first, text: 'Latest draft', title: 'Deployment checklist' }]);
       await expect(new WorktreeNoteService(file).list('owen')).resolves.toMatchObject([{ text: '' }]);
       await expect(service.delete('cora', second!.id)).resolves.toEqual(second);
-      await expect(service.list('cora')).resolves.toEqual([{ ...first, text: 'Latest draft' }]);
+      await expect(service.list('cora')).resolves.toEqual([{ ...first, text: 'Latest draft', title: 'Deployment checklist' }]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -33,6 +34,8 @@ describe('worktree notes', () => {
     await expect(service.list('bad/id')).resolves.toBeUndefined();
     await expect(service.update('cora', note!.id, 'x'.repeat(30_001))).resolves.toBeUndefined();
     await expect(service.update('cora', note!.id, 'bad\0note')).resolves.toBeUndefined();
+    await expect(service.rename('cora', note!.id, '')).resolves.toBeUndefined();
+    await expect(service.rename('cora', note!.id, 'x'.repeat(121))).resolves.toBeUndefined();
   });
 
   it('preserves a corrupt file instead of overwriting it during a mutation', async () => {

@@ -28,6 +28,7 @@ const totals = (stored: StoredQueues) => Object.values(stored).flat().reduce((va
 
 export class QueuedPromptService {
   private mutation = Promise.resolve();
+  private stored?: StoredQueues;
 
   constructor(private readonly file = process.env.RAC_QUEUED_PROMPTS_FILE ?? '.data/queued-prompts.json') {}
 
@@ -119,9 +120,13 @@ export class QueuedPromptService {
 
   private async mutate<T>(change: (stored: StoredQueues) => T | Promise<T>, shouldWrite: (result: T) => boolean = () => true): Promise<T> {
     const operation = this.mutation.then(async () => {
-      const stored = await this.read();
+      const stored = structuredClone(await this.read());
       const result = await change(stored);
-      if (shouldWrite(result)) await this.write(stored);
+      // publish only durable mutations
+      if (shouldWrite(result)) {
+        await this.write(stored);
+        this.stored = stored;
+      }
       return result;
     });
     this.mutation = operation.then(() => undefined, () => undefined);
@@ -129,7 +134,10 @@ export class QueuedPromptService {
   }
 
   private async read(): Promise<StoredQueues> {
+    // reuse the process-owned durable snapshot
+    if (this.stored !== undefined) return this.stored;
     const raw = await readFile(this.file, 'utf8').then(value => JSON.parse(value) as unknown).catch(error => {
+      // treat missing storage as an empty queue
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
       throw error;
     });
@@ -143,6 +151,7 @@ export class QueuedPromptService {
     }
     const size = totals(stored);
     if (Object.keys(stored).length > maxScopes || size.text > maxStoredTextLength || size.attachments > maxStoredAttachmentBytes) throw new Error('queued prompts file exceeds storage limits');
+    this.stored = stored;
     return stored;
   }
 

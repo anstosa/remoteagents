@@ -4,7 +4,7 @@ import { buildApp } from '../src/app.js';
 import { AuthService } from '../src/auth/service.js';
 import type { ValidatedConfig } from '../src/config/schema.js';
 
-const config: ValidatedConfig = { listen: { host: '127.0.0.1', port: 8787 }, publicOrigin: new URL('https://agents.example.com'), trustedProxyIps: new Set(['127.0.0.1']), pollIntervalMs: 500, newAgentCommand: 'codex', worktrees: [] };
+const config: ValidatedConfig = { name: 'Remote Agents', remoteServers: [], listen: { host: '127.0.0.1', port: 8787 }, publicOrigin: new URL('https://agents.example.com'), trustedProxyIps: new Set(['127.0.0.1']), pollIntervalMs: 500, newAgentCommand: 'codex', worktrees: [] };
 
 describe('cleanup API', () => {
   let app: Awaited<ReturnType<typeof buildApp>> | undefined;

@@ -9,8 +9,25 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { QueuedPromptService } from '../src/prompts/queue.js';
 import { SavedPromptService } from '../src/saved-prompts/service.js';
-const config: ValidatedConfig = { listen:{host:'127.0.0.1',port:8787},publicOrigin:new URL('https://agents.example.com'),trustedProxyIps:new Set(['127.0.0.1']),pollIntervalMs:500,newAgentCommand:'codex',worktrees:[] };
+import { ReviewTourStore } from '../src/review-tour/store.js';
+import type { ReviewTour } from '../src/review-tour/contracts.js';
+const config: ValidatedConfig = { name: 'Remote Agents', remoteServers: [], listen:{host:'127.0.0.1',port:8787},publicOrigin:new URL('https://agents.example.com'),trustedProxyIps:new Set(['127.0.0.1']),pollIntervalMs:500,newAgentCommand:'codex',worktrees:[] };
 describe('HTTP security boundary',()=>{let app:Awaited<ReturnType<typeof buildApp>>;afterEach(async()=>{await app?.close()});it('serves the browser application and its build version for the canonical host',async()=>{const hash=await argon2.hash('synthetic-password',{type:argon2.argon2id});app=await buildApp(config,{auth:new AuthService(hash,Buffer.alloc(32,2).toString('base64url'))});const response=await app.inject({method:'GET',url:'/',headers:{host:'agents.example.com'}});expect(response.statusCode).toBe(200);expect(response.headers['content-type']).toContain('text/html');expect(response.body).toContain('<!doctype html>');const version=await app.inject({method:'GET',url:'/api/ui-version',headers:{host:'agents.example.com'}});expect(version.statusCode).toBe(200);expect(version.json().version).toMatch(/^\/assets\/index-[\w-]+\.js$/)}, 15_000);it('requires canonical Host and Origin and creates a secure host cookie',async()=>{const hash=await argon2.hash('synthetic-password',{type:argon2.argon2id});app=await buildApp(config,{auth:new AuthService(hash,Buffer.alloc(32,2).toString('base64url'))});const bad=await app.inject({method:'GET',url:'/api/auth/bootstrap',headers:{host:'evil.example'}});expect(bad.statusCode).toBe(403);const boot=await app.inject({method:'GET',url:'/api/auth/bootstrap',headers:{host:'agents.example.com'}});const token=boot.json().csrfToken;const denied=await app.inject({method:'POST',url:'/api/auth/login',headers:{host:'agents.example.com','x-csrf-token':token},payload:{password:'synthetic-password'}});expect(denied.statusCode).toBe(403);const ok=await app.inject({method:'POST',url:'/api/auth/login',headers:{host:'agents.example.com',origin:'https://agents.example.com','x-csrf-token':token},payload:{password:'synthetic-password'}});expect(ok.statusCode).toBe(200);expect(ok.headers['set-cookie']).toContain('__Host-rac=');expect(ok.headers['set-cookie']).toContain('HttpOnly');expect(ok.headers['set-cookie']).toContain('Secure');expect(ok.headers['content-security-policy']).toContain("default-src 'self'")}, 15_000)});
+
+describe('server identity API', () => {
+  it('publishes local and remote server choices before login and in sessions', async () => {
+    const namedConfig = { ...config, name: 'X1 Carbon', publicOrigin: new URL('https://x1carbon.santosa.dev'), remoteServers: [{ name: 'Framework', url: new URL('https://framework.santosa.dev') }] };
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const identityApp = await buildApp(namedConfig, { auth: new AuthService(hash, Buffer.alloc(32, 16).toString('base64url')) });
+    try {
+      const bootstrap = await identityApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'x1carbon.santosa.dev' } });
+      const expected = { name: 'X1 Carbon', url: 'https://x1carbon.santosa.dev', remotes: [{ name: 'Framework', url: 'https://framework.santosa.dev' }] };
+      expect(bootstrap.json().server).toEqual(expected);
+      const login = await identityApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'x1carbon.santosa.dev', origin: 'https://x1carbon.santosa.dev', 'x-csrf-token': bootstrap.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      expect(login.json().server).toEqual(expected);
+    } finally { await identityApp.close(); }
+  }, 15_000);
+});
 
 describe('project browser security boundary', () => {
   it('limits iframe sources to configured project origins', async () => {
@@ -130,14 +147,17 @@ describe('agent launches', () => {
     } finally { await launchApp.close(); }
   }, 15_000);
 
-  it('waits for the requested worktree agent before responding', async () => {
+  it('waits beyond twenty seconds for the requested worktree agent', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, command: 'codex' };
     const agent = { id: 'socket:%2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '', worktreeId: 'cora' };
     let dashboards = 0;
-    const discovery = { dashboard: async () => ({ generation: ++dashboards, agents: dashboards === 1 ? [] : [agent], worktrees: [] }) };
+    // reveal after the old timeout
+    const discovery = { dashboard: async () => ({ generation: ++dashboards, agents: dashboards < 83 ? [] : [agent], worktrees: [] }) };
     const launch = { launch: async (id: string) => id === 'cora', launchHome: async () => true };
-    const launchApp = await buildApp({ ...config, worktrees: [worktree] }, { auth: new AuthService(hash, Buffer.alloc(32, 4).toString('base64url')), discovery: discovery as never, launch: launch as never });
+    // skip real poll delays
+    const skipLaunchPollDelay = async () => {};
+    const launchApp = await buildApp({ ...config, worktrees: [worktree] }, { auth: new AuthService(hash, Buffer.alloc(32, 4).toString('base64url')), discovery: discovery as never, launch: launch as never, launchPollDelay: skipLaunchPollDelay });
     try {
       const boot = await launchApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
       const login = await launchApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
@@ -145,6 +165,7 @@ describe('agent launches', () => {
       const response = await launchApp.inject({ method: 'POST', url: '/api/worktrees/cora/launch', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', cookie, 'x-csrf-token': login.json().csrfToken } });
       expect(response.statusCode).toBe(201);
       expect(response.json()).toEqual({ agentId: agent.id });
+      expect(dashboards).toBe(83);
     } finally { await launchApp.close(); }
   }, 15_000);
 });
@@ -173,16 +194,12 @@ describe('agent terminal swap', () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const suspended: Array<{ pane: string; path: string }> = [];
     const foregrounded: Array<{ pane: string; path: string }> = [];
-    const closedReviews: Array<{ pane: string; path: string }> = [];
-    const inputs: Array<{ pane: string; path: string; value: string }> = [];
     const swapApp = await buildApp(config, {
       auth: new AuthService(hash, Buffer.alloc(32, 8).toString('base64url')),
       discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined } as never,
       tmux: {
         suspend: async (targetSocket: typeof socket, pane: string) => { suspended.push({ pane, path: targetSocket.path }); return true; },
-        foreground: async (targetSocket: typeof socket, pane: string) => { foregrounded.push({ pane, path: targetSocket.path }); return true; },
-        quitReview: async (targetSocket: typeof socket, pane: string) => { closedReviews.push({ pane, path: targetSocket.path }); return true; },
-        input: async (targetSocket: typeof socket, pane: string, value: string) => { inputs.push({ pane, path: targetSocket.path, value }); return true; }
+        foreground: async (targetSocket: typeof socket, pane: string) => { foregrounded.push({ pane, path: targetSocket.path }); return true; }
       } as never,
       prSwitch: { actionsUrl: async (id: string) => id === agent.id ? 'https://github.com/octo/repo/actions' : undefined } as never
     });
@@ -191,21 +208,89 @@ describe('agent terminal swap', () => {
       const login = await swapApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
       const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
       const background = await swapApp.inject({ method: 'POST', url: `/api/agents/${agent.id}/background`, headers });
-      const review = await swapApp.inject({ method: 'POST', url: `/api/agents/${agent.id}/review`, headers });
-      const closeReview = await swapApp.inject({ method: 'POST', url: `/api/agents/${agent.id}/review/close`, headers });
       const foreground = await swapApp.inject({ method: 'POST', url: `/api/agents/${agent.id}/foreground`, headers });
       const actions = await swapApp.inject({ method: 'GET', url: `/api/agents/${agent.id}/github-actions`, headers: { host: headers.host, cookie: headers.cookie } });
 
       expect(background.statusCode).toBe(204);
-      expect(review.statusCode).toBe(204);
-      expect(closeReview.statusCode).toBe(204);
       expect(foreground.statusCode).toBe(204);
       expect(actions.json()).toEqual({ url: 'https://github.com/octo/repo/actions' });
-      expect(suspended).toEqual([{ pane: '%1', path: '/tmp/tmux' }, { pane: '%1', path: '/tmp/tmux' }]);
-      expect(inputs).toEqual([{ pane: '%1', path: '/tmp/tmux', value: '\x15review; fg\r' }]);
-      expect(closedReviews).toEqual([{ pane: '%1', path: '/tmp/tmux' }]);
+      expect(suspended).toEqual([{ pane: '%1', path: '/tmp/tmux' }]);
       expect(foregrounded).toEqual([{ pane: '%1', path: '/tmp/tmux' }]);
     } finally { await swapApp.close(); }
+  }, 15_000);
+});
+
+describe('guided review API boundary', () => {
+  it('normalizes malformed and oversized requests while accepting the exact request shape', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const snapshot = { agentId: 'agent-1', worktreeId: 'cora', workspace: '/worktrees/cora', scope: 'working', base: 'HEAD', includeTests: false, includeDocs: false, fingerprint: 'empty-fingerprint', changes: [] };
+    const reviewTours = {
+      capability: async () => ({ available: true }),
+      prepare: async () => ({ snapshot, resolved: {} }),
+      fingerprint: async () => ({ snapshot: { scope: 'working', base: 'HEAD', fingerprint: 'empty-fingerprint', includeTests: false, includeDocs: false }, empty: true })
+    };
+    const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' };
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    const pasted: string[] = [];
+    const reviewApp = await buildApp(config, {
+      auth: new AuthService(hash, Buffer.alloc(32, 19).toString('base64url')),
+      reviewTours: reviewTours as never,
+      discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined } as never,
+      tmux: { pastePrompt: async (_socket: typeof socket, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt); return true; }, queue: async () => true } as never
+    });
+    try {
+      const boot = await reviewApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await reviewApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken, 'content-type': 'application/json' };
+      const malformed = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers, payload: '{"scope":' });
+      const oversized = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers, payload: JSON.stringify({ scope: 'working', includeTests: false, includeDocs: false, padding: 'x'.repeat(1_100) }) });
+      const unexpected = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers, payload: JSON.stringify({ scope: 'working', includeTests: false, includeDocs: false, unexpected: true }) });
+      const valid = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers, payload: JSON.stringify({ scope: 'working', includeTests: false, includeDocs: false }) });
+      const invalidFingerprint = await reviewApp.inject({ method: 'GET', url: '/api/agents/agent-1/review-tour/fingerprint?scope=working&includeTests=maybe&includeDocs=false', headers: { host: headers.host, cookie: headers.cookie } });
+      const fingerprint = await reviewApp.inject({ method: 'GET', url: '/api/agents/agent-1/review-tour/fingerprint?scope=working&includeTests=false&includeDocs=false', headers: { host: headers.host, cookie: headers.cookie } });
+      const maximumPrompt = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/prompt', headers, payload: JSON.stringify({ prompt: 'x'.repeat(32_000), attachments: [] }) });
+      const oversizedPrompt = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/prompt', headers, payload: JSON.stringify({ prompt: 'x'.repeat(32_001), attachments: [] }) });
+      expect(malformed.statusCode).toBe(400);
+      expect(malformed.json()).toEqual({ status: 'error', error: { code: 'invalid_request', retryable: false } });
+      expect(oversized.statusCode).toBe(400);
+      expect(oversized.json()).toEqual({ status: 'error', error: { code: 'invalid_request', retryable: false } });
+      expect(unexpected.statusCode).toBe(400);
+      expect(unexpected.json()).toEqual({ status: 'error', error: { code: 'invalid_request', retryable: false } });
+      expect(valid.statusCode).toBe(200);
+      expect(valid.json()).toEqual({ status: 'empty', snapshot: { scope: 'working', base: 'HEAD', fingerprint: 'empty-fingerprint', includeTests: false, includeDocs: false } });
+      expect(invalidFingerprint.statusCode).toBe(400);
+      expect(invalidFingerprint.json()).toEqual({ status: 'error', error: { code: 'invalid_request', retryable: false } });
+      expect(fingerprint.statusCode).toBe(200);
+      expect(fingerprint.json()).toEqual({ status: 'empty', snapshot: { scope: 'working', base: 'HEAD', fingerprint: 'empty-fingerprint', includeTests: false, includeDocs: false } });
+      expect(maximumPrompt.statusCode).toBe(204);
+      expect(oversizedPrompt.statusCode).toBe(400);
+      expect(pasted).toHaveLength(1);
+    } finally { await reviewApp.close(); }
+  }, 15_000);
+
+  it('serves and dismisses a branch-bound review from durable dashboard state', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-review-tour-api-'));
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false, command: 'codex' };
+    const review: ReviewTour = { title: 'Persisted tour', overview: 'Resume the saved walkthrough.', scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: 'persisted-fingerprint-1234', changes: [{ id: 'chg_route0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', patch: '@@ -1 +1 @@\n-old\n+new' }], steps: [{ id: 'route', title: 'Accept the request', explanation: 'The route delegates to the service.', changeIds: ['chg_route0001'] }] };
+    const reviewStore = new ReviewTourStore(join(directory, 'reviews.json'));
+    await reviewStore.save('cora', 'feature/review', review);
+    const discovery = { dashboard: async () => ({ generation: 1, agents: [], worktrees: [{ id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: false, order: 0, branch: 'feature/review' }] }) };
+    const reviewApp = await buildApp({ ...config, worktrees: [worktree] }, { auth: new AuthService(hash, Buffer.alloc(32, 20).toString('base64url')), discovery: discovery as never, reviewStore, reviewTours: { capability: async () => ({ available: true }) } as never });
+    try {
+      const boot = await reviewApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await reviewApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0] };
+      const mutationHeaders = { ...headers, origin: 'https://agents.example.com', 'x-csrf-token': login.json().csrfToken };
+      const dashboard = await reviewApp.inject({ method: 'GET', url: '/api/dashboard', headers });
+      const restored = await reviewApp.inject({ method: 'GET', url: '/api/worktrees/cora/review-tour', headers });
+      const dismissed = await reviewApp.inject({ method: 'DELETE', url: '/api/worktrees/cora/review-tour', headers: mutationHeaders });
+      const missing = await reviewApp.inject({ method: 'GET', url: '/api/worktrees/cora/review-tour', headers });
+      expect(dashboard.json().reviews).toEqual([expect.objectContaining({ worktreeId: 'cora', branch: 'feature/review', title: review.title })]);
+      expect(restored.json()).toMatchObject({ status: 'ready', review: { worktreeId: 'cora', branch: 'feature/review', tour: { fingerprint: review.fingerprint } } });
+      expect(dismissed.statusCode).toBe(204);
+      expect(missing.statusCode).toBe(404);
+    } finally { await reviewApp.close(); await rm(directory, { recursive: true, force: true }); }
   }, 15_000);
 });
 
@@ -377,12 +462,13 @@ describe('worktree notes API', () => {
   it('lists, creates, updates, and deletes notes for the configured worktree', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, command: 'codex' };
-    const stored = [{ id: 'note-identifier-001', text: 'Existing note' }];
+    const stored: Array<{ id: string; text: string; title?: string }> = [{ id: 'note-identifier-001', text: 'Existing note' }];
     const keys: string[] = [];
     const notes = {
       list: async (key: string) => { keys.push(`list:${key}`); return [...stored]; },
-      create: async (key: string) => { keys.push(`create:${key}`); const note = { id: 'note-identifier-002', text: '' }; stored.unshift(note); return note; },
+      create: async (key: string, title?: string) => { keys.push(`create:${key}:${title ?? ''}`); const note = { id: 'note-identifier-002', text: '', ...(title === undefined ? {} : { title }) }; stored.unshift(note); return note; },
       update: async (key: string, noteId: string, text: string) => { keys.push(`update:${key}:${noteId}`); const note = stored.find(candidate => candidate.id === noteId); if (note === undefined) return undefined; note.text = text; return { ...note }; },
+      rename: async (key: string, noteId: string, title: string) => { keys.push(`rename:${key}:${noteId}`); const note = stored.find(candidate => candidate.id === noteId); if (note === undefined) return undefined; note.title = title; return { ...note }; },
       delete: async (key: string, noteId: string) => { keys.push(`delete:${key}:${noteId}`); const index = stored.findIndex(candidate => candidate.id === noteId); return index < 0 ? undefined : stored.splice(index, 1)[0]; }
     };
     const notesApp = await buildApp({ ...config, worktrees: [worktree] }, { auth: new AuthService(hash, Buffer.alloc(32, 10).toString('base64url')), notes: notes as never });
@@ -392,18 +478,46 @@ describe('worktree notes API', () => {
       const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
 
       const listed = await notesApp.inject({ method: 'GET', url: '/api/worktrees/cora/notes', headers: { host: headers.host, cookie: headers.cookie } });
-      const created = await notesApp.inject({ method: 'POST', url: '/api/worktrees/cora/notes', headers });
+      const created = await notesApp.inject({ method: 'POST', url: '/api/worktrees/cora/notes', headers, payload: { title: 'Assistant response' } });
       const updated = await notesApp.inject({ method: 'PUT', url: '/api/worktrees/cora/notes/note-identifier-002', headers, payload: { text: 'Autosaved note' } });
+      const renamed = await notesApp.inject({ method: 'PATCH', url: '/api/worktrees/cora/notes/note-identifier-002', headers, payload: { title: 'Release checklist' } });
       const deleted = await notesApp.inject({ method: 'DELETE', url: '/api/worktrees/cora/notes/note-identifier-001', headers });
       const missing = await notesApp.inject({ method: 'GET', url: '/api/worktrees/missing/notes', headers: { host: headers.host, cookie: headers.cookie } });
 
       expect(listed.json()).toEqual({ notes: [{ id: 'note-identifier-001', text: 'Existing note' }] });
       expect(created.statusCode).toBe(201);
-      expect(created.json()).toEqual({ id: 'note-identifier-002', text: '' });
-      expect(updated.json()).toEqual({ id: 'note-identifier-002', text: 'Autosaved note' });
+      expect(created.json()).toEqual({ id: 'note-identifier-002', text: '', title: 'Assistant response' });
+      expect(updated.json()).toEqual({ id: 'note-identifier-002', text: 'Autosaved note', title: 'Assistant response' });
+      expect(renamed.json()).toEqual({ id: 'note-identifier-002', text: 'Autosaved note', title: 'Release checklist' });
       expect(deleted.json()).toEqual({ id: 'note-identifier-001', text: 'Existing note' });
       expect(missing.statusCode).toBe(404);
-      expect(keys).toEqual(['list:cora', 'create:cora', 'update:cora:note-identifier-002', 'delete:cora:note-identifier-001']);
+      expect(keys).toEqual(['list:cora', 'create:cora:Assistant response', 'update:cora:note-identifier-002', 'rename:cora:note-identifier-002', 'delete:cora:note-identifier-001']);
     } finally { await notesApp.close(); }
+  }, 15_000);
+});
+
+describe('assistant response files API', () => {
+  it('lists and previews files in the current agent workspace', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false, command: 'codex' };
+    const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', title: 'Ready' };
+    const discovery = { target: async (id: string) => id === agent.id ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined };
+    const workspaceFiles = {
+      list: async (workspace: string, message: string) => workspace === '/worktrees/cora' && message === 'Changed `src/main.ts`.' ? [{ path: 'src/main.ts', size: 12 }] : [],
+      preview: async (workspace: string, path: string) => workspace === '/worktrees/cora' && path === 'src/main.ts' ? { path, size: 12, binary: false, truncated: false, content: 'const ok=1;\n' } : undefined
+    };
+    const filesApp = await buildApp({ ...config, worktrees: [worktree] }, { auth: new AuthService(hash, Buffer.alloc(32, 15).toString('base64url')), discovery: discovery as never, workspaceFiles: workspaceFiles as never });
+    try {
+      const boot = await filesApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await filesApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      const listed = await filesApp.inject({ method: 'POST', url: '/api/agents/agent-1/message-files', headers, payload: { message: 'Changed `src/main.ts`.' } });
+      const previewed = await filesApp.inject({ method: 'POST', url: '/api/agents/agent-1/file-preview', headers, payload: { path: 'src/main.ts' } });
+      const invalid = await filesApp.inject({ method: 'POST', url: '/api/agents/agent-1/file-preview', headers, payload: { path: '' } });
+
+      expect(listed.json()).toEqual({ files: [{ path: 'src/main.ts', size: 12 }] });
+      expect(previewed.json()).toEqual({ path: 'src/main.ts', size: 12, binary: false, truncated: false, content: 'const ok=1;\n' });
+      expect(invalid.statusCode).toBe(400);
+    } finally { await filesApp.close(); }
   }, 15_000);
 });

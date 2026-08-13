@@ -58,3 +58,18 @@ test('joins stack controls onto Open and runs actions from its dropdown', async 
   await expect(root).toHaveAttribute('data-action', 'build');
   await expect(root.getByRole('link', { name: 'Building…' })).toHaveAttribute('aria-busy', 'true');
 });
+
+test('hides the browser split control while the stack is stopped', async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="prompt-actions"><div id="control-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderStoppedProjectOpenControls } = await import('/e2e/project-open-fixture.tsx');
+    renderStoppedProjectOpenControls(document.querySelector<HTMLElement>('#control-root')!);
+  });
+
+  const root = page.locator('#control-root');
+  await expect(root.getByRole('link', { name: 'Open' })).toBeVisible();
+  await expect(root.getByRole('button', { name: 'Open project in split view' })).toHaveCount(0);
+  await expect(root.getByRole('button', { name: 'Stack controls' })).toBeVisible();
+  await expect(root.locator('.project-open-group')).not.toHaveClass(/has-browser-control/u);
+});

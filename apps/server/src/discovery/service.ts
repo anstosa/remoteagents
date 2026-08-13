@@ -7,7 +7,8 @@ import { run } from '../tmux/command.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { ProcInspector, type ProcessInspector } from './processes.js';
 import { PullRequestService } from '../pull-requests/service.js';
-import type { Agent, Dashboard, GitStatusChange, GitStatusSummary, Pane, SocketRef, Worktree } from '../domain/models.js';
+import type { Agent, Dashboard, GitComparisonSummary, GitStatusChange, GitStatusSummary, Pane, SocketRef, Worktree } from '../domain/models.js';
+import { classifyReviewPath } from '../git/change-classification.js';
 
 export interface SocketFinder { find(): Promise<SocketRef[]>; }
 export class ProcSocketFinder implements SocketFinder {
@@ -93,7 +94,7 @@ export function gitStatusSummary(output: string, numstatOutputs: string[] = []):
         }
       }
     }
-    changes.push({ code, path, ...(originalPath === undefined ? {} : { originalPath }) });
+    changes.push({ code, path, ...(originalPath === undefined ? {} : { originalPath }), category: classifyReviewPath(path) });
   }
   const lineStats = numstatOutputs.reduce((combined, numstat) => {
     for (const [path, stats] of gitNumstat(numstat)) {
@@ -111,6 +112,54 @@ export function gitStatusSummary(output: string, numstatOutputs: string[] = []):
     if (code[1] !== ' ') summary.unstaged += 1;
   }
   return summary;
+}
+// summarize changes from the merge base
+export function gitComparisonSummary(base: string, nameStatusOutput: string, numstatOutput: string, untrackedChanges: GitStatusChange[] = []): GitComparisonSummary {
+  const changes: GitStatusChange[] = [];
+  const nulDelimited = nameStatusOutput.includes('\0');
+  const records = nameStatusOutput.split(nulDelimited ? '\0' : '\n');
+  // parse name-status records
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index]!;
+    // skip empty records
+    if (!record) continue;
+    let status: string;
+    let path: string;
+    let originalPath: string | undefined;
+    // parse nul-delimited output
+    if (nulDelimited) {
+      status = record;
+      path = records[++index] ?? '';
+      // preserve rename origins
+      if (status[0] === 'R' || status[0] === 'C') {
+        originalPath = path;
+        path = records[++index] ?? '';
+      }
+    } else {
+      const parts = record.split('\t');
+      status = parts[0] ?? '';
+      path = parts[1] ?? '';
+      // preserve rename origins
+      if (status[0] === 'R' || status[0] === 'C') {
+        originalPath = path;
+        path = parts[2] ?? '';
+      }
+    }
+    // ignore malformed records
+    if (!status || !path) continue;
+    const code = status[0] === 'U' ? 'UU' : `${status[0]} `;
+    changes.push({ code, path, ...(originalPath === undefined ? {} : { originalPath }), category: classifyReviewPath(path) });
+  }
+  const lineStats = gitNumstat(numstatOutput);
+  // attach line totals
+  for (const change of changes) Object.assign(change, lineStats.get(change.path));
+  const trackedPaths = new Set(changes.map(change => change.path));
+  // include current untracked files
+  for (const change of untrackedChanges) {
+    // avoid duplicate paths
+    if (!trackedPaths.has(change.path)) changes.push({ ...change });
+  }
+  return { base, files: changes.length, changes };
 }
 export async function addUntrackedLineStats(workspace: string, summary: GitStatusSummary, limits = { files: 256, bytes: 20 * 1024 * 1024, bytesPerFile: 5 * 1024 * 1024 }) {
   let inspectedFiles = 0;
@@ -144,11 +193,61 @@ export async function addUntrackedLineStats(workspace: string, summary: GitStatu
     } catch { /* The worktree may change between status and file inspection. */ }
   }
 }
-async function gitMeta(path: string): Promise<{ workspace: string; branch?: string; gitStatus?: GitStatusSummary }> {
+// compare the working tree with its merge target
+async function gitPrComparison(workspace: string, branch: string | undefined, working: GitStatusSummary | undefined, preferredBase?: string, exactBase = false): Promise<GitComparisonSummary | undefined> {
+  const [configured, remoteHead] = await Promise.all([
+    branch === undefined ? Promise.resolve({ code: 1, stdout: '' }) : run('/usr/bin/git', ['-C', workspace, 'config', '--get', `branch.${branch}.gh-merge-base`]),
+    run('/usr/bin/git', ['-C', workspace, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
+  ]);
+  const configuredBase = configured.code === 0 ? configured.stdout.trim() : '';
+  const preferred = preferredBase === undefined ? undefined : preferredBase.startsWith('origin/') || preferredBase.startsWith('refs/') ? preferredBase : `origin/${preferredBase}`;
+  const candidates = (exactBase ? [preferred] : [
+    preferred,
+    configuredBase === '' ? undefined : configuredBase.includes('/') ? configuredBase : `origin/${configuredBase}`,
+    remoteHead.code === 0 ? remoteHead.stdout.trim() : undefined,
+    'origin/main',
+    'origin/master'
+  ]).filter((candidate): candidate is string => candidate !== undefined && candidate !== '');
+  const seen = new Set<string>();
+  // try merge-target fallbacks
+  for (const candidate of candidates) {
+    // skip duplicate fallbacks
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    const mergeBase = await run('/usr/bin/git', ['-C', workspace, 'merge-base', 'HEAD', candidate]);
+    // skip unavailable targets
+    if (mergeBase.code !== 0 || mergeBase.stdout.trim() === '') continue;
+    const base = mergeBase.stdout.trim();
+    const [names, lines] = await Promise.all([
+      run('/usr/bin/git', ['--no-optional-locks', '-C', workspace, 'diff', '--name-status', '-z', '--find-renames', base, '--']),
+      run('/usr/bin/git', ['--no-optional-locks', '-C', workspace, 'diff', '--numstat', '-z', base, '--'])
+    ]);
+    // require both comparison views
+    if (names.code !== 0 || lines.code !== 0) continue;
+    const untracked = working?.changes?.filter(change => change.code === '??') ?? [];
+    return gitComparisonSummary(candidate, names.stdout, lines.stdout, untracked);
+  }
+  return undefined;
+}
+type GitMeta = { workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary };
+// prefer the pull request's actual base
+async function gitPrComparisonForBase(meta: GitMeta, branch: string | undefined, baseBranch: string | undefined): Promise<GitComparisonSummary | undefined> {
+  // keep the local fallback without PR metadata
+  if (baseBranch === undefined) return meta.gitPrStatus;
+  const preferredBase = baseBranch.startsWith('origin/') || baseBranch.startsWith('refs/') ? baseBranch : `origin/${baseBranch}`;
+  // reuse matching comparisons
+  if (meta.gitPrStatus?.base === preferredBase) return meta.gitPrStatus;
+  return await gitPrComparison(meta.workspace, branch, meta.gitStatus, baseBranch, true);
+}
+// resolve one pane path to its repository root
+async function workspaceRoot(path: string): Promise<string> {
   const canonical = await realpath(path).catch(() => path);
   const root = await run('/usr/bin/git', ['-C', canonical, 'rev-parse', '--show-toplevel']);
-  if (root.code !== 0) return { workspace: canonical };
-  const workspace = root.stdout.trim();
+  return root.code === 0 ? root.stdout.trim() : canonical;
+}
+// collect branch metadata
+async function gitMeta(path: string, rootKnown = false): Promise<GitMeta> {
+  const workspace = rootKnown ? path : await workspaceRoot(path);
   const [symbolicBranch, status, diff] = await Promise.all([
     run('/usr/bin/git', ['-C', workspace, 'symbolic-ref', '--short', 'HEAD']),
     run('/usr/bin/git', ['--no-optional-locks', '-C', workspace, 'status', '--porcelain=v1', '-z', '--untracked-files=all']),
@@ -163,10 +262,14 @@ async function gitMeta(path: string): Promise<{ workspace: string; branch?: stri
     numstatOutputs = [staged, unstaged].filter(result => result.code === 0).map(result => result.stdout);
   }
   const gitStatus = status.code === 0 ? gitStatusSummary(status.stdout, numstatOutputs) : undefined;
+  // enrich untracked line counts
   if (gitStatus !== undefined) await addUntrackedLineStats(workspace, gitStatus);
-  if (symbolicBranch.code === 0) return { workspace, branch: symbolicBranch.stdout.trim(), ...(gitStatus === undefined ? {} : { gitStatus }) };
+  const branch = symbolicBranch.code === 0 ? symbolicBranch.stdout.trim() : undefined;
+  const gitPrStatus = await gitPrComparison(workspace, branch, gitStatus);
+  // return symbolic branches directly
+  if (branch !== undefined) return { workspace, branch, ...(gitStatus === undefined ? {} : { gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }) };
   const sha = await run('/usr/bin/git', ['-C', workspace, 'rev-parse', '--short', 'HEAD']);
-  return { workspace, ...(sha.code === 0 ? { branch: sha.stdout.trim() } : {}), ...(gitStatus === undefined ? {} : { gitStatus }) };
+  return { workspace, ...(sha.code === 0 ? { branch: sha.stdout.trim() } : {}), ...(gitStatus === undefined ? {} : { gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }) };
 }
 type OmxRecord = { kind?: unknown; question_id?: unknown; status?: unknown; question?: unknown; options?: unknown; questions?: unknown; renderer?: { target?: unknown; return_target?: unknown } };
 const questionId = /^question-[A-Za-z0-9_.-]+$/;
@@ -197,10 +300,33 @@ export class DiscoveryService {
   private generation = 0; private snapshot: Agent[] = [];
   private refreshedAt = 0;
   private refreshInFlight?: Promise<Agent[]>;
+  private socketSnapshot: SocketRef[] = [];
+  private socketsRefreshedAt = 0;
+  private socketRefreshInFlight?: Promise<SocketRef[]>;
   private dashboardSnapshot?: { worktrees: Worktree[]; refreshedAt: number; value: Dashboard };
   private dashboardRefreshInFlight?: { worktrees: Worktree[]; value: Promise<Dashboard> };
+  private readonly gitMetadata = new Map<string, { refreshedAt: number; value: GitMeta }>();
+  private readonly gitMetadataInFlight = new Map<string, Promise<GitMeta>>();
   private static readonly refreshCacheMs = 2_000;
+  private static readonly gitMetadataCacheMs = 30_000;
   constructor(private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly tmux = new TmuxAdapter(), private readonly processes: ProcessInspector = new ProcInspector(), private readonly pullRequests = new PullRequestService()) {}
+  // reuse socket discovery across adjacent requests
+  private async sockets(force = false): Promise<SocketRef[]> {
+    // serve the recent socket snapshot
+    if (!force && Date.now() - this.socketsRefreshedAt < DiscoveryService.refreshCacheMs) return this.socketSnapshot;
+    // coalesce concurrent socket scans
+    if (this.socketRefreshInFlight !== undefined) return this.socketRefreshInFlight;
+    const refresh = this.finder.find().then(sockets => {
+      this.socketSnapshot = sockets;
+      this.socketsRefreshedAt = Date.now();
+      return sockets;
+    }).finally(() => {
+      // release only the active scan
+      if (this.socketRefreshInFlight === refresh) this.socketRefreshInFlight = undefined;
+    });
+    this.socketRefreshInFlight = refresh;
+    return refresh;
+  }
   async refresh(force = false): Promise<Agent[]> {
     if (!force && Date.now() - this.refreshedAt < DiscoveryService.refreshCacheMs) return this.snapshot;
     if (this.refreshInFlight) return this.refreshInFlight;
@@ -208,19 +334,30 @@ export class DiscoveryService {
     return this.refreshInFlight;
   }
   private async discover(): Promise<Agent[]> {
-    const sockets = await this.finder.find();
+    const sockets = await this.sockets(true);
     const panes = (await Promise.all(sockets.map(async (socket) => (await this.tmux.listPanes(socket)).map(pane => ({ ...pane, socket }))))).flat();
     const agents: Agent[] = (await Promise.all(panes.filter(pane => !isOmxWorkerPane(pane)).map(async (pane): Promise<Agent | undefined> => {
       if (!await this.processes.hasCodexDescendant(pane.pid)) return undefined;
-      const meta = await gitMeta(pane.path);
-      return { id: `${pane.socket.fingerprint}:${pane.paneId}`, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, workspace: meta.workspace, ...(meta.branch === undefined ? {} : { branch: meta.branch }), ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), title: pane.title, ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }) };
+      const workspace = await workspaceRoot(pane.path);
+      return { id: `${pane.socket.fingerprint}:${pane.paneId}`, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, workspace, title: pane.title, ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }) };
     }))).filter((agent): agent is Agent => agent !== undefined);
     this.snapshot = agents;
     this.refreshedAt = Date.now();
     this.generation++;
     return agents;
   }
-  async target(id: string): Promise<{ agent: Agent; socket: SocketRef } | undefined> { await this.refresh(); const agent = this.snapshot.find(a => a.id === id); if (!agent) return undefined; const socket = (await this.finder.find()).find(s => s.fingerprint === agent.socketFingerprint); return socket ? { agent, socket } : undefined; }
+  // resolve known panes without blocking on dashboard enrichment
+  async target(id: string): Promise<{ agent: Agent; socket: SocketRef } | undefined> {
+    let agent = this.snapshot.find(candidate => candidate.id === id);
+    // discover only targets absent from the runtime snapshot
+    if (agent === undefined) {
+      await this.refresh(true);
+      agent = this.snapshot.find(candidate => candidate.id === id);
+    }
+    if (agent === undefined) return undefined;
+    const socket = (await this.sockets()).find(candidate => candidate.fingerprint === agent!.socketFingerprint);
+    return socket === undefined ? undefined : { agent, socket };
+  }
   async dashboard(worktrees: Worktree[]): Promise<Dashboard> {
     const cached = this.dashboardSnapshot;
     if (cached?.worktrees === worktrees && Date.now() - cached.refreshedAt < DiscoveryService.refreshCacheMs) return cached.value;
@@ -240,26 +377,47 @@ export class DiscoveryService {
 
   private async buildDashboard(worktrees: Worktree[]): Promise<Dashboard> {
     const discovered = await this.refresh();
+    const metadataFor = (workspace: string) => {
+      const cached = this.gitMetadata.get(workspace);
+      // reuse recent Git state across frequent dashboard polls
+      if (cached !== undefined && Date.now() - cached.refreshedAt < DiscoveryService.gitMetadataCacheMs) return Promise.resolve(cached.value);
+      const active = this.gitMetadataInFlight.get(workspace);
+      // coalesce matching repository scans
+      if (active !== undefined) return active;
+      const value = gitMeta(workspace, true).then(meta => {
+        this.gitMetadata.set(workspace, { refreshedAt: Date.now(), value: meta });
+        return meta;
+      }).finally(() => {
+        // release only the matching scan
+        if (this.gitMetadataInFlight.get(workspace) === value) this.gitMetadataInFlight.delete(workspace);
+      });
+      this.gitMetadataInFlight.set(workspace, value);
+      // refresh expired metadata without delaying console traffic
+      if (cached !== undefined) return Promise.resolve(cached.value);
+      return value;
+    };
     const agents = await Promise.all(discovered.map(async (agent) => {
       const order = worktrees.findIndex(candidate => agent.workspace === candidate.identity || agent.workspace === candidate.hostPath);
       const worktree = order < 0 ? undefined : worktrees[order];
       const workspace = worktree?.identity ?? agent.workspace;
       const [meta, question] = await Promise.all([
-        worktree === undefined ? Promise.resolve({ workspace, branch: agent.branch, gitStatus: agent.gitStatus }) : gitMeta(workspace),
+        metadataFor(workspace),
         omxQuestion(workspace, agent.paneId)
       ]);
       const branch = meta.branch ?? agent.branch;
       const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, branch);
+      const gitPrStatus = await gitPrComparisonForBase(meta, branch, pullRequest?.baseBranch);
       const details = worktree === undefined
-        ? { ...agent, branch }
-        : { ...agent, branch, ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), workspace: worktree.identity, worktreeId: worktree.id, worktreeLabel: worktree.label, worktreeOrder: order, ...(worktree.newTask === undefined ? {} : { newTaskConfigured: true }), push: worktree.push, projectUrl: worktree.projectUrl };
+        ? { ...agent, branch, ...(gitPrStatus === undefined ? {} : { gitPrStatus }) }
+        : { ...agent, branch, ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), workspace: worktree.identity, worktreeId: worktree.id, worktreeLabel: worktree.label, worktreeOrder: order, ...(worktree.newTask === undefined ? {} : { newTaskConfigured: true }), push: worktree.push, projectUrl: worktree.projectUrl };
       return { ...details, ...(pullRequest === undefined ? {} : { pullRequest }), ...(question === undefined ? {} : { question }) };
     }));
     const active = new Set(agents.map(agent => agent.workspace));
     const inactive = await Promise.all(worktrees.filter(worktree => !active.has(worktree.identity)).map(async (worktree) => {
-      const meta = await gitMeta(worktree.identity);
+      const meta = await metadataFor(worktree.identity);
       const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, meta.branch);
-      return { id: worktree.id, label: worktree.label, path: worktree.path, available: worktree.available, pinned: worktree.pinned, projectUrl: worktree.projectUrl, order: worktrees.indexOf(worktree), ...(meta.branch === undefined ? {} : { branch: meta.branch }), ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(pullRequest === undefined ? {} : { pullRequest }) };
+      const gitPrStatus = await gitPrComparisonForBase(meta, meta.branch, pullRequest?.baseBranch);
+      return { id: worktree.id, label: worktree.label, path: worktree.path, available: worktree.available, pinned: worktree.pinned, projectUrl: worktree.projectUrl, order: worktrees.indexOf(worktree), ...(meta.branch === undefined ? {} : { branch: meta.branch }), ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(pullRequest === undefined ? {} : { pullRequest }) };
     }));
     return { generation: this.generation, agents, worktrees: inactive };
   }

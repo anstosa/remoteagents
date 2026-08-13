@@ -98,11 +98,12 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
     };
   })));
   expect(loadingLayout).toEqual(menuItemLayout);
-  for (const label of ['Swap to terminal', 'Review', 'Finish and PR', 'Attach files']) {
+  for (const label of ['Swap to terminal', 'Finish and PR', 'Attach files']) {
     const item = menu.getByRole('button', { name: label, exact: true });
     await expect(item).toBeVisible();
     await expect(item.locator('.more-menu-icon')).toHaveCount(1);
   }
+  await expect(menu.getByRole('button', { name: 'Review', exact: true })).toHaveCount(0);
   await expect(menu.getByRole('button', { name: 'Change directory', exact: true })).toHaveCount(0);
   const loadingGithubActions = menu.getByRole('button', { name: 'GitHub Actions', exact: true });
   const loadingNewTask = menu.getByRole('button', { name: 'New Task', exact: true });
@@ -269,6 +270,54 @@ test('shows every pull request target while keeping external and worktree action
 
   await expect(page.getByRole('tab', { name: /^Delta/u })).toHaveAttribute('aria-selected', 'true');
   await expect(menu).toBeHidden();
+});
+
+test('shows the workspace pull request cache while refreshing after a tab remount', async ({ page }) => {
+  let pullRequestRequests = 0;
+  let finishRefresh!: () => void;
+  const refreshFinished = new Promise<void>(resolve => { finishRefresh = resolve; });
+  // serve cached and refreshed lists
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: {
+      generation: 1,
+      agents: [
+        { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' },
+        { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/delta', worktreeId: 'delta', worktreeLabel: 'Delta', worktreeOrder: 1, title: 'Ready' }
+      ],
+      worktrees: []
+    } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (/^\/api\/agents\/agent-[12]\/saved-prompts$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });
+    if (url.pathname === '/api/agents/agent-2/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [] } });
+    if (url.pathname === '/api/agents/agent-1/switch-prs') {
+      pullRequestRequests += 1;
+      // hold the remount refresh
+      if (pullRequestRequests > 1) await refreshFinished;
+      const refreshed = pullRequestRequests > 1;
+      return route.fulfill({ json: { enabled: true, pullRequests: [{ number: refreshed ? 402 : 401, title: refreshed ? 'Refreshed PR' : 'Cached PR', branch: refreshed ? 'feature/refreshed' : 'feature/cached', draft: false, url: `https://github.example.com/pull/${refreshed ? 402 : 401}`, checkedOut: false }] } });
+    }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'More options' }).click();
+  await expect(page.getByRole('button', { name: '#401: Cached PR' })).toBeVisible();
+  await page.getByRole('button', { name: 'More options' }).click();
+  await page.getByRole('tab', { name: /^Delta/u }).click();
+  await page.getByRole('tab', { name: /^Cora/u }).click();
+  await page.getByRole('button', { name: 'More options' }).click();
+
+  const menu = page.locator('.more-menu');
+  await expect.poll(() => pullRequestRequests).toBe(2);
+  await expect(menu.getByRole('button', { name: 'Pull requests' }).locator('.spinner')).toBeVisible();
+  await expect(menu.getByRole('button', { name: '#401: Cached PR' })).toBeVisible();
+  finishRefresh();
+  await expect(menu.getByRole('button', { name: '#402: Refreshed PR' })).toBeVisible();
+  await expect(menu.getByRole('button', { name: '#401: Cached PR' })).toHaveCount(0);
 });
 
 test('formats the empty pull request state like the New Task description', async ({ page }) => {

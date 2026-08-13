@@ -83,7 +83,7 @@ test('long press selects mobile output without entering terminal input mode', as
   });
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   const page = await context.newPage();
-  const notes: Array<{ id: string; text: string }> = [];
+  const notes: Array<{ id: string; text: string; title?: string }> = [];
   const savedNotes: string[] = [];
   let createdNotes = 0;
   await page.addInitScript(() => {
@@ -127,7 +127,8 @@ test('long press selects mobile output without entering terminal input mode', as
     if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
     if (url.pathname === '/api/worktrees/cora/notes' && request.method() === 'GET') return route.fulfill({ json: { notes } });
     if (url.pathname === '/api/worktrees/cora/notes' && request.method() === 'POST') {
-      const note = { id: `note-identifier-00${++createdNotes}`, text: '' };
+      const payload = request.postDataJSON() as { title?: string } | null;
+      const note = { id: `note-identifier-00${++createdNotes}`, text: '', ...(payload?.title === undefined ? {} : { title: payload.title }) };
       notes.unshift(note);
       return route.fulfill({ status: 201, json: note });
     }
@@ -232,6 +233,7 @@ test('long press selects mobile output without entering terminal input mode', as
   await selectionToolbar.getByRole('button', { name: 'Copy' }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('Selectable');
   await selectionToolbar.getByRole('button', { name: 'Create note' }).click();
+  await expect(page.getByRole('dialog', { name: 'Note' }).locator('header strong')).toHaveText('Selectable');
   const notePreview = page.getByLabel('Note preview');
   await expect(notePreview).toContainText('Selectable');
   const noteEditor = page.getByRole('textbox', { name: 'Note content' });

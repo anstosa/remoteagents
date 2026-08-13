@@ -17,7 +17,7 @@ const file = process.env.RAC_CONFIG; if (!file) throw new Error('RAC_CONFIG must
 const config = await validateConfig(JSON.parse(await readFile(file, 'utf8'))); const tmux = new TmuxAdapter(); const discovery = new DiscoveryService(undefined, tmux); const push = new PushService(); const cleanup = new CleanupService(discovery, undefined, tmux);
 const notificationPollMs = Math.max(1_000, config.pollIntervalMs);
 const notifications = new AgentNotificationCoordinator(notification => push.notify(notification), Math.max(2_000, notificationPollMs * 2));
-const dashboardUpdates = new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.worktrees, dashboard.cleanupPending]));
+const dashboardUpdates = new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.worktrees, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews]));
 const app = await buildApp(config, { tmux, discovery, push, notifications, cleanup, dashboardUpdates });
 const dashboardTimer = setInterval(() => void dashboardUpdates.refresh().catch(() => {}), notificationPollMs);
 const cleanupMonitor = new CleanupMonitor(cleanup, dashboardUpdates, push);

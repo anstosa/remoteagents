@@ -32,13 +32,18 @@ that worktree instead of appearing as a duplicate idle card.
    for that worktree; `{taskId}` is replaced with an 8-character URL-safe
    random task ID. The command runs only when the working copy is clean and
    fully pushed. Set `HOST_UID` in `.env` if the host tmux server is not
-   owned by UID 1000.
+   owned by UID 1000. Compose also sets `RAC_PROJECT_PROXY_HOST` to Docker
+   Desktop's `host.docker.internal` gateway so preview requests can reach the
+   configured host ports.
 3. Copy `config/cloudflared.example.yml` to `config/cloudflared.yml`. Set the
-   tunnel UUID and the same hostname in both `hostname` and `httpHostHeader`.
-   Leave `credentials-file` as `/etc/cloudflared/credentials.json`; Compose
-   maps the host credentials file there read-only. The sidecar reads these
-   mounts as root, so you can keep both host files owner-readable only (for
-   example, modes `600` and `400` respectively).
+   tunnel UUID and preserve the browser-facing hostname in each `hostname` and
+   `httpHostHeader`. Route both project previews and the console to port 8787;
+   the console forwards configured project hosts to their fixed loopback ports
+   and injects browser navigation reporting. Leave `credentials-file` as
+   `/etc/cloudflared/credentials.json`; Compose maps the host credentials file
+   there read-only. The sidecar reads these mounts as root, so you can keep both
+   host files owner-readable only (for example, modes `600` and `400`
+   respectively).
 4. Build and start both services:
 
    ```bash

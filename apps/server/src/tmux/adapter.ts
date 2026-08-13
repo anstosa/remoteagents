@@ -65,6 +65,12 @@ const assistantMarkdown = (value: string) => {
   return markdown.replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '').replace(/\r/gu, '');
 };
 
+// strip styling without adding semantic markup
+const plainTerminalText = (value: string) => value
+  .replace(/\x1b\](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\)/gu, '')
+  .replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '')
+  .replace(/\r/gu, '');
+
 export function latestCompletedAssistantMessage(value: string): { text: string; rows: number } | undefined {
   const lines = assistantMarkdown(value).split('\n');
   let completedAt = -1;
@@ -93,6 +99,29 @@ export function latestCompletedAssistantMessage(value: string): { text: string; 
   for (let index = 1; index < rendered.length; index += 1) rendered[index] = rendered[index]!.replace(/^ {2}/u, '');
   const text = rendered.join('\n').trim();
   return text ? { text, rows: contentEnd - start } : undefined;
+}
+
+// capture the complete response after the latest prompt
+export function latestAgentMessageFromHistory(value: string): string | undefined {
+  const lines = plainTerminalText(value).split('\n');
+  let promptAt = -1;
+  // find the latest prompt boundary
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    // ignore selected numbered choices
+    if (/^›\s+\S/u.test(lines[index]!) && !/^›\s+(?:\[[ xX]\]\s*)?\d+[.)]\s/u.test(lines[index]!)) { promptAt = index; break; }
+  }
+  if (promptAt < 0) return undefined;
+  let start = promptAt + 1;
+  // skip wrapped prompt text
+  while (start < lines.length && /^ {2}\S/u.test(lines[start]!)) start += 1;
+  // skip prompt separation
+  while (start < lines.length && !lines[start]!.trim()) start += 1;
+  let end = lines.length;
+  // trim unused terminal rows
+  while (end > start && !lines[end - 1]!.trim()) end -= 1;
+  const message = lines.slice(start, end).join('\n').trim();
+  if (!message) return undefined;
+  return message.length <= 64_000 ? message : message.slice(-64_000);
 }
 
 function safeSnapshot(value: string): string {
@@ -136,6 +165,8 @@ function bottomAlignedWindow(lines: string[], rows: number): string[] {
   return [...Array.from({ length: Math.max(0, rows - content.length) }, () => ''), ...content];
 }
 
+export type CapturedWindow = { text: string; older: boolean; lastPrompt?: string; latestAgentMessage?: string; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean };
+
 export class TmuxAdapter {
   private readonly binary = process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux';
   private readonly inputQueues = new Map<string, Promise<boolean>>();
@@ -155,7 +186,21 @@ export class TmuxAdapter {
     return out.code === 0 ? safeSnapshot(out.stdout).slice(-96_000) : undefined;
   }
 
-  async captureWindow(socket: SocketRef, pane: string, history: number, rows: number): Promise<{ text: string; older: boolean; lastPrompt?: string; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean } | undefined> {
+  // capture only the current browser window
+  async captureRecentWindow(socket: SocketRef, pane: string, rows: number): Promise<CapturedWindow | undefined> {
+    // reject unsafe pane coordinates
+    if (!paneId.test(pane) || !Number.isInteger(rows) || rows < 2 || rows > 300) return undefined;
+    const depth = Math.min(300, rows + 24);
+    const out = await run(this.binary, ['-S', socket.path, 'capture-pane', '-e', '-p', '-t', pane, '-S', `-${depth}`]);
+    // reject failed captures
+    if (out.code !== 0) return undefined;
+    const lines = out.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
+    const start = Math.max(0, lines.length - rows);
+    const window = bottomAlignedWindow(lines.slice(start), rows);
+    return { text: safeSnapshot(window.join('\n')), older: start > 0 };
+  }
+
+  async captureWindow(socket: SocketRef, pane: string, history: number, rows: number): Promise<CapturedWindow | undefined> {
     if (!paneId.test(pane) || !Number.isInteger(history) || history < 0 || history > 5_000 || !Number.isInteger(rows) || rows < 2 || rows > 300) return undefined;
     // tmux's -S/-E coordinates shift around wrapped and blank rows. Capture a
     // bounded history snapshot and slice its concrete lines instead, so page
@@ -168,11 +213,12 @@ export class TmuxAdapter {
     const end = lines.length - offset;
     const start = Math.max(0, end - rows);
     const lastPrompt = lastPromptFromHistory(out.stdout);
+    const latestAgentMessage = latestAgentMessageFromHistory(out.stdout);
     const assistantMessage = latestCompletedAssistantMessage(out.stdout);
     const latestAssistantMessage = assistantMessage !== undefined && assistantMessage.text.length <= 30_000 ? assistantMessage.text : undefined;
     const latestAssistantMessageOverflows = assistantMessage === undefined || latestAssistantMessage === undefined ? undefined : assistantMessage.rows > rows;
     const window = bottomAlignedWindow(lines.slice(start, end), rows);
-    return { text: safeSnapshot(window.join('\n')), older: start > 0, ...(lastPrompt === undefined ? {} : { lastPrompt }), ...(latestAssistantMessage === undefined ? {} : { latestAssistantMessage, latestAssistantMessageOverflows }) };
+    return { text: safeSnapshot(window.join('\n')), older: start > 0, ...(lastPrompt === undefined ? {} : { lastPrompt }), ...(latestAgentMessage === undefined ? {} : { latestAgentMessage }), ...(latestAssistantMessage === undefined ? {} : { latestAssistantMessage, latestAssistantMessageOverflows }) };
   }
 
   async resize(socket: SocketRef, pane: string, cols: number, rows: number): Promise<boolean> {
@@ -276,17 +322,6 @@ export class TmuxAdapter {
     // terminal mode. Use the normal pane input queue so `fg` cannot overtake
     // keystrokes already sent by the browser.
     return await this.input(socket, pane, '\x15fg\r');
-  }
-
-  async quitReview(socket: SocketRef, pane: string): Promise<boolean> {
-    if (!paneId.test(pane)) return false;
-    const current = await run(this.binary, ['-S', socket.path, 'display-message', '-p', '-t', pane, '#{pane_current_command}']);
-    if (current.code !== 0) return false;
-    // The review command resumes the suspended agent after Neovim exits. If
-    // the user already quit Neovim directly, do not type a quit command into
-    // the resumed agent.
-    if (!/^(?:n?vim|view)$/u.test(current.stdout.trim())) return true;
-    return await this.input(socket, pane, '\x1b:qa!\r');
   }
 
   async input(socket: SocketRef, pane: string, value: string): Promise<boolean> {

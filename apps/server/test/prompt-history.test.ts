@@ -23,12 +23,33 @@ describe('PromptHistoryService', () => {
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
+  // persist completed answers with their prompts
+  it('records and reloads the final assistant answer for a prompt', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-prompt-answer-'));
+    const file = join(directory, 'history.json');
+    try {
+      const service = new PromptHistoryService(file);
+      const entry = await service.record('worktree:cora', 'Explain the change');
+
+      await expect(service.recordAnswer('worktree:cora', entry!.id, 'The change is complete.')).resolves.toMatchObject({
+        id: entry!.id,
+        answer: 'The change is complete.'
+      });
+      await expect(new PromptHistoryService(file).list('worktree:cora')).resolves.toMatchObject([{
+        id: entry!.id,
+        text: 'Explain the change',
+        answer: 'The change is complete.'
+      }]);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
   it('rejects invalid records and invalid persisted history', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-invalid-prompt-history-'));
     const file = join(directory, 'history.json');
     try {
       const service = new PromptHistoryService(file);
       await expect(service.record('worktree:cora', '')).resolves.toBeUndefined();
+      await expect(service.recordAnswer('worktree:cora', 'missing-entry', 'Answer')).resolves.toBeUndefined();
       await writeFile(file, JSON.stringify({ 'worktree:cora': [{ id: 'bad', text: 'Prompt', createdAt: 'not-a-date' }] }));
       await expect(service.list('worktree:cora')).rejects.toThrow('invalid prompt history file');
     } finally { await rm(directory, { recursive: true, force: true }); }

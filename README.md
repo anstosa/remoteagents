@@ -29,10 +29,11 @@ pull-request state without losing the terminal-native workflow underneath.
 | Area | Capabilities |
 | --- | --- |
 | **Agent overview** | Discover Codex/OMX descendants in tmux, see working/ready/action-required state, unread activity, and launch configured or scratch agents. |
-| **Live output** | Stream the active pane, page through history, open detected links, copy selected output, answer guided questions, and temporarily switch to an interactive terminal or review view. |
+| **Live output** | Stream the active pane, page through history, open detected links, copy selected output, answer guided questions, and temporarily switch to an interactive terminal. |
 | **Prompt workflow** | Use per-worktree prompt history, arrow-key recall, saved drafts, attachments, skill/slash-command autocomplete, press-and-hold voice dictation, and persistent queued prompt management. |
 | **Worktree context** | Show branch and full Git status, changed filenames, pull-request checks and review issues, GitHub Actions, project links, and trusted stack commands. |
 | **Working notes** | Keep autosaved Markdown notes beside output, copy them, save the latest response, or send a note back as a prompt. |
+| **Guided review** | Generate an AI-narrated tour of active Working or All PR implementation changes, visit or skip each logical step, and send consolidated feedback to the agent. |
 | **Operations** | Install as a browser app, enable notifications, review stale runtime cleanup targets, and deploy with Docker Compose plus an optional Cloudflare Tunnel. |
 
 ### Reuse saved drafts
@@ -42,6 +43,20 @@ draft and its attachments, and lets you restore it to the composer, queue it
 directly, or delete it.
 
 ![Saved prompt flyout with restore, queue, and delete controls](docs/images/saved-prompts.png)
+
+### Review implementation changes
+
+Open the branch-status flyout, choose **Working** or **All PR**, then select
+**Review**. The console captures a fresh Git snapshot and generates a narrated
+tour that explains how related implementation changes fit together. Tests and
+documentation are excluded by default and can be included with the tour
+toggles, which regenerates the snapshot.
+
+The tour is explanatory rather than an automated code review: it does not
+produce findings, verdicts, or patches. Visit or skip every logical step, add
+feedback where useful, then optionally send one editable consolidated change
+request to the active agent. Generation runs as a bounded, cancellable job and
+the tour requires regeneration if the underlying changes move.
 
 ### Manage follow-up prompts
 
@@ -152,7 +167,11 @@ and customized prompt actions.
 ```json
 {
   "listen": { "host": "127.0.0.1", "port": 8787 },
+  "name": "My server",
   "publicOrigin": "https://agents.example.com",
+  "remoteServers": [
+    { "name": "Other server", "url": "https://other-agents.example.com" }
+  ],
   "newAgentCommand": "codex",
   "worktrees": [
     {
@@ -168,6 +187,10 @@ and customized prompt actions.
 }
 ```
 
+`name` identifies the current Remote Agents server. When `remoteServers` is
+configured, the login, control, and output screens offer a server selector that
+navigates directly to the selected server URL.
+
 See [the setup reference](docs/setup.md) for the full security boundary,
 worktree command behavior, browser capabilities, and operational checks.
 
@@ -179,7 +202,7 @@ worktree command behavior, browser capabilities, and operational checks.
 | `Shift+Enter` / `Ctrl+Enter` / `⌘+Enter` | Insert a newline |
 | `↑` / `↓` | Recall older/newer prompt history when the cursor is on the first line |
 | `Ctrl+S` / `⌘+S` | Save the current prompt as a draft |
-| `Tab` | Insert a tab in the prompt; in terminal/review mode, send Tab to the pane |
+| `Tab` | Insert a tab in the prompt; in terminal mode, send Tab to the pane |
 | `$` or `/` | Open skill or slash-command completion |
 | `Ctrl+C` with selected output | Copy the selection; without a selection in terminal mode, interrupt the process |
 

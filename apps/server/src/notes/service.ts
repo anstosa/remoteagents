@@ -2,22 +2,25 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-export type WorktreeNote = { id: string; text: string };
+export type WorktreeNote = { id: string; text: string; title?: string };
 type StoredNotes = Record<string, WorktreeNote[]>;
 
 const maxNotesPerWorktree = 50;
 const maxWorktrees = 100;
 const maxNoteLength = 30_000;
+const maxNoteTitleLength = 120;
 const maxTotalNoteLength = 300_000;
 const validWorktreeId = (value: string) => /^[A-Za-z0-9_-]{1,80}$/u.test(value);
 const validNoteId = (value: string) => /^[A-Za-z0-9_-]{12,64}$/u.test(value);
 const validText = (value: string) => value.length <= maxNoteLength && !value.includes('\0');
+const validTitle = (value: string) => value.trim().length > 0 && value.length <= maxNoteTitleLength && !value.includes('\0');
+// validate persisted note data
 const validNote = (value: unknown): value is WorktreeNote => {
   if (value === null || typeof value !== 'object') return false;
-  const note = value as { id?: unknown; text?: unknown };
-  return typeof note.id === 'string' && validNoteId(note.id) && typeof note.text === 'string' && validText(note.text);
+  const note = value as { id?: unknown; text?: unknown; title?: unknown };
+  return typeof note.id === 'string' && validNoteId(note.id) && typeof note.text === 'string' && validText(note.text) && (note.title === undefined || typeof note.title === 'string' && validTitle(note.title));
 };
-const totalNoteLength = (stored: StoredNotes) => Object.values(stored).flat().reduce((total, note) => total + note.text.length, 0);
+const totalNoteLength = (stored: StoredNotes) => Object.values(stored).flat().reduce((total, note) => total + note.text.length + (note.title?.length ?? 0), 0);
 
 export class WorktreeNoteService {
   private mutation = Promise.resolve();
@@ -30,13 +33,15 @@ export class WorktreeNoteService {
     return [...((await this.read())[worktreeId] ?? [])];
   }
 
-  async create(worktreeId: string): Promise<WorktreeNote | undefined> {
-    if (!validWorktreeId(worktreeId)) return undefined;
+  // create an optionally titled note
+  async create(worktreeId: string, title?: string): Promise<WorktreeNote | undefined> {
+    if (!validWorktreeId(worktreeId) || title !== undefined && !validTitle(title)) return undefined;
     return await this.mutate(stored => {
       const notes = stored[worktreeId] ?? [];
       if (notes.length >= maxNotesPerWorktree) return undefined;
       if (stored[worktreeId] === undefined && Object.keys(stored).length >= maxWorktrees) return undefined;
-      const note = { id: randomBytes(18).toString('base64url'), text: '' };
+      const note: WorktreeNote = { id: randomBytes(18).toString('base64url'), text: '', ...(title === undefined ? {} : { title }) };
+      if (totalNoteLength(stored) + (title?.length ?? 0) > maxTotalNoteLength) return undefined;
       stored[worktreeId] = [note, ...notes];
       return note;
     });
@@ -49,6 +54,18 @@ export class WorktreeNoteService {
       if (note === undefined) return undefined;
       if (totalNoteLength(stored) - note.text.length + text.length > maxTotalNoteLength) return undefined;
       note.text = text;
+      return { ...note };
+    });
+  }
+
+  // rename one note
+  async rename(worktreeId: string, noteId: string, title: string): Promise<WorktreeNote | undefined> {
+    if (!validWorktreeId(worktreeId) || !validNoteId(noteId) || !validTitle(title)) return undefined;
+    return await this.mutate(stored => {
+      const note = stored[worktreeId]?.find(candidate => candidate.id === noteId);
+      if (note === undefined) return undefined;
+      if (totalNoteLength(stored) - (note.title?.length ?? 0) + title.length > maxTotalNoteLength) return undefined;
+      note.title = title;
       return { ...note };
     });
   }

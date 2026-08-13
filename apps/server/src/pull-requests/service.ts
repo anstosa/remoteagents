@@ -122,13 +122,13 @@ export class PullRequestService {
     if (!Array.isArray(pulls)) return undefined;
     const summaries = pulls.flatMap((pull): PullRequestCandidate[] => {
       if (pull === null || typeof pull !== 'object') return [];
-      const value = pull as { number?: unknown; title?: unknown; draft?: unknown; state?: unknown; merged_at?: unknown; html_url?: unknown; head?: { sha?: unknown } };
+      const value = pull as { number?: unknown; title?: unknown; draft?: unknown; state?: unknown; merged_at?: unknown; html_url?: unknown; head?: { sha?: unknown }; base?: { ref?: unknown } };
       if (!Number.isInteger(value.number) || (value.number as number) < 1 || typeof value.title !== 'string' || typeof value.html_url !== 'string') return [];
       const status = typeof value.merged_at === 'string' ? 'merged' : value.state === 'open' ? value.draft === true ? 'draft' : 'open' : undefined;
       if (status === undefined) return [];
       try {
         const url = new URL(value.html_url);
-        return url.protocol === 'https:' && url.hostname === 'github.com' ? [{ number: value.number as number, title: value.title, status, url: url.href, ...(typeof value.head?.sha === 'string' && /^[a-f0-9]{40}$/iu.test(value.head.sha) ? { headSha: value.head.sha } : {}) }] : [];
+        return url.protocol === 'https:' && url.hostname === 'github.com' ? [{ number: value.number as number, title: value.title, status, url: url.href, ...(typeof value.base?.ref === 'string' && value.base.ref !== '' ? { baseBranch: value.base.ref } : {}), ...(typeof value.head?.sha === 'string' && /^[a-f0-9]{40}$/iu.test(value.head.sha) ? { headSha: value.head.sha } : {}) }] : [];
       } catch { return []; }
     });
     const selected = summaries.find(pullRequest => pullRequest.status !== 'merged') ?? summaries[0];

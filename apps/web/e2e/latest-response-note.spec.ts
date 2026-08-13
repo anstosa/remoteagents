@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 test('always offers the latest response and only highlights replies longer than the screen', async ({ page }) => {
-  const notes: Array<{ id: string; text: string }> = [];
+  const notes: Array<{ id: string; text: string; title?: string }> = [];
   const savedTexts: string[] = [];
   let created = 0;
   await page.addInitScript(() => {
@@ -48,7 +48,8 @@ test('always offers the latest response and only highlights replies longer than 
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
     if (url.pathname === '/api/worktrees/cora/notes' && request.method() === 'GET') return route.fulfill({ json: { notes } });
     if (url.pathname === '/api/worktrees/cora/notes' && request.method() === 'POST') {
-      const note = { id: `note-identifier-00${++created}`, text: '' };
+      const payload = request.postDataJSON() as { title?: string } | null;
+      const note = { id: `note-identifier-00${++created}`, text: '', ...(payload?.title === undefined ? {} : { title: payload.title }) };
       notes.unshift(note);
       return route.fulfill({ status: 201, json: note });
     }
@@ -57,6 +58,11 @@ test('always offers the latest response and only highlights replies longer than 
       const note = notes.find(candidate => candidate.id === noteMatch[1])!;
       note.text = (request.postDataJSON() as { text: string }).text;
       savedTexts.push(note.text);
+      return route.fulfill({ json: note });
+    }
+    if (noteMatch && request.method() === 'PATCH') {
+      const note = notes.find(candidate => candidate.id === noteMatch[1])!;
+      note.title = (request.postDataJSON() as { title: string }).title;
       return route.fulfill({ json: note });
     }
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
@@ -91,6 +97,18 @@ test('always offers the latest response and only highlights replies longer than 
   await notesButton.click();
   await expect(saveLatest).toBeVisible();
   await saveLatest.click();
+  const pane = page.getByRole('dialog', { name: 'Note' });
+  const noteTitle = pane.locator('header strong');
+  const renameNote = page.getByRole('button', { name: 'Rename note' });
+  await expect(noteTitle).toHaveText('Summary');
+  const [titleBounds, renameBounds] = await Promise.all([noteTitle.boundingBox(), renameNote.boundingBox()]);
+  expect(renameBounds!.x - (titleBounds!.x + titleBounds!.width)).toBeLessThan(12);
+  await renameNote.click();
+  const noteName = page.getByRole('textbox', { name: 'Note name' });
+  await expect(noteName).toHaveValue('Summary');
+  await noteName.fill('Release checklist');
+  await page.getByRole('button', { name: 'Save note name' }).click();
+  await expect(pane.locator('header strong')).toHaveText('Release checklist');
   const preview = page.getByLabel('Note preview');
   await expect(preview).toContainText('Summary');
   await expect(preview).toContainText('Detail 1');
@@ -103,6 +121,9 @@ test('always offers the latest response and only highlights replies longer than 
   await expect.poll(() => savedTexts).toContain(firstResponse);
 
   await page.getByRole('button', { name: 'Close note' }).click();
+  await notesButton.click();
+  await expect(page.getByRole('button', { name: 'Release checklist' })).toBeVisible();
+  await notesButton.click();
   await emit('Same completed response refreshed', firstResponse, true);
   await expect(notesButton).not.toHaveClass(/latest-response-available/u);
   await notesButton.click();

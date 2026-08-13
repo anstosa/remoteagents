@@ -1,10 +1,13 @@
 import type { Agent, Dashboard, StackAction } from '../domain/models.js';
+import type { ReviewTourCapability, StoredReviewTourSummary } from '../review-tour/contracts.js';
 
 type StackState = { running?: boolean; transition?: 'starting' | 'migrating'; operation?: StackAction; tunnel?: boolean };
 export type DashboardPayload = Omit<Dashboard, 'agents' | 'worktrees'> & {
   agents: Array<Agent & { unread: boolean; stack?: StackState }>;
   worktrees: Array<Dashboard['worktrees'][number] & { stack?: StackState }>;
   cleanupPending: number;
+  reviewTour: ReviewTourCapability;
+  reviews: StoredReviewTourSummary[];
 };
 
 export class DashboardUpdates<T = DashboardPayload> {

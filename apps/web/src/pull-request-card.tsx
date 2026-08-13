@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 
 export type PullRequestIssues = { mergeConflicts?: boolean; failingChecks?: boolean; unresolvedComments?: boolean };
 export type PullRequestCheckStatus = 'passed' | 'pending' | 'failed';
-export type PullRequestSummary = { number: number; title: string; status: 'draft' | 'open' | 'merged'; url: string; checks?: PullRequestCheckStatus; issues?: PullRequestIssues };
+export type PullRequestSummary = { number: number; title: string; status: 'draft' | 'open' | 'merged'; url: string; baseBranch?: string; checks?: PullRequestCheckStatus; issues?: PullRequestIssues };
 
 const statusLabel = { draft: 'Draft', open: 'Open', merged: 'Merged' } as const;
 type IssueName = keyof PullRequestIssues;

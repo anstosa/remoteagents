@@ -2,9 +2,14 @@ import type { IBufferRange, Terminal as XTerm } from '@xterm/xterm';
 
 const outputUrl = /(https?|HTTPS?):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~\[\]`()<>]/;
 const outputUrlContinuation = /^[^\s"'!*(){}|\\^<>`]/;
+// recognize workspace-style file mentions
+const outputFile = /(?:^|[\s'"`(<\[])(@?(?:(?:file:\/\/)?(?:\/|\.{1,2}\/)?(?:[A-Za-z0-9_@.+-]+\/)+[A-Za-z0-9_@.+-]*[A-Za-z0-9_@+-]|(?:README|LICENSE|Dockerfile|Makefile)(?:\.[A-Za-z0-9_-]+)?|[A-Za-z0-9_@+-]+\.[A-Za-z0-9_-]{1,16})(?:#L\d+(?:-L\d+)?|:\d+(?::\d+)?)?)/u;
 
-export type OutputLink = { uri: string; range: IBufferRange };
+export type OutputLink = { kind: 'url'|'file'; uri: string; range: IBufferRange };
 export type OutputLinkSegment = { column: number; row: number; columns: number };
+
+// normalize one file-preview request path
+const outputFilePath = (value: string) => value.replace(/^@/u, '').replace(/^file:\/\//u, '').replace(/#L\d+(?:-L\d+)?$/iu, '').replace(/:\d+(?::\d+)?$/u, '');
 
 const outputLinkPosition = (terminal: XTerm, initialLine: number, initialColumn: number, length: number): [number, number] => {
   const buffer = terminal.buffer.active;
@@ -46,9 +51,11 @@ const urlReachesEnd = (text: string) => {
 export const terminalOutputLinks = (terminal: XTerm): OutputLink[] => {
   const buffer = terminal.buffer.active;
   const links: OutputLink[] = [];
+  // scan each logical terminal line
   for (let first = 0; first < buffer.length;) {
     let last = first;
     let text = buffer.getLine(first)?.translateToString(true) ?? '';
+    // join xterm-wrapped rows
     while (last + 1 < buffer.length) {
       const next = buffer.getLine(last + 1);
       const nextText = next?.translateToString(true) ?? '';
@@ -56,12 +63,31 @@ export const terminalOutputLinks = (terminal: XTerm): OutputLink[] => {
       last += 1;
       text += nextText;
     }
+    const occupied: Array<{ start: number; end: number }> = [];
     const matcher = new RegExp(outputUrl.source, 'g');
+    // retain external URLs first
     for (let match = matcher.exec(text); match !== null; match = matcher.exec(text)) {
       const [startLine, startColumn] = outputLinkPosition(terminal, first, 0, match.index);
       const [endLine, endColumn] = outputLinkPosition(terminal, startLine, startColumn, match[0].length);
       if (startLine < 0 || endLine < 0) continue;
-      links.push({ uri: match[0], range: { start: { x: startColumn + 1, y: startLine + 1 }, end: { x: endColumn, y: endLine + 1 } } });
+      occupied.push({ start: match.index, end: match.index + match[0].length });
+      links.push({ kind: 'url', uri: match[0], range: { start: { x: startColumn + 1, y: startLine + 1 }, end: { x: endColumn, y: endLine + 1 } } });
+    }
+    const fileMatcher = new RegExp(outputFile.source, 'gu');
+    // retain non-URL file mentions
+    for (let match = fileMatcher.exec(text); match !== null; match = fileMatcher.exec(text)) {
+      const mention = match[1]!;
+      const mentionAt = match.index + match[0].length - mention.length;
+      // avoid path-like fragments inside URLs
+      if (occupied.some(range => mentionAt < range.end && mentionAt + mention.length > range.start)) continue;
+      const path = outputFilePath(mention);
+      // ignore empty normalized paths
+      if (!path) continue;
+      const [startLine, startColumn] = outputLinkPosition(terminal, first, 0, mentionAt);
+      const [endLine, endColumn] = outputLinkPosition(terminal, startLine, startColumn, mention.length);
+      // skip unmappable terminal cells
+      if (startLine < 0 || endLine < 0) continue;
+      links.push({ kind: 'file', uri: path, range: { start: { x: startColumn + 1, y: startLine + 1 }, end: { x: endColumn, y: endLine + 1 } } });
     }
     first = last + 1;
   }
@@ -82,12 +108,14 @@ export const outputLinkSegments = (range: IBufferRange, columns: number, rows: n
   return segments;
 };
 
-export const createOutputLinkOverlays = (container: HTMLElement, onOpen: () => void) => {
+export const createOutputLinkOverlays = (container: HTMLElement, onOpen: () => void, onOpenFile?: (path: string) => void) => {
   const anchors = new Map<string, HTMLAnchorElement>();
+  // remove every active overlay
   const clear = () => {
     anchors.forEach(anchor => anchor.remove());
     anchors.clear();
   };
+  // render links over terminal cells
   const render = (terminal: XTerm) => {
     const element = terminal.element;
     const screen = element?.querySelector<HTMLElement>('.xterm-screen');
@@ -98,20 +126,30 @@ export const createOutputLinkOverlays = (container: HTMLElement, onOpen: () => v
     const cellWidth = screenBounds.width / terminal.cols;
     const cellHeight = screenBounds.height / terminal.rows;
     const active = new Set<string>();
+    // map each detected link to visible segments
     for (const link of terminalOutputLinks(terminal)) {
       const segments = outputLinkSegments(link.range, terminal.cols, terminal.rows, terminal.buffer.active.viewportY);
       segments.forEach((segment, index) => {
-        const key = `${link.uri}\0${segment.column}:${segment.row}:${segment.columns}:${index}`;
+        const key = `${link.kind}\0${link.uri}\0${segment.column}:${segment.row}:${segment.columns}:${index}`;
         active.add(key);
         let anchor = anchors.get(key);
+        // create a stable semantic link once
         if (anchor === undefined) {
           anchor = document.createElement('a');
           anchor.className = 'output-link-overlay';
-          anchor.href = link.uri;
-          anchor.target = '_blank';
-          anchor.rel = 'noopener noreferrer';
-          anchor.title = link.uri;
-          anchor.setAttribute('aria-label', `Open ${link.uri}`);
+          // configure external navigation
+          if (link.kind === 'url') {
+            anchor.href = link.uri;
+            anchor.target = '_blank';
+            anchor.rel = 'noopener noreferrer';
+            anchor.title = link.uri;
+            anchor.setAttribute('aria-label', `Open ${link.uri}`);
+          } else {
+            anchor.href = `#file-preview=${encodeURIComponent(link.uri)}`;
+            anchor.title = `Preview ${link.uri}`;
+            anchor.dataset.outputFilePath = link.uri;
+            anchor.setAttribute('aria-label', `Preview ${link.uri}`);
+          }
           anchor.style.position = 'absolute';
           anchor.style.zIndex = '10';
           anchor.style.display = 'block';
@@ -119,7 +157,12 @@ export const createOutputLinkOverlays = (container: HTMLElement, onOpen: () => v
           anchor.style.cursor = 'pointer';
           anchor.addEventListener('mousedown', event => event.stopPropagation());
           anchor.addEventListener('mouseup', event => event.stopPropagation());
-          anchor.addEventListener('click', event => { event.stopPropagation(); onOpen(); });
+          anchor.addEventListener('click', event => {
+            event.stopPropagation();
+            onOpen();
+            // open file links in the internal preview
+            if (link.kind === 'file') { event.preventDefault(); onOpenFile?.(link.uri); }
+          });
           container.append(anchor);
           anchors.set(key, anchor);
         }
@@ -129,6 +172,7 @@ export const createOutputLinkOverlays = (container: HTMLElement, onOpen: () => v
         anchor.style.height = `${cellHeight}px`;
       });
     }
+    // discard overlays no longer rendered
     for (const [key, anchor] of anchors) if (!active.has(key)) {
       anchor.remove();
       anchors.delete(key);

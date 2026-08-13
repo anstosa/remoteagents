@@ -7,6 +7,11 @@ test('keeps a new-task processing indicator visible until the replacement agent 
   let finishNewTask!: () => void;
   const newTaskFinished = new Promise<void>(resolve => { finishNewTask = resolve; });
 
+  await page.addInitScript(() => {
+    const nativeSetTimeout = window.setTimeout;
+    // accelerate handoff recovery
+    window.setTimeout = ((handler: TimerHandler, timeout?: number, ...arguments_: unknown[]) => nativeSetTimeout(handler, timeout === 30_000 ? 50 : timeout, ...arguments_)) as typeof window.setTimeout;
+  });
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -14,7 +19,7 @@ test('keeps a new-task processing indicator visible until the replacement agent 
     if (url.pathname === '/api/dashboard') {
       dashboardRequests += 1;
       if (replacementReady) return route.fulfill({ json: { generation: dashboardRequests, agents: [{ id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, newTaskConfigured: true, title: 'Ready' }], worktrees: [] } });
-      if (oldAgentGone) return route.fulfill({ json: { generation: dashboardRequests, agents: [], worktrees: [{ id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: true, order: 0 }] } });
+      if (oldAgentGone) return route.fulfill({ json: { generation: dashboardRequests, agents: [], worktrees: [] } });
       return route.fulfill({ json: { generation: dashboardRequests, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, newTaskConfigured: true, title: 'Ready' }], worktrees: [] } });
     }
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
@@ -23,7 +28,6 @@ test('keeps a new-task processing indicator visible until the replacement agent 
     if (url.pathname === '/api/agents/agent-1/new-task' && request.method() === 'GET') return route.fulfill({ json: { enabled: true } });
     if (url.pathname === '/api/agents/agent-1/new-task' && request.method() === 'POST') {
       await newTaskFinished;
-      replacementReady = true;
       return route.fulfill({ status: 202 });
     }
     if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [] } });
@@ -34,7 +38,7 @@ test('keeps a new-task processing indicator visible until the replacement agent 
   await page.getByRole('button', { name: 'More options' }).click();
   await page.locator('.more-menu').getByRole('button', { name: 'New Task', exact: true }).click();
 
-  const processing = page.getByRole('status', { name: 'Starting new task' });
+  const processing = page.locator('.log-loading[role="status"]');
   await expect(processing).toBeVisible();
   await expect(processing).toContainText('preparing a fresh agent');
   await expect(page.getByRole('status').filter({ hasText: 'Starting a new task' })).toContainText('You can keep using other tabs');
@@ -46,6 +50,9 @@ test('keeps a new-task processing indicator visible until the replacement agent 
   await expect(processing).toBeVisible();
 
   finishNewTask();
+  await expect(page.getByRole('alert').filter({ hasText: 'New task is taking longer than expected' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Cora — Agent closed' })).toBeVisible();
+  replacementReady = true;
   await expect(page.getByRole('tab', { name: 'Cora — Prompt done' })).toHaveAttribute('aria-selected', 'true', { timeout: 10_000 });
   await expect(processing).toHaveCount(0);
   await expect(page.getByRole('status').filter({ hasText: 'New task is ready' })).toContainText('ready for a fresh prompt');

@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-export type PromptHistoryEntry = { id: string; text: string; createdAt: string };
+export type PromptHistoryEntry = { id: string; text: string; createdAt: string; answer?: string; answeredAt?: string };
 type StoredHistory = Record<string, PromptHistoryEntry[]>;
 
 const maxScopes = 500;
@@ -11,17 +11,26 @@ const listedEntriesPerScope = 50;
 const maxTotalTextLength = 10_000_000;
 const validScope = (value: string) => value.length > 0 && value.length <= 240 && !value.includes('\0');
 const validText = (value: string) => value.trim().length > 0 && value.length <= 64_000 && !value.includes('\0');
+// validate persisted history entries
 const validEntry = (value: unknown): value is PromptHistoryEntry => {
+  // require the base prompt fields
   if (value === null || typeof value !== 'object') return false;
-  const entry = value as { id?: unknown; text?: unknown; createdAt?: unknown };
+  const entry = value as { id?: unknown; text?: unknown; createdAt?: unknown; answer?: unknown; answeredAt?: unknown };
+  const validAnswer = entry.answer === undefined && entry.answeredAt === undefined
+    || typeof entry.answer === 'string'
+      && validText(entry.answer)
+      && typeof entry.answeredAt === 'string'
+      && Number.isFinite(Date.parse(entry.answeredAt));
   return typeof entry.id === 'string'
     && /^[A-Za-z0-9_-]{12,64}$/u.test(entry.id)
     && typeof entry.text === 'string'
     && validText(entry.text)
     && typeof entry.createdAt === 'string'
-    && Number.isFinite(Date.parse(entry.createdAt));
+    && Number.isFinite(Date.parse(entry.createdAt))
+    && validAnswer;
 };
-const totalTextLength = (stored: StoredHistory) => Object.values(stored).flat().reduce((total, entry) => total + entry.text.length, 0);
+// count all persisted history text
+const totalTextLength = (stored: StoredHistory) => Object.values(stored).flat().reduce((total, entry) => total + entry.text.length + (entry.answer?.length ?? 0), 0);
 
 export class PromptHistoryService {
   private mutation = Promise.resolve();
@@ -50,6 +59,30 @@ export class PromptHistoryService {
         if (oldest[1].length === 0) delete stored[oldest[0]];
       }
       return entry;
+    });
+  }
+
+  // attach the completed assistant answer
+  async recordAnswer(scope: string, entryId: string, answer: string): Promise<PromptHistoryEntry | undefined> {
+    // reject invalid updates
+    if (!validScope(scope) || !/^[A-Za-z0-9_-]{12,64}$/u.test(entryId) || !validText(answer)) return undefined;
+    return await this.mutate(stored => {
+      const entries = stored[scope];
+      const index = entries?.findIndex(entry => entry.id === entryId) ?? -1;
+      // require the original prompt
+      if (entries === undefined || index < 0) return undefined;
+      const completed = { ...entries[index]!, answer, answeredAt: new Date().toISOString() };
+      entries[index] = completed;
+      // enforce the shared storage budget
+      while (totalTextLength(stored) > maxTotalTextLength) {
+        const oldest = Object.entries(stored).sort(([, left], [, right]) => Date.parse(left.at(-1)?.createdAt ?? '') - Date.parse(right.at(-1)?.createdAt ?? ''))[0];
+        // stop after exhausting history
+        if (oldest === undefined) break;
+        oldest[1].pop();
+        // remove empty scopes
+        if (oldest[1].length === 0) delete stored[oldest[0]];
+      }
+      return completed;
     });
   }
 

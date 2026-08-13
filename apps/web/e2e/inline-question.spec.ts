@@ -1,18 +1,27 @@
 import { expect, test } from '@playwright/test';
 
-test('captures OMX inline checkbox choices as a numbered agent question', async ({ page }) => {
+test('captures the selected first multi-select choice as a compact numbered agent question', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 });
   const output = [
     'Deployment',
-    'Question 1 of 2',
-    'Where should OMX deploy',
-    '› [x] 1. Staging (Recommended) — Uses the isolated staging stack.',
-    '  [ ] 2. Production — Deploys to the live environment.',
-    '  [ ] 3. Cancel',
+    'Question 1/1',
+    'Which strict-mode end state should govern this cleanup?',
+    '› [x] 1. Global strict only (Recommended)   Set the UI project to strict.',
+    '  [ ] 2. Keep targeted checker              Enable global strict with a targeted checker.',
+    '  [ ] 3. Markers only',
+    '  [ ] 4. None of the above                  Optionally type a different answer.',
+    '↑↓ move · Enter select',
+    ''
+  ].join('\n');
+  const visibleOutput = [
+    'Which strict-mode end state should govern this cleanup?',
+    '  [ ] 3. Markers only',
+    '  [ ] 4. None of the above                  Optionally type a different answer.',
     '↑↓ move · Enter select',
     ''
   ].join('\n');
   let selectedIndex: number | undefined;
-  await page.addInitScript(questionOutput => {
+  await page.addInitScript(({ questionOutput, viewportOutput }) => {
     class MockWebSocket {
       static readonly CONNECTING = 0;
       static readonly OPEN = 1;
@@ -30,7 +39,7 @@ test('captures OMX inline checkbox choices as a numbered agent question', async 
           if (this.readyState !== MockWebSocket.CONNECTING) return;
           this.readyState = MockWebSocket.OPEN;
           this.onopen?.(new Event('open'));
-          if (this.url.includes('/ws/logs/')) this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'reset', text: questionOutput }) }));
+          if (this.url.includes('/ws/logs/')) this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'reset', text: viewportOutput, latestAgentMessage: questionOutput }) }));
         });
       }
       send() {}
@@ -41,7 +50,7 @@ test('captures OMX inline checkbox choices as a numbered agent question', async 
       }
     }
     Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
-  }, output);
+  }, { questionOutput: output, viewportOutput: visibleOutput });
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -60,14 +69,42 @@ test('captures OMX inline checkbox choices as a numbered agent question', async 
 
   await page.goto('/');
   await expect(page.getByText('Agent question')).toBeVisible();
-  await expect(page.locator('.question-copy')).toContainText('Where should OMX deploy');
+  await expect(page.locator('.question-copy')).toContainText('Which strict-mode end state should govern this cleanup?');
   const choices = page.locator('.question-choice');
-  await expect(choices).toHaveCount(3);
+  await expect(choices).toHaveCount(4);
   await expect(choices).toHaveText([
-    '1Staging (Recommended) — Uses the isolated staging stack.',
-    '2Production — Deploys to the live environment.',
-    '3Cancel'
+    '1Global strict only (Recommended)   Set the UI project to strict.',
+    '2Keep targeted checker              Enable global strict with a targeted checker.',
+    '3Markers only',
+    '4None of the above                  Optionally type a different answer.'
   ]);
+  await expect(choices.nth(0)).toHaveCSS('font-size', '11.52px');
+  await expect(choices.nth(0)).toHaveCSS('display', 'grid');
+  const numberBounds = await choices.nth(0).locator('b').boundingBox();
+  expect(numberBounds!.width).toBeGreaterThanOrEqual(22);
+  // capture relative question geometry
+  const layout = await choices.evaluateAll(buttons => buttons.map(button => {
+    const buttonBounds = button.getBoundingClientRect();
+    const numberBounds = button.querySelector('b')!.getBoundingClientRect();
+    const answerBounds = button.querySelector('span')!.getBoundingClientRect();
+    return {
+      height: buttonBounds.height,
+      numberTop: numberBounds.top - buttonBounds.top,
+      numberLeft: numberBounds.left - buttonBounds.left,
+      numberBottomSpace: buttonBounds.bottom - numberBounds.bottom,
+      answerCenter: answerBounds.top + answerBounds.height / 2 - buttonBounds.top - buttonBounds.height / 2
+    };
+  }));
+  const wrapped = layout[1]!;
+  const short = layout[2]!;
+  expect(wrapped.height).toBeGreaterThan(short.height);
+  // keep every number pinned while centering its answer
+  for (const choice of layout) {
+    expect(choice.numberTop).toBeCloseTo(layout[0]!.numberTop, 1);
+    expect(choice.numberLeft).toBeCloseTo(layout[0]!.numberLeft, 1);
+    expect(choice.answerCenter).toBeCloseTo(0, 1);
+  }
+  expect(wrapped.numberBottomSpace).toBeGreaterThan(short.numberBottomSpace);
   await choices.nth(1).click();
   await expect.poll(() => selectedIndex).toBe(1);
 });

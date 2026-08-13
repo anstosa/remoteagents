@@ -23,12 +23,12 @@ describe('GitHub pull request lookup', () => {
       expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer private-token');
       if (url.endsWith('/pulls/42')) return { ok: true, json: async () => ({ mergeable: true, mergeable_state: 'clean' }) };
       if (url.endsWith('/graphql')) return { ok: true, json: async () => ({ data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } }) };
-      return { ok: true, json: async () => [{ number: 42, title: 'Voice input', state: 'open', draft: false, merged_at: null, html_url: 'https://github.com/octo/repo/pull/42' }] };
+      return { ok: true, json: async () => [{ number: 42, title: 'Voice input', state: 'open', draft: false, merged_at: null, html_url: 'https://github.com/octo/repo/pull/42', base: { ref: 'staging' } }] };
     }, undefined, () => 'private-token');
 
     await expect(service.url('/workspace', 'feature/voice')).resolves.toBe('https://github.com/octo/repo/pull/42');
     await expect(service.url('/workspace', 'feature/voice')).resolves.toBe('https://github.com/octo/repo/pull/42');
-    await expect(service.cachedPullRequest('/workspace', 'feature/voice')).resolves.toEqual({ number: 42, title: 'Voice input', status: 'open', url: 'https://github.com/octo/repo/pull/42', checks: 'pending' });
+    await expect(service.cachedPullRequest('/workspace', 'feature/voice')).resolves.toEqual({ number: 42, title: 'Voice input', status: 'open', url: 'https://github.com/octo/repo/pull/42', baseBranch: 'staging', checks: 'pending' });
     expect(requests).toHaveLength(3);
     expect(requests[0]).toContain('head=octo%3Afeature%2Fvoice');
   });

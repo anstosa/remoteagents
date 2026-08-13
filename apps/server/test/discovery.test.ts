@@ -1,9 +1,9 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { addUntrackedLineStats, DiscoveryService, gitStatusSummary, omxQuestion, ProcSocketFinder } from '../src/discovery/service.js';
+import { addUntrackedLineStats, DiscoveryService, gitComparisonSummary, gitStatusSummary, omxQuestion, ProcSocketFinder } from '../src/discovery/service.js';
 import type { SocketRef, Worktree } from '../src/domain/models.js';
 
 describe('DiscoveryService dashboard', () => {
@@ -15,12 +15,12 @@ describe('DiscoveryService dashboard', () => {
       untracked: 1,
       conflicted: 1,
       changes: [
-        { code: ' M', path: 'modified.ts' },
-        { code: 'M ', path: 'staged.ts' },
-        { code: 'MM', path: 'both.ts' },
-        { code: '??', path: 'new.ts' },
-        { code: 'UU', path: 'conflict.ts' },
-        { code: 'R ', path: 'renamed.ts', originalPath: 'old.ts' }
+        { code: ' M', path: 'modified.ts', category: 'implementation' },
+        { code: 'M ', path: 'staged.ts', category: 'implementation' },
+        { code: 'MM', path: 'both.ts', category: 'implementation' },
+        { code: '??', path: 'new.ts', category: 'implementation' },
+        { code: 'UU', path: 'conflict.ts', category: 'implementation' },
+        { code: 'R ', path: 'renamed.ts', originalPath: 'old.ts', category: 'implementation' }
       ]
     });
     expect(gitStatusSummary('')).toEqual({ files: 0, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, changes: [] });
@@ -46,9 +46,28 @@ describe('DiscoveryService dashboard', () => {
       'MM mixed.ts\0 M binary.png\0',
       ['3\t1\tmixed.ts\0-\t-\tbinary.png\0', '2\t4\tmixed.ts\0']
     ).changes).toEqual([
-      { code: 'MM', path: 'mixed.ts', additions: 5, deletions: 5 },
-      { code: ' M', path: 'binary.png' }
+      { code: 'MM', path: 'mixed.ts', additions: 5, deletions: 5, category: 'implementation' },
+      { code: ' M', path: 'binary.png', category: 'implementation' }
     ]);
+  });
+
+  // cover PR comparison parsing
+  it('summarizes merge-base changes with renames and current untracked files', () => {
+    expect(gitComparisonSummary(
+      'origin/main',
+      'M\x00src/changed.ts\x00R100\x00docs/old.md\x00docs/new.md\x00A\x00assets/image.png\x00',
+      '3\t1\tsrc/changed.ts\x002\t2\t\x00docs/old.md\x00docs/new.md\x00-\t-\tassets/image.png\x00',
+      [{ code: '??', path: 'notes/local.txt', additions: 4, deletions: 0 }]
+    )).toEqual({
+      base: 'origin/main',
+      files: 4,
+      changes: [
+        { code: 'M ', path: 'src/changed.ts', additions: 3, deletions: 1, category: 'implementation' },
+        { code: 'R ', path: 'docs/new.md', originalPath: 'docs/old.md', additions: 2, deletions: 2, category: 'doc' },
+        { code: 'A ', path: 'assets/image.png', category: 'implementation' },
+        { code: '??', path: 'notes/local.txt', additions: 4, deletions: 0 }
+      ]
+    });
   });
 
   it('bounds untracked line-stat enrichment by file count and aggregate bytes', async () => {
@@ -64,9 +83,9 @@ describe('DiscoveryService dashboard', () => {
       await addUntrackedLineStats(workspace, summary, { files: 2, bytes: 16, bytesPerFile: 16 });
 
       expect(summary.changes).toEqual([
-        { code: '??', path: 'one.txt', additions: 2, deletions: 0 },
-        { code: '??', path: 'two.txt' },
-        { code: '??', path: 'three.txt' }
+        { code: '??', path: 'one.txt', additions: 2, deletions: 0, category: 'implementation' },
+        { code: '??', path: 'two.txt', category: 'implementation' },
+        { code: '??', path: 'three.txt', category: 'implementation' }
       ]);
     } finally { await rm(workspace, { recursive: true, force: true }); }
   });
@@ -145,6 +164,31 @@ describe('DiscoveryService dashboard', () => {
     expect(third).toHaveLength(1);
     expect(finds).toBe(1);
     expect(inspections).toBe(1);
+  });
+
+  it('resolves a known target without repeating global discovery after the dashboard cache expires', async () => {
+    vi.useFakeTimers();
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    let finds = 0;
+    let listings = 0;
+    let inspections = 0;
+    const finder = { find: async () => { finds += 1; return [socket]; } };
+    const tmux = { listPanes: async () => { listings += 1; return [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/host/ferry', title: 'Ferry' }]; } };
+    const processes = { hasCodexDescendant: async () => { inspections += 1; return true; } };
+    const service = new DiscoveryService(finder, tmux as never, processes);
+
+    try {
+      const [agent] = await service.refresh();
+      vi.advanceTimersByTime(2_100);
+
+      await expect(service.target(agent!.id)).resolves.toMatchObject({ agent: { paneId: '%1' }, socket });
+
+      expect(finds).toBe(2);
+      expect(listings).toBe(1);
+      expect(inspections).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('coalesces concurrent dashboard enrichment so slow polls cannot accumulate', async () => {

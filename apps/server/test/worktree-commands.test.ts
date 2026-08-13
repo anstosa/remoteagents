@@ -4,7 +4,7 @@ import { WorktreeCommandService } from '../src/worktree-commands/service.js';
 
 const previousTmuxDirectory = process.env.RAC_HOST_TMUX_DIR;
 const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false, command: 'codex', commands: { build: 'docker compose build' } };
-const config: ValidatedConfig = { listen: { host: '127.0.0.1', port: 8787 }, publicOrigin: new URL('https://agents.example.com'), trustedProxyIps: new Set(), pollIntervalMs: 500, newAgentCommand: 'codex', worktrees: [worktree] };
+const config: ValidatedConfig = { name: 'Remote Agents', remoteServers: [], listen: { host: '127.0.0.1', port: 8787 }, publicOrigin: new URL('https://agents.example.com'), trustedProxyIps: new Set(), pollIntervalMs: 500, newAgentCommand: 'codex', worktrees: [worktree] };
 
 afterEach(() => {
   if (previousTmuxDirectory === undefined) delete process.env.RAC_HOST_TMUX_DIR;
