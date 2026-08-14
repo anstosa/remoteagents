@@ -30,3 +30,10 @@ export const renderStoppedProjectOpenControls = (root: HTMLElement) => {
     onStackAction: () => {}
   }));
 };
+
+export const renderStackOnlyControls = (root: HTMLElement) => {
+  createRoot(root).render(createElement(ProjectOpen, {
+    stack: { actions: ['start', 'stop', 'build', 'restart'], running: true },
+    onStackAction: action => { root.dataset.action = action; }
+  }));
+};

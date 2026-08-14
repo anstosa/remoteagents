@@ -7,7 +7,7 @@ import { run } from '../tmux/command.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { ProcInspector, type ProcessInspector } from './processes.js';
 import { PullRequestService } from '../pull-requests/service.js';
-import type { Agent, Dashboard, GitComparisonSummary, GitStatusChange, GitStatusSummary, Pane, SocketRef, Worktree } from '../domain/models.js';
+import type { Agent, Dashboard, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, Pane, SocketRef, Worktree } from '../domain/models.js';
 import { classifyReviewPath } from '../git/change-classification.js';
 
 export interface SocketFinder { find(): Promise<SocketRef[]>; }
@@ -229,7 +229,22 @@ async function gitPrComparison(workspace: string, branch: string | undefined, wo
   }
   return undefined;
 }
-type GitMeta = { workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary };
+type GitCommand = (binary: string, args: string[]) => Promise<{ code: number; stdout: string }>;
+// compare HEAD with the current branch's configured upstream
+export async function gitUpstreamSummary(workspace: string, command: GitCommand = run): Promise<GitUpstreamSummary | undefined> {
+  const upstream = await command('/usr/bin/git', ['-C', workspace, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']);
+  const name = upstream.code === 0 ? upstream.stdout.trim() : '';
+  // detached, untracked, and gone upstreams do not produce a rebase prompt
+  if (!name || /[\u0000-\u001f\u007f]/u.test(name) || name.length > 512) return undefined;
+  const counts = await command('/usr/bin/git', ['-C', workspace, 'rev-list', '--left-right', '--count', `HEAD...${name}`]);
+  const match = counts.code === 0 ? /^(\d+)\s+(\d+)$/u.exec(counts.stdout.trim()) : undefined;
+  if (match == null) return undefined;
+  const ahead = Number(match[1]);
+  const behind = Number(match[2]);
+  if (!Number.isSafeInteger(ahead) || !Number.isSafeInteger(behind)) return undefined;
+  return { upstream: name, ahead, behind };
+}
+type GitMeta = { workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary };
 // prefer the pull request's actual base
 async function gitPrComparisonForBase(meta: GitMeta, branch: string | undefined, baseBranch: string | undefined): Promise<GitComparisonSummary | undefined> {
   // keep the local fallback without PR metadata
@@ -265,9 +280,12 @@ async function gitMeta(path: string, rootKnown = false): Promise<GitMeta> {
   // enrich untracked line counts
   if (gitStatus !== undefined) await addUntrackedLineStats(workspace, gitStatus);
   const branch = symbolicBranch.code === 0 ? symbolicBranch.stdout.trim() : undefined;
-  const gitPrStatus = await gitPrComparison(workspace, branch, gitStatus);
+  const [gitPrStatus, gitUpstream] = await Promise.all([
+    gitPrComparison(workspace, branch, gitStatus),
+    branch === undefined ? Promise.resolve(undefined) : gitUpstreamSummary(workspace)
+  ]);
   // return symbolic branches directly
-  if (branch !== undefined) return { workspace, branch, ...(gitStatus === undefined ? {} : { gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }) };
+  if (branch !== undefined) return { workspace, branch, ...(gitStatus === undefined ? {} : { gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(gitUpstream === undefined ? {} : { gitUpstream }) };
   const sha = await run('/usr/bin/git', ['-C', workspace, 'rev-parse', '--short', 'HEAD']);
   return { workspace, ...(sha.code === 0 ? { branch: sha.stdout.trim() } : {}), ...(gitStatus === undefined ? {} : { gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }) };
 }
@@ -408,8 +426,8 @@ export class DiscoveryService {
       const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, branch);
       const gitPrStatus = await gitPrComparisonForBase(meta, branch, pullRequest?.baseBranch);
       const details = worktree === undefined
-        ? { ...agent, branch, ...(gitPrStatus === undefined ? {} : { gitPrStatus }) }
-        : { ...agent, branch, ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), workspace: worktree.identity, worktreeId: worktree.id, worktreeLabel: worktree.label, worktreeOrder: order, ...(worktree.newTask === undefined ? {} : { newTaskConfigured: true }), push: worktree.push, projectUrl: worktree.projectUrl };
+        ? { ...agent, branch, ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }) }
+        : { ...agent, branch, ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }), workspace: worktree.identity, worktreeId: worktree.id, worktreeLabel: worktree.label, worktreeOrder: order, ...(worktree.newTask === undefined ? {} : { newTaskConfigured: true }), push: worktree.push, projectUrl: worktree.projectUrl };
       return { ...details, ...(pullRequest === undefined ? {} : { pullRequest }), ...(question === undefined ? {} : { question }) };
     }));
     const active = new Set(agents.map(agent => agent.workspace));
@@ -417,7 +435,7 @@ export class DiscoveryService {
       const meta = await metadataFor(worktree.identity);
       const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, meta.branch);
       const gitPrStatus = await gitPrComparisonForBase(meta, meta.branch, pullRequest?.baseBranch);
-      return { id: worktree.id, label: worktree.label, path: worktree.path, available: worktree.available, pinned: worktree.pinned, projectUrl: worktree.projectUrl, order: worktrees.indexOf(worktree), ...(meta.branch === undefined ? {} : { branch: meta.branch }), ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(pullRequest === undefined ? {} : { pullRequest }) };
+      return { id: worktree.id, label: worktree.label, path: worktree.path, available: worktree.available, pinned: worktree.pinned, projectUrl: worktree.projectUrl, order: worktrees.indexOf(worktree), ...(meta.branch === undefined ? {} : { branch: meta.branch }), ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }), ...(pullRequest === undefined ? {} : { pullRequest }) };
     }));
     return { generation: this.generation, agents, worktrees: inactive };
   }

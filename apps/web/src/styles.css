@@ -96,22 +96,27 @@ main { max-width: 1100px; margin: auto; padding: var(--edge); }
 .server-instance-icon { width: 1.35rem; height: 1.35rem; flex: none; border-radius: .3rem; }
 .server-switcher strong { min-width: 0; overflow: hidden; color: var(--lavender); font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
 .server-switcher-control { position: relative; min-width: 0; }
-.server-switcher-trigger { display: flex; min-width: 8.8rem; max-width: 14rem; height: 2rem; align-items: center; gap: .5rem; border: 1px solid color-mix(in srgb, var(--lavender) 52%, var(--surface-1)); border-radius: var(--control-radius); padding: 0 .5rem; background: var(--mantle); color: var(--lavender); box-shadow: none; font: 700 .72rem var(--font-mono); }
+.server-switcher-trigger { position: relative; display: flex; min-width: 8.8rem; max-width: 14rem; height: 2rem; align-items: center; gap: .5rem; border: 1px solid color-mix(in srgb, var(--lavender) 52%, var(--surface-1)); border-radius: var(--control-radius); padding: 0 .5rem; background: var(--mantle); color: var(--lavender); box-shadow: none; font: 700 .72rem var(--font-mono); }
 .server-switcher-trigger:hover, .server-switcher-trigger[aria-expanded='true'] { border-color: var(--lavender); background: color-mix(in srgb, var(--mantle) 86%, var(--lavender)); }
+.server-switcher-trigger.attention-question { border-color: color-mix(in srgb, var(--red) 72%, var(--surface-1)); color: var(--red); }
+.server-switcher-trigger.attention-working { border-color: color-mix(in srgb, var(--orange) 70%, var(--surface-1)); color: var(--orange); }
+.server-switcher-trigger.attention-completed { border-color: color-mix(in srgb, var(--green) 65%, var(--surface-1)); color: var(--green); }
+.server-switcher-trigger.attention-unavailable { border-color: color-mix(in srgb, var(--overlay-0) 70%, var(--surface-1)); color: var(--overlay-2); }
 .server-switcher-trigger > span { min-width: 0; flex: 1; overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .server-switcher-trigger > svg { width: .9rem; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; transition: transform .15s ease; }
 .server-switcher-trigger[aria-expanded='true'] > svg { transform: rotate(180deg); }
 .server-switcher-menu { position: absolute; top: calc(100% + .35rem); right: auto; left: 0; z-index: 120; display: grid; min-width: max(100%, 12rem); overflow: hidden; border: 1px solid var(--surface-1); border-radius: var(--control-radius); padding: .3rem; background: var(--mantle); box-shadow: 0 .7rem 1.8rem #11111bcc; }
-.server-switcher-option { display: grid; grid-template-columns: 1.7rem minmax(0, 1fr) .65rem 1rem; align-items: center; gap: .55rem; min-height: 2.6rem; border: 0; border-radius: var(--control-radius); padding: .35rem .5rem; background: transparent; color: var(--subtext-1); box-shadow: none; font: 700 .72rem var(--font-mono); text-align: left; }
+.server-switcher-option { display: flex; align-items: center; gap: .55rem; min-height: 2.6rem; border: 0; border-radius: var(--control-radius); padding: .35rem .5rem; background: transparent; color: var(--subtext-1); box-shadow: none; font: 700 .72rem var(--font-mono); text-align: left; }
 .server-switcher-option:hover, .server-switcher-option:focus-visible { background: color-mix(in srgb, var(--lavender) 13%, transparent); color: var(--text); }
 .server-switcher-option[aria-selected='true'] { color: var(--lavender); }
-.server-switcher-option img { width: 1.7rem; height: 1.7rem; border-radius: .38rem; }
-.server-switcher-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.server-switcher-attention { width: .55rem; height: .55rem; border: 1px solid color-mix(in srgb, currentColor 45%, transparent); border-radius: 50%; opacity: 0; }
+.server-switcher-option img { width: 1.7rem; height: 1.7rem; flex: none; border-radius: .38rem; }
+.server-switcher-option span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.server-switcher-attention { width: .55rem; height: .55rem; flex: none; border: 1px solid color-mix(in srgb, currentColor 45%, transparent); border-radius: 50%; opacity: 0; }
 .server-switcher-attention.question { background: var(--red); border-color: color-mix(in srgb, var(--red) 75%, white); box-shadow: 0 0 .55rem color-mix(in srgb, var(--red) 65%, transparent); opacity: 1; }
+.server-switcher-attention.working { background: var(--orange); border-color: color-mix(in srgb, var(--orange) 75%, white); box-shadow: 0 0 .55rem color-mix(in srgb, var(--orange) 60%, transparent); opacity: 1; }
 .server-switcher-attention.completed { background: var(--green); border-color: color-mix(in srgb, var(--green) 75%, white); box-shadow: 0 0 .55rem color-mix(in srgb, var(--green) 55%, transparent); opacity: 1; }
-.server-switcher-attention.unavailable { background: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 75%, white); opacity: .9; }
-.server-switcher-option svg { width: 1rem; fill: none; stroke: var(--green); stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.server-switcher-attention.unavailable { background: var(--overlay-0); border-color: var(--overlay-2); opacity: 1; }
+.server-switcher-summary-attention { position: absolute; top: -.25rem; right: -.25rem; }
 .auth-server-switcher { justify-self: start; margin-bottom: .15rem; }
 .auth-card input { width: 100%; min-height: 2.75rem; border-color: var(--surface-1); background: color-mix(in srgb, var(--crust) 82%, transparent); font-family: var(--font-mono); }
 .auth-submit { justify-content: space-between; width: 100%; margin-top: .15rem; background: linear-gradient(115deg, var(--mauve), var(--lavender), var(--blue)); }
@@ -153,6 +158,7 @@ html.software-keyboard-open .tabs { display: none; }
 .agent-view, .worktree-view { width: 100%; height: 100%; min-width: 0; min-height: 0; display: grid; gap: 1rem; overflow: visible; }
 .agent-view { grid-template-rows: minmax(0, 1fr) auto; gap: 0; }
 .agent-view > .pull-request-card { margin-top: .375rem; }
+.agent-view > .upstream-rebase-banner + .pull-request-card { margin-top: 0; }
 .agent-view > .prompt, .worktree-view > .prompt { margin: .375rem .375rem .375rem; }
 .worktree-view { align-content: start; }
 .agent-view h2, .worktree-view h2 { color: var(--lavender); margin: 0; }
@@ -481,6 +487,7 @@ html.software-keyboard-open .tabs { display: none; }
 .prompt-actions :is(.project-browser-toggle, .project-stack-toggle) { flex: 0 0 2.6rem; width: 2.6rem; border-left: 0; padding: 0; place-items: center; }
 .prompt-actions .project-browser-toggle { display: none; border-radius: 0 var(--control-radius) var(--control-radius) 0; }
 .prompt-actions .project-stack-toggle { display: grid; border-radius: 0 var(--control-radius) var(--control-radius) 0; }
+.prompt-actions .project-open-group.stack-only .project-stack-toggle { border-left: 1px solid var(--prompt-control-border); border-radius: var(--control-radius); }
 :is(.project-browser-toggle, .project-stack-toggle) svg { width: .9rem; height: .9rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.2; }
 .project-browser-toggle[aria-pressed='true'] { color: var(--blue); }
 @media (min-width: 769px) {
@@ -521,6 +528,14 @@ html.software-keyboard-open .tabs { display: none; }
 .pull-request-card.status-draft { color: var(--overlay-2); }
 .pull-request-card.status-open { color: var(--green); }
 .pull-request-card.status-merged { color: var(--mauve); }
+.upstream-rebase-banner { display: grid; min-width: 0; min-height: 3rem; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .7rem; margin: .375rem .375rem 0; border: 1px solid color-mix(in srgb, var(--yellow) 58%, var(--surface-1)); border-radius: var(--control-radius); padding: .5rem .55rem .5rem .7rem; background: color-mix(in srgb, var(--mantle) 90%, var(--yellow)); color: var(--yellow); box-shadow: inset 0 1px #ffffff0a; }
+.upstream-rebase-banner > svg { width: 1.2rem; height: 1.2rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.upstream-rebase-banner > span { display: grid; min-width: 0; gap: .1rem; }
+.upstream-rebase-banner strong { color: var(--text); font: 700 .75rem var(--font-mono); }
+.upstream-rebase-banner small { overflow: hidden; color: var(--subtext-0); font: 500 .66rem/1.3 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.upstream-rebase-banner > button { min-width: 7.8rem; height: 2rem; justify-content: center; border-color: color-mix(in srgb, var(--yellow) 72%, var(--surface-1)); padding: .25rem .55rem; background: transparent; color: var(--yellow); box-shadow: none; font: 700 .68rem var(--font-mono); }
+.upstream-rebase-banner > button:not(:disabled):hover { background: color-mix(in srgb, var(--yellow) 14%, transparent); color: var(--text); }
+.upstream-rebase-banner > button.queued { border-color: var(--green); color: var(--green); }
 .dialog { position: fixed; inset: 0; background: #11111bd9; display: grid; place-items: center; padding: 1rem; z-index: var(--layer-dialog); backdrop-filter: blur(5px); }
 .dialog > div { width: min(52rem, 100%); max-height: 90vh; overflow: auto; background: var(--base); border: 1px solid var(--surface-1); border-radius: var(--control-radius); padding: 1rem; box-shadow: 0 1.5rem 4rem #11111bcc; }
 .response-file-dialog { padding: 0; }

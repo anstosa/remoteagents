@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { addUntrackedLineStats, DiscoveryService, gitComparisonSummary, gitStatusSummary, omxQuestion, ProcSocketFinder } from '../src/discovery/service.js';
+import { addUntrackedLineStats, DiscoveryService, gitComparisonSummary, gitStatusSummary, gitUpstreamSummary, omxQuestion, ProcSocketFinder } from '../src/discovery/service.js';
 import type { SocketRef, Worktree } from '../src/domain/models.js';
 
 describe('DiscoveryService dashboard', () => {
@@ -49,6 +49,22 @@ describe('DiscoveryService dashboard', () => {
       { code: 'MM', path: 'mixed.ts', additions: 5, deletions: 5, category: 'implementation' },
       { code: ' M', path: 'binary.png', category: 'implementation' }
     ]);
+  });
+
+  it('reports commits available from the configured branch upstream', async () => {
+    const command = vi.fn(async (_binary: string, args: string[]) => args.includes('rev-parse')
+      ? { code: 0, stdout: 'origin/feature\n' }
+      : { code: 0, stdout: '2\t3\n' });
+
+    await expect(gitUpstreamSummary('/worktrees/cora', command)).resolves.toEqual({ upstream: 'origin/feature', ahead: 2, behind: 3 });
+    expect(command).toHaveBeenLastCalledWith('/usr/bin/git', ['-C', '/worktrees/cora', 'rev-list', '--left-right', '--count', 'HEAD...origin/feature']);
+  });
+
+  it('omits branches without a usable configured upstream', async () => {
+    const command = vi.fn(async () => ({ code: 128, stdout: '' }));
+
+    await expect(gitUpstreamSummary('/worktrees/cora', command)).resolves.toBeUndefined();
+    expect(command).toHaveBeenCalledTimes(1);
   });
 
   // cover PR comparison parsing

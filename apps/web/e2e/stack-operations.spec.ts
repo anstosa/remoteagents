@@ -73,3 +73,22 @@ test('hides the browser split control while the stack is stopped', async ({ page
   await expect(root.getByRole('button', { name: 'Stack controls' })).toBeVisible();
   await expect(root.locator('.project-open-group')).not.toHaveClass(/has-browser-control/u);
 });
+
+test('shows stack controls when the worktree has commands but no project URL', async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="prompt-actions"><div id="control-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderStackOnlyControls } = await import('/e2e/project-open-fixture.tsx');
+    renderStackOnlyControls(document.querySelector<HTMLElement>('#control-root')!);
+  });
+
+  const root = page.locator('#control-root');
+  await expect(root.getByRole('link')).toHaveCount(0);
+  const toggle = root.getByRole('button', { name: 'Stack controls' });
+  await expect(toggle).toBeVisible();
+  const cornerRadius = await toggle.evaluate(element => Number.parseFloat(getComputedStyle(element).borderTopLeftRadius));
+  expect(cornerRadius).toBeGreaterThan(0);
+  await toggle.click();
+  await page.getByRole('button', { name: 'Restart stack', exact: true }).click();
+  await expect(root).toHaveAttribute('data-action', 'restart');
+});

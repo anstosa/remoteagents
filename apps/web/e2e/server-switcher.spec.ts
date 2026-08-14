@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test('shows and switches the configured server on authentication and output screens', async ({ page }) => {
   let screen: 'login'|'control'|'output' = 'login';
-  let remoteAttention: 'question'|'completed' = 'question';
+  let remoteAttention: 'working'|'question'|'completed' = 'working';
   let statusAvailable = true;
   const server = { name: 'X1 Carbon', url: 'https://x1carbon.santosa.dev', icon: 'potato', remotes: [{ name: 'Framework', url: 'https://framework.santosa.dev', icon: 'heart' }] };
   await page.addInitScript(() => {
@@ -54,14 +54,14 @@ test('shows and switches the configured server on authentication and output scre
     if (url.pathname === '/api/server-statuses') {
       // simulate an aggregate outage
       if (!statusAvailable) return route.fulfill({ status: 503, json: { error: 'unavailable' } });
-      return route.fulfill({ json: { servers: [{ url: server.url, attention: 'idle' }, { url: server.remotes[0]!.url, attention: remoteAttention }] } });
+      return route.fulfill({ json: { servers: [{ url: server.url, attention: 'working' }, { url: server.remotes[0]!.url, attention: remoteAttention }] } });
     }
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 
   // verify custom server choices
   const expectSwitcher = async (remoteLabel = 'Framework') => {
-    const switcher = page.getByRole('combobox', { name: 'Remote Agents server' });
+    const switcher = page.getByRole('combobox', { name: /Remote Agents server/u });
     await expect(switcher).toBeVisible();
     await expect(switcher).toHaveText('X1 Carbon');
     await switcher.click();
@@ -87,31 +87,44 @@ test('shows and switches the configured server on authentication and output scre
   screen = 'control';
   await page.reload();
   await expect(page.getByText('Desk iPad is active')).toBeVisible();
-  await expectSwitcher('Framework — Active question');
+  await expectSwitcher('Framework — Working');
 
   screen = 'output';
-  remoteAttention = 'completed';
   await page.reload();
   await expect(page.getByLabel('Live log')).toBeVisible({ timeout: 15_000 });
-  const outputSwitcher = await expectSwitcher('Framework — Completed notification');
+  const outputSwitcher = await expectSwitcher('Framework — Working');
+  await expect(outputSwitcher).toHaveClass(/attention-working/u);
+  await expect(outputSwitcher).toHaveAccessibleName('Remote Agents server — Working');
+  const summaryAttention = outputSwitcher.locator('.server-switcher-summary-attention.working');
+  await expect(summaryAttention).toBeVisible();
+  const [switcherBounds, attentionBounds] = await Promise.all([outputSwitcher.boundingBox(), summaryAttention.boundingBox()]);
+  expect(attentionBounds!.x + attentionBounds!.width / 2).toBeGreaterThan(switcherBounds!.x + switcherBounds!.width - 2);
+  expect(attentionBounds!.y + attentionBounds!.height / 2).toBeLessThan(switcherBounds!.y + 2);
   const bounds = await outputSwitcher.boundingBox();
   const outputBounds = await page.locator('.log-output').boundingBox();
   expect(bounds!.x).toBeLessThan(outputBounds!.x + outputBounds!.width / 2);
   expect(bounds!.y).toBeLessThan(outputBounds!.y + outputBounds!.height / 2);
 
   await outputSwitcher.click();
+  const options = page.getByRole('option');
+  await expect(options.locator('.server-switcher-attention.working')).toHaveCount(2);
+  await expect(options.locator('svg')).toHaveCount(0);
   const remoteOption = page.getByRole('option').nth(1);
+  remoteAttention = 'completed';
   await expect(remoteOption).toHaveAccessibleName('Framework — Completed notification');
   await expect(remoteOption.locator('.server-switcher-attention')).toHaveClass(/completed/u);
+  await expect(outputSwitcher).toHaveClass(/attention-working/u);
 
   statusAvailable = false;
-  await expect(remoteOption).toHaveAccessibleName('Framework — Unavailable', { timeout: 8_000 });
+  await expect(remoteOption).toHaveAccessibleName('Framework — Server unavailable', { timeout: 8_000 });
   await expect(remoteOption.locator('.server-switcher-attention')).toHaveClass(/unavailable/u);
 
   statusAvailable = true;
   remoteAttention = 'question';
   await expect(remoteOption).toHaveAccessibleName('Framework — Active question', { timeout: 8_000 });
   await expect(remoteOption.locator('.server-switcher-attention')).toHaveClass(/question/u);
+  await expect(outputSwitcher).toHaveClass(/attention-question/u);
+  await expect(outputSwitcher).toHaveAccessibleName('Remote Agents server — Active question');
   await remoteOption.click();
   await expect(page).toHaveURL('https://framework.santosa.dev/');
   await expect(page.getByRole('heading', { name: 'Framework target' })).toBeVisible();

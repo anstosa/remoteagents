@@ -3,7 +3,7 @@ import type { RemoteServer } from './config/schema.js';
 import type { DashboardPayload } from './dashboard/updates.js';
 import { agentAttentionState } from './notifications.js';
 
-export type InstanceAttention = 'idle' | 'question' | 'completed' | 'unavailable';
+export type InstanceAttention = 'idle' | 'working' | 'question' | 'completed' | 'unavailable';
 export type InstanceStatus = { url: string; attention: InstanceAttention };
 
 const statusClockSkewMs = 30_000;
@@ -14,6 +14,8 @@ const statusCacheMs = 5_000;
 export function instanceAttention(dashboard: Pick<DashboardPayload, 'agents'>): Exclude<InstanceAttention, 'unavailable'> {
   // prioritize active questions over completed notifications
   if (dashboard.agents.some(agent => agentAttentionState(agent) === 'question')) return 'question';
+  // show active work before any retained completion notification
+  if (dashboard.agents.some(agent => agentAttentionState(agent) === 'working')) return 'working';
   // retain completed state until its notification is viewed
   if (dashboard.agents.some(agent => agent.unread)) return 'completed';
   return 'idle';
@@ -47,7 +49,7 @@ export function validInstanceStatusRequest(secret: string, targetOrigin: string,
 
 // validate a remote status response
 function isInstanceAttention(value: unknown): value is Exclude<InstanceAttention, 'unavailable'> {
-  return value === 'idle' || value === 'question' || value === 'completed';
+  return value === 'idle' || value === 'working' || value === 'question' || value === 'completed';
 }
 
 // read one deliberately small peer response

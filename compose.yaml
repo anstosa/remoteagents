@@ -37,16 +37,6 @@ services:
       # standalone cascadia sanctuaries checkout
       - /home/ubuntu/cascadiasanctuaries.org:/worktrees/cascadiasanctuaries.org:rw
       - /home/ubuntu/ferry.fyi:/worktrees/ferry.fyi:rw
-      # Owen, Dave, and Eric are linked Git worktrees whose .git files point
-      # to one of these shared metadata directories on the host.
-      - /home/ubuntu/simulation-infra:/home/ubuntu/simulation-infra:ro
-      - /home/ubuntu/cora:/home/ubuntu/cora:ro
-      - /home/ubuntu/cora:/worktrees/cora:rw
-      - /home/ubuntu/owen:/worktrees/owen:rw
-      - /home/ubuntu/dave:/worktrees/dave:rw
-      - /home/ubuntu/eric:/worktrees/eric:rw
-      - /home/ubuntu/alex:/worktrees/alex:rw
-      - /home/ubuntu/skills:/worktrees/skills:rw
       - ./config/remote-agent-console.docker.json:/config/remote-agent-console.docker.json:ro
       # Discovery needs the host tmux server and process tree. The socket is
       # mounted read-only; interaction remains limited to tmux's own protocol.

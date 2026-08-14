@@ -15,6 +15,7 @@ import { PullRequestCard, PullRequestIndicators, PullRequestStatusIcon, type Pul
 import { isStackOperationLog, type StackAction, type StackOperationLog } from './stack-operations.js';
 import { SyntaxHighlightedCode } from './syntax-highlight.js';
 import { isPromptKeyboardTarget, useShiftArrowTabCycling } from './tab-navigation.js';
+import { UpstreamRebaseBanner, type GitUpstreamSummary } from './upstream-rebase.js';
 import { useViewportFlyout } from './viewport-flyout.js';
 import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
 import './styles.css';
@@ -33,8 +34,8 @@ type GitComparisonSummary = { base: string; files: number; changes?: GitStatusCh
 type NewTaskAvailability = { enabled: boolean; reason?: string };
 type OperationFeedback = { id: number; tone: 'pending'|'success'|'error'; message: string; detail: string; worktreeId?: string };
 type CleanupTarget = { id: string; kind: 'orphan-worker'|'stale-agent'|'hud-pane'|'hud-process'; label: string; detail: string };
-type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; title: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: OmxQuestion; stack?: Stack; unread?: boolean };
-type Worktree = { id: string; label: string; path: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; available: boolean; pinned: boolean; order: number; projectUrl?: string; pullRequest?: PullRequestSummary; stack?: Stack };
+type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: OmxQuestion; stack?: Stack; unread?: boolean };
+type Worktree = { id: string; label: string; path: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; order: number; projectUrl?: string; pullRequest?: PullRequestSummary; stack?: Stack };
 type ReviewTourCapability = { available: true } | { available: false; reason: 'generator_unavailable'|'unsupported_cli'|'configuration_invalid'|'authentication_required' };
 type StoredReviewSummary = { worktreeId: string; branch: string; savedAt: string; title: string; scope: ReviewScope; includeTests: boolean; includeDocs: boolean; fingerprint: string };
 type ReviewButtonState = ReviewTourIndicator & { onOpen: () => void };
@@ -97,7 +98,7 @@ type AssistantFilePreview = AssistantFile & { truncated: boolean } & ({ binary: 
 type InstanceIcon = 'terminal'|'potato'|'heart';
 type RemoteServer = { name: string; url: string; icon?: InstanceIcon };
 type ServerInfo = { name: string; url: string; icon?: InstanceIcon; remotes: RemoteServer[] };
-type InstanceAttention = 'idle'|'question'|'completed'|'unavailable';
+type InstanceAttention = 'idle'|'working'|'question'|'completed'|'unavailable';
 type InstanceStatus = { url: string; attention: InstanceAttention };
 type SessionInfo = { csrfToken: string; active: boolean; deviceName?: string; controllingDeviceName?: string; server?: ServerInfo };
 type PromptCommand = { value: string; description: string };
@@ -479,7 +480,7 @@ const isServerInfo = (value: unknown): value is ServerInfo => isRemoteServer(val
   && Array.isArray((value as ServerInfo).remotes)
   && (value as ServerInfo).remotes.every(isRemoteServer);
 // validate one instance attention value
-const isInstanceAttention = (value: unknown): value is InstanceAttention => value === 'idle' || value === 'question' || value === 'completed' || value === 'unavailable';
+const isInstanceAttention = (value: unknown): value is InstanceAttention => value === 'idle' || value === 'working' || value === 'question' || value === 'completed' || value === 'unavailable';
 // validate one aggregated instance status
 const isInstanceStatus = (value: unknown): value is InstanceStatus => value !== null
   && typeof value === 'object'
@@ -500,6 +501,15 @@ const sameServerStatuses = (left: Readonly<Record<string, InstanceAttention>>, r
   // require the same keys and attention values
   return leftEntries.length === Object.keys(right).length && leftEntries.every(([url, attention]) => right[url] === attention);
 };
+// summarize all configured instances by the most urgent visible state
+const rolledUpServerAttention = (targets: RemoteServer[], statuses: Readonly<Record<string, InstanceAttention>>): InstanceAttention => {
+  const attention = targets.map(target => statuses[target.url] ?? 'idle');
+  if (attention.includes('question')) return 'question';
+  if (attention.includes('working')) return 'working';
+  if (attention.includes('completed')) return 'completed';
+  if (attention.includes('unavailable')) return 'unavailable';
+  return 'idle';
+};
 // provide backward-compatible identity while older servers update
 const fallbackServerInfo = (): ServerInfo => ({ name: 'Remote Agents', url: location.origin, remotes: [] });
 // resolve bundled server artwork
@@ -509,8 +519,9 @@ const instanceAttentionLabel = (attention: InstanceAttention): string | undefine
   // map only visible attention states
   switch (attention) {
     case 'question': return 'Active question';
+    case 'working': return 'Working';
     case 'completed': return 'Completed notification';
-    case 'unavailable': return 'Unavailable';
+    case 'unavailable': return 'Server unavailable';
     default: return undefined;
   }
 };
@@ -520,6 +531,8 @@ function ServerSwitcher({ className = '' }: { className?: string }) {
   const server = useContext(ServerContext) ?? fallbackServerInfo();
   const statuses = useContext(ServerStatusContext);
   const targets = [{ name: server.name, url: server.url, icon: server.icon }, ...server.remotes];
+  const summaryAttention = rolledUpServerAttention(targets, statuses);
+  const summaryAttentionLabel = instanceAttentionLabel(summaryAttention);
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -587,10 +600,10 @@ function ServerSwitcher({ className = '' }: { className?: string }) {
   const menuOptions = targets.map(target => {
     const attention = statuses[target.url] ?? 'idle';
     const attentionLabel = instanceAttentionLabel(attention);
-    return <button key={target.url} type="button" className="server-switcher-option" role="option" aria-selected={target.url === server.url} aria-label={`${target.name}${attentionLabel === undefined ? '' : ` — ${attentionLabel}`}`} onClick={() => switchServer(target)}><img src={serverIconPath(target.icon)} alt="" /><span>{target.name}</span><i className={`server-switcher-attention ${attention}`} aria-hidden="true" title={attentionLabel} />{target.url === server.url && <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7" /></svg>}</button>;
+    return <button key={target.url} type="button" className="server-switcher-option" role="option" aria-selected={target.url === server.url} aria-label={`${target.name}${attentionLabel === undefined ? '' : ` — ${attentionLabel}`}`} onClick={() => switchServer(target)}><img src={serverIconPath(target.icon)} alt="" /><span>{target.name}</span><i className={`server-switcher-attention ${attention}`} aria-hidden="true" title={attentionLabel} /></button>;
   });
   // collapse single-server installations
-  const control = server.remotes.length === 0 ? <><img className="server-instance-icon" src={serverIconPath(server.icon)} alt="" /><strong>{server.name}</strong></> : <div className="server-switcher-control" onBlur={closeFromFocus}><button ref={trigger} type="button" className="server-switcher-trigger" role="combobox" aria-label="Remote Agents server" aria-haspopup="listbox" aria-controls={menuId} aria-expanded={open} onClick={toggleMenu}><img className="server-instance-icon" src={serverIconPath(server.icon)} alt="" /><span>{server.name}</span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg></button>{open && <div id={menuId} className="server-switcher-menu" role="listbox" aria-label="Remote Agents servers" onKeyDown={moveOptionFocus}>{menuOptions}</div>}</div>;
+  const control = server.remotes.length === 0 ? <><img className="server-instance-icon" src={serverIconPath(server.icon)} alt="" /><strong>{server.name}</strong></> : <div className="server-switcher-control" onBlur={closeFromFocus}><button ref={trigger} type="button" className={`server-switcher-trigger attention-${summaryAttention}`} role="combobox" aria-label={`Remote Agents server${summaryAttentionLabel === undefined ? '' : ` — ${summaryAttentionLabel}`}`} aria-haspopup="listbox" aria-controls={menuId} aria-expanded={open} onClick={toggleMenu}><img className="server-instance-icon" src={serverIconPath(server.icon)} alt="" /><span>{server.name}</span><i className={`server-switcher-attention server-switcher-summary-attention ${summaryAttention}`} aria-hidden="true" title={summaryAttentionLabel} /><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg></button>{open && <div id={menuId} className="server-switcher-menu" role="listbox" aria-label="Remote Agents servers" onKeyDown={moveOptionFocus}>{menuOptions}</div>}</div>;
   return <div ref={root} className={`server-switcher${className ? ` ${className}` : ''}`}>{control}</div>;
 }
 
@@ -3021,7 +3034,13 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
         ? 'Authenticate Codex to use guided review'
         : 'Guided review unavailable on this server';
   const omxQuestion = agent.question === undefined ? undefined : { text: agent.question.text, choices: agent.question.choices.map(choiceFromLabel), omxId: agent.question.id };
-  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} onBrowserNavigate={projectBrowser.navigate} onBrowserClose={projectBrowser.close} terminalMode={swapped} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />{tabBar}<PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) }); if (response.ok) await promptHistory.refresh(); return response.ok; }} /><Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} deactivating={deactivating} swapping={swapping} swapped={swapped} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSwap={() => void changePaneMode()} onSelectTarget={onSelectTarget} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={omxQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} pushAction={agent.push} stack={agent.stack} review={review} /></article>;
+  const rebaseUpstream = agent.gitUpstream?.upstream;
+  const queueRebase = rebaseUpstream === undefined ? undefined : async () => {
+    const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: `$rebase ${rebaseUpstream}`, attachments: [] }) });
+    if (response.ok) await promptHistory.refresh();
+    return response.ok;
+  };
+  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} onBrowserNavigate={projectBrowser.navigate} onBrowserClose={projectBrowser.close} terminalMode={swapped} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />{tabBar}<UpstreamRebaseBanner summary={agent.gitUpstream} onRebase={queueRebase} /><PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) }); if (response.ok) await promptHistory.refresh(); return response.ok; }} /><Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} deactivating={deactivating} swapping={swapping} swapped={swapped} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSwap={() => void changePaneMode()} onSelectTarget={onSelectTarget} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={omxQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} pushAction={agent.push} stack={agent.stack} review={review} /></article>;
 }
 
 function launchError(response: Response): Promise<string> {
@@ -3071,7 +3090,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperatio
   };
   const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className="log-loading inactive" role={processing ? 'status' : undefined} aria-label={startingNewTask ? 'Starting new task' : launching ? `Starting ${worktree.label}` : undefined}>{processing ? <span className="spinner" /> : null}<strong>{startingNewTask ? 'Starting new task…' : launching ? 'Starting Codex…' : 'Agent is off'}</strong><span>{startingNewTask ? 'Waiting for the fresh agent session to become ready.' : launching ? 'Creating the agent session and connecting its output.' : 'This worktree is available. Launch an agent when you are ready to continue.'}</span></div><span className={`status log-status ${processing ? 'connecting' : 'inactive'}`}>{processing ? 'Starting' : 'Off'}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div>;
   const browserPane = projectBrowser.url === undefined || projectBrowser.homeUrl === undefined ? null : <ProjectBrowserPane url={projectBrowser.url} homeUrl={projectBrowser.homeUrl} worktreeId={worktree.id} onNavigate={projectBrowser.navigate} onClose={projectBrowser.close} />;
-  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit output={output} note={worktreeNotes.pane} browser={browserPane} /></div><div className={`log-topbar${gitExpanded ? ' expanded' : ''}`}><GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} expanded={gitExpanded} onToggle={() => setGitExpanded(value => !value)} reviewUnavailable="Launch agent to review" /></div></section>{tabBar}<PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions"><span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} /><button className="queue" disabled={!worktree.available || processing} onClick={() => void launch()}>{startingNewTask ? <><span className="spinner" />Starting new task</> : launching ? <><span className="spinner" />Launching</> : 'Launch agent'}</button></div></section></article>;
+  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit output={output} note={worktreeNotes.pane} browser={browserPane} /></div><div className={`log-topbar${gitExpanded ? ' expanded' : ''}`}><GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} expanded={gitExpanded} onToggle={() => setGitExpanded(value => !value)} reviewUnavailable="Launch agent to review" /></div></section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} /><PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions"><span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} /><button className="queue" disabled={!worktree.available || processing} onClick={() => void launch()}>{startingNewTask ? <><span className="spinner" />Starting new task</> : launching ? <><span className="spinner" />Launching</> : 'Launch agent'}</button></div></section></article>;
 }
 
 // render browser notification enrollment
@@ -3179,7 +3198,7 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
       if (visible) continue;
       const priorWorktree = dashboardSnapshot.current?.worktrees.find(worktree => worktree.id === worktreeId);
       const sourceAgent = dashboardSnapshot.current?.agents.find(agent => agent.id === sourceAgentId && agent.worktreeId === worktreeId);
-      const retained = priorWorktree ?? (sourceAgent === undefined ? undefined : { id: worktreeId, label: sourceAgent.worktreeLabel ?? agentLabel(sourceAgent), path: sourceAgent.workspace, branch: sourceAgent.branch, gitStatus: sourceAgent.gitStatus, gitPrStatus: sourceAgent.gitPrStatus, available: false, pinned: false, order: sourceAgent.worktreeOrder ?? Number.MAX_SAFE_INTEGER, projectUrl: sourceAgent.projectUrl, pullRequest: sourceAgent.pullRequest, stack: sourceAgent.stack });
+      const retained = priorWorktree ?? (sourceAgent === undefined ? undefined : { id: worktreeId, label: sourceAgent.worktreeLabel ?? agentLabel(sourceAgent), path: sourceAgent.workspace, branch: sourceAgent.branch, gitStatus: sourceAgent.gitStatus, gitPrStatus: sourceAgent.gitPrStatus, gitUpstream: sourceAgent.gitUpstream, available: false, pinned: false, order: sourceAgent.worktreeOrder ?? Number.MAX_SAFE_INTEGER, projectUrl: sourceAgent.projectUrl, pullRequest: sourceAgent.pullRequest, stack: sourceAgent.stack });
       // retain the last known workspace shape
       if (retained !== undefined) retainedWorktrees.push({ ...retained, available: false, pinned: false });
     }
