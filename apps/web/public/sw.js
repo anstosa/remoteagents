@@ -3,14 +3,6 @@ self.addEventListener('activate', event => event.waitUntil(self.clients.claim())
 self.addEventListener('fetch', () => {});
 self.addEventListener('push', event => {
   const data = event.data?.json() ?? {};
-  if (data.kind === 'dismiss') {
-    event.waitUntil(self.registration.getNotifications().then(notifications => {
-      for (const notification of notifications) {
-        if (notification.tag === data.tag || notification.tag === data.legacyTag || (data.worktreeId !== undefined && notification.data?.worktreeId === data.worktreeId)) notification.close();
-      }
-    }));
-    return;
-  }
   // prefer durable worktree destinations
   const url = typeof data.worktreeId === 'string' ? `/#worktree=${encodeURIComponent(data.worktreeId)}` : data.url ?? '/';
   event.waitUntil(self.registration.showNotification(data.title ?? 'Remote Agent Console', { body: data.body ?? 'An agent is ready.', tag: data.tag, icon: '/favicon.svg', badge: '/notification-badge.png', requireInteraction: data.kind === 'question', data: { url, kind: data.kind, worktreeId: data.worktreeId } }));

@@ -173,7 +173,7 @@ and customized prompt actions.
   "name": "My server",
   "publicOrigin": "https://agents.example.com",
   "remoteServers": [
-    { "name": "Other server", "url": "https://other-agents.example.com" }
+    { "url": "https://other-agents.example.com" }
   ],
   "newAgentCommand": "codex",
   "worktrees": [
@@ -190,9 +190,10 @@ and customized prompt actions.
 }
 ```
 
-`name` identifies the current Remote Agents server. When `remoteServers` is
-configured, the login, control, and output screens show one direct navigation
-button for each server.
+`name` identifies the current Remote Agents server. Remote entries contain only
+their canonical URL; each server publishes its own name and icon through the
+authenticated peer-status API. The login, control, and output screens show one
+direct navigation button for each server.
 
 See [the setup reference](docs/setup.md) for the full security boundary,
 worktree command behavior, browser capabilities, and operational checks.

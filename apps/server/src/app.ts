@@ -25,8 +25,8 @@ import { WorktreeCommandService } from './worktree-commands/service.js';
 import { PullRequestSwitchService } from './pull-requests/switch-service.js';
 import { NewTaskService } from './new-task/service.js';
 import { SavedPromptService } from './saved-prompts/service.js';
-import { AgentNotificationCoordinator, agentNotificationTag } from './notifications.js';
-import { stackActions, type StackAction } from './domain/models.js';
+import { AgentNotificationCoordinator } from './notifications.js';
+import { stackActions, type Agent, type StackAction } from './domain/models.js';
 import { SkillService } from './skills/service.js';
 import { LatestViewportScheduler, PaneViewportCoordinator } from './logs/viewport-scheduler.js';
 import { DashboardUpdates, type DashboardPayload } from './dashboard/updates.js';
@@ -42,7 +42,7 @@ import { parseReviewTourInput, REVIEW_REQUEST_BODY_BYTES, ReviewTourError, type 
 import { configuredWorktreeForWorkspace } from './workspaces/resolver.js';
 import { WorkspaceFileService } from './workspace-files/service.js';
 import { instanceIconSvg, isInstanceIcon } from './instance-icon.js';
-import { instanceAttention, RemoteInstanceStatusPoller, validInstanceStatusRequest } from './instance-status.js';
+import { instanceAttention, RemoteInstanceStatusPoller, validInstanceStatusRequest, type InstanceStatus } from './instance-status.js';
 import { createHmac } from 'node:crypto';
 import { defaultIntegrationConfig } from './config/schema.js';
 import { OrchestrationService } from './orchestration/index.js';
@@ -55,7 +55,7 @@ import { federationForwarder, verifyFederationRequest } from './integrations/fed
 import { IntegrationControlService } from './integrations/control/index.js';
 import { ServerAdminService } from './server-admin/service.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; skills?: SkillService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; skills?: SkillService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'> };
 const cookieName = '__Host-rac';
 // bound full history scans
 const logMetadataRefreshMs = 30_000;
@@ -80,7 +80,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const integrationConfig = config.integrations ?? defaultIntegrationConfig;
   // prefer a dedicated federation secret while retaining existing deployments
   const instanceStatusSecret = process.env.RAC_INSTANCE_STATUS_SECRET ?? process.env.RAC_SESSION_SECRET ?? '';
-  const instanceStatusPoller = new RemoteInstanceStatusPoller(instanceStatusSecret);
+  const instanceStatusPoller = deps.instanceStatusPoller ?? new RemoteInstanceStatusPoller(instanceStatusSecret);
   const projectProxy = new ProjectProxy(config.worktrees, config.publicOrigin.origin, process.env.RAC_PROJECT_PROXY_HOST);
   const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 65_536 }); const webRoot = fileURLToPath(new URL('../../web/dist', import.meta.url)); const uiVersion = async () => await readFile(join(webRoot, 'index.html'), 'utf8').then(html => /<script[^>]+src="([^"]+)"/u.exec(html)?.[1]).catch(() => undefined); await app.register(cookie); await app.register(staticPlugin, { root: webRoot, index: false }); await app.register(rateLimit, { global: false }); await app.register(websocket, { options: { maxPayload: 65_536 } });
   app.setErrorHandler((error, request, reply) => {
@@ -113,8 +113,16 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   function browser(request: FastifyRequest, mutation = false): void { if (request.headers.host !== expectedHost) throw forbidden(); if (mutation && request.headers.origin !== config.publicOrigin.origin) throw forbidden(); }
   function session(request: FastifyRequest, mutation = false): Session { browser(request, mutation); const s = auth.get(auth.unsign(request.cookies[cookieName])); if (!s) throw unauthorized(); if (mutation && !auth.csrf(s, request.headers['x-csrf-token'] as string | undefined)) throw forbidden(); return s; }
   function controlled(request: FastifyRequest, mutation = false): Session { const s = session(request, mutation); if (!control.connect(s.id)) throw inactiveClient(); return s; }
-  // publish safe server navigation metadata
-  const server = { name: config.name, url: config.publicOrigin.origin, ...(config.icon === undefined ? {} : { icon: config.icon }), remotes: config.remoteServers.map(remote => ({ name: remote.name, url: remote.url.origin, ...(remote.icon === undefined ? {} : { icon: remote.icon }) })) };
+  type PublishedServer = { name: string; url: string; icon?: InstanceStatus['icon'] };
+  type PublishedServerNavigation = PublishedServer & { remotes: PublishedServer[] };
+  // publish safe local server metadata
+  const server: PublishedServerNavigation = { name: config.name, url: config.publicOrigin.origin, ...(config.icon === undefined ? {} : { icon: config.icon }), remotes: [] };
+  // refresh remote identities from their publishers
+  const refreshRemoteServers = async (known?: InstanceStatus[]) => {
+    const statuses = known ?? await instanceStatusPoller.statuses(config.remoteServers);
+    server.remotes = statuses.map(status => ({ name: status.name, url: status.url, ...(status.icon === undefined ? {} : { icon: status.icon }) }));
+    return statuses;
+  };
   // map typed review failures
   const reviewStatus = (code: ReviewErrorCode) => code === 'invalid_request' ? 400 : code === 'target_unavailable' ? 404 : code === 'too_large' ? 413 : code === 'generation_failed' || code === 'malformed_result' || code === 'generation_rejected' ? 502 : code === 'capability_unavailable' ? 503 : code === 'timed_out' ? 504 : code === 'cancelled' ? 499 : 409;
   // send one frozen review error envelope
@@ -133,6 +141,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   };
   // describe one authenticated browser session
   const sessionState = async (s: Session, active: boolean) => {
+    await refreshRemoteServers();
     const owner = control.ownerSessionId();
     return {
       csrfToken: s.csrf,
@@ -142,22 +151,36 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       server
     };
   };
+  // share durable prompt queue scopes
+  const promptStorageKeyForAgent = (agent: Pick<Agent, 'id' | 'workspace'>) => {
+    const worktree = configuredWorktreeForWorkspace(config.worktrees, agent.workspace);
+    return worktree === undefined ? `agent:${agent.id}` : `worktree:${worktree.id}`;
+  };
+  // count prompts before dispatch starts
+  const queuedPromptCounts = async (agents: Agent[]) => new Map(await Promise.all(agents.map(async agent => {
+    // suppress false completion alerts on storage errors
+    const count = await queuedPrompts.list(promptStorageKeyForAgent(agent)).then(queue => queue?.length ?? 0).catch(() => 1);
+    return [agent.id, count] as const;
+  })));
   const dashboard = async (): Promise<DashboardPayload> => {
     const discovered = await discovery.dashboard(config.worktrees);
+    const queuedCounts = await queuedPromptCounts(discovered.agents);
     await Promise.all(discovered.agents.map(agent => prompts.observe(agent).catch(() => undefined)));
-    for (const agent of discovered.agents) notifications.observe(agent);
+    // suppress completions while more work waits
+    for (const agent of discovered.agents) notifications.observe(agent, (queuedCounts.get(agent.id) ?? 0) > 0);
     notifications.retain(discovered.agents);
     const controls = new Map(await Promise.all(config.worktrees.map(async worktree => [worktree.id, { actions: stackCommands.actions(worktree), ...await stackCommands.state(worktree) }] as const)));
     const controlFor = (worktreeId: string | undefined) => worktreeId === undefined ? undefined : controls.get(worktreeId);
     const reviewBranches = config.worktrees.map(worktree => ({ worktreeId: worktree.id, branch: discovered.agents.find(agent => agent.worktreeId === worktree.id)?.branch ?? discovered.worktrees.find(candidate => candidate.id === worktree.id)?.branch }));
     const reviews = await reviewStore.summaries(reviewBranches);
-    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }) })), worktrees: discovered.worktrees.map(worktree => ({ ...worktree, ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }) })), cleanupPending: cleanup.pending().length, reviewTour: reviewTourCapability, reviews };
+    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }) })), worktrees: discovered.worktrees.map(worktree => ({ ...worktree, ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }) })), cleanupPending: cleanup.pending().length, reviewTour: reviewTourCapability, reviews };
   };
   // observe only agent state needed by cross-instance attention
   const localInstanceAttention = async () => {
     const discovered = await discovery.dashboard(config.worktrees);
+    const queuedCounts = await queuedPromptCounts(discovered.agents);
     // update completion and question state for every agent
-    for (const agent of discovered.agents) notifications.observe(agent);
+    for (const agent of discovered.agents) notifications.observe(agent, (queuedCounts.get(agent.id) ?? 0) > 0);
     notifications.retain(discovered.agents);
     return instanceAttention({ agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent) })) });
   };
@@ -184,6 +207,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       workspaceFiles,
       pullRequests: prSwitch,
       newTasks: newTask,
+      loadInstances: async () => {
+        await refreshRemoteServers();
+        return [{ id: server.url, name: server.name, url: server.url, local: true, ...(server.icon === undefined ? {} : { icon: server.icon }) }, ...server.remotes.map(remote => ({ id: remote.url, name: remote.name, url: remote.url, local: false, ...(remote.icon === undefined ? {} : { icon: remote.icon }) }))];
+      },
       launchWorktree: worktreeId => launch.launch(worktreeId),
       launchScratch: () => launch.launchHome(),
       loadReview: (worktreeId, branch) => reviewStore.current(worktreeId, branch),
@@ -260,7 +287,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     browser(request);
     // require an authenticated peer signature
     if (!validInstanceStatusRequest(instanceStatusSecret, config.publicOrigin.origin, request.headers['x-rac-status-timestamp'], request.headers['x-rac-status-signature'])) return reply.code(401).send({ error: 'unauthorized' });
-    return { attention: await localInstanceAttention() };
+    return { name: server.name, ...(server.icon === undefined ? {} : { icon: server.icon }), attention: await localInstanceAttention() };
   });
   // serve the configured favicon before authentication
   app.get('/favicon.svg', async (request, reply) => { browser(request); return reply.type('image/svg+xml').send(instanceIconSvg(config.icon)); });
@@ -275,12 +302,13 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.get('/', async (request, reply) => { browser(request); return reply.sendFile('index.html'); });
   app.get('/api/ui-version', async (request) => { browser(request); return { version: await uiVersion() }; });
   app.get('/api/auth/session', async (request) => { const s = session(request); return await sessionState(s, control.connect(s.id)); });
-  app.get('/api/auth/bootstrap', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request) => { browser(request); return { csrfToken: auth.bootstrap(), server }; });
+  app.get('/api/auth/bootstrap', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request) => { browser(request); await refreshRemoteServers(); return { csrfToken: auth.bootstrap(), server }; });
   // aggregate configured instance attention for authenticated clients
   app.get('/api/server-statuses', async (request) => {
     session(request);
     const [localAttention, remotes] = await Promise.all([localInstanceAttention(), instanceStatusPoller.statuses(config.remoteServers)]);
-    return { servers: [{ url: config.publicOrigin.origin, attention: localAttention }, ...remotes] };
+    await refreshRemoteServers(remotes);
+    return { servers: [{ url: config.publicOrigin.origin, name: server.name, ...(server.icon === undefined ? {} : { icon: server.icon }), attention: localAttention }, ...remotes] };
   });
   app.post('/api/auth/login', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request, reply) => { browser(request, true); const data = body(request); const preauth = request.headers['x-csrf-token']; if (typeof data.password !== 'string' || typeof preauth !== 'string') return reply.code(401).send({ error: 'invalid credentials' }); const s = await auth.login(data.password, preauth); if (!s) return reply.code(401).send({ error: 'invalid credentials' }); reply.setCookie(cookieName, auth.sign(s), { path: '/', secure: true, httpOnly: true, sameSite: 'lax', signed: false, maxAge: 400 * 24 * 60 * 60 }); return await sessionState(s, control.connect(s.id)); });
   app.post('/api/auth/take-control', async (request, reply) => {
@@ -379,7 +407,6 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const worktree = configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
     const scopedAgent = worktree === undefined ? target.agent : { ...target.agent, worktreeId: worktree.id };
     notifications.view(scopedAgent);
-    await push.notify({ kind: 'dismiss', tag: agentNotificationTag(scopedAgent), legacyTag: `agent-status-${target.agent.id}`, ...(worktree === undefined ? {} : { worktreeId: worktree.id }) });
     return reply.code(204).send();
   });
   app.get('/api/agents/:id/switch-prs', async (request, reply) => { controlled(request); const availability = await prSwitch.available((request.params as { id: string }).id); return availability === undefined ? reply.code(404).send({ error: 'pull request switching unavailable' }) : availability; });
@@ -390,8 +417,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const promptStorageKey = async (agentId: string) => {
     const target = await discovery.target(agentId);
     if (!target) return undefined;
-    const worktree = configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
-    return worktree === undefined ? `agent:${agentId}` : `worktree:${worktree.id}`;
+    return promptStorageKeyForAgent(target.agent);
   };
   app.post('/api/agents/:id/prompt', { bodyLimit: Math.ceil(maxPromptAttachmentBytes * 1.4) }, async (request, reply) => {
     controlled(request, true);

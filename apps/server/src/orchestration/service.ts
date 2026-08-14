@@ -73,6 +73,7 @@ export type OrchestrationDependencies = {
   workspaceFiles: WorkspaceFileFacade;
   pullRequests: PullRequestSwitchFacade;
   newTasks: NewTaskFacade;
+  loadInstances?: () => Promise<InstanceV1[]>;
   launchWorktree: (worktreeId: string) => Promise<boolean>;
   launchScratch: () => Promise<boolean>;
   loadReview?: (worktreeId: string, branch: string) => Promise<StoredReviewTour | undefined>;
@@ -241,6 +242,8 @@ export class OrchestrationService {
 
   // list configured local and remote instances
   async listInstances(): Promise<OrchestrationResult<InstanceV1[]>> {
+    // prefer identities published by live peers
+    if (this.dependencies.loadInstances !== undefined) return success(await this.dependencies.loadInstances());
     return success([
       {
         id: this.dependencies.config.publicOrigin.origin,
@@ -251,10 +254,9 @@ export class OrchestrationService {
       },
       ...this.dependencies.config.remoteServers.map(server => ({
         id: server.url.origin,
-        name: server.name,
+        name: server.url.hostname,
         url: server.url.origin,
-        local: false,
-        ...(server.icon === undefined ? {} : { icon: server.icon })
+        local: false
       }))
     ]);
   }

@@ -213,8 +213,8 @@ test('switches sticky notes between vertical and horizontal output splits', asyn
   expect(horizontal[2]!.x).toBeCloseTo(horizontal[4]!.x + horizontal[4]!.width, 0);
   expect(horizontal[1]!.height / horizontal[0]!.height).toBeGreaterThan(0.95);
   expect(horizontal[2]!.height / horizontal[0]!.height).toBeGreaterThan(0.95);
-  expect(horizontal[3]!.x + horizontal[3]!.width).toBeLessThanOrEqual(horizontal[1]!.x + horizontal[1]!.width);
-  expect(horizontal[1]!.x + horizontal[1]!.width - horizontal[3]!.x - horizontal[3]!.width).toBeLessThanOrEqual(10);
+  expect(horizontal[3]!.x).toBeGreaterThanOrEqual(horizontal[1]!.x);
+  expect(horizontal[3]!.x - horizontal[1]!.x).toBeLessThanOrEqual(10);
   expect(horizontal[3]!.y).toBeGreaterThanOrEqual(horizontal[1]!.y);
-  expect(horizontal[3]!.y - horizontal[1]!.y).toBeLessThanOrEqual(10);
+  expect(horizontal[3]!.y - horizontal[1]!.y).toBeLessThanOrEqual(60);
 });

@@ -62,6 +62,20 @@ describe('agent notifications', () => {
     coordinator.stop();
   });
 
+  it('suppresses completion while a prompt remains queued', async () => {
+    vi.useFakeTimers();
+    const delivered: AgentNotification[] = [];
+    const coordinator = new AgentNotificationCoordinator(notification => delivered.push(notification), 2_000);
+
+    coordinator.observe(agent({ title: '⠋ Working' }));
+    coordinator.observe(agent({ title: 'Ready' }), true);
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    expect(delivered).toEqual([]);
+    expect(coordinator.isUnread(agent())).toBe(false);
+    coordinator.stop();
+  });
+
   it('delivers completion after the agent remains finished', async () => {
     vi.useFakeTimers();
     const delivered: AgentNotification[] = [];

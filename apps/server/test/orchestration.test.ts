@@ -8,7 +8,7 @@ const cora: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', ide
 const dave: Worktree = { id: 'dave', label: 'Dave', path: '/worktrees/dave', identity: '/worktrees/dave', available: true, pinned: false, command: 'codex' };
 const config: ValidatedConfig = {
   name: 'Remote Agents',
-  remoteServers: [{ name: 'Remote', url: new URL('https://remote.example.com') }],
+  remoteServers: [{ url: new URL('https://remote.example.com') }],
   listen: { host: '127.0.0.1', port: 8787 },
   publicOrigin: new URL('https://agents.example.com'),
   trustedProxyIps: new Set(),
@@ -57,6 +57,7 @@ function dependencies(overrides: Partial<OrchestrationDependencies> = {}): Orche
     workspaceFiles: { preview: async (_workspace, path) => ({ path, size: 12, binary: false, truncated: false, content: 'abcdefghijkl' }) },
     pullRequests: { available: async () => ({ enabled: true, pullRequests: [] }), actionsUrl: async () => undefined, switch: async () => true },
     newTasks: { available: async () => ({ enabled: true }), start: async () => true },
+    loadInstances: async () => [{ id: config.publicOrigin.origin, name: config.name, url: config.publicOrigin.origin, local: true }, { id: 'https://remote.example.com', name: 'Remote', url: 'https://remote.example.com', local: false }],
     launchWorktree: async () => true,
     launchScratch: async () => true,
     ...overrides

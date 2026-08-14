@@ -35,7 +35,7 @@ type GitComparisonSummary = { base: string; files: number; changes?: GitStatusCh
 type NewTaskAvailability = { enabled: boolean; reason?: string };
 type OperationFeedback = { id: number; tone: 'pending'|'success'|'error'; message: string; detail: string; worktreeId?: string };
 type CleanupTarget = { id: string; kind: 'orphan-worker'|'stale-agent'|'hud-pane'|'hud-process'; label: string; detail: string };
-type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: OmxQuestion; stack?: Stack; unread?: boolean };
+type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: OmxQuestion; stack?: Stack; unread?: boolean; queuedPromptCount: number };
 type Worktree = { id: string; label: string; path: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; order: number; projectUrl?: string; pullRequest?: PullRequestSummary; stack?: Stack };
 type ReviewTourCapability = { available: true } | { available: false; reason: 'generator_unavailable'|'unsupported_cli'|'configuration_invalid'|'authentication_required' };
 type StoredReviewSummary = { worktreeId: string; branch: string; savedAt: string; title: string; scope: ReviewScope; includeTests: boolean; includeDocs: boolean; fingerprint: string };
@@ -100,7 +100,7 @@ type InstanceIcon = 'terminal'|'potato'|'heart';
 type RemoteServer = { name: string; url: string; icon?: InstanceIcon };
 type ServerInfo = { name: string; url: string; icon?: InstanceIcon; remotes: RemoteServer[] };
 type InstanceAttention = 'idle'|'working'|'question'|'completed'|'unavailable';
-type InstanceStatus = { url: string; attention: InstanceAttention };
+type InstanceStatus = RemoteServer & { attention: InstanceAttention };
 type SessionInfo = { csrfToken: string; active: boolean; deviceName?: string; controllingDeviceName?: string; server?: ServerInfo };
 type PromptCommand = { value: string; description: string };
 type CommandToken = { start: number; end: number; prefix: '$'|'/'; query: string };
@@ -520,16 +520,17 @@ const isInstanceAttention = (value: unknown): value is InstanceAttention => valu
 // validate one aggregated instance status
 const isInstanceStatus = (value: unknown): value is InstanceStatus => value !== null
   && typeof value === 'object'
-  && typeof (value as InstanceStatus).url === 'string'
+  && isRemoteServer(value)
   && isInstanceAttention((value as InstanceStatus).attention);
-// convert an API response to URL-keyed attention
-const serverStatusesFrom = (value: unknown): Record<string, InstanceAttention> | undefined => {
+// validate one published instance snapshot
+const serverStatusesFrom = (value: unknown): { attention: Record<string, InstanceAttention>; servers: InstanceStatus[] } | undefined => {
   // require the aggregate response envelope
   if (value === null || typeof value !== 'object' || !Array.isArray((value as { servers?: unknown }).servers)) return undefined;
   const servers = (value as { servers: unknown[] }).servers;
   // reject partial or malformed lists
   if (!servers.every(isInstanceStatus)) return undefined;
-  return Object.fromEntries((servers as InstanceStatus[]).map(status => [status.url, status.attention]));
+  const published = servers as InstanceStatus[];
+  return { attention: Object.fromEntries(published.map(status => [status.url, status.attention])), servers: published };
 };
 // compare sanitized status maps without rerendering unchanged state
 const sameServerStatuses = (left: Readonly<Record<string, InstanceAttention>>, right: Readonly<Record<string, InstanceAttention>>): boolean => {
@@ -3524,9 +3525,11 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
       const tag = agentNotificationTag(agent);
       const label = agent.worktreeLabel ?? agent.displayLabel ?? agent.title;
       const focused = selectedItemKey.current === `agent-${agent.id}` && pageFocused();
+      const hasQueuedPrompt = agent.queuedPromptCount > 0;
       observed.add(agent.id);
       const pendingCompletion = pendingCompletions.current.get(agent.id);
-      if (state !== 'prompt-done' && pendingCompletion !== undefined) {
+      // cancel intermediate queue completions
+      if ((state !== 'prompt-done' || hasQueuedPrompt) && pendingCompletion !== undefined) {
         window.clearTimeout(pendingCompletion.timer);
         pendingCompletions.current.delete(agent.id);
       }
@@ -3535,11 +3538,11 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
         if (focused) dismissAgentNotifications(agent);
         else void showNotification('question', 'Agent has a question', body, tag, `/#agent=${encodeURIComponent(agent.id)}`, agent.worktreeId);
       }
-      if (previous === 'working' && state === 'prompt-done') {
+      if (previous === 'working' && state === 'prompt-done' && !hasQueuedPrompt) {
         const delay = 2_000;
         const timer = window.setTimeout(() => void refresh(), delay);
         pendingCompletions.current.set(agent.id, { due: Date.now() + delay, timer });
-      } else if (state === 'prompt-done' && pendingCompletion !== undefined && Date.now() >= pendingCompletion.due) {
+      } else if (state === 'prompt-done' && !hasQueuedPrompt && pendingCompletion !== undefined && Date.now() >= pendingCompletion.due) {
         window.clearTimeout(pendingCompletion.timer);
         pendingCompletions.current.delete(agent.id);
         void showNotification('finished', 'Agent finished', `${label} is ready for another prompt.`, tag, `/#agent=${encodeURIComponent(agent.id)}`, agent.worktreeId);
@@ -3952,12 +3955,21 @@ function App() {
         const response = await request('/api/server-statuses', { signal: AbortSignal.timeout(8_000) }, false);
         // reject unsuccessful aggregate responses
         if (!response.ok) throw new Error('status aggregate unavailable');
-        const statuses = serverStatusesFrom(await response.json());
+        const snapshot = serverStatusesFrom(await response.json());
         // reject malformed aggregate responses
-        if (statuses === undefined) throw new Error('invalid status aggregate');
+        if (snapshot === undefined) throw new Error('invalid status aggregate');
         // ignore a response after cleanup
         if (!active) return;
-        setServerStatuses(current => sameServerStatuses(current, statuses) ? current : statuses);
+        setServerStatuses(current => sameServerStatuses(current, snapshot.attention) ? current : snapshot.attention);
+        const local = snapshot.servers.find(candidate => candidate.url === serverInfo.url);
+        // refresh names and icons published by every server
+        if (local !== undefined) {
+          const remotes = snapshot.servers.filter(candidate => candidate.url !== serverInfo.url).map(({ name, url, icon }) => ({ name, url, ...(icon === undefined ? {} : { icon }) }));
+          setServerInfo(current => {
+            const unchanged = current.name === local.name && current.url === local.url && current.icon === local.icon && current.remotes.length === remotes.length && remotes.every((remote, index) => current.remotes[index]?.name === remote.name && current.remotes[index]?.url === remote.url && current.remotes[index]?.icon === remote.icon);
+            return unchanged ? current : { name: local.name, url: local.url, ...(local.icon === undefined ? {} : { icon: local.icon }), remotes };
+          });
+        }
       } catch {
         // replace stale remote attention with explicit unavailability
         if (active) {

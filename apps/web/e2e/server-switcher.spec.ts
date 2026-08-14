@@ -13,6 +13,7 @@ const renderedBounds = async (locator: Locator): Promise<BoundingBox> => {
 test('shows and switches the configured server on authentication and output screens', async ({ page }) => {
   let screen: 'login'|'control'|'output' = 'login';
   let remoteAttention: 'working'|'question'|'completed' = 'working';
+  let remoteName = 'Framework';
   let statusAvailable = true;
   const remoteServer = { name: 'Framework', url: 'https://framework.santosa.dev', icon: 'heart' };
   const server = { name: 'X1 Carbon', url: 'https://x1carbon.santosa.dev', icon: 'potato', remotes: [remoteServer] };
@@ -65,7 +66,7 @@ test('shows and switches the configured server on authentication and output scre
     if (url.pathname === '/api/server-statuses') {
       // simulate an aggregate outage
       if (!statusAvailable) return route.fulfill({ status: 503, json: { error: 'unavailable' } });
-      return route.fulfill({ json: { servers: [{ url: server.url, attention: 'working' }, { url: remoteServer.url, attention: remoteAttention }] } });
+      return route.fulfill({ json: { servers: [{ name: server.name, url: server.url, icon: server.icon, attention: 'working' }, { ...remoteServer, name: remoteName, attention: remoteAttention }] } });
     }
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
@@ -118,17 +119,18 @@ test('shows and switches the configured server on authentication and output scre
   const [serverRowBounds, statusBounds] = await Promise.all([renderedBounds(outputServers.group), renderedBounds(page.locator('.log-status'))]);
   expect(serverRowBounds.y + serverRowBounds.height).toBeLessThanOrEqual(statusBounds.y);
 
+  remoteName = 'Framework Published';
   remoteAttention = 'completed';
-  await expect(outputServers.remote).toHaveAccessibleName('Framework — Completed notification', { timeout: 8_000 });
+  await expect(outputServers.remote).toHaveAccessibleName('Framework Published — Completed notification', { timeout: 8_000 });
   await expect(outputServers.remote.locator('.server-switcher-attention')).toHaveClass(/completed/u);
 
   statusAvailable = false;
-  await expect(outputServers.remote).toHaveAccessibleName('Framework — Server unavailable', { timeout: 8_000 });
+  await expect(outputServers.remote).toHaveAccessibleName('Framework Published — Server unavailable', { timeout: 8_000 });
   await expect(outputServers.remote.locator('.server-switcher-attention')).toHaveClass(/unavailable/u);
 
   statusAvailable = true;
   remoteAttention = 'question';
-  await expect(outputServers.remote).toHaveAccessibleName('Framework — Active question', { timeout: 8_000 });
+  await expect(outputServers.remote).toHaveAccessibleName('Framework Published — Active question', { timeout: 8_000 });
   await expect(outputServers.remote.locator('.server-switcher-attention')).toHaveClass(/question/u);
   await outputServers.remote.click();
   await expect(page).toHaveURL('https://framework.santosa.dev/');

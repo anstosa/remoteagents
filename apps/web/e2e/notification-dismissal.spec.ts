@@ -50,30 +50,3 @@ test('dismisses a newly selected agent tab but waits for prompt focus on the alr
     window as unknown as { __localDismissals: string[] }
   ).__localDismissals)).toEqual(expect.arrayContaining(['worktree-status-owen', 'agent-status-agent-2']));
 });
-
-test('service worker closes matching worktree notifications without showing another alert', async ({ page }) => {
-  await page.goto('/');
-  const result = await page.evaluate(async () => {
-    const closed: string[] = [];
-    const shown: string[] = [];
-    const notifications = [
-      { tag: 'worktree-status-cora', data: { worktreeId: 'cora' }, close: () => closed.push('stable') },
-      { tag: 'agent-status-old-pane', data: { worktreeId: 'cora' }, close: () => closed.push('old-pane') },
-      { tag: 'worktree-status-owen', data: { worktreeId: 'owen' }, close: () => closed.push('other') }
-    ];
-    Object.defineProperty(window, 'registration', { configurable: true, value: { getNotifications: async () => notifications, showNotification: async (title: string) => { shown.push(title); } } });
-    Object.defineProperty(window, 'clients', { configurable: true, value: { claim: async () => {}, matchAll: async () => [], openWindow: async () => {} } });
-    Object.defineProperty(window, 'skipWaiting', { configurable: true, value: () => {} });
-    const source = await fetch('/sw.js').then(response => response.text());
-    Function(source)();
-    const waits: Promise<unknown>[] = [];
-    const event = new Event('push') as Event & { data: { json: () => unknown }; waitUntil: (promise: Promise<unknown>) => void };
-    Object.defineProperty(event, 'data', { value: { json: () => ({ kind: 'dismiss', tag: 'worktree-status-cora', legacyTag: 'agent-status-current-pane', worktreeId: 'cora' }) } });
-    Object.defineProperty(event, 'waitUntil', { value: (promise: Promise<unknown>) => waits.push(promise) });
-    window.dispatchEvent(event);
-    await Promise.all(waits);
-    return { closed, shown };
-  });
-
-  expect(result).toEqual({ closed: ['stable', 'old-pane'], shown: [] });
-});

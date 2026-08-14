@@ -16,8 +16,7 @@ export type CleanupNotification = {
   tag: 'runtime-cleanup';
   url: '/#cleanup';
 };
-export type NotificationDismissal = { kind: 'dismiss'; tag: string; legacyTag: string; worktreeId?: string };
-export type PushMessage = AgentNotification | CleanupNotification | NotificationDismissal;
+export type PushMessage = AgentNotification | CleanupNotification;
 
 type NotificationDelivery = (notification: AgentNotification) => void | Promise<void>;
 
@@ -57,12 +56,18 @@ export class AgentNotificationCoordinator {
 
   constructor(private readonly deliver: NotificationDelivery, private readonly completionDelayMs = 2_000) {}
 
-  observe(agent: Agent): void {
+  observe(agent: Agent, hasQueuedPrompt = false): void {
     const key = attentionKey(agent);
     const current = agentAttentionState(agent);
     const previous = this.states.get(key);
     this.states.set(key, current);
 
+    // suppress intermediate queue completions
+    if (current === 'finished' && hasQueuedPrompt) {
+      this.cancelCompletion(key);
+      this.unread.delete(key);
+      return;
+    }
     if (current !== 'finished') {
       this.cancelCompletion(key);
       this.unread.delete(key);

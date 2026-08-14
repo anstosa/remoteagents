@@ -3,7 +3,7 @@ import type { ReviewTourCapability, StoredReviewTourSummary } from '../review-to
 
 type StackState = { running?: boolean; transition?: 'starting' | 'migrating'; operation?: StackAction; tunnel?: boolean };
 export type DashboardPayload = Omit<Dashboard, 'agents' | 'worktrees'> & {
-  agents: Array<Agent & { unread: boolean; stack?: StackState }>;
+  agents: Array<Agent & { unread: boolean; queuedPromptCount: number; stack?: StackState }>;
   worktrees: Array<Dashboard['worktrees'][number] & { stack?: StackState }>;
   cleanupPending: number;
   reviewTour: ReviewTourCapability;

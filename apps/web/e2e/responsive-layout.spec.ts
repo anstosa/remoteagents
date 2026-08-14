@@ -62,6 +62,8 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
       gitBranchFlexGrow: getComputedStyle(document.querySelector<HTMLElement>('.git-branch')!).flexGrow,
       logStatus: bounds('.log-status'),
       serverSwitcher: bounds('.output-server-switcher'),
+      serverSettings: bounds('.output-server-switcher .server-switcher-settings'),
+      promptMore: bounds('.prompt-actions .more'),
       logStatusStyle: (() => {
         const style = getComputedStyle(document.querySelector<HTMLElement>('.log-status')!);
         return { position: style.position, boxShadow: style.boxShadow, backgroundColor: style.backgroundColor, color: style.color, backdropFilter: style.backdropFilter };
@@ -94,6 +96,14 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   expect(layout.logStatusStyle.backdropFilter).toBe('none');
   expect(layout.logStatus.top).toBeGreaterThan(layout.serverSwitcher.bottom);
   expect(Math.abs(layout.logStatus.left - layout.serverSwitcher.left)).toBeLessThanOrEqual(1);
+  expect(layout.logStatus.height).toBeLessThan(layout.serverSwitcher.height);
+  expect(Math.abs(layout.logStatus.height - 32)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.serverSwitcher.height - layout.promptMore.height)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.serverSettings.width - layout.promptMore.width)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.serverSettings.height - layout.promptMore.height)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.serverSwitcher.left - layout.prompt.left)).toBeLessThanOrEqual(1);
+  expect(layout.serverSwitcher.right).toBeLessThanOrEqual(layout.prompt.right);
+  expect(layout.serverSwitcher.width).toBeLessThan(layout.prompt.width);
   expect(Math.abs(layout.tabs.top - layout.outputFooter.bottom)).toBeLessThanOrEqual(1);
   await expect(page.locator('.log > .log-topbar')).toHaveCount(0);
   await expect(page.locator('.log + .log-topbar')).toHaveCount(1);

@@ -3,7 +3,7 @@ import type { Agent } from '../src/domain/models.js';
 import { instanceAttention, RemoteInstanceStatusPoller, validInstanceStatusRequest } from '../src/instance-status.js';
 
 const secret = 'status-secret-with-at-least-thirty-two-bytes';
-const remote = { name: 'Framework', url: new URL('https://framework.example') };
+const remote = { url: new URL('https://framework.example') };
 const agent = (title: string, unread = false, overrides: Partial<Agent> = {}) => ({
   id: 'socket:%1',
   paneId: '%1',
@@ -42,11 +42,11 @@ describe('remote instance status', () => {
     let requestHeaders = new Headers();
     const fetchStatus = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       requestHeaders = new Headers(init?.headers);
-      return new Response(JSON.stringify({ attention: 'working' }), { status: 200 });
+      return new Response(JSON.stringify({ name: 'Framework', icon: 'heart', attention: 'working' }), { status: 200 });
     });
     vi.stubGlobal('fetch', fetchStatus);
 
-    await expect(new RemoteInstanceStatusPoller(secret).statuses([remote])).resolves.toEqual([{ url: remote.url.origin, attention: 'working' }]);
+    await expect(new RemoteInstanceStatusPoller(secret).statuses([remote])).resolves.toEqual([{ url: remote.url.origin, name: 'Framework', icon: 'heart', attention: 'working' }]);
 
     const timestamp = requestHeaders.get('x-rac-status-timestamp');
     const signature = requestHeaders.get('x-rac-status-signature');
@@ -54,6 +54,19 @@ describe('remote instance status', () => {
     expect(validInstanceStatusRequest(secret, remote.url.origin, timestamp, signature, requestedAt)).toBe(true);
     expect(validInstanceStatusRequest(`${secret}-wrong`, remote.url.origin, timestamp, signature, requestedAt)).toBe(false);
     expect(validInstanceStatusRequest(secret, remote.url.origin, timestamp, signature, requestedAt + 30_001)).toBe(false);
+  });
+
+  it('queries published bootstrap metadata from older peers', async () => {
+    const fetchStatus = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      // serve the legacy status and identity surfaces
+      if (url.pathname === '/api/instance-status') return new Response(JSON.stringify({ attention: 'idle' }), { status: 200 });
+      return new Response(JSON.stringify({ server: { name: 'Framework', icon: 'heart', url: remote.url.origin, remotes: [] } }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchStatus);
+
+    await expect(new RemoteInstanceStatusPoller(secret).statuses([remote])).resolves.toEqual([{ url: remote.url.origin, name: 'Framework', icon: 'heart', attention: 'idle' }]);
+    expect(fetchStatus).toHaveBeenCalledTimes(2);
   });
 
   it('shares in-flight and cached remote polls', async () => {
@@ -67,25 +80,29 @@ describe('remote instance status', () => {
     const first = poller.statuses([remote]);
     const second = poller.statuses([remote]);
     await vi.waitFor(() => expect(fetchStatus).toHaveBeenCalledTimes(1));
-    release(new Response(JSON.stringify({ attention: 'completed' }), { status: 200 }));
+    release(new Response(JSON.stringify({ name: 'Framework', attention: 'completed' }), { status: 200 }));
 
     await expect(Promise.all([first, second])).resolves.toEqual([
-      [{ url: remote.url.origin, attention: 'completed' }],
-      [{ url: remote.url.origin, attention: 'completed' }]
+      [{ url: remote.url.origin, name: 'Framework', attention: 'completed' }],
+      [{ url: remote.url.origin, name: 'Framework', attention: 'completed' }]
     ]);
-    await expect(poller.statuses([remote])).resolves.toEqual([{ url: remote.url.origin, attention: 'completed' }]);
+    await expect(poller.statuses([remote])).resolves.toEqual([{ url: remote.url.origin, name: 'Framework', attention: 'completed' }]);
     expect(fetchStatus).toHaveBeenCalledTimes(1);
 
     now += 5_001;
-    fetchStatus.mockResolvedValueOnce(new Response(JSON.stringify({ attention: 'question' }), { status: 200 }));
-    await expect(poller.statuses([remote])).resolves.toEqual([{ url: remote.url.origin, attention: 'question' }]);
+    fetchStatus.mockResolvedValueOnce(new Response(JSON.stringify({ name: 'Framework', attention: 'question' }), { status: 200 }));
+    await expect(poller.statuses([remote])).resolves.toEqual([{ url: remote.url.origin, name: 'Framework', attention: 'question' }]);
     expect(fetchStatus).toHaveBeenCalledTimes(2);
+
+    now += 5_001;
+    fetchStatus.mockRejectedValueOnce(new TypeError('peer unavailable'));
+    await expect(poller.statuses([remote])).resolves.toEqual([{ url: remote.url.origin, name: 'Framework', attention: 'unavailable' }]);
   });
 
   it('marks redirects, oversized bodies, and malformed payloads unavailable', async () => {
-    const redirected = { name: 'Redirected', url: new URL('https://redirected.example') };
-    const oversized = { name: 'Oversized', url: new URL('https://oversized.example') };
-    const malformed = { name: 'Malformed', url: new URL('https://malformed.example') };
+    const redirected = { url: new URL('https://redirected.example') };
+    const oversized = { url: new URL('https://oversized.example') };
+    const malformed = { url: new URL('https://malformed.example') };
     const fetchStatus = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       expect(init?.redirect).toBe('error');
       const origin = new URL(String(input)).origin;
@@ -96,9 +113,9 @@ describe('remote instance status', () => {
     vi.stubGlobal('fetch', fetchStatus);
 
     await expect(new RemoteInstanceStatusPoller(secret).statuses([redirected, oversized, malformed])).resolves.toEqual([
-      { url: redirected.url.origin, attention: 'unavailable' },
-      { url: oversized.url.origin, attention: 'unavailable' },
-      { url: malformed.url.origin, attention: 'unavailable' }
+      { url: redirected.url.origin, name: 'redirected.example', attention: 'unavailable' },
+      { url: oversized.url.origin, name: 'oversized.example', attention: 'unavailable' },
+      { url: malformed.url.origin, name: 'malformed.example', attention: 'unavailable' }
     ]);
   });
 });

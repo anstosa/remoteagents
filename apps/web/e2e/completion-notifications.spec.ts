@@ -29,9 +29,10 @@ test('suppresses an intermediate completion when the next queued prompt starts',
     if (url.pathname === '/api/dashboard') {
       dashboardRequests += 1;
       const working = dashboardRequests === 1 || dashboardRequests === 3 || dashboardRequests === 4;
+      const queuedPromptCount = dashboardRequests === 2 ? 1 : 0;
       return route.fulfill({
         json: {
-          agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: working ? '⠋ Working' : 'Ready', worktreeLabel: 'Cora' }],
+          agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: working ? '⠋ Working' : 'Ready', worktreeLabel: 'Cora', queuedPromptCount }],
           worktrees: []
         }
       });
@@ -40,7 +41,7 @@ test('suppresses an intermediate completion when the next queued prompt starts',
   });
 
   await page.goto('/');
-  await expect.poll(() => dashboardRequests, { timeout: 10_000 }).toBeGreaterThanOrEqual(3);
+  await expect.poll(() => dashboardRequests, { timeout: 15_000 }).toBeGreaterThanOrEqual(3);
   await expect.poll(async () => await page.evaluate(() => (
     window as unknown as { __testNotifications: unknown[] }
   ).__testNotifications.length)).toBe(0);

@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import argon2 from 'argon2';
+import { createHmac } from 'node:crypto';
 import { buildApp } from '../src/app.js';
 import { AuthService } from '../src/auth/service.js';
 import { AgentNotificationCoordinator } from '../src/notifications.js';
@@ -12,19 +13,30 @@ import { SavedPromptService } from '../src/saved-prompts/service.js';
 import { ReviewTourStore } from '../src/review-tour/store.js';
 import type { ReviewTour } from '../src/review-tour/contracts.js';
 const config: ValidatedConfig = { name: 'Remote Agents', remoteServers: [], listen:{host:'127.0.0.1',port:8787},publicOrigin:new URL('https://agents.example.com'),trustedProxyIps:new Set(['127.0.0.1']),pollIntervalMs:500,newAgentCommand:'codex',worktrees:[] };
+// reset environment overrides
+afterEach(() => { vi.unstubAllEnvs(); });
 describe('HTTP security boundary',()=>{let app:Awaited<ReturnType<typeof buildApp>>;afterEach(async()=>{await app?.close()});it('serves the browser application and its build version for the canonical host',async()=>{const hash=await argon2.hash('synthetic-password',{type:argon2.argon2id});app=await buildApp(config,{auth:new AuthService(hash,Buffer.alloc(32,2).toString('base64url'))});const response=await app.inject({method:'GET',url:'/',headers:{host:'agents.example.com'}});expect(response.statusCode).toBe(200);expect(response.headers['content-type']).toContain('text/html');expect(response.body).toContain('<!doctype html>');const version=await app.inject({method:'GET',url:'/api/ui-version',headers:{host:'agents.example.com'}});expect(version.statusCode).toBe(200);expect(version.json().version).toMatch(/^\/assets\/index-[\w-]+\.js$/)}, 15_000);it('requires canonical Host and Origin and creates a secure host cookie',async()=>{const hash=await argon2.hash('synthetic-password',{type:argon2.argon2id});app=await buildApp(config,{auth:new AuthService(hash,Buffer.alloc(32,2).toString('base64url'))});const bad=await app.inject({method:'GET',url:'/api/auth/bootstrap',headers:{host:'evil.example'}});expect(bad.statusCode).toBe(403);const boot=await app.inject({method:'GET',url:'/api/auth/bootstrap',headers:{host:'agents.example.com'}});const token=boot.json().csrfToken;const denied=await app.inject({method:'POST',url:'/api/auth/login',headers:{host:'agents.example.com','x-csrf-token':token},payload:{password:'synthetic-password'}});expect(denied.statusCode).toBe(403);const ok=await app.inject({method:'POST',url:'/api/auth/login',headers:{host:'agents.example.com',origin:'https://agents.example.com','x-csrf-token':token},payload:{password:'synthetic-password'}});expect(ok.statusCode).toBe(200);expect(ok.headers['set-cookie']).toContain('__Host-rac=');expect(ok.headers['set-cookie']).toContain('HttpOnly');expect(ok.headers['set-cookie']).toContain('Secure');expect(ok.headers['content-security-policy']).toContain("default-src 'self'")}, 15_000)});
 
 describe('server identity API', () => {
   it('publishes local and remote server choices before login and in sessions', async () => {
-    const namedConfig = { ...config, name: 'X1 Carbon', publicOrigin: new URL('https://x1carbon.santosa.dev'), remoteServers: [{ name: 'Framework', url: new URL('https://framework.santosa.dev') }] };
+    const namedConfig = { ...config, name: 'X1 Carbon', icon: 'potato' as const, publicOrigin: new URL('https://x1carbon.santosa.dev'), remoteServers: [{ url: new URL('https://framework.santosa.dev') }] };
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const identityApp = await buildApp(namedConfig, { auth: new AuthService(hash, Buffer.alloc(32, 16).toString('base64url')) });
+    const statusSecret = 'shared-status-secret-with-thirty-two-bytes';
+    vi.stubEnv('RAC_INSTANCE_STATUS_SECRET', statusSecret);
+    const instanceStatusPoller = { statuses: async () => [{ url: 'https://framework.santosa.dev', name: 'Framework', icon: 'heart' as const, attention: 'idle' as const }] };
+    // avoid host discovery in identity test
+    const discovery = { dashboard: async () => ({ generation: 1, agents: [], worktrees: [] }) };
+    const identityApp = await buildApp(namedConfig, { auth: new AuthService(hash, Buffer.alloc(32, 16).toString('base64url')), instanceStatusPoller, discovery: discovery as never });
     try {
       const bootstrap = await identityApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'x1carbon.santosa.dev' } });
-      const expected = { name: 'X1 Carbon', url: 'https://x1carbon.santosa.dev', remotes: [{ name: 'Framework', url: 'https://framework.santosa.dev' }] };
+      const expected = { name: 'X1 Carbon', icon: 'potato', url: 'https://x1carbon.santosa.dev', remotes: [{ name: 'Framework', icon: 'heart', url: 'https://framework.santosa.dev' }] };
       expect(bootstrap.json().server).toEqual(expected);
       const login = await identityApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'x1carbon.santosa.dev', origin: 'https://x1carbon.santosa.dev', 'x-csrf-token': bootstrap.json().csrfToken }, payload: { password: 'synthetic-password' } });
       expect(login.json().server).toEqual(expected);
+      const timestamp = String(Date.now());
+      const signature = createHmac('sha256', statusSecret).update(`rac-instance-status-v1\n${namedConfig.publicOrigin.origin}\n${timestamp}`).digest('base64url');
+      const published = await identityApp.inject({ method: 'GET', url: '/api/instance-status', headers: { host: 'x1carbon.santosa.dev', 'x-rac-status-timestamp': timestamp, 'x-rac-status-signature': signature } });
+      expect(published.json()).toMatchObject({ name: 'X1 Carbon', icon: 'potato', attention: 'idle' });
     } finally { await identityApp.close(); }
   }, 15_000);
 });
@@ -124,7 +136,7 @@ describe('client control', () => {
     await controlApp.close();
   }, 15_000);
 
-  it('registers every authenticated client and broadcasts worktree notification dismissal', async () => {
+  it('registers every authenticated client without pushing silent notification dismissals', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const subscribed: unknown[] = [];
     const messages: unknown[] = [];
@@ -157,7 +169,7 @@ describe('client control', () => {
     expect(unreadDashboard.json().agents[0].unread).toBe(true);
     expect(dismissal.statusCode).toBe(204);
     expect(viewedDashboard.json().agents[0].unread).toBe(false);
-    expect(messages).toEqual([{ kind: 'dismiss', tag: 'worktree-status-cora', legacyTag: 'agent-status-socket:%1', worktreeId: 'cora' }]);
+    expect(messages).toEqual([]);
     notifications.stop();
     await pushApp.close();
   }, 15_000);

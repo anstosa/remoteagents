@@ -14,7 +14,7 @@ const launchSchema = z.object({ program: z.string().max(4096), args: z.array(arg
 const serverName = z.string().trim().min(1).max(80).refine(value => !value.includes('\0'), 'NUL is forbidden');
 // constrain icons to bundled artwork
 const instanceIcon = z.enum(instanceIconNames);
-const remoteServer = z.object({ name: serverName, url: z.string(), icon: instanceIcon.optional() }).strict();
+const remoteServer = z.object({ url: z.string(), name: serverName.optional(), icon: instanceIcon.optional() }).strict();
 // default every remote surface off
 const integrationFeatures = z.object({
   enabled: z.boolean().default(false),
@@ -36,7 +36,7 @@ const sourceSchema = z.object({
   worktrees: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), label: z.string().max(120).optional(), path: z.string().min(1), hostPath: z.string().startsWith('/').optional(), pinned: z.boolean().default(false), port: z.number().int().min(1).max(65535).optional(), hostname: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/).optional(), command: command.optional(), launch: launchSchema.optional(), commands: stackCommands.optional(), newTask: command.optional(), push: pushAction }).strict()).min(1).max(100)
 }).strict();
 export type ConfigInput = z.input<typeof sourceSchema>;
-export type RemoteServer = { name: string; url: URL; icon?: InstanceIcon };
+export type RemoteServer = { url: URL };
 export type IntegrationConfig = z.output<typeof integrationFeatures>;
 export type ValidatedConfig = { listen: { host: '127.0.0.1'|'::1'; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; newAgentCommand: string; integrations?: IntegrationConfig; worktrees: Worktree[] };
 // support legacy test fixtures
@@ -70,15 +70,12 @@ export async function validateConfig(input: unknown): Promise<ValidatedConfig> {
   if (!loopback.has(parsed.listen.host)) throw new Error('listener must bind to loopback');
   if (parsed.proxy.trustedSourceIps.some((ip) => !loopback.has(ip))) throw new Error('only loopback proxy sources are permitted');
   const publicOrigin = canonicalOrigin(parsed.publicOrigin);
-  // preserve optional remote icon choices
-  const remoteServers = parsed.remoteServers.map(server => ({ name: server.name, url: canonicalOrigin(server.url, `remote server ${server.name}`), ...(server.icon === undefined ? {} : { icon: server.icon }) }));
-  const serverNames = new Set([parsed.name.toLocaleLowerCase()]);
+  // retain only canonical remote origins
+  const remoteServers = parsed.remoteServers.map(server => ({ url: canonicalOrigin(server.url, 'remote server') }));
   const serverUrls = new Set([publicOrigin.origin]);
-  // reject ambiguous server switch targets
+  // reject duplicate server switch targets
   for (const server of remoteServers) {
-    const normalizedName = server.name.toLocaleLowerCase();
-    if (serverNames.has(normalizedName) || serverUrls.has(server.url.origin)) throw new Error('remote server names and URLs must be unique');
-    serverNames.add(normalizedName);
+    if (serverUrls.has(server.url.origin)) throw new Error('remote server URLs must be unique');
     serverUrls.add(server.url.origin);
   }
   const worktrees: Worktree[] = []; const ids = new Set<string>(); const identities = new Set<string>();
