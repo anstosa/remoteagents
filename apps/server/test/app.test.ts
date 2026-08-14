@@ -29,6 +29,36 @@ describe('server identity API', () => {
   }, 15_000);
 });
 
+describe('server administration API', () => {
+  it('renames and updates only from the controlling browser', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const renamed: string[] = [];
+    const serverAdmin = {
+      renameServer: async (name: string) => { renamed.push(name); return name.trim() || undefined; },
+      startUpdate: async () => ({ id: 'server_update_operation_1234', kind: 'update' as const, state: 'queued' as const }),
+      updateStatus: async (id: string) => id === 'server_update_operation_1234' ? ({ id, kind: 'update' as const, state: 'running' as const }) : undefined
+    };
+    const adminApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 19).toString('base64url')), serverAdmin: serverAdmin as never });
+    try {
+      const boot = await adminApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await adminApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+
+      const rename = await adminApp.inject({ method: 'PATCH', url: '/api/server/name', headers, payload: { name: 'Garage Server' } });
+      const update = await adminApp.inject({ method: 'POST', url: '/api/server/update', headers });
+      const status = await adminApp.inject({ method: 'GET', url: '/api/server/update/server_update_operation_1234', headers: { host: headers.host, cookie: headers.cookie } });
+
+      expect(rename.json()).toMatchObject({ name: 'Garage Server', server: { name: 'Garage Server' } });
+      expect(renamed).toEqual(['Garage Server']);
+      expect(update.statusCode).toBe(202);
+      expect(update.json()).toMatchObject({ state: 'queued' });
+      expect(status.json()).toMatchObject({ state: 'running' });
+    } finally {
+      await adminApp.close();
+    }
+  }, 15_000);
+});
+
 describe('project browser security boundary', () => {
   it('limits iframe sources to configured project origins', async () => {
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false, command: 'codex', projectUrl: 'https://project.example.com' };
@@ -69,6 +99,10 @@ describe('client control', () => {
     expect(first.response.json().deviceName).toBeUndefined();
     expect(unnamedFirst.statusCode).toBe(400);
     expect(namedFirst.json()).toMatchObject({ active: true, deviceName: 'Studio Mac', controllingDeviceName: 'Studio Mac' });
+    const invalidRename = await controlApp.inject({ method: 'PATCH', url: '/api/auth/device-name', headers: firstHeaders, payload: { deviceName: '   ' } });
+    const renamedFirst = await controlApp.inject({ method: 'PATCH', url: '/api/auth/device-name', headers: firstHeaders, payload: { deviceName: 'Studio Display' } });
+    expect(invalidRename.statusCode).toBe(400);
+    expect(renamedFirst.json()).toMatchObject({ active: true, deviceName: 'Studio Display', controllingDeviceName: 'Studio Display' });
     const dashboardTicket = await controlApp.inject({ method: 'POST', url: '/api/dashboard/ticket', headers: firstHeaders });
     expect(dashboardTicket.statusCode).toBe(200);
     expect(dashboardTicket.json().ticket).toMatch(/^[A-Za-z0-9_-]+$/u);
@@ -86,7 +120,7 @@ describe('client control', () => {
     const displaced = await controlApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: 'agents.example.com', cookie: first.cookie } });
     const displacedSession = await controlApp.inject({ method: 'GET', url: '/api/auth/session', headers: { host: 'agents.example.com', cookie: first.cookie } });
     expect(displaced.statusCode).toBe(423);
-    expect(displacedSession.json()).toMatchObject({ active: false, deviceName: 'Studio Mac', controllingDeviceName: 'Kitchen iPad' });
+    expect(displacedSession.json()).toMatchObject({ active: false, deviceName: 'Studio Display', controllingDeviceName: 'Kitchen iPad' });
     await controlApp.close();
   }, 15_000);
 

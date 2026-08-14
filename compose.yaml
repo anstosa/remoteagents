@@ -13,18 +13,24 @@ services:
       - .env
     environment:
       RAC_CONFIG: /config/remote-agent-console.docker.json
+      RAC_CONFIG_WRITE_PATH: /workspace/config/remote-agent-console.docker.json
       RAC_HOST_PROC: /host-proc
       RAC_HOST_TMUX_DIR: /host-tmux
       RAC_HOST_TMUX_SOURCE: ${HOST_TMUX_DIR:-${HOME}/.local/state/tmux/tmux-${HOST_UID:-1000}}
       RAC_HOST_UID: ${HOST_UID:-1000}
       RAC_TMUX_BIN: /usr/local/bin/host-tmux
-      RAC_PROJECT_PROXY_HOST: host.docker.internal
+      RAC_HOST_REPOSITORY: ${RAC_HOST_REPOSITORY:-${PWD}}
+      # linux host networking reaches project ports through loopback
+      RAC_PROJECT_PROXY_HOST: ${RAC_PROJECT_PROXY_HOST:-127.0.0.1}
       RAC_DEVICE_NAMES_FILE: /workspace/.data/device-names.json
       RAC_SAVED_PROMPTS_FILE: /workspace/.data/saved-prompts.json
       RAC_PROMPT_HISTORY_FILE: /workspace/.data/prompt-history.json
       RAC_QUEUED_PROMPTS_FILE: /workspace/.data/queued-prompts.json
       RAC_NOTES_FILE: /workspace/.data/notes.json
       RAC_REVIEW_TOURS_FILE: /workspace/.data/review-tours.json
+      RAC_INTEGRATION_AUTH_FILE: /workspace/.data/integration-auth.json
+      RAC_INTEGRATION_STATE_FILE: /workspace/.data/integration-state.json
+      RAC_INTEGRATION_AUDIT_FILE: /workspace/.data/integration-audit.jsonl
     volumes:
       - ./:/workspace:rw
       - ${HOME}/.bash_aliases:/home/node/.bash_aliases:ro
@@ -33,20 +39,6 @@ services:
       - ${HOME}/.zshrc:/home/node/.zshrc:ro
       - ${HOME}/.gitignore:/home/node/.config/git/ignore:ro
       - ${HOME}/.config/gh/hosts.yml:/home/node/.config/gh/hosts.yml:ro
-      - /home/ubuntu/actionable:/worktrees/actionable:rw
-      # standalone cascadia sanctuaries checkout
-      - /home/ubuntu/cascadiasanctuaries.org:/worktrees/cascadiasanctuaries.org:rw
-      - /home/ubuntu/ferry.fyi:/worktrees/ferry.fyi:rw
-      # compatibility checkout and shared git metadata remain read-only
-      - /home/ubuntu/simulation-infra:/home/ubuntu/simulation-infra:ro
-      - /home/ubuntu/cora:/home/ubuntu/cora:ro
-      # linked worktree content stages prompt attachments
-      - /home/ubuntu/cora:/worktrees/cora:rw
-      - /home/ubuntu/owen:/worktrees/owen:rw
-      - /home/ubuntu/dave:/worktrees/dave:rw
-      - /home/ubuntu/eric:/worktrees/eric:rw
-      - /home/ubuntu/alex:/worktrees/alex:ro
-      - /home/ubuntu/skills:/worktrees/skills:rw
       - ./config/remote-agent-console.docker.json:/config/remote-agent-console.docker.json:ro
       # Discovery needs the host tmux server and process tree. The socket is
       # mounted read-only; interaction remains limited to tmux's own protocol.
@@ -69,9 +61,8 @@ services:
     # remain usable without weakening their host permissions.
     user: "0:0"
     restart: unless-stopped
-    # Share the console's network namespace so this sidecar can reach the
-    # loopback-only origin at 127.0.0.1:8787 on Docker Desktop as well.
-    network_mode: "service:remote-agent-console"
+    # keep the connector independent while reaching the loopback-only origin
+    network_mode: host
     depends_on:
       remote-agent-console:
         condition: service_healthy

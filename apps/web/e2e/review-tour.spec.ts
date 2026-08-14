@@ -8,6 +8,8 @@ test('guides a human through active-scope implementation changes and sends conso
   const longPatch = ['@@ -1,2 +1,122 @@', '-old route', `+new route ${'wide-content-'.repeat(40)}`, ...Array.from({ length: 120 }, (_, index) => ` context line ${index + 1}`)].join('\n');
   let snapshotFingerprint = 'snapshot-1234567890';
   let releaseGeneration = false;
+  let fingerprintRequests = 0;
+  let latestReadyJob = 0;
   await page.addInitScript(() => {
     class MockWebSocket {
       static readonly CONNECTING = 0;
@@ -56,12 +58,17 @@ test('guides a human through active-scope implementation changes and sends conso
       jobRequests.push(request.postDataJSON() as typeof jobRequests[number]);
       return route.fulfill({ status: 202, json: { status: 'pending', job: { id: `job-${jobRequests.length}`, expiresAt: '2026-08-07T20:00:00.000Z', retryAfterMs: 10 } } });
     }
-    if (/^\/api\/review-tour\/jobs\/job-\d+$/u.test(url.pathname) && request.method() === 'GET') {
+    const jobMatch = url.pathname.match(/^\/api\/review-tour\/jobs\/job-(\d+)$/u);
+    if (jobMatch !== null && request.method() === 'GET') {
       if (!releaseGeneration) return route.fulfill({ status: 202, json: { status: 'pending' } });
+      latestReadyJob = Math.max(latestReadyJob, Number(jobMatch[1]));
       return route.fulfill({ json: { status: 'ready', tour: { title: 'Request routing tour', overview: 'Follow the request from the route into the service.', scope: 'pr', base: 'origin/main', includeTests: jobRequests.at(-1)?.includeTests ?? false, includeDocs: jobRequests.at(-1)?.includeDocs ?? false, fingerprint: snapshotFingerprint, changes: [{ id: 'chg_route0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', patch: longPatch }, { id: 'chg_service01', file: 'src/service.ts', category: 'implementation', kind: 'hunk', patch: '@@ -4 +4 @@\n-old service\n+new service' }], steps: [{ id: 'route', title: 'Accept the request', explanation: 'The route validates input before delegating.', changeIds: ['chg_route0001'] }, { id: 'service', title: 'Apply the operation', explanation: 'The service performs the requested state transition.', changeIds: ['chg_service01'] }] } } });
     }
     if (/^\/api\/review-tour\/jobs\/job-\d+$/u.test(url.pathname) && request.method() === 'DELETE') return route.fulfill({ status: 204 });
-    if (url.pathname === '/api/agents/agent-1/review-tour/fingerprint') return route.fulfill({ json: { status: 'snapshot', snapshot: { scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: snapshotFingerprint } } });
+    if (url.pathname === '/api/agents/agent-1/review-tour/fingerprint') {
+      fingerprintRequests += 1;
+      return route.fulfill({ json: { status: 'snapshot', snapshot: { scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: snapshotFingerprint } } });
+    }
     // capture the final batch request
     if (url.pathname === '/api/agents/agent-1/prompt' && request.method() === 'POST') {
       prompts.push((request.postDataJSON() as { prompt: string }).prompt);
@@ -74,9 +81,9 @@ test('guides a human through active-scope implementation changes and sends conso
   await page.goto('/');
   await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
   const statusPanel = page.getByRole('region', { name: 'Changed files' });
-  await expect(statusPanel.getByRole('button', { name: 'Review' })).toBeVisible();
+  await expect(statusPanel.getByRole('button', { name: 'Review', exact: true })).toBeVisible();
   await expect(statusPanel.getByRole('button', { name: 'All PR' })).toHaveAttribute('aria-pressed', 'true');
-  await statusPanel.getByRole('button', { name: 'Review' }).click();
+  await statusPanel.getByRole('button', { name: 'Review', exact: true }).click();
 
   const loadingDialog = page.getByRole('dialog', { name: 'Generating change tour' });
   await expect(loadingDialog).toBeHidden();
@@ -173,12 +180,16 @@ test('guides a human through active-scope implementation changes and sends conso
   expect(jobRequests[3]).toEqual({ scope: 'pr', includeTests: false, includeDocs: true });
   await dialog.getByLabel('Docs').uncheck();
   await expect.poll(() => jobRequests.length).toBe(5);
+  await expect.poll(() => latestReadyJob).toBe(5);
   await expect(dialog.getByText('Step 1 of 2')).toBeVisible();
   expect(jobRequests[4]).toEqual({ scope: 'pr', includeTests: false, includeDocs: false });
+  await expect(reviewButton).toHaveAttribute('aria-busy', 'false');
 
   await dialog.getByLabel('Feedback for this change').fill('Keep the route error copy aligned with the existing API.');
   snapshotFingerprint = 'snapshot-updated-567890';
+  const previousFingerprintRequests = fingerprintRequests;
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect.poll(() => fingerprintRequests).toBeGreaterThan(previousFingerprintRequests);
   await expect(dialog.getByText('Changes updated')).toBeVisible();
   await dialog.getByRole('button', { name: 'Minimize guided review' }).click();
   await expect(reviewButton).toHaveAttribute('aria-label', 'Open out-of-date guided review');

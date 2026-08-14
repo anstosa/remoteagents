@@ -35,6 +35,7 @@ pull-request state without losing the terminal-native workflow underneath.
 | **Working notes** | Keep autosaved Markdown notes beside output, copy them, save the latest response, or send a note back as a prompt. |
 | **Guided review** | Generate an AI-narrated tour of active Working or All PR implementation changes, visit or skip each logical step, and send consolidated feedback to the agent. |
 | **Operations** | Install as a browser app, enable notifications, review stale runtime cleanup targets, and deploy with Docker Compose plus an optional Cloudflare Tunnel. |
+| **Conversational control** | Connect ChatGPT through scoped remote MCP or use the built-in OpenAI Realtime voice dialog to inspect and direct the same agents. |
 
 ### Reuse saved drafts
 
@@ -156,7 +157,9 @@ docker compose ps
 
 Docker requires host-specific bind mounts, worktree paths, and tunnel
 credentials. Follow the [Docker Compose guide](docs/docker.md) before starting
-the supplied stack.
+the supplied stack. Keep those values in ignored `.env`,
+`compose.override.yaml`, and `config/` files. Remote deployments pull the
+repository and build on the target host rather than copying local artifacts.
 
 ## Configuration
 
@@ -243,6 +246,7 @@ compose.yaml   Local production stack
 - [Setup, configuration, and browser capabilities](docs/setup.md)
 - [Docker Compose deployment](docs/docker.md)
 - [Using an existing Cloudflare Tunnel](docs/cloudflare-tunnel.md)
+- [ChatGPT, MCP, Realtime voice, and federation](docs/integrations.md)
 - [Security policy and deployment expectations](SECURITY.md)
 - [Contributing and validation](CONTRIBUTING.md)
 

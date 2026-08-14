@@ -1,6 +1,7 @@
 .git
 .omx
 .env
+compose.override.yaml
 node_modules
 **/node_modules
 **/dist

@@ -15,6 +15,13 @@ const serverName = z.string().trim().min(1).max(80).refine(value => !value.inclu
 // constrain icons to bundled artwork
 const instanceIcon = z.enum(instanceIconNames);
 const remoteServer = z.object({ name: serverName, url: z.string(), icon: instanceIcon.optional() }).strict();
+// default every remote surface off
+const integrationFeatures = z.object({
+  enabled: z.boolean().default(false),
+  mcp: z.object({ readEnabled: z.boolean().default(true), writeEnabled: z.boolean().default(false), dangerousEnabled: z.boolean().default(false) }).strict().default({}),
+  realtime: z.object({ enabled: z.boolean().default(false), writeToolsEnabled: z.boolean().default(false) }).strict().default({}),
+  multiInstance: z.object({ enabled: z.boolean().default(false) }).strict().default({})
+}).strict().default({});
 const sourceSchema = z.object({
   listen: z.object({ host: z.string(), port: z.number().int().min(1).max(65535) }).strict().default({ host: '127.0.0.1', port: 8787 }),
   name: serverName.default('Remote Agents'),
@@ -24,12 +31,16 @@ const sourceSchema = z.object({
   proxy: z.object({ trustedSourceIps: z.array(z.string()).default(['127.0.0.1', '::1']) }).strict().default({}),
   tmux: z.object({ pollIntervalMs: z.number().int().min(250).max(10000).default(500) }).strict().default({}),
   newAgentCommand: command.default('codex'),
+  integrations: integrationFeatures,
   launch: launchSchema.optional(),
   worktrees: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), label: z.string().max(120).optional(), path: z.string().min(1), hostPath: z.string().startsWith('/').optional(), pinned: z.boolean().default(false), port: z.number().int().min(1).max(65535).optional(), hostname: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/).optional(), command: command.optional(), launch: launchSchema.optional(), commands: stackCommands.optional(), newTask: command.optional(), push: pushAction }).strict()).min(1).max(100)
 }).strict();
 export type ConfigInput = z.input<typeof sourceSchema>;
 export type RemoteServer = { name: string; url: URL; icon?: InstanceIcon };
-export type ValidatedConfig = { listen: { host: '127.0.0.1'|'::1'; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; newAgentCommand: string; worktrees: Worktree[] };
+export type IntegrationConfig = z.output<typeof integrationFeatures>;
+export type ValidatedConfig = { listen: { host: '127.0.0.1'|'::1'; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; newAgentCommand: string; integrations?: IntegrationConfig; worktrees: Worktree[] };
+// support legacy test fixtures
+export const defaultIntegrationConfig: IntegrationConfig = integrationFeatures.parse(undefined);
 
 // require one canonical HTTPS origin
 function canonicalOrigin(value: string, label = 'publicOrigin'): URL {
@@ -83,6 +94,6 @@ export async function validateConfig(input: unknown): Promise<ValidatedConfig> {
     const projectUrl = raw.hostname === undefined ? undefined : `https://${raw.hostname}`;
     worktrees.push({ id: raw.id, label: raw.label ?? raw.id, path, identity, hostPath: raw.hostPath === undefined ? undefined : resolve(raw.hostPath), available: true, pinned: raw.pinned, command: raw.command, launch, projectUrl, projectPort: raw.port, push: raw.push, ...(raw.commands === undefined ? {} : { commands: raw.commands as StackCommands }), ...(raw.newTask === undefined ? {} : { newTask: raw.newTask }) });
   }
-  return { listen: { host: parsed.listen.host as '127.0.0.1'|'::1', port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, newAgentCommand: parsed.newAgentCommand, worktrees };
+  return { listen: { host: parsed.listen.host as '127.0.0.1'|'::1', port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, newAgentCommand: parsed.newAgentCommand, integrations: parsed.integrations, worktrees };
 }
 export function expandLaunch(template: LaunchTemplate, worktree: Worktree): string[] { return template.args.map((arg) => arg.replaceAll('{worktreePath}', worktree.identity).replaceAll('{worktreeId}', worktree.id)); }

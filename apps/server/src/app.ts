@@ -43,8 +43,19 @@ import { configuredWorktreeForWorkspace } from './workspaces/resolver.js';
 import { WorkspaceFileService } from './workspace-files/service.js';
 import { instanceIconSvg, isInstanceIcon } from './instance-icon.js';
 import { instanceAttention, RemoteInstanceStatusPoller, validInstanceStatusRequest } from './instance-status.js';
+import { createHmac } from 'node:crypto';
+import { defaultIntegrationConfig } from './config/schema.js';
+import { OrchestrationService } from './orchestration/index.js';
+import { IntegrationAuthService, registerIntegrationAuthServer, type IntegrationScope, type LocalIntegrationSubject } from './integrations/auth/index.js';
+import { IntegrationPolicyService } from './integrations/policy/service.js';
+import { IntegrationAuditService } from './integrations/audit/service.js';
+import { IntegrationGateway, registerMcpServer } from './integrations/mcp/index.js';
+import { RealtimeService } from './integrations/realtime/service.js';
+import { federationForwarder, verifyFederationRequest } from './integrations/federation/index.js';
+import { IntegrationControlService } from './integrations/control/index.js';
+import { ServerAdminService } from './server-admin/service.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; skills?: SkillService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; skills?: SkillService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService };
 const cookieName = '__Host-rac';
 // bound full history scans
 const logMetadataRefreshMs = 30_000;
@@ -64,8 +75,9 @@ export function logFrame(last: string, value: string): LogFrame | undefined {
 }
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, config.worktrees, promptHistory, queuedPrompts, savedPrompts); const notes = deps.notes ?? new WorktreeNoteService(); const skills = deps.skills ?? new SkillService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = new WorktreeCommandService(config); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.worktrees, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews])); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, config.worktrees, new CodexExecReviewTourGenerator()); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, config.worktrees, promptHistory, queuedPrompts, savedPrompts); const notes = deps.notes ?? new WorktreeNoteService(); const skills = deps.skills ?? new SkillService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = new WorktreeCommandService(config); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.worktrees, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews])); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, config.worktrees, new CodexExecReviewTourGenerator()); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
   const paneViewports = new PaneViewportCoordinator();
+  const integrationConfig = config.integrations ?? defaultIntegrationConfig;
   // prefer a dedicated federation secret while retaining existing deployments
   const instanceStatusSecret = process.env.RAC_INSTANCE_STATUS_SECRET ?? process.env.RAC_SESSION_SECRET ?? '';
   const instanceStatusPoller = new RemoteInstanceStatusPoller(instanceStatusSecret);
@@ -150,7 +162,98 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return instanceAttention({ agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent) })) });
   };
   dashboardUpdates.setLoader(dashboard);
-  app.addHook('onSend', async (_request, reply, payload) => { reply.header('Cache-Control', 'no-store').header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains').header('X-Frame-Options', 'DENY').header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()').header('Cross-Origin-Opener-Policy', 'same-origin').header('Cross-Origin-Resource-Policy', 'same-origin').header('Content-Security-Policy', `default-src 'self'; connect-src 'self' wss://${expectedHost}; style-src 'self' 'unsafe-inline'; ${frameSourcePolicy}; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`); return payload; });
+  app.addHook('onSend', async (_request, reply, payload) => { reply.header('Cache-Control', 'no-store').header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains').header('X-Frame-Options', 'DENY').header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()').header('Cross-Origin-Opener-Policy', 'same-origin').header('Cross-Origin-Resource-Policy', 'same-origin').header('Content-Security-Policy', `default-src 'self'; connect-src 'self' wss://${expectedHost}${integrationConfig.realtime.enabled ? ' https://api.openai.com' : ''}; style-src 'self' 'unsafe-inline'; ${frameSourcePolicy}; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`); return payload; });
+  // expose the same shared services through remote transports
+  if (integrationConfig.enabled) {
+    const resource = `${config.publicOrigin.origin}/mcp`;
+    const derivedRealtimeToken = createHmac('sha256', process.env.RAC_SESSION_SECRET ?? '').update('remote-agents:realtime-mcp:v1').digest('base64url');
+    const realtimeToken = process.env.RAC_REALTIME_MCP_TOKEN?.trim() || derivedRealtimeToken;
+    const integrationAuth = new IntegrationAuthService({ issuer: config.publicOrigin.origin, resource, stateFile: process.env.RAC_INTEGRATION_AUTH_FILE ?? '.data/integration-auth.json', realtimeToken, realtimeSubjectId: 'local-voice' });
+    const integrationPolicy = new IntegrationPolicyService();
+    const integrationAudit = new IntegrationAuditService();
+    const integrationControl = new IntegrationControlService(() => control.ownerSessionId());
+    await integrationPolicy.recoverUnknownOutcomes();
+    const orchestration = new OrchestrationService({
+      config,
+      loadDashboard: () => dashboardUpdates.refresh(),
+      discovery,
+      tmux,
+      prompts,
+      promptHistory,
+      worktreeCommands: stackCommands,
+      workspaceFiles,
+      pullRequests: prSwitch,
+      newTasks: newTask,
+      launchWorktree: worktreeId => launch.launch(worktreeId),
+      launchScratch: () => launch.launchHome(),
+      loadReview: (worktreeId, branch) => reviewStore.current(worktreeId, branch),
+      startReview: (agentId, input) => reviewJobs.start('integration-gateway', agentId, input)
+    });
+    const federationSecret = process.env.RAC_INTEGRATION_FEDERATION_SECRET?.trim() || instanceStatusSecret;
+    const integrationGateway = new IntegrationGateway({ config: integrationConfig, instanceId: config.publicOrigin.origin, orchestration, policy: integrationPolicy, audit: integrationAudit, control: integrationControl, ...(integrationConfig.multiInstance.enabled ? { forward: federationForwarder(config.remoteServers, federationSecret) } : {}) });
+    const realtimeScopes: IntegrationScope[] = ['status:read', 'logs:read', 'files:read', ...(integrationConfig.realtime.writeToolsEnabled ? ['prompts:write', 'agents:control', 'stack:operate', 'review:write'] as IntegrationScope[] : [])];
+    registerIntegrationAuthServer({
+      app,
+      auth: integrationAuth,
+      resource,
+      // bind OAuth consent to the existing signed browser session
+      localSubject: (request, csrf): LocalIntegrationSubject | undefined => {
+        try {
+          const local = session(request);
+          // verify form approval with the session's CSRF secret
+          if (csrf !== undefined && (request.headers.origin !== config.publicOrigin.origin || !auth.csrf(local, csrf))) return undefined;
+          return { id: local.id, csrf: local.csrf } as LocalIntegrationSubject;
+        } catch { return undefined; }
+      }
+    });
+    registerMcpServer({ app, publicOrigin: config.publicOrigin.origin, auth: integrationAuth, gateway: integrationGateway, realtimeScopes });
+    app.post('/api/integration-federation', { config: { rateLimit: { max: 240, timeWindow: '1 minute' } } }, async (request, reply) => {
+      browser(request);
+      // keep cross-instance execution independently disabled
+      if (!integrationConfig.multiInstance.enabled) return reply.code(404).send({ error: 'federation unavailable' });
+      const delegated = verifyFederationRequest(federationSecret, request.headers['x-rac-federation-timestamp'], request.headers['x-rac-federation-signature'], request.body);
+      // reject unsigned or malformed delegation
+      if (delegated === undefined) return reply.code(401).send({ error: 'unauthorized' });
+      return await integrationGateway.call({ authentication: 'oauth', subjectId: delegated.principal.subjectId, audience: resource, scopes: delegated.principal.scopes, ...(delegated.principal.clientId === undefined ? {} : { clientId: delegated.principal.clientId }) }, delegated.name, delegated.arguments, { voiceAuthorized: delegated.voiceAuthorized });
+    });
+    const realtime = new RealtimeService({ apiKey: process.env.RAC_OPENAI_API_KEY });
+    app.get('/api/integrations/status', async request => {
+      session(request);
+      return { enabled: true, mcp: integrationConfig.mcp, control: integrationControl.snapshot(), realtime: { enabled: integrationConfig.realtime.enabled, available: integrationConfig.realtime.enabled && realtime.available(), writeToolsEnabled: integrationConfig.realtime.writeToolsEnabled } };
+    });
+    app.post('/api/realtime/session', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+      const local = controlled(request, true);
+      // keep voice disabled unless both the feature and provider are configured
+      if (!integrationConfig.realtime.enabled || !realtime.available()) return reply.code(503).send({ error: 'Realtime voice is unavailable.' });
+      const principal = integrationAuth.authenticateRealtimeToken(realtimeToken);
+      // fail closed if the isolated MCP credential is unavailable
+      if (!principal.ok) return reply.code(503).send({ error: 'Realtime orchestration is unavailable.' });
+      const allowedTools = integrationGateway.listTools({ ...principal.value, audience: resource, scopes: realtimeScopes }).map(tool => tool.name);
+      const requestedContext = body(request);
+      // accept only canonical selected-target identifiers
+      if ((requestedContext.worktreeId !== undefined && (typeof requestedContext.worktreeId !== 'string' || requestedContext.worktreeId.length > 240)) || (requestedContext.agentId !== undefined && (typeof requestedContext.agentId !== 'string' || requestedContext.agentId.length > 240)) || typeof requestedContext.voiceSessionId !== 'string' || !/^[A-Za-z0-9_-]{20,64}$/u.test(requestedContext.voiceSessionId)) return reply.code(400).send({ error: 'invalid voice context' });
+      // activate mutation access only for this voice session
+      if (!integrationControl.startVoice(local.id, requestedContext.voiceSessionId)) return reply.code(409).send({ error: 'voice session stopped' });
+      const result = await realtime.create({ subject: local.id, mcpUrl: resource, mcpAuthorization: realtimeToken, allowedTools, context: { instanceId: config.publicOrigin.origin, ...(requestedContext.worktreeId === undefined ? {} : { worktreeId: requestedContext.worktreeId as string }), ...(requestedContext.agentId === undefined ? {} : { agentId: requestedContext.agentId as string }) } });
+      // revoke access when provider setup fails
+      if (!result.ok) integrationControl.stopVoice(local.id, requestedContext.voiceSessionId);
+      return result.ok ? reply.send(result) : reply.code(result.code === 'invalid_request' ? 400 : 502).send({ error: result.code });
+    });
+    app.post('/api/realtime/session/heartbeat', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
+      const local = controlled(request, true);
+      const voiceSessionId = body(request).voiceSessionId;
+      // renew only the active voice browser
+      if (typeof voiceSessionId !== 'string' || !/^[A-Za-z0-9_-]{20,64}$/u.test(voiceSessionId) || !integrationControl.heartbeatVoice(local.id, voiceSessionId)) return reply.code(409).send({ error: 'voice mode inactive' });
+      return { ok: true };
+    });
+    app.post('/api/realtime/session/stop', async request => {
+      const local = session(request, true);
+      const voiceSessionId = body(request).voiceSessionId;
+      // stop only one canonical browser voice session
+      if (typeof voiceSessionId === 'string' && /^[A-Za-z0-9_-]{20,64}$/u.test(voiceSessionId)) integrationControl.stopVoice(local.id, voiceSessionId);
+      return { ok: true };
+    });
+  }
   app.get('/healthz', async () => ({ ok: true }));
   // publish only the local instance attention state
   app.get('/api/instance-status', { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async (request, reply) => {
@@ -191,6 +294,44 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (deviceName === undefined) return reply.code(400).send({ error: 'Name this device before taking control.' });
     control.take(s.id);
     return await sessionState(s, true);
+  });
+  // rename the active browser client
+  app.patch('/api/auth/device-name', async (request, reply) => {
+    const s = controlled(request, true);
+    const providedName = body(request).deviceName;
+    // require a valid visible client name
+    if (typeof providedName !== 'string' || await devices.set(s.id, providedName) === undefined) return reply.code(400).send({ error: 'Client name must be between 1 and 64 visible characters.' });
+    return await sessionState(s, true);
+  });
+  // rename the current server persistently
+  app.patch('/api/server/name', async (request, reply) => {
+    controlled(request, true);
+    const providedName = body(request).name;
+    // require a valid configuration name
+    if (typeof providedName !== 'string') return reply.code(400).send({ error: 'Server name must be between 1 and 80 visible characters.' });
+    try {
+      const name = await serverAdmin.renameServer(providedName);
+      // reject invalid or unavailable configuration writes
+      if (name === undefined) return reply.code(400).send({ error: 'Server name must be between 1 and 80 visible characters.' });
+      server.name = name;
+      return { name, server };
+    } catch {
+      return reply.code(503).send({ error: 'Unable to update the server configuration.' });
+    }
+  });
+  // pull and rebuild this server on its host
+  app.post('/api/server/update', { config: { rateLimit: { max: 2, timeWindow: '1 hour' } } }, async (request, reply) => {
+    controlled(request, true);
+    const status = await serverAdmin.startUpdate();
+    // require the configured host bridge
+    if (status === undefined) return reply.code(503).send({ error: 'Server updates are unavailable on this deployment.' });
+    return reply.code(status.state === 'failed' ? 503 : 202).send(status);
+  });
+  // report one surviving host update
+  app.get('/api/server/update/:id', async (request, reply) => {
+    controlled(request);
+    const status = await serverAdmin.updateStatus((request.params as { id: string }).id);
+    return status === undefined ? reply.code(404).send({ error: 'Server update unavailable.' }) : status;
   });
   app.post('/api/auth/logout', async (request, reply) => { const s = session(request, true); control.release(s.id); auth.logout(s.id); reply.clearCookie(cookieName, { path: '/', secure: true, httpOnly: true, sameSite: 'lax' }); return reply.code(204).send(); });
   app.get('/api/dashboard', async (request) => { controlled(request); return await dashboardUpdates.refresh(); });

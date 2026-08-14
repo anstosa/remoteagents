@@ -73,7 +73,7 @@ test('shows and switches the configured server on authentication and output scre
   // verify direct server buttons
   const expectServerButtons = async (remoteLabel?: string) => {
     const group = page.getByRole('group', { name: 'Remote Agents servers' });
-    const buttons = group.getByRole('button');
+    const buttons = group.locator('button.server-switcher-button:not(.server-switcher-voice):not(.server-switcher-settings)');
     await expect(group).toBeVisible();
     await expect(buttons).toHaveText(['X1 Carbon', 'Framework']);
     // require the current server on the left
@@ -113,10 +113,10 @@ test('shows and switches the configured server on authentication and output scre
     activeTab.evaluate(element => getComputedStyle(element).boxShadow)
   ]);
   expect(currentBorderEffect).toBe(tabBorderEffect);
-  // keep the server row left of status on narrow screens
+  // keep status below controls on narrow screens
   await page.setViewportSize({ width: 390, height: 844 });
   const [serverRowBounds, statusBounds] = await Promise.all([renderedBounds(outputServers.group), renderedBounds(page.locator('.log-status'))]);
-  expect(serverRowBounds.x + serverRowBounds.width).toBeLessThanOrEqual(statusBounds.x);
+  expect(serverRowBounds.y + serverRowBounds.height).toBeLessThanOrEqual(statusBounds.y);
 
   remoteAttention = 'completed';
   await expect(outputServers.remote).toHaveAccessibleName('Framework — Completed notification', { timeout: 8_000 });

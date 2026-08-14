@@ -31,6 +31,8 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   await activeTab.click();
   await expect(activeTab).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByLabel('Live log')).toBeVisible();
+  const callDavo = page.locator('.output-server-switcher').getByRole('button', { name: 'Call Davo' });
+  await expect(callDavo.locator('span')).toHaveText('Call Davo');
   const gitStatus = page.getByLabel('Git status: feature/output-git-summary; 3 changes (1 staged file, 2 unstaged files, 1 untracked file)');
   await expect(gitStatus).toBeVisible();
   await gitStatus.click();
@@ -59,6 +61,7 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
       gitBranch: bounds('.git-branch'),
       gitBranchFlexGrow: getComputedStyle(document.querySelector<HTMLElement>('.git-branch')!).flexGrow,
       logStatus: bounds('.log-status'),
+      serverSwitcher: bounds('.output-server-switcher'),
       logStatusStyle: (() => {
         const style = getComputedStyle(document.querySelector<HTMLElement>('.log-status')!);
         return { position: style.position, boxShadow: style.boxShadow, backgroundColor: style.backgroundColor, color: style.color, backdropFilter: style.backdropFilter };
@@ -89,8 +92,8 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   expect(layout.logStatusStyle.backgroundColor).toBe('rgb(249, 226, 175)');
   expect(layout.logStatusStyle.color).toBe('rgb(17, 17, 27)');
   expect(layout.logStatusStyle.backdropFilter).toBe('none');
-  expect(layout.logStatus.top).toBeGreaterThanOrEqual(layout.output.top);
-  expect(layout.output.right - layout.logStatus.right).toBeLessThanOrEqual(10);
+  expect(layout.logStatus.top).toBeGreaterThan(layout.serverSwitcher.bottom);
+  expect(Math.abs(layout.logStatus.left - layout.serverSwitcher.left)).toBeLessThanOrEqual(1);
   expect(Math.abs(layout.tabs.top - layout.outputFooter.bottom)).toBeLessThanOrEqual(1);
   await expect(page.locator('.log > .log-topbar')).toHaveCount(0);
   await expect(page.locator('.log + .log-topbar')).toHaveCount(1);

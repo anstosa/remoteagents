@@ -2,6 +2,8 @@
 
 Compose runs the console and a `cloudflared` sidecar. The sidecar maintains the
 outbound Cloudflare Tunnel and reconnects after the laptop changes networks.
+Both services use host networking so they can share the loopback-only origin
+without coupling the tunnel connector to the application container lifecycle.
 The console reads the host tmux socket directory and process table to discover
 the host user's existing Codex sessions; it does not discover sessions owned by
 another UID.
@@ -12,10 +14,12 @@ than the container image.
 The source checkout is mounted at `/workspace`, so the default worktree changes
 to this repository and runs its configured `codex` command.
 
-The supplied Docker configuration also maps the configured host worktrees under
-`/worktrees`. When adding a worktree, add both a `worktrees` entry in
-`config/remote-agent-console.docker.json` and a matching bind mount in
-`compose.yaml`. Set `path` to the container path used to launch an agent and
+The supplied Docker configuration keeps host worktrees out of the tracked base
+Compose file. Copy `compose.override.example.yaml` to the ignored
+`compose.override.yaml`, then add the configured host worktrees under
+`/worktrees`. When adding a worktree, add both a `worktrees` entry in the ignored
+`config/remote-agent-console.docker.json` and a matching bind mount in the local
+override. Set `path` to the container path used to launch an agent and
 `hostPath` to the matching host path so existing tmux panes are associated with
 that worktree instead of appearing as a duplicate idle card.
 For linked Git worktrees, also expose the absolute common Git directory path
@@ -31,7 +35,10 @@ Mount read-only agent worktrees read-only.
 1. Create `.env` from `.env.example` and supply an Argon2id password hash, a
    session secret, and the absolute path to the Cloudflare Tunnel credential
    JSON. Wrap the Argon2 value in single quotes because its `$` characters
-   otherwise trigger Compose variable interpolation.
+   otherwise trigger Compose variable interpolation. Keep
+   `RAC_PROJECT_PROXY_HOST=127.0.0.1` on Linux host networking. Override it only
+   when the target container runtime exposes host project ports through another
+   stable name, such as `host.docker.internal`.
 2. Update `config/remote-agent-console.docker.json`: set `publicOrigin` to the
    canonical HTTPS origin (for example, `https://agents.santosa.dev`) and
    adjust each worktree's `path`, `hostPath`, and `command` or the `/workspace`
@@ -39,9 +46,7 @@ Mount read-only agent worktrees read-only.
    for that worktree; `{taskId}` is replaced with an 8-character URL-safe
    random task ID. The command runs only when the working copy is clean and
    fully pushed. Set `HOST_UID` in `.env` if the host tmux server is not
-   owned by UID 1000. Compose also sets `RAC_PROJECT_PROXY_HOST` to Docker
-   Desktop's `host.docker.internal` gateway so preview requests can reach the
-   configured host ports.
+   owned by UID 1000.
 3. Copy `config/cloudflared.example.yml` to `config/cloudflared.yml`. Set the
    tunnel UUID and preserve the browser-facing hostname in each `hostname` and
    `httpHostHeader`. Route both project previews and the console to port 8787;
@@ -91,9 +96,11 @@ in the image. Changes apply to the next worktree launch; no rebuild is needed.
 The Compose setup uses Linux host networking so the console's loopback-only
 listener remains available at `127.0.0.1:8787` on the Docker host. The bundled
 `cloudflared` service is the only public ingress and does not publish a Docker
-port. Both services use `restart: unless-stopped`, so Docker restores them after
-a reboot or network interruption as long as Compose has not been explicitly
-stopped. A local health check is available at:
+port. It runs in its own host network namespace, so rebuilding the application
+does not require recreating the connector. Both services use
+`restart: unless-stopped`, so Docker restores them after a reboot or network
+interruption as long as Compose has not been explicitly stopped. A local health
+check is available at:
 
 ```bash
 curl http://127.0.0.1:8787/healthz
@@ -112,3 +119,18 @@ docker compose down -v              # also removes the Codex login volume
 
 Set `CODEX_VERSION` in the shell or `.env` before building to use a different
 Codex package version. The image defaults to `0.144.5`.
+
+## Remote deployment
+
+Keep `.env`, `compose.override.yaml`, `config/cloudflared.yml`, and
+`config/remote-agent-console.docker.json` local to each host. Deploy by updating
+and building inside the target checkout:
+
+```bash
+ssh target-host \
+  'cd /path/to/remoteagents && git pull --ff-only && docker compose up -d --build && docker compose ps'
+```
+
+Do not synchronize a source tree, Docker image, generated web assets, or local
+configuration between hosts. Each host pulls the same repository revision and
+builds its own image with its own ignored configuration.

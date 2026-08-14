@@ -3,6 +3,7 @@ node_modules/
 .data/
 dist/
 .env
+compose.override.yaml
 config/cloudflared.yml
 config/remote-agent-console.docker.json
 coverage/

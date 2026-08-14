@@ -1,0 +1,183 @@
+import { describe, expect, it } from 'vitest';
+import type { ValidatedConfig } from '../src/config/schema.js';
+import type { DashboardPayload } from '../src/dashboard/updates.js';
+import type { Agent, Worktree } from '../src/domain/models.js';
+import { OrchestrationService, type OrchestrationDependencies } from '../src/orchestration/service.js';
+
+const cora: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: true, command: 'codex', commands: { build: 'docker compose build' } };
+const dave: Worktree = { id: 'dave', label: 'Dave', path: '/worktrees/dave', identity: '/worktrees/dave', available: true, pinned: false, command: 'codex' };
+const config: ValidatedConfig = {
+  name: 'Remote Agents',
+  remoteServers: [{ name: 'Remote', url: new URL('https://remote.example.com') }],
+  listen: { host: '127.0.0.1', port: 8787 },
+  publicOrigin: new URL('https://agents.example.com'),
+  trustedProxyIps: new Set(),
+  pollIntervalMs: 500,
+  newAgentCommand: 'codex',
+  worktrees: [cora, dave]
+};
+const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+const activeAgent: Agent = { id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.identity, branch: 'feature/cora', title: 'Ready', worktreeId: cora.id, worktreeLabel: cora.label, worktreeOrder: 0, gitStatus: { files: 2, staged: 0, unstaged: 2, untracked: 0, conflicted: 0 } };
+
+// build one fully structural dependency set
+function dependencies(overrides: Partial<OrchestrationDependencies> = {}): OrchestrationDependencies {
+  const dashboard: DashboardPayload = {
+    generation: 1,
+    agents: [{ ...activeAgent, unread: false }],
+    worktrees: [{ id: dave.id, label: dave.label, path: dave.path, available: true, pinned: false, order: 1, branch: 'main' }],
+    cleanupPending: 0,
+    reviewTour: { available: false, reason: 'generator_unavailable' },
+    reviews: []
+  };
+  return {
+    config,
+    loadDashboard: async () => dashboard,
+    discovery: { target: async agentId => agentId === activeAgent.id ? { agent: activeAgent, socket } : undefined },
+    tmux: {
+      captureWindow: async () => ({ text: 'terminal', older: false }),
+      captureRecentWindow: async () => ({ text: 'terminal', older: false })
+    },
+    prompts: {
+      submit: async () => true,
+      listQueued: async () => [],
+      updateQueued: async (_agentId, promptId, text) => ({ id: promptId, text, createdAt: '2026-08-13T00:00:00.000Z' }),
+      moveQueued: async () => [],
+      removeQueued: async () => true,
+      answerOmxQuestion: async () => true,
+      cancel: async () => true,
+      close: async () => true
+    },
+    promptHistory: { list: async () => [] },
+    worktreeCommands: {
+      actions: worktree => worktree.commands?.build === undefined ? [] : ['build'],
+      state: async () => ({}),
+      start: async () => 'started',
+      log: async () => undefined
+    },
+    workspaceFiles: { preview: async (_workspace, path) => ({ path, size: 12, binary: false, truncated: false, content: 'abcdefghijkl' }) },
+    pullRequests: { available: async () => ({ enabled: true, pullRequests: [] }), actionsUrl: async () => undefined, switch: async () => true },
+    newTasks: { available: async () => ({ enabled: true }), start: async () => true },
+    launchWorktree: async () => true,
+    launchScratch: async () => true,
+    ...overrides
+  };
+}
+
+describe('OrchestrationService', () => {
+  it('merges active agents and inactive worktrees in configured order', async () => {
+    const service = new OrchestrationService(dependencies());
+
+    await expect(service.listInstances()).resolves.toMatchObject({ ok: true, version: 'v1', value: [{ local: true, name: 'Remote Agents' }, { local: false, name: 'Remote' }] });
+    await expect(service.listWorktrees()).resolves.toMatchObject({
+      ok: true,
+      value: [
+        { id: 'cora', active: true, agentIds: ['agent-cora'], branch: 'feature/cora', order: 0 },
+        { id: 'dave', active: false, agentIds: [], branch: 'main', order: 1 }
+      ]
+    });
+  });
+
+  it('falls back to durable responses and bounds terminal and file output', async () => {
+    const oversized = 'x'.repeat(120 * 1024);
+    const service = new OrchestrationService(dependencies({
+      tmux: {
+        captureWindow: async () => ({ text: '', older: false }),
+        captureRecentWindow: async () => ({ text: oversized, older: true })
+      },
+      promptHistory: { list: async () => [{ id: 'history-12345', text: 'Question', createdAt: '2026-08-13T00:00:00.000Z', answer: 'Durable answer', answeredAt: '2026-08-13T00:01:00.000Z' }] }
+    }));
+
+    await expect(service.latestResponse(activeAgent.id)).resolves.toMatchObject({ ok: true, value: { source: 'history', text: 'Durable answer', truncated: false } });
+    const log = await service.logTail(activeAgent.id, 300);
+    expect(log).toMatchObject({ ok: true, value: { rows: 300, older: true, truncated: true } });
+    // verify the facade byte ceiling
+    if (log.ok) expect(Buffer.byteLength(log.value.text)).toBe(96 * 1024);
+    await expect(service.logTail(activeAgent.id, 301)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_request' } });
+    await expect(service.previewFile({ agentId: activeAgent.id, path: 'README.md', maxBytes: 5 })).resolves.toMatchObject({ ok: true, value: { content: 'abcde', truncated: true } });
+  });
+
+  it('blocks secret paths and redacts credential-shaped output', async () => {
+    let previews = 0;
+    const service = new OrchestrationService(dependencies({
+      tmux: {
+        captureWindow: async () => ({ text: '', older: false }),
+        captureRecentWindow: async () => ({ text: 'RAC_SESSION_SECRET=private\nAuthorization: Bearer abcdefghijklmnop\nkey: sk-proj-examplecredential\npassword: hunter2', older: false })
+      },
+      workspaceFiles: { preview: async (_workspace, path) => { previews += 1; return { path, size: 64, binary: false, truncated: false, content: '"api_key":"sk_examplecredential"' }; } },
+      worktreeCommands: {
+        actions: () => ['build'],
+        state: async () => ({}),
+        start: async () => 'started',
+        log: async () => ({ action: 'build', active: false, startedAt: '2026-08-13T00:00:00.000Z', output: 'PASSWORD=hunter2' })
+      }
+    }));
+
+    await expect(service.previewFile({ worktreeId: cora.id, path: '.env' })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_request' } });
+    await expect(service.previewFile({ worktreeId: cora.id, path: '.data/integration-auth.json' })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_request' } });
+    expect(previews).toBe(0);
+    await expect(service.previewFile({ worktreeId: cora.id, path: 'src/config.ts' })).resolves.toMatchObject({ ok: true, value: { content: '"api_key":"[REDACTED]"' } });
+    await expect(service.logTail(activeAgent.id)).resolves.toMatchObject({ ok: true, value: { text: 'RAC_SESSION_SECRET=[REDACTED]\nAuthorization: [REDACTED]\nkey: [REDACTED TOKEN]\npassword: [REDACTED]' } });
+    await expect(service.stackStatus(cora.id)).resolves.toMatchObject({ ok: true, value: { log: { output: 'PASSWORD=[REDACTED]' } } });
+    const symlinkService = new OrchestrationService(dependencies({ workspaceFiles: { preview: async () => ({ path: '.env', size: 12, binary: false, truncated: false, content: 'RAC_SESSION_SECRET=private' }) } }));
+    await expect(symlinkService.previewFile({ worktreeId: cora.id, path: 'safe-link' })).resolves.toMatchObject({ ok: false, error: { code: 'not_found' } });
+  });
+
+  it('routes prompt and configured stack mutations through shared services', async () => {
+    const calls: string[] = [];
+    const promptId = 'prompt-123456789';
+    const service = new OrchestrationService(dependencies({
+      prompts: {
+        submit: async (_agentId, prompt) => { calls.push(`queue:${prompt}`); return true; },
+        listQueued: async () => [],
+        updateQueued: async (_agentId, id, text) => { calls.push(`update:${id}:${text}`); return { id, text, createdAt: '2026-08-13T00:00:00.000Z' }; },
+        moveQueued: async (_agentId, id, direction) => { calls.push(`move:${id}:${direction}`); return [{ id, text: 'Edited', createdAt: '2026-08-13T00:00:00.000Z' }]; },
+        removeQueued: async (_agentId, id) => { calls.push(`remove:${id}`); return true; },
+        answerOmxQuestion: async () => true,
+        cancel: async () => true,
+        close: async () => true
+      },
+      worktreeCommands: {
+        actions: worktree => worktree.id === cora.id ? ['build'] : [],
+        state: async () => ({}),
+        start: async (worktreeId, action) => { calls.push(`stack:${worktreeId}:${action}`); return 'started'; },
+        log: async () => undefined
+      }
+    }));
+
+    await expect(service.queuePrompt({ agentId: activeAgent.id, prompt: '!rm -rf /' })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_request' } });
+    await expect(service.queuePrompt({ agentId: activeAgent.id, prompt: 'First' })).resolves.toMatchObject({ ok: true });
+    await expect(service.updateQueuedPrompt({ agentId: activeAgent.id, promptId, prompt: 'Edited' })).resolves.toMatchObject({ ok: true, value: { text: 'Edited' } });
+    await expect(service.moveQueuedPrompt({ agentId: activeAgent.id, promptId, direction: 'earlier' })).resolves.toMatchObject({ ok: true, value: { prompts: [{ id: promptId }] } });
+    await expect(service.removeQueuedPrompt({ agentId: activeAgent.id, promptId })).resolves.toMatchObject({ ok: true });
+    await expect(service.runStackAction({ worktreeId: cora.id, action: 'build' })).resolves.toMatchObject({ ok: true });
+    await expect(service.runStackAction({ worktreeId: dave.id, action: 'build' })).resolves.toMatchObject({ ok: false, error: { code: 'unavailable' } });
+    expect(calls).toEqual(['queue:First', `update:${promptId}:Edited`, `move:${promptId}:earlier`, `remove:${promptId}`, 'stack:cora:build']);
+  });
+
+  it('deactivates only idle agents in configured worktrees', async () => {
+    let agent: Agent = { ...activeAgent, title: '⠋ Working' };
+    let closed = 0;
+    const service = new OrchestrationService(dependencies({
+      discovery: { target: async () => ({ agent, socket }) },
+      prompts: {
+        submit: async () => true,
+        listQueued: async () => [],
+        updateQueued: async () => undefined,
+        moveQueued: async () => undefined,
+        removeQueued: async () => false,
+        answerOmxQuestion: async () => false,
+        cancel: async () => false,
+        close: async () => { closed += 1; return true; }
+      }
+    }));
+
+    await expect(service.deactivate(activeAgent.id)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } });
+    expect(closed).toBe(0);
+    agent = { ...activeAgent, title: 'Ready' };
+    await expect(service.deactivate(activeAgent.id)).resolves.toMatchObject({ ok: true, value: { deactivated: true } });
+    expect(closed).toBe(1);
+    agent = { ...activeAgent, workspace: '/scratch/repo', title: 'Ready' };
+    await expect(service.deactivate(activeAgent.id)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } });
+    expect(closed).toBe(1);
+  });
+});

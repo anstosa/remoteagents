@@ -18,6 +18,7 @@ import { isPromptKeyboardTarget, useShiftArrowTabCycling } from './tab-navigatio
 import { UpstreamRebaseBanner, type GitUpstreamSummary } from './upstream-rebase.js';
 import { useViewportFlyout } from './viewport-flyout.js';
 import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
+import { VoiceDialog } from './voice/voice-dialog.js';
 import './styles.css';
 
 type OmxQuestion = { id: string; text: string; choices: string[]; paneId: string };
@@ -425,11 +426,35 @@ const decodeAttachment = (attachment: SavedPromptAttachment): File => {
 const agentNotificationTag = (agent: Pick<Agent, 'id' | 'worktreeId'>) => agent.worktreeId === undefined ? `agent-status-${agent.id}` : `worktree-status-${agent.worktreeId}`;
 const reviewNotificationTag = (worktreeId: string) => `review-ready-${worktreeId}`;
 const pageFocused = () => document.visibilityState === 'visible' && document.hasFocus();
+const notificationSoundPaths = { finished: '/notification-success.wav', question: '/notification-warning.wav' } as const;
+const recentNotificationSounds = new Map<string, number>();
+
+// play one distinct agent alert chime
+const playNotificationSound = async (kind: 'question' | 'finished' | 'system', tag: string): Promise<boolean> => {
+  // leave system alerts unchanged
+  if (kind === 'system') return false;
+  const now = Date.now();
+  const previous = recentNotificationSounds.get(tag);
+  // suppress duplicate polling and push alerts
+  if (previous !== undefined && now - previous < 3_000) return true;
+  recentNotificationSounds.set(tag, now);
+  window.setTimeout(() => recentNotificationSounds.delete(tag), 3_000);
+  try {
+    const sound = new Audio(notificationSoundPaths[kind]);
+    sound.volume = kind === 'question' ? 0.48 : 0.42;
+    await sound.play();
+    return true;
+  } catch {
+    recentNotificationSounds.delete(tag);
+    return false;
+  }
+};
 
 // show alerts with durable worktree metadata
 const showNotification = async (kind: 'question' | 'finished' | 'system', title: string, body: string, tag: string, url = '/', worktreeId?: string) => {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
-  const options = { body, tag, icon: '/favicon.svg', badge: '/notification-badge.png', requireInteraction: kind === 'question', data: { url, kind, worktreeId } };
+  const customSoundPlayed = await playNotificationSound(kind, tag);
+  const options = { body, tag, icon: '/favicon.svg', badge: '/notification-badge.png', requireInteraction: kind === 'question', silent: customSoundPlayed, data: { url, kind, worktreeId } };
   if ('serviceWorker' in navigator) {
     const registration = await navigator.serviceWorker.ready;
     await registration.showNotification(title, options);
@@ -468,6 +493,17 @@ const voiceHoldDelayMs = 450;
 
 const ServerContext = createContext<ServerInfo | undefined>(undefined);
 const ServerStatusContext = createContext<Readonly<Record<string, InstanceAttention>>>({});
+const VoiceTriggerContext = createContext<{ open: () => void; active: boolean; visible: boolean } | undefined>(undefined);
+type ServerUpdateState = 'queued' | 'running' | 'complete' | 'failed';
+type ClientSettings = {
+  deviceName: string;
+  serverName: string;
+  renameClient: (name: string) => Promise<string | undefined>;
+  renameServer: (name: string) => Promise<string | undefined>;
+  startServerUpdate: () => Promise<{ id?: string; error?: string }>;
+  serverUpdateStatus: (id: string) => Promise<ServerUpdateState | undefined>;
+};
+const ClientSettingsContext = createContext<ClientSettings | undefined>(undefined);
 // validate one configured icon name
 const isInstanceIcon = (value: unknown): value is InstanceIcon => value === 'terminal' || value === 'potato' || value === 'heart';
 // validate one server switch target
@@ -517,10 +553,130 @@ const instanceAttentionLabel = (attention: InstanceAttention): string | undefine
   }
 };
 
+// render the client settings flyout
+function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
+  const [open, setOpen] = useState(false);
+  const [dialog, setDialog] = useState<'client' | 'server' | 'update' | 'progress'>();
+  const [name, setName] = useState(settings.deviceName);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState('');
+  const [updateId, setUpdateId] = useState<string>();
+  const [updateState, setUpdateState] = useState<ServerUpdateState>('queued');
+  const { anchorRef, flyoutRef, style } = useViewportFlyout(open);
+  // close after outside interaction
+  useEffect(() => {
+    // listen only while visible
+    if (!open) return;
+    const close = (event: MouseEvent) => {
+      const target = event.target as Node;
+      // preserve interactions within either surface
+      if (anchorRef.current?.contains(target) || flyoutRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+  // start editing the current client name
+  const beginRename = (target: 'client' | 'server') => {
+    setName(target === 'client' ? settings.deviceName : settings.serverName);
+    setError('');
+    setOpen(false);
+    setDialog(target);
+  };
+  // open update confirmation
+  const beginUpdate = () => {
+    setOpen(false);
+    setError('');
+    setDialog('update');
+  };
+  // close the active popup
+  const closeDialog = () => {
+    // keep pending writes stable
+    if (pending) return;
+    setDialog(undefined);
+    setError('');
+  };
+  // save one client or server name
+  const submitRename = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    // prevent duplicate writes
+    if (pending || (dialog !== 'client' && dialog !== 'server')) return;
+    const normalized = name.trim();
+    // keep invalid names local
+    if (!normalized) {
+      setError(`Enter a ${dialog} name.`);
+      return;
+    }
+    setPending(true);
+    setError('');
+    const failure = dialog === 'client' ? await settings.renameClient(normalized) : await settings.renameServer(normalized);
+    setPending(false);
+    // retain the editor after a failed rename
+    if (failure !== undefined) {
+      setError(failure);
+      return;
+    }
+    setDialog(undefined);
+  };
+  // start one guarded host update
+  const confirmUpdate = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    // prevent duplicate launches
+    if (pending) return;
+    setPending(true);
+    setError('');
+    const result = await settings.startServerUpdate();
+    setPending(false);
+    // retain confirmation after launch failure
+    if (result.id === undefined) {
+      setError(result.error ?? 'Unable to start the server update.');
+      return;
+    }
+    setUpdateId(result.id);
+    setUpdateState('queued');
+    setDialog('progress');
+  };
+  // poll through the expected restart outage
+  useEffect(() => {
+    // require an active update
+    if (dialog !== 'progress' || updateId === undefined || updateState === 'complete' || updateState === 'failed') return;
+    let active = true;
+    const poll = async () => {
+      const state = await settings.serverUpdateStatus(updateId);
+      // ignore transient restart failures
+      if (!active || state === undefined) return;
+      setUpdateState(state);
+    };
+    void poll();
+    const interval = window.setInterval(() => { void poll(); }, 1_000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, [dialog, settings, updateId, updateState]);
+  const flyout = !open ? null : createPortal(<div ref={flyoutRef} className="client-settings-menu more-menu flyout-menu" style={style} role="menu" aria-label="Global settings"><button type="button" role="menuitem" onClick={() => beginRename('client')}>Rename Client</button><button type="button" role="menuitem" onClick={() => beginRename('server')}>Rename Server</button><button type="button" role="menuitem" onClick={beginUpdate}>Update Server</button></div>, document.body);
+  const renameTarget = dialog === 'client' || dialog === 'server' ? dialog : undefined;
+  const renameDialog = renameTarget === undefined ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-rename-title" onKeyDown={event => { /* close on escape */ if (event.key === 'Escape') closeDialog(); }}><div><header><div><small>GLOBAL SETTINGS</small><h2 id="settings-rename-title">Rename {renameTarget === 'client' ? 'Client' : 'Server'}</h2></div><button type="button" aria-label={`Close rename ${renameTarget}`} disabled={pending} onClick={closeDialog}>×</button></header><form onSubmit={event => void submitRename(event)}><label>{renameTarget === 'client' ? 'Client' : 'Server'} name<input autoFocus type="text" value={name} maxLength={renameTarget === 'client' ? 64 : 80} autoComplete="nickname" onChange={event => setName(event.target.value)} /></label>{error && <span className="auth-error" role="alert">{error}</span>}<footer><button type="button" disabled={pending} onClick={closeDialog}>Cancel</button><button type="submit" disabled={pending || !name.trim()}>{pending ? <><span className="spinner" />Renaming…</> : 'Save'}</button></footer></form></div></div>, document.body);
+  const updateDialog = dialog !== 'update' ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="server-update-title" onKeyDown={event => { /* close on escape */ if (event.key === 'Escape') closeDialog(); }}><div><header><div><small>GLOBAL SETTINGS</small><h2 id="server-update-title">Update Server</h2></div><button type="button" aria-label="Close update server" disabled={pending} onClick={closeDialog}>×</button></header><form onSubmit={event => void confirmUpdate(event)}><p>Pull the latest Remote Agents code and rebuild the local stack?</p>{error && <span className="auth-error" role="alert">{error}</span>}<footer><button type="button" disabled={pending} onClick={closeDialog}>Cancel</button><button type="submit" disabled={pending}>{pending ? <><span className="spinner" />Starting…</> : 'Update Server'}</button></footer></form></div></div>, document.body);
+  let progressContent: ReactNode;
+  // render failed progress
+  if (updateState === 'failed') {
+    progressContent = <span className="auth-error">Update failed. Check the server logs.</span>;
+  // render completed progress
+  } else if (updateState === 'complete') {
+    progressContent = <><strong>Update complete.</strong><button type="button" onClick={() => location.reload()}>Reload</button></>;
+  // render active progress
+  } else {
+    const progressLabel = updateState === 'queued' ? 'Waiting for the host…' : 'Pulling, rebuilding, and restarting…';
+    progressContent = <><span className="spinner" /><span>{progressLabel}</span></>;
+  }
+  const progressDialog = dialog !== 'progress' ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="server-update-progress-title"><div><header><div><small>GLOBAL SETTINGS</small><h2 id="server-update-progress-title">Updating Server</h2></div>{(updateState === 'complete' || updateState === 'failed') && <button type="button" aria-label="Close server update" onClick={closeDialog}>×</button>}</header><div className="server-update-progress" role="status">{progressContent}</div></div></div>, document.body);
+  return <span ref={anchorRef} className="server-switcher-settings-wrap"><button type="button" className="server-switcher-button server-switcher-settings" aria-label="Global settings" aria-haspopup="menu" aria-expanded={open} onClick={() => { setOpen(current => !current); setError(''); }}>⋮</button>{flyout}{renameDialog}{updateDialog}{progressDialog}</span>;
+}
+
 // render every server as a direct navigation button
 function ServerSwitcher({ className = '' }: { className?: string }) {
   const server = useContext(ServerContext) ?? fallbackServerInfo();
   const statuses = useContext(ServerStatusContext);
+  const voice = useContext(VoiceTriggerContext);
+  const clientSettings = useContext(ClientSettingsContext);
   const targets = [{ name: server.name, url: server.url, icon: server.icon }, ...server.remotes];
   // navigate directly to one server origin
   const switchServer = (target: RemoteServer) => {
@@ -534,7 +690,8 @@ function ServerSwitcher({ className = '' }: { className?: string }) {
     const attentionLabel = instanceAttentionLabel(attention);
     return <button key={target.url} type="button" className={`server-switcher-button attention-${attention}`} aria-current={target.url === server.url ? 'page' : undefined} aria-label={`${target.name}${attentionLabel === undefined ? '' : ` — ${attentionLabel}`}`} onClick={() => switchServer(target)}><img src={serverIconPath(target.icon)} alt="" /><span>{target.name}</span><i className={`server-switcher-attention ${attention}`} aria-hidden="true" title={attentionLabel} /></button>;
   });
-  return <div className={`server-switcher${className ? ` ${className}` : ''}`} role="group" aria-label="Remote Agents servers">{buttons}</div>;
+  const voiceLabel = voice?.active ? voice.visible ? 'Ongoing Davo call' : 'Show ongoing Davo call' : 'Call Davo';
+  return <div className={`server-switcher${className ? ` ${className}` : ''}`} role="group" aria-label="Davo and Remote Agents servers">{voice && <button type="button" className={`server-switcher-button server-switcher-voice${voice.active ? ' active' : ''}`} aria-label={voiceLabel} aria-pressed={voice.visible} onClick={voice.open}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.69 2.8a2 2 0 0 1-.45 2.11L8.08 9.9a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.9.33 1.84.56 2.8.69A2 2 0 0 1 22 16.92Z" /></svg><span>{voice.active ? 'Ongoing' : 'Call Davo'}</span></button>}{buttons}{clientSettings && <ClientSettingsMenu settings={clientSettings} />}</div>;
 }
 
 function Login({ done, initialError }: { done: (session: SessionInfo) => void; initialError?: string }) {
@@ -3081,7 +3238,26 @@ function OperationFeedbackBanner({ feedback, onDismiss }: { feedback: OperationF
 }
 
 function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }: { onUnauthorized: () => void; onInactive: () => void; updateAvailable: boolean; onReload: () => void }) {
+  const serverInfo = useContext(ServerContext) ?? fallbackServerInfo();
   const [data, setData] = useState<Dashboard>();
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  const [voiceActive, setVoiceActive] = useState(false);
+  const [voiceCallRequest, setVoiceCallRequest] = useState(0);
+  // close only the voice surface
+  const closeVoice = useCallback(() => setVoiceOpen(false), []);
+  // open, call, or reveal the shared voice surface
+  const openVoice = useCallback(() => {
+    // toggle only an ongoing mobile call
+    if (voiceActive) {
+      if (window.matchMedia('(max-width: 600px)').matches) setVoiceOpen(current => !current);
+      else setVoiceOpen(true);
+      return;
+    }
+    setVoiceOpen(true);
+    setVoiceCallRequest(current => current + 1);
+  }, [voiceActive]);
+  // retain one stable voice trigger context
+  const voiceTrigger = useMemo(() => ({ open: openVoice, active: voiceActive, visible: voiceOpen }), [openVoice, voiceActive, voiceOpen]);
   const [reviewLaunch, setReviewLaunch] = useState<ReviewLaunch>();
   const [reviewInitialTour, setReviewInitialTour] = useState<ReviewTour>();
   const [reviewMinimized, setReviewMinimized] = useState(false);
@@ -3438,6 +3614,17 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
     return () => window.removeEventListener('hashchange', activateLinkedItem);
   }, [tabKey, viewAgent]);
   const select = (index: number) => { const item = items[index]; if (!item) return; const changed = selectedItemKey.current !== item.key; selectedItemKey.current = item.key; if (changed && item.agent !== undefined) viewAgent(item.agent); const target = item.agent === undefined ? `tab=${encodeURIComponent(item.label)}` : `agent=${encodeURIComponent(item.agent.id)}`; history.replaceState(null, '', `${location.pathname}${location.search}#${target}`); setActive(index); };
+  // select one canonical worktree from Davo
+  const selectVoiceWorktree = (worktreeId: string) => {
+    const index = items.findIndex(candidate => candidate.agent?.worktreeId === worktreeId || candidate.worktree?.id === worktreeId);
+    // reject worktrees without a visible tab
+    if (index < 0) return undefined;
+    const selected = items[index];
+    // retain the canonical dashboard label
+    if (selected === undefined) return undefined;
+    select(index);
+    return { worktreeId, worktreeLabel: selected.agent?.worktreeLabel ?? selected.worktree?.label ?? selected.label };
+  };
   useShiftArrowTabCycling(active, items.length, select);
   useEffect(() => {
     if (activateAgentId === undefined) return;
@@ -3587,6 +3774,8 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
   const stateLabel: Record<AgentState, string> = { working: 'Working', 'prompt-done': 'Prompt done', 'action-required': 'Action required', closed: 'Agent closed' };
   const operationLabel = (operation: DashboardItem['operation']) => operation === 'launching' ? 'Starting agent' : operation === 'deactivating' ? 'Turning off' : operation === 'new-task' ? 'Starting new task' : undefined;
   const activeWorktreeId = item?.agent?.worktreeId ?? item?.worktree?.id;
+  const voiceContext = { server: serverInfo.name, ...(activeWorktreeId === undefined ? {} : { worktreeId: activeWorktreeId, worktree: item?.agent?.worktreeLabel ?? data.worktrees.find(worktree => worktree.id === activeWorktreeId)?.label ?? activeWorktreeId }), ...(item?.agent === undefined ? {} : { agentId: item.agent.id, agent: agentLabel(item.agent) }) };
+  const voiceDialog = <VoiceDialog open={voiceOpen} callRequest={voiceCallRequest} context={voiceContext} request={request} onClose={closeVoice} onSelectWorktree={selectVoiceWorktree} onActiveChange={setVoiceActive} />;
   const visibleOperationFeedback = operationFeedback?.worktreeId === undefined || operationFeedback.worktreeId === activeWorktreeId ? operationFeedback : undefined;
   // minimize without discarding the cached review
   const minimizeReview = () => {
@@ -3618,8 +3807,9 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
     const label = transition ?? stateLabel[entry.state];
     return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{transition !== undefined ? <span className="tab-transition-label"><span>{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
   })}<NotificationControl />{updateAvailable && <button className="update-ready" type="button" onClick={onReload}>Update available <span>Reload</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle}><button disabled={creatingAgent} onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} disabled={creatingAgent || pendingOperations.has(launchOperationKey(worktree.id))} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{launchErrorMessage && operationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
-  if (items.length === 0) return <main className="console"><article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{reviewDialog}</article></main>;
-  return <main className="console"><section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={launched} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{reviewDialog}</main>;
+  const consoleClass = `console${voiceOpen ? ' voice-visible' : ''}`;
+  if (items.length === 0) return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{reviewDialog}</article></main></VoiceTriggerContext.Provider>;
+  return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={launched} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{reviewDialog}</main></VoiceTriggerContext.Provider>;
 }
 
 function App() {
@@ -3638,6 +3828,46 @@ function App() {
     if (isServerInfo(current.server)) setServerInfo(current.server);
     setSessionInfo(current);
     setState(current.active ? current.deviceName === undefined ? 'naming' : 'ready' : 'inactive');
+  }, []);
+  // rename the current browser client
+  const renameClient = useCallback(async (deviceName: string): Promise<string | undefined> => {
+    const response = await request('/api/auth/device-name', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ deviceName }) });
+    // surface the server validation message
+    if (!response.ok) {
+      const payload = await response.json().catch(() => undefined) as { error?: unknown } | undefined;
+      return typeof payload?.error === 'string' ? payload.error : 'Unable to rename this client.';
+    }
+    applySession(await response.json() as SessionInfo);
+    return undefined;
+  }, [applySession]);
+  // rename the current server
+  const renameServer = useCallback(async (name: string): Promise<string | undefined> => {
+    const response = await request('/api/server/name', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
+    // surface the server validation message
+    if (!response.ok) {
+      const payload = await response.json().catch(() => undefined) as { error?: unknown } | undefined;
+      return typeof payload?.error === 'string' ? payload.error : 'Unable to rename this server.';
+    }
+    const payload = await response.json() as { server?: unknown };
+    // publish only validated identity
+    if (isServerInfo(payload.server)) setServerInfo(payload.server);
+    return undefined;
+  }, []);
+  // launch one host-managed update
+  const startServerUpdate = useCallback(async (): Promise<{ id?: string; error?: string }> => {
+    const response = await request('/api/server/update', { method: 'POST' });
+    const payload = await response.json().catch(() => undefined) as { id?: unknown; error?: unknown } | undefined;
+    // require one canonical operation identifier
+    if (!response.ok || typeof payload?.id !== 'string') return { error: typeof payload?.error === 'string' ? payload.error : 'Unable to start the server update.' };
+    return { id: payload.id };
+  }, []);
+  // read one host-managed update state
+  const serverUpdateStatus = useCallback(async (id: string): Promise<ServerUpdateState | undefined> => {
+    const response = await request(`/api/server/update/${encodeURIComponent(id)}`);
+    // tolerate expected restart outages
+    if (!response.ok) return undefined;
+    const payload = await response.json().catch(() => undefined) as { state?: unknown } | undefined;
+    return payload?.state === 'queued' || payload?.state === 'running' || payload?.state === 'complete' || payload?.state === 'failed' ? payload.state : undefined;
   }, []);
   const refreshSession = useCallback(async () => {
     try {
@@ -3823,7 +4053,8 @@ function App() {
         : (state === 'inactive' || state === 'naming') && sessionInfo !== undefined
           ? <ControlScreen session={sessionInfo} claimed={applySession} />
           : <Login initialError={error} done={applySession} />;
-  return <ServerContext.Provider value={serverInfo}><ServerStatusContext.Provider value={serverStatuses}>{screen}{reconnecting && <ReconnectingOverlay />}</ServerStatusContext.Provider></ServerContext.Provider>;
+  const clientSettings = useMemo<ClientSettings | undefined>(() => state === 'ready' && sessionInfo?.deviceName !== undefined ? { deviceName: sessionInfo.deviceName, serverName: serverInfo.name, renameClient, renameServer, startServerUpdate, serverUpdateStatus } : undefined, [renameClient, renameServer, serverInfo.name, serverUpdateStatus, sessionInfo?.deviceName, startServerUpdate, state]);
+  return <ServerContext.Provider value={serverInfo}><ServerStatusContext.Provider value={serverStatuses}><ClientSettingsContext.Provider value={clientSettings}>{screen}{reconnecting && <ReconnectingOverlay />}</ClientSettingsContext.Provider></ServerStatusContext.Provider></ServerContext.Provider>;
 }
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');
 createRoot(document.getElementById('root')!).render(<ConsoleBoundary><App /></ConsoleBoundary>);

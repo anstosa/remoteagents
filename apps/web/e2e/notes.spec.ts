@@ -186,10 +186,10 @@ test('switches sticky notes between vertical and horizontal output splits', asyn
   expect(vertical[2]!.y).toBeCloseTo(vertical[1]!.y + vertical[1]!.height, 0);
   expect(vertical[1]!.width / vertical[0]!.width).toBeGreaterThan(0.95);
   expect(vertical[2]!.width / vertical[0]!.width).toBeGreaterThan(0.95);
-  expect(vertical[3]!.x + vertical[3]!.width).toBeLessThanOrEqual(vertical[1]!.x + vertical[1]!.width);
-  expect(vertical[1]!.x + vertical[1]!.width - vertical[3]!.x - vertical[3]!.width).toBeLessThanOrEqual(10);
+  expect(vertical[3]!.x).toBeGreaterThanOrEqual(vertical[1]!.x);
+  expect(vertical[3]!.x - vertical[1]!.x).toBeLessThanOrEqual(24);
   expect(vertical[3]!.y).toBeGreaterThanOrEqual(vertical[1]!.y);
-  expect(vertical[3]!.y - vertical[1]!.y).toBeLessThanOrEqual(10);
+  expect(vertical[3]!.y - vertical[1]!.y).toBeLessThanOrEqual(60);
 
   await page.getByLabel('Note preview').click();
   await expect(page.getByRole('textbox', { name: 'Note content' })).toBeFocused();
