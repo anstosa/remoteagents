@@ -72,10 +72,11 @@ test('shows selection actions for xterm canvas selections', async ({ page }) => 
   await expect(page.getByRole('textbox', { name: 'Prompt' })).not.toHaveValue('');
 });
 
-test('long press selects mobile output without entering terminal input mode', async ({ browser }) => {
+// inherit the isolated test server origin
+test('long press selects mobile output without entering terminal input mode', async ({ browser, baseURL }) => {
   test.setTimeout(60_000);
   const context = await browser.newContext({
-    baseURL: 'http://127.0.0.1:4173',
+    baseURL,
     hasTouch: true,
     isMobile: true,
     userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36',

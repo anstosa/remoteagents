@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { constants } from 'node:fs';
 import { z } from 'zod';
 import type { LaunchTemplate, StackCommands, Worktree } from '../domain/models.js';
+import { instanceIconNames, type InstanceIcon } from '../instance-icon.js';
 
 const loopback = new Set(['127.0.0.1', '::1']);
 const arg = z.string().max(4096).refine((v) => !v.includes('\0'), 'NUL is forbidden');
@@ -11,10 +12,13 @@ const stackCommands = z.object({ start: command.optional(), stop: command.option
 const pushAction = z.object({ label: z.string().trim().min(1).max(80), prompt: command }).strict().default({ label: 'Commit/Push', prompt: 'review, commit, and push' });
 const launchSchema = z.object({ program: z.string().max(4096), args: z.array(arg).max(64) }).strict();
 const serverName = z.string().trim().min(1).max(80).refine(value => !value.includes('\0'), 'NUL is forbidden');
-const remoteServer = z.object({ name: serverName, url: z.string() }).strict();
+// constrain icons to bundled artwork
+const instanceIcon = z.enum(instanceIconNames);
+const remoteServer = z.object({ name: serverName, url: z.string(), icon: instanceIcon.optional() }).strict();
 const sourceSchema = z.object({
   listen: z.object({ host: z.string(), port: z.number().int().min(1).max(65535) }).strict().default({ host: '127.0.0.1', port: 8787 }),
   name: serverName.default('Remote Agents'),
+  icon: instanceIcon.optional(),
   publicOrigin: z.string(),
   remoteServers: z.array(remoteServer).max(20).default([]),
   proxy: z.object({ trustedSourceIps: z.array(z.string()).default(['127.0.0.1', '::1']) }).strict().default({}),
@@ -24,8 +28,8 @@ const sourceSchema = z.object({
   worktrees: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), label: z.string().max(120).optional(), path: z.string().min(1), hostPath: z.string().startsWith('/').optional(), pinned: z.boolean().default(false), port: z.number().int().min(1).max(65535).optional(), hostname: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/).optional(), command: command.optional(), launch: launchSchema.optional(), commands: stackCommands.optional(), newTask: command.optional(), push: pushAction }).strict()).min(1).max(100)
 }).strict();
 export type ConfigInput = z.input<typeof sourceSchema>;
-export type RemoteServer = { name: string; url: URL };
-export type ValidatedConfig = { listen: { host: '127.0.0.1'|'::1'; port: number }; name: string; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; newAgentCommand: string; worktrees: Worktree[] };
+export type RemoteServer = { name: string; url: URL; icon?: InstanceIcon };
+export type ValidatedConfig = { listen: { host: '127.0.0.1'|'::1'; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; newAgentCommand: string; worktrees: Worktree[] };
 
 // require one canonical HTTPS origin
 function canonicalOrigin(value: string, label = 'publicOrigin'): URL {
@@ -55,7 +59,8 @@ export async function validateConfig(input: unknown): Promise<ValidatedConfig> {
   if (!loopback.has(parsed.listen.host)) throw new Error('listener must bind to loopback');
   if (parsed.proxy.trustedSourceIps.some((ip) => !loopback.has(ip))) throw new Error('only loopback proxy sources are permitted');
   const publicOrigin = canonicalOrigin(parsed.publicOrigin);
-  const remoteServers = parsed.remoteServers.map(server => ({ name: server.name, url: canonicalOrigin(server.url, `remote server ${server.name}`) }));
+  // preserve optional remote icon choices
+  const remoteServers = parsed.remoteServers.map(server => ({ name: server.name, url: canonicalOrigin(server.url, `remote server ${server.name}`), ...(server.icon === undefined ? {} : { icon: server.icon }) }));
   const serverNames = new Set([parsed.name.toLocaleLowerCase()]);
   const serverUrls = new Set([publicOrigin.origin]);
   // reject ambiguous server switch targets
@@ -78,6 +83,6 @@ export async function validateConfig(input: unknown): Promise<ValidatedConfig> {
     const projectUrl = raw.hostname === undefined ? undefined : `https://${raw.hostname}`;
     worktrees.push({ id: raw.id, label: raw.label ?? raw.id, path, identity, hostPath: raw.hostPath === undefined ? undefined : resolve(raw.hostPath), available: true, pinned: raw.pinned, command: raw.command, launch, projectUrl, projectPort: raw.port, push: raw.push, ...(raw.commands === undefined ? {} : { commands: raw.commands as StackCommands }), ...(raw.newTask === undefined ? {} : { newTask: raw.newTask }) });
   }
-  return { listen: { host: parsed.listen.host as '127.0.0.1'|'::1', port: parsed.listen.port }, name: parsed.name, publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, newAgentCommand: parsed.newAgentCommand, worktrees };
+  return { listen: { host: parsed.listen.host as '127.0.0.1'|'::1', port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, newAgentCommand: parsed.newAgentCommand, worktrees };
 }
 export function expandLaunch(template: LaunchTemplate, worktree: Worktree): string[] { return template.args.map((arg) => arg.replaceAll('{worktreePath}', worktree.identity).replaceAll('{worktreeId}', worktree.id)); }

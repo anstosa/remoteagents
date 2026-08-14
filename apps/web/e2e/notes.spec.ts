@@ -60,6 +60,7 @@ test('creates, previews, edits, autosaves, and deletes per-worktree notes', asyn
   expect(notesBounds!.y).toBeLessThan(pageUpBounds!.y);
 
   await notesButton.click();
+  await page.getByRole('button', { name: '+ New note' }).click();
   const pane = page.getByRole('dialog', { name: 'Note' });
   const editor = page.getByRole('textbox', { name: 'Note content' });
   await expect(pane).toBeVisible();

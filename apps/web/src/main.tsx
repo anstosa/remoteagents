@@ -1,4 +1,4 @@
-import { Component, createContext, type Dispatch, type ReactNode, type SetStateAction, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { Component, createContext, type Dispatch, type ReactNode, type SetStateAction, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { Terminal as XTerm } from '@xterm/xterm';
@@ -94,8 +94,11 @@ const isQueuedPrompt = (value: unknown): value is QueuedPrompt => value !== null
 type WorktreeNote = { id: string; text: string; title?: string };
 type AssistantFile = { path: string; size: number };
 type AssistantFilePreview = AssistantFile & { truncated: boolean } & ({ binary: true } | { binary: false; content: string });
-type RemoteServer = { name: string; url: string };
-type ServerInfo = { name: string; url: string; remotes: RemoteServer[] };
+type InstanceIcon = 'terminal'|'potato'|'heart';
+type RemoteServer = { name: string; url: string; icon?: InstanceIcon };
+type ServerInfo = { name: string; url: string; icon?: InstanceIcon; remotes: RemoteServer[] };
+type InstanceAttention = 'idle'|'question'|'completed'|'unavailable';
+type InstanceStatus = { url: string; attention: InstanceAttention };
 type SessionInfo = { csrfToken: string; active: boolean; deviceName?: string; controllingDeviceName?: string; server?: ServerInfo };
 type PromptCommand = { value: string; description: string };
 type CommandToken = { start: number; end: number; prefix: '$'|'/'; query: string };
@@ -463,26 +466,132 @@ const selectionCopyFlashMs = 600;
 const voiceHoldDelayMs = 450;
 
 const ServerContext = createContext<ServerInfo | undefined>(undefined);
+const ServerStatusContext = createContext<Readonly<Record<string, InstanceAttention>>>({});
+// validate one configured icon name
+const isInstanceIcon = (value: unknown): value is InstanceIcon => value === 'terminal' || value === 'potato' || value === 'heart';
 // validate one server switch target
 const isRemoteServer = (value: unknown): value is RemoteServer => value !== null && typeof value === 'object'
   && typeof (value as RemoteServer).name === 'string'
-  && typeof (value as RemoteServer).url === 'string';
+  && typeof (value as RemoteServer).url === 'string'
+  && ((value as RemoteServer).icon === undefined || isInstanceIcon((value as RemoteServer).icon));
 // validate public server metadata
 const isServerInfo = (value: unknown): value is ServerInfo => isRemoteServer(value)
   && Array.isArray((value as ServerInfo).remotes)
   && (value as ServerInfo).remotes.every(isRemoteServer);
+// validate one instance attention value
+const isInstanceAttention = (value: unknown): value is InstanceAttention => value === 'idle' || value === 'question' || value === 'completed' || value === 'unavailable';
+// validate one aggregated instance status
+const isInstanceStatus = (value: unknown): value is InstanceStatus => value !== null
+  && typeof value === 'object'
+  && typeof (value as InstanceStatus).url === 'string'
+  && isInstanceAttention((value as InstanceStatus).attention);
+// convert an API response to URL-keyed attention
+const serverStatusesFrom = (value: unknown): Record<string, InstanceAttention> | undefined => {
+  // require the aggregate response envelope
+  if (value === null || typeof value !== 'object' || !Array.isArray((value as { servers?: unknown }).servers)) return undefined;
+  const servers = (value as { servers: unknown[] }).servers;
+  // reject partial or malformed lists
+  if (!servers.every(isInstanceStatus)) return undefined;
+  return Object.fromEntries((servers as InstanceStatus[]).map(status => [status.url, status.attention]));
+};
+// compare sanitized status maps without rerendering unchanged state
+const sameServerStatuses = (left: Readonly<Record<string, InstanceAttention>>, right: Readonly<Record<string, InstanceAttention>>): boolean => {
+  const leftEntries = Object.entries(left);
+  // require the same keys and attention values
+  return leftEntries.length === Object.keys(right).length && leftEntries.every(([url, attention]) => right[url] === attention);
+};
 // provide backward-compatible identity while older servers update
 const fallbackServerInfo = (): ServerInfo => ({ name: 'Remote Agents', url: location.origin, remotes: [] });
+// resolve bundled server artwork
+const serverIconPath = (icon: InstanceIcon | undefined): string => `/instance-icons/${icon ?? 'terminal'}.svg`;
+// describe one server attention marker
+const instanceAttentionLabel = (attention: InstanceAttention): string | undefined => {
+  // map only visible attention states
+  switch (attention) {
+    case 'question': return 'Active question';
+    case 'completed': return 'Completed notification';
+    case 'unavailable': return 'Unavailable';
+    default: return undefined;
+  }
+};
 
 // render the current server name and optional switcher
 function ServerSwitcher({ className = '' }: { className?: string }) {
   const server = useContext(ServerContext) ?? fallbackServerInfo();
-  const targets = [{ name: server.name, url: server.url }, ...server.remotes];
-  // navigate directly to the selected server origin
-  const switchServer = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    if (event.target.value !== server.url) window.location.assign(event.target.value);
+  const statuses = useContext(ServerStatusContext);
+  const targets = [{ name: server.name, url: server.url, icon: server.icon }, ...server.remotes];
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const menuId = useId();
+  // close the menu from outside interactions
+  useEffect(() => {
+    // avoid global listeners while closed
+    if (!open) return;
+    // close after an outside pointer
+    const closeOutside = (event: PointerEvent) => {
+      // retain interactions within the menu
+      if (root.current?.contains(event.target as Node)) return;
+      setOpen(false);
+    };
+    // close and restore trigger focus
+    const closeFromKeyboard = (event: KeyboardEvent) => {
+      // ignore unrelated keys
+      if (event.key !== 'Escape') return;
+      setOpen(false);
+      trigger.current?.focus();
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    document.addEventListener('keydown', closeFromKeyboard);
+    // remove temporary document listeners
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside);
+      document.removeEventListener('keydown', closeFromKeyboard);
+    };
+  }, [open]);
+  // toggle and focus the selected option
+  const toggleMenu = () => {
+    const next = !open;
+    setOpen(next);
+    // focus the current option after opening
+    if (next) window.requestAnimationFrame(() => root.current?.querySelector<HTMLButtonElement>('[role="option"][aria-selected="true"]')?.focus());
   };
-  return <div className={`server-switcher${className ? ` ${className}` : ''}`}><span>SERVER</span>{server.remotes.length === 0 ? <strong>{server.name}</strong> : <select aria-label="Remote Agents server" value={server.url} onChange={switchServer}>{targets.map(target => <option key={target.url} value={target.url}>{target.name}</option>)}</select>}</div>;
+  // navigate directly to one server origin
+  const switchServer = (target: RemoteServer) => {
+    setOpen(false);
+    // avoid reloading the current instance
+    if (target.url !== server.url) window.location.assign(target.url);
+    // restore focus after selecting the current instance
+    else window.requestAnimationFrame(() => trigger.current?.focus());
+  };
+  // close after keyboard focus leaves the full control
+  const closeFromFocus = (event: React.FocusEvent<HTMLDivElement>) => {
+    // retain focus moving between trigger and options
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    setOpen(false);
+  };
+  // move through options with arrow keys
+  const moveOptionFocus = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    // handle only vertical navigation
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    const options = Array.from(root.current?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? []);
+    // stop without rendered options
+    if (options.length === 0) return;
+    const current = options.indexOf(document.activeElement as HTMLButtonElement);
+    const direction = event.key === 'ArrowDown' ? 1 : -1;
+    const next = (current + direction + options.length) % options.length;
+    options[next]?.focus();
+  };
+  // render every configured choice
+  const menuOptions = targets.map(target => {
+    const attention = statuses[target.url] ?? 'idle';
+    const attentionLabel = instanceAttentionLabel(attention);
+    return <button key={target.url} type="button" className="server-switcher-option" role="option" aria-selected={target.url === server.url} aria-label={`${target.name}${attentionLabel === undefined ? '' : ` — ${attentionLabel}`}`} onClick={() => switchServer(target)}><img src={serverIconPath(target.icon)} alt="" /><span>{target.name}</span><i className={`server-switcher-attention ${attention}`} aria-hidden="true" title={attentionLabel} />{target.url === server.url && <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7" /></svg>}</button>;
+  });
+  // collapse single-server installations
+  const control = server.remotes.length === 0 ? <><img className="server-instance-icon" src={serverIconPath(server.icon)} alt="" /><strong>{server.name}</strong></> : <div className="server-switcher-control" onBlur={closeFromFocus}><button ref={trigger} type="button" className="server-switcher-trigger" role="combobox" aria-label="Remote Agents server" aria-haspopup="listbox" aria-controls={menuId} aria-expanded={open} onClick={toggleMenu}><img className="server-instance-icon" src={serverIconPath(server.icon)} alt="" /><span>{server.name}</span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg></button>{open && <div id={menuId} className="server-switcher-menu" role="listbox" aria-label="Remote Agents servers" onKeyDown={moveOptionFocus}>{menuOptions}</div>}</div>;
+  return <div ref={root} className={`server-switcher${className ? ` ${className}` : ''}`}>{control}</div>;
 }
 
 function Login({ done, initialError }: { done: (session: SessionInfo) => void; initialError?: string }) {
@@ -1120,6 +1229,11 @@ const assistantNoteTitle = (text: string) => {
   const characters = Array.from(cleaned);
   return characters.length <= 80 ? cleaned : `${characters.slice(0, 79).join('').trimEnd()}…`;
 };
+// find the newest response substantial enough to save
+const latestSubstantialResponse = (latestAssistantMessage: string | undefined, history: PromptHistoryEntry[]) => {
+  const candidates = [...(latestAssistantMessage === undefined ? [] : [latestAssistantMessage]), ...history.flatMap(entry => entry.answer === undefined ? [] : [entry.answer])];
+  return candidates.find(response => response.length <= 30_000 && response.trim().split(/\s+/u).filter(Boolean).length >= 50);
+};
 // resolve a note menu label
 const noteName = (note: WorktreeNote) => note.title ?? notePreview(note.text);
 const notePreview = (text: string) => {
@@ -1229,7 +1343,7 @@ function useLatestAssistantFiles(agentId: string, message?: string) {
 }
 
 // manage persistent worktree notes
-function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistantMessage?: string, latestAssistantMessageOverflows = false, onPromptQueued?: () => void | Promise<void>) {
+function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistantMessage?: string, latestAssistantMessageOverflows = false, onPromptHistoryChanged?: () => void | Promise<void>, promptHistory: PromptHistoryEntry[] = []) {
   const [notes, setNotes] = useState<WorktreeNote[]>();
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeNote, setActiveNote] = useState<WorktreeNote>();
@@ -1506,11 +1620,13 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     } catch { setSaveStatus('error'); }
     finally { setLoading(false); }
   };
+  // toggle notes menu
   const toggle = async () => {
     if (menuOpen) return setMenuOpen(false);
+    // refresh completed historical responses before choosing one
+    await onPromptHistoryChanged?.();
     const loaded = await load();
     if (loaded === undefined) return;
-    if (loaded.length === 0 && latestAssistantMessage === undefined) return await create();
     setMenuOpen(true);
   };
   const changeDraft = (text: string) => {
@@ -1554,7 +1670,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
       const response = await request(`/api/agents/${encodeURIComponent(agentId)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt, attachments: [] }) });
       if (!response.ok) throw new Error();
       setSendState('queued');
-      await onPromptQueued?.();
+      await onPromptHistoryChanged?.();
       clearActionStatusLater();
     } catch {
       setSendState('error');
@@ -1632,10 +1748,11 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
 
   if (worktreeId === undefined) return { active: false, expanded: false, appendToActive, canAppendToActive, canCreate: false, control: null, createWithText: create, pane: null };
   const noteCount = notes?.length ?? 0;
-  const latestResponseAvailable = notes !== undefined && latestAssistantMessage !== undefined && latestAssistantMessage.length <= 30_000 && !notes.some(note => note.text === latestAssistantMessage);
-  const highlightLatestResponse = latestResponseAvailable && latestAssistantMessageOverflows;
+  const substantialResponse = latestSubstantialResponse(latestAssistantMessage, promptHistory);
+  const latestResponseAvailable = notes !== undefined && substantialResponse !== undefined && !notes.some(note => note.text === substantialResponse);
+  const highlightLatestResponse = latestResponseAvailable && substantialResponse === latestAssistantMessage && latestAssistantMessageOverflows;
   const notesLabel = dirtyCount === 0 ? `Notes (${noteCount})` : `Notes (${noteCount}; ${dirtyCount} unsaved)`;
-  const control = <div className="notes-control" ref={anchorRef}><button ref={triggerRef} className={`log-control page-arrow notes-toggle${menuOpen || activeNote !== undefined ? ' active' : ''}${dirtyCount > 0 ? ' unsaved' : ''}${highlightLatestResponse ? ' latest-response-available' : ''}`} aria-label={notesLabel} title={notesLabel} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}{noteCount > 0 && <span className="saved-prompts-count notes-count" aria-hidden="true">{noteCount}</span>}</button>{menuOpen && <div className="notes-menu" aria-label="Worktree notes"><button className="log-control save-latest-response" disabled={!latestResponseAvailable} onClick={() => { if (latestAssistantMessage !== undefined) void create(latestAssistantMessage, assistantNoteTitle(latestAssistantMessage)); }}>Save latest response</button>{notes?.map(note => <button key={note.id} className="log-control note-choice" title={(note.title ?? note.text) || 'Blank note'} onClick={() => open(note)}>{noteName(note)}</button>)}<button className="log-control new-note" onClick={() => void create()}>+ New note</button></div>}</div>;
+  const control = <div className="notes-control" ref={anchorRef}><button ref={triggerRef} className={`log-control page-arrow notes-toggle${menuOpen || activeNote !== undefined ? ' active' : ''}${dirtyCount > 0 ? ' unsaved' : ''}${highlightLatestResponse ? ' latest-response-available' : ''}`} aria-label={notesLabel} title={notesLabel} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}{noteCount > 0 && <span className="saved-prompts-count notes-count" aria-hidden="true">{noteCount}</span>}</button>{menuOpen && <div className="notes-menu" aria-label="Worktree notes"><button className="log-control save-latest-response" disabled={!latestResponseAvailable} onClick={() => { if (substantialResponse !== undefined) void create(substantialResponse, assistantNoteTitle(substantialResponse)); }}>Save latest response</button>{notes?.map(note => <button key={note.id} className="log-control note-choice" title={(note.title ?? note.text) || 'Blank note'} onClick={() => open(note)}>{noteName(note)}</button>)}<button className="log-control new-note" onClick={() => void create()}>+ New note</button></div>}</div>;
   const actionStatus = copyState === 'error' ? 'Copy failed' : sendState === 'queued' ? 'Queued' : sendState === 'error' ? 'Queue failed' : '';
   const toggleExpanded = () => setExpanded(value => {
     const next = !value;
@@ -2095,7 +2212,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
   const [selectionActive, setSelectionActive] = useState(false);
   const [selectionToolbar, setSelectionToolbar] = useState<{ text: string; top: number }>();
   const copyOutputSelectionRef = useRef<(value: string) => Promise<void>>(copyText);
-  const worktreeNotes = useWorktreeNotes(worktreeId, id, latestAssistantMessage, latestAssistantMessageOverflows, refreshHistory);
+  const worktreeNotes = useWorktreeNotes(worktreeId, id, latestAssistantMessage, latestAssistantMessageOverflows, refreshHistory, history);
   const responseFiles = useLatestAssistantFiles(id, latestAssistantMessage);
   // retain preview handling across terminal connections
   const openOutputFileRef = useRef(responseFiles.openFile);
@@ -2665,7 +2782,9 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
     else setHistoryAnswerId(undefined);
   };
   const historyToggle = !terminalMode ? <><span className="prompt-history-anchor" ref={historyAnchorRef}><button className={`prompt-history-toggle${historyOpen ? ' active' : ''}`} type="button" aria-label={`Prompt history (${history.length})`} title="Prompt history" aria-expanded={historyOpen} onClick={event => { event.stopPropagation(); toggleHistory(); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5M12 7v5l3 2" /></svg></button></span>{historyPanel}</> : null;
-  const promptSection = !terminalMode ? <div className="toolbar-prompt-group">{historyToggle}{lastPrompt !== undefined && <button ref={lastPromptRef} className="toolbar-prompt" type="button" aria-label="Last prompt" aria-expanded={historyOpen} title={lastPrompt} onClick={toggleHistory}><span className="toolbar-prompt-text">{lastPrompt}</span></button>}</div> : null;
+  // fall back to persisted history when terminal parsing misses the prompt
+  const visibleLastPrompt = lastPrompt ?? history[0]?.text;
+  const promptSection = !terminalMode ? <div className="toolbar-prompt-group">{historyToggle}{visibleLastPrompt !== undefined && <button ref={lastPromptRef} className="toolbar-prompt" type="button" aria-label="Last prompt" aria-expanded={historyOpen} title={visibleLastPrompt} onClick={toggleHistory}><span className="toolbar-prompt-text">{visibleLastPrompt}</span></button>}</div> : null;
   const gitSection = <GitStatus branch={branch} summary={gitStatus} prSummary={gitPrStatus} expanded={toolbarExpanded === 'git'} onToggle={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'git' ? undefined : 'git'); }} onReview={scope => { setToolbarExpanded(undefined); onReview?.(scope); }} reviewOpen={reviewOpen} reviewUnavailable={reviewUnavailable} />;
   // distinguish retained output from live frames
   const output = <div className={`log-output${cached ? ' cached' : ''}`}><ServerSwitcher className="output-server-switcher" /><div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'}><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{cached && <div className="log-cached-treatment" aria-hidden="true"><span>Cached view · reconnecting</span></div>}{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!terminalMode && <div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{responseFiles.control}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><div className="page-down-controls">{scrolledUp && <button className="log-control page-arrow back-to-bottom" aria-label="Back to bottom" title="Back to bottom" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(0)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19h14M6 8l6 6 6-6" /></svg></button>}<button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div>}</div></div>;
@@ -3535,6 +3654,7 @@ function App() {
   const [state, setState] = useState<'checking' | 'login' | 'naming' | 'ready' | 'inactive'>('checking');
   const [sessionInfo, setSessionInfo] = useState<SessionInfo>();
   const [serverInfo, setServerInfo] = useState<ServerInfo>(fallbackServerInfo);
+  const [serverStatuses, setServerStatuses] = useState<Record<string, InstanceAttention>>({});
   const [error, setError] = useState('');
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [reloading, setReloading] = useState(false);
@@ -3558,6 +3678,16 @@ function App() {
       if (response.ok) applySession(await response.json() as SessionInfo);
     } catch { /* keep the current screen while the reconnect overlay handles availability */ }
   }, [applySession]);
+  // return an expired session to login
+  const handleUnauthorized = useCallback(() => {
+    setSessionInfo(undefined);
+    setState('login');
+  }, []);
+  // refresh ownership after losing control
+  const handleInactive = useCallback(() => {
+    setState('checking');
+    void refreshSession();
+  }, [refreshSession]);
   useEffect(() => {
     const viewport = window.visualViewport;
     const root = document.documentElement;
@@ -3601,6 +3731,46 @@ function App() {
       if (reachable) setReconnectAttempt(attempt => attempt + 1);
     });
   }, []);
+  // poll cross-instance attention for authenticated screens
+  useEffect(() => {
+    // clear stale attention after logout
+    if (state === 'checking' || state === 'login') {
+      setServerStatuses({});
+      return;
+    }
+    // avoid an unnecessary poll on single-instance consoles
+    if (serverInfo.remotes.length === 0) {
+      setServerStatuses(current => sameServerStatuses(current, {}) ? current : {});
+      return;
+    }
+    let active = true;
+    // refresh the sanitized aggregate
+    const refreshServerStatuses = async () => {
+      try {
+        const response = await request('/api/server-statuses', { signal: AbortSignal.timeout(8_000) }, false);
+        // reject unsuccessful aggregate responses
+        if (!response.ok) throw new Error('status aggregate unavailable');
+        const statuses = serverStatusesFrom(await response.json());
+        // reject malformed aggregate responses
+        if (statuses === undefined) throw new Error('invalid status aggregate');
+        // ignore a response after cleanup
+        if (!active) return;
+        setServerStatuses(current => sameServerStatuses(current, statuses) ? current : statuses);
+      } catch {
+        // replace stale remote attention with explicit unavailability
+        if (active) {
+          const unavailable: Record<string, InstanceAttention> = Object.fromEntries([[serverInfo.url, 'idle'], ...serverInfo.remotes.map(remote => [remote.url, 'unavailable'] as const)]);
+          setServerStatuses(current => sameServerStatuses(current, unavailable) ? current : unavailable);
+        }
+      }
+    };
+    const stopPolling = pollWhileVisible(refreshServerStatuses, 5_000, true, 30_000);
+    // stop updates after screen changes
+    return () => {
+      active = false;
+      stopPolling();
+    };
+  }, [reconnectAttempt, serverInfo, state]);
   useEffect(() => {
     if (!reconnecting) return;
     let closed = false;
@@ -3666,21 +3836,22 @@ function App() {
     window.addEventListener('focus', checkControl);
     return () => window.removeEventListener('focus', checkControl);
   }, [refreshSession, state]);
-  const reload = () => {
+  // reload after the pending frame paints
+  const reload = useCallback(() => {
     if (reloading) return;
     setReloading(true);
     window.requestAnimationFrame(() => window.requestAnimationFrame(() => location.reload()));
-  };
+  }, [reloading]);
   const screen = reloading
     ? <LoadingScreen label="Reloading" />
     : state === 'checking'
       ? <LoadingScreen />
       : state === 'ready'
-        ? <DashboardView onUnauthorized={() => { setSessionInfo(undefined); setState('login'); }} onInactive={() => { setState('checking'); void refreshSession(); }} updateAvailable={updateAvailable} onReload={reload} />
+        ? <DashboardView onUnauthorized={handleUnauthorized} onInactive={handleInactive} updateAvailable={updateAvailable} onReload={reload} />
         : (state === 'inactive' || state === 'naming') && sessionInfo !== undefined
           ? <ControlScreen session={sessionInfo} claimed={applySession} />
           : <Login initialError={error} done={applySession} />;
-  return <ServerContext.Provider value={serverInfo}>{screen}{reconnecting && <ReconnectingOverlay />}</ServerContext.Provider>;
+  return <ServerContext.Provider value={serverInfo}><ServerStatusContext.Provider value={serverStatuses}>{screen}{reconnecting && <ReconnectingOverlay />}</ServerStatusContext.Provider></ServerContext.Provider>;
 }
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');
 createRoot(document.getElementById('root')!).render(<ConsoleBoundary><App /></ConsoleBoundary>);

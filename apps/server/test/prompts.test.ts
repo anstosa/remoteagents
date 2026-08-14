@@ -90,6 +90,57 @@ it('records the final assistant answer when the busy state is missed', async () 
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+// reconcile restart-lost answer tracking
+it('records a recovered answer before dispatching queued work after a restart', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'rac-prompt-answer-restart-'));
+  const queue = new QueuedPromptService(join(directory, 'queue.json'));
+  const mutableAgent = { ...agent, title: 'Ready' };
+  const events: string[] = [];
+  const historyEntry = { id: 'prompt-history-restart', text: 'Active prompt', createdAt: '2026-08-07T01:00:00.000Z' };
+  let capture = ['› Active prompt', '', '• Answer still rendering'].join('\n');
+  const discovery = {
+    // resolve the stable pane
+    target: async () => ({ agent: mutableAgent, socket })
+  };
+  const tmux = {
+    // submit released queued work
+    pastePrompt: async () => { events.push('dispatch'); return true; },
+    // accept queued Codex input
+    queue: async () => true,
+    // expose current terminal history
+    capture: async () => capture,
+    // support prompt cancellation
+    interrupt: async () => true
+  };
+  const history = {
+    // expose the unanswered prompt
+    list: async () => [historyEntry],
+    // track dispatched prompts
+    record: async (_scope: string, text: string) => ({ id: 'prompt-history-next', text, createdAt: '2026-08-07T01:01:00.000Z' }),
+    // record completion ordering
+    recordAnswer: async (_scope: string, _entryId: string, answer: string) => {
+      events.push('answer');
+      return { ...historyEntry, answer, answeredAt: '2026-08-07T01:00:02.000Z' };
+    }
+  };
+  const service = new PromptService(discovery as never, tmux as never, [], history as never, queue);
+  try {
+    await queue.enqueue('agent:socket:%1', 'Next prompt');
+    await service.observe(mutableAgent);
+
+    expect(events).toEqual([]);
+    await expect(service.listQueued(agent.id)).resolves.toMatchObject([{ text: 'Next prompt' }]);
+
+    capture = ['› Active prompt', '', '• ## Recovered answer', '', '  Completed before restart.', '────────', ''].join('\n');
+
+    await service.observe(mutableAgent);
+    await service.observe(mutableAgent);
+
+    expect(events).toEqual(['answer', 'dispatch']);
+    await expect(service.listQueued(agent.id)).resolves.toEqual([]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 // retain completion tracking until the terminal response is capturable
 it('retries answer recording after the agent first appears finished', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-prompt-answer-race-'));

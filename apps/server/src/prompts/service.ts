@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { appendFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { DiscoveryService } from '../discovery/service.js';
-import { lastPromptFromHistory, latestCompletedAssistantMessage, TmuxAdapter } from '../tmux/adapter.js';
+import { latestCompletedAssistantTurn, TmuxAdapter } from '../tmux/adapter.js';
 import { omxQuestion } from '../discovery/service.js';
 import type { Worktree } from '../domain/models.js';
 import { run } from '../tmux/command.js';
@@ -22,11 +22,16 @@ export { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentBytes, 
 const queueReadyPrompt = (prompt: string) => /\s$/u.test(prompt) ? prompt : `${prompt} `;
 const answerCaptureGraceMs = 10_000;
 const attachmentIgnoreRule = '/node_modules/.remote-agent-console/';
+// normalize terminal-wrapped prompts
+const normalizedPrompt = (value: string) => value.replace(/\s+/gu, ' ').trim();
 type PromptCompletion = 'completed' | 'failed' | 'pending';
+type PromptReconciliation = 'pending' | 'settled' | 'recorded';
 type PromptPhase = { state: 'awaiting-start' | 'working' | 'awaiting-answer' | 'halted'; changedAt: number; historyEntryId?: string; historyPrompt?: string; baselineCompletion?: string };
 export class PromptService {
   private readonly phases = new Map<string, PromptPhase>();
   private readonly dispatching = new Set<string>();
+  private readonly reconciled = new Set<string>();
+  private readonly reconciliationPendingSince = new Map<string, number>();
 
   constructor(private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly worktrees: Worktree[] = [], private readonly history?: PromptHistoryService, private readonly queued?: QueuedPromptService, private readonly saved?: SavedPromptService) {}
 
@@ -81,6 +86,8 @@ export class PromptService {
     }
     // wait through active agent work
     if (busy) {
+      this.reconciled.delete(scope);
+      this.reconciliationPendingSince.delete(scope);
       // mark the prompt as started
       if (phase?.state === 'awaiting-start' || phase?.state === 'awaiting-answer') this.phases.set(scope, { ...phase, state: 'working', changedAt: Date.now() });
       // adopt externally started work once prompts are queued
@@ -107,9 +114,16 @@ export class PromptService {
         if (await this.saveQueued(scope)) this.phases.delete(scope);
         return;
       }
+      // reconcile adopted work before releasing its queue
+      if (phase.historyEntryId === undefined) {
+        // wait for restart recovery before releasing queued work
+        if (!await this.reconciliationComplete(agent.id, scope)) return;
+      }
       // release completed prompts
       this.phases.delete(scope);
     }
+    // recover answer tracking lost across restarts
+    if (phase === undefined && !this.reconciled.has(scope) && !await this.reconciliationComplete(agent.id, scope)) return;
     await this.dispatch(agent.id, scope);
   }
 
@@ -176,21 +190,66 @@ export class PromptService {
     return submitted;
   }
 
+  // restore the latest matching unanswered entry
+  private async reconcileLatestAnswer(agentId: string, scope: string): Promise<PromptReconciliation> {
+    // require prompt history
+    if (this.history === undefined || typeof this.history.list !== 'function') return 'settled';
+    let entries: Awaited<ReturnType<PromptHistoryService['list']>>;
+    // contain history read failures
+    try { entries = await this.history.list(scope); }
+    catch { entries = undefined; }
+    // retry failed history reads
+    if (entries === undefined) return 'pending';
+    const unanswered = entries.filter(candidate => candidate.answer === undefined);
+    // stop when no response needs recovery
+    if (unanswered.length === 0) return 'settled';
+    const target = await this.discovery.target(agentId);
+    // require a stable pane
+    if (target === undefined) return 'pending';
+    const capture = await this.tmux.capture(target.socket, target.agent.paneId).catch(() => undefined);
+    // require terminal history
+    if (capture === undefined) return 'pending';
+    const turn = latestCompletedAssistantTurn(capture);
+    // require a completed turn
+    if (turn?.prompt === undefined) return 'pending';
+    const capturedPrompt = turn.prompt;
+    // find the newest unanswered match
+    const entry = unanswered.find(candidate => normalizedPrompt(candidate.text) === normalizedPrompt(capturedPrompt));
+    // require an unanswered match
+    if (entry === undefined) return 'settled';
+    const recorded = await this.history.recordAnswer(scope, entry.id, turn.text).catch(() => undefined);
+    return recorded === undefined ? 'pending' : 'recorded';
+  }
+
+  // retry restart recovery through the shared render grace window
+  private async reconciliationComplete(agentId: string, scope: string): Promise<boolean> {
+    const result = await this.reconcileLatestAnswer(agentId, scope);
+    // wait briefly for terminal rendering or storage recovery
+    if (result === 'pending') {
+      const startedAt = this.reconciliationPendingSince.get(scope) ?? Date.now();
+      this.reconciliationPendingSince.set(scope, startedAt);
+      // retain queued work during the recovery window
+      if (Date.now() - startedAt < answerCaptureGraceMs) return false;
+    }
+    this.reconciliationPendingSince.delete(scope);
+    this.reconciled.add(scope);
+    return true;
+  }
+
   // capture and persist the final answer
   private async recordAnswer(agentId: string, scope: string, entryId: string | undefined, prompt: string | undefined, baselineCompletion: string | undefined): Promise<PromptCompletion> {
     const target = await this.discovery.target(agentId);
     // require the original pane
     if (target === undefined) return 'pending';
     const capture = await this.tmux.capture(target.socket, target.agent.paneId).catch(() => undefined);
-    const answer = capture === undefined ? undefined : latestCompletedAssistantMessage(capture)?.text;
+    const turn = capture === undefined ? undefined : latestCompletedAssistantTurn(capture);
     // require a completed response
     if (capture === undefined) return 'pending';
     // fail explicit terminal errors without waiting through the grace window
     if (this.failedTurnFromCapture(capture)) return 'failed';
     // wait for the latest completed response
-    if (answer === undefined) return 'pending';
-    const capturedPrompt = lastPromptFromHistory(capture);
-    const promptMatches = prompt === undefined || capturedPrompt !== undefined && capturedPrompt.replace(/\s+/gu, ' ').trim() === prompt.replace(/\s+/gu, ' ').trim();
+    if (turn === undefined) return 'pending';
+    const promptMatches = prompt === undefined || turn.prompt !== undefined && normalizedPrompt(turn.prompt) === normalizedPrompt(prompt);
     // reject stale pane completions
     if (!promptMatches) return 'pending';
     const completion = this.completionSignatureFromCapture(capture);
@@ -198,7 +257,7 @@ export class PromptService {
     if (prompt === undefined && completion === baselineCompletion) return 'pending';
     // persist tracked answers when history is available
     if (this.history !== undefined && entryId !== undefined) {
-      const stored = await this.history.recordAnswer(scope, entryId, answer).catch(() => undefined);
+      const stored = await this.history.recordAnswer(scope, entryId, turn.text).catch(() => undefined);
       // retry transient or missing-entry writes
       if (stored === undefined) return 'pending';
     }
@@ -227,8 +286,8 @@ export class PromptService {
 
   // identify a completion without retaining pane output
   private completionSignatureFromCapture(capture: string): string | undefined {
-    const answer = latestCompletedAssistantMessage(capture)?.text;
-    return answer === undefined ? undefined : `${lastPromptFromHistory(capture) ?? ''}\0${answer}`;
+    const turn = latestCompletedAssistantTurn(capture);
+    return turn === undefined ? undefined : `${turn.prompt ?? ''}\0${turn.text}`;
   }
 
   private workspaceFor(workspace: string): string {

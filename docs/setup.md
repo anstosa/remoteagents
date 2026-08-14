@@ -14,12 +14,21 @@ cp config/remote-agent-console.example.json ~/remote-agent-console.json
 # Edit every absolute path and the HTTPS publicOrigin.
 node -e "require('argon2').hash('choose-a-long-password',{type:require('argon2').argon2id}).then(console.log)"
 node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 export RAC_PASSWORD_HASH='paste-the-argon2id-hash'
-export RAC_SESSION_SECRET='paste-32+-random-base64url-bytes'
+export RAC_SESSION_SECRET='paste-unique-32+-random-base64url-bytes'
+export RAC_INSTANCE_STATUS_SECRET='paste-shared-32+-random-base64url-bytes'
 export RAC_CONFIG="$HOME/remote-agent-console.json"
 pnpm build
 pnpm start
 ```
+
+When `remoteServers` connects multiple console instances, configure the same
+separately generated `RAC_INSTANCE_STATUS_SECRET` on every peer. Keep each
+instance's `RAC_SESSION_SECRET` unique: it signs browser sessions and must not
+be reused as the federation credential. The status API exposes only aggregate
+question, completed, idle, or unavailable attention and rejects unsigned or
+stale peer requests.
 
 To run the console and its managed tmux/Codex sessions in Docker instead, see
 [the Docker Compose guide](docker.md).

@@ -3,6 +3,7 @@ import { run } from './command.js';
 
 const paneId = /^%\d+$/;
 const sessionId = /^\$?[-\w.]+$/;
+const selectedChoice = /^›\s+(?:\[[ xX]\]\s*)?\d+[.)]\s/u;
 
 /**
  * `capture-pane -e` preserves the SGR codes tmux uses for its rendered
@@ -15,7 +16,7 @@ export function lastPromptFromHistory(value: string): string | undefined {
   const lines = value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '').split(/\r?\n/u);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const match = /^›\s+(.+)$/u.exec(lines[index]!);
-    if (!match) continue;
+    if (!match || selectedChoice.test(lines[index]!)) continue;
     const prompt = [match[1]];
     let continuation = index + 1;
     while (continuation < lines.length && /^ {2}\S/u.test(lines[continuation]!)) prompt.push(lines[continuation++]!.trim());
@@ -71,34 +72,79 @@ const plainTerminalText = (value: string) => value
   .replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '')
   .replace(/\r/gu, '');
 
-export function latestCompletedAssistantMessage(value: string): { text: string; rows: number } | undefined {
-  const lines = assistantMarkdown(value).split('\n');
-  let completedAt = -1;
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (/^─ Worked for\b/u.test(lines[index]!)) { completedAt = index; break; }
-  }
-  if (completedAt < 0) return undefined;
+export type CompletedAssistantTurn = { prompt?: string; text: string; rows: number };
 
-  // A submitted prompt after this completion means a newer response is in
-  // progress. Keep the previous completion from being offered as "latest".
-  for (let index = completedAt + 1; index < lines.length; index += 1) {
-    if (!/^›\s+\S/u.test(lines[index]!)) continue;
+// find the prompt associated with one completion boundary
+const promptBeforeCompletion = (lines: string[], completedAt: number): { index: number; text: string } | undefined => {
+  // search backward for the nearest started prompt
+  for (let index = completedAt - 1; index >= 0; index -= 1) {
+    const match = /^›\s+(.+)$/u.exec(lines[index]!);
+    // skip non-prompt rows
+    if (match === null || selectedChoice.test(lines[index]!)) continue;
+    const prompt = [match[1]!];
     let following = index + 1;
-    while (following < lines.length && /^ {2}\S/u.test(lines[following]!)) following += 1;
-    while (following < lines.length && lines[following] === '') following += 1;
-    if (/^•(?:\s|$)/u.test(lines[following] ?? '')) return undefined;
+    // collect wrapped prompt rows
+    while (following < completedAt && /^ {2}\S/u.test(lines[following]!)) prompt.push(lines[following++]!.trim());
+    // skip prompt spacing
+    while (following < completedAt && lines[following] === '') following += 1;
+    // require assistant activity for this prompt
+    if (!/^•(?:\s|$)/u.test(lines[following] ?? '')) continue;
+    return { index, text: prompt.join(' ') };
   }
+  return undefined;
+};
 
-  let start = completedAt - 1;
-  while (start >= 0 && !/^•(?:\s|$)/u.test(lines[start]!)) start -= 1;
-  if (start < 0) return undefined;
-  let contentEnd = completedAt;
-  while (contentEnd > start && !lines[contentEnd - 1]!.trim()) contentEnd -= 1;
-  const rendered = lines.slice(start, contentEnd);
-  rendered[0] = rendered[0]!.replace(/^•\s?/u, '');
-  for (let index = 1; index < rendered.length; index += 1) rendered[index] = rendered[index]!.replace(/^ {2}/u, '');
-  const text = rendered.join('\n').trim();
-  return text ? { text, rows: contentEnd - start } : undefined;
+// detect output that makes an earlier boundary stale
+const hasLaterAssistantActivity = (lines: string[], completedAt: number): boolean => {
+  // inspect output after the candidate boundary
+  for (let index = completedAt + 1; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    // ignore non-response status announcements
+    if (/^• Model changed to\b/u.test(line)) continue;
+    // reject any later assistant response activity
+    if (/^•(?:\s|$)/u.test(line)) return true;
+  }
+  return false;
+};
+
+// capture the newest prompt-coherent completed turn
+export function latestCompletedAssistantTurn(value: string): CompletedAssistantTurn | undefined {
+  const lines = assistantMarkdown(value).split('\n');
+  // inspect completion boundaries newest first
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const timed = /^─ Worked for\b/u.test(lines[index]!);
+    const untimed = /^─{3,}$/u.test(lines[index]!);
+    // skip ordinary output rows
+    if (!timed && !untimed) continue;
+    // reject an intermediate divider or older completed turn
+    if (hasLaterAssistantActivity(lines, index)) return undefined;
+    const prompt = promptBeforeCompletion(lines, index);
+    // require a prompt for ambiguous untimed dividers
+    if (untimed && prompt === undefined) continue;
+    const lowerBound = prompt?.index ?? -1;
+    let start = index - 1;
+    // find the final assistant message within this turn
+    while (start > lowerBound && !/^•(?:\s|$)/u.test(lines[start]!)) start -= 1;
+    // require final message content
+    if (start <= lowerBound) continue;
+    let contentEnd = index;
+    // trim completion spacing
+    while (contentEnd > start && !lines[contentEnd - 1]!.trim()) contentEnd -= 1;
+    const rendered = lines.slice(start, contentEnd);
+    rendered[0] = rendered[0]!.replace(/^•\s?/u, '');
+    // remove terminal indentation
+    for (let row = 1; row < rendered.length; row += 1) rendered[row] = rendered[row]!.replace(/^ {2}/u, '');
+    const text = rendered.join('\n').trim();
+    // return the first valid newest boundary
+    if (text) return { ...(prompt === undefined ? {} : { prompt: prompt.text }), text, rows: contentEnd - start };
+  }
+  return undefined;
+}
+
+// expose only the completed response text
+export function latestCompletedAssistantMessage(value: string): { text: string; rows: number } | undefined {
+  const turn = latestCompletedAssistantTurn(value);
+  return turn === undefined ? undefined : { text: turn.text, rows: turn.rows };
 }
 
 // capture the complete response after the latest prompt
@@ -108,7 +154,7 @@ export function latestAgentMessageFromHistory(value: string): string | undefined
   // find the latest prompt boundary
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     // ignore selected numbered choices
-    if (/^›\s+\S/u.test(lines[index]!) && !/^›\s+(?:\[[ xX]\]\s*)?\d+[.)]\s/u.test(lines[index]!)) { promptAt = index; break; }
+    if (/^›\s+\S/u.test(lines[index]!) && !selectedChoice.test(lines[index]!)) { promptAt = index; break; }
   }
   if (promptAt < 0) return undefined;
   let start = promptAt + 1;

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { run } = vi.hoisted(() => ({ run: vi.fn() }));
 vi.mock('../src/tmux/command.js', () => ({ run }));
 
-import { latestAgentMessageFromHistory, latestCompletedAssistantMessage, TmuxAdapter } from '../src/tmux/adapter.js';
+import { latestAgentMessageFromHistory, latestCompletedAssistantMessage, latestCompletedAssistantTurn, TmuxAdapter } from '../src/tmux/adapter.js';
 
 describe('TmuxAdapter capture', () => {
   beforeEach(() => {
@@ -314,6 +314,84 @@ describe('TmuxAdapter prompt history', () => {
     ].join('\n');
 
     expect(latestCompletedAssistantMessage(history)?.text).toBe('Run `pnpm test`, then inspect `config.json`.\nOpen https://example.com/results for the report.');
+  });
+
+  // parse untimed completion dividers
+  it('extracts a completed assistant response without a timing label', () => {
+    const history = [
+      '› Give guidance',
+      '',
+      '• Checking local patterns',
+      '────────',
+      '',
+      '• ## Recommendation',
+      '',
+      '  Keep feature boundaries cohesive.',
+      '────────',
+      '',
+      '• Model changed to gpt-5.6-sol xhigh',
+      '',
+      '› Implement {feature}',
+      ''
+    ].join('\n');
+
+    expect(latestCompletedAssistantMessage(history)?.text).toBe('## Recommendation\n\nKeep feature boundaries cohesive.');
+  });
+
+  // prefer the newest structural completion style
+  it('selects a newer untimed completion after an older timed completion', () => {
+    const history = [
+      '› Old prompt',
+      '',
+      '• Old final answer',
+      '─ Worked for 1s',
+      '',
+      '› New prompt',
+      '',
+      '• New final answer',
+      '────────',
+      ''
+    ].join('\n');
+
+    expect(latestCompletedAssistantTurn(history)).toMatchObject({ prompt: 'New prompt', text: 'New final answer' });
+  });
+
+  // reject stale answers after a newer turn begins
+  it('does not attach an untimed completion to a newer active prompt', () => {
+    const history = [
+      '› Old prompt',
+      '',
+      '• Old final answer',
+      '────────',
+      '',
+      '› New prompt',
+      '',
+      '• Still working',
+      ''
+    ].join('\n');
+
+    expect(latestCompletedAssistantTurn(history)).toBeUndefined();
+  });
+
+  // associate selected choices with their original prompt
+  it('skips numbered and multi-select choices while matching the completed turn', () => {
+    const history = [
+      '› Original request',
+      '',
+      '• Choose the implementation scope',
+      '› 1. Focused change',
+      '  2. Broader refactor',
+      '› [x] 1. Include validation',
+      '  [ ] 2. Skip validation',
+      '',
+      '• Final answer',
+      '',
+      '  Completed the focused change.',
+      '────────',
+      ''
+    ].join('\n');
+
+    expect(latestCompletedAssistantTurn(history)).toMatchObject({ prompt: 'Original request', text: 'Final answer\n\nCompleted the focused change.' });
   });
 
   it('includes a completed assistant response that fits in the viewport without marking it as overflowing', async () => {

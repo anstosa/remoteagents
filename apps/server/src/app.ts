@@ -41,6 +41,8 @@ import { ReviewTourStore } from './review-tour/store.js';
 import { parseReviewTourInput, REVIEW_REQUEST_BODY_BYTES, ReviewTourError, type ReviewErrorCode, type ReviewTourInput } from './review-tour/contracts.js';
 import { configuredWorktreeForWorkspace } from './workspaces/resolver.js';
 import { WorkspaceFileService } from './workspace-files/service.js';
+import { instanceIconSvg, isInstanceIcon } from './instance-icon.js';
+import { instanceAttention, RemoteInstanceStatusPoller, validInstanceStatusRequest } from './instance-status.js';
 
 export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; skills?: SkillService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService };
 const cookieName = '__Host-rac';
@@ -64,6 +66,9 @@ export function logFrame(last: string, value: string): LogFrame | undefined {
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
   const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, config.worktrees, promptHistory, queuedPrompts, savedPrompts); const notes = deps.notes ?? new WorktreeNoteService(); const skills = deps.skills ?? new SkillService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = new WorktreeCommandService(config); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.worktrees, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews])); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, config.worktrees, new CodexExecReviewTourGenerator()); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
   const paneViewports = new PaneViewportCoordinator();
+  // prefer a dedicated federation secret while retaining existing deployments
+  const instanceStatusSecret = process.env.RAC_INSTANCE_STATUS_SECRET ?? process.env.RAC_SESSION_SECRET ?? '';
+  const instanceStatusPoller = new RemoteInstanceStatusPoller(instanceStatusSecret);
   const projectProxy = new ProjectProxy(config.worktrees, config.publicOrigin.origin, process.env.RAC_PROJECT_PROXY_HOST);
   const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 65_536 }); const webRoot = fileURLToPath(new URL('../../web/dist', import.meta.url)); const uiVersion = async () => await readFile(join(webRoot, 'index.html'), 'utf8').then(html => /<script[^>]+src="([^"]+)"/u.exec(html)?.[1]).catch(() => undefined); await app.register(cookie); await app.register(staticPlugin, { root: webRoot, index: false }); await app.register(rateLimit, { global: false }); await app.register(websocket, { options: { maxPayload: 65_536 } });
   app.setErrorHandler((error, request, reply) => {
@@ -97,7 +102,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   function session(request: FastifyRequest, mutation = false): Session { browser(request, mutation); const s = auth.get(auth.unsign(request.cookies[cookieName])); if (!s) throw unauthorized(); if (mutation && !auth.csrf(s, request.headers['x-csrf-token'] as string | undefined)) throw forbidden(); return s; }
   function controlled(request: FastifyRequest, mutation = false): Session { const s = session(request, mutation); if (!control.connect(s.id)) throw inactiveClient(); return s; }
   // publish safe server navigation metadata
-  const server = { name: config.name, url: config.publicOrigin.origin, remotes: config.remoteServers.map(remote => ({ name: remote.name, url: remote.url.origin })) };
+  const server = { name: config.name, url: config.publicOrigin.origin, ...(config.icon === undefined ? {} : { icon: config.icon }), remotes: config.remoteServers.map(remote => ({ name: remote.name, url: remote.url.origin, ...(remote.icon === undefined ? {} : { icon: remote.icon }) })) };
   // map typed review failures
   const reviewStatus = (code: ReviewErrorCode) => code === 'invalid_request' ? 400 : code === 'target_unavailable' ? 404 : code === 'too_large' ? 413 : code === 'generation_failed' || code === 'malformed_result' || code === 'generation_rejected' ? 502 : code === 'capability_unavailable' ? 503 : code === 'timed_out' ? 504 : code === 'cancelled' ? 499 : 409;
   // send one frozen review error envelope
@@ -136,13 +141,44 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const reviews = await reviewStore.summaries(reviewBranches);
     return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }) })), worktrees: discovered.worktrees.map(worktree => ({ ...worktree, ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }) })), cleanupPending: cleanup.pending().length, reviewTour: reviewTourCapability, reviews };
   };
+  // observe only agent state needed by cross-instance attention
+  const localInstanceAttention = async () => {
+    const discovered = await discovery.dashboard(config.worktrees);
+    // update completion and question state for every agent
+    for (const agent of discovered.agents) notifications.observe(agent);
+    notifications.retain(discovered.agents);
+    return instanceAttention({ agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent) })) });
+  };
   dashboardUpdates.setLoader(dashboard);
   app.addHook('onSend', async (_request, reply, payload) => { reply.header('Cache-Control', 'no-store').header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains').header('X-Frame-Options', 'DENY').header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()').header('Cross-Origin-Opener-Policy', 'same-origin').header('Cross-Origin-Resource-Policy', 'same-origin').header('Content-Security-Policy', `default-src 'self'; connect-src 'self' wss://${expectedHost}; style-src 'self' 'unsafe-inline'; ${frameSourcePolicy}; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`); return payload; });
   app.get('/healthz', async () => ({ ok: true }));
+  // publish only the local instance attention state
+  app.get('/api/instance-status', { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async (request, reply) => {
+    browser(request);
+    // require an authenticated peer signature
+    if (!validInstanceStatusRequest(instanceStatusSecret, config.publicOrigin.origin, request.headers['x-rac-status-timestamp'], request.headers['x-rac-status-signature'])) return reply.code(401).send({ error: 'unauthorized' });
+    return { attention: await localInstanceAttention() };
+  });
+  // serve the configured favicon before authentication
+  app.get('/favicon.svg', async (request, reply) => { browser(request); return reply.type('image/svg+xml').send(instanceIconSvg(config.icon)); });
+  // serve bundled artwork for the server menu
+  app.get('/instance-icons/:icon.svg', async (request, reply) => {
+    browser(request);
+    const icon = (request.params as { icon: string }).icon;
+    // reject unknown icon paths
+    if (!isInstanceIcon(icon)) return reply.code(404).send({ error: 'icon unavailable' });
+    return reply.type('image/svg+xml').send(instanceIconSvg(icon));
+  });
   app.get('/', async (request, reply) => { browser(request); return reply.sendFile('index.html'); });
   app.get('/api/ui-version', async (request) => { browser(request); return { version: await uiVersion() }; });
   app.get('/api/auth/session', async (request) => { const s = session(request); return await sessionState(s, control.connect(s.id)); });
   app.get('/api/auth/bootstrap', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request) => { browser(request); return { csrfToken: auth.bootstrap(), server }; });
+  // aggregate configured instance attention for authenticated clients
+  app.get('/api/server-statuses', async (request) => {
+    session(request);
+    const [localAttention, remotes] = await Promise.all([localInstanceAttention(), instanceStatusPoller.statuses(config.remoteServers)]);
+    return { servers: [{ url: config.publicOrigin.origin, attention: localAttention }, ...remotes] };
+  });
   app.post('/api/auth/login', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request, reply) => { browser(request, true); const data = body(request); const preauth = request.headers['x-csrf-token']; if (typeof data.password !== 'string' || typeof preauth !== 'string') return reply.code(401).send({ error: 'invalid credentials' }); const s = await auth.login(data.password, preauth); if (!s) return reply.code(401).send({ error: 'invalid credentials' }); reply.setCookie(cookieName, auth.sign(s), { path: '/', secure: true, httpOnly: true, sameSite: 'lax', signed: false, maxAge: 400 * 24 * 60 * 60 }); return await sessionState(s, control.connect(s.id)); });
   app.post('/api/auth/take-control', async (request, reply) => {
     const s = session(request, true);
