@@ -18,6 +18,13 @@ The supplied Docker configuration also maps the configured host worktrees under
 `compose.yaml`. Set `path` to the container path used to launch an agent and
 `hostPath` to the matching host path so existing tmux panes are associated with
 that worktree instead of appearing as a duplicate idle card.
+For linked Git worktrees, also expose the absolute common Git directory path
+referenced by each worktree's `.git` file at the same container path through a
+read-only bind. Keep each content mount writable only when the console must stage
+prompt attachments there. Before making shared Git metadata read-only, ensure
+the repository ignores `node_modules/.remote-agent-console/` or add
+`/node_modules/.remote-agent-console/` to the host common Git `info/exclude`.
+Mount read-only agent worktrees read-only.
 
 ## Start
 
