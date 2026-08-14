@@ -1,4 +1,4 @@
-import { Component, createContext, type Dispatch, type ReactNode, type SetStateAction, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { Component, createContext, type Dispatch, type ReactNode, type SetStateAction, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { Terminal as XTerm } from '@xterm/xterm';
@@ -501,15 +501,6 @@ const sameServerStatuses = (left: Readonly<Record<string, InstanceAttention>>, r
   // require the same keys and attention values
   return leftEntries.length === Object.keys(right).length && leftEntries.every(([url, attention]) => right[url] === attention);
 };
-// summarize all configured instances by the most urgent visible state
-const rolledUpServerAttention = (targets: RemoteServer[], statuses: Readonly<Record<string, InstanceAttention>>): InstanceAttention => {
-  const attention = targets.map(target => statuses[target.url] ?? 'idle');
-  if (attention.includes('question')) return 'question';
-  if (attention.includes('working')) return 'working';
-  if (attention.includes('completed')) return 'completed';
-  if (attention.includes('unavailable')) return 'unavailable';
-  return 'idle';
-};
 // provide backward-compatible identity while older servers update
 const fallbackServerInfo = (): ServerInfo => ({ name: 'Remote Agents', url: location.origin, remotes: [] });
 // resolve bundled server artwork
@@ -526,85 +517,24 @@ const instanceAttentionLabel = (attention: InstanceAttention): string | undefine
   }
 };
 
-// render the current server name and optional switcher
+// render every server as a direct navigation button
 function ServerSwitcher({ className = '' }: { className?: string }) {
   const server = useContext(ServerContext) ?? fallbackServerInfo();
   const statuses = useContext(ServerStatusContext);
   const targets = [{ name: server.name, url: server.url, icon: server.icon }, ...server.remotes];
-  const summaryAttention = rolledUpServerAttention(targets, statuses);
-  const summaryAttentionLabel = instanceAttentionLabel(summaryAttention);
-  const [open, setOpen] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const menuId = useId();
-  // close the menu from outside interactions
-  useEffect(() => {
-    // avoid global listeners while closed
-    if (!open) return;
-    // close after an outside pointer
-    const closeOutside = (event: PointerEvent) => {
-      // retain interactions within the menu
-      if (root.current?.contains(event.target as Node)) return;
-      setOpen(false);
-    };
-    // close and restore trigger focus
-    const closeFromKeyboard = (event: KeyboardEvent) => {
-      // ignore unrelated keys
-      if (event.key !== 'Escape') return;
-      setOpen(false);
-      trigger.current?.focus();
-    };
-    document.addEventListener('pointerdown', closeOutside);
-    document.addEventListener('keydown', closeFromKeyboard);
-    // remove temporary document listeners
-    return () => {
-      document.removeEventListener('pointerdown', closeOutside);
-      document.removeEventListener('keydown', closeFromKeyboard);
-    };
-  }, [open]);
-  // toggle and focus the selected option
-  const toggleMenu = () => {
-    const next = !open;
-    setOpen(next);
-    // focus the current option after opening
-    if (next) window.requestAnimationFrame(() => root.current?.querySelector<HTMLButtonElement>('[role="option"][aria-selected="true"]')?.focus());
-  };
   // navigate directly to one server origin
   const switchServer = (target: RemoteServer) => {
-    setOpen(false);
     // avoid reloading the current instance
-    if (target.url !== server.url) window.location.assign(target.url);
-    // restore focus after selecting the current instance
-    else window.requestAnimationFrame(() => trigger.current?.focus());
+    if (target.url === server.url) return;
+    window.location.assign(target.url);
   };
-  // close after keyboard focus leaves the full control
-  const closeFromFocus = (event: React.FocusEvent<HTMLDivElement>) => {
-    // retain focus moving between trigger and options
-    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
-    setOpen(false);
-  };
-  // move through options with arrow keys
-  const moveOptionFocus = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    // handle only vertical navigation
-    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-    event.preventDefault();
-    const options = Array.from(root.current?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? []);
-    // stop without rendered options
-    if (options.length === 0) return;
-    const current = options.indexOf(document.activeElement as HTMLButtonElement);
-    const direction = event.key === 'ArrowDown' ? 1 : -1;
-    const next = (current + direction + options.length) % options.length;
-    options[next]?.focus();
-  };
-  // render every configured choice
-  const menuOptions = targets.map(target => {
+  // render the current server first
+  const buttons = targets.map(target => {
     const attention = statuses[target.url] ?? 'idle';
     const attentionLabel = instanceAttentionLabel(attention);
-    return <button key={target.url} type="button" className="server-switcher-option" role="option" aria-selected={target.url === server.url} aria-label={`${target.name}${attentionLabel === undefined ? '' : ` — ${attentionLabel}`}`} onClick={() => switchServer(target)}><img src={serverIconPath(target.icon)} alt="" /><span>{target.name}</span><i className={`server-switcher-attention ${attention}`} aria-hidden="true" title={attentionLabel} /></button>;
+    return <button key={target.url} type="button" className={`server-switcher-button attention-${attention}`} aria-current={target.url === server.url ? 'page' : undefined} aria-label={`${target.name}${attentionLabel === undefined ? '' : ` — ${attentionLabel}`}`} onClick={() => switchServer(target)}><img src={serverIconPath(target.icon)} alt="" /><span>{target.name}</span><i className={`server-switcher-attention ${attention}`} aria-hidden="true" title={attentionLabel} /></button>;
   });
-  // collapse single-server installations
-  const control = server.remotes.length === 0 ? <><img className="server-instance-icon" src={serverIconPath(server.icon)} alt="" /><strong>{server.name}</strong></> : <div className="server-switcher-control" onBlur={closeFromFocus}><button ref={trigger} type="button" className={`server-switcher-trigger attention-${summaryAttention}`} role="combobox" aria-label={`Remote Agents server${summaryAttentionLabel === undefined ? '' : ` — ${summaryAttentionLabel}`}`} aria-haspopup="listbox" aria-controls={menuId} aria-expanded={open} onClick={toggleMenu}><img className="server-instance-icon" src={serverIconPath(server.icon)} alt="" /><span>{server.name}</span><i className={`server-switcher-attention server-switcher-summary-attention ${summaryAttention}`} aria-hidden="true" title={summaryAttentionLabel} /><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg></button>{open && <div id={menuId} className="server-switcher-menu" role="listbox" aria-label="Remote Agents servers" onKeyDown={moveOptionFocus}>{menuOptions}</div>}</div>;
-  return <div ref={root} className={`server-switcher${className ? ` ${className}` : ''}`}>{control}</div>;
+  return <div className={`server-switcher${className ? ` ${className}` : ''}`} role="group" aria-label="Remote Agents servers">{buttons}</div>;
 }
 
 function Login({ done, initialError }: { done: (session: SessionInfo) => void; initialError?: string }) {
@@ -2795,8 +2725,8 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
     else setHistoryAnswerId(undefined);
   };
   const historyToggle = !terminalMode ? <><span className="prompt-history-anchor" ref={historyAnchorRef}><button className={`prompt-history-toggle${historyOpen ? ' active' : ''}`} type="button" aria-label={`Prompt history (${history.length})`} title="Prompt history" aria-expanded={historyOpen} onClick={event => { event.stopPropagation(); toggleHistory(); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5M12 7v5l3 2" /></svg></button></span>{historyPanel}</> : null;
-  // fall back to persisted history when terminal parsing misses the prompt
-  const visibleLastPrompt = lastPrompt ?? history[0]?.text;
+  // prefer the refreshed prompt history over a stale log frame
+  const visibleLastPrompt = history[0]?.text ?? lastPrompt;
   const promptSection = !terminalMode ? <div className="toolbar-prompt-group">{historyToggle}{visibleLastPrompt !== undefined && <button ref={lastPromptRef} className="toolbar-prompt" type="button" aria-label="Last prompt" aria-expanded={historyOpen} title={visibleLastPrompt} onClick={toggleHistory}><span className="toolbar-prompt-text">{visibleLastPrompt}</span></button>}</div> : null;
   const gitSection = <GitStatus branch={branch} summary={gitStatus} prSummary={gitPrStatus} expanded={toolbarExpanded === 'git'} onToggle={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'git' ? undefined : 'git'); }} onReview={scope => { setToolbarExpanded(undefined); onReview?.(scope); }} reviewOpen={reviewOpen} reviewUnavailable={reviewUnavailable} />;
   // distinguish retained output from live frames

@@ -188,8 +188,8 @@ and customized prompt actions.
 ```
 
 `name` identifies the current Remote Agents server. When `remoteServers` is
-configured, the login, control, and output screens offer a server selector that
-navigates directly to the selected server URL.
+configured, the login, control, and output screens show one direct navigation
+button for each server.
 
 See [the setup reference](docs/setup.md) for the full security boundary,
 worktree command behavior, browser capabilities, and operational checks.

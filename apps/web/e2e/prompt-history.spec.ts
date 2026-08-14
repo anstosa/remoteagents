@@ -123,6 +123,7 @@ test('shows worktree prompt history and cycles it from the composer', async ({ p
   await page.getByRole('button', { name: 'Queue', exact: true }).click();
   const updatedHistoryToggle = page.getByRole('button', { name: 'Prompt history (3)' });
   await expect(updatedHistoryToggle).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Last prompt', exact: true })).toContainText('Third prompt');
   await updatedHistoryToggle.click();
   await expect(historyMenu.locator('.prompt-history-prompt').first()).toContainText('First prompt');
   await expect(historyMenu.locator('.prompt-history-prompt').last()).toContainText('Third prompt');

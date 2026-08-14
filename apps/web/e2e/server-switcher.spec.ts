@@ -1,10 +1,21 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator } from '@playwright/test';
+
+type BoundingBox = NonNullable<Awaited<ReturnType<Locator['boundingBox']>>>;
+
+// require rendered locator bounds
+const renderedBounds = async (locator: Locator): Promise<BoundingBox> => {
+  const bounds = await locator.boundingBox();
+  // fail clearly when the element is not rendered
+  if (bounds === null) throw new Error('Expected locator to have rendered bounds');
+  return bounds;
+};
 
 test('shows and switches the configured server on authentication and output screens', async ({ page }) => {
   let screen: 'login'|'control'|'output' = 'login';
   let remoteAttention: 'working'|'question'|'completed' = 'working';
   let statusAvailable = true;
-  const server = { name: 'X1 Carbon', url: 'https://x1carbon.santosa.dev', icon: 'potato', remotes: [{ name: 'Framework', url: 'https://framework.santosa.dev', icon: 'heart' }] };
+  const remoteServer = { name: 'Framework', url: 'https://framework.santosa.dev', icon: 'heart' };
+  const server = { name: 'X1 Carbon', url: 'https://x1carbon.santosa.dev', icon: 'potato', remotes: [remoteServer] };
   await page.addInitScript(() => {
     class MockWebSocket {
       static readonly CONNECTING = 0;
@@ -54,78 +65,91 @@ test('shows and switches the configured server on authentication and output scre
     if (url.pathname === '/api/server-statuses') {
       // simulate an aggregate outage
       if (!statusAvailable) return route.fulfill({ status: 503, json: { error: 'unavailable' } });
-      return route.fulfill({ json: { servers: [{ url: server.url, attention: 'working' }, { url: server.remotes[0]!.url, attention: remoteAttention }] } });
+      return route.fulfill({ json: { servers: [{ url: server.url, attention: 'working' }, { url: remoteServer.url, attention: remoteAttention }] } });
     }
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 
-  // verify custom server choices
-  const expectSwitcher = async (remoteLabel = 'Framework') => {
-    const switcher = page.getByRole('combobox', { name: /Remote Agents server/u });
-    await expect(switcher).toBeVisible();
-    await expect(switcher).toHaveText('X1 Carbon');
-    await switcher.click();
-    const choices = page.getByRole('option');
-    await expect(choices).toHaveText(['X1 Carbon', 'Framework']);
-    await expect(choices.nth(1)).toHaveAccessibleName(remoteLabel);
-    await expect(choices.nth(0)).toHaveAttribute('aria-selected', 'true');
-    await expect(choices.nth(1)).toHaveAttribute('aria-selected', 'false');
-    await expect(choices.nth(0).locator('img')).toHaveAttribute('src', '/instance-icons/potato.svg');
-    await expect(choices.nth(1).locator('img')).toHaveAttribute('src', '/instance-icons/heart.svg');
-    await expect(choices.nth(0)).toBeFocused();
-    await page.keyboard.press('ArrowDown');
-    await expect(choices.nth(1)).toBeFocused();
-    await page.keyboard.press('Escape');
-    await expect(switcher).toHaveAttribute('aria-expanded', 'false');
-    return switcher;
+  // verify direct server buttons
+  const expectServerButtons = async (remoteLabel?: string) => {
+    const group = page.getByRole('group', { name: 'Remote Agents servers' });
+    const buttons = group.getByRole('button');
+    await expect(group).toBeVisible();
+    await expect(buttons).toHaveText(['X1 Carbon', 'Framework']);
+    // require the current server on the left
+    await expect(buttons.nth(0)).toHaveAttribute('aria-current', 'page');
+    await expect(buttons.nth(1)).not.toHaveAttribute('aria-current', 'page');
+    await expect(buttons.nth(0).locator('img')).toHaveAttribute('src', '/instance-icons/potato.svg');
+    await expect(buttons.nth(1).locator('img')).toHaveAttribute('src', '/instance-icons/heart.svg');
+    // verify an attention label when requested
+    if (remoteLabel !== undefined) await expect(buttons.nth(1)).toHaveAccessibleName(remoteLabel);
+    return { group, current: buttons.nth(0), remote: buttons.nth(1) };
   };
 
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Console access' })).toBeVisible();
-  await expectSwitcher();
+  await expectServerButtons();
+  await expect(page.getByRole('combobox', { name: /Remote Agents server/u })).toHaveCount(0);
 
   screen = 'control';
   await page.reload();
   await expect(page.getByText('Desk iPad is active')).toBeVisible();
-  await expectSwitcher('Framework — Working');
+  await expectServerButtons('Framework — Working');
 
   screen = 'output';
   await page.reload();
   await expect(page.getByLabel('Live log')).toBeVisible({ timeout: 15_000 });
-  const outputSwitcher = await expectSwitcher('Framework — Working');
-  await expect(outputSwitcher).toHaveClass(/attention-working/u);
-  await expect(outputSwitcher).toHaveAccessibleName('Remote Agents server — Working');
-  const summaryAttention = outputSwitcher.locator('.server-switcher-summary-attention.working');
-  await expect(summaryAttention).toBeVisible();
-  const [switcherBounds, attentionBounds] = await Promise.all([outputSwitcher.boundingBox(), summaryAttention.boundingBox()]);
-  expect(attentionBounds!.x + attentionBounds!.width / 2).toBeGreaterThan(switcherBounds!.x + switcherBounds!.width - 2);
-  expect(attentionBounds!.y + attentionBounds!.height / 2).toBeLessThan(switcherBounds!.y + 2);
-  const bounds = await outputSwitcher.boundingBox();
-  const outputBounds = await page.locator('.log-output').boundingBox();
-  expect(bounds!.x).toBeLessThan(outputBounds!.x + outputBounds!.width / 2);
-  expect(bounds!.y).toBeLessThan(outputBounds!.y + outputBounds!.height / 2);
+  const outputServers = await expectServerButtons('Framework — Working');
+  await expect(outputServers.group).toHaveClass(/output-server-switcher/u);
+  await expect(page.locator('.log-output .server-switcher')).toHaveCount(1);
+  await expect(outputServers.group.locator('.server-switcher-attention.working')).toHaveCount(2);
+  const activeTab = page.getByRole('tab', { selected: true });
+  const [currentBounds, remoteBounds, outputBounds] = await Promise.all([renderedBounds(outputServers.current), renderedBounds(outputServers.remote), renderedBounds(page.locator('.log-output'))]);
+  expect(currentBounds.x).toBeLessThan(remoteBounds.x);
+  expect(currentBounds.x).toBeLessThan(outputBounds.x + outputBounds.width / 2);
+  expect(currentBounds.y).toBeLessThan(outputBounds.y + outputBounds.height / 2);
+  const [currentBorderEffect, tabBorderEffect] = await Promise.all([
+    outputServers.current.evaluate(element => getComputedStyle(element).boxShadow),
+    activeTab.evaluate(element => getComputedStyle(element).boxShadow)
+  ]);
+  expect(currentBorderEffect).toBe(tabBorderEffect);
+  // keep the server row left of status on narrow screens
+  await page.setViewportSize({ width: 390, height: 844 });
+  const [serverRowBounds, statusBounds] = await Promise.all([renderedBounds(outputServers.group), renderedBounds(page.locator('.log-status'))]);
+  expect(serverRowBounds.x + serverRowBounds.width).toBeLessThanOrEqual(statusBounds.x);
 
-  await outputSwitcher.click();
-  const options = page.getByRole('option');
-  await expect(options.locator('.server-switcher-attention.working')).toHaveCount(2);
-  await expect(options.locator('svg')).toHaveCount(0);
-  const remoteOption = page.getByRole('option').nth(1);
   remoteAttention = 'completed';
-  await expect(remoteOption).toHaveAccessibleName('Framework — Completed notification');
-  await expect(remoteOption.locator('.server-switcher-attention')).toHaveClass(/completed/u);
-  await expect(outputSwitcher).toHaveClass(/attention-working/u);
+  await expect(outputServers.remote).toHaveAccessibleName('Framework — Completed notification', { timeout: 8_000 });
+  await expect(outputServers.remote.locator('.server-switcher-attention')).toHaveClass(/completed/u);
 
   statusAvailable = false;
-  await expect(remoteOption).toHaveAccessibleName('Framework — Server unavailable', { timeout: 8_000 });
-  await expect(remoteOption.locator('.server-switcher-attention')).toHaveClass(/unavailable/u);
+  await expect(outputServers.remote).toHaveAccessibleName('Framework — Server unavailable', { timeout: 8_000 });
+  await expect(outputServers.remote.locator('.server-switcher-attention')).toHaveClass(/unavailable/u);
 
   statusAvailable = true;
   remoteAttention = 'question';
-  await expect(remoteOption).toHaveAccessibleName('Framework — Active question', { timeout: 8_000 });
-  await expect(remoteOption.locator('.server-switcher-attention')).toHaveClass(/question/u);
-  await expect(outputSwitcher).toHaveClass(/attention-question/u);
-  await expect(outputSwitcher).toHaveAccessibleName('Remote Agents server — Active question');
-  await remoteOption.click();
+  await expect(outputServers.remote).toHaveAccessibleName('Framework — Active question', { timeout: 8_000 });
+  await expect(outputServers.remote.locator('.server-switcher-attention')).toHaveClass(/question/u);
+  await outputServers.remote.click();
   await expect(page).toHaveURL('https://framework.santosa.dev/');
   await expect(page.getByRole('heading', { name: 'Framework target' })).toBeVisible();
+});
+
+test('renders a single configured server as the current button', async ({ page }) => {
+  const server = { name: 'X1 Carbon', url: 'https://x1carbon.santosa.dev', icon: 'potato', remotes: [] };
+  await page.route('**/*', async route => {
+    const url = new URL(route.request().url());
+    // serve the public login metadata
+    if (url.pathname === '/api/auth/session') return route.fulfill({ status: 401, json: { error: 'unauthorized' } });
+    if (url.pathname === '/api/auth/bootstrap') return route.fulfill({ json: { csrfToken: 'bootstrap-token', server } });
+    if (url.pathname.startsWith('/api/')) return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+    return route.continue();
+  });
+
+  await page.goto('/');
+  const group = page.getByRole('group', { name: 'Remote Agents servers' });
+  const buttons = group.getByRole('button');
+  await expect(buttons).toHaveCount(1);
+  await expect(buttons).toHaveText(['X1 Carbon']);
+  await expect(buttons.first()).toHaveAttribute('aria-current', 'page');
 });
