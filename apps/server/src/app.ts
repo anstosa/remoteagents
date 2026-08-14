@@ -216,6 +216,19 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // rename one note
   app.patch('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const title = body(request).title; if (configuredWorktree(id) === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid note title' }); const note = await notes.rename(id, noteId, title); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
   app.delete('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; if (configuredWorktree(id) === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const note = await notes.delete(id, noteId); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
+  // preview one configured worktree file
+  app.post('/api/worktrees/:id/file-preview', async (request, reply) => {
+    controlled(request, true);
+    const { id } = request.params as { id: string };
+    const path = body(request).path;
+    // require one bounded relative path
+    if (typeof path !== 'string' || !path || path.length > 512 || path.includes('\0')) return reply.code(400).send({ error: 'invalid file path' });
+    const worktree = configuredWorktree(id);
+    // require a configured workspace
+    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const preview = await workspaceFiles.preview(worktree.identity, path);
+    return preview === undefined ? reply.code(404).send({ error: 'file unavailable' }) : preview;
+  });
   app.get('/api/push/public-key', async (request) => { session(request); return push.enabled ? { publicKey: push.publicKey } : { publicKey: undefined }; });
   app.post('/api/push/subscriptions', async (request, reply) => { session(request, true); return await push.subscribe(body(request) as never) ? reply.code(204).send() : reply.code(400).send({ error: 'invalid push subscription' }); });
   app.post('/api/agents/:id/notifications/dismiss', async (request, reply) => {

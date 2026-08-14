@@ -1202,24 +1202,68 @@ const isAssistantFilePreview = (value: unknown): value is AssistantFilePreview =
 // format compact file sizes
 const assistantFileSize = (size: number) => size < 1_024 ? `${size} B` : size < 1_048_576 ? `${(size / 1_024).toFixed(1)} KB` : `${(size / 1_048_576).toFixed(1)} MB`;
 
-// manage files referenced by the latest assistant response
-function useLatestAssistantFiles(agentId: string, message?: string) {
-  const [files, setFiles] = useState<AssistantFile[]>([]);
-  const [menuOpen, setMenuOpen] = useState(false);
+// manage one workspace file preview
+function useFilePreview(previewUrl: string) {
   const [previewPath, setPreviewPath] = useState<string>();
   const [preview, setPreview] = useState<AssistantFilePreview>();
   const [previewState, setPreviewState] = useState<'loading'|'ready'|'error'>('loading');
   const [copied, setCopied] = useState(false);
-  const anchorRef = useRef<HTMLDivElement | null>(null);
   const previewRequest = useRef(0);
+
+  // reset when the workspace target changes
+  useEffect(() => {
+    setPreviewPath(undefined);
+    setPreview(undefined);
+    previewRequest.current += 1;
+  }, [previewUrl]);
+  // load one selected file preview
+  const openFile = async (path: string) => {
+    const requestId = ++previewRequest.current;
+    setPreviewPath(path);
+    setPreview(undefined);
+    setPreviewState('loading');
+    setCopied(false);
+    try {
+      const response = await request(previewUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path }) });
+      if (!response.ok) throw new Error('preview unavailable');
+      const payload: unknown = await response.json();
+      if (!isAssistantFilePreview(payload)) throw new Error('invalid preview');
+      // ignore replaced or closed previews
+      if (previewRequest.current !== requestId) return;
+      setPreviewPath(payload.path);
+      setPreview(payload);
+      setPreviewState('ready');
+    } catch { if (previewRequest.current === requestId) setPreviewState('error'); }
+  };
+  // close the active file preview
+  const closePreview = () => {
+    previewRequest.current += 1;
+    setPreviewPath(undefined);
+    setPreview(undefined);
+    setCopied(false);
+  };
+  // copy the canonical workspace path
+  const copyPath = async () => {
+    if (previewPath === undefined) return;
+    try { await copyText(previewPath); setCopied(true); } catch { setCopied(false); }
+  };
+
+  const dialog = previewPath === undefined ? null : createPortal(<div className="dialog response-file-dialog" role="dialog" aria-modal="true" aria-label={`File preview: ${previewPath}`} onKeyDown={event => { if (event.key === 'Escape') closePreview(); }}><div><header><strong title={previewPath}>{previewPath}</strong><button className="response-file-copy-path" type="button" onClick={() => void copyPath()}>{copied ? 'Path copied' : 'Copy path'}</button><button type="button" aria-label="Close file preview" title="Close" onClick={closePreview}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{previewState === 'loading' ? <div className="response-file-message" role="status"><span className="spinner" />Loading preview…</div> : previewState === 'error' ? <div className="response-file-message error" role="alert">Preview unavailable</div> : preview?.binary ? <div className="response-file-message">Binary file preview unavailable</div> : preview === undefined ? <div className="response-file-message error" role="alert">Preview unavailable</div> : <SyntaxHighlightedCode path={previewPath} code={preview.content} label={`Contents of ${previewPath}`} />}{preview?.truncated && <footer>Preview limited to the first 256 KB.</footer>}</div></div>, document.body);
+  return { dialog, openFile, closePreview };
+}
+
+// manage files referenced by the latest assistant response
+function useLatestAssistantFiles(agentId: string, message?: string) {
+  const [files, setFiles] = useState<AssistantFile[]>([]);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const filePreview = useFilePreview(`/api/agents/${encodeURIComponent(agentId)}/file-preview`);
 
   useEffect(() => {
     let cancelled = false;
     setFiles([]);
     setMenuOpen(false);
-    setPreviewPath(undefined);
-    setPreview(undefined);
-    previewRequest.current += 1;
+    filePreview.closePreview();
     // ignore sessions without a completed response
     if (message === undefined) return () => { cancelled = true; };
     void request(`/api/agents/${encodeURIComponent(agentId)}/message-files`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message }) }).then(async response => {
@@ -1246,43 +1290,9 @@ function useLatestAssistantFiles(agentId: string, message?: string) {
     return () => document.removeEventListener('mousedown', close);
   }, [menuOpen]);
 
-  // load one selected file preview
-  const openFile = async (path: string) => {
-    const requestId = ++previewRequest.current;
-    setMenuOpen(false);
-    setPreviewPath(path);
-    setPreview(undefined);
-    setPreviewState('loading');
-    setCopied(false);
-    try {
-      const response = await request(`/api/agents/${encodeURIComponent(agentId)}/file-preview`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path }) });
-      if (!response.ok) throw new Error('preview unavailable');
-      const payload: unknown = await response.json();
-      if (!isAssistantFilePreview(payload)) throw new Error('invalid preview');
-      // ignore replaced or closed previews
-      if (previewRequest.current !== requestId) return;
-      setPreviewPath(payload.path);
-      setPreview(payload);
-      setPreviewState('ready');
-    } catch { if (previewRequest.current === requestId) setPreviewState('error'); }
-  };
-  // close the active file preview
-  const closePreview = () => {
-    previewRequest.current += 1;
-    setPreviewPath(undefined);
-    setPreview(undefined);
-    setCopied(false);
-  };
-  // copy the canonical workspace path
-  const copyPath = async () => {
-    if (previewPath === undefined) return;
-    try { await copyText(previewPath); setCopied(true); } catch { setCopied(false); }
-  };
-
   const label = `Files from latest response (${files.length})`;
-  const control = files.length === 0 ? null : <div className="response-files-control" ref={anchorRef}><button className={`log-control page-arrow response-files-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} onPointerDown={event => event.preventDefault()} onClick={() => setMenuOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 12 5.7-5.7a3.5 3.5 0 1 1 5 5L11 20a5 5 0 1 1-7-7l8.3-8.3" /></svg><span className="saved-prompts-count response-files-count" aria-hidden="true">{files.length}</span></button>{menuOpen && <div className="response-files-menu" aria-label="Files from latest response">{files.map(file => <button className="log-control" type="button" key={file.path} title={file.path} onClick={() => void openFile(file.path)}><span>{file.path}</span><small>{assistantFileSize(file.size)}</small></button>)}</div>}</div>;
-  const dialog = previewPath === undefined ? null : createPortal(<div className="dialog response-file-dialog" role="dialog" aria-modal="true" aria-label={`File preview: ${previewPath}`} onKeyDown={event => { if (event.key === 'Escape') closePreview(); }}><div><header><strong title={previewPath}>{previewPath}</strong><button className="response-file-copy-path" type="button" onClick={() => void copyPath()}>{copied ? 'Path copied' : 'Copy path'}</button><button type="button" aria-label="Close file preview" title="Close" onClick={closePreview}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{previewState === 'loading' ? <div className="response-file-message" role="status"><span className="spinner" />Loading preview…</div> : previewState === 'error' ? <div className="response-file-message error" role="alert">Preview unavailable</div> : preview?.binary ? <div className="response-file-message">Binary file preview unavailable</div> : preview === undefined ? <div className="response-file-message error" role="alert">Preview unavailable</div> : <SyntaxHighlightedCode path={previewPath} code={preview.content} label={`Contents of ${previewPath}`} />}{preview?.truncated && <footer>Preview limited to the first 256 KB.</footer>}</div></div>, document.body);
-  return { control, dialog, openFile };
+  const control = files.length === 0 ? null : <div className="response-files-control" ref={anchorRef}><button className={`log-control page-arrow response-files-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} onPointerDown={event => event.preventDefault()} onClick={() => setMenuOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 12 5.7-5.7a3.5 3.5 0 1 1 5 5L11 20a5 5 0 1 1-7-7l8.3-8.3" /></svg><span className="saved-prompts-count response-files-count" aria-hidden="true">{files.length}</span></button>{menuOpen && <div className="response-files-menu" aria-label="Files from latest response">{files.map(file => <button className="log-control" type="button" key={file.path} title={file.path} onClick={() => { setMenuOpen(false); void filePreview.openFile(file.path); }}><span>{file.path}</span><small>{assistantFileSize(file.size)}</small></button>)}</div>}</div>;
+  return { control, ...filePreview };
 }
 
 // manage persistent worktree notes
@@ -2035,13 +2045,14 @@ function GitLineSummary({ additions, deletions, className }: { additions: number
   const label = [additions > 0 ? `${gitCountLabel(additions, 'line')} added` : undefined, deletions > 0 ? `${gitCountLabel(deletions, 'line')} removed` : undefined].filter(Boolean).join(', ') || 'No lines added or removed';
   return <span className={className} aria-label={label}><span className="git-lines-added">{additions > 0 ? `+${additions}` : ''}</span><span className="git-lines-deleted">{deletions > 0 ? `−${deletions}` : ''}</span></span>;
 }
-function GitChangeGroup({ label, changes }: { label: string; changes: GitStatusChange[] }) {
+// render one clickable changed-file group
+function GitChangeGroup({ label, changes, onOpenFile }: { label: string; changes: GitStatusChange[]; onOpenFile: (path: string) => void }) {
   if (changes.length === 0) return null;
   const totals = gitLineTotals(changes);
-  return <span className="git-status-group" role="group" aria-label={`${label} files`}><span className="git-status-group-header"><strong>{label}</strong><span>{gitCountLabel(changes.length, 'file')}</span><GitLineSummary {...totals} className="git-status-group-lines" /></span><span className="git-status-file-list">{changes.map((change, index) => <span className={`git-status-file ${gitChangeState(change.code)}`} key={`${change.code}:${change.path}:${index}`}><span className="git-status-file-code" aria-hidden="true">{change.code}</span><span className="git-status-file-path">{change.originalPath === undefined ? change.path : `${change.originalPath} → ${change.path}`}</span>{change.additions === undefined || change.deletions === undefined ? <span className="git-status-file-lines unavailable">binary</span> : <GitLineSummary additions={change.additions} deletions={change.deletions} className="git-status-file-lines" />}</span>)}</span></span>;
+  return <span className="git-status-group" role="group" aria-label={`${label} files`}><span className="git-status-group-header"><strong>{label}</strong><span>{gitCountLabel(changes.length, 'file')}</span><GitLineSummary {...totals} className="git-status-group-lines" /></span><span className="git-status-file-list">{changes.map((change, index) => <button className={`git-status-file ${gitChangeState(change.code)}`} type="button" aria-label={`Preview ${change.path}`} title={`Preview ${change.path}`} key={`${change.code}:${change.path}:${index}`} onClick={() => onOpenFile(change.path)}><span className="git-status-file-code" aria-hidden="true">{change.code}</span><span className="git-status-file-path">{change.originalPath === undefined ? change.path : `${change.originalPath} → ${change.path}`}</span>{change.additions === undefined || change.deletions === undefined ? <span className="git-status-file-lines unavailable">binary</span> : <GitLineSummary additions={change.additions} deletions={change.deletions} className="git-status-file-lines" />}</button>)}</span></span>;
 }
 // render working and pull-request changes
-function GitStatus({ branch, summary, prSummary, expanded = false, onToggle, onReview, reviewOpen = false, reviewUnavailable }: { branch?: string; summary?: GitStatusSummary; prSummary?: GitComparisonSummary; expanded?: boolean; onToggle?: () => void; onReview?: (scope: ReviewScope) => void; reviewOpen?: boolean; reviewUnavailable?: string }) {
+function GitStatus({ branch, summary, prSummary, expanded = false, onToggle, onOpenFile, onReview, reviewOpen = false, reviewUnavailable }: { branch?: string; summary?: GitStatusSummary; prSummary?: GitComparisonSummary; expanded?: boolean; onToggle?: () => void; onOpenFile: (path: string) => void; onReview?: (scope: ReviewScope) => void; reviewOpen?: boolean; reviewUnavailable?: string }) {
   const lastTouchToggle = useRef<number | undefined>(undefined);
   const wrapRef = useRef<HTMLSpanElement | null>(null);
   const [panelMaxHeight, setPanelMaxHeight] = useState(0);
@@ -2127,7 +2138,7 @@ function GitStatus({ branch, summary, prSummary, expanded = false, onToggle, onR
   };
   const disabledReviewReason = reviewOpen ? undefined : reviewUnavailable ?? (activeSummary === undefined ? 'Selected changes unavailable' : undefined);
   const reviewLabel = reviewOpen ? 'Open Review' : 'Review';
-  return <span ref={wrapRef} className={`git-status-wrap${expanded ? ' expanded' : ''}`}><button className={`git-status-summary ${state}`} type="button" aria-label={label} aria-expanded={expanded} title={label} onPointerDown={pointerToggle} onClick={clickToggle}><span className="git-branch">{branch}</span><span className="git-status-separator" aria-hidden="true">·</span><span className="git-worktree-state">{stateLabel}</span></button>{expanded && <span className="git-status-panel" role="region" aria-label="Changed files" style={{ maxHeight: panelMaxHeight }}><span className="git-status-panel-header"><strong>{mode === 'working' ? 'Working changes' : 'PR changes'}</strong>{panelDetails.length > 0 && <small className="git-status-details">{panelDetails.join(' · ')}</small>}</span>{changedFiles !== undefined && changedFiles.length > 0 ? <span className="git-status-files"><GitChangeGroup label="Implementation" changes={implementationChanges} /><GitChangeGroup label="TESTS & DOCS" changes={supportingChanges} /></span> : <span className="git-status-empty">{emptyLabel}</span>}<span className="git-status-panel-footer"><button className="git-status-review" type="button" disabled={onReview === undefined || disabledReviewReason !== undefined} title={disabledReviewReason ?? (reviewOpen ? 'Open the current guided review' : `Start guided review of ${mode === 'working' ? 'Working' : 'All PR'} changes`)} onClick={() => onReview?.(mode)}>{reviewLabel}</button><span className="git-status-mode" role="group" aria-label="Git change view"><button type="button" aria-pressed={mode === 'working'} onClick={() => setMode('working')}>Working</button><button type="button" aria-pressed={mode === 'pr'} disabled={prSummary === undefined} title={prSummary === undefined ? 'Merge target unavailable' : `Compare with ${prSummary.base}`} onClick={() => setMode('pr')}>All PR</button></span></span></span>}</span>;
+  return <span ref={wrapRef} className={`git-status-wrap${expanded ? ' expanded' : ''}`}><button className={`git-status-summary ${state}`} type="button" aria-label={label} aria-expanded={expanded} title={label} onPointerDown={pointerToggle} onClick={clickToggle}><span className="git-branch">{branch}</span><span className="git-status-separator" aria-hidden="true">·</span><span className="git-worktree-state">{stateLabel}</span></button>{expanded && <span className="git-status-panel" role="region" aria-label="Changed files" style={{ maxHeight: panelMaxHeight }}><span className="git-status-panel-header"><strong>{mode === 'working' ? 'Working changes' : 'PR changes'}</strong>{panelDetails.length > 0 && <small className="git-status-details">{panelDetails.join(' · ')}</small>}</span>{changedFiles !== undefined && changedFiles.length > 0 ? <span className="git-status-files"><GitChangeGroup label="Implementation" changes={implementationChanges} onOpenFile={onOpenFile} /><GitChangeGroup label="TESTS & DOCS" changes={supportingChanges} onOpenFile={onOpenFile} /></span> : <span className="git-status-empty">{emptyLabel}</span>}<span className="git-status-panel-footer"><button className="git-status-review" type="button" disabled={onReview === undefined || disabledReviewReason !== undefined} title={disabledReviewReason ?? (reviewOpen ? 'Open the current guided review' : `Start guided review of ${mode === 'working' ? 'Working' : 'All PR'} changes`)} onClick={() => onReview?.(mode)}>{reviewLabel}</button><span className="git-status-mode" role="group" aria-label="Git change view"><button type="button" aria-pressed={mode === 'working'} onClick={() => setMode('working')}>Working</button><button type="button" aria-pressed={mode === 'pr'} disabled={prSummary === undefined} title={prSummary === undefined ? 'Merge target unavailable' : `Compare with ${prSummary.base}`} onClick={() => setMode('pr')}>All PR</button></span></span></span>}</span>;
 }
 
 // render live agent output
@@ -2157,9 +2168,15 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
   const copyOutputSelectionRef = useRef<(value: string) => Promise<void>>(copyText);
   const worktreeNotes = useWorktreeNotes(worktreeId, id, latestAssistantMessage, latestAssistantMessageOverflows, refreshHistory, history);
   const responseFiles = useLatestAssistantFiles(id, latestAssistantMessage);
+  const gitFilePreview = useFilePreview(`/api/agents/${encodeURIComponent(id)}/file-preview`);
   // retain preview handling across terminal connections
   const openOutputFileRef = useRef(responseFiles.openFile);
   openOutputFileRef.current = responseFiles.openFile;
+  // preview one changed branch file
+  const openGitFile = (path: string) => {
+    setToolbarExpanded(undefined);
+    void gitFilePreview.openFile(path);
+  };
   // refresh open history while answers arrive
   useEffect(() => {
     // require visible history
@@ -2728,11 +2745,11 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
   // prefer the refreshed prompt history over a stale log frame
   const visibleLastPrompt = history[0]?.text ?? lastPrompt;
   const promptSection = !terminalMode ? <div className="toolbar-prompt-group">{historyToggle}{visibleLastPrompt !== undefined && <button ref={lastPromptRef} className="toolbar-prompt" type="button" aria-label="Last prompt" aria-expanded={historyOpen} title={visibleLastPrompt} onClick={toggleHistory}><span className="toolbar-prompt-text">{visibleLastPrompt}</span></button>}</div> : null;
-  const gitSection = <GitStatus branch={branch} summary={gitStatus} prSummary={gitPrStatus} expanded={toolbarExpanded === 'git'} onToggle={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'git' ? undefined : 'git'); }} onReview={scope => { setToolbarExpanded(undefined); onReview?.(scope); }} reviewOpen={reviewOpen} reviewUnavailable={reviewUnavailable} />;
+  const gitSection = <GitStatus branch={branch} summary={gitStatus} prSummary={gitPrStatus} expanded={toolbarExpanded === 'git'} onToggle={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'git' ? undefined : 'git'); }} onOpenFile={openGitFile} onReview={scope => { setToolbarExpanded(undefined); onReview?.(scope); }} reviewOpen={reviewOpen} reviewUnavailable={reviewUnavailable} />;
   // distinguish retained output from live frames
   const output = <div className={`log-output${cached ? ' cached' : ''}`}><ServerSwitcher className="output-server-switcher" /><div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'}><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{cached && <div className="log-cached-treatment" aria-hidden="true"><span>Cached view · reconnecting</span></div>}{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!terminalMode && <div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{responseFiles.control}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><div className="page-down-controls">{scrolledUp && <button className="log-control page-arrow back-to-bottom" aria-label="Back to bottom" title="Back to bottom" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(0)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19h14M6 8l6 6 6-6" /></svg></button>}<button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div>}</div></div>;
   const browserPane = browserUrl === undefined || browserHomeUrl === undefined || onBrowserNavigate === undefined || onBrowserClose === undefined ? null : <ProjectBrowserPane url={browserUrl} homeUrl={browserHomeUrl} worktreeId={worktreeId} onNavigate={onBrowserNavigate} onClose={onBrowserClose} />;
-  return <section className="log-shell"><div className={`log${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{selectionActions}{responseFiles.dialog}<div className={`log-topbar${toolbarExpanded === undefined ? '' : ' expanded'}`}>{promptSection}{gitSection}</div></section>;
+  return <section className="log-shell"><div className={`log${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{selectionActions}{responseFiles.dialog}{gitFilePreview.dialog}<div className={`log-topbar${toolbarExpanded === undefined ? '' : ' expanded'}`}>{promptSection}{gitSection}</div></section>;
 }
 
 type MoreMenuIconName = 'actions'|'attachment'|'new-task'|'pull-request'|'push'|'swap';
@@ -2985,8 +3002,14 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperatio
   const processing = launching || startingNewTask;
   const worktreeNotes = useWorktreeNotes(worktree.id);
   const projectBrowser = useProjectBrowser(worktree.projectUrl, worktree.id);
+  const filePreview = useFilePreview(`/api/worktrees/${encodeURIComponent(worktree.id)}/file-preview`);
   const [gitExpanded, setGitExpanded] = useState(false);
   const [error, setError] = useState('');
+  // preview one inactive worktree file
+  const openGitFile = (path: string) => {
+    setGitExpanded(false);
+    void filePreview.openFile(path);
+  };
   useEffect(() => {
     if (!error) return;
     const timer = window.setTimeout(() => setError(''), 5_000);
@@ -3020,7 +3043,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperatio
   };
   const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className="log-loading inactive" role={processing ? 'status' : undefined} aria-label={startingNewTask ? 'Starting new task' : launching ? `Starting ${worktree.label}` : undefined}>{processing ? <span className="spinner" /> : null}<strong>{startingNewTask ? 'Starting new task…' : launching ? 'Starting Codex…' : 'Agent is off'}</strong><span>{startingNewTask ? 'Waiting for the fresh agent session to become ready.' : launching ? 'Creating the agent session and connecting its output.' : 'This worktree is available. Launch an agent when you are ready to continue.'}</span></div><span className={`status log-status ${processing ? 'connecting' : 'inactive'}`}>{processing ? 'Starting' : 'Off'}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div>;
   const browserPane = projectBrowser.url === undefined || projectBrowser.homeUrl === undefined ? null : <ProjectBrowserPane url={projectBrowser.url} homeUrl={projectBrowser.homeUrl} worktreeId={worktree.id} onNavigate={projectBrowser.navigate} onClose={projectBrowser.close} />;
-  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit output={output} note={worktreeNotes.pane} browser={browserPane} /></div><div className={`log-topbar${gitExpanded ? ' expanded' : ''}`}><GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} expanded={gitExpanded} onToggle={() => setGitExpanded(value => !value)} reviewUnavailable="Launch agent to review" /></div></section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} /><PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions"><span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} /><button className="queue" disabled={!worktree.available || processing} onClick={() => void launch()}>{startingNewTask ? <><span className="spinner" />Starting new task</> : launching ? <><span className="spinner" />Launching</> : 'Launch agent'}</button></div></section></article>;
+  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{filePreview.dialog}<div className={`log-topbar${gitExpanded ? ' expanded' : ''}`}><GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} expanded={gitExpanded} onToggle={() => setGitExpanded(value => !value)} onOpenFile={openGitFile} reviewUnavailable="Launch agent to review" /></div></section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} /><PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions"><span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} /><button className="queue" disabled={!worktree.available || processing} onClick={() => void launch()}>{startingNewTask ? <><span className="spinner" />Starting new task</> : launching ? <><span className="spinner" />Launching</> : 'Launch agent'}</button></div></section></article>;
 }
 
 // render browser notification enrollment

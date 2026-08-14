@@ -23,7 +23,7 @@ test('shows worktree prompt history and cycles it from the composer', async ({ p
         window.setTimeout(() => {
           this.readyState = MockWebSocket.OPEN;
           this.onopen?.(new Event('open'));
-          if (this.url.includes('/ws/logs/')) this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'reset', text: 'Ready\n', lastPrompt: 'Second prompt' }) }));
+          if (this.url.includes('/ws/logs/')) this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'reset', text: 'Ready\n', lastPrompt: 'First prompt' }) }));
         });
       }
       send() {}

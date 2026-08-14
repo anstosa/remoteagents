@@ -496,8 +496,8 @@ describe('worktree notes API', () => {
   }, 15_000);
 });
 
-describe('assistant response files API', () => {
-  it('lists and previews files in the current agent workspace', async () => {
+describe('workspace files API', () => {
+  it('lists response files and previews active or inactive workspace files', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false, command: 'codex' };
     const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', title: 'Ready' };
@@ -513,11 +513,15 @@ describe('assistant response files API', () => {
       const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
       const listed = await filesApp.inject({ method: 'POST', url: '/api/agents/agent-1/message-files', headers, payload: { message: 'Changed `src/main.ts`.' } });
       const previewed = await filesApp.inject({ method: 'POST', url: '/api/agents/agent-1/file-preview', headers, payload: { path: 'src/main.ts' } });
+      const worktreePreviewed = await filesApp.inject({ method: 'POST', url: '/api/worktrees/cora/file-preview', headers, payload: { path: 'src/main.ts' } });
       const invalid = await filesApp.inject({ method: 'POST', url: '/api/agents/agent-1/file-preview', headers, payload: { path: '' } });
+      const missingWorktree = await filesApp.inject({ method: 'POST', url: '/api/worktrees/missing/file-preview', headers, payload: { path: 'src/main.ts' } });
 
       expect(listed.json()).toEqual({ files: [{ path: 'src/main.ts', size: 12 }] });
       expect(previewed.json()).toEqual({ path: 'src/main.ts', size: 12, binary: false, truncated: false, content: 'const ok=1;\n' });
+      expect(worktreePreviewed.json()).toEqual(previewed.json());
       expect(invalid.statusCode).toBe(400);
+      expect(missingWorktree.statusCode).toBe(404);
     } finally { await filesApp.close(); }
   }, 15_000);
 });

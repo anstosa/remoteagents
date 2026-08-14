@@ -239,7 +239,8 @@ html.software-keyboard-open .tabs { display: none; }
 .git-status-group, .git-status-file-list { display: grid; min-width: 0; gap: .18rem; }
 .git-status-group-header { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) auto auto; gap: .6rem; align-items: baseline; padding-bottom: .12rem; border-bottom: 1px solid color-mix(in srgb, var(--surface-1) 72%, transparent); color: var(--overlay-0); font-size: 1rem; text-transform: uppercase; letter-spacing: .04em; }
 .git-status-group-header strong { overflow-wrap: anywhere; color: var(--subtext-1); font: inherit; font-weight: 800; }
-.git-status-file { display: grid; min-width: 0; grid-template-columns: 2.2rem minmax(0, 1fr) auto; gap: .45rem; align-items: start; color: var(--subtext-0); font-size: .62rem; font-weight: 400; }
+.git-status-file { display: grid; width: 100%; min-width: 0; grid-template-columns: 2.2rem minmax(0, 1fr) auto; gap: .45rem; align-items: start; border: 0; border-radius: var(--control-radius); padding: .12rem 0; background: transparent; color: var(--subtext-0); box-shadow: none; font-size: .62rem; font-weight: 400; text-align: left; }
+.git-status-file:hover { background: color-mix(in srgb, var(--lavender) 12%, transparent); color: var(--text); filter: none; }
 .git-status-file-code { color: var(--yellow); white-space: pre; }
 .git-status-file.untracked .git-status-file-code { color: var(--green); }
 .git-status-file.conflicted .git-status-file-code { color: var(--red); }
