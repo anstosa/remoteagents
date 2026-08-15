@@ -2,11 +2,73 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 type Request = (url: string, init?: RequestInit) => Promise<Response>;
 type VoiceState = 'idle' | 'connecting' | 'connected' | 'error';
-type TranscriptEntry = { id: string; role: 'user' | 'assistant' | 'tool'; text: string };
+export type ToolState = 'running' | 'completed' | 'incomplete' | 'failed';
+export type SpeechTranscriptEntry = { id: string; role: 'user' | 'assistant'; text: string; timestamp: number };
+export type ToolTranscriptEntry = { id: string; role: 'tool'; text: string; timestamp: number; name: string; status: ToolState; request?: string; result?: string; error?: string };
+export type TranscriptEntry = SpeechTranscriptEntry | ToolTranscriptEntry;
+type ToolTranscriptPatch = Partial<Pick<ToolTranscriptEntry, 'name' | 'status' | 'request' | 'result' | 'error'>>;
 type RealtimeCredential = { ok: true; clientSecret: { value: string }; model: string };
 type VoiceTarget = { worktreeId?: string; worktreeLabel?: string; agentId?: string };
 type WorktreeSelection = { worktreeId: string; worktreeLabel: string };
 type SelectWorktree = (worktreeId: string) => WorktreeSelection | undefined;
+const toolDetailMaxChars = 8 * 1_024;
+const toolHistoryMaxChars = 256 * 1_024;
+
+// narrow one provider object
+function recordFrom(value: unknown): Record<string, unknown> | undefined {
+  // require a non-array object
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
+// retain one searchable provider detail
+function detailFrom(value: unknown): string | undefined {
+  // preserve non-empty strings directly
+  if (typeof value === 'string') return value.trim() === '' ? undefined : value;
+  // skip absent values
+  if (value === undefined || value === null) return undefined;
+  try { return JSON.stringify(value); }
+  catch { return String(value); }
+}
+
+// bound one retained provider detail
+function boundedToolDetail(value: string | undefined): string | undefined {
+  // preserve absent and already compact details
+  if (value === undefined || value.length <= toolDetailMaxChars) return value;
+  const suffix = '\n… [truncated]';
+  return `${value.slice(0, toolDetailMaxChars - suffix.length)}${suffix}`;
+}
+
+// measure retained tool detail
+function toolEntryChars(entry: ToolTranscriptEntry): number {
+  return entry.name.length + entry.text.length + (entry.request?.length ?? 0) + (entry.result?.length ?? 0) + (entry.error?.length ?? 0);
+}
+
+// keep recent tool history within one character budget
+function boundedToolHistory(entries: TranscriptEntry[]): TranscriptEntry[] {
+  const retained: TranscriptEntry[] = [];
+  let toolChars = 0;
+  // prefer the newest structured tool entries
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    // retain speech outside the tool-detail budget
+    if (entry.role !== 'tool') {
+      retained.push(entry);
+      continue;
+    }
+    const size = toolEntryChars(entry);
+    // discard only older tool rows beyond the budget
+    if (toolChars + size > toolHistoryMaxChars) continue;
+    toolChars += size;
+    retained.push(entry);
+  }
+  return retained.reverse();
+}
+
+// read one provider string field
+function stringFrom(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+}
 
 // measure one normalized audio amplitude
 function audioLevel(analyser: AnalyserNode | undefined): number {
@@ -92,12 +154,21 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
   const outputSpeaking = useRef(false);
   const mutedRef = useRef(false);
   const toolsReady = useRef(false);
+  const pendingToolNames = useRef(new Map<string, string>());
+  const finalizedToolIds = useRef(new Set<string>());
   const silentInterruptionUntil = useRef(0);
   const silentResponseStarted = useRef(false);
   const selectWorktree = useRef(onSelectWorktree);
   const activeWorktreeLabel = useRef(target.worktreeLabel ?? target.worktreeId);
   selectWorktree.current = onSelectWorktree;
   activeWorktreeLabel.current = target.worktreeLabel ?? target.worktreeId;
+
+  // publish the remaining tool batch progress
+  const syncToolStatus = useCallback(() => {
+    const names = [...pendingToolNames.current.values()];
+    const name = names.at(-1);
+    setToolStatus(name === undefined ? undefined : `Tool · ${name}`);
+  }, []);
 
   // stop the shared audio meter
   const stopMeter = useCallback(() => {
@@ -210,6 +281,8 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
     hangupPending.current = false;
     mutedRef.current = false;
     toolsReady.current = false;
+    pendingToolNames.current.clear();
+    finalizedToolIds.current.clear();
     silentInterruptionUntil.current = 0;
     silentResponseStarted.current = false;
     setMuted(false);
@@ -225,18 +298,39 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
     setState('error');
   }, [stop]);
 
-  // retain bounded transcript entries
-  const appendTranscript = useCallback((entry: TranscriptEntry) => {
-    setTranscript(current => [...current.slice(-99), entry]);
+  // merge one bounded tool history entry
+  const updateToolTranscript = useCallback((id: string, patch: ToolTranscriptPatch) => {
+    setTranscript(current => {
+      const existing = current.find((entry): entry is ToolTranscriptEntry => entry.id === id && entry.role === 'tool');
+      const name = patch.name ?? existing?.name ?? 'Remote Agents tool';
+      const status = patch.status ?? existing?.status ?? 'running';
+      const requestDetail = boundedToolDetail(patch.request ?? existing?.request);
+      const resultDetail = boundedToolDetail(patch.result ?? existing?.result);
+      const errorDetail = boundedToolDetail(patch.error ?? existing?.error);
+      const entry: ToolTranscriptEntry = {
+        id,
+        role: 'tool',
+        text: `${name}: ${status}`,
+        timestamp: existing?.timestamp ?? Date.now(),
+        name,
+        status,
+        ...(requestDetail === undefined ? {} : { request: requestDetail }),
+        ...(resultDetail === undefined ? {} : { result: resultDetail }),
+        ...(errorDetail === undefined ? {} : { error: errorDetail })
+      };
+      const withoutEntry = current.filter(candidate => candidate.id !== id);
+      return boundedToolHistory([...withoutEntry.slice(-99), entry]);
+    });
   }, []);
 
   // stream one in-progress user transcript
   const updateUser = useCallback((itemId: string, delta: string) => {
     const id = `user-${itemId}`;
     setTranscript(current => {
-      const draft = current.find(entry => entry.id === id)?.text ?? '';
+      const existing = current.find(entry => entry.id === id && entry.role === 'user');
+      const draft = existing?.text ?? '';
       const withoutDraft = current.filter(entry => entry.id !== id);
-      return [...withoutDraft.slice(-99), { id, role: 'user', text: `${draft}${delta}` }];
+      return [...withoutDraft.slice(-99), { id, role: 'user', text: `${draft}${delta}`, timestamp: existing?.timestamp ?? Date.now() }];
     });
   }, []);
 
@@ -244,10 +338,11 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
   const completeUser = useCallback((itemId: string, text: string) => {
     const id = `user-${itemId}`;
     setTranscript(current => {
+      const existing = current.find(entry => entry.id === id && entry.role === 'user');
       const withoutDraft = current.filter(entry => entry.id !== id);
       // discard empty provider transcripts
       if (text.trim() === '') return withoutDraft;
-      return [...withoutDraft.slice(-99), { id, role: 'user', text }];
+      return [...withoutDraft.slice(-99), { id, role: 'user', text, timestamp: existing?.timestamp ?? Date.now() }];
     });
   }, []);
 
@@ -262,8 +357,9 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
     assistantDraft.current += delta;
     const text = assistantDraft.current;
     setTranscript(current => {
+      const existing = current.find(entry => entry.id === 'assistant-live' && entry.role === 'assistant');
       const withoutDraft = current.filter(entry => entry.id !== 'assistant-live');
-      return [...withoutDraft.slice(-99), { id: 'assistant-live', role: 'assistant', text }];
+      return [...withoutDraft.slice(-99), { id: 'assistant-live', role: 'assistant', text, timestamp: existing?.timestamp ?? Date.now() }];
     });
   }, []);
 
@@ -281,6 +377,7 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
     try { payload = JSON.parse(event.data) as Record<string, unknown>; }
     catch { return; }
     const type = typeof payload.type === 'string' ? payload.type : '';
+    const item = recordFrom(payload.item);
     // enable speech only after MCP discovery succeeds
     if (type === 'mcp_list_tools.completed') {
       toolsReady.current = true;
@@ -300,11 +397,20 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
       const worktreeId = worktreeIdFromArguments(payload.arguments);
       const selection = worktreeId === undefined ? undefined : selectWorktree.current?.(worktreeId);
       const callId = typeof payload.call_id === 'string' ? payload.call_id : undefined;
+      const requestDetail = detailFrom(payload.arguments);
+      const output = selection === undefined
+        ? { ok: false, error: worktreeId === undefined ? 'invalid worktree selection' : 'worktree is not available in the browser' }
+        : { ok: true, worktree_id: selection.worktreeId, worktree_label: selection.worktreeLabel };
+      const toolError = callId === undefined ? 'missing function call identifier' : selection === undefined ? (worktreeId === undefined ? 'invalid worktree selection' : 'worktree is not available in the browser') : undefined;
+      updateToolTranscript(`tool-${callId ?? crypto.randomUUID()}`, {
+        name: 'select_worktree',
+        status: toolError === undefined ? 'completed' : 'failed',
+        ...(requestDetail === undefined ? {} : { request: requestDetail }),
+        result: JSON.stringify(output),
+        ...(toolError === undefined ? {} : { error: toolError })
+      });
       // answer only valid provider function calls
       if (callId !== undefined && channel.current?.readyState === 'open') {
-        const output = selection === undefined
-          ? { ok: false, error: worktreeId === undefined ? 'invalid worktree selection' : 'worktree is not available in the browser' }
-          : { ok: true, worktree_id: selection.worktreeId, worktree_label: selection.worktreeLabel };
         channel.current.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(output) } }));
         channel.current.send(JSON.stringify({ type: 'response.create' }));
       }
@@ -361,7 +467,10 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
     // replace the live draft with the final transcript
     if ((type === 'response.audio_transcript.done' || type === 'response.output_audio_transcript.done') && typeof payload.transcript === 'string') {
       assistantDraft.current = '';
-      setTranscript(current => [...current.filter(entry => entry.id !== 'assistant-live').slice(-99), { id: crypto.randomUUID(), role: 'assistant', text: payload.transcript as string }]);
+      setTranscript(current => {
+        const existing = current.find(entry => entry.id === 'assistant-live' && entry.role === 'assistant');
+        return [...current.filter(entry => entry.id !== 'assistant-live').slice(-99), { id: crypto.randomUUID(), role: 'assistant', text: payload.transcript as string, timestamp: existing?.timestamp ?? Date.now() }];
+      });
     }
     // provide a provider-backed Davo playback fallback
     if (type === 'output_audio_buffer.started') {
@@ -377,20 +486,85 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
       outputSpeaking.current = false;
       if (outputAnalyser.current === undefined) setOutputLevel(0);
     }
-    // surface remote MCP progress without exposing arguments
-    if (type.includes('mcp') || type.includes('tool')) {
-      const name = typeof payload.name === 'string' ? payload.name : 'Remote Agents tool';
-      let status = 'running';
-      // mark completed tools
-      if (type.endsWith('.done') || type.endsWith('.completed')) status = 'completed';
-      // mark failed tools
-      else if (type.endsWith('.failed')) status = 'failed';
-      setToolStatus(`${name}: ${status}`);
-      // retain completed tool lifecycle entries
-      if (status !== 'running') appendTranscript({ id: crypto.randomUUID(), role: 'tool', text: `${name}: ${status}` });
+    // merge MCP items carrying request and result detail
+    if ((type === 'response.output_item.added' || type === 'response.output_item.done' || type === 'conversation.item.added') && item?.type === 'mcp_call') {
+      const itemId = stringFrom(item.id) ?? stringFrom(payload.item_id);
+      // ignore lifecycle events that cannot be correlated safely
+      if (itemId === undefined) return;
+      const name = stringFrom(item.name);
+      const requestDetail = detailFrom(item.arguments);
+      const resultDetail = detailFrom(item.output);
+      const itemError = detailFrom(item.error);
+      const terminal = type === 'response.output_item.done';
+      const status: ToolState = itemError !== undefined || item.status === 'failed'
+        ? 'failed'
+        : item.status === 'completed'
+          ? 'completed'
+          : terminal
+            ? 'incomplete'
+            : 'running';
+      const errorDetail = itemError ?? (status === 'failed' ? 'Tool call failed.' : undefined);
+      updateToolTranscript(`tool-${itemId}`, {
+        ...(name === undefined ? {} : { name }),
+        status,
+        ...(requestDetail === undefined ? {} : { request: requestDetail }),
+        ...(resultDetail === undefined ? {} : { result: resultDetail }),
+        ...(errorDetail === undefined ? {} : { error: errorDetail })
+      });
+      // track only active correlated tool work
+      if (status === 'running') pendingToolNames.current.set(itemId, name ?? pendingToolNames.current.get(itemId) ?? 'Remote Agents');
+      else pendingToolNames.current.delete(itemId);
+      syncToolStatus();
+      return;
     }
-    // ask Davo to speak the completed tool result
-    if ((type === 'response.mcp_call.completed' || type === 'response.mcp_call.failed') && channel.current?.readyState === 'open') channel.current.send(JSON.stringify({ type: 'response.create' }));
+    // retain finalized MCP request arguments
+    if (type === 'response.mcp_call_arguments.done') {
+      const itemId = stringFrom(payload.item_id);
+      // ignore lifecycle events that cannot be correlated safely
+      if (itemId === undefined) return;
+      const name = stringFrom(payload.name);
+      const requestDetail = detailFrom(payload.arguments);
+      updateToolTranscript(`tool-${itemId}`, { ...(name === undefined ? {} : { name }), status: 'running', ...(requestDetail === undefined ? {} : { request: requestDetail }) });
+      pendingToolNames.current.set(itemId, name ?? pendingToolNames.current.get(itemId) ?? 'Remote Agents');
+      syncToolStatus();
+      return;
+    }
+    // merge one MCP lifecycle update
+    if (type === 'response.mcp_call.in_progress' || type === 'response.mcp_call.completed' || type === 'response.mcp_call.failed') {
+      const itemId = stringFrom(payload.item_id);
+      // ignore lifecycle events that cannot be correlated safely
+      if (itemId === undefined) return;
+      const name = stringFrom(payload.name);
+      const requestDetail = detailFrom(payload.arguments);
+      const resultDetail = detailFrom(payload.output);
+      const status: ToolState = type.endsWith('.failed') ? 'failed' : type.endsWith('.completed') ? 'completed' : 'running';
+      const errorDetail = detailFrom(payload.error) ?? (status === 'failed' ? 'Tool call failed.' : undefined);
+      updateToolTranscript(`tool-${itemId}`, {
+        ...(name === undefined ? {} : { name }),
+        status,
+        ...(requestDetail === undefined ? {} : { request: requestDetail }),
+        ...(resultDetail === undefined ? {} : { result: resultDetail }),
+        ...(errorDetail === undefined ? {} : { error: errorDetail })
+      });
+      // retain active calls until the whole batch settles
+      if (status === 'running') {
+        pendingToolNames.current.set(itemId, name ?? pendingToolNames.current.get(itemId) ?? 'Remote Agents');
+        syncToolStatus();
+        return;
+      }
+      pendingToolNames.current.delete(itemId);
+      syncToolStatus();
+      const duplicateTerminal = finalizedToolIds.current.has(itemId);
+      finalizedToolIds.current.add(itemId);
+      // ask Davo to speak once after the complete tool batch
+      if (!duplicateTerminal && pendingToolNames.current.size === 0 && channel.current?.readyState === 'open') channel.current.send(JSON.stringify({ type: 'response.create' }));
+      return;
+    }
+    // retain MCP discovery progress without history noise
+    if (type === 'mcp_list_tools.in_progress') {
+      setToolStatus('Loading Davo tools…');
+      return;
+    }
     // hang up only after WebRTC playback drains
     if (type === 'output_audio_buffer.stopped' && hangupPending.current) {
       stop(true);
@@ -402,7 +576,7 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
       if (Date.now() < silentInterruptionUntil.current) return;
       setError('Davo reported a session error.');
     }
-  }, [appendTranscript, completeUser, discardUser, failConnection, silenceDavo, stop, updateAssistant, updateUser]);
+  }, [completeUser, discardUser, failConnection, silenceDavo, stop, syncToolStatus, updateAssistant, updateToolTranscript, updateUser]);
 
   // establish one direct browser-to-provider WebRTC session
   const start = useCallback(async () => {
@@ -436,6 +610,8 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
     setTranscript([]);
     mutedRef.current = false;
     toolsReady.current = false;
+    pendingToolNames.current.clear();
+    finalizedToolIds.current.clear();
     setMuted(false);
     try {
       const credentialResponse = await request('/api/realtime/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...(target.worktreeId === undefined ? {} : { worktreeId: target.worktreeId }), ...(target.agentId === undefined ? {} : { agentId: target.agentId }), voiceSessionId }), signal: controller.signal });

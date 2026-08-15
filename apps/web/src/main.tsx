@@ -18,7 +18,7 @@ import { isPromptKeyboardTarget, useShiftArrowTabCycling } from './tab-navigatio
 import { UpstreamRebaseBanner, type GitUpstreamSummary } from './upstream-rebase.js';
 import { useViewportFlyout } from './viewport-flyout.js';
 import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
-import { VoiceDialog } from './voice/voice-dialog.js';
+import { VoiceDialog, type VoiceWorktree } from './voice/voice-dialog.js';
 import './styles.css';
 
 type OmxQuestion = { id: string; text: string; choices: string[]; paneId: string };
@@ -137,6 +137,17 @@ const commandTokenAt = (value: string, cursor: number): CommandToken | undefined
 const actionRequired = (agent: Agent) => agent.question !== undefined || /action required/i.test(agent.title);
 const agentState = (agent: Agent): AgentState => actionRequired(agent) ? 'action-required' : /^[\u2800-\u28ff]/u.test(agent.title) ? 'working' : 'prompt-done';
 const agentLabel = (agent: Agent) => (agent.worktreeLabel ?? agent.displayLabel ?? (actionRequired(agent) ? agent.title.replace(/(?:\[\s*.\s*\]\s*)?action required\s*\|?\s*/i, '🚨 ') : agent.title)) || agent.workspace;
+// list other open worktrees once
+const otherOpenWorktrees = (agents: Agent[], activeWorktreeId: string | undefined): VoiceWorktree[] => {
+  const worktrees = new Map<string, VoiceWorktree>();
+  // collect live worktree sessions
+  for (const agent of agents) {
+    // skip scratch sessions and the active worktree
+    if (agent.worktreeId === undefined || agent.worktreeId === activeWorktreeId) continue;
+    worktrees.set(agent.worktreeId, { id: agent.worktreeId, label: agent.worktreeLabel?.trim() || agent.worktreeId });
+  }
+  return [...worktrees.values()].sort((left, right) => left.label.localeCompare(right.label) || left.id.localeCompare(right.id));
+};
 type SpeechRecognitionResult = ArrayLike<{ transcript: string }> & { isFinal: boolean };
 type SpeechRecognitionInstance = { continuous: boolean; interimResults: boolean; lang: string; start: () => void; abort: () => void; onresult: ((event: { resultIndex: number; results: ArrayLike<SpeechRecognitionResult> }) => void) | null; onend: (() => void) | null; onerror: ((event: { error?: string }) => void) | null };
 type SpeechRecognitionConstructor = new () => SpeechRecognitionInstance;
@@ -3847,7 +3858,7 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, updateErro
   const stateLabel: Record<AgentState, string> = { working: 'Working', 'prompt-done': 'Prompt done', 'action-required': 'Action required', closed: 'Agent closed', sleeping: 'Sleeping' };
   const operationLabel = (operation: DashboardItem['operation']) => operation === 'launching' ? 'Starting agent' : operation === 'deactivating' ? 'Turning off' : operation === 'sleeping' ? 'Going to sleep' : operation === 'waking' ? 'Waking up' : operation === 'new-task' ? 'Starting new task' : undefined;
   const activeWorktreeId = item?.agent?.worktreeId ?? item?.worktree?.id;
-  const voiceContext = { server: serverInfo.name, ...(activeWorktreeId === undefined ? {} : { worktreeId: activeWorktreeId, worktree: item?.agent?.worktreeLabel ?? data.worktrees.find(worktree => worktree.id === activeWorktreeId)?.label ?? activeWorktreeId }), ...(item?.agent === undefined ? {} : { agentId: item.agent.id, agent: agentLabel(item.agent) }) };
+  const voiceContext = { server: serverInfo.name, serverUrl: serverInfo.url, openWorktrees: otherOpenWorktrees(data.agents, activeWorktreeId), ...(activeWorktreeId === undefined ? {} : { worktreeId: activeWorktreeId, worktree: item?.agent?.worktreeLabel ?? data.worktrees.find(worktree => worktree.id === activeWorktreeId)?.label ?? activeWorktreeId }), ...(item?.agent === undefined ? {} : { agentId: item.agent.id, agent: agentLabel(item.agent) }) };
   const voiceDialog = <VoiceDialog open={voiceOpen} callRequest={voiceCallRequest} context={voiceContext} request={request} onClose={closeVoice} onSelectWorktree={selectVoiceWorktree} onActiveChange={setVoiceActive} />;
   const visibleOperationFeedback = operationFeedback?.worktreeId === undefined || operationFeedback.worktreeId === activeWorktreeId ? operationFeedback : undefined;
   // minimize without discarding the cached review

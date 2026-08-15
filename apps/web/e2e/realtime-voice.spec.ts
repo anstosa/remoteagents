@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 test('opens Davo with the selected canonical context', async ({ page }) => {
+  const longWorktreeLabel = `Very long worktree label ${'x'.repeat(120)}`;
   await page.addInitScript(() => {
     class MockWebSocket {
       static readonly CONNECTING = 0;
@@ -47,8 +48,15 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
     }
     // retain the progress state
     if (url.pathname === '/api/server/update/server_update_operation_1234') return route.fulfill({ json: { id: 'server_update_operation_1234', kind: 'update', state: 'running' } });
-    // provide one selected agent and worktree
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready', unread: false }], worktrees: [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
+    // provide one selected worktree and other open worktrees
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [
+      { id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready', unread: false },
+      { id: 'agent-skills', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/worktrees/skills', worktreeId: 'skills', worktreeLabel: 'Skills', title: 'Ready', unread: false },
+      { id: 'agent-ferry', paneId: '%3', sessionId: 'socket:$3', socketFingerprint: 'socket', workspace: '/worktrees/ferry', worktreeId: 'ferry-fyi', worktreeLabel: 'Ferry FYI', title: 'Ready', unread: false },
+      { id: 'agent-ferry-review', paneId: '%4', sessionId: 'socket:$4', socketFingerprint: 'socket', workspace: '/worktrees/ferry-review', worktreeId: 'ferry-fyi', worktreeLabel: 'Ferry FYI', title: 'Review', unread: false },
+      { id: 'agent-skills-copy', paneId: '%5', sessionId: 'socket:$5', socketFingerprint: 'socket', workspace: '/worktrees/skills-copy', worktreeId: 'skills-copy', worktreeLabel: 'Skills', title: 'Ready', unread: false },
+      { id: 'agent-long-label', paneId: '%6', sessionId: 'socket:$6', socketFingerprint: 'socket', workspace: '/worktrees/long-label', worktreeId: 'long-label', worktreeLabel: longWorktreeLabel, title: 'Ready', unread: false }
+    ], worktrees: [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
     if (url.pathname === '/api/dashboard/ticket') return route.fulfill({ json: { ticket: 'dashboard-ticket' } });
     if (url.pathname === '/api/agents/agent-cora/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/agent-cora/saved-prompts') return route.fulfill({ json: { prompts: [] } });
@@ -93,7 +101,35 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
   await expect(callTrigger.locator('svg')).toHaveCount(1);
   await callTrigger.click();
   await expect(page.getByRole('heading', { name: 'Davo' })).toBeVisible();
-  await expect(page.locator('.voice-context')).toHaveText(/Garage Server.*Active: Cora.*Cora/u);
+  const context = page.getByRole('region', { name: 'Davo connection context' });
+  await expect(context.locator('.voice-context-active > small')).toHaveText('Active worktree');
+  await expect(context.locator('.voice-context-active > strong')).toHaveText('Cora');
+  await expect(context.locator('.voice-context-active > span')).toHaveText('Agent · Cora');
+  await expect(context.locator('.voice-context-server > small')).toHaveText('Server / instance');
+  await expect(context.locator('.voice-context-server > strong')).toHaveText('Framework');
+  await expect(context.locator('.voice-context-server > span')).toHaveText('framework.santosa.dev');
+  await expect(context.locator('.voice-context-open > small')).toHaveText('Other open worktrees');
+  await expect(context.locator('.voice-context-open li')).toHaveText(['Ferry FYI', 'Skills · skills', 'Skills · skills-copy', longWorktreeLabel]);
+  await expect(context.locator('.voice-context-open')).not.toContainText('Cora');
+  // contain long labels in the narrow mobile dialog
+  await page.setViewportSize({ width: 320, height: 700 });
+  const mobileContextMetrics = await context.evaluate(element => {
+    const dialog = element.closest('.voice-dialog')?.firstElementChild;
+    const card = element.querySelector('.voice-context-open');
+    const chip = element.querySelector('.voice-context-open li:last-child');
+    return {
+      dialogContained: dialog !== null && dialog.scrollWidth <= dialog.clientWidth,
+      chipContained: card !== null && chip !== null && chip.getBoundingClientRect().right <= card.getBoundingClientRect().right + 1
+    };
+  });
+  expect(mobileContextMetrics).toEqual({ dialogContained: true, chipContained: true });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await expect(page.locator('.voice-dialog').getByRole('alert')).toHaveText('Davo is not configured on this server.');
+  // clear a stale history filter when retrying in place
+  const historySearch = page.getByRole('searchbox', { name: 'Search Davo history' });
+  await historySearch.fill('stale filter');
+  await page.locator('.voice-dialog').getByRole('button', { name: 'Call Davo' }).click();
+  await expect(historySearch).toHaveValue('');
   await expect(page.locator('.voice-dialog').getByRole('alert')).toHaveText('Davo is not configured on this server.');
   expect(realtimeHeaders['x-csrf-token']).toBe('voice-csrf');
   expect(realtimeBody).toMatchObject({ worktreeId: 'cora', agentId: 'agent-cora', voiceSessionId: expect.any(String) });
@@ -103,6 +139,48 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
   await updateDialog.getByRole('button', { name: 'Update Server', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Updating Server' })).toContainText('Pulling, rebuilding, and restarting…');
   expect(updateStarted).toBe(true);
+});
+
+test('shows graceful Davo context fallbacks without worktree or instance data', async ({ page }) => {
+  await page.addInitScript(() => {
+    class MockWebSocket {
+      static readonly OPEN = 1;
+      readyState = MockWebSocket.OPEN;
+      onopen: ((event: Event) => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      // open the fixture connection
+      constructor(_url: string | URL) { window.setTimeout(() => this.onopen?.(new Event('open'))); }
+      // ignore fixture writes
+      send() {}
+      // close the fixture connection
+      close() { this.onclose?.(new CloseEvent('close')); }
+    }
+    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
+  });
+  await page.route('**/api/**', async route => {
+    const url = new URL(route.request().url());
+    // restore a session without instance metadata
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'voice-csrf', active: true, deviceName: 'Test device', server: { name: '   ', url: '', remotes: [] } } });
+    // provide one scratch agent without a worktree
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-scratch', sessionId: 'socket:$1', workspace: '/tmp', title: 'Scratch', unread: false }], worktrees: [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
+    if (url.pathname === '/api/dashboard/ticket') return route.fulfill({ json: { ticket: 'dashboard-ticket' } });
+    if (url.pathname === '/api/agents/agent-scratch/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    // return empty agent resources
+    if (/^\/api\/agents\/agent-scratch\/(?:saved-prompts|queued-prompts|prompt-history|skills)$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [], skills: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/realtime/session') return route.fulfill({ status: 503, json: { error: 'Realtime voice is unavailable.' } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.locator('.output-server-switcher').getByRole('button', { name: 'Call Davo' }).click();
+  const context = page.getByRole('region', { name: 'Davo connection context' });
+  await expect(context.locator('.voice-context-active > strong')).toHaveText('No worktree selected');
+  await expect(context.locator('.voice-context-server > strong')).toHaveText('Unavailable');
+  await expect(context.locator('.voice-context-server > span')).toHaveCount(0);
+  await expect(context.locator('.voice-context-open > .voice-context-fallback')).toHaveText('None');
 });
 
 test('mobile swaps between an ongoing Davo call and the main UI', async ({ page }) => {
@@ -123,6 +201,31 @@ test('mobile swaps between an ongoing Davo call and the main UI', async ({ page 
       close() { this.onclose?.(new CloseEvent('close')); }
     }
     Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
+    const wakeLockState = { requests: 0, releases: 0, forceRelease: async () => {} };
+    class MockWakeLockSentinel extends EventTarget {
+      released = false;
+      // release one held fixture lock
+      async release() {
+        // preserve idempotent browser behavior
+        if (this.released) return;
+        this.released = true;
+        wakeLockState.releases += 1;
+        this.dispatchEvent(new Event('release'));
+      }
+    }
+    let currentSentinel: MockWakeLockSentinel | undefined;
+    // simulate one user-agent initiated release
+    wakeLockState.forceRelease = async () => currentSentinel?.release();
+    // expose wake-lock activity to the test
+    Object.defineProperty(window, 'davoWakeLockState', { configurable: true, value: wakeLockState });
+    Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: {
+      // provide one fresh fixture lock
+      request: async () => {
+        wakeLockState.requests += 1;
+        currentSentinel = new MockWakeLockSentinel();
+        return currentSentinel;
+      }
+    } });
   });
   await page.setViewportSize({ width: 390, height: 844 });
   let releaseCredential!: () => void;
@@ -148,20 +251,44 @@ test('mobile swaps between an ongoing Davo call and the main UI', async ({ page 
   });
 
   await page.goto('/');
+  expect(await page.evaluate(() => (window as unknown as { davoWakeLockState: { requests: number } }).davoWakeLockState.requests)).toBe(0);
   await page.locator('.output-server-switcher').getByRole('button', { name: 'Call Davo' }).click();
   await credentialRequest;
+  await expect.poll(() => page.evaluate(() => (window as unknown as { davoWakeLockState: { requests: number } }).davoWakeLockState.requests)).toBe(1);
   const ongoingCall = page.getByRole('button', { name: 'Ongoing Davo call', exact: true });
   await expect(ongoingCall).toHaveAttribute('aria-pressed', 'true');
   await expect(ongoingCall.locator('span')).toHaveText('Ongoing');
   expect(await ongoingCall.evaluate(element => getComputedStyle(element).color)).toBe('rgb(166, 227, 161)');
   await page.getByRole('button', { name: 'Ongoing Davo call — show main UI' }).click();
   await expect(page.getByRole('heading', { name: 'Davo' })).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { davoWakeLockState: { releases: number } }).davoWakeLockState.releases)).toBe(1);
   const hiddenCall = page.getByRole('button', { name: 'Show ongoing Davo call' });
   await expect(hiddenCall).toHaveAttribute('aria-pressed', 'false');
   await expect(hiddenCall).toHaveClass(/active/u);
   await hiddenCall.click();
   await expect(page.getByRole('heading', { name: 'Davo' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Calling...' })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { davoWakeLockState: { requests: number } }).davoWakeLockState.requests)).toBe(2);
+  // release while the page is hidden
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { davoWakeLockState: { releases: number } }).davoWakeLockState.releases)).toBe(2);
+  // reacquire after returning visibly
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { davoWakeLockState: { requests: number } }).davoWakeLockState.requests)).toBe(3);
+  // release for navigation and restore from page cache
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
+  await expect.poll(() => page.evaluate(() => (window as unknown as { davoWakeLockState: { releases: number } }).davoWakeLockState.releases)).toBe(3);
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+  await expect.poll(() => page.evaluate(() => (window as unknown as { davoWakeLockState: { requests: number } }).davoWakeLockState.requests)).toBe(4);
+  // recover once from a user-agent initiated release
+  await page.evaluate(() => (window as unknown as { davoWakeLockState: { forceRelease: () => Promise<void> } }).davoWakeLockState.forceRelease());
+  await expect.poll(() => page.evaluate(() => (window as unknown as { davoWakeLockState: { requests: number } }).davoWakeLockState.requests)).toBe(5);
   releaseCredential();
 });
 
@@ -322,14 +449,85 @@ test('waits for MCP tools and requests a spoken follow-up after tool completion'
   await page.evaluate(() => (window as unknown as { davoChannel: EventTarget }).davoChannel.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'spoken-1', transcript: 'Give me a sitrep, please.' }) })));
   await expect(page.locator('.voice-user > span')).toHaveText('Give me a sitrep, please.');
   await expect(page.locator('.voice-user')).toHaveCount(1);
-  await page.evaluate(() => (window as unknown as { davoChannel: EventTarget }).davoChannel.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.mcp_call.completed', name: 'list_instances' }) })));
+  await expect(page.locator('.voice-user > time')).toHaveAttribute('datetime', /^\d{4}-\d{2}-\d{2}T/gu);
+  // merge one successful MCP lifecycle into a detailed row
+  await page.evaluate(() => {
+    const data = (window as unknown as { davoChannel: EventTarget }).davoChannel;
+    data.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.output_item.added', item: { id: 'mcp-list-instances', type: 'mcp_call', status: 'in_progress', name: 'list_instances', arguments: JSON.stringify({ scope: 'all', include_status: true }) } }) }));
+    data.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.mcp_call_arguments.done', item_id: 'mcp-list-instances', arguments: JSON.stringify({ scope: 'all', include_status: true }) }) }));
+    data.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.mcp_call.in_progress', item_id: 'mcp-list-instances' }) }));
+    data.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.output_item.done', item: { id: 'mcp-list-instances', type: 'mcp_call', status: 'completed', name: 'list_instances', arguments: JSON.stringify({ scope: 'all', include_status: true }), output: JSON.stringify({ count: 2, instances: ['Cora', 'Ferry FYI'], summary: '2 instances online', detail: 'x'.repeat(20_000) }) } }) }));
+    data.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.mcp_call.completed', item_id: 'mcp-list-instances' }) }));
+  });
   await expect.poll(() => page.evaluate(() => (window as unknown as { davoChannel: { sent: string[] } }).davoChannel.sent.map(value => JSON.parse(value) as { type: string }).filter(value => value.type === 'response.create').length)).toBe(2);
+  const listTool = page.locator('.voice-tool').filter({ hasText: 'list_instances' });
+  await expect(listTool).toHaveCount(1);
+  await expect(listTool).not.toHaveAttribute('open', '');
+  await expect(listTool.locator('summary')).toContainText('2 instances online');
+  await expect(listTool.locator('summary > b')).toHaveText('Done');
+  await expect(listTool.locator('summary > time')).toHaveAttribute('datetime', /^\d{4}-\d{2}-\d{2}T/gu);
+  await listTool.locator('summary').click();
+  await expect(listTool.getByText('Req', { exact: true })).toBeVisible();
+  await expect(listTool.getByText('Result', { exact: true })).toBeVisible();
+  await expect(listTool.locator('pre')).toContainText(['"include_status": true', '"Ferry FYI"']);
+  await expect(listTool.locator('pre').last()).toContainText('[truncated]');
+  expect(await listTool.locator('pre').last().textContent()).toHaveLength(8_192);
+  // retain incomplete calls without reporting success
+  await page.evaluate(() => {
+    const data = (window as unknown as { davoChannel: EventTarget }).davoChannel;
+    data.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.output_item.done', item: { id: 'mcp-partial', type: 'mcp_call', status: 'incomplete', name: 'inspect_logs', output: JSON.stringify({ summary: 'Provider interrupted the result' }) } }) }));
+    data.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.mcp_call.completed', name: 'uncorrelated_tool' }) }));
+  });
+  const partialTool = page.locator('.voice-tool').filter({ hasText: 'inspect_logs' });
+  await expect(partialTool.locator('summary > b')).toHaveText('Partial');
+  await expect(page.locator('.voice-tool').filter({ hasText: 'uncorrelated_tool' })).toHaveCount(0);
+  // wait for every concurrent tool before requesting one follow-up
+  await page.evaluate(() => {
+    const data = (window as unknown as { davoChannel: EventTarget }).davoChannel;
+    data.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.output_item.added', item: { id: 'mcp-concurrent-a', type: 'mcp_call', status: 'in_progress', name: 'concurrent_a' } }) }));
+    data.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.output_item.added', item: { id: 'mcp-concurrent-b', type: 'mcp_call', status: 'in_progress', name: 'concurrent_b' } }) }));
+    data.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.mcp_call.in_progress', item_id: 'mcp-concurrent-a' }) }));
+    data.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.mcp_call.in_progress', item_id: 'mcp-concurrent-b' }) }));
+    data.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.mcp_call.completed', item_id: 'mcp-concurrent-a' }) }));
+  });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { davoChannel: { sent: string[] } }).davoChannel.sent.map(value => JSON.parse(value) as { type: string }).filter(value => value.type === 'response.create').length)).toBe(2);
+  await expect(page.locator('.voice-tool-status')).toContainText('concurrent_b');
+  await page.evaluate(() => {
+    const data = (window as unknown as { davoChannel: EventTarget }).davoChannel;
+    data.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.mcp_call.completed', item_id: 'mcp-concurrent-b' }) }));
+    data.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.mcp_call.completed', item_id: 'mcp-concurrent-b' }) }));
+  });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { davoChannel: { sent: string[] } }).davoChannel.sent.map(value => JSON.parse(value) as { type: string }).filter(value => value.type === 'response.create').length)).toBe(3);
+  await expect(page.locator('.voice-tool-status')).toHaveCount(0);
+  // retain one failed MCP lifecycle with its error detail
+  await page.evaluate(() => {
+    const data = (window as unknown as { davoChannel: EventTarget }).davoChannel;
+    data.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.output_item.added', item: { id: 'mcp-read-file', type: 'mcp_call', status: 'in_progress', name: 'read_file', arguments: JSON.stringify({ path: '/private/notes.txt' }) } }) }));
+    data.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.mcp_call.failed', item_id: 'mcp-read-file' }) }));
+    data.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.output_item.done', item: { id: 'mcp-read-file', type: 'mcp_call', status: 'failed', name: 'read_file', arguments: JSON.stringify({ path: '/private/notes.txt' }), error: { type: 'mcp_execution_error', message: 'Permission denied' } } }) }));
+  });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { davoChannel: { sent: string[] } }).davoChannel.sent.map(value => JSON.parse(value) as { type: string }).filter(value => value.type === 'response.create').length)).toBe(4);
+  const failedTool = page.locator('.voice-tool').filter({ hasText: 'read_file' });
+  await expect(failedTool).toHaveCount(1);
+  await expect(failedTool.locator('summary')).toContainText('Permission denied');
+  await expect(failedTool.locator('summary > b')).toHaveText('Error');
+  await failedTool.locator('summary').click();
+  await expect(failedTool.locator('dt').filter({ hasText: /^Error$/u })).toBeVisible();
+  // search across speech and collapsed raw tool details
+  const historySearch = page.getByRole('searchbox', { name: 'Search Davo history' });
+  await historySearch.fill('/private/notes.txt');
+  await expect(failedTool).toBeVisible();
+  await expect(listTool).toHaveCount(0);
+  await historySearch.fill('sitrep');
+  await expect(page.locator('.voice-user')).toHaveCount(1);
+  await expect(page.locator('.voice-tool')).toHaveCount(0);
+  await historySearch.fill('');
   // switch Davo and the browser to one resolved worktree
   await page.evaluate(() => (window as unknown as { davoChannel: EventTarget }).davoChannel.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.function_call_arguments.done', name: 'select_worktree', call_id: 'select-ferry', arguments: JSON.stringify({ worktree_id: 'ferry-fyi' }) }) })));
   await expect(page.getByRole('tab', { name: /Ferry FYI/u })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.locator('.voice-context')).toContainText('Active: Ferry FYI');
+  await expect(page.locator('.voice-context-active > strong')).toHaveText('Ferry FYI');
   await expect.poll(() => page.evaluate(() => (window as unknown as { davoChannel: { sent: string[] } }).davoChannel.sent.map(value => JSON.parse(value) as { type: string; item?: { type?: string; call_id?: string; output?: string } }).find(value => value.type === 'conversation.item.create' && value.item?.call_id === 'select-ferry'))).toMatchObject({ item: { type: 'function_call_output', call_id: 'select-ferry', output: expect.stringContaining('Ferry FYI') } });
-  await expect.poll(() => page.evaluate(() => (window as unknown as { davoChannel: { sent: string[] } }).davoChannel.sent.map(value => JSON.parse(value) as { type: string }).filter(value => value.type === 'response.create').length)).toBe(3);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { davoChannel: { sent: string[] } }).davoChannel.sent.map(value => JSON.parse(value) as { type: string }).filter(value => value.type === 'response.create').length)).toBe(5);
   const assistantMessages = await page.locator('.voice-assistant').count();
   // cancel a bare interruption without replying
   await page.evaluate(() => {
