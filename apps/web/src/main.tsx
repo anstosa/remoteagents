@@ -36,7 +36,7 @@ type NewTaskAvailability = { enabled: boolean; reason?: string };
 type OperationFeedback = { id: number; tone: 'pending'|'success'|'error'; message: string; detail: string; worktreeId?: string };
 type CleanupTarget = { id: string; kind: 'orphan-worker'|'stale-agent'|'hud-pane'|'hud-process'; label: string; detail: string };
 type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: OmxQuestion; stack?: Stack; unread?: boolean; queuedPromptCount: number };
-type Worktree = { id: string; label: string; path: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; order: number; projectUrl?: string; pullRequest?: PullRequestSummary; stack?: Stack };
+type Worktree = { id: string; label: string; path: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; sleeping?: boolean; order: number; projectUrl?: string; pullRequest?: PullRequestSummary; stack?: Stack };
 type ReviewTourCapability = { available: true } | { available: false; reason: 'generator_unavailable'|'unsupported_cli'|'configuration_invalid'|'authentication_required' };
 type StoredReviewSummary = { worktreeId: string; branch: string; savedAt: string; title: string; scope: ReviewScope; includeTests: boolean; includeDocs: boolean; fingerprint: string };
 type ReviewButtonState = ReviewTourIndicator & { onOpen: () => void };
@@ -62,8 +62,8 @@ const isCleanupTarget = (value: unknown): value is CleanupTarget => value !== nu
   && ['orphan-worker', 'stale-agent', 'hud-pane', 'hud-process'].includes((value as CleanupTarget).kind)
   && typeof (value as CleanupTarget).label === 'string'
   && typeof (value as CleanupTarget).detail === 'string';
-type AgentState = 'working' | 'prompt-done' | 'action-required' | 'closed';
-type DashboardItem = { key: string; label: string; state: AgentState; order: number; unread: boolean; operation?: 'launching'|'deactivating'|'new-task'; agent?: Agent; worktree?: Worktree };
+type AgentState = 'working' | 'prompt-done' | 'action-required' | 'closed' | 'sleeping';
+type DashboardItem = { key: string; label: string; state: AgentState; order: number; unread: boolean; operation?: 'launching'|'deactivating'|'sleeping'|'waking'|'new-task'; agent?: Agent; worktree?: Worktree };
 type LogFrame = { type: 'append' | 'reset'; text?: string; older?: boolean; newer?: boolean; lastPrompt?: string; latestAgentMessage?: string; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean };
 type ChoiceOption = { label: string; number: number; answerIndex: number };
 type ChoiceQuestion = { text: string; choices: ChoiceOption[]; omxId?: string };
@@ -221,6 +221,10 @@ const pullRequestSwitchCache = new Map<string, PullRequestSwitchAvailability>();
 const newTaskOperationKey = (worktreeId: string) => `new-task:${worktreeId}`;
 const launchOperationKey = (worktreeId: string) => `worktree-launch:${worktreeId}`;
 const deactivateOperationKey = (worktreeId: string) => `deactivate:${worktreeId}`;
+// track sleep transitions by worktree
+const sleepOperationKey = (worktreeId: string) => `sleep:${worktreeId}`;
+// track wake transitions by worktree
+const wakeOperationKey = (worktreeId: string) => `wake:${worktreeId}`;
 const defaultPushAction: PromptAction = { label: 'Commit/Push', prompt: 'review, commit, and push' };
 const subscribeToPendingOperation = (key: string, listener: () => void) => {
   const listeners = pendingOperationListeners.get(key) ?? new Set();
@@ -546,6 +550,7 @@ const serverIconPath = (icon: InstanceIcon | undefined): string => `/instance-ic
 const instanceAttentionLabel = (attention: InstanceAttention): string | undefined => {
   // map only visible attention states
   switch (attention) {
+    case 'idle': return 'Idle';
     case 'question': return 'Active question';
     case 'working': return 'Working';
     case 'completed': return 'Completed notification';
@@ -752,7 +757,34 @@ class ConsoleBoundary extends Component<{ children: ReactNode }, { failed: boole
   }
 }
 
-function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting, deactivating, swapping, swapped, onCancel, onDelete, onDeactivate, onSwap, onSelectTarget, onPromptFocus, onOperationFeedback, projectUrl, browserOpen, onBrowserToggle, question, worktreeId, newTaskConfigured, pushAction, stack, review }: { id: string; history: PromptHistoryEntry[]; onHistoryChanged: () => Promise<void>; canCancel: boolean; cancelling: boolean; deleting: boolean; deactivating: boolean; swapping: boolean; swapped: boolean; onCancel: () => void; onDelete?: () => void; onDeactivate?: () => void; onSwap: () => void; onSelectTarget: (target: DashboardTarget) => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; projectUrl?: string; browserOpen?: boolean; onBrowserToggle?: () => void; question?: ChoiceQuestion; worktreeId?: string; newTaskConfigured?: boolean; pushAction?: PromptAction; stack?: Stack; review?: ReviewButtonState }) {
+// render idle configured-agent power choices
+function AgentPowerMenu({ pending, onSleep, onTurnOff }: { pending: boolean; onSleep: () => void; onTurnOff: () => void }) {
+  const [open, setOpen] = useState(false);
+  const { anchorRef, flyoutRef, style } = useViewportFlyout(open);
+  // close after outside interaction
+  useEffect(() => {
+    // listen only while visible
+    if (!open) return;
+    const close = (event: MouseEvent) => {
+      const target = event.target;
+      // ignore non-node event targets
+      if (!(target instanceof Node)) return;
+      // preserve interactions within either surface
+      if (anchorRef.current?.contains(target) || flyoutRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+  // choose one power action
+  const choose = (action: () => void) => {
+    setOpen(false);
+    action();
+  };
+  return <><span className="power-menu-wrap" ref={anchorRef}><button className="danger icon-button deactivate-agent" disabled={pending} aria-label="Agent power options" aria-expanded={open} aria-haspopup="menu" title="Agent power options" onClick={() => setOpen(current => !current)}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button></span>{open && createPortal(<div className="more-menu flyout-menu agent-power-menu" ref={flyoutRef} style={style} role="menu" aria-label="Agent power options"><button type="button" role="menuitem" onClick={() => choose(onSleep)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg>Sleep</button><button className="agent-power-off" type="button" role="menuitem" onClick={() => choose(onTurnOff)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>Turn off</button></div>, document.body)}</>;
+}
+
+function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting, deactivating, sleeping, swapping, swapped, onCancel, onDelete, onDeactivate, onSleep, onSwap, onSelectTarget, onPromptFocus, onOperationFeedback, projectUrl, browserOpen, onBrowserToggle, question, worktreeId, newTaskConfigured, pushAction, stack, review }: { id: string; history: PromptHistoryEntry[]; onHistoryChanged: () => Promise<void>; canCancel: boolean; cancelling: boolean; deleting: boolean; deactivating: boolean; sleeping: boolean; swapping: boolean; swapped: boolean; onCancel: () => void; onDelete?: () => void; onDeactivate?: () => void; onSleep?: () => void; onSwap: () => void; onSelectTarget: (target: DashboardTarget) => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; projectUrl?: string; browserOpen?: boolean; onBrowserToggle?: () => void; question?: ChoiceQuestion; worktreeId?: string; newTaskConfigured?: boolean; pushAction?: PromptAction; stack?: Stack; review?: ReviewButtonState }) {
   const [value, setValue] = usePromptDraft(id);
   const [commandToken, setCommandToken] = useState<CommandToken>();
   const [activeCommand, setActiveCommand] = useState(0);
@@ -1240,8 +1272,8 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
   const mobileKeys = <div className="mobile-terminal-keys" aria-label="Terminal keys"><div className="mobile-control-keys"><button type="button" aria-label="Esc" onPointerDown={event => { event.preventDefault(); mobileControl('\x1b'); }}>Esc</button><button type="button" aria-label="Ctrl+C" onPointerDown={event => { event.preventDefault(); mobileControl('\x03'); }}>Ctrl+C</button></div><div className="mobile-key-modifiers"><button type="button" aria-label="Tab" onPointerDown={event => { event.preventDefault(); mobileKey('tab'); }}>Tab</button><button type="button" className={shiftActive ? 'active' : ''} aria-pressed={shiftActive} onPointerDown={event => { event.preventDefault(); toggleModifier('shift'); }}>Shift</button><button type="button" className={ctrlActive ? 'active' : ''} aria-pressed={ctrlActive} onPointerDown={event => { event.preventDefault(); toggleModifier('ctrl'); }}>Ctrl</button><button type="button" className={altActive ? 'active' : ''} aria-pressed={altActive} onPointerDown={event => { event.preventDefault(); toggleModifier('alt'); }}>Alt</button></div><div className="mobile-arrow-keys"><button type="button" aria-label="Slash" onPointerDown={event => { event.preventDefault(); mobileKey('slash'); }}>/</button><button type="button" aria-label="Up arrow" onPointerDown={event => { event.preventDefault(); mobileKey('up'); }}><MobileKeyIcon name="up" /></button><button type="button" aria-label="Dollar" onPointerDown={event => { event.preventDefault(); mobileKey('dollar'); }}>$</button><button type="button" aria-label="Left arrow" onPointerDown={event => { event.preventDefault(); mobileKey('left'); }}><MobileKeyIcon name="left" /></button><button type="button" aria-label="Down arrow" onPointerDown={event => { event.preventDefault(); mobileKey('down'); }}><MobileKeyIcon name="down" /></button><button type="button" aria-label="Right arrow" onPointerDown={event => { event.preventDefault(); mobileKey('right'); }}><MobileKeyIcon name="right" /></button></div></div>;
   const cancelButton = <button className="danger icon-button cancel-agent" disabled={!canCancel || cancelling} aria-label="Cancel agent" title="Cancel agent" onClick={onCancel}>{cancelling ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>}</button>;
   const deleteButton = <button className="danger icon-button delete-agent" disabled={deleting} aria-label="Delete agent" title="Delete agent" onClick={onDelete}>{deleting ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button>;
-  const offButton = <button className="danger icon-button deactivate-agent" disabled={deactivating} aria-label="Turn off worktree agent" title="Turn off worktree agent" onClick={onDeactivate}>{deactivating ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button>;
-  const stop = onDeactivate !== undefined ? offButton : onDelete === undefined ? cancelButton : deleteButton;
+  const powerMenu = onDeactivate === undefined || onSleep === undefined ? null : <AgentPowerMenu pending={deactivating || sleeping} onSleep={onSleep} onTurnOff={onDeactivate} />;
+  const stop = powerMenu ?? (onDelete === undefined ? cancelButton : deleteButton);
   const swapLabel = swapped ? 'Return to agent output' : 'Swap to terminal';
   const swap = <button className={`swap-agent icon-button${swapped ? ' active' : ''}`} disabled={swapping} aria-label={swapLabel} title={swapped ? 'Return to agent output' : 'Background agent and show terminal'} onClick={onSwap}>{swapping ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h13m0 0-4-4m4 4-4 4M19 17H6m0 0 4 4m-4-4 4-4" /></svg>}</button>;
   const reviewButton = review === undefined ? null : <button className={`review-tour-toggle icon-button${review.generating ? ' generating' : ''}${review.stale ? ' stale' : ''}`} type="button" aria-label={review.generating ? 'Open generating guided review' : review.stale ? 'Open out-of-date guided review' : 'Open guided review'} aria-busy={review.generating} title={review.generating ? 'Guided review is generating' : review.stale ? 'Guided review is out of date' : 'Open guided review'} onClick={review.onOpen}>{review.generating ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 2h8l5 5v4M5 2v20h8M13 2v6h5" /><circle cx="16.5" cy="16.5" r="3.5" /><path d="m19 19 3 3" /></svg>}</button>;
@@ -3044,6 +3076,7 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
   const [cancelling, setCancelling] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deactivating, setDeactivating] = useState(false);
+  const [sleeping, setSleeping] = useState(false);
   const [swapping, setSwapping] = useState(false);
   const [question, setQuestion] = useState<ChoiceQuestion>();
   const promptHistory = usePromptHistory(agent.id);
@@ -3083,6 +3116,25 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
     finally {
       setPendingOperation(deactivateOperationKey(agent.worktreeId), false);
       setDeactivating(false);
+    }
+  };
+  // sleep one configured agent
+  const sleep = async () => {
+    // require an idle configured target
+    if (sleeping || agent.worktreeId === undefined || !beginPendingOperation(sleepOperationKey(agent.worktreeId))) return;
+    setSleeping(true);
+    const label = agent.worktreeLabel ?? agentLabel(agent);
+    onOperationFeedback({ tone: 'pending', message: `Putting ${label} to sleep…`, detail: 'Stopping the agent while keeping this tab ready to wake.', worktreeId: agent.worktreeId });
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/sleep`, { method: 'POST' });
+      // surface failed sleep
+      if (!response.ok) return onOperationFeedback({ tone: 'error', message: `${label} could not sleep`, detail: await launchError(response), worktreeId: agent.worktreeId });
+      await onDeleted();
+      onOperationFeedback({ tone: 'success', message: `${label} is sleeping`, detail: 'Use Wake up to resume the previous Codex conversation.', worktreeId: agent.worktreeId });
+    } catch { onOperationFeedback({ tone: 'error', message: `${label} could not sleep`, detail: 'The console could not be reached. The agent may still be running.', worktreeId: agent.worktreeId }); }
+    finally {
+      setPendingOperation(sleepOperationKey(agent.worktreeId), false);
+      setSleeping(false);
     }
   };
   useEffect(() => {
@@ -3145,7 +3197,7 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
     if (response.ok) await promptHistory.refresh();
     return response.ok;
   };
-  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} onBrowserNavigate={projectBrowser.navigate} onBrowserClose={projectBrowser.close} terminalMode={swapped} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />{tabBar}<UpstreamRebaseBanner summary={agent.gitUpstream} onRebase={queueRebase} /><PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) }); if (response.ok) await promptHistory.refresh(); return response.ok; }} /><Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} deactivating={deactivating} swapping={swapping} swapped={swapped} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSwap={() => void changePaneMode()} onSelectTarget={onSelectTarget} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={omxQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} pushAction={agent.push} stack={agent.stack} review={review} /></article>;
+  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} onBrowserNavigate={projectBrowser.navigate} onBrowserClose={projectBrowser.close} terminalMode={swapped} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />{tabBar}<UpstreamRebaseBanner summary={agent.gitUpstream} onRebase={queueRebase} /><PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) }); if (response.ok) await promptHistory.refresh(); return response.ok; }} /><Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} deactivating={deactivating} sleeping={sleeping} swapping={swapping} swapped={swapped} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSleep={!active && agent.worktreeId !== undefined ? () => void sleep() : undefined} onSwap={() => void changePaneMode()} onSelectTarget={onSelectTarget} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={omxQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} pushAction={agent.push} stack={agent.stack} review={review} /></article>;
 }
 
 function launchError(response: Response): Promise<string> {
@@ -3155,9 +3207,12 @@ function launchError(response: Response): Promise<string> {
 // render an inactive worktree
 function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperationFeedback }: { worktree: Worktree; tabBar: ReactNode; cleanupControl?: ReactNode; onLaunched: (agentId: string, sourceItemKey: string) => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
   const launchKey = launchOperationKey(worktree.id);
+  const wakeKey = wakeOperationKey(worktree.id);
   const launching = usePendingOperation(launchKey);
+  const waking = usePendingOperation(wakeKey);
   const startingNewTask = usePendingOperation(newTaskOperationKey(worktree.id));
-  const processing = launching || startingNewTask;
+  const sleeping = worktree.sleeping === true;
+  const processing = launching || waking || startingNewTask;
   const worktreeNotes = useWorktreeNotes(worktree.id);
   const projectBrowser = useProjectBrowser(worktree.projectUrl, worktree.id);
   const filePreview = useFilePreview(`/api/worktrees/${encodeURIComponent(worktree.id)}/file-preview`);
@@ -3173,35 +3228,41 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperatio
     const timer = window.setTimeout(() => setError(''), 5_000);
     return () => window.clearTimeout(timer);
   }, [error]);
-  const launch = async () => {
-    if (!worktree.available || processing || !beginPendingOperation(launchKey)) return;
+  // start or resume one inactive worktree
+  const start = async () => {
+    const operationKey = sleeping ? wakeKey : launchKey;
+    const action = sleeping ? 'wake' : 'launch';
+    // serialize inactive worktree actions
+    if (!worktree.available || processing || !beginPendingOperation(operationKey)) return;
     setError('');
-    onOperationFeedback({ tone: 'pending', message: `Starting ${worktree.label}…`, detail: 'Launching Codex and waiting for the agent session to become ready.', worktreeId: worktree.id });
+    onOperationFeedback({ tone: 'pending', message: `${sleeping ? 'Waking' : 'Starting'} ${worktree.label}…`, detail: sleeping ? 'Running the resume alias and waiting for the previous conversation.' : 'Launching Codex and waiting for the agent session to become ready.', worktreeId: worktree.id });
     try {
-      const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/launch`, { method: 'POST' });
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/${action}`, { method: 'POST' });
+      // surface failed starts
       if (!response.ok) {
         const message = await launchError(response);
         setError(message);
-        return onOperationFeedback({ tone: 'error', message: `${worktree.label} could not start`, detail: message, worktreeId: worktree.id });
+        return onOperationFeedback({ tone: 'error', message: `${worktree.label} could not ${sleeping ? 'wake up' : 'start'}`, detail: message, worktreeId: worktree.id });
       }
       const payload = await response.json() as { agentId?: unknown };
+      // require the discovered replacement agent
       if (typeof payload.agentId !== 'string') {
-        const message = 'The agent started but could not be opened.';
+        const message = `The agent ${sleeping ? 'woke up' : 'started'} but could not be opened.`;
         setError(message);
         return onOperationFeedback({ tone: 'error', message: `${worktree.label} could not be opened`, detail: message, worktreeId: worktree.id });
       }
       onLaunched(payload.agentId, `worktree-${worktree.id}`);
-      onOperationFeedback({ tone: 'success', message: `${worktree.label} is starting`, detail: 'The new agent session is ready and its output is connecting.', worktreeId: worktree.id });
+      onOperationFeedback({ tone: 'success', message: `${worktree.label} ${sleeping ? 'is awake' : 'is starting'}`, detail: sleeping ? 'The previous Codex conversation resumed and its output is connecting.' : 'The new agent session is ready and its output is connecting.', worktreeId: worktree.id });
     } catch {
-      const message = 'Unable to reach the console while launching the agent.';
+      const message = `Unable to reach the console while ${sleeping ? 'waking' : 'launching'} the agent.`;
       setError(message);
-      onOperationFeedback({ tone: 'error', message: `${worktree.label} could not start`, detail: message, worktreeId: worktree.id });
+      onOperationFeedback({ tone: 'error', message: `${worktree.label} could not ${sleeping ? 'wake up' : 'start'}`, detail: message, worktreeId: worktree.id });
     }
-    finally { setPendingOperation(launchKey, false); }
+    finally { setPendingOperation(operationKey, false); }
   };
-  const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className="log-loading inactive" role={processing ? 'status' : undefined} aria-label={startingNewTask ? 'Starting new task' : launching ? `Starting ${worktree.label}` : undefined}>{processing ? <span className="spinner" /> : null}<strong>{startingNewTask ? 'Starting new task…' : launching ? 'Starting Codex…' : 'Agent is off'}</strong><span>{startingNewTask ? 'Waiting for the fresh agent session to become ready.' : launching ? 'Creating the agent session and connecting its output.' : 'This worktree is available. Launch an agent when you are ready to continue.'}</span></div><span className={`status log-status ${processing ? 'connecting' : 'inactive'}`}>{processing ? 'Starting' : 'Off'}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div>;
+  const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className={`log-loading inactive${sleeping ? ' sleeping' : ''}`} role={processing || sleeping ? 'status' : undefined} aria-label={startingNewTask ? 'Starting new task' : waking ? `Waking ${worktree.label}` : launching ? `Starting ${worktree.label}` : sleeping ? `${worktree.label} sleeping` : undefined}>{processing ? <span className="spinner" /> : sleeping ? <svg className="sleeping-agent-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg> : null}<strong>{startingNewTask ? 'Starting new task…' : waking ? 'Waking up…' : launching ? 'Starting Codex…' : sleeping ? 'Agent is sleeping' : 'Agent is off'}</strong><span>{startingNewTask ? 'Waiting for the fresh agent session to become ready.' : waking ? 'Running the resume alias and reconnecting the previous conversation.' : launching ? 'Creating the agent session and connecting its output.' : sleeping ? 'The agent process is closed, but this tab is waiting for you.' : 'This worktree is available. Launch an agent when you are ready to continue.'}</span>{sleeping && !processing && <button className="wake-agent" type="button" disabled={!worktree.available} onClick={() => void start()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>}</div><span className={`status log-status ${processing ? 'connecting' : sleeping ? 'sleeping' : 'inactive'}`}>{waking ? 'Waking' : launching || startingNewTask ? 'Starting' : sleeping ? 'Sleep' : 'Off'}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div>;
   const browserPane = projectBrowser.url === undefined || projectBrowser.homeUrl === undefined ? null : <ProjectBrowserPane url={projectBrowser.url} homeUrl={projectBrowser.homeUrl} worktreeId={worktree.id} onNavigate={projectBrowser.navigate} onClose={projectBrowser.close} />;
-  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{filePreview.dialog}<div className={`log-topbar${gitExpanded ? ' expanded' : ''}`}><GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} expanded={gitExpanded} onToggle={() => setGitExpanded(value => !value)} onOpenFile={openGitFile} reviewUnavailable="Launch agent to review" /></div></section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} /><PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions"><span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} /><button className="queue" disabled={!worktree.available || processing} onClick={() => void launch()}>{startingNewTask ? <><span className="spinner" />Starting new task</> : launching ? <><span className="spinner" />Launching</> : 'Launch agent'}</button></div></section></article>;
+  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{filePreview.dialog}<div className={`log-topbar${gitExpanded ? ' expanded' : ''}`}><GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} expanded={gitExpanded} onToggle={() => setGitExpanded(value => !value)} onOpenFile={openGitFile} reviewUnavailable="Launch agent to review" /></div></section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} /><PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions"><span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} />{!sleeping && <button className="queue" disabled={!worktree.available || processing} onClick={() => void start()}>{startingNewTask ? <><span className="spinner" />Starting new task</> : launching ? <><span className="spinner" />Launching</> : 'Launch agent'}</button>}</div></section></article>;
 }
 
 // render browser notification enrollment
@@ -3578,15 +3639,15 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
   const items: DashboardItem[] = data === undefined ? [] : [
     ...data.agents.map(agent => {
       const scope = agent.worktreeId ?? agent.id;
-      const operation = pendingOperations.has(newTaskOperationKey(scope)) ? 'new-task' as const : pendingOperations.has(deactivateOperationKey(scope)) ? 'deactivating' as const : undefined;
+      const operation = pendingOperations.has(newTaskOperationKey(scope)) ? 'new-task' as const : pendingOperations.has(deactivateOperationKey(scope)) ? 'deactivating' as const : pendingOperations.has(sleepOperationKey(scope)) ? 'sleeping' as const : undefined;
       return { key: `agent-${agent.id}`, label: agentLabel(agent), state: agentState(agent), order: agent.worktreeOrder ?? Number.MAX_SAFE_INTEGER, unread: agent.unread === true, operation, agent };
     }),
     ...data.worktrees.filter(worktree => {
       // retain pending handoff tabs
-      return worktree.pinned || pendingNewTaskSources.has(worktree.id);
+      return worktree.pinned || worktree.sleeping === true || pendingNewTaskSources.has(worktree.id);
     }).map(worktree => {
-      const operation = pendingOperations.has(newTaskOperationKey(worktree.id)) ? 'new-task' as const : pendingOperations.has(launchOperationKey(worktree.id)) ? 'launching' as const : undefined;
-      return { key: `worktree-${worktree.id}`, label: worktree.label, state: 'closed' as const, order: worktree.order, unread: false, operation, worktree };
+      const operation = pendingOperations.has(newTaskOperationKey(worktree.id)) ? 'new-task' as const : pendingOperations.has(wakeOperationKey(worktree.id)) ? 'waking' as const : pendingOperations.has(launchOperationKey(worktree.id)) ? 'launching' as const : pendingOperations.has(sleepOperationKey(worktree.id)) ? 'sleeping' as const : undefined;
+      return { key: `worktree-${worktree.id}`, label: worktree.label, state: worktree.sleeping === true ? 'sleeping' as const : 'closed' as const, order: worktree.order, unread: false, operation, worktree };
     })
   ].sort((left, right) => left.order - right.order);
   const activeItemKey = items[active]?.key;
@@ -3681,32 +3742,37 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
     if (tabsRef.current) observer.observe(tabsRef.current);
     return () => observer.disconnect();
   }, [items.length, launcherOpen, activeItemKey]);
+  // start or resume from the launcher
   const launchWorktree = async (worktree: Worktree) => {
-    const key = launchOperationKey(worktree.id);
+    const waking = worktree.sleeping === true;
+    const key = waking ? wakeOperationKey(worktree.id) : launchOperationKey(worktree.id);
+    // serialize launcher actions
     if (creatingAgent || !beginPendingOperation(key)) return;
     setLauncherOpen(false);
     setCreatingAgent(true);
     setLaunchErrorMessage('');
-    showOperationFeedback({ tone: 'pending', message: `Starting ${worktree.label}…`, detail: 'Launching Codex and waiting for the agent session to become ready.', worktreeId: worktree.id });
+    showOperationFeedback({ tone: 'pending', message: `${waking ? 'Waking' : 'Starting'} ${worktree.label}…`, detail: waking ? 'Running the resume alias and waiting for the previous conversation.' : 'Launching Codex and waiting for the agent session to become ready.', worktreeId: worktree.id });
     try {
-      const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/launch`, { method: 'POST' });
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/${waking ? 'wake' : 'launch'}`, { method: 'POST' });
+      // surface failed starts
       if (!response.ok) {
         const message = await launchError(response);
         setLaunchErrorMessage(message);
-        return showOperationFeedback({ tone: 'error', message: `${worktree.label} could not start`, detail: message, worktreeId: worktree.id });
+        return showOperationFeedback({ tone: 'error', message: `${worktree.label} could not ${waking ? 'wake up' : 'start'}`, detail: message, worktreeId: worktree.id });
       }
       const payload = await response.json() as { agentId?: unknown };
+      // require the discovered replacement agent
       if (typeof payload.agentId !== 'string') {
-        const message = 'The agent started but could not be opened.';
+        const message = `The agent ${waking ? 'woke up' : 'started'} but could not be opened.`;
         setLaunchErrorMessage(message);
         return showOperationFeedback({ tone: 'error', message: `${worktree.label} could not be opened`, detail: message, worktreeId: worktree.id });
       }
       launched(payload.agentId);
-      showOperationFeedback({ tone: 'success', message: `${worktree.label} started`, detail: 'The new agent session is ready and its output is connecting.', worktreeId: worktree.id });
+      showOperationFeedback({ tone: 'success', message: `${worktree.label} ${waking ? 'is awake' : 'started'}`, detail: waking ? 'The previous Codex conversation resumed and its output is connecting.' : 'The new agent session is ready and its output is connecting.', worktreeId: worktree.id });
     } catch {
-      const message = 'Unable to reach the console while launching the agent.';
+      const message = `Unable to reach the console while ${waking ? 'waking' : 'launching'} the agent.`;
       setLaunchErrorMessage(message);
-      showOperationFeedback({ tone: 'error', message: `${worktree.label} could not start`, detail: message, worktreeId: worktree.id });
+      showOperationFeedback({ tone: 'error', message: `${worktree.label} could not ${waking ? 'wake up' : 'start'}`, detail: message, worktreeId: worktree.id });
     } finally {
       setPendingOperation(key, false);
       setCreatingAgent(false);
@@ -3774,8 +3840,8 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
     'hud-process': 'HUD watcher'
   };
   const cleanupDialog = !cleanupOpen ? null : createPortal(<div className="dialog cleanup-dialog" role="dialog" aria-modal="true" aria-labelledby="cleanup-title"><div><header className="cleanup-header"><div><h2 id="cleanup-title">Runtime cleanup</h2><p>Select the stale runtime items to clean up. Unchecked items will be dismissed.</p></div><button className="cleanup-close" type="button" aria-label="Close cleanup" disabled={cleanupLoading} onClick={closeCleanup}>×</button></header>{cleanupLoading && cleanupTargets.length === 0 ? <p className="cleanup-loading" role="status"><span className="spinner" />Searching for cleanup targets…</p> : cleanupTargets.length === 0 ? <p className="cleanup-empty">No cleanup targets remain.</p> : <fieldset className="cleanup-targets" disabled={cleanupLoading}><legend className="sr-only">Cleanup targets</legend>{cleanupTargets.map(target => <label key={target.id} className="cleanup-target"><input type="checkbox" checked={cleanupChecked.has(target.id)} onChange={event => setCleanupChecked(current => { const next = new Set(current); if (event.target.checked) next.add(target.id); else next.delete(target.id); return next; })} /><span><strong><small>{cleanupKindLabel[target.kind]}</small>{target.label}</strong><span>{target.detail}</span></span></label>)}</fieldset>}{cleanupError && <p className="cleanup-error" role="alert">{cleanupError}</p>}<footer className="cleanup-actions"><span>{cleanupTargets.length === 0 ? 'Nothing selected' : `${cleanupChecked.size} of ${cleanupTargets.length} selected`}</span><button type="button" disabled={cleanupLoading || cleanupError === 'Unable to load cleanup targets.'} onClick={() => void resolveCleanup()}>{cleanupLoading ? <><span className="spinner" />Working…</> : cleanupChecked.size === 0 ? 'Dismiss all' : 'Cleanup'}</button></footer></div></div>, document.body);
-  const stateLabel: Record<AgentState, string> = { working: 'Working', 'prompt-done': 'Prompt done', 'action-required': 'Action required', closed: 'Agent closed' };
-  const operationLabel = (operation: DashboardItem['operation']) => operation === 'launching' ? 'Starting agent' : operation === 'deactivating' ? 'Turning off' : operation === 'new-task' ? 'Starting new task' : undefined;
+  const stateLabel: Record<AgentState, string> = { working: 'Working', 'prompt-done': 'Prompt done', 'action-required': 'Action required', closed: 'Agent closed', sleeping: 'Sleeping' };
+  const operationLabel = (operation: DashboardItem['operation']) => operation === 'launching' ? 'Starting agent' : operation === 'deactivating' ? 'Turning off' : operation === 'sleeping' ? 'Going to sleep' : operation === 'waking' ? 'Waking up' : operation === 'new-task' ? 'Starting new task' : undefined;
   const activeWorktreeId = item?.agent?.worktreeId ?? item?.worktree?.id;
   const voiceContext = { server: serverInfo.name, ...(activeWorktreeId === undefined ? {} : { worktreeId: activeWorktreeId, worktree: item?.agent?.worktreeLabel ?? data.worktrees.find(worktree => worktree.id === activeWorktreeId)?.label ?? activeWorktreeId }), ...(item?.agent === undefined ? {} : { agentId: item.agent.id, agent: agentLabel(item.agent) }) };
   const voiceDialog = <VoiceDialog open={voiceOpen} callRequest={voiceCallRequest} context={voiceContext} request={request} onClose={closeVoice} onSelectWorktree={selectVoiceWorktree} onActiveChange={setVoiceActive} />;

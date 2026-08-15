@@ -70,37 +70,54 @@ export class LaunchService {
     } finally { this.pending.delete(key); }
   }
 
+  // launch the configured worktree command
   async launch(worktreeId: string): Promise<boolean> {
+    return await this.launchWorktree(worktreeId);
+  }
+
+  // resume the previous Codex conversation through the host alias
+  async resume(worktreeId: string): Promise<boolean> {
+    return await this.launchWorktree(worktreeId, 'resume');
+  }
+
+  // start one worktree with its configured or requested command
+  private async launchWorktree(worktreeId: string, requestedCommand?: string): Promise<boolean> {
     const worktree = this.config.worktrees.find(candidate => candidate.id === worktreeId);
+    // serialize each worktree launch
     if (!worktree || this.pending.has(worktreeId)) return false;
     this.pending.add(worktreeId);
     try {
       const id = randomBytes(18).toString('base64url');
-      if (worktree.command !== undefined) {
+      const command = requestedCommand ?? worktree.command;
+      // reuse an existing interactive shell
+      if (command !== undefined) {
         const existing = await this.existingPane(worktree);
+        // send through the shell alias context
         if (existing !== undefined) {
           const buffer = `rac-launch-${id}`;
-          return await this.panes.pastePrompt(existing.socket, existing.pane.paneId, buffer, worktree.command)
+          return await this.panes.pastePrompt(existing.socket, existing.pane.paneId, buffer, command)
             && await this.panes.enter(existing.socket, existing.pane.paneId);
         }
       }
       const session = worktreeSessionName(worktree.hostPath ?? worktree.identity);
-      if (this.hostSocket !== undefined && worktree.command !== undefined) {
+      // launch host-mounted worktrees on the host socket
+      if (this.hostSocket !== undefined && command !== undefined) {
         const hostWorktree = { ...worktree, identity: worktree.hostPath ?? worktree.identity };
         const home = dirname(hostWorktree.identity);
-        const tail = ['-c', hostWorktree.identity, hostInteractiveShell, '-lc', interactiveShellBootstrap(hostCommand(expandCommand(worktree.command, hostWorktree), home), home, hostInteractiveShell)];
+        const tail = ['-c', hostWorktree.identity, hostInteractiveShell, '-lc', interactiveShellBootstrap(hostCommand(expandCommand(command, hostWorktree), home), home, hostInteractiveShell)];
         return await startNamedReplacementSession(this.tmux, this.hostSocket, session, session, tail);
       }
       await mkdir(this.root, { recursive: true, mode: 0o700 });
       const descriptor = join(this.root, `${id}.json`);
-      const payload = worktree.command === undefined
+      const payload = command === undefined
         ? { program: worktree.launch!.program, args: expandLaunch(worktree.launch!, worktree), cwd: worktree.identity }
-        : { program: interactiveShell, args: ['-lc', interactiveShellBootstrap(expandCommand(worktree.command, worktree))], cwd: worktree.identity };
+        : { program: interactiveShell, args: ['-lc', interactiveShellBootstrap(expandCommand(command, worktree))], cwd: worktree.identity };
       const handle = await open(descriptor, 'wx', 0o600);
       await handle.writeFile(JSON.stringify(payload));
       await handle.close();
       const runner = new URL('./runner.js', import.meta.url).pathname;
       const created = await run(this.tmux, ['new-session', '-d', '-s', session, process.execPath, runner, descriptor]);
+      // remove rejected launch descriptors
       if (created.code !== 0) {
         await unlink(descriptor).catch(() => {});
         return false;

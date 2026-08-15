@@ -231,6 +231,45 @@ describe('configured worktree deactivation', () => {
       expect(closed).toBe(true);
     } finally { await deactivateApp.close(); }
   }, 15_000);
+
+  it('sleeps an idle agent and wakes it through the resume alias', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false, command: 'codex' };
+    const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' };
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    let active = true;
+    let resumed = '';
+    const discovery = {
+      // expose the current process state
+      dashboard: async () => active
+        ? { generation: 1, agents: [agent], worktrees: [] }
+        : { generation: 2, agents: [], worktrees: [{ id: worktree.id, label: worktree.label, path: worktree.path, available: true, pinned: false, order: 0 }] },
+      // resolve only the live agent
+      target: async (id: string) => active && id === agent.id ? { agent, socket } : undefined
+    };
+    const launch = {
+      // wake through the requested alias
+      resume: async (id: string) => { resumed = id; active = true; return true; },
+      launch: async () => false,
+      launchHome: async () => false
+    };
+    const sleepApp = await buildApp({ ...config, worktrees: [worktree] }, { auth: new AuthService(hash, Buffer.alloc(32, 21).toString('base64url')), discovery: discovery as never, launch: launch as never, tmux: { close: async () => { active = false; return true; } } as never, launchPollDelay: async () => {} });
+    try {
+      const boot = await sleepApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await sleepApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+
+      const slept = await sleepApp.inject({ method: 'POST', url: '/api/agents/agent-1/sleep', headers });
+      expect(slept.statusCode).toBe(204);
+      const sleepingDashboard = await sleepApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: headers.host, cookie: headers.cookie } });
+      expect(sleepingDashboard.json().worktrees).toEqual([expect.objectContaining({ id: 'cora', sleeping: true })]);
+
+      const woke = await sleepApp.inject({ method: 'POST', url: '/api/worktrees/cora/wake', headers });
+      expect(woke.statusCode).toBe(201);
+      expect(woke.json()).toEqual({ agentId: agent.id });
+      expect(resumed).toBe('cora');
+    } finally { await sleepApp.close(); }
+  }, 15_000);
 });
 
 describe('agent terminal swap', () => {

@@ -116,6 +116,7 @@ main { max-width: 1100px; margin: auto; padding: var(--edge); }
 .server-switcher-voice:hover { background: color-mix(in srgb, var(--mantle) 78%, var(--mauve)); color: var(--text); }
 .server-switcher-voice.active { border-color: var(--mauve); background: linear-gradient(145deg, color-mix(in srgb, var(--mauve) 55%, var(--surface-0)), color-mix(in srgb, var(--blue) 36%, var(--mantle))); color: var(--text); box-shadow: inset 0 0 0 1px var(--mauve), 0 0 1rem color-mix(in srgb, var(--mauve) 42%, transparent); }
 .server-switcher-attention { width: .55rem; height: .55rem; flex: none; border: 1px solid color-mix(in srgb, currentColor 45%, transparent); border-radius: 50%; opacity: 0; }
+.server-switcher-attention.idle { background: var(--surface-2); border-color: var(--overlay-0); opacity: 1; }
 .server-switcher-attention.question { background: var(--red); border-color: color-mix(in srgb, var(--red) 75%, white); box-shadow: 0 0 .55rem color-mix(in srgb, var(--red) 65%, transparent); opacity: 1; }
 .server-switcher-attention.working { background: var(--orange); border-color: color-mix(in srgb, var(--orange) 75%, white); box-shadow: 0 0 .55rem color-mix(in srgb, var(--orange) 60%, transparent); opacity: 1; }
 .server-switcher-attention.completed { background: var(--green); border-color: color-mix(in srgb, var(--green) 75%, white); box-shadow: 0 0 .55rem color-mix(in srgb, var(--green) 55%, transparent); opacity: 1; }
@@ -151,6 +152,7 @@ textarea { min-height: 7rem; resize: vertical; font-family: var(--font-mono); }
 .tabs button.unread { color: var(--green); background: linear-gradient(145deg, color-mix(in srgb, var(--green) 18%, var(--surface-0)), color-mix(in srgb, var(--green) 8%, var(--mantle))); animation: tab-unread-success 1.6s ease-in-out infinite; }
 .tabs button.unread::after { position: absolute; top: .42rem; right: .42rem; width: .42rem; height: .42rem; border-radius: 50%; background: var(--green); box-shadow: 0 0 .7rem color-mix(in srgb, var(--green) 88%, transparent); content: ''; animation: tab-unread-dot 1.6s ease-in-out infinite; }
 .tabs button.status-closed { color: var(--surface-2); }
+.tabs button.status-sleeping { color: var(--blue); }
 .tabs button.status-transitioning { isolation: isolate; color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 42%, var(--surface-1)); background: linear-gradient(145deg, color-mix(in srgb, var(--yellow) 12%, var(--surface-0)), var(--mantle)); }
 .tabs button.status-transitioning::after { position: absolute; top: .42rem; right: .42rem; width: .42rem; height: .42rem; border-radius: 50%; background: var(--yellow); box-shadow: 0 0 .7rem color-mix(in srgb, var(--yellow) 88%, transparent); content: ''; animation: tab-working-dot 1.25s ease-in-out infinite; }
 .tab-transition-label { display: grid; min-width: 0; gap: .08rem; line-height: 1; text-align: left; }
@@ -192,6 +194,10 @@ html.software-keyboard-open .tabs { display: none; }
 .log-loading strong { color: var(--text); font: 700 .78rem var(--font-mono); }
 .log-loading > span:not(.spinner) { max-width: 31rem; color: var(--overlay-2); font: 500 .68rem/1.5 var(--font-mono); letter-spacing: .01em; }
 .log-loading.inactive { color: var(--overlay-0); }
+.log-loading.sleeping { pointer-events: auto; }
+.sleeping-agent-icon { width: 2.4rem; height: 2.4rem; fill: color-mix(in srgb, var(--blue) 16%, transparent); stroke: var(--blue); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.6; filter: drop-shadow(0 0 .65rem color-mix(in srgb, var(--blue) 45%, transparent)); }
+.log-loading .wake-agent { min-width: 8rem; justify-content: center; margin-top: .25rem; border-color: color-mix(in srgb, var(--blue) 70%, var(--surface-2)); background: color-mix(in srgb, var(--blue) 18%, var(--mantle)); color: var(--blue); box-shadow: 0 0 1rem color-mix(in srgb, var(--blue) 18%, transparent); }
+.log-loading .wake-agent svg { width: 1rem; height: 1rem; fill: currentColor; stroke: none; }
 .log-stale-overlay { position: absolute; inset: 0; z-index: 14; overflow: hidden; pointer-events: none; background: linear-gradient(120deg, color-mix(in srgb, var(--crust) 50%, transparent), color-mix(in srgb, var(--mantle) 26%, transparent)), repeating-linear-gradient(0deg, #11111b1a 0 1px, transparent 1px 5px); box-shadow: inset 0 0 5rem #11111bb8, inset 0 0 0 1px color-mix(in srgb, var(--surface-2) 42%, transparent); backdrop-filter: blur(1.75px) saturate(.72) brightness(.82); }
 .log-stale-overlay::after { position: absolute; inset: -20%; content: ''; background: radial-gradient(ellipse at 50% 48%, transparent 25%, #11111b5c 76%); filter: blur(1rem); }
 .log-cached-treatment { position: absolute; inset: 0; z-index: 13; overflow: hidden; border: 2px solid color-mix(in srgb, var(--yellow) 58%, transparent); pointer-events: none; background: repeating-linear-gradient(135deg, transparent 0 18px, color-mix(in srgb, var(--yellow) 5%, transparent) 18px 20px); box-shadow: inset 0 0 3.5rem color-mix(in srgb, var(--yellow) 8%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--crust) 75%, transparent); }
@@ -408,6 +414,7 @@ html.software-keyboard-open .tabs { display: none; }
 .log-status.live, .log-status.terminal { --log-status-color: var(--green); color: var(--crust); }
 .log-status.disconnected, .log-status.unavailable { --log-status-color: var(--red); color: var(--crust); }
 .log-status.inactive { --log-status-color: var(--overlay-2); color: var(--crust); }
+.log-status.sleeping { --log-status-color: var(--blue); color: var(--crust); }
 .prompt { display: grid; min-width: 0; gap: .375rem; }
 .prompt textarea.voice-listening, .prompt textarea.voice-listening:focus-visible { border-color: var(--red); outline: 0; box-shadow: inset 0 0 0 1px var(--red); animation: voice-listening 1s ease-in-out infinite alternate; }
 .prompt textarea { min-height: 4.5rem; max-height: calc(var(--app-height, 100dvh) * .5); overflow-y: auto; resize: none; padding: .45rem .55rem; line-height: 1.35; font-variant-ligatures: contextual; font-feature-settings: "calt" 1; text-rendering: optimizeLegibility; }
@@ -436,6 +443,7 @@ html.software-keyboard-open .tabs { display: none; }
 .danger svg rect { fill: currentColor; stroke: none; }
 .prompt-actions .danger { display: inline-grid; width: var(--standard-control-size); border-color: var(--red); background: transparent; color: var(--red); filter: none; place-items: center; padding: 0; }
 .prompt-actions .danger:not(:disabled):hover { border-color: var(--red); background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--red); filter: none; }
+.power-menu-wrap { display: inline-flex; flex: none; }
 .prompt-actions .queue { margin-left: 0; border-color: color-mix(in srgb, var(--lavender) 54%, transparent); background: linear-gradient(135deg, var(--mauve), var(--blue)); color: var(--crust); filter: none; }
 .prompt-actions .queue:not(:disabled):hover { filter: brightness(1.08); }
 .prompt-actions .queue svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
@@ -684,6 +692,8 @@ html.software-keyboard-open .tabs { display: none; }
 .more-wrap { position: relative; }
 .more { width: 2rem; padding: .2rem; justify-content: center; font-size: 1.25rem; line-height: 1; }
 .more-menu { position: absolute; right: 0; z-index: var(--layer-popover); width: max-content; max-width: calc(100vw - 1rem); max-height: calc(100vh - 1rem); overflow: auto; padding: .3rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: var(--mantle); box-shadow: 0 .7rem 1.8rem #11111bcc; font: 700 .78rem var(--font-mono); letter-spacing: .035em; }
+.more-menu.agent-power-menu { width: 9rem; }
+.more-menu.agent-power-menu .agent-power-off { color: var(--red); }
 .flyout-menu[data-flyout-side="above"] { top: auto; bottom: calc(100% + .4rem); }
 .flyout-menu[data-flyout-side="below"] { top: calc(100% + .4rem); bottom: auto; }
 .flyout-menu .spinner { box-sizing: border-box; flex: 0 0 1rem; width: 1rem; height: 1rem; }

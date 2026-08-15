@@ -12,7 +12,7 @@ const renderedBounds = async (locator: Locator): Promise<BoundingBox> => {
 
 test('shows and switches the configured server on authentication and output screens', async ({ page }) => {
   let screen: 'login'|'control'|'output' = 'login';
-  let remoteAttention: 'working'|'question'|'completed' = 'working';
+  let remoteAttention: 'idle'|'working'|'question'|'completed' = 'working';
   let remoteName = 'Framework';
   let statusAvailable = true;
   const remoteServer = { name: 'Framework', url: 'https://framework.santosa.dev', icon: 'heart' };
@@ -132,6 +132,11 @@ test('shows and switches the configured server on authentication and output scre
   remoteAttention = 'question';
   await expect(outputServers.remote).toHaveAccessibleName('Framework Published — Active question', { timeout: 8_000 });
   await expect(outputServers.remote.locator('.server-switcher-attention')).toHaveClass(/question/u);
+  // show a neutral marker when the server needs no attention
+  remoteAttention = 'idle';
+  await expect(outputServers.remote).toHaveAccessibleName('Framework Published — Idle', { timeout: 8_000 });
+  await expect(outputServers.remote.locator('.server-switcher-attention')).toHaveClass(/idle/u);
+  await expect(outputServers.remote.locator('.server-switcher-attention')).toHaveCSS('background-color', 'rgb(88, 91, 112)');
   await outputServers.remote.click();
   await expect(page).toHaveURL('https://framework.santosa.dev/');
   await expect(page.getByRole('heading', { name: 'Framework target' })).toBeVisible();

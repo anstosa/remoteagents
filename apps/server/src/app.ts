@@ -77,6 +77,8 @@ export function logFrame(last: string, value: string): LogFrame | undefined {
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
   const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, config.worktrees, promptHistory, queuedPrompts, savedPrompts); const notes = deps.notes ?? new WorktreeNoteService(); const skills = deps.skills ?? new SkillService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = new WorktreeCommandService(config); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.worktrees, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews])); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, config.worktrees, new CodexExecReviewTourGenerator()); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
   const paneViewports = new PaneViewportCoordinator();
+  // retain sleeping tabs during this server session
+  const sleepingWorktrees = new Set<string>();
   const integrationConfig = config.integrations ?? defaultIntegrationConfig;
   // prefer a dedicated federation secret while retaining existing deployments
   const instanceStatusSecret = process.env.RAC_INSTANCE_STATUS_SECRET ?? process.env.RAC_SESSION_SECRET ?? '';
@@ -173,7 +175,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const controlFor = (worktreeId: string | undefined) => worktreeId === undefined ? undefined : controls.get(worktreeId);
     const reviewBranches = config.worktrees.map(worktree => ({ worktreeId: worktree.id, branch: discovered.agents.find(agent => agent.worktreeId === worktree.id)?.branch ?? discovered.worktrees.find(candidate => candidate.id === worktree.id)?.branch }));
     const reviews = await reviewStore.summaries(reviewBranches);
-    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }) })), worktrees: discovered.worktrees.map(worktree => ({ ...worktree, ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }) })), cleanupPending: cleanup.pending().length, reviewTour: reviewTourCapability, reviews };
+    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }) })), worktrees: discovered.worktrees.map(worktree => ({ ...worktree, ...(sleepingWorktrees.has(worktree.id) ? { sleeping: true } : {}), ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }) })), cleanupPending: cleanup.pending().length, reviewTour: reviewTourCapability, reviews };
   };
   // observe only agent state needed by cross-instance attention
   const localInstanceAttention = async () => {
@@ -211,7 +213,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         await refreshRemoteServers();
         return [{ id: server.url, name: server.name, url: server.url, local: true, ...(server.icon === undefined ? {} : { icon: server.icon }) }, ...server.remotes.map(remote => ({ id: remote.url, name: remote.name, url: remote.url, local: false, ...(remote.icon === undefined ? {} : { icon: remote.icon }) }))];
       },
-      launchWorktree: worktreeId => launch.launch(worktreeId),
+      launchWorktree: async worktreeId => {
+        const launched = await launch.launch(worktreeId);
+        // clear sleep only after a successful integration launch
+        if (launched) sleepingWorktrees.delete(worktreeId);
+        return launched;
+      },
       launchScratch: () => launch.launchHome(),
       loadReview: (worktreeId, branch) => reviewStore.current(worktreeId, branch),
       startReview: (agentId, input) => reviewJobs.start('integration-gateway', agentId, input)
@@ -552,7 +559,33 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   });
   app.post('/api/agents/:id/foreground', async (request, reply) => { controlled(request, true); const target = await discovery.target((request.params as { id: string }).id); if (!target || !await tmux.foreground(target.socket, target.agent.paneId)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
   app.delete('/api/agents/:id', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const target = await discovery.target(id); if (!target || config.worktrees.some(worktree => target.agent.workspace === worktree.identity || target.agent.workspace === worktree.hostPath) || !await prompts.close(id)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
-  app.post('/api/agents/:id/deactivate', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const target = await discovery.target(id); const configured = target !== undefined && config.worktrees.some(worktree => target.agent.workspace === worktree.identity || target.agent.workspace === worktree.hostPath); if (!target || !configured || /^[\u2800-\u28ff]/u.test(target.agent.title)) return reply.code(409).send({ error: 'only idle configured agents can be turned off' }); if (!await prompts.close(id)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
+  // permanently close one idle configured agent
+  app.post('/api/agents/:id/deactivate', async (request, reply) => {
+    controlled(request, true);
+    const id = (request.params as { id: string }).id;
+    const target = await discovery.target(id);
+    const worktree = target === undefined ? undefined : configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
+    // preserve active configured agents
+    if (!target || worktree === undefined || /^[\u2800-\u28ff]/u.test(target.agent.title)) return reply.code(409).send({ error: 'only idle configured agents can be turned off' });
+    // require a live target
+    if (!await prompts.close(id)) return reply.code(404).send({ error: 'target unavailable' });
+    sleepingWorktrees.delete(worktree.id);
+    return reply.code(204).send();
+  });
+  // close one idle agent while retaining its worktree tab
+  app.post('/api/agents/:id/sleep', async (request, reply) => {
+    controlled(request, true);
+    const id = (request.params as { id: string }).id;
+    const target = await discovery.target(id);
+    const worktree = target === undefined ? undefined : configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
+    // limit sleep to the same idle configured agents as turn off
+    if (!target || worktree === undefined || /^[\u2800-\u28ff]/u.test(target.agent.title)) return reply.code(409).send({ error: 'only idle configured agents can sleep' });
+    // require a live target
+    if (!await prompts.close(id)) return reply.code(404).send({ error: 'target unavailable' });
+    sleepingWorktrees.add(worktree.id);
+    await dashboardUpdates.refresh().catch(() => undefined);
+    return reply.code(204).send();
+  });
   app.post('/api/agents/:id/question', async (request, reply) => { controlled(request, true); const index = body(request).index; if (!Number.isInteger(index) || !await prompts.answerOption((request.params as { id: string }).id, index as number)) return reply.code(404).send({ error: 'question unavailable' }); return reply.code(204).send(); });
   app.post('/api/agents/:id/omx-question', async (request, reply) => { controlled(request, true); const data = body(request); if (typeof data.questionId !== 'string' || !Number.isInteger(data.index) || !await prompts.answerOmxQuestion((request.params as { id: string }).id, data.questionId, data.index as number)) return reply.code(404).send({ error: 'question unavailable' }); return reply.code(204).send(); });
   const launchReadyTimeoutSeconds = 60;
@@ -577,10 +610,28 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     controlled(request, true);
     const worktreeId = (request.params as { id: string }).id;
     const before = new Set((await discovery.dashboard(config.worktrees)).agents.map(agent => agent.id));
+    // require a successful launch handoff
     if (!await launch.launch(worktreeId)) return reply.code(409).send({ error: 'Could not start the worktree agent.' });
+    sleepingWorktrees.delete(worktreeId);
     const agent = await waitForAgent(before, worktreeId);
     // report a true timeout
     if (!agent) return reply.code(504).send({ error: `The worktree session started, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
+    return reply.code(201).send({ agentId: agent.id });
+  });
+  // wake one sleeping worktree through the host resume alias
+  app.post('/api/worktrees/:id/wake', async (request, reply) => {
+    controlled(request, true);
+    const worktreeId = (request.params as { id: string }).id;
+    // reject ordinary inactive worktrees
+    if (configuredWorktree(worktreeId) === undefined || !sleepingWorktrees.has(worktreeId)) return reply.code(409).send({ error: 'worktree is not sleeping' });
+    const before = new Set((await discovery.dashboard(config.worktrees)).agents.map(agent => agent.id));
+    // require a successful resume handoff
+    if (!await launch.resume(worktreeId)) return reply.code(409).send({ error: 'Could not resume the worktree agent.' });
+    const agent = await waitForAgent(before, worktreeId);
+    // preserve the sleep screen after a failed resume
+    if (!agent) return reply.code(504).send({ error: `The worktree session started, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
+    sleepingWorktrees.delete(worktreeId);
+    await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(201).send({ agentId: agent.id });
   });
   app.post('/api/worktrees/:id/commands/:action', async (request, reply) => { controlled(request, true); const action = (request.params as { action: string }).action; if (!(stackActions as readonly string[]).includes(action)) return reply.code(404).send({ error: 'stack command unavailable' }); const result = await stackCommands.start((request.params as { id: string }).id, action as StackAction); if (result === 'busy') return reply.code(409).send({ error: 'stack operation already running' }); return result === false ? reply.code(404).send({ error: 'stack command unavailable' }) : reply.code(202).send(); });

@@ -38,12 +38,15 @@ test('keeps agent on/off progress visible across lifecycle transitions', async (
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'Turn off worktree agent' }).click();
+  await page.getByRole('button', { name: 'Agent power options' }).click();
+  const powerMenu = page.getByRole('menu', { name: 'Agent power options' });
+  await expect(powerMenu.getByRole('menuitem', { name: 'Sleep' })).toBeVisible();
+  await powerMenu.getByRole('menuitem', { name: 'Turn off' }).click();
 
   const pendingOff = page.getByRole('status').filter({ hasText: 'Turning off Cora' });
   await expect(pendingOff).toContainText('Stopping the agent while keeping the worktree available');
   await expect(page.getByRole('tab', { name: 'Cora — Turning off' })).toHaveAttribute('aria-busy', 'true');
-  await expect(page.getByRole('button', { name: 'Turn off worktree agent' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Agent power options' })).toBeDisabled();
   await page.getByRole('tab', { name: 'Delta — Agent closed' }).click();
   await expect(pendingOff).toHaveCount(0);
   await page.getByRole('tab', { name: 'Cora — Turning off' }).click();
@@ -67,5 +70,61 @@ test('keeps agent on/off progress visible across lifecycle transitions', async (
 
   finishLaunch();
   await expect(page.getByRole('status').filter({ hasText: 'Cora is starting' })).toContainText('output is connecting');
+  await expect(page.getByRole('tab', { name: 'Cora — Prompt done' })).toBeVisible();
+});
+
+test('sleeps an idle agent and wakes the retained tab through resume', async ({ page }) => {
+  let state: 'active'|'sleeping' = 'active';
+  let agentId = 'agent-1';
+  let sleepRequests = 0;
+  let wakeRequests = 0;
+  let finishWake!: () => void;
+  const wakeFinished = new Promise<void>(resolve => { finishWake = resolve; });
+
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: state === 'active'
+      ? { generation: 1, agents: [{ id: agentId, sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' }], worktrees: [] }
+      : { generation: 2, agents: [], worktrees: [{ id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: false, sleeping: true, order: 0 }] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (/^\/api\/agents\/agent-[12]\/(?:saved-prompts|prompt-history)$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });
+    if (url.pathname === '/api/worktrees/cora/notes') return route.fulfill({ json: { notes: [] } });
+    // close the process while retaining the sleep state
+    if (url.pathname === '/api/agents/agent-1/sleep' && request.method() === 'POST') {
+      sleepRequests += 1;
+      state = 'sleeping';
+      return route.fulfill({ status: 204 });
+    }
+    // resume only after the wake transition is visible
+    if (url.pathname === '/api/worktrees/cora/wake' && request.method() === 'POST') {
+      wakeRequests += 1;
+      await wakeFinished;
+      state = 'active';
+      agentId = 'agent-2';
+      return route.fulfill({ status: 201, json: { agentId } });
+    }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Agent power options' }).click();
+  await page.getByRole('menuitem', { name: 'Sleep' }).click();
+
+  await expect.poll(() => sleepRequests).toBe(1);
+  await expect(page.getByRole('tab', { name: 'Cora — Sleeping' })).toBeVisible();
+  await expect(page.getByRole('status', { name: 'Cora sleeping', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Wake up' })).toBeEnabled();
+  await expect(page.locator('.prompt-actions').getByRole('button', { name: 'Launch agent' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Wake up' }).click();
+  await expect.poll(() => wakeRequests).toBe(1);
+  await expect(page.getByRole('tab', { name: 'Cora — Waking up' })).toHaveAttribute('aria-busy', 'true');
+  await expect(page.getByRole('status', { name: 'Waking Cora', exact: true })).toBeVisible();
+
+  finishWake();
+  await expect(page.getByRole('status').filter({ hasText: 'Cora is awake' })).toBeVisible();
   await expect(page.getByRole('tab', { name: 'Cora — Prompt done' })).toBeVisible();
 });

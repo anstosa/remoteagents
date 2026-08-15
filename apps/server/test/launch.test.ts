@@ -28,6 +28,19 @@ describe('LaunchService', () => {
     expect(expandHomeCommand('codex', '/home/ubuntu')).toContain("cd -- '/home/ubuntu' && eval 'codex'");
   });
 
+  it('wakes a worktree through the resume alias', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, command: 'codex' };
+    const calls: string[][] = [];
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', pane, buffer, command]); return true; }, enter: async (_socket: SocketRef, pane: string) => { calls.push(['enter', pane]); return true; } };
+    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [socket] }, panes as never);
+
+    await expect(service.resume(worktree.id)).resolves.toBe(true);
+
+    expect(calls[0]).toMatchObject(['paste', '%4', expect.stringMatching(/^rac-launch-/), 'resume']);
+    expect(calls[1]).toEqual(['enter', '%4']);
+  });
+
   it('marks home-launched agents as Scratch without replacing their tmux title', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
