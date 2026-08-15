@@ -30,7 +30,11 @@ fail_update() {
 
 trap fail_update ERR
 write_status running
-git pull --ff-only
+# update only the deployed main branch
+if [[ "$(git symbolic-ref --short HEAD)" != "main" ]]; then
+  fail_update
+fi
+git pull --ff-only origin main
 docker compose up -d --build --wait
 docker compose ps
 write_status complete

@@ -368,6 +368,13 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const status = await serverAdmin.updateStatus((request.params as { id: string }).id);
     return status === undefined ? reply.code(404).send({ error: 'Server update unavailable.' }) : status;
   });
+  // check whether origin main is ahead of local main
+  app.get('/api/server/update-available', async (request, reply) => {
+    controlled(request);
+    const available = await serverAdmin.updateAvailable();
+    // require the configured host bridge
+    return available === undefined ? reply.code(503).send({ error: 'Server update checks are unavailable on this deployment.' }) : { available };
+  });
   app.post('/api/auth/logout', async (request, reply) => { const s = session(request, true); control.release(s.id); auth.logout(s.id); reply.clearCookie(cookieName, { path: '/', secure: true, httpOnly: true, sameSite: 'lax' }); return reply.code(204).send(); });
   app.get('/api/dashboard', async (request) => { controlled(request); return await dashboardUpdates.refresh(); });
   app.post('/api/dashboard/ticket', async (request) => { const s = controlled(request, true); return { ticket: tickets.mint(s.id, 'dashboard', 'dashboard').id }; });

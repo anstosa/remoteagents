@@ -499,6 +499,7 @@ const ServerContext = createContext<ServerInfo | undefined>(undefined);
 const ServerStatusContext = createContext<Readonly<Record<string, InstanceAttention>>>({});
 const VoiceTriggerContext = createContext<{ open: () => void; active: boolean; visible: boolean } | undefined>(undefined);
 type ServerUpdateState = 'queued' | 'running' | 'complete' | 'failed';
+type ServerUpdateAvailability = { available: boolean };
 type ClientSettings = {
   deviceName: string;
   serverName: string;
@@ -508,6 +509,8 @@ type ClientSettings = {
   serverUpdateStatus: (id: string) => Promise<ServerUpdateState | undefined>;
 };
 const ClientSettingsContext = createContext<ClientSettings | undefined>(undefined);
+// validate one upstream availability response
+const isServerUpdateAvailability = (value: unknown): value is ServerUpdateAvailability => value !== null && typeof value === 'object' && typeof (value as ServerUpdateAvailability).available === 'boolean';
 // validate one configured icon name
 const isInstanceIcon = (value: unknown): value is InstanceIcon => value === 'terminal' || value === 'potato' || value === 'heart';
 // validate one server switch target
@@ -3299,7 +3302,8 @@ function OperationFeedbackBanner({ feedback, onDismiss }: { feedback: OperationF
   </div>;
 }
 
-function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }: { onUnauthorized: () => void; onInactive: () => void; updateAvailable: boolean; onReload: () => void }) {
+// render the active console dashboard
+function DashboardView({ onUnauthorized, onInactive, updateAvailable, updateError, onRestart }: { onUnauthorized: () => void; onInactive: () => void; updateAvailable: boolean; updateError?: string; onRestart: () => void }) {
   const serverInfo = useContext(ServerContext) ?? fallbackServerInfo();
   const [data, setData] = useState<Dashboard>();
   const [voiceOpen, setVoiceOpen] = useState(false);
@@ -3875,12 +3879,13 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, onReload }
     const transition = operationLabel(entry.operation);
     const label = transition ?? stateLabel[entry.state];
     return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{transition !== undefined ? <span className="tab-transition-label"><span>{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
-  })}<NotificationControl />{updateAvailable && <button className="update-ready" type="button" onClick={onReload}>Update available <span>Reload</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle}><button disabled={creatingAgent} onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} disabled={creatingAgent || pendingOperations.has(launchOperationKey(worktree.id))} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{launchErrorMessage && operationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
+  })}<NotificationControl />{updateAvailable && <button className="update-ready" type="button" onClick={onRestart}>Update available <span>Restart</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle}><button disabled={creatingAgent} onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} disabled={creatingAgent || pendingOperations.has(launchOperationKey(worktree.id))} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && operationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
   const consoleClass = `console${voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{reviewDialog}</article></main></VoiceTriggerContext.Provider>;
   return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={launched} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{reviewDialog}</main></VoiceTriggerContext.Provider>;
 }
 
+// coordinate console session and update lifecycle
 function App() {
   const [state, setState] = useState<'checking' | 'login' | 'naming' | 'ready' | 'inactive'>('checking');
   const [sessionInfo, setSessionInfo] = useState<SessionInfo>();
@@ -3888,7 +3893,8 @@ function App() {
   const [serverStatuses, setServerStatuses] = useState<Record<string, InstanceAttention>>({});
   const [error, setError] = useState('');
   const [updateAvailable, setUpdateAvailable] = useState(false);
-  const [reloading, setReloading] = useState(false);
+  const [updateError, setUpdateError] = useState<string>();
+  const [restarting, setRestarting] = useState(false);
   const [reconnecting, setReconnecting] = useState(!consoleReachable);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const applySession = useCallback((current: SessionInfo) => {
@@ -4085,6 +4091,25 @@ function App() {
     const stopPolling = pollWhileVisible(checkForUpdate, 30_000, false);
     return () => { closed = true; stopPolling(); };
   }, []);
+  // check origin main while the controlling console is open
+  useEffect(() => {
+    // avoid host fetches before authentication
+    if (state !== 'ready') return;
+    let closed = false;
+    const checkForServerUpdate = async () => {
+      const response = await request('/api/server/update-available', { signal: AbortSignal.timeout(30_000) }, false);
+      // retry unavailable checks later
+      if (!response.ok || closed) return;
+      const payload: unknown = await response.json().catch(() => undefined);
+      // latch a discovered upstream update
+      if (isServerUpdateAvailability(payload) && payload.available) setUpdateAvailable(true);
+    };
+    const stopPolling = pollWhileVisible(checkForServerUpdate, 300_000, true, 1_800_000);
+    return () => {
+      closed = true;
+      stopPolling();
+    };
+  }, [reconnectAttempt, state]);
   useEffect(() => {
     let active = true;
     void (async () => {
@@ -4116,18 +4141,45 @@ function App() {
     window.addEventListener('focus', checkControl);
     return () => window.removeEventListener('focus', checkControl);
   }, [refreshSession, state]);
-  // reload after the pending frame paints
-  const reload = useCallback(() => {
-    if (reloading) return;
-    setReloading(true);
-    window.requestAnimationFrame(() => window.requestAnimationFrame(() => location.reload()));
-  }, [reloading]);
-  const screen = reloading
-    ? <LoadingScreen label="Reloading" />
+  // pull origin main and restart the host stack
+  const restart = useCallback(async () => {
+    // prevent duplicate restart requests
+    if (restarting) return;
+    setRestarting(true);
+    setUpdateError(undefined);
+    const result = await startServerUpdate();
+    // restore the banner after launch failure
+    if (result.id === undefined) {
+      setRestarting(false);
+      setUpdateError(result.error ?? 'Unable to restart the server.');
+      return;
+    }
+    const deadline = Date.now() + 300_000;
+    // follow the operation across the expected outage
+    while (Date.now() < deadline) {
+      const status = await serverUpdateStatus(result.id);
+      // load the rebuilt client after success
+      if (status === 'complete') {
+        location.reload();
+        return;
+      }
+      // restore the console after a host failure
+      if (status === 'failed') {
+        setRestarting(false);
+        setUpdateError('Restart failed. Check the server logs.');
+        return;
+      }
+      await new Promise(resolve => window.setTimeout(resolve, 1_000));
+    }
+    setRestarting(false);
+    setUpdateError('Restart is taking longer than expected. Check the server status before trying again.');
+  }, [restarting, serverUpdateStatus, startServerUpdate]);
+  const screen = restarting
+    ? <LoadingScreen label="Restarting" />
     : state === 'checking'
       ? <LoadingScreen />
       : state === 'ready'
-        ? <DashboardView onUnauthorized={handleUnauthorized} onInactive={handleInactive} updateAvailable={updateAvailable} onReload={reload} />
+        ? <DashboardView onUnauthorized={handleUnauthorized} onInactive={handleInactive} updateAvailable={updateAvailable} updateError={updateError} onRestart={() => void restart()} />
         : (state === 'inactive' || state === 'naming') && sessionInfo !== undefined
           ? <ControlScreen session={sessionInfo} claimed={applySession} />
           : <Login initialError={error} done={applySession} />;

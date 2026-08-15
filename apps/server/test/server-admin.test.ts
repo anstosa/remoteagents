@@ -51,4 +51,23 @@ describe('server administration', () => {
     expect(await service.updateStatus(update!.id)).toEqual(update);
     expect(runCommand).toHaveBeenCalledTimes(1);
   });
+
+  it('rechecks origin main through the fixed host script', async () => {
+    root = await mkdtemp(join(tmpdir(), 'rac-server-admin-'));
+    const statusPath = join(root, 'server-update-availability.json');
+    let state: 'available' | 'current' = 'available';
+    // publish the host script result
+    const runCommand = vi.fn(async () => {
+      await writeFile(statusPath, `${JSON.stringify({ kind: 'update-availability', state })}\n`);
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const service = new ServerAdminService(config, { hostRepository: '/host/repo', statusDirectory: root, tmuxBinary: '/usr/local/bin/host-tmux', tmuxSocket: '/host-tmux/default', runCommand });
+
+    await expect(service.updateAvailable()).resolves.toBe(true);
+    state = 'current';
+    await expect(service.updateAvailable()).resolves.toBe(false);
+
+    expect(runCommand).toHaveBeenCalledWith('/usr/local/bin/host-tmux', ['-S', '/host-tmux/default', 'run-shell', "/bin/bash '/host/repo/scripts/check-server-update.sh'"], undefined, 30_000);
+    expect(runCommand).toHaveBeenCalledTimes(2);
+  });
 });

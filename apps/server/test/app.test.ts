@@ -48,7 +48,9 @@ describe('server administration API', () => {
     const serverAdmin = {
       renameServer: async (name: string) => { renamed.push(name); return name.trim() || undefined; },
       startUpdate: async () => ({ id: 'server_update_operation_1234', kind: 'update' as const, state: 'queued' as const }),
-      updateStatus: async (id: string) => id === 'server_update_operation_1234' ? ({ id, kind: 'update' as const, state: 'running' as const }) : undefined
+      updateStatus: async (id: string) => id === 'server_update_operation_1234' ? ({ id, kind: 'update' as const, state: 'running' as const }) : undefined,
+      // expose fetched upstream state
+      updateAvailable: async () => true
     };
     const adminApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 19).toString('base64url')), serverAdmin: serverAdmin as never });
     try {
@@ -59,12 +61,14 @@ describe('server administration API', () => {
       const rename = await adminApp.inject({ method: 'PATCH', url: '/api/server/name', headers, payload: { name: 'Garage Server' } });
       const update = await adminApp.inject({ method: 'POST', url: '/api/server/update', headers });
       const status = await adminApp.inject({ method: 'GET', url: '/api/server/update/server_update_operation_1234', headers: { host: headers.host, cookie: headers.cookie } });
+      const availability = await adminApp.inject({ method: 'GET', url: '/api/server/update-available', headers: { host: headers.host, cookie: headers.cookie } });
 
       expect(rename.json()).toMatchObject({ name: 'Garage Server', server: { name: 'Garage Server' } });
       expect(renamed).toEqual(['Garage Server']);
       expect(update.statusCode).toBe(202);
       expect(update.json()).toMatchObject({ state: 'queued' });
       expect(status.json()).toMatchObject({ state: 'running' });
+      expect(availability.json()).toEqual({ available: true });
     } finally {
       await adminApp.close();
     }
