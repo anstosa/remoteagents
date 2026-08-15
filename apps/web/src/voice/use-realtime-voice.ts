@@ -84,16 +84,24 @@ function audioLevel(analyser: AnalyserNode | undefined): number {
   return Math.min(1, Math.sqrt(sum / samples.length) * 5);
 }
 
+// normalize one spoken control phrase
+function normalizedVoiceCommand(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9\s]/gu, ' ').replace(/\s+/gu, ' ').trim();
+}
+
 // recognize direct call-ending requests
 function isHangupRequest(text: string): boolean {
-  const normalized = text.toLowerCase().replace(/[^a-z0-9\s]/gu, ' ').replace(/\s+/gu, ' ').trim();
-  return /^(?:davo\s+)?(?:(?:can|could|would|will) you\s+|please\s+)?(?:hang up|end (?:the )?call)(?:\s+(?:please|davo|mate|now))*$/u.test(normalized);
+  return /^(?:davo\s+)?(?:(?:can|could|would|will) you\s+|please\s+)?(?:hang up|end (?:the )?call)(?:\s+(?:please|davo|mate|now))*$/u.test(normalizedVoiceCommand(text));
 }
 
 // recognize reply-free speech interruptions
 function isSilentInterruption(text: string): boolean {
-  const normalized = text.toLowerCase().replace(/[^a-z0-9\s]/gu, ' ').replace(/\s+/gu, ' ').trim();
-  return /^(?:davo\s+)?(?:please\s+)?(?:stop|stop talking|shut up|nope|nah|enough|that s enough|quiet|cut it out)(?:\s+(?:please|davo|mate|now))*$/u.test(normalized);
+  return /^(?:davo\s+)?(?:please\s+)?(?:stop|stop talking|shut up|nope|nah|enough|that s enough|quiet|cut it out)(?:\s+(?:please|davo|mate|now))*$/u.test(normalizedVoiceCommand(text));
+}
+
+// recognize the exact mute control command
+function isMuteRequest(text: string): boolean {
+  return /^(?:davo\s+)?(?:please\s+)?mute(?:\s+(?:please|davo|mate|now))*$/u.test(normalizedVoiceCommand(text));
 }
 
 // read one bounded worktree tool argument
@@ -124,7 +132,7 @@ export type RealtimeVoice = {
 };
 
 // manage one browser WebRTC Realtime session
-export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelectWorktree?: SelectWorktree): RealtimeVoice {
+export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelectWorktree: SelectWorktree | undefined, muteCommandActive: boolean): RealtimeVoice {
   const [state, setState] = useState<VoiceState>('idle');
   const [error, setError] = useState<string>();
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
@@ -159,8 +167,10 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
   const silentInterruptionUntil = useRef(0);
   const silentResponseStarted = useRef(false);
   const selectWorktree = useRef(onSelectWorktree);
+  const muteCommandActiveRef = useRef(muteCommandActive);
   const activeWorktreeLabel = useRef(target.worktreeLabel ?? target.worktreeId);
   selectWorktree.current = onSelectWorktree;
+  muteCommandActiveRef.current = muteCommandActive;
   activeWorktreeLabel.current = target.worktreeLabel ?? target.worktreeId;
 
   // publish the remaining tool batch progress
@@ -248,6 +258,16 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
       }
       return next;
     });
+  }, []);
+
+  // keep spoken mute idempotent under replay
+  const mute = useCallback(() => {
+    mutedRef.current = true;
+    // disable every microphone track
+    stream.current?.getAudioTracks().forEach(track => { track.enabled = false; });
+    inputSpeaking.current = false;
+    setInputLevel(0);
+    setMuted(true);
   }, []);
 
   // close every media and peer resource
@@ -431,6 +451,8 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
     // replace partial text with the final user transcript
     if (type === 'conversation.item.input_audio_transcription.completed' && typeof payload.transcript === 'string') {
       completeUser(typeof payload.item_id === 'string' ? payload.item_id : crypto.randomUUID(), payload.transcript);
+      // mute only while the Davo surface is open
+      if (muteCommandActiveRef.current && isMuteRequest(payload.transcript)) mute();
       // arm automatic hang-up after Davo's goodbye finishes
       if (isHangupRequest(payload.transcript)) hangupPending.current = true;
       // suppress replies to bare interruptions
@@ -576,7 +598,7 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
       if (Date.now() < silentInterruptionUntil.current) return;
       setError('Davo reported a session error.');
     }
-  }, [completeUser, discardUser, failConnection, silenceDavo, stop, syncToolStatus, updateAssistant, updateToolTranscript, updateUser]);
+  }, [completeUser, discardUser, failConnection, mute, silenceDavo, stop, syncToolStatus, updateAssistant, updateToolTranscript, updateUser]);
 
   // establish one direct browser-to-provider WebRTC session
   const start = useCallback(async () => {

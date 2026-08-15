@@ -522,6 +522,32 @@ test('waits for MCP tools and requests a spoken follow-up after tool completion'
   await expect(page.locator('.voice-user')).toHaveCount(1);
   await expect(page.locator('.voice-tool')).toHaveCount(0);
   await historySearch.fill('');
+  // send one completed fixture command
+  const sendVoiceCommand = (transcript: string, itemId: string) => page.evaluate(({ text, id }) => {
+    const data = (window as unknown as { davoChannel: EventTarget }).davoChannel;
+    data.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', item_id: id, transcript: text }) }));
+  }, { text: transcript, id: itemId });
+  // route only the exact visible-surface mute command
+  await sendVoiceCommand('unmute', 'command-unmute');
+  await expect(page.getByRole('button', { name: 'Mute' })).toHaveAttribute('aria-pressed', 'false');
+  await sendVoiceCommand('mute', 'command-mute');
+  await expect(page.getByRole('button', { name: 'Unmute' })).toHaveAttribute('aria-pressed', 'true');
+  expect(await page.evaluate(() => (window as unknown as { davoTrack: { enabled: boolean } }).davoTrack.enabled)).toBe(false);
+  await sendVoiceCommand('mute', 'command-mute-replay');
+  await expect(page.getByRole('button', { name: 'Unmute' })).toHaveAttribute('aria-pressed', 'true');
+  expect(await page.evaluate(() => (window as unknown as { davoTrack: { enabled: boolean } }).davoTrack.enabled)).toBe(false);
+  await sendVoiceCommand('mute the agent', 'command-mute-agent');
+  await expect(page.getByRole('button', { name: 'Unmute' })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Unmute' }).click();
+  // ignore mute commands while the ongoing call surface is hidden
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: 'Ongoing Davo call — show main UI' }).click();
+  await expect(page.locator('.voice-dialog')).toHaveCount(0);
+  await sendVoiceCommand('mute', 'command-hidden-mute');
+  await page.getByRole('button', { name: 'Show ongoing Davo call' }).click();
+  await expect(page.getByRole('button', { name: 'Mute' })).toHaveAttribute('aria-pressed', 'false');
+  expect(await page.evaluate(() => (window as unknown as { davoTrack: { enabled: boolean } }).davoTrack.enabled)).toBe(true);
+  await page.setViewportSize({ width: 1280, height: 720 });
   // switch Davo and the browser to one resolved worktree
   await page.evaluate(() => (window as unknown as { davoChannel: EventTarget }).davoChannel.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'response.function_call_arguments.done', name: 'select_worktree', call_id: 'select-ferry', arguments: JSON.stringify({ worktree_id: 'ferry-fyi' }) }) })));
   await expect(page.getByRole('tab', { name: /Ferry FYI/u })).toHaveAttribute('aria-selected', 'true');

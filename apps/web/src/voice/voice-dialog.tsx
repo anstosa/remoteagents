@@ -185,7 +185,7 @@ export type VoiceDialogProps = { open: boolean; callRequest: number; context: Vo
 
 // render the responsive voice orchestration surface
 export function VoiceDialog({ open, callRequest, context, request, onClose, onSelectWorktree, onActiveChange }: VoiceDialogProps) {
-  const voice = useRealtimeVoice(request, { ...(context.worktreeId === undefined ? {} : { worktreeId: context.worktreeId }), ...(context.worktree === undefined ? {} : { worktreeLabel: context.worktree }), ...(context.agentId === undefined ? {} : { agentId: context.agentId }) }, onSelectWorktree);
+  const voice = useRealtimeVoice(request, { ...(context.worktreeId === undefined ? {} : { worktreeId: context.worktreeId }), ...(context.worktree === undefined ? {} : { worktreeLabel: context.worktree }), ...(context.agentId === undefined ? {} : { agentId: context.agentId }) }, onSelectWorktree, open);
   useMobileScreenWakeLock(open);
   const connection = formatVoiceContext(context);
   const [historyQuery, setHistoryQuery] = useState('');
