@@ -22,4 +22,9 @@ describe('log frame generation', () => {
   it('marks unrelated non-empty snapshots as a reset', () => {
     expect(logFrame('old output', 'new output')).toEqual({ type: 'reset', text: 'new output' });
   });
+
+  it('re-emits an unchanged snapshot when metadata refreshes', () => {
+    expect(logFrame('same output', 'same output', true)).toEqual({ type: 'reset', text: 'same output' });
+    expect(logFrame('', '', true)).toEqual({ type: 'reset', text: '' });
+  });
 });

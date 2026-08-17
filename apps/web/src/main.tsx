@@ -64,9 +64,11 @@ const isCleanupTarget = (value: unknown): value is CleanupTarget => value !== nu
   && typeof (value as CleanupTarget).detail === 'string';
 type AgentState = 'working' | 'prompt-done' | 'action-required' | 'closed' | 'sleeping';
 type DashboardItem = { key: string; label: string; state: AgentState; order: number; unread: boolean; operation?: 'launching'|'deactivating'|'sleeping'|'waking'|'new-task'; agent?: Agent; worktree?: Worktree };
-type LogFrame = { type: 'append' | 'reset'; text?: string; older?: boolean; newer?: boolean; lastPrompt?: string; latestAgentMessage?: string; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean };
+type CompleteLogMetadata = { state: 'complete'; latestAgentMessage: string | null; latestAssistantMessage: string | null; latestAssistantMessageOverflows: boolean };
+type LogFrame = { type: 'append' | 'reset'; text?: string; older?: boolean; newer?: boolean; metadata?: CompleteLogMetadata; lastPrompt?: string; latestAgentMessage?: string; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean };
 type ChoiceOption = { label: string; number: number; answerIndex: number };
 type ChoiceQuestion = { text: string; choices: ChoiceOption[]; omxId?: string };
+type DismissedQuestionState = { question: ChoiceQuestion; advanced: boolean };
 type SavedPromptAttachment = { name: string; size?: number; data?: string };
 type SavedPrompt = { id: string; text: string; attachments?: SavedPromptAttachment[] };
 type QueuedPrompt = { id: string; text: string; createdAt: string; attachments?: Array<{ name: string; size: number }> };
@@ -198,6 +200,8 @@ const usePromptDraft = (id: string): [string, Dispatch<SetStateAction<string>>] 
 const terminalInputs = new Map<string, (value: string) => void>();
 const exitTerminalInput = new Map<string, () => void>();
 const logHistoryRequests = new Map<string, (direction: -1 | 0 | 1) => void>();
+const answeredQuestionActions = new Map<string, (question: ChoiceQuestion) => void>();
+const dismissedQuestions = new Map<string, DismissedQuestionState>();
 const mobileModifiers = new Map<string, { alt: boolean; ctrl: boolean; shift: boolean }>();
 type WorktreeNoteView = { noteId: string; expanded: boolean };
 const retainedWorktreeNoteViews = new Map<string, WorktreeNoteView>();
@@ -262,16 +266,39 @@ const usePendingOperation = (key: string) => useSyncExternalStore(
   () => pendingOperations.has(key),
   () => false
 );
+// read one complete metadata envelope
+const completeLogMetadata = (frame: LogFrame): CompleteLogMetadata | undefined => {
+  const metadata: unknown = frame.metadata;
+  // validate the explicit transport contract
+  if (metadata !== null && typeof metadata === 'object'
+    && (metadata as CompleteLogMetadata).state === 'complete'
+    && (typeof (metadata as CompleteLogMetadata).latestAgentMessage === 'string' || (metadata as CompleteLogMetadata).latestAgentMessage === null)
+    && (typeof (metadata as CompleteLogMetadata).latestAssistantMessage === 'string' || (metadata as CompleteLogMetadata).latestAssistantMessage === null)
+    && typeof (metadata as CompleteLogMetadata).latestAssistantMessageOverflows === 'boolean') return metadata as CompleteLogMetadata;
+  // retain legacy populated frames during upgrades
+  if (frame.latestAgentMessage !== undefined || frame.latestAssistantMessage !== undefined) return {
+    state: 'complete',
+    latestAgentMessage: frame.latestAgentMessage ?? null,
+    latestAssistantMessage: frame.latestAssistantMessage ?? null,
+    latestAssistantMessageOverflows: frame.latestAssistantMessageOverflows === true
+  };
+  return undefined;
+};
+// cache one log transport frame
 const cacheLogFrame = (id: string, frame: LogFrame) => {
   const text = frame.text ?? '';
-  if (frame.type === 'reset') logSnapshots.set(id, text);
-  else logSnapshots.append(id, text);
+  const metadata = completeLogMetadata(frame);
+  // apply authoritative empty resets
+  if (frame.type === 'reset' && (text || metadata !== undefined)) logSnapshots.set(id, text);
+  else if (text) logSnapshots.append(id, text);
   if (frame.lastPrompt !== undefined) lastPrompts.set(id, frame.lastPrompt);
-  if (frame.latestAgentMessage === undefined) latestAgentMessages.delete(id);
-  else latestAgentMessages.set(id, frame.latestAgentMessage);
-  if (frame.latestAssistantMessage === undefined) latestAssistantMessages.delete(id);
-  else latestAssistantMessages.set(id, frame.latestAssistantMessage);
-  if (frame.latestAssistantMessageOverflows === true) overflowingLatestAssistantMessages.add(id);
+  // preserve complete metadata across cheap viewport frames
+  if (metadata === undefined) return;
+  if (metadata.latestAgentMessage === null) latestAgentMessages.delete(id);
+  else latestAgentMessages.set(id, metadata.latestAgentMessage);
+  if (metadata.latestAssistantMessage === null) latestAssistantMessages.delete(id);
+  else latestAssistantMessages.set(id, metadata.latestAssistantMessage);
+  if (metadata.latestAssistantMessageOverflows) overflowingLatestAssistantMessages.add(id);
   else overflowingLatestAssistantMessages.delete(id);
 };
 
@@ -283,9 +310,13 @@ const choiceFromLabel = (label: string, answerIndex: number): ChoiceOption => {
     : { label: numbered[2]!, number: Number(numbered[1]), answerIndex };
 };
 
+const questionChoiceLine = /^([›❯>]\s*)?(?:\[([ xX])\]\s*)?(\d+)[.)]\s+(.+)$/u;
+// normalize one agent message into visible rows
+const agentMessageLines = (message: string) => message.replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '').split('\n').map(line => line.trim()).filter(Boolean);
 // detect wrapped questions from one complete message
 const questionFromAgentMessage = (message: string): ChoiceQuestion | undefined => {
-  const lines = message.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').split('\n').map(line => line.trim()).filter(Boolean);
+  const lines = agentMessageLines(message);
+  let detected: ChoiceQuestion | undefined;
   // inspect the latest output
   for (let start = Math.max(0, lines.length - 40); start < lines.length; start += 1) {
     const choices: ChoiceOption[] = [];
@@ -295,7 +326,7 @@ const questionFromAgentMessage = (message: string): ChoiceQuestion | undefined =
     let wrappedLines = 0;
     // bridge wrapped descriptions
     while (end < lines.length && end - start < 32) {
-      const match = /^([›❯>]\s*)?(?:\[([ xX])\]\s*)?(\d+)[.)]\s+(.+)$/.exec(lines[end]!);
+      const match = questionChoiceLine.exec(lines[end]!);
       // retain sequential choices
       if (match) {
         const number = Number(match[3]);
@@ -316,15 +347,44 @@ const questionFromAgentMessage = (message: string): ChoiceQuestion | undefined =
     }
     // require real choices
     if (choices.length < 2) continue;
+    // skip starts inside this choice block
+    const choiceEnd = end;
     const context = lines.slice(Math.max(0, start - 4), start).reverse();
     const question = interactive
       ? context.find(line => !/^question \d+ of \d+$/i.test(line))
       : context.find(line => /[?]$|^(?:question|select|choose)\b/i.test(line));
-    // return the latest question
-    if (question) return { text: question.replace(/^[›❯>]\s*/, ''), choices };
+    // retain the latest question
+    if (question) detected = { text: question.replace(/^[›❯>]\s*/, ''), choices };
+    start = Math.max(start, choiceEnd - 1);
   }
-  return undefined;
+  return detected;
 };
+
+// compare labels across terminal wrapping
+const sameChoiceLabel = (left: string, right: string) => {
+  const normalizedLeft = left.replace(/\s+/gu, ' ').trim();
+  const normalizedRight = right.replace(/\s+/gu, ' ').trim();
+  return normalizedLeft === normalizedRight || normalizedLeft.startsWith(normalizedRight) || normalizedRight.startsWith(normalizedLeft);
+};
+// compare prompts across terminal wrapping
+const sameQuestionText = (left: string, right: string) => {
+  const normalizedLeft = left.replace(/\s+/gu, ' ').trim();
+  const normalizedRight = right.replace(/\s+/gu, ' ').trim();
+  return normalizedLeft === normalizedRight || normalizedLeft.startsWith(normalizedRight) || normalizedRight.startsWith(normalizedLeft) || normalizedLeft.endsWith(normalizedRight) || normalizedRight.endsWith(normalizedLeft);
+};
+// compare one parsed question with its visible subset
+const sameQuestion = (complete: ChoiceQuestion, visible: ChoiceQuestion) => sameQuestionText(complete.text, visible.text) && visible.choices.every(choice => complete.choices.some(candidate => candidate.number === choice.number && sameChoiceLabel(candidate.label, choice.label)));
+// match partial and complete question identities
+const matchingQuestion = (left: ChoiceQuestion, right: ChoiceQuestion) => sameQuestion(left, right) || sameQuestion(right, left);
+// find evidence for a cropped complete question
+const questionHasVisibleChoice = (question: ChoiceQuestion, message: string) => agentMessageLines(message).some(line => {
+  const match = questionChoiceLine.exec(line);
+  // ignore non-choice rows
+  if (match === null) return false;
+  const number = Number(match[3]);
+  const label = match[4]!;
+  return question.choices.some(choice => choice.number === number && sameChoiceLabel(choice.label, label));
+});
 
 let csrf = '';
 const currentUiVersion = (() => {
@@ -1185,12 +1245,14 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
   };
   // submit one numbered answer
   const answer = async (answerIndex: number) => {
-    // block duplicate answers
-    if (pending || !beginPendingOperation(pendingKey)) return;
+    // require one current unanswered question
+    if (question === undefined || pending || !beginPendingOperation(pendingKey)) return;
     try {
-      const url = question?.omxId === undefined ? `/api/agents/${encodeURIComponent(id)}/question` : `/api/agents/${encodeURIComponent(id)}/omx-question`;
-      const body = question?.omxId === undefined ? { index: answerIndex } : { index: answerIndex, questionId: question.omxId };
-      await request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const url = question.omxId === undefined ? `/api/agents/${encodeURIComponent(id)}/question` : `/api/agents/${encodeURIComponent(id)}/omx-question`;
+      const body = question.omxId === undefined ? { index: answerIndex } : { index: answerIndex, questionId: question.omxId };
+      const response = await request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      // retire successfully answered inferred questions
+      if (response.ok && question.omxId === undefined) answeredQuestionActions.get(id)?.(question);
     } finally { setPendingOperation(pendingKey, false); }
   };
   const startVoice = () => {
@@ -2440,6 +2502,10 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
     let copiedSelectionTimer: number | undefined;
     let awaitingConnectedPaint = true;
     let connectionUpdateVersion = 0;
+    let metadataRefreshPending = false;
+    let metadataFresh = false;
+    let metadataInitialized = false;
+    let dismissedQuestion = dismissedQuestions.get(id);
     let rerenderAfterResize = () => {};
     const pendingInput: string[] = [];
     setStatus('Connecting');
@@ -2642,8 +2708,78 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
       setSelectionToolbar(undefined);
     };
     let flushSelectedOutput = () => {};
-    // prefer complete history, then inspect the visible terminal
-    const detectedQuestion = () => questionFromAgentMessage(latestAgentMessage ?? '') ?? questionFromAgentMessage(snapshot);
+    // request one authoritative live scan
+    const requestMetadataRefresh = () => {
+      // coalesce unavailable or duplicate requests
+      if (metadataRefreshPending || historyOffset !== 0 || socket?.readyState !== WebSocket.OPEN) return;
+      metadataRefreshPending = true;
+      socket.send(JSON.stringify({ v: 1, type: 'metadata' }));
+    };
+    // reconcile complete choices with current viewport evidence
+    const detectedQuestion = () => {
+      const complete = questionFromAgentMessage(latestAgentMessage ?? '');
+      const visible = questionFromAgentMessage(snapshot);
+      // suppress a just-answered question across stale captures
+      if (dismissedQuestion !== undefined) {
+        const completeWasDismissed = complete !== undefined && matchingQuestion(dismissedQuestion.question, complete);
+        const visibleWasDismissed = visible === undefined ? questionHasVisibleChoice(dismissedQuestion.question, snapshot) : matchingQuestion(dismissedQuestion.question, visible);
+        // allow an identical question after visible intervening work
+        if (dismissedQuestion.advanced && visible !== undefined && visibleWasDismissed) {
+          dismissedQuestions.delete(id);
+          dismissedQuestion = undefined;
+          requestMetadataRefresh();
+          return completeWasDismissed && metadataFresh ? complete : visible;
+        }
+        // mark a newer cheap viewport as a generation boundary
+        if (!metadataFresh && !visibleWasDismissed) {
+          const firstAdvance = !dismissedQuestion.advanced;
+          dismissedQuestion.advanced = true;
+          // discard stale complete metadata
+          if (completeWasDismissed) { latestAgentMessage = undefined; latestAgentMessages.delete(id); }
+          if (firstAdvance) requestMetadataRefresh();
+          return visible;
+        }
+        // show newer visible questions without reviving stale metadata
+        if (completeWasDismissed && visible !== undefined && !visibleWasDismissed) { requestMetadataRefresh(); return visible; }
+        // retain the dismissal while either transport view still matches
+        if (completeWasDismissed || visibleWasDismissed) return undefined;
+        // retire the tombstone after an authoritative replacement or clear
+        if (metadataFresh) { dismissedQuestions.delete(id); dismissedQuestion = undefined; }
+        // show a newer partial question while its metadata refreshes
+        else if (visible !== undefined) { requestMetadataRefresh(); return visible; }
+      }
+      // trust the matching detailed capture
+      if (complete !== undefined && metadataFresh) return complete;
+      // defer partial initial output while refreshing
+      if (complete === undefined) return metadataRefreshPending && !metadataInitialized ? undefined : visible;
+      // retain a complete list for the same visible question
+      if (visible !== undefined && sameQuestion(complete, visible)) return complete;
+      // replace a visibly different question immediately
+      if (visible !== undefined) { requestMetadataRefresh(); return visible; }
+      // retain cropped questions with matching choice evidence
+      if (questionHasVisibleChoice(complete, snapshot)) return complete;
+      requestMetadataRefresh();
+      return undefined;
+    };
+    // retire one answered inferred question
+    const answeredQuestion = (answered: ChoiceQuestion) => {
+      const complete = questionFromAgentMessage(latestAgentMessage ?? '');
+      const visible = questionFromAgentMessage(snapshot);
+      const completeWasAnswered = complete !== undefined && matchingQuestion(answered, complete);
+      const visibleWasAnswered = visible !== undefined && matchingQuestion(answered, visible);
+      dismissedQuestion = { question: answered, advanced: false };
+      dismissedQuestions.set(id, dismissedQuestion);
+      // discard only matching complete metadata
+      if (completeWasAnswered) {
+        latestAgentMessage = undefined;
+        latestAgentMessages.delete(id);
+        metadataFresh = false;
+      }
+      // preserve a replacement question that arrived during the request
+      if (visible === undefined ? completeWasAnswered : visibleWasAnswered) onQuestion(undefined);
+      requestMetadataRefresh();
+    };
+    answeredQuestionActions.set(id, answeredQuestion);
     // defer question analysis until output settles
     const scheduleOutputAnalysis = () => {
       if (terminalMode) return;
@@ -2847,25 +2983,50 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
         ws.onopen = () => {
           if (closed || socket !== ws) return;
           scheduleViewport();
+          requestMetadataRefresh();
         };
         ws.onmessage = event => {
           if (closed || socket !== ws) return;
           const frame = JSON.parse(event.data) as LogFrame;
           const text = frame.text ?? '';
-          if (!text) return;
-          if (awaitingConnectedPaint) connectionUpdateVersion += 1;
           if (frame.newer !== true) historyOffset = 0;
           syncScrollState();
           const latest = historyOffset === 0;
+          const metadata = completeLogMetadata(frame);
+          const metadataRefreshed = metadata !== undefined;
           if (!terminalMode && latest && frame.lastPrompt !== undefined) setLastPrompt(frame.lastPrompt);
-          if (!terminalMode && latest) {
-            latestAgentMessage = frame.latestAgentMessage;
-            setLatestAssistantMessage(frame.latestAssistantMessage);
-            setLatestAssistantMessageOverflows(frame.latestAssistantMessageOverflows === true);
+          // update complete history only from metadata frames
+          if (!terminalMode && latest && metadata !== undefined) {
+            latestAgentMessage = metadata.latestAgentMessage ?? undefined;
+            setLatestAssistantMessage(metadata.latestAssistantMessage ?? undefined);
+            setLatestAssistantMessageOverflows(metadata.latestAssistantMessageOverflows);
+            metadataRefreshPending = false;
+            metadataFresh = true;
+            metadataInitialized = true;
           }
           if (!terminalMode && latest) cacheLogFrame(id, frame);
+          // invalidate completeness after newer cheap output
+          if (!metadataRefreshed && text) metadataFresh = false;
+          // apply authoritative empty resets
+          if (!text) {
+            // retain legacy empty-frame behavior
+            if (!metadataRefreshed || frame.type !== 'reset') return;
+            if (awaitingConnectedPaint) connectionUpdateVersion += 1;
+            appendWrites.clear();
+            snapshot = '';
+            scheduleOutputAnalysis();
+            // defer clears around active selection or rendering
+            if (outputSelectionPresent() || renderingSnapshot) { pendingRender = true; return; }
+            renderSnapshot(ws);
+            return;
+          }
+          if (awaitingConnectedPaint) connectionUpdateVersion += 1;
           if (frame.type === 'reset') {
-            if (text === snapshot && !awaitingConnectedPaint) return;
+            // reanalyze unchanged output when metadata changes
+            if (text === snapshot && !awaitingConnectedPaint) {
+              if (metadataRefreshed) scheduleOutputAnalysis();
+              return;
+            }
             appendWrites.clear();
             snapshot = nextLiveSnapshot(snapshot, frame.type, text);
             scheduleOutputAnalysis();
@@ -2893,6 +3054,9 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
           appendWrites.clear();
           awaitingConnectedPaint = true;
           connectionUpdateVersion = 0;
+          metadataRefreshPending = false;
+          metadataFresh = false;
+          metadataInitialized = false;
           cancelConnectedPaint();
           setStatus('Connecting');
           reconnect();
@@ -2901,7 +3065,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
       } catch { setStatus('Connecting'); reconnect(); }
     };
     void connect();
-    return () => { closed = true; appendWrites.clear(); cancelConnectedPaint(); if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (retry !== undefined) window.clearTimeout(retry); if (flushFrame !== undefined) window.cancelAnimationFrame(flushFrame); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (overlayFrame !== undefined) window.cancelAnimationFrame(overlayFrame); if (analysisFrame !== undefined) window.cancelAnimationFrame(analysisFrame); if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer); selectionSubscriptions.forEach(subscription => subscription.dispose()); inputSubscriptions.forEach(subscription => subscription.dispose()); window.removeEventListener('resize', scheduleViewport); window.visualViewport?.removeEventListener('resize', scheduleViewport); document.removeEventListener('visibilitychange', syncVisibleViewport); window.removeEventListener('pageshow', scheduleViewport); document.removeEventListener('selectionchange', syncSelectionMode); window.removeEventListener('keydown', interruptOutput, true); document.removeEventListener('keydown', copySelectionShortcut, true); document.removeEventListener('copy', nativeOutputCopied); canvas.current?.closest('.log')?.classList.remove('selection-copied'); canvas.current?.removeEventListener('pointerdown', captureSelectionMode, true); canvas.current?.removeEventListener('click', focus); releaseLongPressSelection(); releaseScrollContainment(); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; overlays.clear(); terminals.forEach(candidate => candidate.dispose()); };
+    return () => { closed = true; appendWrites.clear(); cancelConnectedPaint(); if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (answeredQuestionActions.get(id) === answeredQuestion) answeredQuestionActions.delete(id); if (retry !== undefined) window.clearTimeout(retry); if (flushFrame !== undefined) window.cancelAnimationFrame(flushFrame); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (overlayFrame !== undefined) window.cancelAnimationFrame(overlayFrame); if (analysisFrame !== undefined) window.cancelAnimationFrame(analysisFrame); if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer); selectionSubscriptions.forEach(subscription => subscription.dispose()); inputSubscriptions.forEach(subscription => subscription.dispose()); window.removeEventListener('resize', scheduleViewport); window.visualViewport?.removeEventListener('resize', scheduleViewport); document.removeEventListener('visibilitychange', syncVisibleViewport); window.removeEventListener('pageshow', scheduleViewport); document.removeEventListener('selectionchange', syncSelectionMode); window.removeEventListener('keydown', interruptOutput, true); document.removeEventListener('keydown', copySelectionShortcut, true); document.removeEventListener('copy', nativeOutputCopied); canvas.current?.closest('.log')?.classList.remove('selection-copied'); canvas.current?.removeEventListener('pointerdown', captureSelectionMode, true); canvas.current?.removeEventListener('click', focus); releaseLongPressSelection(); releaseScrollContainment(); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; overlays.clear(); terminals.forEach(candidate => candidate.dispose()); };
   }, [id, onQuestion, terminalMode]);
   const processing = processingLabel !== undefined;
   const loading = !hasRendered || processing;
@@ -3414,6 +3578,8 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, updateErro
     logSnapshots.retain(activeAgentIds);
     for (const id of lastPrompts.keys()) if (!activeAgentIds.has(id)) lastPrompts.delete(id);
     for (const id of latestAgentMessages.keys()) if (!activeAgentIds.has(id)) latestAgentMessages.delete(id);
+    // retire tombstones for removed agents
+    for (const id of dismissedQuestions.keys()) if (!activeAgentIds.has(id)) dismissedQuestions.delete(id);
     for (const id of latestAssistantMessages.keys()) if (!activeAgentIds.has(id)) latestAssistantMessages.delete(id);
     for (const id of overflowingLatestAssistantMessages) if (!activeAgentIds.has(id)) overflowingLatestAssistantMessages.delete(id);
     for (const id of promptDrafts.keys()) if (!activeAgentIds.has(id)) promptDrafts.delete(id);

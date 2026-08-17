@@ -67,8 +67,10 @@ const promptAttachments = (value: unknown): PromptAttachment[] | undefined => {
   return attachments.some(attachment => attachment === undefined) ? undefined : attachments as PromptAttachment[];
 };
 type LogFrame = { type: 'append'|'reset'; text: string };
-export function logFrame(last: string, value: string): LogFrame | undefined {
-  if (!value.trim() || value === last) return undefined;
+// build one complete viewport frame
+export function logFrame(last: string, value: string, refreshMetadata = false): LogFrame | undefined {
+  // retain metadata-only refreshes
+  if ((!value.trim() || value === last) && !refreshMetadata) return undefined;
   // Captures are complete viewport frames. Replaying a guessed suffix can
   // preserve cells that tmux already redrew, producing a mixed old/new frame.
   return { type: 'reset', text: value };
@@ -714,8 +716,6 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
           const captured = detailed
             ? await tmux.captureWindow(target.socket, target.agent.paneId, requestedHistory, requestedRows)
             : await (tmux.captureRecentWindow?.(target.socket, target.agent.paneId, requestedRows) ?? tmux.captureWindow(target.socket, target.agent.paneId, requestedHistory, requestedRows));
-          // defer full-history analysis after a detailed live capture
-          if (detailed && requestedHistory === 0) metadataRefreshAt = Date.now() + logMetadataRefreshMs;
           if (captured === undefined) return socket.close(1008);
           // A page/viewport request may arrive while tmux is capturing the old
           // window. Never publish that stale window: it makes the next click
@@ -724,13 +724,19 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
             pollQueued = true;
             return;
           }
-          if (!captured.text || captured.text === last) return;
+          const frame = requestedHistory === 0 ? logFrame(last, captured.text, detailed) : logFrame('', captured.text);
+          // skip unchanged cheap captures
+          if (frame === undefined) return;
           const now = Date.now();
           if (!immediate && lastResetAt && now - lastResetAt < 750) return;
-          const frame = requestedHistory === 0 ? logFrame(last, captured.text) : { type: 'reset' as const, text: captured.text };
           last = captured.text;
           lastResetAt = now;
-          if (frame !== undefined && socket.readyState === socket.OPEN) socket.send(JSON.stringify({ v: 1, ...frame, older: captured.older, newer: requestedHistory > 0, ...(captured.lastPrompt === undefined ? {} : { lastPrompt: captured.lastPrompt }), ...(captured.latestAgentMessage === undefined ? {} : { latestAgentMessage: captured.latestAgentMessage }), ...(captured.latestAssistantMessage === undefined ? {} : { latestAssistantMessage: captured.latestAssistantMessage, latestAssistantMessageOverflows: captured.latestAssistantMessageOverflows }) }));
+          if (socket.readyState === socket.OPEN) {
+            const metadata = detailed ? { state: 'complete', latestAgentMessage: captured.latestAgentMessage ?? null, latestAssistantMessage: captured.latestAssistantMessage ?? null, latestAssistantMessageOverflows: captured.latestAssistantMessageOverflows === true } as const : undefined;
+            socket.send(JSON.stringify({ v: 1, ...frame, older: captured.older, newer: requestedHistory > 0, ...(metadata === undefined ? {} : { metadata }), ...(captured.lastPrompt === undefined ? {} : { lastPrompt: captured.lastPrompt }) }));
+            // defer the next successful full-history scan
+            if (detailed && requestedHistory === 0) metadataRefreshAt = Date.now() + logMetadataRefreshMs;
+          }
         } finally {
           polling = false;
           if (pollQueued) {
@@ -740,8 +746,11 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         }
       };
       const requestView = (nextHistory: number) => {
+        const returningToLive = history > 0 && nextHistory === 0;
         history = nextHistory;
         last = '';
+        // refresh metadata after leaving history
+        if (returningToLive) metadataRefreshAt = 0;
         viewVersion += 1;
         void poll(true);
       };
@@ -788,6 +797,13 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
             rows = frame.rows;
             viewportEstablished = true;
             void viewport.schedule({ cols, rows, history: frame.offset, onFailure: () => socket.close(1011) });
+            return;
+          }
+          if (frame.type === 'metadata') {
+            // refresh only the live pane
+            if (history !== 0) throw new Error();
+            metadataRefreshAt = 0;
+            void poll(true);
             return;
           }
           throw new Error();
