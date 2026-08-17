@@ -15,6 +15,7 @@ export type PullRequestSwitchAvailability = { enabled: boolean; pullRequests: Sw
 export class PullRequestSwitchService {
   constructor(private readonly config: ValidatedConfig, private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly pullRequests = new PullRequestService(), private readonly command: GitCommand = run) {}
 
+  // list one agent's switchable pull requests
   async available(agentId: string): Promise<PullRequestSwitchAvailability | undefined> {
     const target = await this.discovery.target(agentId);
     const worktree = target === undefined ? undefined : this.worktree(target.agent.workspace);
@@ -35,7 +36,7 @@ export class PullRequestSwitchService {
     }
     return {
       enabled,
-      pullRequests: (pullRequests ?? []).map(pullRequest => {
+      pullRequests: pullRequests.map(pullRequest => {
         const openIn = checkedOut.get(pullRequest.branch);
         return { ...pullRequest, checkedOut: checkedOut.has(pullRequest.branch), ...(openIn === undefined ? {} : { openIn }) };
       })

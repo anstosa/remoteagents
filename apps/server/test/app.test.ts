@@ -12,6 +12,7 @@ import { QueuedPromptService } from '../src/prompts/queue.js';
 import { SavedPromptService } from '../src/saved-prompts/service.js';
 import { ReviewTourStore } from '../src/review-tour/store.js';
 import type { ReviewTour } from '../src/review-tour/contracts.js';
+import { PullRequestLookupError } from '../src/pull-requests/service.js';
 const config: ValidatedConfig = { name: 'Remote Agents', remoteServers: [], listen:{host:'127.0.0.1',port:8787},publicOrigin:new URL('https://agents.example.com'),trustedProxyIps:new Set(['127.0.0.1']),pollIntervalMs:500,newAgentCommand:'codex',worktrees:[] };
 // reset environment overrides
 afterEach(() => { vi.unstubAllEnvs(); });
@@ -217,6 +218,23 @@ describe('agent launches', () => {
       expect(response.json()).toEqual({ agentId: agent.id });
       expect(dashboards).toBe(83);
     } finally { await launchApp.close(); }
+  }, 15_000);
+});
+
+describe('pull request switch API', () => {
+  // preserve lookup failures across the HTTP boundary
+  it('returns an actionable gateway error when GitHub lookup fails', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const prSwitch = { available: async () => { throw new PullRequestLookupError('GitHub could not load pull requests (503).'); } };
+    const pullRequestApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 17).toString('base64url')), prSwitch: prSwitch as never });
+    try {
+      const boot = await pullRequestApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await pullRequestApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const response = await pullRequestApp.inject({ method: 'GET', url: '/api/agents/agent-1/switch-prs', headers: { host: 'agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0] } });
+
+      expect(response.statusCode).toBe(502);
+      expect(response.json()).toEqual({ error: 'GitHub could not load pull requests (503).' });
+    } finally { await pullRequestApp.close(); }
   }, 15_000);
 });
 

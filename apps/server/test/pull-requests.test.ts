@@ -93,6 +93,46 @@ describe('GitHub pull request lookup', () => {
     await expect(service.ownOpen('/workspace')).resolves.toEqual([{ number: 7, title: 'Draft work', draft: true, url: 'https://github.com/octo/repo/pull/7', branch: 'feature/draft', checks: 'failed', issues: { mergeConflicts: true, failingChecks: true, unresolvedComments: true } }]);
   });
 
+  // preserve and recover from upstream failures
+  it('reports repeated GitHub viewer failures and retries on the next lookup', async () => {
+    let viewerRequests = 0;
+    const service = new PullRequestService(async () => ({ code: 0, stdout: 'git@github.com:octo/repo.git\n' }), async (url) => {
+      // fail one complete retry cycle
+      if (url.endsWith('/user') && ++viewerRequests <= 3) return { ok: false, status: 503, json: async () => ({ message: 'GitHub is temporarily unavailable.' }) };
+      // identify the viewer after recovery
+      if (url.endsWith('/user')) return { ok: true, status: 200, json: async () => ({ login: 'me' }) };
+      return { ok: true, status: 200, json: async () => [] };
+    }, undefined, () => 'private-token');
+
+    await expect(service.ownOpen('/workspace')).rejects.toMatchObject({
+      statusCode: 502,
+      message: 'GitHub could not identify the authenticated user (503): GitHub is temporarily unavailable.'
+    });
+    await expect(service.ownOpen('/workspace')).resolves.toEqual([]);
+    expect(viewerRequests).toBe(4);
+  });
+
+  // recover after token rotation
+  it('reloads credentials after GitHub rejects a cached token', async () => {
+    let tokenRequests = 0;
+    const service = new PullRequestService(async () => ({ code: 0, stdout: 'git@github.com:octo/repo.git\n' }), async (url, init) => {
+      const authorization = (init?.headers as Record<string, string>).Authorization;
+      // reject the expired credential
+      if (authorization === 'Bearer expired-token') return { ok: false, status: 401, json: async () => ({ message: 'Bad credentials' }) };
+      // identify the recovered viewer
+      if (url.endsWith('/user')) return { ok: true, status: 200, json: async () => ({ login: 'me' }) };
+      return { ok: true, status: 200, json: async () => [] };
+    }, undefined, async () => ++tokenRequests === 1 ? 'expired-token' : 'fresh-token');
+
+    await expect(service.ownOpen('/workspace')).rejects.toMatchObject({
+      statusCode: 502,
+      githubStatus: 401,
+      message: 'GitHub could not identify the authenticated user (401): Bad credentials'
+    });
+    await expect(service.ownOpen('/workspace')).resolves.toEqual([]);
+    expect(tokenRequests).toBe(2);
+  });
+
   it('caches rich draft, open, and merged pull request details for the dashboard', async () => {
     const requests: string[] = [];
     const service = new PullRequestService(async () => ({ code: 0, stdout: 'git@github.com:octo/repo.git\n' }), async (url) => {

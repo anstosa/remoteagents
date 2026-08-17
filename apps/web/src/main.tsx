@@ -232,6 +232,10 @@ const clearWorktreeNoteView = (worktreeId: string) => {
 const pendingOperations = new Set<string>();
 const pendingOperationListeners = new Map<string, Set<() => void>>();
 const pendingNewTaskSources = new Map<string, string>();
+// retain launch handoffs by worktree
+type PendingWorktreeLaunch = { operationKey: string; agentId?: string; confirmationTimer?: number };
+const pendingWorktreeLaunches = new Map<string, PendingWorktreeLaunch>();
+const worktreeLaunchConfirmationMs = 30_000;
 const pullRequestSwitchCache = new Map<string, PullRequestSwitchAvailability>();
 const newTaskOperationKey = (worktreeId: string) => `new-task:${worktreeId}`;
 const launchOperationKey = (worktreeId: string) => `worktree-launch:${worktreeId}`;
@@ -240,6 +244,8 @@ const deactivateOperationKey = (worktreeId: string) => `deactivate:${worktreeId}
 const sleepOperationKey = (worktreeId: string) => `sleep:${worktreeId}`;
 // track wake transitions by worktree
 const wakeOperationKey = (worktreeId: string) => `wake:${worktreeId}`;
+// select one launch transition key
+const worktreeLaunchOperationKey = (worktree: Pick<Worktree, 'id' | 'sleeping'>) => worktree.sleeping === true ? wakeOperationKey(worktree.id) : launchOperationKey(worktree.id);
 const defaultPushAction: PromptAction = { label: 'Commit/Push', prompt: 'review, commit, and push' };
 const subscribeToPendingOperation = (key: string, listener: () => void) => {
   const listeners = pendingOperationListeners.get(key) ?? new Set();
@@ -3133,11 +3139,12 @@ function MoreMenuIcon({ name }: { name: MoreMenuIconName }) {
   return <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d={paths[name]} /></svg>;
 }
 
+// render the agent action menu
 function More({ id, worktreeId, newTaskConfigured = false, pushAction = defaultPushAction, attachDisabled = false, onAttach, swapDisabled = false, onSwap, onPromptQueued, onSelectTarget, onOperationFeedback }: { id?: string; worktreeId?: string; newTaskConfigured?: boolean; pushAction?: PromptAction; attachDisabled?: boolean; onAttach?: () => void; swapDisabled?: boolean; onSwap?: () => void; onPromptQueued?: () => void | Promise<void>; onSelectTarget: (target: DashboardTarget) => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
   const [menuOpen, setMenuOpen] = useState(false); const { anchorRef, flyoutRef, style } = useViewportFlyout(menuOpen);
   const prSwitchCacheKey = worktreeId ?? id;
   const cachedPrSwitch = prSwitchCacheKey === undefined ? undefined : pullRequestSwitchCache.get(prSwitchCacheKey);
-  const [prSwitch, setPrSwitch] = useState<PullRequestSwitchAvailability | undefined>(cachedPrSwitch); const [prSwitchLoaded, setPrSwitchLoaded] = useState(cachedPrSwitch !== undefined); const [loadingPrSwitch, setLoadingPrSwitch] = useState(false); const [switchingPr, setSwitchingPr] = useState<number>();
+  const [prSwitch, setPrSwitch] = useState<PullRequestSwitchAvailability | undefined>(cachedPrSwitch); const [prSwitchLoaded, setPrSwitchLoaded] = useState(cachedPrSwitch !== undefined); const [prSwitchError, setPrSwitchError] = useState<string>(); const [loadingPrSwitch, setLoadingPrSwitch] = useState(false); const [switchingPr, setSwitchingPr] = useState<number>();
   const [githubActionsUrl, setGithubActionsUrl] = useState<string>(); const [loadingGithubActions, setLoadingGithubActions] = useState(false);
   const [newTask, setNewTask] = useState<NewTaskAvailability>(); const [loadingNewTask, setLoadingNewTask] = useState(false);
   const newTaskKey = newTaskOperationKey(worktreeId ?? id ?? 'unavailable');
@@ -3145,6 +3152,7 @@ function More({ id, worktreeId, newTaskConfigured = false, pushAction = defaultP
   const promptPendingKey = `prompt:${id ?? 'unavailable'}`;
   const promptPending = usePendingOperation(promptPendingKey);
   useEffect(() => { if (!menuOpen) return; const close = (event: MouseEvent) => { const target = event.target as Node; if (!anchorRef.current?.contains(target) && !flyoutRef.current?.contains(target)) setMenuOpen(false); }; document.addEventListener('mousedown', close); return () => document.removeEventListener('mousedown', close); }, [menuOpen]);
+  // refresh menu availability
   useEffect(() => {
     if (!menuOpen || id === undefined) return;
     let cancelled = false;
@@ -3159,8 +3167,18 @@ function More({ id, worktreeId, newTaskConfigured = false, pushAction = defaultP
         else setGithubActionsUrl(undefined);
       } catch { setGithubActionsUrl(undefined); }
     }).catch(() => { if (!cancelled) setGithubActionsUrl(undefined); }).finally(() => { if (!cancelled) setLoadingGithubActions(false); });
-    void request(`/api/agents/${encodeURIComponent(id)}/switch-prs`).then(response => response.ok ? response.json() : undefined).then((payload: unknown) => {
+    void request(`/api/agents/${encodeURIComponent(id)}/switch-prs`).then(async response => ({ ok: response.ok, status: response.status, payload: await response.json().catch(() => undefined) })).then(({ ok, status, payload }) => {
+      // ignore closed menu work
       if (cancelled) return;
+      // expose the server failure
+      if (!ok) {
+        const error = payload !== null && typeof payload === 'object' && typeof (payload as { error?: unknown }).error === 'string' ? (payload as { error: string }).error : `Unable to load pull requests (${status}).`;
+        setPrSwitchError(error);
+        setPrSwitchLoaded(true);
+        setLoadingPrSwitch(false);
+        return;
+      }
+      // validate successful availability
       if (payload !== null && typeof payload === 'object' && typeof (payload as { enabled?: unknown }).enabled === 'boolean' && Array.isArray((payload as { pullRequests?: unknown }).pullRequests)) {
         const pullRequests = (payload as { pullRequests: unknown[] }).pullRequests.filter((value): value is SwitchablePullRequest => {
           if (value === null || typeof value !== 'object' || !Number.isInteger((value as PullRequestChoice).number) || typeof (value as PullRequestChoice).title !== 'string' || typeof (value as PullRequestChoice).branch !== 'string' || typeof (value as PullRequestChoice).draft !== 'boolean' || typeof (value as PullRequestChoice).url !== 'string' || typeof (value as SwitchablePullRequest).checkedOut !== 'boolean') return false;
@@ -3175,10 +3193,16 @@ function More({ id, worktreeId, newTaskConfigured = false, pushAction = defaultP
         // cache one workspace list
         if (prSwitchCacheKey !== undefined) pullRequestSwitchCache.set(prSwitchCacheKey, next);
         setPrSwitch(next);
+        setPrSwitchError(undefined);
+      } else {
+        setPrSwitchError('The console returned invalid pull request data.');
       }
       setPrSwitchLoaded(true);
       setLoadingPrSwitch(false);
-    }).catch(() => { if (!cancelled) { setPrSwitchLoaded(true); setLoadingPrSwitch(false); } });
+    }).catch(() => {
+      // retain one actionable client error
+      if (!cancelled) { setPrSwitchError('Unable to load pull requests.'); setPrSwitchLoaded(true); setLoadingPrSwitch(false); }
+    });
     setLoadingNewTask(newTaskConfigured);
     if (!newTaskConfigured) setNewTask(undefined);
     if (newTaskConfigured) void request(`/api/agents/${encodeURIComponent(id)}/new-task`).then(response => response.ok ? response.json() : undefined).then((payload: unknown) => {
@@ -3236,13 +3260,13 @@ function More({ id, worktreeId, newTaskConfigured = false, pushAction = defaultP
   };
   const selectWorktree = (target: DashboardTarget) => { setMenuOpen(false); onSelectTarget(target); };
   if (id === undefined) return null;
-  const pullRequestReason = loadingPrSwitch ? 'Loading pull requests…' : prSwitchLoaded && prSwitch === undefined ? 'Pull requests unavailable.' : prSwitch?.pullRequests.length === 0 ? 'No open pull requests.' : undefined;
+  const pullRequestReason = loadingPrSwitch ? 'Loading pull requests…' : prSwitchError ?? (prSwitchLoaded && prSwitch === undefined ? 'Pull requests unavailable.' : prSwitch?.pullRequests.length === 0 ? 'No open pull requests.' : undefined);
   const newTaskReason = !newTaskConfigured ? 'Not configured for this worktree.' : newTask === undefined ? 'Checking availability…' : newTask.enabled ? 'Start a fresh task for this worktree.' : newTask.reason ?? 'New Task is currently unavailable.';
-  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} onClick={toggleMenu}>⋮</button></span>{menuOpen && createPortal(<div className="more-menu flyout-menu pr-switch-menu" ref={flyoutRef} style={style} aria-busy={loadingPrSwitch || loadingGithubActions || loadingNewTask}><div className="pr-switch-summary"><button className="pr-switch-heading" type="button" aria-label="Pull requests" disabled>{loadingPrSwitch ? <span className="spinner" /> : <MoreMenuIcon name="pull-request" />}Pull requests</button>{pullRequestReason !== undefined && <span className="more-menu-reason" role="status" aria-label={pullRequestReason}>{pullRequestReason}</span>}</div>{prSwitch?.pullRequests.map(pullRequest => {
+  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} onClick={toggleMenu}>⋮</button></span>{menuOpen && createPortal(<div className="more-menu flyout-menu pr-switch-menu" ref={flyoutRef} style={style} aria-busy={loadingPrSwitch || loadingGithubActions || loadingNewTask}><div className="pr-switch-summary"><button className="pr-switch-heading" type="button" aria-label="Pull requests" disabled>{loadingPrSwitch ? <span className="spinner" /> : <MoreMenuIcon name="pull-request" />}Pull requests</button>{pullRequestReason !== undefined && <span className={`more-menu-reason${prSwitchError === undefined ? '' : ' pr-switch-error'}`} role={prSwitchError === undefined ? 'status' : 'alert'} aria-label={pullRequestReason}>{pullRequestReason}</span>}</div>{prSwitch?.pullRequests.map(pullRequest => {
     const status = pullRequest.draft ? 'draft' : 'open';
     const label = `#${pullRequest.number}: ${pullRequest.title}`;
-    const unavailableReason = pullRequest.checkedOut ? `Already open in ${pullRequest.openIn?.worktreeName ?? 'another worktree'}` : !prSwitch.enabled ? 'Working copy must be clean and pushed' : label;
-    return <div key={pullRequest.number} className="switch-pr-option"><button className="switch-pr" disabled={loadingPrSwitch || switchingPr !== undefined || pullRequest.checkedOut || !prSwitch.enabled} title={unavailableReason} aria-label={label} onClick={() => void switchPullRequest(pullRequest.number)}>{switchingPr === pullRequest.number ? <><span className="spinner" />Switching…</> : <span className="switch-pr-copy"><strong className={`status-${status}`}>#{pullRequest.number}</strong><span>: {pullRequest.title}</span></span>}</button><span className="switch-pr-actions"><PullRequestStatusIcon status={status} className="switch-pr-status-icon" /><PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} /><a className="switch-pr-action switch-pr-external outline-button" href={pullRequest.url} target="_blank" rel="noreferrer" aria-label={`Open PR #${pullRequest.number} in GitHub`} title={`Open PR #${pullRequest.number} in GitHub`}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5M19 5l-8 8M19 14v5H5V5h5" /></svg><span>Open in GitHub</span></a>{pullRequest.openIn && <button className="switch-pr-action switch-pr-worktree outline-button" onClick={() => selectWorktree(pullRequest.openIn!)}>Switch to {pullRequest.openIn.worktreeName}</button>}</span></div>;
+    const unavailableReason = prSwitchError !== undefined ? 'Pull request list could not be refreshed' : pullRequest.checkedOut ? `Already open in ${pullRequest.openIn?.worktreeName ?? 'another worktree'}` : !prSwitch.enabled ? 'Working copy must be clean and pushed' : label;
+    return <div key={pullRequest.number} className="switch-pr-option"><button className="switch-pr" disabled={loadingPrSwitch || prSwitchError !== undefined || switchingPr !== undefined || pullRequest.checkedOut || !prSwitch.enabled} title={unavailableReason} aria-label={label} onClick={() => void switchPullRequest(pullRequest.number)}>{switchingPr === pullRequest.number ? <><span className="spinner" />Switching…</> : <span className="switch-pr-copy"><strong className={`status-${status}`}>#{pullRequest.number}</strong><span>: {pullRequest.title}</span></span>}</button><span className="switch-pr-actions"><PullRequestStatusIcon status={status} className="switch-pr-status-icon" /><PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} /><a className="switch-pr-action switch-pr-external outline-button" href={pullRequest.url} target="_blank" rel="noreferrer" aria-label={`Open PR #${pullRequest.number} in GitHub`} title={`Open PR #${pullRequest.number} in GitHub`}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5M19 5l-8 8M19 14v5H5V5h5" /></svg><span>Open in GitHub</span></a>{pullRequest.openIn && <button className="switch-pr-action switch-pr-worktree outline-button" onClick={() => selectWorktree(pullRequest.openIn!)}>Switch to {pullRequest.openIn.worktreeName}</button>}</span></div>;
   })}<hr className="more-menu-divider" /><button disabled={onSwap === undefined || swapDisabled} onClick={swapToTerminal}><MoreMenuIcon name="swap" />Swap to terminal</button><button disabled={promptPending} onClick={() => void queuePush()}>{promptPending ? <span className="spinner" /> : <MoreMenuIcon name="push" />}{pushAction.label}</button><button disabled={onAttach === undefined || attachDisabled} onClick={attachFiles}><MoreMenuIcon name="attachment" />Attach files</button>{loadingGithubActions ? <button className="github-actions-loading" type="button" disabled><span className="spinner" />GitHub Actions</button> : githubActionsUrl === undefined ? <button type="button" disabled title="GitHub Actions unavailable"><MoreMenuIcon name="actions" />GitHub Actions</button> : <a className="more-menu-link" href={githubActionsUrl} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)}><MoreMenuIcon name="actions" />GitHub Actions</a>}<div className="new-task-option"><button disabled={!newTaskConfigured || loadingNewTask || !newTask?.enabled || startingNewTask} onClick={() => void startNewTask()}>{loadingNewTask || startingNewTask ? <><span className="spinner" />{startingNewTask ? 'Starting New Task' : 'New Task'}</> : <><MoreMenuIcon name="new-task" />New Task</>}</button><span className="more-menu-reason" role="status">{newTaskReason}</span></div></div>, document.body)}</>;
 }
 
@@ -3383,7 +3407,7 @@ function launchError(response: Response): Promise<string> {
 }
 
 // render an inactive worktree
-function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperationFeedback }: { worktree: Worktree; tabBar: ReactNode; cleanupControl?: ReactNode; onLaunched: (agentId: string, sourceItemKey: string) => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
+function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperationFeedback }: { worktree: Worktree; tabBar: ReactNode; cleanupControl?: ReactNode; onLaunched: (agentId: string, worktree: Worktree, operationKey: string) => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
   const launchKey = launchOperationKey(worktree.id);
   const wakeKey = wakeOperationKey(worktree.id);
   const launching = usePendingOperation(launchKey);
@@ -3408,10 +3432,12 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperatio
   }, [error]);
   // start or resume one inactive worktree
   const start = async () => {
-    const operationKey = sleeping ? wakeKey : launchKey;
+    const operationKey = worktreeLaunchOperationKey(worktree);
     const action = sleeping ? 'wake' : 'launch';
     // serialize inactive worktree actions
     if (!worktree.available || processing || !beginPendingOperation(operationKey)) return;
+    pendingWorktreeLaunches.set(worktree.id, { operationKey });
+    let handedOff = false;
     setError('');
     onOperationFeedback({ tone: 'pending', message: `${sleeping ? 'Waking' : 'Starting'} ${worktree.label}…`, detail: sleeping ? 'Running the resume alias and waiting for the previous conversation.' : 'Launching Codex and waiting for the agent session to become ready.', worktreeId: worktree.id });
     try {
@@ -3429,14 +3455,21 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperatio
         setError(message);
         return onOperationFeedback({ tone: 'error', message: `${worktree.label} could not be opened`, detail: message, worktreeId: worktree.id });
       }
-      onLaunched(payload.agentId, `worktree-${worktree.id}`);
+      onLaunched(payload.agentId, worktree, operationKey);
+      handedOff = true;
       onOperationFeedback({ tone: 'success', message: `${worktree.label} ${sleeping ? 'is awake' : 'is starting'}`, detail: sleeping ? 'The previous Codex conversation resumed and its output is connecting.' : 'The new agent session is ready and its output is connecting.', worktreeId: worktree.id });
     } catch {
       const message = `Unable to reach the console while ${sleeping ? 'waking' : 'launching'} the agent.`;
       setError(message);
       onOperationFeedback({ tone: 'error', message: `${worktree.label} could not ${sleeping ? 'wake up' : 'start'}`, detail: message, worktreeId: worktree.id });
     }
-    finally { setPendingOperation(operationKey, false); }
+    finally {
+      // preserve successful handoffs until dashboard confirmation
+      if (!handedOff) {
+        pendingWorktreeLaunches.delete(worktree.id);
+        setPendingOperation(operationKey, false);
+      }
+    }
   };
   const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className={`log-loading inactive${sleeping ? ' sleeping' : ''}`} role={processing || sleeping ? 'status' : undefined} aria-label={startingNewTask ? 'Starting new task' : waking ? `Waking ${worktree.label}` : launching ? `Starting ${worktree.label}` : sleeping ? `${worktree.label} sleeping` : undefined}>{processing ? <span className="spinner" /> : sleeping ? <svg className="sleeping-agent-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg> : null}<strong>{startingNewTask ? 'Starting new task…' : waking ? 'Waking up…' : launching ? 'Starting Codex…' : sleeping ? 'Agent is sleeping' : 'Agent is off'}</strong><span>{startingNewTask ? 'Waiting for the fresh agent session to become ready.' : waking ? 'Running the resume alias and reconnecting the previous conversation.' : launching ? 'Creating the agent session and connecting its output.' : sleeping ? 'The agent process is closed, but this tab is waiting for you.' : 'This worktree is available. Launch an agent when you are ready to continue.'}</span>{sleeping && !processing && <button className="wake-agent" type="button" disabled={!worktree.available} onClick={() => void start()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>}</div><span className={`status log-status ${processing ? 'connecting' : sleeping ? 'sleeping' : 'inactive'}`}>{waking ? 'Waking' : launching || startingNewTask ? 'Starting' : sleeping ? 'Sleep' : 'Off'}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div>;
   const browserPane = projectBrowser.url === undefined || projectBrowser.homeUrl === undefined ? null : <ProjectBrowserPane url={projectBrowser.url} homeUrl={projectBrowser.homeUrl} worktreeId={worktree.id} onNavigate={projectBrowser.navigate} onClose={projectBrowser.close} />;
@@ -3516,6 +3549,7 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, updateErro
   const [operationFeedback, setOperationFeedback] = useState<OperationFeedback>();
   const operationFeedbackId = useRef(0);
   const [activateAgentId, setActivateAgentId] = useState<string>();
+  const [activateWorktreeId, setActivateWorktreeId] = useState<string>();
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [cleanupTargets, setCleanupTargets] = useState<CleanupTarget[]>([]);
   const [cleanupChecked, setCleanupChecked] = useState<Set<string>>(() => new Set());
@@ -3529,6 +3563,7 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, updateErro
   const dashboardContent = useRef('');
   const dashboardSnapshot = useRef<Dashboard | undefined>(undefined);
   const selectedItemKey = useRef<string | undefined>(undefined);
+  const dashboardMounted = useRef(true);
   const showOperationFeedback = useCallback((feedback: Omit<OperationFeedback, 'id'>) => {
     operationFeedbackId.current += 1;
     setOperationFeedback({ ...feedback, id: operationFeedbackId.current });
@@ -3559,14 +3594,27 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, updateErro
   }, [launcherOpen]);
   const agentStates = useRef(new Map<string, AgentState>());
   const pendingCompletions = useRef(new Map<string, { due: number; timer: number }>());
+  // release launch state when the dashboard leaves
+  useEffect(() => () => {
+    dashboardMounted.current = false;
+    // clear every dashboard-owned launch
+    for (const pendingLaunch of pendingWorktreeLaunches.values()) {
+      // cancel confirmation recovery
+      if (pendingLaunch.confirmationTimer !== undefined) window.clearTimeout(pendingLaunch.confirmationTimer);
+      setPendingOperation(pendingLaunch.operationKey, false);
+    }
+    pendingWorktreeLaunches.clear();
+  }, []);
   const applyDashboard = useCallback((payload: Dashboard) => {
     const retainedWorktrees: Worktree[] = [];
+    const pendingWorktreeIds = new Set([...pendingNewTaskSources.keys(), ...pendingWorktreeLaunches.keys()]);
     // preserve every pending handoff workspace
-    for (const [worktreeId, sourceAgentId] of pendingNewTaskSources) {
+    for (const worktreeId of pendingWorktreeIds) {
       const visible = payload.agents.some(agent => agent.worktreeId === worktreeId) || payload.worktrees.some(worktree => worktree.id === worktreeId);
       // keep server-provided workspace entries
       if (visible) continue;
       const priorWorktree = dashboardSnapshot.current?.worktrees.find(worktree => worktree.id === worktreeId);
+      const sourceAgentId = pendingNewTaskSources.get(worktreeId);
       const sourceAgent = dashboardSnapshot.current?.agents.find(agent => agent.id === sourceAgentId && agent.worktreeId === worktreeId);
       const retained = priorWorktree ?? (sourceAgent === undefined ? undefined : { id: worktreeId, label: sourceAgent.worktreeLabel ?? agentLabel(sourceAgent), path: sourceAgent.workspace, branch: sourceAgent.branch, gitStatus: sourceAgent.gitStatus, gitPrStatus: sourceAgent.gitPrStatus, gitUpstream: sourceAgent.gitUpstream, available: false, pinned: false, order: sourceAgent.worktreeOrder ?? Number.MAX_SAFE_INTEGER, projectUrl: sourceAgent.projectUrl, pullRequest: sourceAgent.pullRequest, stack: sourceAgent.stack });
       // retain the last known workspace shape
@@ -3592,6 +3640,21 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, updateErro
       pendingNewTaskSources.delete(worktreeId);
       setPendingOperation(newTaskOperationKey(worktreeId), false);
       if (replacement !== undefined) showOperationFeedback({ tone: 'success', message: 'New task is ready', detail: `${replacement.worktreeLabel ?? agentLabel(replacement)} is ready for a fresh prompt.`, worktreeId });
+    }
+    // finish launches only after their dashboard agent appears
+    for (const [worktreeId, pendingLaunch] of pendingWorktreeLaunches) {
+      const replacement = pendingLaunch.agentId === undefined
+        ? nextPayload.agents.find(agent => agent.worktreeId === worktreeId)
+        : nextPayload.agents.find(agent => agent.id === pendingLaunch.agentId && agent.worktreeId === worktreeId);
+      // wait for the matching agent identity
+      if (replacement === undefined) continue;
+      const shouldActivate = selectedItemKey.current === `worktree-${worktreeId}`;
+      // cancel confirmation recovery
+      if (pendingLaunch.confirmationTimer !== undefined) window.clearTimeout(pendingLaunch.confirmationTimer);
+      pendingWorktreeLaunches.delete(worktreeId);
+      setPendingOperation(pendingLaunch.operationKey, false);
+      // preserve newer navigation choices
+      if (shouldActivate) setActivateAgentId(replacement.id);
     }
     const content = JSON.stringify([nextPayload.agents, nextPayload.worktrees, nextPayload.cleanupPending ?? 0, nextPayload.reviewTour, nextPayload.reviews]);
     if (content !== dashboardContent.current || pendingCompletions.current.size > 0) {
@@ -3824,8 +3887,8 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, updateErro
       return { key: `agent-${agent.id}`, label: agentLabel(agent), state: agentState(agent), order: agent.worktreeOrder ?? Number.MAX_SAFE_INTEGER, unread: agent.unread === true, operation, agent };
     }),
     ...data.worktrees.filter(worktree => {
-      // retain pending handoff tabs
-      return worktree.pinned || worktree.sleeping === true || pendingNewTaskSources.has(worktree.id);
+      // retain pending and explicitly visible tabs
+      return worktree.pinned || worktree.sleeping === true || pendingNewTaskSources.has(worktree.id) || pendingWorktreeLaunches.has(worktree.id);
     }).map(worktree => {
       const operation = pendingOperations.has(newTaskOperationKey(worktree.id)) ? 'new-task' as const : pendingOperations.has(wakeOperationKey(worktree.id)) ? 'waking' as const : pendingOperations.has(launchOperationKey(worktree.id)) ? 'launching' as const : pendingOperations.has(sleepOperationKey(worktree.id)) ? 'sleeping' as const : undefined;
       return { key: `worktree-${worktree.id}`, label: worktree.label, state: worktree.sleeping === true ? 'sleeping' as const : 'closed' as const, order: worktree.order, unread: false, operation, worktree };
@@ -3878,9 +3941,53 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, updateErro
     select(index);
     setActivateAgentId(undefined);
   }, [activateAgentId, tabKey]);
-  const launched = (agentId: string, sourceItemKey?: string) => {
+  // activate one newly opened worktree tab
+  useEffect(() => {
+    // wait for the pending tab
+    if (activateWorktreeId === undefined) return;
+    const index = items.findIndex(candidate => candidate.worktree?.id === activateWorktreeId);
+    // wait for the matching item
+    if (index < 0) return;
+    select(index);
+    setActivateWorktreeId(undefined);
+  }, [activateWorktreeId, tabKey]);
+  // open one scratch agent
+  const launched = (agentId: string) => {
     setLaunchErrorMessage('');
-    if (sourceItemKey === undefined || selectedItemKey.current === sourceItemKey) setActivateAgentId(agentId);
+    setActivateAgentId(agentId);
+    void refresh();
+  };
+  // complete one dashboard-confirmed worktree launch
+  const worktreeLaunched = (agentId: string, worktree: Worktree, operationKey: string) => {
+    // ignore callbacks after dashboard teardown
+    if (!dashboardMounted.current) return;
+    setLaunchErrorMessage('');
+    const visible = dashboardSnapshot.current?.agents.some(agent => agent.id === agentId && agent.worktreeId === worktree.id) === true;
+    const action = worktree.sleeping === true ? 'wake' : 'launch';
+    const existing = pendingWorktreeLaunches.get(worktree.id);
+    // replace one prior confirmation timer
+    if (existing?.confirmationTimer !== undefined) window.clearTimeout(existing.confirmationTimer);
+    // retain the placeholder through dashboard propagation
+    if (!visible) {
+      const confirmationTimer = window.setTimeout(() => {
+        const pendingLaunch = pendingWorktreeLaunches.get(worktree.id);
+        // ignore replaced or completed handoffs
+        if (!dashboardMounted.current || pendingLaunch?.agentId !== agentId) return;
+        pendingWorktreeLaunches.delete(worktree.id);
+        setPendingOperation(operationKey, false);
+        const detail = `${worktree.label} ${action === 'wake' ? 'woke up' : 'started'}, but its agent did not remain discoverable. Try again.`;
+        setLaunchErrorMessage(detail);
+        showOperationFeedback({ tone: 'error', message: `${worktree.label} did not finish ${action === 'wake' ? 'waking up' : 'starting'}`, detail, worktreeId: worktree.id });
+        void refresh();
+      }, worktreeLaunchConfirmationMs);
+      pendingWorktreeLaunches.set(worktree.id, { operationKey, agentId, confirmationTimer });
+    }
+    else {
+      pendingWorktreeLaunches.delete(worktree.id);
+      setPendingOperation(operationKey, false);
+      // preserve newer navigation choices
+      if (selectedItemKey.current === `worktree-${worktree.id}`) setActivateAgentId(agentId);
+    }
     void refresh();
   };
   const createAgent = async () => {
@@ -3926,11 +4033,13 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, updateErro
   // start or resume from the launcher
   const launchWorktree = async (worktree: Worktree) => {
     const waking = worktree.sleeping === true;
-    const key = waking ? wakeOperationKey(worktree.id) : launchOperationKey(worktree.id);
-    // serialize launcher actions
-    if (creatingAgent || !beginPendingOperation(key)) return;
+    const key = worktreeLaunchOperationKey(worktree);
+    // prevent duplicate worktree launches
+    if (!beginPendingOperation(key)) return;
+    pendingWorktreeLaunches.set(worktree.id, { operationKey: key });
+    let handedOff = false;
     setLauncherOpen(false);
-    setCreatingAgent(true);
+    setActivateWorktreeId(worktree.id);
     setLaunchErrorMessage('');
     showOperationFeedback({ tone: 'pending', message: `${waking ? 'Waking' : 'Starting'} ${worktree.label}…`, detail: waking ? 'Running the resume alias and waiting for the previous conversation.' : 'Launching Codex and waiting for the agent session to become ready.', worktreeId: worktree.id });
     try {
@@ -3948,15 +4057,19 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, updateErro
         setLaunchErrorMessage(message);
         return showOperationFeedback({ tone: 'error', message: `${worktree.label} could not be opened`, detail: message, worktreeId: worktree.id });
       }
-      launched(payload.agentId);
+      worktreeLaunched(payload.agentId, worktree, key);
+      handedOff = true;
       showOperationFeedback({ tone: 'success', message: `${worktree.label} ${waking ? 'is awake' : 'started'}`, detail: waking ? 'The previous Codex conversation resumed and its output is connecting.' : 'The new agent session is ready and its output is connecting.', worktreeId: worktree.id });
     } catch {
       const message = `Unable to reach the console while ${waking ? 'waking' : 'launching'} the agent.`;
       setLaunchErrorMessage(message);
       showOperationFeedback({ tone: 'error', message: `${worktree.label} could not ${waking ? 'wake up' : 'start'}`, detail: message, worktreeId: worktree.id });
     } finally {
-      setPendingOperation(key, false);
-      setCreatingAgent(false);
+      // preserve successful handoffs until dashboard confirmation
+      if (!handedOff) {
+        pendingWorktreeLaunches.delete(worktree.id);
+        setPendingOperation(key, false);
+      }
     }
   };
   const selectTarget = (target: DashboardTarget) => {
@@ -4055,11 +4168,11 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, updateErro
   const tabBar = <><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => {
     const transition = operationLabel(entry.operation);
     const label = transition ?? stateLabel[entry.state];
-    return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{transition !== undefined ? <span className="tab-transition-label"><span>{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
-  })}<NotificationControl />{updateAvailable && <button className="update-ready" type="button" onClick={onRestart}>Update available <span>Restart</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle}><button disabled={creatingAgent} onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} disabled={creatingAgent || pendingOperations.has(launchOperationKey(worktree.id))} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && operationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
+    return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
+  })}<NotificationControl />{updateAvailable && <button className="update-ready" type="button" onClick={onRestart}>Update available <span>Restart</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><button disabled={creatingAgent} onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
   const consoleClass = `console${voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{reviewDialog}</article></main></VoiceTriggerContext.Provider>;
-  return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={launched} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{reviewDialog}</main></VoiceTriggerContext.Provider>;
+  return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{reviewDialog}</main></VoiceTriggerContext.Provider>;
 }
 
 // coordinate console session and update lifecycle
