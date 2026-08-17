@@ -292,6 +292,46 @@ describe('configured worktree deactivation', () => {
       expect(resumed).toBe('cora');
     } finally { await sleepApp.close(); }
   }, 15_000);
+
+  it('closes an idle agent before restarting it through the resume alias', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false, command: 'codex' };
+    const firstAgent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' };
+    const secondAgent = { ...firstAgent, id: 'agent-2', paneId: '%2', sessionId: 'socket:$2' };
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    const events: string[] = [];
+    let resumed = false;
+    let pollsAfterResume = 0;
+    const discovery = {
+      // expose one stale frame before the replacement
+      dashboard: async () => {
+        // retain the original agent before resume
+        if (!resumed) return { generation: 1, agents: [firstAgent], worktrees: [] };
+        pollsAfterResume += 1;
+        return { generation: pollsAfterResume === 1 ? 1 : 2, agents: [pollsAfterResume === 1 ? firstAgent : secondAgent], worktrees: [] };
+      },
+      // resolve the original restart target
+      target: async (id: string) => id === firstAgent.id ? { agent: firstAgent, socket } : undefined
+    };
+    const launch = {
+      launch: async () => false,
+      launchHome: async () => false,
+      // record the host alias handoff
+      resume: async (id: string) => { events.push(`resume:${id}`); resumed = true; return true; }
+    };
+    const restartApp = await buildApp({ ...config, worktrees: [worktree] }, { auth: new AuthService(hash, Buffer.alloc(32, 22).toString('base64url')), discovery: discovery as never, launch: launch as never, tmux: { close: async () => { events.push(`close:${firstAgent.id}`); return true; } } as never, launchPollDelay: async () => {} });
+    try {
+      const boot = await restartApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await restartApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+
+      const restarted = await restartApp.inject({ method: 'POST', url: '/api/agents/agent-1/restart', headers });
+
+      expect(restarted.statusCode).toBe(201);
+      expect(restarted.json()).toEqual({ agentId: 'agent-2' });
+      expect(events).toEqual(['close:agent-1', 'resume:cora']);
+    } finally { await restartApp.close(); }
+  }, 15_000);
 });
 
 describe('agent terminal swap', () => {

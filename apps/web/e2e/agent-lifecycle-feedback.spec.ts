@@ -73,6 +73,70 @@ test('keeps agent on/off progress visible across lifecycle transitions', async (
   await expect(page.getByRole('tab', { name: 'Cora — Prompt done' })).toBeVisible();
 });
 
+// verify non-destructive power actions
+test('clears and restarts an idle agent from the power menu', async ({ page }) => {
+  let agentId = 'agent-1';
+  let clearPrompt: unknown;
+  let restartRequests = 0;
+  let finishClear!: () => void;
+  let finishRestart!: () => void;
+  const clearFinished = new Promise<void>(resolve => { finishClear = resolve; });
+  const restartFinished = new Promise<void>(resolve => { finishRestart = resolve; });
+
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: agentId === 'agent-1' ? 1 : 2, agents: [{ id: agentId, sessionId: agentId === 'agent-1' ? 'socket:$1' : 'socket:$2', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' }], worktrees: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (/^\/api\/agents\/agent-[12]\/saved-prompts$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });
+    if (/^\/api\/agents\/agent-[12]\/prompt-history$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });
+    // hold clear while its progress state is visible
+    if (url.pathname === '/api/agents/agent-1/prompt' && request.method() === 'POST') {
+      clearPrompt = request.postDataJSON();
+      await clearFinished;
+      return route.fulfill({ status: 204 });
+    }
+    // hold restart while its progress state is visible
+    if (url.pathname === '/api/agents/agent-1/restart' && request.method() === 'POST') {
+      restartRequests += 1;
+      await restartFinished;
+      agentId = 'agent-2';
+      return route.fulfill({ status: 201, json: { agentId } });
+    }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Agent power options' }).click();
+  const powerMenu = page.getByRole('menu', { name: 'Agent power options' });
+  await expect(powerMenu.getByRole('menuitem', { name: 'Restart' })).toBeVisible();
+  await expect(powerMenu.getByRole('menuitem', { name: 'Clear' })).toBeVisible();
+  await powerMenu.getByRole('menuitem', { name: 'Clear' }).click();
+
+  await expect.poll(() => clearPrompt).toEqual({ prompt: '/clear', attachments: [] });
+  await expect(page.getByRole('status').filter({ hasText: 'Clearing Cora' })).toContainText('Sending /clear');
+  await expect(page.getByRole('tab', { name: 'Cora — Clearing' })).toHaveAttribute('aria-busy', 'true');
+  await expect(page.getByRole('button', { name: 'Agent power options' })).toBeDisabled();
+
+  finishClear();
+  await expect(page.getByRole('status').filter({ hasText: 'Cora cleared' })).toContainText('conversation is resetting');
+  await expect(page.getByRole('tab', { name: 'Cora — Prompt done' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Agent power options' }).click();
+  await powerMenu.getByRole('menuitem', { name: 'Restart' }).click();
+
+  await expect.poll(() => restartRequests).toBe(1);
+  await expect(page.getByRole('status').filter({ hasText: 'Restarting Cora' })).toContainText('running the resume alias');
+  await expect(page.getByRole('tab', { name: 'Cora — Restarting' })).toHaveAttribute('aria-busy', 'true');
+  await expect(page.getByRole('button', { name: 'Agent power options' })).toBeDisabled();
+
+  finishRestart();
+  await expect(page.getByRole('status').filter({ hasText: 'Cora restarted' })).toContainText('conversation resumed');
+  await expect(page.getByRole('tab', { name: 'Cora — Prompt done' })).toBeVisible();
+});
+
 test('sleeps an idle agent and wakes the retained tab through resume', async ({ page }) => {
   let state: 'active'|'sleeping' = 'active';
   let agentId = 'agent-1';

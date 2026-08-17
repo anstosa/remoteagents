@@ -607,7 +607,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // poll for up to sixty seconds
     for (let attempt = 0; attempt < launchPollAttempts; attempt += 1) {
       const dashboard = await discovery.dashboard(config.worktrees);
-      const agent = worktreeId === undefined ? dashboard.agents.find(candidate => !before.has(candidate.id)) : dashboard.agents.find(candidate => candidate.worktreeId === worktreeId);
+      const agent = dashboard.agents.find(candidate => !before.has(candidate.id) && (worktreeId === undefined || candidate.worktreeId === worktreeId));
       // return the ready agent
       if (agent) return agent;
       // pause before retrying
@@ -615,6 +615,33 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     }
     return undefined;
   };
+  // restart one idle configured agent through the host resume alias
+  app.post('/api/agents/:id/restart', async (request, reply) => {
+    controlled(request, true);
+    const id = (request.params as { id: string }).id;
+    const target = await discovery.target(id);
+    const worktree = target === undefined ? undefined : configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
+    // preserve active or unconfigured agents
+    if (!target || worktree === undefined || /^[\u2800-\u28ff]/u.test(target.agent.title)) return reply.code(409).send({ error: 'only idle configured agents can restart' });
+    const before = new Set((await discovery.dashboard(config.worktrees)).agents.map(agent => agent.id));
+    // require the original agent to close
+    if (!await prompts.close(id)) return reply.code(404).send({ error: 'target unavailable' });
+    sleepingWorktrees.add(worktree.id);
+    // require the resume alias to start
+    if (!await launch.resume(worktree.id)) {
+      await dashboardUpdates.refresh().catch(() => undefined);
+      return reply.code(409).send({ error: 'The agent closed, but the resume alias could not restart it.' });
+    }
+    const agent = await waitForAgent(before, worktree.id);
+    // preserve recovery controls after a timeout
+    if (!agent) {
+      await dashboardUpdates.refresh().catch(() => undefined);
+      return reply.code(504).send({ error: `The agent closed and the resume alias ran, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
+    }
+    sleepingWorktrees.delete(worktree.id);
+    await dashboardUpdates.refresh().catch(() => undefined);
+    return reply.code(201).send({ agentId: agent.id });
+  });
   app.post('/api/worktrees/:id/launch', async (request, reply) => {
     controlled(request, true);
     const worktreeId = (request.params as { id: string }).id;
