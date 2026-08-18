@@ -316,6 +316,7 @@ const omxWorkerStartup = /(?:^|\/)\.omx\/state\/team\/[^/]+\/runtime\/worker-\d+
 export const isOmxWorkerPane = (pane: Pane) => omxWorkerWorktree.test(pane.path) || omxWorkerStartup.test(pane.startCommand ?? '');
 export class DiscoveryService {
   private generation = 0; private snapshot: Agent[] = [];
+  private readonly serverStartedAt = Date.now();
   private refreshedAt = 0;
   private refreshInFlight?: Promise<Agent[]>;
   private socketSnapshot: SocketRef[] = [];
@@ -346,7 +347,11 @@ export class DiscoveryService {
     return refresh;
   }
   async refresh(force = false): Promise<Agent[]> {
+    // finish older scans before a forced read
+    if (force && this.refreshInFlight) await this.refreshInFlight;
+    // reuse only ordinary fresh snapshots
     if (!force && Date.now() - this.refreshedAt < DiscoveryService.refreshCacheMs) return this.snapshot;
+    // coalesce matching live scans
     if (this.refreshInFlight) return this.refreshInFlight;
     this.refreshInFlight = this.discover().finally(() => { this.refreshInFlight = undefined; });
     return this.refreshInFlight;
@@ -376,12 +381,15 @@ export class DiscoveryService {
     const socket = (await this.sockets()).find(candidate => candidate.fingerprint === agent!.socketFingerprint);
     return socket === undefined ? undefined : { agent, socket };
   }
-  async dashboard(worktrees: Worktree[]): Promise<Dashboard> {
+  // build or reuse one dashboard view
+  async dashboard(worktrees: Worktree[], force = false): Promise<Dashboard> {
     const cached = this.dashboardSnapshot;
-    if (cached?.worktrees === worktrees && Date.now() - cached.refreshedAt < DiscoveryService.refreshCacheMs) return cached.value;
+    // bypass cached state for lifecycle checks
+    if (!force && cached?.worktrees === worktrees && Date.now() - cached.refreshedAt < DiscoveryService.refreshCacheMs) return cached.value;
     const active = this.dashboardRefreshInFlight;
-    if (active?.worktrees === worktrees) return active.value;
-    const value = this.buildDashboard(worktrees)
+    // reuse only ordinary dashboard refreshes
+    if (!force && active?.worktrees === worktrees) return active.value;
+    const value = this.buildDashboard(worktrees, force)
       .then(dashboard => {
         this.dashboardSnapshot = { worktrees, refreshedAt: Date.now(), value: dashboard };
         return dashboard;
@@ -393,8 +401,9 @@ export class DiscoveryService {
     return value;
   }
 
-  private async buildDashboard(worktrees: Worktree[]): Promise<Dashboard> {
-    const discovered = await this.refresh();
+  // enrich one discovered dashboard
+  private async buildDashboard(worktrees: Worktree[], force = false): Promise<Dashboard> {
+    const discovered = await this.refresh(force);
     const metadataFor = (workspace: string) => {
       const cached = this.gitMetadata.get(workspace);
       // reuse recent Git state across frequent dashboard polls
@@ -437,6 +446,6 @@ export class DiscoveryService {
       const gitPrStatus = await gitPrComparisonForBase(meta, meta.branch, pullRequest?.baseBranch);
       return { id: worktree.id, label: worktree.label, path: worktree.path, available: worktree.available, pinned: worktree.pinned, projectUrl: worktree.projectUrl, order: worktrees.indexOf(worktree), ...(meta.branch === undefined ? {} : { branch: meta.branch }), ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }), ...(pullRequest === undefined ? {} : { pullRequest }) };
     }));
-    return { generation: this.generation, agents, worktrees: inactive };
+    return { generation: this.generation, serverStartedAt: this.serverStartedAt, agents, worktrees: inactive };
   }
 }

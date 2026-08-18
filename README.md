@@ -151,9 +151,12 @@ Tunnel sidecar:
 
 ```bash
 docker compose up -d --build
-docker compose exec remote-agent-console codex login
 docker compose ps
 ```
+
+After startup, use **Global settings → Add account** to connect one or more
+ChatGPT accounts through device-code login and select the active Codex login.
+Failed account queries offer **Re-login** without changing the active account.
 
 Docker requires host-specific bind mounts, worktree paths, and tunnel
 credentials. Follow the [Docker Compose guide](docs/docker.md) before starting

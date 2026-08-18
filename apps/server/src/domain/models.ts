@@ -17,4 +17,4 @@ export type Worktree = { id: string; label: string; path: string; identity: stri
 export type LaunchTemplate = { program: string; args: string[] };
 export type CleanupTargetKind = 'orphan-worker' | 'stale-agent' | 'hud-pane' | 'hud-process';
 export type CleanupTarget = { id: string; kind: CleanupTargetKind; label: string; detail: string };
-export type Dashboard = { generation: number; agents: Agent[]; worktrees: Array<Pick<Worktree, 'id'|'label'|'path'|'available'|'pinned'|'projectUrl'> & { order: number; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; pullRequest?: PullRequestSummary }> };
+export type Dashboard = { generation: number; serverStartedAt?: number; agents: Agent[]; worktrees: Array<Pick<Worktree, 'id'|'label'|'path'|'available'|'pinned'|'projectUrl'> & { order: number; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; pullRequest?: PullRequestSummary }> };

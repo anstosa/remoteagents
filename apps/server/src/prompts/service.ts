@@ -32,26 +32,96 @@ export class PromptService {
   private readonly dispatching = new Set<string>();
   private readonly reconciled = new Set<string>();
   private readonly reconciliationPendingSince = new Map<string, number>();
+  private readonly restartLocks = new Set<string>();
+  private readonly lockedAgentIds = new Set<string>();
+  private readonly activeMutations = new Map<string, number>();
+  private readonly mutationVersions = new Map<string, number>();
+  private lifecycleMutationVersion = 0;
 
   constructor(private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly worktrees: Worktree[] = [], private readonly history?: PromptHistoryService, private readonly queued?: QueuedPromptService, private readonly saved?: SavedPromptService) {}
 
   // submit or durably queue one prompt
   async submit(agentId: string, prompt: string, attachments: PromptAttachment[] = []): Promise<boolean> {
     if (!validPrompt(prompt, attachments)) return false;
+    const releaseMutation = this.beginAgentMutation(agentId);
     const first = await this.discovery.target(agentId);
-    if (!first) return false;
-    const scope = this.historyScope(first.agent.workspace, agentId);
-    const waiting = await this.queued?.list(scope);
-    // retain prompts behind active or halted work
-    if (this.queued !== undefined && (agentAttentionState(first.agent) !== 'finished' || this.phases.has(scope) || (waiting?.length ?? 0) > 0)) {
-      const busy = agentAttentionState(first.agent) !== 'finished';
-      const baselineCompletion = busy && !this.phases.has(scope) ? await this.completionSignature(agentId) : undefined;
-      const queued = await this.queued.enqueue(scope, prompt, attachments);
-      // track work that started outside the managed prompt flow
-      if (queued !== undefined && busy && !this.phases.has(scope)) this.phases.set(scope, { state: 'working', changedAt: Date.now(), ...(baselineCompletion === undefined ? {} : { baselineCompletion }) });
-      return queued !== undefined;
+    // release reservations for vanished targets
+    if (!first) {
+      releaseMutation?.();
+      return false;
     }
-    return await this.send(agentId, prompt, attachments, first);
+    const scope = this.historyScope(first.agent.workspace, agentId);
+    // queue work arriving during a restart handoff
+    if (releaseMutation === undefined || this.restartLocks.has(scope)) {
+      releaseMutation?.();
+      return this.queued !== undefined && await this.queued.enqueue(scope, prompt, attachments) !== undefined;
+    }
+    try {
+      const waiting = await this.queued?.list(scope);
+      // retain prompts behind active or halted work
+      if (this.queued !== undefined && (agentAttentionState(first.agent) !== 'finished' || this.phases.has(scope) || (waiting?.length ?? 0) > 0)) {
+        const busy = agentAttentionState(first.agent) !== 'finished';
+        const baselineCompletion = busy && !this.phases.has(scope) ? await this.completionSignature(agentId) : undefined;
+        const queued = await this.queued.enqueue(scope, prompt, attachments);
+        // track work that started outside the managed prompt flow
+        if (queued !== undefined && busy && !this.phases.has(scope)) this.phases.set(scope, { state: 'working', changedAt: Date.now(), ...(baselineCompletion === undefined ? {} : { baselineCompletion }) });
+        return queued !== undefined;
+      }
+      return await this.send(agentId, prompt, attachments, first);
+    } finally {
+      releaseMutation();
+    }
+  }
+
+  // reserve one agent for an idle restart
+  async acquireRestartLock(agentId: string, expectedMutationVersion?: number, expectedMutationGeneration?: number): Promise<(() => void) | undefined> {
+    const target = await this.discovery.target(agentId);
+    // require a current target
+    if (target === undefined) return undefined;
+    const scope = this.historyScope(target.agent.workspace, agentId);
+    // reject overlapping input and lifecycle work
+    if (this.restartLocks.has(scope) || this.lockedAgentIds.has(agentId) || this.phases.has(scope) || (this.activeMutations.get(agentId) ?? 0) > 0
+      || (expectedMutationVersion !== undefined && this.mutationVersion(agentId) !== expectedMutationVersion)
+      || (expectedMutationGeneration !== undefined && this.mutationGeneration() !== expectedMutationGeneration)) return undefined;
+    this.restartLocks.add(scope);
+    this.lockedAgentIds.add(agentId);
+    let released = false;
+    // release the exact reservation once
+    return () => {
+      if (released) return;
+      released = true;
+      this.restartLocks.delete(scope);
+      this.lockedAgentIds.delete(agentId);
+    };
+  }
+
+  // reserve one direct agent mutation
+  beginAgentMutation(agentId: string): (() => void) | undefined {
+    // reject input after restart reservation
+    if (this.lockedAgentIds.has(agentId)) return undefined;
+    this.lifecycleMutationVersion += 1;
+    this.mutationVersions.set(agentId, this.mutationVersion(agentId) + 1);
+    this.activeMutations.set(agentId, (this.activeMutations.get(agentId) ?? 0) + 1);
+    let released = false;
+    // release the exact mutation once
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = (this.activeMutations.get(agentId) ?? 1) - 1;
+      // remove empty counters
+      if (remaining <= 0) this.activeMutations.delete(agentId);
+      else this.activeMutations.set(agentId, remaining);
+    };
+  }
+
+  // snapshot one agent mutation generation
+  mutationVersion(agentId: string): number {
+    return this.mutationVersions.get(agentId) ?? 0;
+  }
+
+  // snapshot all agent mutations
+  mutationGeneration(): number {
+    return this.lifecycleMutationVersion;
   }
 
   async listQueued(agentId: string): Promise<QueuedPromptSummary[] | undefined> {
@@ -77,6 +147,8 @@ export class PromptService {
   // advance managed prompt completion
   async observe(agent: Parameters<typeof agentAttentionState>[0]): Promise<void> {
     const scope = this.historyScope(agent.workspace, agent.id);
+    // pause queue dispatch during restart handoffs
+    if (this.restartLocks.has(scope)) return;
     const busy = agentAttentionState(agent) !== 'finished';
     const phase = this.phases.get(scope);
     // retry failed queue transfers without dispatching
@@ -147,7 +219,7 @@ export class PromptService {
   }
 
   private async dispatch(agentId: string, scope: string): Promise<void> {
-    if (this.dispatching.has(scope) || this.phases.has(scope)) return;
+    if (this.dispatching.has(scope) || this.phases.has(scope) || this.restartLocks.has(scope)) return;
     this.dispatching.add(scope);
     try {
       const prompt = await this.queued?.next(scope);

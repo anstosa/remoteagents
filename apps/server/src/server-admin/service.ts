@@ -30,6 +30,8 @@ export class ServerAdminService {
   private readonly tmuxSocket: string | undefined;
   private readonly runCommand: RunCommand;
   private availabilityCheck?: Promise<boolean | undefined>;
+  private updateLaunch?: Promise<ServerUpdateStatus | undefined>;
+  private activeUpdate?: ServerUpdateStatus;
 
   // resolve deployment paths once
   constructor(config: ValidatedConfig, options: ServerAdminOptions = {}) {
@@ -59,8 +61,30 @@ export class ServerAdminService {
 
   // launch the fixed host update script
   async startUpdate(): Promise<ServerUpdateStatus | undefined> {
+    // share concurrent launch requests
+    if (this.updateLaunch !== undefined) return await this.updateLaunch;
+    const launch = this.launchUpdate().finally(() => {
+      // release only the matching launch
+      if (this.updateLaunch === launch) this.updateLaunch = undefined;
+    });
+    this.updateLaunch = launch;
+    return await launch;
+  }
+
+  // launch or reuse one active host update
+  private async launchUpdate(): Promise<ServerUpdateStatus | undefined> {
     // require an explicit host repository mapping
     if (this.hostRepository === undefined || this.tmuxSocket === undefined) return undefined;
+    // reuse an update that has not reached a terminal state
+    if (this.activeUpdate !== undefined) {
+      const current = await this.updateStatus(this.activeUpdate.id);
+      // preserve one host mutation at a time
+      if (current?.state === 'queued' || current?.state === 'running') {
+        this.activeUpdate = current;
+        return current;
+      }
+      this.activeUpdate = undefined;
+    }
     const id = randomBytes(24).toString('base64url');
     const status: ServerUpdateStatus = { id, kind: 'update', state: 'queued' };
     await mkdir(this.statusDirectory, { recursive: true });
@@ -74,6 +98,7 @@ export class ServerAdminService {
       await writeFile(this.statusPath(id), `${JSON.stringify(failed)}\n`, { mode: 0o600 });
       return failed;
     }
+    this.activeUpdate = status;
     return status;
   }
 

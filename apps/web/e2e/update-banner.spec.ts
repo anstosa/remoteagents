@@ -25,8 +25,8 @@ test('places the update chip in the tab bar beside notification controls', async
   expect(Math.abs(notificationBounds!.height - bannerBounds!.height)).toBeLessThanOrEqual(1);
 });
 
-// verify the upstream banner starts the host updater
-test('checks upstream main and restarts from the update banner', async ({ page }) => {
+// verify failed updates remain beside output status
+test('shows a failed update beside the output status without overlap', async ({ page }) => {
   let updateStarts = 0;
   await page.route('**/api/**', async route => {
     const request = route.request();
@@ -42,8 +42,8 @@ test('checks upstream main and restarts from the update banner', async ({ page }
       updateStarts += 1;
       return route.fulfill({ status: 202, json: { id: 'server_update_operation_1234', kind: 'update', state: 'queued' } });
     }
-    // keep the restart screen active
-    if (url.pathname === '/api/server/update/server_update_operation_1234') return route.fulfill({ json: { id: 'server_update_operation_1234', kind: 'update', state: 'running' } });
+    // finish one failed host update
+    if (url.pathname === '/api/server/update/server_update_operation_1234') return route.fulfill({ json: { id: 'server_update_operation_1234', kind: 'update', state: 'failed' } });
     // disable push enrollment
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     // connect the visible agent output
@@ -59,5 +59,12 @@ test('checks upstream main and restarts from the update banner', async ({ page }
   await banner.click();
 
   await expect.poll(() => updateStarts).toBe(1);
-  await expect(page.getByText('Restarting', { exact: true })).toBeVisible();
+  const alert = page.getByRole('alert').filter({ hasText: 'Restart failed. Check the server logs.' });
+  await expect(alert).toBeVisible();
+  const status = page.locator('.log-status');
+  const [alertBounds, statusBounds] = await Promise.all([alert.boundingBox(), status.boundingBox()]);
+  expect(alertBounds).not.toBeNull();
+  expect(statusBounds).not.toBeNull();
+  expect(Math.abs(alertBounds!.y - statusBounds!.y)).toBeLessThanOrEqual(1);
+  expect(alertBounds!.x).toBeGreaterThanOrEqual(statusBounds!.x + statusBounds!.width + 4);
 });

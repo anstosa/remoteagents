@@ -51,7 +51,7 @@ test('falls back until the first push, then applies snapshots without frequent H
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     if (url.pathname === '/api/dashboard') {
       dashboardRequests += 1;
-      return route.fulfill({ json: { generation: 1, agents: [], worktrees: [worktree('Old label')] } });
+      return route.fulfill({ json: { generation: 100, serverStartedAt: 1_000, agents: [], worktrees: [worktree('Old label')] } });
     }
     if (url.pathname === '/api/dashboard/ticket') {
       ticketRequests += 1;
@@ -69,7 +69,8 @@ test('falls back until the first push, then applies snapshots without frequent H
   await expect.poll(() => dashboardRequests).toBeGreaterThan(1);
 
   await page.evaluate(next => (window as typeof window & { __emitDashboard: (dashboard: unknown) => void }).__emitDashboard(next), {
-    generation: 2,
+    generation: 101,
+    serverStartedAt: 1_000,
     agents: [],
     worktrees: [worktree('Synchronized label')]
   });
@@ -80,16 +81,26 @@ test('falls back until the first push, then applies snapshots without frequent H
   expect(dashboardRequests).toBe(synchronizedRequests);
 
   await page.evaluate(next => (window as typeof window & { __emitDashboard: (dashboard: unknown) => void }).__emitDashboard(next), {
-    generation: 3,
+    generation: 102,
+    serverStartedAt: 1_000,
     agents: [],
     worktrees: [worktree('Pushed label')]
   });
   await expect(page.getByRole('tab', { name: /Pushed label/u })).toBeVisible();
   expect(dashboardRequests).toBe(synchronizedRequests);
 
+  await page.evaluate(next => (window as typeof window & { __emitDashboard: (dashboard: unknown) => void }).__emitDashboard(next), {
+    generation: 1,
+    serverStartedAt: 2_000,
+    agents: [],
+    worktrees: [worktree('Restarted server label')]
+  });
+  await expect(page.getByRole('tab', { name: /Restarted server label/u })).toBeVisible();
+
   await page.clock.fastForward(61_000);
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect.poll(() => dashboardRequests).toBeGreaterThan(synchronizedRequests);
+  await expect(page.getByRole('tab', { name: /Restarted server label/u })).toBeVisible();
   const safetyRequests = dashboardRequests;
   await page.clock.fastForward(20_000);
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));

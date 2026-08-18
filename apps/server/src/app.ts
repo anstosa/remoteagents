@@ -25,7 +25,7 @@ import { WorktreeCommandService } from './worktree-commands/service.js';
 import { PullRequestSwitchService } from './pull-requests/switch-service.js';
 import { NewTaskService } from './new-task/service.js';
 import { SavedPromptService } from './saved-prompts/service.js';
-import { AgentNotificationCoordinator } from './notifications.js';
+import { agentAttentionState, AgentNotificationCoordinator } from './notifications.js';
 import { stackActions, type Agent, type StackAction } from './domain/models.js';
 import { SkillService } from './skills/service.js';
 import { LatestViewportScheduler, PaneViewportCoordinator } from './logs/viewport-scheduler.js';
@@ -54,8 +54,9 @@ import { RealtimeService } from './integrations/realtime/service.js';
 import { federationForwarder, verifyFederationRequest } from './integrations/federation/index.js';
 import { IntegrationControlService } from './integrations/control/index.js';
 import { ServerAdminService } from './server-admin/service.js';
+import { CodexAccountService, safeAccountId, type AccountRateLimitWindow, type AccountSummary } from './accounts/index.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; skills?: SkillService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'> };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; skills?: SkillService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'> };
 const cookieName = '__Host-rac';
 // bound full history scans
 const logMetadataRefreshMs = 30_000;
@@ -78,9 +79,11 @@ export function logFrame(last: string, value: string, refreshMetadata = false): 
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
   const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, config.worktrees, promptHistory, queuedPrompts, savedPrompts); const notes = deps.notes ?? new WorktreeNoteService(); const skills = deps.skills ?? new SkillService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = new WorktreeCommandService(config); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.worktrees, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews])); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, config.worktrees, new CodexExecReviewTourGenerator()); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
+  const accounts = deps.accounts ?? new CodexAccountService();
   const paneViewports = new PaneViewportCoordinator();
   // retain sleeping tabs during this server session
   const sleepingWorktrees = new Set<string>();
+  let accountSwitching = false;
   const integrationConfig = config.integrations ?? defaultIntegrationConfig;
   // prefer a dedicated federation secret while retaining existing deployments
   const instanceStatusSecret = process.env.RAC_INSTANCE_STATUS_SECRET ?? process.env.RAC_SESSION_SECRET ?? '';
@@ -171,6 +174,20 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       server
     };
   };
+  // omit unavailable nullable limit fields
+  const publicLimitWindow = (window: AccountRateLimitWindow) => ({ usedPercent: window.usedPercent, ...(window.windowDurationMins === null ? {} : { windowDurationMins: window.windowDurationMins }), ...(window.resetsAt === null ? {} : { resetsAt: window.resetsAt }) });
+  // flatten one secret-free account response for the browser
+  const publicAccount = (account: AccountSummary) => ({
+    id: account.id,
+    label: account.label,
+    active: account.active,
+    ...(account.email === undefined ? {} : { email: account.email }),
+    ...(account.planType === undefined ? {} : { planType: account.planType }),
+    ...(account.limits?.primary === undefined ? {} : { primary: publicLimitWindow(account.limits.primary) }),
+    ...(account.limits?.secondary === undefined ? {} : { secondary: publicLimitWindow(account.limits.secondary) }),
+    ...(account.limits?.rateLimitResetCredits === undefined ? {} : { resetCount: account.limits.rateLimitResetCredits.availableCount }),
+    ...(account.error === undefined ? {} : { error: account.error })
+  });
   // share durable prompt queue scopes
   const promptStorageKeyForAgent = (agent: Pick<Agent, 'id' | 'workspace'>) => {
     const worktree = configuredWorktreeForWorkspace(config.worktrees, agent.workspace);
@@ -631,32 +648,162 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     }
     return undefined;
   };
+  type IdleRestartResult = { status: 'restarted'; worktreeId: string; agentId: string } | { status: 'skipped'|'failed'; worktreeId: string; reason: 'unavailable'|'not-idle'|'launch-failed'|'timed-out'; error: string };
+  // restart one still-idle configured agent
+  const restartIdleConfiguredAgent = async (id: string, expectedWorktreeId?: string, expectedMutationVersion?: number, expectedMutationGeneration?: number): Promise<IdleRestartResult> => {
+    const releaseRestart = await prompts.acquireRestartLock(id, expectedMutationVersion, expectedMutationGeneration);
+    // reject overlapping prompt and lifecycle work
+    if (releaseRestart === undefined) return { status: 'skipped', worktreeId: expectedWorktreeId ?? 'unknown', reason: 'not-idle', error: 'The worktree is no longer idle.' };
+    try {
+      const current = await discovery.dashboard(config.worktrees, true);
+      const observed = current.agents.find(agent => agent.id === id);
+      const worktree = observed === undefined ? undefined : configuredWorktreeForWorkspace(config.worktrees, observed.workspace);
+      const worktreeId = worktree?.id ?? expectedWorktreeId ?? 'unknown';
+      // require the original configured target
+      if (observed === undefined || worktree === undefined || (expectedWorktreeId !== undefined && worktree.id !== expectedWorktreeId)) return { status: 'skipped', worktreeId, reason: 'unavailable', error: 'The worktree agent is no longer open.' };
+      // reject working and question states
+      if (agentAttentionState(observed) !== 'finished') return { status: 'skipped', worktreeId, reason: 'not-idle', error: 'Only idle configured agents can restart.' };
+      // revalidate state before closing
+      if (observed.worktreeId !== worktree.id) return { status: 'skipped', worktreeId, reason: 'not-idle', error: 'The worktree agent is no longer idle.' };
+      const queued = await queuedPrompts.list(promptStorageKeyForAgent(observed)).then(prompts => prompts?.length).catch(() => undefined);
+      // preserve queued or unreadable prompt work
+      if (queued === undefined || queued > 0) return { status: 'skipped', worktreeId, reason: 'not-idle', error: 'The worktree has queued prompts.' };
+      const before = new Set(current.agents.map(agent => agent.id));
+      // require the original agent to close
+      if (!await prompts.close(id)) return { status: 'skipped', worktreeId, reason: 'unavailable', error: 'The worktree agent could not be closed.' };
+      sleepingWorktrees.add(worktree.id);
+      // require the resume alias to start
+      if (!await launch.resume(worktree.id)) {
+        await dashboardUpdates.refresh().catch(() => undefined);
+        return { status: 'failed', worktreeId, reason: 'launch-failed', error: 'The agent closed, but the resume alias could not restart it.' };
+      }
+      const agent = await waitForAgent(before, worktree.id);
+      // retain recovery controls after a timeout
+      if (agent === undefined) {
+        await dashboardUpdates.refresh().catch(() => undefined);
+        return { status: 'failed', worktreeId, reason: 'timed-out', error: `The agent closed and the resume alias ran, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` };
+      }
+      sleepingWorktrees.delete(worktree.id);
+      await dashboardUpdates.refresh().catch(() => undefined);
+      return { status: 'restarted', worktreeId, agentId: agent.id };
+    } finally {
+      releaseRestart();
+    }
+  };
+  // query all configured Codex accounts on menu open
+  app.get('/api/codex/accounts', async (request, reply) => {
+    controlled(request);
+    try {
+      return { accounts: (await accounts.listAccounts()).map(publicAccount) };
+    } catch {
+      return reply.code(503).send({ error: 'Unable to load ChatGPT accounts.' });
+    }
+  });
+  // switch the global account and restart every open idle worktree
+  app.post('/api/codex/accounts/switch', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+    controlled(request, true);
+    const id = body(request).id;
+    // require one bounded configured identifier
+    if (typeof id !== 'string' || !safeAccountId.test(id)) return reply.code(400).send({ error: 'Invalid ChatGPT account.' });
+    // serialize switch and restart handoffs
+    if (accountSwitching) return reply.code(409).send({ error: 'Another ChatGPT account switch is already running.' });
+    accountSwitching = true;
+    try {
+      const selectionMutationGeneration = prompts.mutationGeneration();
+      const discovered = await discovery.dashboard(config.worktrees);
+      const queuedCounts = await queuedPromptCounts(discovered.agents);
+      const byWorktree = new Map<string, Agent[]>();
+      // group only open configured worktrees
+      for (const agent of discovered.agents) {
+        // ignore scratch and stale configured identifiers
+        if (agent.worktreeId === undefined || config.worktrees.every(worktree => worktree.id !== agent.worktreeId)) continue;
+        const group = byWorktree.get(agent.worktreeId) ?? [];
+        group.push(agent);
+        byWorktree.set(agent.worktreeId, group);
+      }
+      const restartTargets: Array<{ agentId: string; worktreeId: string; mutationVersion: number; mutationGeneration: number }> = [];
+      const skipped: Array<{ worktreeId: string; status: 'skipped'; error: string }> = [];
+      // select only unambiguous idle worktrees
+      for (const [worktreeId, agents] of byWorktree) {
+        const agent = agents[0];
+        // preserve duplicate, active, questioning, and queued work
+        if (agent === undefined || agents.length !== 1 || agentAttentionState(agent) !== 'finished' || (queuedCounts.get(agent.id) ?? 1) > 0) {
+          skipped.push({ worktreeId, status: 'skipped', error: 'The worktree is not idle.' });
+          continue;
+        }
+        restartTargets.push({ agentId: agent.id, worktreeId, mutationVersion: prompts.mutationVersion(agent.id), mutationGeneration: selectionMutationGeneration });
+      }
+      const account = await accounts.switchAccount(id);
+      const restarted = await Promise.all(restartTargets.map(async target => {
+        try {
+          const result = await restartIdleConfiguredAgent(target.agentId, target.worktreeId, target.mutationVersion, target.mutationGeneration);
+          // expose only the stable worktree outcome
+          return result.status === 'restarted'
+            ? { worktreeId: result.worktreeId, status: 'restarted' as const }
+            : { worktreeId: result.worktreeId, status: result.status, error: result.error };
+        } catch {
+          return { worktreeId: target.worktreeId, status: 'failed' as const, error: 'The worktree could not be restarted.' };
+        }
+      }));
+      return { account: publicAccount(account), restarts: [...restarted, ...skipped] };
+    } catch {
+      return reply.code(404).send({ error: 'Unable to switch ChatGPT accounts.' });
+    } finally {
+      accountSwitching = false;
+    }
+  });
+  // redeem one reset credit for a configured ChatGPT account
+  app.post('/api/codex/accounts/:id/reset', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request, reply) => {
+    controlled(request, true);
+    const id = (request.params as { id: string }).id;
+    // require one bounded configured identifier
+    if (!safeAccountId.test(id)) return reply.code(400).send({ error: 'Invalid ChatGPT account.' });
+    try {
+      const result = await accounts.consumeRateLimitReset(id);
+      return { outcome: result.outcome, ...(result.account === undefined ? {} : { account: publicAccount(result.account) }) };
+    } catch (error) {
+      // distinguish missing slots from provider failures
+      if (error instanceof Error && error.message === 'Account not found') return reply.code(404).send({ error: 'ChatGPT account not found.' });
+      return reply.code(502).send({ error: 'Unable to use the ChatGPT reset.' });
+    }
+  });
+  // start one isolated ChatGPT device-code login
+  app.post('/api/codex/accounts/login', { config: { rateLimit: { max: 5, timeWindow: '10 minutes' } } }, async (request, reply) => {
+    controlled(request, true);
+    const repairAccountId = body(request).repairAccountId;
+    // validate optional repair targets
+    if (repairAccountId !== undefined && (typeof repairAccountId !== 'string' || !safeAccountId.test(repairAccountId))) return reply.code(400).send({ error: 'Invalid ChatGPT account.' });
+    try {
+      return reply.code(201).send({ login: await accounts.startAddAccount(repairAccountId) });
+    } catch (error) {
+      // distinguish missing repair targets
+      if (error instanceof Error && error.message === 'Account not found') return reply.code(404).send({ error: 'ChatGPT account not found.' });
+      return reply.code(503).send({ error: 'Unable to start ChatGPT login.' });
+    }
+  });
+  // report one device-code login state
+  app.get('/api/codex/accounts/login/:id', async (request) => {
+    controlled(request);
+    const status = await accounts.status((request.params as { id: string }).id);
+    // flatten newly configured accounts
+    return status.status === 'succeeded' ? { ...status, account: publicAccount(status.account) } : status;
+  });
+  // cancel one abandoned device-code login
+  app.delete('/api/codex/accounts/login/:id', async (request, reply) => {
+    controlled(request, true);
+    return await accounts.cancelAddAccount((request.params as { id: string }).id) ? reply.code(204).send() : reply.code(404).send({ error: 'ChatGPT login unavailable.' });
+  });
   // restart one idle configured agent through the host resume alias
   app.post('/api/agents/:id/restart', async (request, reply) => {
     controlled(request, true);
     const id = (request.params as { id: string }).id;
-    const target = await discovery.target(id);
-    const worktree = target === undefined ? undefined : configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
-    // preserve active or unconfigured agents
-    if (!target || worktree === undefined || /^[\u2800-\u28ff]/u.test(target.agent.title)) return reply.code(409).send({ error: 'only idle configured agents can restart' });
-    const before = new Set((await discovery.dashboard(config.worktrees)).agents.map(agent => agent.id));
-    // require the original agent to close
-    if (!await prompts.close(id)) return reply.code(404).send({ error: 'target unavailable' });
-    sleepingWorktrees.add(worktree.id);
-    // require the resume alias to start
-    if (!await launch.resume(worktree.id)) {
-      await dashboardUpdates.refresh().catch(() => undefined);
-      return reply.code(409).send({ error: 'The agent closed, but the resume alias could not restart it.' });
-    }
-    const agent = await waitForAgent(before, worktree.id);
-    // preserve recovery controls after a timeout
-    if (!agent) {
-      await dashboardUpdates.refresh().catch(() => undefined);
-      return reply.code(504).send({ error: `The agent closed and the resume alias ran, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
-    }
-    sleepingWorktrees.delete(worktree.id);
-    await dashboardUpdates.refresh().catch(() => undefined);
-    return reply.code(201).send({ agentId: agent.id });
+    const mutationGeneration = prompts.mutationGeneration();
+    const result = await restartIdleConfiguredAgent(id, undefined, prompts.mutationVersion(id), mutationGeneration);
+    // return one successful replacement
+    if (result.status === 'restarted') return reply.code(201).send({ agentId: result.agentId });
+    // distinguish missing targets from active work
+    if (result.status === 'skipped') return reply.code(result.reason === 'unavailable' ? 404 : 409).send({ error: result.error });
+    return reply.code(result.reason === 'timed-out' ? 504 : 409).send({ error: result.error });
   });
   app.post('/api/worktrees/:id/launch', async (request, reply) => {
     controlled(request, true);
@@ -856,8 +1003,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       await poll();
     } catch { socket.close(1008); }
   });
-  app.get('/ws/input/:id', { websocket: true }, async (socket, request) => { try { const s = controlled(request, false); const ticket = String(request.headers['sec-websocket-protocol'] ?? '').split(',').map(x => x.trim())[1]; const id = (request.params as { id: string }).id; if (!tickets.consume(ticket, s.id, 'input', id)) throw new Error(); const target = await discovery.target(id); if (!target) throw new Error(); socket.on('message', (raw: unknown) => { try { if (!control.active(s.id)) throw new Error(); const frame = JSON.parse(String(raw)); if (frame?.v !== 1 || frame?.type !== 'input' || typeof frame.data !== 'string' || !/^[A-Za-z0-9_-]*$/.test(frame.data)) throw new Error(); const decoded = Buffer.from(frame.data, 'base64url'); if (!decoded.length || decoded.length > 65_536 || decoded.toString('base64url') !== frame.data) throw new Error(); const input = decoded.toString('utf8'); /* route interrupts through queue cancellation */ void (input === '\x03' ? prompts.cancel(id) : tmux.input(target.socket, target.agent.paneId, input)).then(ok => { if (!ok) socket.close(1011); }); } catch { socket.close(1008); } }); } catch { socket.close(1008); } });
-  app.get('/ws/terminal/:id', { websocket: true }, async (socket, request) => { try { const s = controlled(request, false); const ticket = String(request.headers['sec-websocket-protocol'] ?? '').split(',').map(x => x.trim())[1]; const target = await discovery.target((request.params as { id: string }).id); if (!target || !tickets.consume(ticket, s.id, 'terminal', target.agent.sessionId)) throw new Error(); const sessionName = target.agent.sessionId.slice(target.agent.socketFingerprint.length + 1); const terminal = pty.spawn(process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux', ['-S', target.socket.path, 'attach-session', '-t', sessionName], { name: 'xterm-256color', cols: 120, rows: 36, cwd: '/', env: safeEnv() as Record<string, string> }); terminal.onData(value => socket.readyState === socket.OPEN && socket.send(JSON.stringify({ v: 1, type: 'output', data: Buffer.from(value).toString('base64url') }))); socket.on('message', (raw: unknown) => { try { if (!control.active(s.id)) throw new Error(); const frame = JSON.parse(String(raw)); if (frame?.v !== 1 || typeof frame?.type !== 'string') throw new Error(); if (frame.type === 'resize') { if (!Number.isInteger(frame.cols) || !Number.isInteger(frame.rows) || frame.cols < 2 || frame.cols > 500 || frame.rows < 2 || frame.rows > 300) throw new Error(); terminal.resize(frame.cols, frame.rows); return; } if (frame.type !== 'input' || typeof frame.data !== 'string' || !/^[A-Za-z0-9_-]*$/.test(frame.data)) throw new Error(); const decoded = Buffer.from(frame.data, 'base64url'); if (decoded.length > 65_536 || decoded.toString('base64url') !== frame.data) throw new Error(); terminal.write(decoded.toString('utf8')); } catch { socket.close(1008); } }); const close = () => terminal.kill(); socket.on('close', close); terminal.onExit(() => socket.close()); } catch { socket.close(1008); } });
-  app.addHook('onClose', async () => { reviewJobs.close(); await paneViewports.restoreAll(); dashboardUpdates.close(); });
+  app.get('/ws/input/:id', { websocket: true }, async (socket, request) => { try { const s = controlled(request, false); const ticket = String(request.headers['sec-websocket-protocol'] ?? '').split(',').map(x => x.trim())[1]; const id = (request.params as { id: string }).id; if (!tickets.consume(ticket, s.id, 'input', id)) throw new Error(); const target = await discovery.target(id); if (!target) throw new Error(); socket.on('message', (raw: unknown) => { try { if (!control.active(s.id)) throw new Error(); const frame = JSON.parse(String(raw)); if (frame?.v !== 1 || frame?.type !== 'input' || typeof frame.data !== 'string' || !/^[A-Za-z0-9_-]*$/.test(frame.data)) throw new Error(); const decoded = Buffer.from(frame.data, 'base64url'); if (!decoded.length || decoded.length > 65_536 || decoded.toString('base64url') !== frame.data) throw new Error(); const input = decoded.toString('utf8'); const releaseMutation = prompts.beginAgentMutation(id); if (releaseMutation === undefined) throw new Error(); /* route interrupts through queue cancellation */ void (input === '\x03' ? prompts.cancel(id) : tmux.input(target.socket, target.agent.paneId, input)).then(ok => { if (!ok) socket.close(1011); }).finally(releaseMutation); } catch { socket.close(1008); } }); } catch { socket.close(1008); } });
+  app.get('/ws/terminal/:id', { websocket: true }, async (socket, request) => { try { const s = controlled(request, false); const ticket = String(request.headers['sec-websocket-protocol'] ?? '').split(',').map(x => x.trim())[1]; const id = (request.params as { id: string }).id; const target = await discovery.target(id); if (!target || !tickets.consume(ticket, s.id, 'terminal', target.agent.sessionId)) throw new Error(); const sessionName = target.agent.sessionId.slice(target.agent.socketFingerprint.length + 1); const terminal = pty.spawn(process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux', ['-S', target.socket.path, 'attach-session', '-t', sessionName], { name: 'xterm-256color', cols: 120, rows: 36, cwd: '/', env: safeEnv() as Record<string, string> }); terminal.onData(value => socket.readyState === socket.OPEN && socket.send(JSON.stringify({ v: 1, type: 'output', data: Buffer.from(value).toString('base64url') }))); socket.on('message', (raw: unknown) => { try { if (!control.active(s.id)) throw new Error(); const frame = JSON.parse(String(raw)); if (frame?.v !== 1 || typeof frame?.type !== 'string') throw new Error(); if (frame.type === 'resize') { if (!Number.isInteger(frame.cols) || !Number.isInteger(frame.rows) || frame.cols < 2 || frame.cols > 500 || frame.rows < 2 || frame.rows > 300) throw new Error(); terminal.resize(frame.cols, frame.rows); return; } if (frame.type !== 'input' || typeof frame.data !== 'string' || !/^[A-Za-z0-9_-]*$/.test(frame.data)) throw new Error(); const decoded = Buffer.from(frame.data, 'base64url'); if (decoded.length > 65_536 || decoded.toString('base64url') !== frame.data) throw new Error(); const releaseMutation = prompts.beginAgentMutation(id); if (releaseMutation === undefined) throw new Error(); try { terminal.write(decoded.toString('utf8')); } finally { releaseMutation(); } } catch { socket.close(1008); } }); const close = () => terminal.kill(); socket.on('close', close); terminal.onExit(() => socket.close()); } catch { socket.close(1008); } });
+  app.addHook('onClose', async () => { reviewJobs.close(); await accounts.close(); await paneViewports.restoreAll(); dashboardUpdates.close(); });
   return app;
 }

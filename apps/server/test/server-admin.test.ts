@@ -40,6 +40,19 @@ describe('server administration', () => {
     expect(await service.updateStatus('../../config')).toBeUndefined();
   });
 
+  it('reuses one queued update across concurrent restart requests', async () => {
+    root = await mkdtemp(join(tmpdir(), 'rac-server-admin-'));
+    const runCommand = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const service = new ServerAdminService(config, { hostRepository: '/home/ubuntu/remoteagents', statusDirectory: root, tmuxSocket: '/host-tmux/default', runCommand });
+
+    const [first, second] = await Promise.all([service.startUpdate(), service.startUpdate()]);
+    const repeated = await service.startUpdate();
+
+    expect(second).toEqual(first);
+    expect(repeated).toEqual(first);
+    expect(runCommand).toHaveBeenCalledTimes(1);
+  });
+
   it('records a failed launch without running arbitrary fallback commands', async () => {
     root = await mkdtemp(join(tmpdir(), 'rac-server-admin-'));
     const runCommand = vi.fn(async () => ({ code: 1, stdout: '', stderr: 'no tmux' }));

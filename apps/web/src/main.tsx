@@ -40,7 +40,7 @@ type Worktree = { id: string; label: string; path: string; branch?: string; gitS
 type ReviewTourCapability = { available: true } | { available: false; reason: 'generator_unavailable'|'unsupported_cli'|'configuration_invalid'|'authentication_required' };
 type StoredReviewSummary = { worktreeId: string; branch: string; savedAt: string; title: string; scope: ReviewScope; includeTests: boolean; includeDocs: boolean; fingerprint: string };
 type ReviewButtonState = ReviewTourIndicator & { onOpen: () => void };
-type Dashboard = { generation?: number; agents: Agent[]; worktrees: Worktree[]; cleanupPending?: number; reviewTour?: ReviewTourCapability; reviews?: StoredReviewSummary[] };
+type Dashboard = { generation?: number; serverStartedAt?: number; agents: Agent[]; worktrees: Worktree[]; cleanupPending?: number; reviewTour?: ReviewTourCapability; reviews?: StoredReviewSummary[] };
 // validate durable review dashboard summaries
 const isStoredReviewSummary = (value: unknown): value is StoredReviewSummary => value !== null && typeof value === 'object'
   && typeof (value as StoredReviewSummary).worktreeId === 'string'
@@ -53,8 +53,12 @@ const isStoredReviewSummary = (value: unknown): value is StoredReviewSummary => 
   && typeof (value as StoredReviewSummary).fingerprint === 'string';
 const isDashboard = (value: unknown): value is Dashboard => {
   if (value === null || typeof value !== 'object') return false;
-  const dashboard = value as { agents?: unknown; worktrees?: unknown; cleanupPending?: unknown; reviews?: unknown };
-  return Array.isArray(dashboard.agents) && Array.isArray(dashboard.worktrees) && (dashboard.cleanupPending === undefined || (Number.isInteger(dashboard.cleanupPending) && (dashboard.cleanupPending as number) >= 0)) && (dashboard.reviews === undefined || Array.isArray(dashboard.reviews) && dashboard.reviews.every(isStoredReviewSummary));
+  const dashboard = value as { serverStartedAt?: unknown; agents?: unknown; worktrees?: unknown; cleanupPending?: unknown; reviews?: unknown };
+  return (dashboard.serverStartedAt === undefined || typeof dashboard.serverStartedAt === 'number' && Number.isSafeInteger(dashboard.serverStartedAt) && dashboard.serverStartedAt >= 0)
+    && Array.isArray(dashboard.agents)
+    && Array.isArray(dashboard.worktrees)
+    && (dashboard.cleanupPending === undefined || Number.isInteger(dashboard.cleanupPending) && (dashboard.cleanupPending as number) >= 0)
+    && (dashboard.reviews === undefined || Array.isArray(dashboard.reviews) && dashboard.reviews.every(isStoredReviewSummary));
 };
 const isDashboardFrame = (value: unknown): value is { v: 1; type: 'dashboard'; dashboard: Dashboard } => value !== null && typeof value === 'object' && (value as { v?: unknown }).v === 1 && (value as { type?: unknown }).type === 'dashboard' && isDashboard((value as { dashboard?: unknown }).dashboard);
 const isCleanupTarget = (value: unknown): value is CleanupTarget => value !== null && typeof value === 'object'
@@ -105,6 +109,12 @@ type ServerInfo = { name: string; url: string; icon?: InstanceIcon; remotes: Rem
 type InstanceAttention = 'idle'|'working'|'question'|'completed'|'unavailable';
 type InstanceStatus = RemoteServer & { attention: InstanceAttention };
 type SessionInfo = { csrfToken: string; active: boolean; deviceName?: string; controllingDeviceName?: string; server?: ServerInfo };
+type CodexLimitWindow = { usedPercent: number; windowDurationMins?: number; resetsAt?: number };
+type CodexAccount = { id: string; label: string; active: boolean; email?: string; planType?: string; primary?: CodexLimitWindow; secondary?: CodexLimitWindow; resetCount?: number; error?: string };
+type CodexAccountRestart = { worktreeId: string; status: 'restarted'|'skipped'|'failed'; error?: string };
+type CodexAccountResetOutcome = 'reset'|'nothingToReset'|'noCredit'|'alreadyRedeemed';
+type CodexAccountLogin = { loginId: string; verificationUrl: string; userCode: string };
+type CodexAccountLoginStatus = { status: 'pending'|'succeeded'|'failed'; account?: CodexAccount; error?: string };
 type PromptCommand = { value: string; description: string };
 type CommandToken = { start: number; end: number; prefix: '$'|'/'; query: string };
 const skillCommands: PromptCommand[] = [
@@ -617,12 +627,27 @@ type ServerUpdateAvailability = { available: boolean };
 type ClientSettings = {
   deviceName: string;
   serverName: string;
+  serverUrl: string;
   renameClient: (name: string) => Promise<string | undefined>;
   renameServer: (name: string) => Promise<string | undefined>;
   startServerUpdate: () => Promise<{ id?: string; error?: string }>;
   serverUpdateStatus: (id: string) => Promise<ServerUpdateState | undefined>;
+  codexAccounts: () => Promise<{ accounts?: CodexAccount[]; error?: string }>;
+  switchCodexAccount: (id: string) => Promise<{ account?: CodexAccount; restarts?: CodexAccountRestart[]; error?: string }>;
+  resetCodexAccount: (id: string) => Promise<{ outcome?: CodexAccountResetOutcome; account?: CodexAccount; error?: string }>;
+  startCodexAccountLogin: (repairAccountId?: string) => Promise<{ login?: CodexAccountLogin; error?: string }>;
+  codexAccountLoginStatus: (id: string) => Promise<CodexAccountLoginStatus | undefined>;
+  cancelCodexAccountLogin: (id: string) => Promise<void>;
 };
 const ClientSettingsContext = createContext<ClientSettings | undefined>(undefined);
+// format one server host
+const serverHostLabel = (url: string): string => {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+};
 // validate one upstream availability response
 const isServerUpdateAvailability = (value: unknown): value is ServerUpdateAvailability => value !== null && typeof value === 'object' && typeof (value as ServerUpdateAvailability).available === 'boolean';
 // validate one configured icon name
@@ -676,15 +701,96 @@ const instanceAttentionLabel = (attention: InstanceAttention): string | undefine
   }
 };
 
+// validate one optional unsigned integer
+const isOptionalUnsignedInteger = (value: unknown): boolean => value === undefined || typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+// validate one provider limit window
+const isCodexLimitWindow = (value: unknown): value is CodexLimitWindow => value !== null
+  && typeof value === 'object'
+  && Number.isFinite((value as CodexLimitWindow).usedPercent)
+  && (value as CodexLimitWindow).usedPercent >= 0
+  && (value as CodexLimitWindow).usedPercent <= 100
+  && isOptionalUnsignedInteger((value as CodexLimitWindow).windowDurationMins)
+  && isOptionalUnsignedInteger((value as CodexLimitWindow).resetsAt);
+// validate one safe account summary
+const isCodexAccount = (value: unknown): value is CodexAccount => value !== null
+  && typeof value === 'object'
+  && typeof (value as CodexAccount).id === 'string'
+  && typeof (value as CodexAccount).label === 'string'
+  && typeof (value as CodexAccount).active === 'boolean'
+  && ((value as CodexAccount).email === undefined || typeof (value as CodexAccount).email === 'string')
+  && ((value as CodexAccount).planType === undefined || typeof (value as CodexAccount).planType === 'string')
+  && ((value as CodexAccount).primary === undefined || isCodexLimitWindow((value as CodexAccount).primary))
+  && ((value as CodexAccount).secondary === undefined || isCodexLimitWindow((value as CodexAccount).secondary))
+  && isOptionalUnsignedInteger((value as CodexAccount).resetCount)
+  && ((value as CodexAccount).error === undefined || typeof (value as CodexAccount).error === 'string');
+// validate one reset-credit outcome
+const isCodexAccountResetOutcome = (value: unknown): value is CodexAccountResetOutcome => value === 'reset' || value === 'nothingToReset' || value === 'noCredit' || value === 'alreadyRedeemed';
+// validate one account restart result
+const isCodexAccountRestart = (value: unknown): value is CodexAccountRestart => value !== null
+  && typeof value === 'object'
+  && typeof (value as CodexAccountRestart).worktreeId === 'string'
+  && ['restarted', 'skipped', 'failed'].includes((value as CodexAccountRestart).status)
+  && ((value as CodexAccountRestart).error === undefined || typeof (value as CodexAccountRestart).error === 'string');
+// validate one device-code login response
+const isCodexAccountLogin = (value: unknown): value is CodexAccountLogin => {
+  // require the exact public fields
+  if (value === null || typeof value !== 'object' || typeof (value as CodexAccountLogin).loginId !== 'string' || typeof (value as CodexAccountLogin).userCode !== 'string' || typeof (value as CodexAccountLogin).verificationUrl !== 'string') return false;
+  try {
+    return new URL((value as CodexAccountLogin).verificationUrl).protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
+// label one provider plan
+const codexPlanLabel = (plan: string | undefined): string | undefined => plan === undefined ? undefined : plan.replaceAll('_', ' ').replace(/\b\w/gu, letter => letter.toUpperCase());
+// select one account email label
+const codexAccountEmail = (account: Pick<CodexAccount, 'email' | 'label'>): string => account.email ?? (account.label.includes('@') ? account.label : 'Email unavailable');
+// label one limit duration
+const codexLimitDuration = (minutes: number | undefined): string => {
+  // prefer whole days
+  if (minutes !== undefined && minutes >= 1_440 && minutes % 1_440 === 0) return `${minutes / 1_440}d`;
+  // prefer whole hours
+  if (minutes !== undefined && minutes >= 60 && minutes % 60 === 0) return `${minutes / 60}h`;
+  return minutes === undefined ? 'Limit' : `${minutes}m`;
+};
+// format one live reset countdown
+const codexResetCountdown = (timestamp: number | undefined, now: number): string | undefined => {
+  // omit unavailable reset times
+  if (timestamp === undefined) return undefined;
+  const totalSeconds = Math.max(0, Math.ceil(timestamp - now / 1_000));
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor(totalSeconds % 86_400 / 3_600);
+  const minutes = Math.floor(totalSeconds % 3_600 / 60);
+  const seconds = totalSeconds % 60;
+  return `${days}d ${String(hours).padStart(2, '0')}h ${String(minutes).padStart(2, '0')}m ${String(seconds).padStart(2, '0')}s`;
+};
+// render one account limit meter
+function CodexLimitUsage({ window, now }: { window: CodexLimitWindow; now: number }) {
+  const duration = codexLimitDuration(window.windowDurationMins);
+  const countdown = codexResetCountdown(window.resetsAt, now);
+  return <span className={`chatgpt-limit${window.usedPercent >= 100 ? ' at-limit' : ''}`}><span className="chatgpt-limit-heading"><small>{duration} limit</small><small>{window.usedPercent}% consumed</small></span><progress aria-label={`${duration} ChatGPT limit consumed`} max={100} value={window.usedPercent}>{window.usedPercent}%</progress>{countdown !== undefined && <small className="chatgpt-limit-reset">Resets in {countdown}</small>}</span>;
+}
+
 // render the client settings flyout
 function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const [open, setOpen] = useState(false);
-  const [dialog, setDialog] = useState<'client' | 'server' | 'update' | 'progress'>();
+  const [dialog, setDialog] = useState<'client' | 'server' | 'update' | 'progress' | 'account-login'>();
   const [name, setName] = useState(settings.deviceName);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   const [updateId, setUpdateId] = useState<string>();
   const [updateState, setUpdateState] = useState<ServerUpdateState>('queued');
+  const [accounts, setAccounts] = useState<CodexAccount[]>([]);
+  const [accountsLoading, setAccountsLoading] = useState(false);
+  const [switchingAccountId, setSwitchingAccountId] = useState<string>();
+  const [resettingAccountId, setResettingAccountId] = useState<string>();
+  const [accountMessage, setAccountMessage] = useState('');
+  const [accountClock, setAccountClock] = useState(() => Date.now());
+  const [accountLogin, setAccountLogin] = useState<CodexAccountLogin>();
+  const [accountLoginTarget, setAccountLoginTarget] = useState<{ email: string }>();
+  const [accountLoginState, setAccountLoginState] = useState<'pending' | 'failed'>('pending');
+  const [deviceCodeCopied, setDeviceCodeCopied] = useState(false);
+  const accountLoginRequest = useRef(0);
   const { anchorRef, flyoutRef, style } = useViewportFlyout(open);
   // close after outside interaction
   useEffect(() => {
@@ -699,6 +805,33 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     document.addEventListener('mousedown', close);
     return () => document.removeEventListener('mousedown', close);
   }, [open]);
+  // query every configured account when opened
+  useEffect(() => {
+    // skip hidden menus
+    if (!open) return;
+    let active = true;
+    setAccountsLoading(true);
+    void settings.codexAccounts().then(result => {
+      // ignore closed-menu responses
+      if (!active) return;
+      setAccountsLoading(false);
+      // retain the last good list on failure
+      if (result.accounts === undefined) {
+        setAccountMessage(result.error ?? 'Unable to load ChatGPT accounts.');
+        return;
+      }
+      setAccounts(result.accounts);
+    });
+    return () => { active = false; };
+  }, [open, settings]);
+  // update visible reset countdowns every second
+  useEffect(() => {
+    // stop the clock while the menu is hidden
+    if (!open) return;
+    setAccountClock(Date.now());
+    const interval = window.setInterval(() => setAccountClock(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [open]);
   // start editing the current client name
   const beginRename = (target: 'client' | 'server') => {
     setName(target === 'client' ? settings.deviceName : settings.serverName);
@@ -712,10 +845,103 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     setError('');
     setDialog('update');
   };
+  // switch the global Codex account
+  const switchAccount = async (account: CodexAccount) => {
+    // ignore active or duplicate selections
+    if (account.active || switchingAccountId !== undefined || resettingAccountId !== undefined) return;
+    setSwitchingAccountId(account.id);
+    setAccountMessage('');
+    const result = await settings.switchCodexAccount(account.id);
+    setSwitchingAccountId(undefined);
+    // keep the current account after failure
+    if (result.account === undefined) {
+      setAccountMessage(result.error ?? 'Unable to switch ChatGPT accounts.');
+      return;
+    }
+    const switchedAccount = result.account;
+    setAccounts(current => current.map(candidate => candidate.id === switchedAccount.id ? { ...candidate, ...switchedAccount, active: true } : { ...candidate, active: false }));
+    const restarted = result.restarts?.filter(item => item.status === 'restarted').length ?? 0;
+    const failed = result.restarts?.filter(item => item.status === 'failed').length ?? 0;
+    setAccountMessage(`Switched to ${codexAccountEmail(account)}. Restarted ${restarted} idle ${restarted === 1 ? 'worktree' : 'worktrees'}${failed === 0 ? '.' : `; ${failed} failed.`}`);
+  };
+  // redeem one available reset credit
+  const useAccountReset = async (account: CodexAccount) => {
+    const atLimit = account.primary?.usedPercent === 100 || account.secondary?.usedPercent === 100;
+    // require an eligible idle account action
+    if (!atLimit || !account.resetCount || switchingAccountId !== undefined || resettingAccountId !== undefined) return;
+    setResettingAccountId(account.id);
+    setAccountMessage('');
+    const result = await settings.resetCodexAccount(account.id);
+    // retain current usage after transport failures
+    if (result.outcome === undefined) {
+      setResettingAccountId(undefined);
+      setAccountMessage(result.error ?? 'Unable to use the ChatGPT reset.');
+      return;
+    }
+    // publish a refreshed provider snapshot when available
+    if (result.account !== undefined) {
+      const refreshedAccount = result.account;
+      setAccounts(current => current.map(candidate => candidate.id === refreshedAccount.id ? { ...candidate, ...refreshedAccount } : candidate));
+    } else {
+      const refreshed = await settings.codexAccounts();
+      // replace stale usage after a successful provider action
+      if (refreshed.accounts !== undefined) setAccounts(refreshed.accounts);
+    }
+    setResettingAccountId(undefined);
+    // report the provider outcome without inventing success
+    const email = codexAccountEmail(account);
+    if (result.outcome === 'reset') setAccountMessage(`Used one reset for ${email}.`);
+    else if (result.outcome === 'nothingToReset') setAccountMessage(`${email} no longer has a limit available to reset.`);
+    else if (result.outcome === 'noCredit') setAccountMessage(`${email} has no resets available.`);
+    else setAccountMessage(`The reset for ${email} was already used.`);
+  };
+  // start one device-code login
+  const beginAccountLogin = async (account?: CodexAccount) => {
+    const requestId = accountLoginRequest.current + 1;
+    accountLoginRequest.current = requestId;
+    setOpen(false);
+    setDialog('account-login');
+    setAccountLogin(undefined);
+    setAccountLoginTarget(account === undefined ? undefined : { email: codexAccountEmail(account) });
+    setAccountLoginState('pending');
+    setDeviceCodeCopied(false);
+    setError('');
+    const result = await settings.startCodexAccountLogin(account?.id);
+    // cancel logins created after the dialog closes or another request starts
+    if (accountLoginRequest.current !== requestId) {
+      // stop the late server session
+      if (result.login !== undefined) await settings.cancelCodexAccountLogin(result.login.loginId);
+      return;
+    }
+    // retain a visible failure
+    if (result.login === undefined) {
+      setAccountLoginState('failed');
+      setError(result.error ?? 'Unable to start ChatGPT login.');
+      return;
+    }
+    setAccountLogin(result.login);
+  };
+  // copy the current device code
+  const copyDeviceCode = async () => {
+    // require one ready login
+    if (accountLogin === undefined) return;
+    try {
+      await copyText(accountLogin.userCode);
+      setDeviceCodeCopied(true);
+    } catch {
+      setDeviceCodeCopied(false);
+    }
+  };
   // close the active popup
   const closeDialog = () => {
     // keep pending writes stable
     if (pending) return;
+    // stop abandoned and in-flight device logins
+    if (dialog === 'account-login' && accountLoginState === 'pending') {
+      accountLoginRequest.current += 1;
+      // cancel a started server session
+      if (accountLogin !== undefined) void settings.cancelCodexAccountLogin(accountLogin.loginId);
+    }
     setDialog(undefined);
     setError('');
   };
@@ -774,7 +1000,54 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     const interval = window.setInterval(() => { void poll(); }, 1_000);
     return () => { active = false; window.clearInterval(interval); };
   }, [dialog, settings, updateId, updateState]);
-  const flyout = !open ? null : createPortal(<div ref={flyoutRef} className="client-settings-menu more-menu flyout-menu" style={style} role="menu" aria-label="Global settings"><button type="button" role="menuitem" onClick={() => beginRename('client')}>Rename Client</button><button type="button" role="menuitem" onClick={() => beginRename('server')}>Rename Server</button><button type="button" role="menuitem" onClick={beginUpdate}>Update Server</button></div>, document.body);
+  // poll one device-code login
+  useEffect(() => {
+    // require an active login
+    if (dialog !== 'account-login' || accountLogin === undefined || accountLoginState !== 'pending') return;
+    let active = true;
+    const poll = async () => {
+      const status = await settings.codexAccountLoginStatus(accountLogin.loginId);
+      // ignore transient or stale reads
+      if (!active || status === undefined || status.status === 'pending') return;
+      // show provider failures in place
+      if (status.status === 'failed') {
+        setAccountLoginState('failed');
+        setError(status.error ?? 'ChatGPT login failed.');
+        return;
+      }
+      // publish the completed account before the list refresh
+      if (status.account !== undefined) {
+        const completedAccount = status.account;
+        setAccounts(current => [...current.filter(account => account.id !== completedAccount.id), completedAccount]);
+      }
+      const refreshed = await settings.codexAccounts();
+      // publish the newly configured account list
+      if (active && refreshed.accounts !== undefined) setAccounts(refreshed.accounts);
+      // close the login dialog into a visible success state
+      if (active) {
+        setDialog(undefined);
+        setAccountLogin(undefined);
+        setOpen(true);
+        setAccountMessage(accountLoginTarget === undefined ? `${status.account === undefined ? 'ChatGPT account' : codexAccountEmail(status.account)} added.` : `Re-login complete for ${accountLoginTarget.email}.`);
+      }
+    };
+    void poll();
+    const interval = window.setInterval(() => { void poll(); }, 1_000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, [accountLogin, accountLoginState, accountLoginTarget, dialog, settings]);
+  // render each configured account
+  const accountRows = accounts.map(account => {
+    const plan = codexPlanLabel(account.planType);
+    const details = [account.primary, account.secondary].filter((window): window is CodexLimitWindow => window !== undefined);
+    const email = codexAccountEmail(account);
+    const inlinePlan = plan === undefined ? '' : ` (${plan})`;
+    const atLimit = details.some(window => window.usedPercent === 100);
+    const busy = accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined;
+    return <div key={account.id} className="chatgpt-account-option"><button className="chatgpt-account-select" type="button" role="menuitemradio" aria-checked={account.active} disabled={account.active || busy} onClick={() => void switchAccount(account)}><span className="chatgpt-account-check" aria-hidden="true">{switchingAccountId === account.id ? <span className="spinner" /> : account.active ? '✓' : ''}</span><span className="chatgpt-account-copy"><strong>{email}{inlinePlan}</strong>{details.map((window, index) => <CodexLimitUsage key={`${account.id}:${index}`} window={window} now={accountClock} />)}{account.resetCount !== undefined && account.resetCount > 0 && <small>{account.resetCount} {account.resetCount === 1 ? 'reset' : 'resets'} available</small>}{account.error !== undefined && <small className="chatgpt-account-error">{account.error}</small>}</span></button>{atLimit && account.resetCount !== undefined && account.resetCount > 0 && <button className="chatgpt-account-reset" type="button" role="menuitem" aria-label={`Use reset for ${email}`} disabled={busy} onClick={() => void useAccountReset(account)}>{resettingAccountId === account.id ? <><span className="spinner" />Using reset…</> : 'Use reset'}</button>}{account.error !== undefined && <button className="chatgpt-account-relogin" type="button" role="menuitem" aria-label={`Re-login to ${email}`} disabled={busy} onClick={() => void beginAccountLogin(account)}>Re-login</button>}</div>;
+  });
+  // render current client and server identities
+  const settingsCards = <div className="client-settings-overview" role="presentation"><div className="client-settings-card" role="group" aria-label="Client"><header><small>CLIENT</small><span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Rename Client" onClick={() => beginRename('client')}>Rename</button></span></header><strong>{settings.deviceName}</strong></div><div className="client-settings-card" role="group" aria-label="Server"><header><small>SERVER</small><span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Rename Server" onClick={() => beginRename('server')}>Rename</button><button type="button" role="menuitem" aria-label="Update Server" onClick={beginUpdate}>Update</button></span></header><strong>{settings.serverName}</strong><span>{serverHostLabel(settings.serverUrl)}</span></div></div>;
+  const flyout = !open ? null : createPortal(<div ref={flyoutRef} className="client-settings-menu more-menu flyout-menu" style={style} role="menu" aria-label="Global settings" aria-busy={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined}>{settingsCards}<hr className="more-menu-divider" />{accountsLoading && accounts.length === 0 ? <button className="chatgpt-account-loading" type="button" role="menuitem" disabled><span className="spinner" />Loading ChatGPT accounts…</button> : accountRows}{accountMessage && <span className="chatgpt-account-message" role="status">{accountMessage}</span>}<button className="chatgpt-account-add" type="button" role="menuitem" disabled={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined} onClick={() => void beginAccountLogin()}>+ Add account</button></div>, document.body);
   const renameTarget = dialog === 'client' || dialog === 'server' ? dialog : undefined;
   const renameDialog = renameTarget === undefined ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-rename-title" onKeyDown={event => { /* close on escape */ if (event.key === 'Escape') closeDialog(); }}><div><header><div><small>GLOBAL SETTINGS</small><h2 id="settings-rename-title">Rename {renameTarget === 'client' ? 'Client' : 'Server'}</h2></div><button type="button" aria-label={`Close rename ${renameTarget}`} disabled={pending} onClick={closeDialog}>×</button></header><form onSubmit={event => void submitRename(event)}><label>{renameTarget === 'client' ? 'Client' : 'Server'} name<input autoFocus type="text" value={name} maxLength={renameTarget === 'client' ? 64 : 80} autoComplete="nickname" onChange={event => setName(event.target.value)} /></label>{error && <span className="auth-error" role="alert">{error}</span>}<footer><button type="button" disabled={pending} onClick={closeDialog}>Cancel</button><button type="submit" disabled={pending || !name.trim()}>{pending ? <><span className="spinner" />Renaming…</> : 'Save'}</button></footer></form></div></div>, document.body);
   const updateDialog = dialog !== 'update' ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="server-update-title" onKeyDown={event => { /* close on escape */ if (event.key === 'Escape') closeDialog(); }}><div><header><div><small>GLOBAL SETTINGS</small><h2 id="server-update-title">Update Server</h2></div><button type="button" aria-label="Close update server" disabled={pending} onClick={closeDialog}>×</button></header><form onSubmit={event => void confirmUpdate(event)}><p>Pull the latest Remote Agents code and rebuild the local stack?</p>{error && <span className="auth-error" role="alert">{error}</span>}<footer><button type="button" disabled={pending} onClick={closeDialog}>Cancel</button><button type="submit" disabled={pending}>{pending ? <><span className="spinner" />Starting…</> : 'Update Server'}</button></footer></form></div></div>, document.body);
@@ -791,7 +1064,26 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     progressContent = <><span className="spinner" /><span>{progressLabel}</span></>;
   }
   const progressDialog = dialog !== 'progress' ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="server-update-progress-title"><div><header><div><small>GLOBAL SETTINGS</small><h2 id="server-update-progress-title">Updating Server</h2></div>{(updateState === 'complete' || updateState === 'failed') && <button type="button" aria-label="Close server update" onClick={closeDialog}>×</button>}</header><div className="server-update-progress" role="status">{progressContent}</div></div></div>, document.body);
-  return <span ref={anchorRef} className="server-switcher-settings-wrap"><button type="button" className="server-switcher-button server-switcher-settings" aria-label="Global settings" aria-haspopup="menu" aria-expanded={open} onClick={() => { setOpen(current => !current); setError(''); }}>⋮</button>{flyout}{renameDialog}{updateDialog}{progressDialog}</span>;
+  let accountLoginContent: ReactNode;
+  // render a failed login
+  if (accountLoginState === 'failed') {
+    accountLoginContent = <span className="auth-error">{error || 'ChatGPT login failed.'}</span>;
+  // render an active device-code login
+  } else if (accountLogin !== undefined) {
+    accountLoginContent = <><span>{accountLoginTarget === undefined ? 'Open ChatGPT to add this account.' : `Open ChatGPT to repair ${accountLoginTarget.email}.`}</span><a href={accountLogin.verificationUrl} target="_blank" rel="noreferrer">Open activation page ↗</a><span className="chatgpt-device-code-wrap"><small>DEVICE CODE</small><button className="chatgpt-device-code" type="button" title="Copy login code" onClick={() => void copyDeviceCode()}>{accountLogin.userCode}</button><small className={deviceCodeCopied ? 'copied' : undefined} aria-live="polite">{deviceCodeCopied ? 'Copied!' : 'Click the code to copy it'}</small></span><small>Waiting for authorization…</small></>;
+  // render login startup
+  } else {
+    accountLoginContent = <><span className="spinner" /><span>Starting secure ChatGPT login…</span></>;
+  }
+  const accountLoginDialog = dialog !== 'account-login' ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="account-login-title"><div><header><div><small>GLOBAL SETTINGS</small><h2 id="account-login-title">{accountLoginTarget === undefined ? 'Add ChatGPT account' : 'Re-login to ChatGPT'}</h2></div><button type="button" aria-label="Close account login" onClick={closeDialog}>×</button></header><div className={`chatgpt-account-login ${accountLoginState}`} role="status">{accountLoginContent}</div><footer className="chatgpt-account-login-actions"><button type="button" onClick={closeDialog}>Cancel</button></footer></div></div>, document.body);
+  // toggle the menu as a fresh user action
+  const toggleSettings = () => {
+    // clear stale operation messages on a new open
+    if (!open) setAccountMessage('');
+    setOpen(current => !current);
+    setError('');
+  };
+  return <span ref={anchorRef} className="server-switcher-settings-wrap"><button type="button" className="server-switcher-button server-switcher-settings" aria-label="Global settings" aria-haspopup="menu" aria-expanded={open} onClick={toggleSettings}>⋮</button>{flyout}{renameDialog}{updateDialog}{progressDialog}{accountLoginDialog}</span>;
 }
 
 // render every server as a direct navigation button
@@ -3681,6 +3973,8 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, updateErro
   const dashboardPushSynchronized = useRef(false);
   const dashboardContent = useRef('');
   const dashboardSnapshot = useRef<Dashboard | undefined>(undefined);
+  const latestDashboardServerStartedAt = useRef<number | undefined>(undefined);
+  const latestDashboardGeneration = useRef<number | undefined>(undefined);
   const selectedItemKey = useRef<string | undefined>(undefined);
   const dashboardMounted = useRef(true);
   const showOperationFeedback = useCallback((feedback: Omit<OperationFeedback, 'id'>) => {
@@ -3725,6 +4019,20 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, updateErro
     pendingWorktreeLaunches.clear();
   }, []);
   const applyDashboard = useCallback((payload: Dashboard) => {
+    const latestServerStartedAt = latestDashboardServerStartedAt.current;
+    // reject snapshots from an older server process
+    if (payload.serverStartedAt !== undefined && latestServerStartedAt !== undefined && payload.serverStartedAt < latestServerStartedAt) return;
+    // reject legacy snapshots after a scoped server snapshot arrives
+    if (payload.serverStartedAt === undefined && latestServerStartedAt !== undefined) return;
+    // reset generation ordering across server processes
+    if (payload.serverStartedAt !== undefined && payload.serverStartedAt !== latestServerStartedAt) {
+      latestDashboardServerStartedAt.current = payload.serverStartedAt;
+      latestDashboardGeneration.current = undefined;
+    }
+    // reject stale HTTP snapshots that finish after newer pushes
+    if (payload.generation !== undefined && latestDashboardGeneration.current !== undefined && payload.generation < latestDashboardGeneration.current) return;
+    // retain the newest ordered snapshot boundary
+    if (payload.generation !== undefined) latestDashboardGeneration.current = payload.generation;
     const retainedWorktrees: Worktree[] = [];
     const pendingWorktreeIds = new Set([...pendingNewTaskSources.keys(), ...pendingWorktreeLaunches.keys()]);
     // preserve every pending handoff workspace
@@ -4351,6 +4659,56 @@ function App() {
     const payload = await response.json().catch(() => undefined) as { state?: unknown } | undefined;
     return payload?.state === 'queued' || payload?.state === 'running' || payload?.state === 'complete' || payload?.state === 'failed' ? payload.state : undefined;
   }, []);
+  // load every configured Codex account and its limits
+  const codexAccounts = useCallback(async (): Promise<{ accounts?: CodexAccount[]; error?: string }> => {
+    const response = await request('/api/codex/accounts');
+    const payload = await response.json().catch(() => undefined) as { accounts?: unknown; error?: unknown } | undefined;
+    // require one sanitized account list
+    if (!response.ok || !Array.isArray(payload?.accounts) || !payload.accounts.every(isCodexAccount)) return { error: typeof payload?.error === 'string' ? payload.error : 'Unable to load ChatGPT accounts.' };
+    return { accounts: payload.accounts };
+  }, []);
+  // switch the active Codex account and restart idle worktrees
+  const switchCodexAccount = useCallback(async (id: string): Promise<{ account?: CodexAccount; restarts?: CodexAccountRestart[]; error?: string }> => {
+    const response = await request('/api/codex/accounts/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+    const payload = await response.json().catch(() => undefined) as { account?: unknown; restarts?: unknown; error?: unknown } | undefined;
+    // require one sanitized switch result
+    if (!response.ok || !isCodexAccount(payload?.account) || !Array.isArray(payload?.restarts) || !payload.restarts.every(isCodexAccountRestart)) return { error: typeof payload?.error === 'string' ? payload.error : 'Unable to switch ChatGPT accounts.' };
+    return { account: payload.account, restarts: payload.restarts };
+  }, []);
+  // redeem one ChatGPT rate-limit reset credit
+  const resetCodexAccount = useCallback(async (id: string): Promise<{ outcome?: CodexAccountResetOutcome; account?: CodexAccount; error?: string }> => {
+    const response = await request(`/api/codex/accounts/${encodeURIComponent(id)}/reset`, { method: 'POST' });
+    const payload = await response.json().catch(() => undefined) as { outcome?: unknown; account?: unknown; error?: unknown } | undefined;
+    // require one documented reset outcome
+    if (!response.ok || !isCodexAccountResetOutcome(payload?.outcome) || payload?.account !== undefined && !isCodexAccount(payload.account)) return { error: typeof payload?.error === 'string' ? payload.error : 'Unable to use the ChatGPT reset.' };
+    return { outcome: payload.outcome, ...(payload.account === undefined ? {} : { account: payload.account }) };
+  }, []);
+  // start one ChatGPT device-code login
+  const startCodexAccountLogin = useCallback(async (repairAccountId?: string): Promise<{ login?: CodexAccountLogin; error?: string }> => {
+    const response = await request('/api/codex/accounts/login', {
+      method: 'POST',
+      ...(repairAccountId === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ repairAccountId }) })
+    });
+    const payload = await response.json().catch(() => undefined) as { login?: unknown; error?: unknown } | undefined;
+    // require a safe HTTPS login target
+    if (!response.ok || !isCodexAccountLogin(payload?.login)) return { error: typeof payload?.error === 'string' ? payload.error : 'Unable to start ChatGPT login.' };
+    return { login: payload.login };
+  }, []);
+  // read one account-login state
+  const codexAccountLoginStatus = useCallback(async (id: string): Promise<CodexAccountLoginStatus | undefined> => {
+    const response = await request(`/api/codex/accounts/login/${encodeURIComponent(id)}`);
+    const payload = await response.json().catch(() => undefined) as { status?: unknown; account?: unknown; error?: unknown } | undefined;
+    const status = payload?.status;
+    // retry transient failures through the polling loop
+    if (!response.ok || status !== 'pending' && status !== 'succeeded' && status !== 'failed') return undefined;
+    // reject malformed completed accounts
+    if (payload?.account !== undefined && !isCodexAccount(payload.account)) return undefined;
+    return { status, ...(payload?.account === undefined ? {} : { account: payload.account }), ...(typeof payload?.error === 'string' ? { error: payload.error } : {}) };
+  }, []);
+  // cancel one abandoned account login
+  const cancelCodexAccountLogin = useCallback(async (id: string): Promise<void> => {
+    await request(`/api/codex/accounts/login/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }, []);
   const refreshSession = useCallback(async () => {
     try {
       const response = await consoleFetch('/api/auth/session', { credentials: 'same-origin', signal: AbortSignal.timeout(8_000) });
@@ -4590,7 +4948,7 @@ function App() {
         : (state === 'inactive' || state === 'naming') && sessionInfo !== undefined
           ? <ControlScreen session={sessionInfo} claimed={applySession} />
           : <Login initialError={error} done={applySession} />;
-  const clientSettings = useMemo<ClientSettings | undefined>(() => state === 'ready' && sessionInfo?.deviceName !== undefined ? { deviceName: sessionInfo.deviceName, serverName: serverInfo.name, renameClient, renameServer, startServerUpdate, serverUpdateStatus } : undefined, [renameClient, renameServer, serverInfo.name, serverUpdateStatus, sessionInfo?.deviceName, startServerUpdate, state]);
+  const clientSettings = useMemo<ClientSettings | undefined>(() => state === 'ready' && sessionInfo?.deviceName !== undefined ? { deviceName: sessionInfo.deviceName, serverName: serverInfo.name, serverUrl: serverInfo.url, renameClient, renameServer, startServerUpdate, serverUpdateStatus, codexAccounts, switchCodexAccount, resetCodexAccount, startCodexAccountLogin, codexAccountLoginStatus, cancelCodexAccountLogin } : undefined, [cancelCodexAccountLogin, codexAccountLoginStatus, codexAccounts, renameClient, renameServer, resetCodexAccount, serverInfo.name, serverInfo.url, serverUpdateStatus, sessionInfo?.deviceName, startCodexAccountLogin, startServerUpdate, state, switchCodexAccount]);
   return <ServerContext.Provider value={serverInfo}><ServerStatusContext.Provider value={serverStatuses}><ClientSettingsContext.Provider value={clientSettings}>{screen}{reconnecting && <ReconnectingOverlay />}</ClientSettingsContext.Provider></ServerStatusContext.Provider></ServerContext.Provider>;
 }
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');

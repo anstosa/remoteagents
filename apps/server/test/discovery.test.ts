@@ -182,6 +182,59 @@ describe('DiscoveryService dashboard', () => {
     expect(inspections).toBe(1);
   });
 
+  it('forces a fresh dashboard for lifecycle revalidation', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    let title = 'Ready';
+    let listings = 0;
+    const finder = { find: async () => [socket] };
+    const tmux = { listPanes: async () => { listings += 1; return [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title }]; } };
+    const processes = { hasCodexDescendant: async () => true };
+    const service = new DiscoveryService(finder, tmux as never, processes);
+
+    const first = await service.dashboard([]);
+    title = '⠋ Working';
+    const cached = await service.dashboard([]);
+    const fresh = await service.dashboard([], true);
+
+    expect(first.agents[0]?.title).toBe('Ready');
+    expect(cached.agents[0]?.title).toBe('Ready');
+    expect(fresh.agents[0]?.title).toBe('⠋ Working');
+    expect(listings).toBe(2);
+  });
+
+  it('forces discovery after an older scan already in flight', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    let title = 'Ready';
+    let listings = 0;
+    let markListingStarted!: () => void;
+    let releaseListing!: () => void;
+    const listingStarted = new Promise<void>(resolve => { markListingStarted = resolve; });
+    const listingBlocked = new Promise<void>(resolve => { releaseListing = resolve; });
+    const finder = { find: async () => [socket] };
+    const tmux = { listPanes: async () => {
+      listings += 1;
+      const capturedTitle = title;
+      // hold only the stale scan
+      if (listings === 1) {
+        markListingStarted();
+        await listingBlocked;
+      }
+      return [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title: capturedTitle }];
+    } };
+    const processes = { hasCodexDescendant: async () => true };
+    const service = new DiscoveryService(finder, tmux as never, processes);
+
+    const stale = service.dashboard([]);
+    await listingStarted;
+    title = '⠋ Working';
+    const fresh = service.dashboard([], true);
+    releaseListing();
+
+    await expect(stale).resolves.toMatchObject({ agents: [{ title: 'Ready' }] });
+    await expect(fresh).resolves.toMatchObject({ agents: [{ title: '⠋ Working' }] });
+    expect(listings).toBe(2);
+  });
+
   it('resolves a known target without repeating global discovery after the dashboard cache expires', async () => {
     vi.useFakeTimers();
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };

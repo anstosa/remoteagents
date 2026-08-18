@@ -60,6 +60,85 @@ it('records successful submissions in the configured worktree history', async ()
   expect(recorded).toEqual([['worktree:cora', 'first prompt']]);
 });
 
+it('queues prompts that arrive while an idle restart holds the worktree lock', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'rac-restart-lock-'));
+  const queue = new QueuedPromptService(join(directory, 'queue.json'));
+  const pasted: string[] = [];
+  const discovery = { target: async () => ({ agent, socket }) };
+  const tmux = {
+    pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt); return true; },
+    queue: async () => true,
+    interrupt: async () => true
+  };
+  const worktree = { id: 'cora', label: 'Cora', path: '/tmp', identity: '/tmp', available: true, pinned: false };
+  const service = new PromptService(discovery as never, tmux as never, [worktree], undefined, queue);
+  try {
+    const release = await service.acquireRestartLock(agent.id);
+    expect(release).toBeTypeOf('function');
+    await expect(service.submit(agent.id, 'Run after restart')).resolves.toBe(true);
+    expect(pasted).toEqual([]);
+    await expect(queue.list('worktree:cora')).resolves.toMatchObject([{ text: 'Run after restart' }]);
+    release?.();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('blocks restart acquisition while a submitted prompt awaits its working state', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'rac-awaiting-start-'));
+  const queue = new QueuedPromptService(join(directory, 'queue.json'));
+  const discovery = { target: async () => ({ agent, socket }) };
+  const tmux = { pastePrompt: async () => true, queue: async () => true, interrupt: async () => true };
+  const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+  try {
+    await expect(service.submit(agent.id, 'Start working')).resolves.toBe(true);
+    await expect(service.acquireRestartLock(agent.id)).resolves.toBeUndefined();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('releases a replacement-agent reservation after queuing behind a worktree restart', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'rac-replacement-lock-'));
+  const queue = new QueuedPromptService(join(directory, 'queue.json'));
+  const replacement = { ...agent, id: 'socket:%2', paneId: '%2', sessionId: 'socket:$2' };
+  const discovery = { target: async (id: string) => ({ agent: id === replacement.id ? replacement : agent, socket }) };
+  const tmux = { pastePrompt: async () => true, queue: async () => true, interrupt: async () => true };
+  const worktree = { id: 'cora', label: 'Cora', path: '/tmp', identity: '/tmp', available: true, pinned: false };
+  const service = new PromptService(discovery as never, tmux as never, [worktree], undefined, queue);
+  try {
+    const releaseOriginal = await service.acquireRestartLock(agent.id);
+    await expect(service.submit(replacement.id, 'Run on replacement')).resolves.toBe(true);
+    releaseOriginal?.();
+    const releaseReplacement = await service.acquireRestartLock(replacement.id);
+    expect(releaseReplacement).toBeTypeOf('function');
+    releaseReplacement?.();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('rejects restart acquisition after the selected mutation generation changes', async () => {
+  const discovery = { target: async () => ({ agent, socket }) };
+  const service = new PromptService(discovery as never, {} as never);
+  const selectedVersion = service.mutationVersion(agent.id);
+  const releaseMutation = service.beginAgentMutation(agent.id);
+  releaseMutation?.();
+
+  await expect(service.acquireRestartLock(agent.id, selectedVersion)).resolves.toBeUndefined();
+});
+
+it('rejects a completed mutation between dashboard selection and the agent snapshot', async () => {
+  const discovery = { target: async () => ({ agent, socket }) };
+  const service = new PromptService(discovery as never, {} as never);
+  const selectionGeneration = service.mutationGeneration();
+  const releaseMutation = service.beginAgentMutation(agent.id);
+  releaseMutation?.();
+  const selectedVersion = service.mutationVersion(agent.id);
+
+  await expect(service.acquireRestartLock(agent.id, selectedVersion, selectionGeneration)).resolves.toBeUndefined();
+});
+
 // capture fast responses between dashboard polls
 it('records the final assistant answer when the busy state is missed', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-prompt-answer-'));

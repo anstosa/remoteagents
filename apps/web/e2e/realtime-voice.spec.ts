@@ -26,11 +26,12 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
   let renamedClient: unknown;
   let renamedServer: unknown;
   let updateStarted = false;
+  let currentServerName = 'Framework';
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
     // restore one authenticated browser session
-    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'voice-csrf', active: true, deviceName: 'Test device', server: { name: 'Framework', url: 'https://framework.santosa.dev', remotes: [] } } });
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'voice-csrf', active: true, deviceName: 'Test device', server: { name: currentServerName, url: 'https://framework.santosa.dev', remotes: [] } } });
     // persist one renamed client
     if (url.pathname === '/api/auth/device-name') {
       renamedClient = request.postDataJSON();
@@ -39,13 +40,16 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
     // persist one renamed server
     if (url.pathname === '/api/server/name') {
       renamedServer = request.postDataJSON();
-      return route.fulfill({ json: { name: 'Garage Server', server: { name: 'Garage Server', url: 'https://framework.santosa.dev', remotes: [] } } });
+      currentServerName = 'Garage Server';
+      return route.fulfill({ json: { name: currentServerName, server: { name: currentServerName, url: 'https://framework.santosa.dev', remotes: [] } } });
     }
     // launch one host update
     if (url.pathname === '/api/server/update' && request.method() === 'POST') {
       updateStarted = true;
       return route.fulfill({ status: 202, json: { id: 'server_update_operation_1234', kind: 'update', state: 'queued' } });
     }
+    // expose an empty account store
+    if (url.pathname === '/api/codex/accounts') return route.fulfill({ json: { accounts: [] } });
     // retain the progress state
     if (url.pathname === '/api/server/update/server_update_operation_1234') return route.fulfill({ json: { id: 'server_update_operation_1234', kind: 'update', state: 'running' } });
     // provide one selected worktree and other open worktrees
@@ -80,7 +84,13 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
   await expect(settings).toHaveText('⋮');
   await expect.poll(() => settings.evaluate(button => { const box = button.getBoundingClientRect(); return Math.abs(box.width - box.height); })).toBeLessThanOrEqual(1);
   await settings.click();
-  await expect(page.getByRole('menu', { name: 'Global settings' }).getByRole('menuitem')).toHaveText(['Rename Client', 'Rename Server', 'Update Server']);
+  const globalMenu = page.getByRole('menu', { name: 'Global settings' });
+  const clientCard = globalMenu.getByRole('group', { name: 'Client' });
+  const serverCard = globalMenu.getByRole('group', { name: 'Server' });
+  await expect(clientCard).toContainText('Test device');
+  await expect(serverCard).toContainText('Framework');
+  await expect(serverCard).toContainText('framework.santosa.dev');
+  await expect(globalMenu.getByRole('menuitem')).toHaveText(['Rename', 'Rename', 'Update', '+ Add account']);
   await page.getByRole('menuitem', { name: 'Rename Client' }).click();
   await expect(page.getByRole('menu', { name: 'Global settings' })).toHaveCount(0);
   const renameDialog = page.getByRole('dialog', { name: 'Rename Client' });
@@ -90,6 +100,7 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
   await expect(renameDialog).toHaveCount(0);
   expect(renamedClient).toEqual({ deviceName: 'Office Mac' });
   await settings.click();
+  await expect(globalMenu.getByRole('group', { name: 'Client' })).toContainText('Office Mac');
   await page.getByRole('menuitem', { name: 'Rename Server' }).click();
   const serverRenameDialog = page.getByRole('dialog', { name: 'Rename Server' });
   await serverRenameDialog.getByLabel('Server name').fill('Garage Server');
@@ -106,7 +117,7 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
   await expect(context.locator('.voice-context-active > strong')).toHaveText('Cora');
   await expect(context.locator('.voice-context-active > span')).toHaveText('Agent · Cora');
   await expect(context.locator('.voice-context-server > small')).toHaveText('Server / instance');
-  await expect(context.locator('.voice-context-server > strong')).toHaveText('Framework');
+  await expect(context.locator('.voice-context-server > strong')).toHaveText('Garage Server');
   await expect(context.locator('.voice-context-server > span')).toHaveText('framework.santosa.dev');
   await expect(context.locator('.voice-context-open > small')).toHaveText('Other open worktrees');
   await expect(context.locator('.voice-context-open li')).toHaveText(['Ferry FYI', 'Skills · skills', 'Skills · skills-copy', longWorktreeLabel]);
@@ -134,6 +145,7 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
   expect(realtimeHeaders['x-csrf-token']).toBe('voice-csrf');
   expect(realtimeBody).toMatchObject({ worktreeId: 'cora', agentId: 'agent-cora', voiceSessionId: expect.any(String) });
   await settings.click();
+  await expect(globalMenu.getByRole('group', { name: 'Server' })).toContainText('Garage Server');
   await page.getByRole('menuitem', { name: 'Update Server' }).click();
   const updateDialog = page.getByRole('dialog', { name: 'Update Server' });
   await updateDialog.getByRole('button', { name: 'Update Server', exact: true }).click();

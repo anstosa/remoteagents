@@ -66,10 +66,29 @@ Mount read-only agent worktrees read-only.
    configured with `restart: unless-stopped`, so Docker restarts it after a
    daemon or process restart unless it was explicitly stopped.
 
-5. Authenticate Codex once (the named `codex-home` volume preserves the login):
+5. Configure ChatGPT accounts from **Global settings → Add account**. Open the
+   displayed ChatGPT device-login link, enter its one-time code, then select the
+   new account in the same menu. Repeat this for each account. The named
+   `codex-home` volume preserves the private login files between rebuilds.
+   Adding an account does not select it. If an account query fails, use its
+   **Re-login** action to replace only that account's credentials without
+   changing the active selection.
 
-   ```bash
-   docker compose exec remote-agent-console codex login
+   Opening Global settings refreshes the usage windows and available reset
+   count for every configured account. Selecting another account atomically
+   changes the Codex login, then restarts open idle worktrees so their resumed
+   sessions use it. Working worktrees and worktrees waiting for an answer are
+   left untouched.
+
+   Deployments that launch agents through the host tmux server must expose the
+   same host Codex home to the container. Put this host-specific bind mount in
+   the ignored `compose.override.yaml`:
+
+   ```yaml
+   services:
+     remote-agent-console:
+       volumes:
+         - ${HOME}/.codex:/home/node/.codex:rw
    ```
 
 ## Agent shell configuration
