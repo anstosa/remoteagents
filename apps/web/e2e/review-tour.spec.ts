@@ -1,15 +1,7 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page, type Route } from '@playwright/test';
 
-// verify generation, notification, and feedback flow
-test('guides a human through active-scope implementation changes and sends consolidated feedback', async ({ page }) => {
-  const jobRequests: Array<{ scope: string; includeTests: boolean; includeDocs: boolean }> = [];
-  const prompts: string[] = [];
-  // create a vertically overflowing diff fixture
-  const longPatch = ['@@ -1,2 +1,122 @@', '-old route', `+new route ${'wide-content-'.repeat(40)}`, ...Array.from({ length: 120 }, (_, index) => ` context line ${index + 1}`)].join('\n');
-  let snapshotFingerprint = 'snapshot-1234567890';
-  let releaseGeneration = false;
-  let fingerprintRequests = 0;
-  let latestReadyJob = 0;
+// install the shared agent stream fixture
+async function installAgentWebSocket(page: Page): Promise<void> {
   await page.addInitScript(() => {
     class MockWebSocket {
       static readonly CONNECTING = 0;
@@ -27,13 +19,48 @@ test('guides a human through active-scope implementation changes and sends conso
         window.setTimeout(() => {
           this.readyState = MockWebSocket.OPEN;
           this.onopen?.(new Event('open'));
+          // seed the visible log
           if (this.url.includes('/ws/logs/')) this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'reset', text: 'Ready\n' }) }));
         });
       }
+      // ignore fixture writes
       send() {}
+      // close the fixture stream
       close() { this.readyState = MockWebSocket.CLOSED; this.onclose?.(new CloseEvent('close')); }
     }
     Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
+  });
+}
+
+// serve common agent dependencies
+async function fulfillAgentSupport(route: Route, pathname: string): Promise<boolean> {
+  // disable push registration
+  if (pathname === '/api/push/public-key') { await route.fulfill({ json: {} }); return true; }
+  // seed the agent log ticket
+  if (pathname === '/api/agents/agent-1/tickets') { await route.fulfill({ json: { ticket: 'log-ticket' } }); return true; }
+  // return no saved prompts
+  if (pathname === '/api/agents/agent-1/saved-prompts') { await route.fulfill({ json: { prompts: [] } }); return true; }
+  // return no prompt history
+  if (pathname === '/api/agents/agent-1/prompt-history') { await route.fulfill({ json: { prompts: [] } }); return true; }
+  // return no queued prompts
+  if (pathname === '/api/agents/agent-1/queued-prompts') { await route.fulfill({ json: { prompts: [] } }); return true; }
+  // return no installed skills
+  if (pathname === '/api/agents/agent-1/skills') { await route.fulfill({ json: { skills: [] } }); return true; }
+  return false;
+}
+
+// verify generation, notification, and feedback flow
+test('guides a human through active-scope implementation changes and sends consolidated feedback', async ({ page }) => {
+  const jobRequests: Array<{ scope: string; includeTests: boolean; includeDocs: boolean }> = [];
+  const prompts: string[] = [];
+  // create a vertically overflowing diff fixture
+  const longPatch = ['@@ -1,2 +1,122 @@', '-old route', `+new route ${'wide-content-'.repeat(40)}`, ...Array.from({ length: 120 }, (_, index) => ` context line ${index + 1}`)].join('\n');
+  let snapshotFingerprint = 'snapshot-1234567890';
+  let releaseGeneration = false;
+  let fingerprintRequests = 0;
+  let latestReadyJob = 0;
+  await installAgentWebSocket(page);
+  await page.addInitScript(() => {
     const notifications: Array<{ title: string; options?: NotificationOptions }> = [];
     Object.defineProperty(window, '__testNotifications', { configurable: true, value: notifications });
     Object.defineProperty(window, 'Notification', { configurable: true, value: { permission: 'granted' } });
@@ -47,12 +74,8 @@ test('guides a human through active-scope implementation changes and sends conso
     // serve the active console fixture
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, reviewTour: { available: true }, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', branch: 'feature/review-tour', title: 'Ready', gitStatus: { files: 2, staged: 0, unstaged: 2, untracked: 0, conflicted: 0, changes: [{ code: ' M', path: 'src/route.ts', additions: 8, deletions: 2, category: 'implementation' }, { code: ' M', path: 'test/route.test.ts', additions: 4, deletions: 1, category: 'test' }] }, gitPrStatus: { base: 'origin/main', files: 2, changes: [{ code: 'M ', path: 'src/route.ts', additions: 12, deletions: 3, category: 'implementation' }, { code: 'M ', path: 'docs/review.md', additions: 6, deletions: 0, category: 'doc' }] } }], worktrees: [] } });
-    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
-    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
-    if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
-    if (url.pathname === '/api/agents/agent-1/prompt-history') return route.fulfill({ json: { prompts: [] } });
-    if (url.pathname === '/api/agents/agent-1/queued-prompts') return route.fulfill({ json: { prompts: [] } });
-    if (url.pathname === '/api/agents/agent-1/skills') return route.fulfill({ json: { skills: [] } });
+    // serve common agent dependencies
+    if (await fulfillAgentSupport(route, url.pathname)) return;
     // start one bounded tour job
     if (url.pathname === '/api/agents/agent-1/review-tour/jobs' && request.method() === 'POST') {
       jobRequests.push(request.postDataJSON() as typeof jobRequests[number]);
@@ -246,48 +269,51 @@ test('guides a human through active-scope implementation changes and sends conso
   await dialog.getByRole('button', { name: 'Minimize guided review' }).click();
 });
 
+// verify actionable generator authentication feedback
+test('explains when the server Codex login expires', async ({ page }) => {
+  await installAgentWebSocket(page);
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    // serve the authenticated console fixture
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    // expose one reviewable agent
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, reviewTour: { available: true }, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/owen', worktreeId: 'owen', worktreeLabel: 'Owen', branch: 'feature/review-tour', title: 'Ready', gitStatus: { files: 1, staged: 0, unstaged: 1, untracked: 0, conflicted: 0, changes: [{ code: ' M', path: 'src/route.ts', additions: 2, deletions: 1, category: 'implementation' }] }, gitPrStatus: { base: 'origin/main', files: 1, changes: [{ code: 'M ', path: 'src/route.ts', additions: 2, deletions: 1, category: 'implementation' }] } }], worktrees: [] } });
+    // serve common agent dependencies
+    if (await fulfillAgentSupport(route, url.pathname)) return;
+    // start one bounded tour job
+    if (url.pathname === '/api/agents/agent-1/review-tour/jobs' && request.method() === 'POST') return route.fulfill({ status: 202, json: { status: 'pending', job: { id: 'job-auth', expiresAt: '2026-08-17T23:00:00.000Z', retryAfterMs: 10 } } });
+    // report the expired generator login
+    if (url.pathname === '/api/review-tour/jobs/job-auth' && request.method() === 'GET') return route.fulfill({ status: 503, json: { status: 'error', jobId: 'job-auth', error: { code: 'authentication_required', retryable: false } } });
+    // reap obsolete jobs
+    if (url.pathname === '/api/review-tour/jobs/job-auth' && request.method() === 'DELETE') return route.fulfill({ status: 204 });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
+  const reviewButton = page.locator('.review-tour-toggle');
+  await expect(reviewButton).toHaveAttribute('aria-busy', 'false');
+  await reviewButton.click();
+  const dialog = page.getByRole('dialog', { name: 'Generating change tour' });
+  await expect(dialog.getByText('Unable to build tour', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('The server’s Codex login expired. Sign in to Codex on the server, then try again.')).toBeVisible();
+});
+
 test('restores the worktree review after reload and dismisses it when stale', async ({ page }) => {
   let reviewStored = true;
   let generationRequests = 0;
   const tour = { title: 'Persisted routing tour', overview: 'Resume the saved implementation walkthrough.', scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: 'stored-fingerprint-123456', changes: [{ id: 'chg_route0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', patch: '@@ -1 +1 @@\n-old\n+new' }], steps: [{ id: 'route', title: 'Accept the request', explanation: 'The route delegates to the service.', changeIds: ['chg_route0001'] }] };
-  await page.addInitScript(() => {
-    class MockWebSocket {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSED = 3;
-      readonly url: string;
-      readyState = MockWebSocket.CONNECTING;
-      onopen: ((event: Event) => void) | null = null;
-      onclose: ((event: CloseEvent) => void) | null = null;
-      onerror: ((event: Event) => void) | null = null;
-      onmessage: ((event: MessageEvent) => void) | null = null;
-      // connect the mocked agent stream
-      constructor(url: string | URL) {
-        this.url = String(url);
-        window.setTimeout(() => {
-          this.readyState = MockWebSocket.OPEN;
-          this.onopen?.(new Event('open'));
-          // seed the visible log
-          if (this.url.includes('/ws/logs/')) this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'reset', text: 'Ready\n' }) }));
-        });
-      }
-      send() {}
-      close() { this.readyState = MockWebSocket.CLOSED; this.onclose?.(new CloseEvent('close')); }
-    }
-    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
-  });
+  await installAgentWebSocket(page);
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
     // serve the authenticated console fixture
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, reviewTour: { available: true }, reviews: reviewStored ? [{ worktreeId: 'cora', branch: 'feature/review-tour', savedAt: '2026-08-08T18:00:00.000Z', title: tour.title, scope: tour.scope, includeTests: false, includeDocs: false, fingerprint: tour.fingerprint }] : [], agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', branch: 'feature/review-tour', title: 'Ready', gitStatus: { files: 1, staged: 0, unstaged: 1, untracked: 0, conflicted: 0 }, gitPrStatus: { base: 'origin/main', files: 1 } }], worktrees: [] } });
-    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
-    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
-    if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
-    if (url.pathname === '/api/agents/agent-1/prompt-history') return route.fulfill({ json: { prompts: [] } });
-    if (url.pathname === '/api/agents/agent-1/queued-prompts') return route.fulfill({ json: { prompts: [] } });
-    if (url.pathname === '/api/agents/agent-1/skills') return route.fulfill({ json: { skills: [] } });
+    // serve common agent dependencies
+    if (await fulfillAgentSupport(route, url.pathname)) return;
     // restore the durable artifact
     if (url.pathname === '/api/worktrees/cora/review-tour' && request.method() === 'GET') return route.fulfill({ json: { status: 'ready', review: { worktreeId: 'cora', branch: 'feature/review-tour', savedAt: '2026-08-08T18:00:00.000Z', tour } } });
     if (url.pathname === '/api/worktrees/cora/review-tour' && request.method() === 'DELETE') { reviewStored = false; return route.fulfill({ status: 204 }); }

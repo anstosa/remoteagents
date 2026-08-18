@@ -4,8 +4,12 @@ import { access, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import { constants } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { Readable } from 'node:stream';
 import { run, safeEnv } from '../tmux/command.js';
 import { generatedReviewTourJsonSchema, MAX_REVIEW_GENERATED_BYTES, parseGeneratedReviewTourResult, REVIEW_GENERATION_TIMEOUT_MS, ReviewTourError, type GeneratedReviewTour, type ReviewSnapshot, type ReviewTourCapability } from './contracts.js';
+
+const MAX_REVIEW_DIAGNOSTIC_CHARACTERS = 16_384;
+const authenticationDiagnostic = /(?:^|\n)(?:\d{4}-\d{2}-\d{2}T\S+\s+)?ERROR(?:\s+codex_login::auth::manager)?:\s*(?:Failed to refresh token|Your access token could not be refreshed|Provided authentication token is expired)\b/imu;
 
 export interface ReviewTourGenerator {
   capability(): Promise<ReviewTourCapability>;
@@ -23,6 +27,22 @@ async function terminate(child: ChildProcess): Promise<void> {
       try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
     }
   }
+}
+
+// retain a bounded diagnostic tail while draining stderr
+function collectDiagnostics(stream: Readable): () => string {
+  let diagnostics = '';
+  stream.setEncoding('utf8');
+  // keep only the most recent diagnostic output
+  stream.on('data', (chunk: string) => { diagnostics = `${diagnostics}${chunk}`.slice(-MAX_REVIEW_DIAGNOSTIC_CHARACTERS); });
+  return () => diagnostics;
+}
+
+// classify actionable Codex process failures
+function processFailure(diagnostics: string): ReviewTourError {
+  // distinguish an expired server login from model generation failures
+  if (authenticationDiagnostic.test(diagnostics)) return new ReviewTourError('authentication_required', false);
+  return new ReviewTourError('generation_failed', true);
 }
 
 // build explanation-only instructions
@@ -78,8 +98,7 @@ export class CodexExecReviewTourGenerator implements ReviewTourGenerator {
     await writeFile(schemaPath, JSON.stringify(generatedReviewTourJsonSchema), { mode: 0o600 });
     const args = ['exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--sandbox', 'read-only', '--output-schema', schemaPath, '--output-last-message', outputPath, '--color', 'never', '-C', snapshot.workspace, '-'];
     const child = spawn(this.binary, args, { shell: false, detached: true, env: safeEnv(), stdio: ['pipe', 'ignore', 'pipe'] });
-    // drain diagnostics without retaining content
-    child.stderr.resume();
+    const diagnostics = collectDiagnostics(child.stderr);
     const timedOut = new AbortController();
     const timer = setTimeout(() => timedOut.abort(), REVIEW_GENERATION_TIMEOUT_MS);
     let abortedByTimeout = false;
@@ -102,8 +121,8 @@ export class CodexExecReviewTourGenerator implements ReviewTourGenerator {
       if (signal.aborted) throw new ReviewTourError('cancelled', true);
       // report timeout distinctly
       if (abortedByTimeout) throw new ReviewTourError('timed_out', true);
-      // reject failed processes
-      if (code !== 0) throw new ReviewTourError('generation_failed', true);
+      // classify a failed process from its bounded diagnostic tail
+      if (code !== 0) throw processFailure(diagnostics());
       const raw = await readFile(outputPath);
       // reject oversized output
       if (raw.length > MAX_REVIEW_GENERATED_BYTES) throw new ReviewTourError('malformed_result', true);

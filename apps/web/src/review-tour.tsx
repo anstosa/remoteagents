@@ -64,10 +64,14 @@ function errorMessage(code: string | undefined): string {
   if (code === 'timed_out') return 'Tour generation timed out.';
   if (code === 'stale_during_generation') return 'The change moved while the tour was being generated.';
   if (code === 'capability_unavailable') return 'Guided review is unavailable on this server.';
+  // explain expired generator credentials
+  if (code === 'authentication_required') return 'The server’s Codex login expired. Sign in to Codex on the server, then try again.';
   if (code === 'configured_worktree_required') return 'Guided review requires a configured worktree.';
   if (code === 'generation_rejected') return 'The generated response was not an explanatory tour. Try again.';
   if (code === 'cancelled') return 'Tour generation was cancelled.';
   if (code === 'malformed_result') return 'The generated tour was incomplete. Try again.';
+  // explain unclassified process failures
+  if (code === 'generation_failed') return 'Codex exited before returning a guided tour. Try again; if it keeps failing, verify the server’s Codex login and network access.';
   return 'The guided tour could not be generated.';
 }
 

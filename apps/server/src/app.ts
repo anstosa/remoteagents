@@ -128,7 +128,23 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return statuses;
   };
   // map typed review failures
-  const reviewStatus = (code: ReviewErrorCode) => code === 'invalid_request' ? 400 : code === 'target_unavailable' ? 404 : code === 'too_large' ? 413 : code === 'generation_failed' || code === 'malformed_result' || code === 'generation_rejected' ? 502 : code === 'capability_unavailable' ? 503 : code === 'timed_out' ? 504 : code === 'cancelled' ? 499 : 409;
+  const reviewStatus = (code: ReviewErrorCode): number => {
+    // map request failures
+    if (code === 'invalid_request') return 400;
+    // map missing targets
+    if (code === 'target_unavailable') return 404;
+    // map oversized snapshots
+    if (code === 'too_large') return 413;
+    // map invalid generator results
+    if (code === 'generation_failed' || code === 'malformed_result' || code === 'generation_rejected') return 502;
+    // map unavailable generator dependencies
+    if (code === 'capability_unavailable' || code === 'authentication_required') return 503;
+    // map bounded timeouts
+    if (code === 'timed_out') return 504;
+    // retain the explicit cancellation status
+    if (code === 'cancelled') return 499;
+    return 409;
+  };
   // send one frozen review error envelope
   const reviewFailure = (reply: FastifyReply, error: unknown) => {
     const failure = error instanceof ReviewTourError ? error : new ReviewTourError('generation_failed', true);
