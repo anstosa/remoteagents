@@ -1914,7 +1914,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   const [sendState, setSendState] = useState<'idle'|'sending'|'queued'|'error'>('idle');
   const [dirtyCount, setDirtyCount] = useState(0);
   const [saveStatus, setSaveStatus] = useState<'saved'|'saving'|'error'>('saved');
-  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen, { placement: 'left', boundarySelector: '.log', boundaryRootSelector: '.agent-view, .worktree-view' });
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const titleEditorRef = useRef<HTMLInputElement | null>(null);
@@ -2061,7 +2061,12 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   }, [worktreeId]);
   useEffect(() => {
     if (!menuOpen) return;
-    const close = (event: MouseEvent) => { if (!anchorRef.current?.contains(event.target as Node)) setMenuOpen(false); };
+    const close = (event: MouseEvent) => {
+      const target = event.target as Node;
+      // preserve clicks inside either portal boundary
+      if (anchorRef.current?.contains(target) || flyoutRef.current?.contains(target)) return;
+      setMenuOpen(false);
+    };
     document.addEventListener('mousedown', close);
     return () => document.removeEventListener('mousedown', close);
   }, [menuOpen]);
@@ -2307,7 +2312,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   const latestResponseAvailable = notes !== undefined && substantialResponse !== undefined && !notes.some(note => note.text === substantialResponse);
   const highlightLatestResponse = latestResponseAvailable && substantialResponse === latestAssistantMessage && latestAssistantMessageOverflows;
   const notesLabel = dirtyCount === 0 ? `Notes (${noteCount})` : `Notes (${noteCount}; ${dirtyCount} unsaved)`;
-  const control = <div className="notes-control" ref={anchorRef}><button ref={triggerRef} className={`log-control page-arrow notes-toggle${menuOpen || activeNote !== undefined ? ' active' : ''}${dirtyCount > 0 ? ' unsaved' : ''}${highlightLatestResponse ? ' latest-response-available' : ''}`} aria-label={notesLabel} title={notesLabel} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}{noteCount > 0 && <span className="saved-prompts-count notes-count" aria-hidden="true">{noteCount}</span>}</button>{menuOpen && <div className="notes-menu" aria-label="Worktree notes"><button className="log-control save-latest-response" disabled={!latestResponseAvailable} onClick={() => { if (substantialResponse !== undefined) void create(substantialResponse, assistantNoteTitle(substantialResponse)); }}>Save latest response</button>{notes?.map(note => <button key={note.id} className="log-control note-choice" title={(note.title ?? note.text) || 'Blank note'} onClick={() => open(note)}>{noteName(note)}</button>)}<button className="log-control new-note" onClick={() => void create()}>+ New note</button></div>}</div>;
+  const control = <div className="notes-control" ref={anchorRef}><button ref={triggerRef} className={`log-control page-arrow notes-toggle${menuOpen || activeNote !== undefined ? ' active' : ''}${dirtyCount > 0 ? ' unsaved' : ''}${highlightLatestResponse ? ' latest-response-available' : ''}`} aria-label={notesLabel} title={notesLabel} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}{noteCount > 0 && <span className="saved-prompts-count notes-count" aria-hidden="true">{noteCount}</span>}</button>{menuOpen && createPortal(<div ref={flyoutRef} className="notes-menu" style={flyoutStyle} aria-label="Worktree notes"><button className="log-control save-latest-response" disabled={!latestResponseAvailable} onClick={() => { if (substantialResponse !== undefined) void create(substantialResponse, assistantNoteTitle(substantialResponse)); }}>Save latest response</button>{notes?.map(note => <button key={note.id} className="log-control note-choice" title={(note.title ?? note.text) || 'Blank note'} onClick={() => open(note)}>{noteName(note)}</button>)}<button className="log-control new-note" onClick={() => void create()}>+ New note</button></div>, document.body)}</div>;
   const actionStatus = copyState === 'error' ? 'Copy failed' : sendState === 'queued' ? 'Queued' : sendState === 'error' ? 'Queue failed' : '';
   const toggleExpanded = () => setExpanded(value => {
     const next = !value;

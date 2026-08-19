@@ -1,4 +1,12 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator } from '@playwright/test';
+
+// require rendered layout geometry
+const renderedBounds = async (locator: Locator) => {
+  const bounds = await locator.boundingBox();
+  // reject hidden layout targets
+  if (bounds === null) throw new Error('Expected visible layout bounds');
+  return bounds;
+};
 
 test('creates, previews, edits, autosaves, and deletes per-worktree notes', async ({ page }) => {
   test.setTimeout(60_000);
@@ -151,6 +159,53 @@ test('creates, previews, edits, autosaves, and deletes per-worktree notes', asyn
   await expect(notesButton).toBeFocused();
   await expect(notesButton.locator('.notes-count')).toHaveText('1');
   expect(notes).toEqual([{ id: 'note-identifier-001', text: 'Remember to review the migration plan carefully before unload' }]);
+});
+
+// preserve leftward note flyouts inside the output
+test('keeps note flyouts left-aligned and shifts long menus within the output boundary', async ({ page }) => {
+  const notes = Array.from({ length: 4 }, (_, index) => ({ id: `note-identifier-${String(index + 1).padStart(3, '0')}`, text: `Sticky note option ${index + 1}` }));
+  let visibleNotes: typeof notes = [];
+  await page.setViewportSize({ width: 1_000, height: 600 });
+  // serve the focused note layout fixture
+  await page.route('**/api/**', route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    // serve the active session
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    // serve one idle worktree
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready' }], worktrees: [] } });
+    // disable push setup
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    // serve the log ticket
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    // serve empty saved prompts
+    if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
+    // serve the active sticky note set
+    if (url.pathname === '/api/worktrees/cora/notes' && request.method() === 'GET') return route.fulfill({ json: { notes: visibleNotes } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  const notesButton = page.getByRole('button', { name: 'Notes (0)' });
+  await notesButton.click();
+  const menu = page.getByLabel('Worktree notes');
+  await expect(menu).toBeVisible();
+  const [menuBounds, notesButtonBounds, outputBounds] = await Promise.all([renderedBounds(menu), renderedBounds(notesButton), renderedBounds(page.locator('.log'))]);
+  expect(menuBounds.x).toBeGreaterThanOrEqual(outputBounds.x);
+  expect(menuBounds.x + menuBounds.width).toBeLessThan(notesButtonBounds.x);
+  expect(menuBounds.y).toBeCloseTo(notesButtonBounds.y, 0);
+  expect(menuBounds.y + menuBounds.height).toBeLessThanOrEqual(outputBounds.y + outputBounds.height);
+
+  visibleNotes = notes;
+  await page.reload();
+  const longMenuButton = page.getByRole('button', { name: 'Notes (4)' });
+  await longMenuButton.click();
+  const [longMenuBounds, longMenuButtonBounds, longOutputBounds] = await Promise.all([renderedBounds(menu), renderedBounds(longMenuButton), renderedBounds(page.locator('.log'))]);
+  expect(longMenuBounds.x).toBeGreaterThanOrEqual(longOutputBounds.x);
+  expect(longMenuBounds.x + longMenuBounds.width).toBeLessThan(longMenuButtonBounds.x);
+  expect(longMenuBounds.y).toBeLessThan(longMenuButtonBounds.y);
+  expect(longMenuBounds.y).toBeGreaterThanOrEqual(longOutputBounds.y);
+  expect(longMenuBounds.y + longMenuBounds.height).toBeLessThanOrEqual(longOutputBounds.y + longOutputBounds.height);
 });
 
 test('switches sticky notes between vertical and horizontal output splits', async ({ page }) => {
