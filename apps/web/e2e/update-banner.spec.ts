@@ -25,6 +25,47 @@ test('places the update chip in the tab bar beside notification controls', async
   expect(Math.abs(notificationBounds!.height - bannerBounds!.height)).toBeLessThanOrEqual(1);
 });
 
+// reload stale browser assets without launching a host update
+test('reloads a stale client instead of restarting the server', async ({ page }) => {
+  let updateStarts = 0;
+  let navigations = 0;
+  // count full-page reloads
+  page.on('framenavigated', frame => {
+    // ignore child-frame navigation
+    if (frame === page.mainFrame()) navigations += 1;
+  });
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    // restore one controlling session
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    // render the empty console
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [], worktrees: [] } });
+    // report a newer browser bundle
+    if (url.pathname === '/api/ui-version') return route.fulfill({ json: { version: '/assets/index-new.js' } });
+    // keep the host repository current
+    if (url.pathname === '/api/server/update-available') return route.fulfill({ json: { available: false } });
+    // flag accidental host mutations
+    if (url.pathname === '/api/server/update' && request.method() === 'POST') {
+      updateStarts += 1;
+      return route.fulfill({ status: 202, json: { id: 'server_update_operation_1234', kind: 'update', state: 'queued' } });
+    }
+    // disable push enrollment
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  const initialNavigations = navigations;
+  const banner = page.getByRole('button', { name: 'Update available Reload' });
+  await expect(banner).toBeVisible();
+  await banner.click();
+
+  await expect.poll(() => navigations).toBeGreaterThan(initialNavigations);
+  expect(updateStarts).toBe(0);
+});
+
 // verify failed updates remain beside output status
 test('shows a failed update beside the output status without overlap', async ({ page }) => {
   let updateStarts = 0;

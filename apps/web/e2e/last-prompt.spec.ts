@@ -41,7 +41,7 @@ test('opens prompt history from the last prompt while git status expands indepen
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', branch: 'feature/full-toolbar-git-status', gitStatus: { files: 54, staged: 2, unstaged: 51, untracked: 1, conflicted: 0, changes: [{ code: 'M ', path: 'apps/server/src/app.ts', additions: 12, deletions: 3 }, { code: ' M', path: 'apps/web/src/main.tsx', additions: 8, deletions: 2 }, { code: 'MM', path: 'apps/web/src/styles.css', additions: 5, deletions: 4 }, { code: ' M', path: 'apps/web/e2e/last-prompt.spec.ts', additions: 16, deletions: 5 }, { code: ' M', path: 'README.md', additions: 4, deletions: 1 }, { code: 'R ', path: 'docs/setup.md', originalPath: 'docs/install.md', additions: 3, deletions: 2 }, { code: '??', path: 'notes/release plan.md', additions: 9, deletions: 0 }, ...overflowChanges] }, gitPrStatus: { base: 'origin/main', files: 3, changes: [{ code: 'A ', path: 'apps/server/src/pr-only.ts', additions: 20, deletions: 0 }, { code: 'M ', path: 'apps/web/src/main.tsx', additions: 30, deletions: 4 }, { code: 'M ', path: 'docs/pr.md', additions: 5, deletions: 1 }] }, title: 'Ready' }], worktrees: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', branch: 'feature/full-toolbar-git-status', gitStatus: { files: 54, staged: 2, unstaged: 51, untracked: 1, conflicted: 0, changes: [{ code: 'M ', path: 'apps/server/src/app.ts', additions: 1_212, deletions: 3 }, { code: ' M', path: 'apps/web/src/main.tsx', additions: 8, deletions: 2 }, { code: 'MM', path: 'apps/web/src/styles.css', additions: 5, deletions: 4 }, { code: ' M', path: 'apps/web/e2e/last-prompt.spec.ts', additions: 16, deletions: 5 }, { code: ' M', path: 'README.md', additions: 4, deletions: 1 }, { code: 'R ', path: 'docs/setup.md', originalPath: 'docs/install.md', additions: 3, deletions: 2 }, { code: '??', path: 'notes/release plan.md', additions: 9, deletions: 0 }, ...overflowChanges] }, gitPrStatus: { base: 'origin/main', files: 3, changes: [{ code: 'A ', path: 'apps/server/src/pr-only.ts', additions: 1_200, deletions: 0 }, { code: 'M ', path: 'apps/web/src/main.tsx', additions: 30, deletions: 4 }, { code: 'M ', path: 'docs/pr.md', additions: 5, deletions: 1 }] }, title: 'Ready' }], worktrees: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
@@ -89,7 +89,7 @@ test('opens prompt history from the last prompt while git status expands indepen
   const prView = gitView.getByRole('button', { name: 'All PR' });
   await expect(prView).toHaveAttribute('aria-pressed', 'true');
   await expect(changedFiles).toContainText('PR changes');
-  await expect(changedFiles).toContainText('Compared with origin/main · 3 files · +55 −5');
+  await expect(changedFiles).toContainText('Compared with origin/main · 3 files · +1,235 −5');
   await expect(changedFiles).toContainText('apps/server/src/pr-only.ts');
   await expect(changedFiles).not.toContainText('notes/release plan.md');
   await workingView.tap();
@@ -102,8 +102,9 @@ test('opens prompt history from the last prompt while git status expands indepen
   await expect(changedFiles).toContainText('notes/release plan.md');
   const implementation = changedFiles.getByRole('group', { name: 'Implementation files' });
   const supporting = changedFiles.getByRole('group', { name: 'TESTS & DOCS files' });
-  await expect(implementation.locator('.git-status-group-header')).toContainText('50 files+72−9');
-  await expect(implementation.locator('.git-status-file').first()).toContainText('apps/server/src/app.ts+12−3');
+  await expect(implementation.locator('.git-status-group-header')).toContainText('50 files+1,272−9');
+  await expect(implementation.locator('.git-status-group-lines')).toHaveAttribute('aria-label', '1,272 lines added, 9 lines removed');
+  await expect(implementation.locator('.git-status-file').first()).toContainText('apps/server/src/app.ts+1,212−3');
   await expect(supporting.locator('.git-status-group-header')).toContainText('4 files+32−8');
   await expect(supporting.locator('.git-status-file').first()).toContainText('apps/web/e2e/last-prompt.spec.ts+16−5');
   const zeroDeletion = implementation.locator('.git-status-file', { hasText: 'apps/server/src/generated-0.ts' });

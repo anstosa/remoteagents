@@ -260,6 +260,123 @@ it('retries answer recording after the agent first appears finished', async () =
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+// retain tracked answers after their prompts leave tmux history
+it('records a completed answer after long output scrolls its prompt out of capture', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'rac-prompt-answer-scrolled-'));
+  const queue = new QueuedPromptService(join(directory, 'queue.json'));
+  const mutableAgent = { ...agent, title: 'Ready' };
+  const completed: string[] = [];
+  const historyEntry = { id: 'prompt-history-scrolled', text: 'Run the long task', createdAt: '2026-08-07T01:00:00.000Z' };
+  let capture = ['• Previous answer', '─ Worked for 1s', '', '› Run the long task', '', '• Working'].join('\n');
+  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const tmux = {
+    pastePrompt: async () => true,
+    queue: async () => true,
+    capture: async () => capture,
+    interrupt: async () => true
+  };
+  const history = {
+    record: async () => historyEntry,
+    // collect the recovered long answer
+    recordAnswer: async (_scope: string, _entryId: string, answer: string) => {
+      completed.push(answer);
+      return { ...historyEntry, answer, answeredAt: '2026-08-07T01:00:02.000Z' };
+    }
+  };
+  const service = new PromptService(discovery as never, tmux as never, [], history as never, queue);
+  try {
+    await expect(service.submit(agent.id, 'Run the long task')).resolves.toBe(true);
+    mutableAgent.title = '⠋ Working';
+    await service.observe(mutableAgent);
+
+    mutableAgent.title = 'Ready';
+    capture = ['• Previous answer', '─ Worked for 1s', ''].join('\n');
+    await service.observe(mutableAgent);
+    expect(completed).toEqual([]);
+
+    capture = ['• Long task complete', '', '  All checks passed.', '─ Worked for 2m', ''].join('\n');
+    await service.observe(mutableAgent);
+
+    expect(completed).toEqual(['Long task complete\n\nAll checks passed.']);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+// recover a restart-lost answer without its scrolled prompt
+it('records the newest unanswered completion after observing restarted work', async () => {
+  const mutableAgent = { ...agent, title: '⠋ Working' };
+  const completed: string[] = [];
+  const historyEntry = { id: 'prompt-history-restarted-long', text: 'Run the restarted long task', createdAt: '2026-08-07T01:01:00.000Z' };
+  const olderEntry = { id: 'prompt-history-older', text: 'Earlier task', createdAt: '2026-08-07T01:00:00.000Z', answer: 'Earlier answer', answeredAt: '2026-08-07T01:00:02.000Z' };
+  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const tmux = {
+    capture: async () => ['• Recovered after restart', '', '─ Worked for 3m', ''].join('\n')
+  };
+  const history = {
+    list: async () => [historyEntry, olderEntry],
+    // collect restart reconciliation
+    recordAnswer: async (_scope: string, _entryId: string, answer: string) => {
+      completed.push(answer);
+      return { ...historyEntry, answer, answeredAt: '2026-08-07T01:04:00.000Z' };
+    }
+  };
+  const service = new PromptService(discovery as never, tmux as never, [], history as never);
+
+  await service.observe(mutableAgent);
+  mutableAgent.title = 'Ready';
+  await service.observe(mutableAgent);
+
+  expect(completed).toEqual(['Recovered after restart']);
+});
+
+// reject pre-restart output before a pending prompt starts
+it('does not assign a promptless completion to work not observed running', async () => {
+  const mutableAgent = { ...agent, title: 'Ready' };
+  const recorded: string[] = [];
+  const pendingEntry = { id: 'prompt-history-pending', text: 'Pending task', createdAt: '2026-08-07T01:01:00.000Z' };
+  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const tmux = {
+    capture: async () => ['• Previous answer', '', '─ Worked for 1m', ''].join('\n')
+  };
+  const history = {
+    list: async () => [pendingEntry],
+    // flag accidental pending writes
+    recordAnswer: async (_scope: string, entryId: string) => {
+      recorded.push(entryId);
+      return pendingEntry;
+    }
+  };
+  const service = new PromptService(discovery as never, tmux as never, [], history as never);
+
+  await service.observe(mutableAgent);
+
+  expect(recorded).toEqual([]);
+});
+
+// avoid assigning an answered turn to stale unanswered history
+it('does not duplicate a promptless completion onto an older unanswered entry', async () => {
+  const mutableAgent = { ...agent, title: 'Ready' };
+  const recorded: string[] = [];
+  const newestEntry = { id: 'prompt-history-newest', text: 'Newest task', createdAt: '2026-08-07T01:01:00.000Z', answer: 'Newest answer', answeredAt: '2026-08-07T01:01:02.000Z' };
+  const staleEntry = { id: 'prompt-history-stale', text: 'Stale task', createdAt: '2026-08-07T01:00:00.000Z' };
+  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const tmux = {
+    capture: async () => ['• Newest answer', '', '─ Worked for 1m', ''].join('\n')
+  };
+  const history = {
+    list: async () => [newestEntry, staleEntry],
+    // flag accidental stale writes
+    recordAnswer: async (_scope: string, entryId: string) => {
+      recorded.push(entryId);
+      return staleEntry;
+    }
+  };
+  const service = new PromptService(discovery as never, tmux as never, [], history as never);
+
+  await service.observe(mutableAgent);
+
+  expect(recorded).toEqual([]);
+});
+
 // retry transient history storage failures
 it('does not settle completion until the answer is stored in history', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-prompt-answer-storage-'));

@@ -31,6 +31,8 @@ export class PromptService {
   private readonly phases = new Map<string, PromptPhase>();
   private readonly dispatching = new Set<string>();
   private readonly reconciled = new Set<string>();
+  // track work observed after service startup
+  private readonly observedWorking = new Set<string>();
   private readonly reconciliationPendingSince = new Map<string, number>();
   private readonly restartLocks = new Set<string>();
   private readonly lockedAgentIds = new Set<string>();
@@ -158,10 +160,14 @@ export class PromptService {
     }
     // wait through active agent work
     if (busy) {
+      this.observedWorking.add(scope);
       this.reconciled.delete(scope);
       this.reconciliationPendingSince.delete(scope);
       // mark the prompt as started
-      if (phase?.state === 'awaiting-start' || phase?.state === 'awaiting-answer') this.phases.set(scope, { ...phase, state: 'working', changedAt: Date.now() });
+      if (phase?.state === 'awaiting-start' || phase?.state === 'awaiting-answer') {
+        const baselineCompletion = phase.baselineCompletion ?? await this.completionSignature(agent.id);
+        this.phases.set(scope, { ...phase, state: 'working', changedAt: Date.now(), ...(baselineCompletion === undefined ? {} : { baselineCompletion }) });
+      }
       // adopt externally started work once prompts are queued
       if (phase === undefined && (await this.queued?.list(scope))?.length) {
         const baselineCompletion = await this.completionSignature(agent.id);
@@ -171,7 +177,7 @@ export class PromptService {
     }
     // finish tracked work before releasing its queue
     if (phase !== undefined) {
-      const completion = await this.recordAnswer(agent.id, scope, phase.historyEntryId, phase.historyPrompt, phase.baselineCompletion);
+      const completion = await this.recordAnswer(agent.id, scope, phase.historyEntryId, phase.historyPrompt, phase.baselineCompletion, phase.state !== 'awaiting-start');
       // allow terminal output to finish rendering
       if (completion === 'pending' && phase.state === 'working') {
         this.phases.set(scope, { ...phase, state: 'awaiting-answer', changedAt: Date.now() });
@@ -283,10 +289,16 @@ export class PromptService {
     if (capture === undefined) return 'pending';
     const turn = latestCompletedAssistantTurn(capture);
     // require a completed turn
-    if (turn?.prompt === undefined) return 'pending';
-    const capturedPrompt = turn.prompt;
-    // find the newest unanswered match
-    const entry = unanswered.find(candidate => normalizedPrompt(candidate.text) === normalizedPrompt(capturedPrompt));
+    if (turn === undefined) return 'pending';
+    const newest = entries[0];
+    let entry: (typeof entries)[number] | undefined;
+    // recover only observed work when its prompt text scrolled away
+    if (turn.prompt === undefined) {
+      entry = this.observedWorking.has(scope) && newest?.answer === undefined && !entries.some(candidate => candidate.answer === turn.text) ? newest : undefined;
+    } else {
+      const capturedPrompt = turn.prompt;
+      entry = unanswered.find(candidate => normalizedPrompt(candidate.text) === normalizedPrompt(capturedPrompt));
+    }
     // require an unanswered match
     if (entry === undefined) return 'settled';
     const recorded = await this.history.recordAnswer(scope, entry.id, turn.text).catch(() => undefined);
@@ -305,11 +317,12 @@ export class PromptService {
     }
     this.reconciliationPendingSince.delete(scope);
     this.reconciled.add(scope);
+    this.observedWorking.delete(scope);
     return true;
   }
 
   // capture and persist the final answer
-  private async recordAnswer(agentId: string, scope: string, entryId: string | undefined, prompt: string | undefined, baselineCompletion: string | undefined): Promise<PromptCompletion> {
+  private async recordAnswer(agentId: string, scope: string, entryId: string | undefined, prompt: string | undefined, baselineCompletion: string | undefined, allowPromptless = false): Promise<PromptCompletion> {
     const target = await this.discovery.target(agentId);
     // require the original pane
     if (target === undefined) return 'pending';
@@ -321,10 +334,12 @@ export class PromptService {
     if (this.failedTurnFromCapture(capture)) return 'failed';
     // wait for the latest completed response
     if (turn === undefined) return 'pending';
-    const promptMatches = prompt === undefined || turn.prompt !== undefined && normalizedPrompt(turn.prompt) === normalizedPrompt(prompt);
+    const completion = this.completionSignatureFromCapture(capture);
+    const promptMatches = prompt === undefined
+      || turn.prompt !== undefined && normalizedPrompt(turn.prompt) === normalizedPrompt(prompt)
+      || allowPromptless && turn.prompt === undefined && completion !== baselineCompletion;
     // reject stale pane completions
     if (!promptMatches) return 'pending';
-    const completion = this.completionSignatureFromCapture(capture);
     // reject completions that predate externally tracked work
     if (prompt === undefined && completion === baselineCompletion) return 'pending';
     // persist tracked answers when history is available

@@ -2628,7 +2628,10 @@ function ResizableLogSplit({ output, note, browser }: { output: ReactNode; note?
   return <div ref={containerRef} className={`log-split${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}`} style={style}>{output}{noteDivider}{note}{browserDivider}{browser}</div>;
 }
 
-const gitCountLabel = (count: number, label: string) => `${count} ${label}${count === 1 ? '' : 's'}`;
+// format one git stat number
+const gitNumberLabel = (count: number) => count.toLocaleString('en-US');
+// pluralize one git stat count
+const gitCountLabel = (count: number, label: string) => `${gitNumberLabel(count)} ${label}${count === 1 ? '' : 's'}`;
 const gitConflictCodes = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
 const gitChangeState = (code: string) => code === '??' ? 'untracked' : gitConflictCodes.has(code) ? 'conflicted' : code[0] !== ' ' && code[1] !== ' ' ? 'mixed' : code[0] !== ' ' ? 'staged' : 'unstaged';
 const gitSupportingFile = (path: string) => {
@@ -2643,9 +2646,10 @@ const gitSupportingFile = (path: string) => {
 // prefer server-owned change categories
 const gitSupportingChange = (change: GitStatusChange) => change.category === undefined ? gitSupportingFile(change.path) : change.category !== 'implementation';
 const gitLineTotals = (changes: GitStatusChange[]) => changes.reduce((totals, change) => ({ additions: totals.additions + (change.additions ?? 0), deletions: totals.deletions + (change.deletions ?? 0) }), { additions: 0, deletions: 0 });
+// render one git line summary
 function GitLineSummary({ additions, deletions, className }: { additions: number; deletions: number; className: string }) {
   const label = [additions > 0 ? `${gitCountLabel(additions, 'line')} added` : undefined, deletions > 0 ? `${gitCountLabel(deletions, 'line')} removed` : undefined].filter(Boolean).join(', ') || 'No lines added or removed';
-  return <span className={className} aria-label={label}><span className="git-lines-added">{additions > 0 ? `+${additions}` : ''}</span><span className="git-lines-deleted">{deletions > 0 ? `−${deletions}` : ''}</span></span>;
+  return <span className={className} aria-label={label}><span className="git-lines-added">{additions > 0 ? `+${gitNumberLabel(additions)}` : ''}</span><span className="git-lines-deleted">{deletions > 0 ? `−${gitNumberLabel(deletions)}` : ''}</span></span>;
 }
 // render one clickable changed-file group
 function GitChangeGroup({ label, changes, onOpenFile }: { label: string; changes: GitStatusChange[]; onOpenFile: (path: string) => void }) {
@@ -2723,7 +2727,7 @@ function GitStatus({ branch, summary, prSummary, expanded = false, onToggle, onO
     ? details
     : prSummary === undefined
       ? []
-      : [`Compared with ${prSummary.base}`, gitCountLabel(prSummary.files, 'file'), `+${prTotals.additions} −${prTotals.deletions}`];
+      : [`Compared with ${prSummary.base}`, gitCountLabel(prSummary.files, 'file'), `+${gitNumberLabel(prTotals.additions)} −${gitNumberLabel(prTotals.deletions)}`];
   const emptyLabel = activeSummary?.files === 0 ? mode === 'working' ? 'No working changes' : 'No PR changes' : 'Changed-file details unavailable';
   // support touch without delayed clicks
   const pointerToggle = (event: React.PointerEvent<HTMLButtonElement>) => {
@@ -3922,7 +3926,7 @@ function OperationFeedbackBanner({ feedback, onDismiss }: { feedback: OperationF
 }
 
 // render the active console dashboard
-function DashboardView({ onUnauthorized, onInactive, updateAvailable, updateError, onRestart }: { onUnauthorized: () => void; onInactive: () => void; updateAvailable: boolean; updateError?: string; onRestart: () => void }) {
+function DashboardView({ onUnauthorized, onInactive, clientUpdateAvailable, serverUpdateAvailable, updateError, onUpdate }: { onUnauthorized: () => void; onInactive: () => void; clientUpdateAvailable: boolean; serverUpdateAvailable: boolean; updateError?: string; onUpdate: () => void }) {
   const serverInfo = useContext(ServerContext) ?? fallbackServerInfo();
   const [data, setData] = useState<Dashboard>();
   const [voiceOpen, setVoiceOpen] = useState(false);
@@ -4594,7 +4598,7 @@ function DashboardView({ onUnauthorized, onInactive, updateAvailable, updateErro
     const transition = dashboardOperationLabel(entry.operation);
     const label = transition ?? stateLabel[entry.state];
     return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
-  })}<NotificationControl />{updateAvailable && <button className="update-ready" type="button" onClick={onRestart}>Update available <span>Restart</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><button disabled={creatingAgent} onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
+  })}<NotificationControl />{(clientUpdateAvailable || serverUpdateAvailable) && <button className="update-ready" type="button" onClick={onUpdate}>Update available <span>{clientUpdateAvailable ? 'Reload' : 'Restart'}</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><button disabled={creatingAgent} onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
   const consoleClass = `console${voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{reviewDialog}</article></main></VoiceTriggerContext.Provider>;
   return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{reviewDialog}</main></VoiceTriggerContext.Provider>;
@@ -4607,7 +4611,8 @@ function App() {
   const [serverInfo, setServerInfo] = useState<ServerInfo>(fallbackServerInfo);
   const [serverStatuses, setServerStatuses] = useState<Record<string, InstanceAttention>>({});
   const [error, setError] = useState('');
-  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [clientUpdateAvailable, setClientUpdateAvailable] = useState(false);
+  const [serverUpdateAvailable, setServerUpdateAvailable] = useState(false);
   const [updateError, setUpdateError] = useState<string>();
   const [restarting, setRestarting] = useState(false);
   const [reconnecting, setReconnecting] = useState(!consoleReachable);
@@ -4850,7 +4855,7 @@ function App() {
         const response = await consoleFetch('/api/ui-version', { cache: 'no-store', signal: AbortSignal.timeout(8_000) });
         if (!response.ok || closed) return;
         const payload = await response.json() as { version?: unknown };
-        if (typeof payload.version === 'string' && payload.version !== currentUiVersion) setUpdateAvailable(true);
+        if (typeof payload.version === 'string' && payload.version !== currentUiVersion) setClientUpdateAvailable(true);
       } catch { /* Retry at the next interval. */ }
     };
     const stopPolling = pollWhileVisible(checkForUpdate, 30_000, false);
@@ -4867,7 +4872,7 @@ function App() {
       if (!response.ok || closed) return;
       const payload: unknown = await response.json().catch(() => undefined);
       // latch a discovered upstream update
-      if (isServerUpdateAvailability(payload) && payload.available) setUpdateAvailable(true);
+      if (isServerUpdateAvailability(payload) && payload.available) setServerUpdateAvailable(true);
     };
     const stopPolling = pollWhileVisible(checkForServerUpdate, 300_000, true, 1_800_000);
     return () => {
@@ -4944,7 +4949,7 @@ function App() {
     : state === 'checking'
       ? <LoadingScreen />
       : state === 'ready'
-        ? <DashboardView onUnauthorized={handleUnauthorized} onInactive={handleInactive} updateAvailable={updateAvailable} updateError={updateError} onRestart={() => void restart()} />
+        ? <DashboardView onUnauthorized={handleUnauthorized} onInactive={handleInactive} clientUpdateAvailable={clientUpdateAvailable} serverUpdateAvailable={serverUpdateAvailable} updateError={updateError} onUpdate={clientUpdateAvailable ? () => location.reload() : () => void restart()} />
         : (state === 'inactive' || state === 'naming') && sessionInfo !== undefined
           ? <ControlScreen session={sessionInfo} claimed={applySession} />
           : <Login initialError={error} done={applySession} />;
