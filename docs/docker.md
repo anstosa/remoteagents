@@ -91,6 +91,11 @@ Mount read-only agent worktrees read-only.
          - ${HOME}/.codex:/home/node/.codex:rw
    ```
 
+   Mount the complete directory, not only `auth.json`. Codex replaces the
+   credential file atomically during refreshes and account changes. A
+   single-file bind mount remains attached to the replaced inode, so the
+   console can read or update stale credentials instead of the host login.
+
 ## Agent shell configuration
 
 The Compose service mounts `${HOME}/.zshenv`, `${HOME}/.zprofile`,

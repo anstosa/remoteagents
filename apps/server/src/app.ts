@@ -122,8 +122,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   function controlled(request: FastifyRequest, mutation = false): Session { const s = session(request, mutation); if (!control.connect(s.id)) throw inactiveClient(); return s; }
   type PublishedServer = { name: string; url: string; icon?: InstanceStatus['icon'] };
   type PublishedServerNavigation = PublishedServer & { remotes: PublishedServer[] };
+  // publish configured navigation before peer checks
+  const configuredRemotes = config.remoteServers.map(remote => ({ name: remote.url.hostname, url: remote.url.origin }));
   // publish safe local server metadata
-  const server: PublishedServerNavigation = { name: config.name, url: config.publicOrigin.origin, ...(config.icon === undefined ? {} : { icon: config.icon }), remotes: [] };
+  const server: PublishedServerNavigation = { name: config.name, url: config.publicOrigin.origin, ...(config.icon === undefined ? {} : { icon: config.icon }), remotes: configuredRemotes };
   // refresh remote identities from their publishers
   const refreshRemoteServers = async (known?: InstanceStatus[]) => {
     const statuses = known ?? await instanceStatusPoller.statuses(config.remoteServers);
@@ -164,7 +166,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   };
   // describe one authenticated browser session
   const sessionState = async (s: Session, active: boolean) => {
-    await refreshRemoteServers();
+    // refresh peers off the authentication path
+    void refreshRemoteServers().catch(() => undefined);
     const owner = control.ownerSessionId();
     return {
       csrfToken: s.csrf,
@@ -344,7 +347,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.get('/', async (request, reply) => { browser(request); return reply.sendFile('index.html'); });
   app.get('/api/ui-version', async (request) => { browser(request); return { version: await uiVersion() }; });
   app.get('/api/auth/session', async (request) => { const s = session(request); return await sessionState(s, control.connect(s.id)); });
-  app.get('/api/auth/bootstrap', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request) => { browser(request); await refreshRemoteServers(); return { csrfToken: auth.bootstrap(), server }; });
+  // issue bootstrap without waiting for peers
+  app.get('/api/auth/bootstrap', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request) => { browser(request); void refreshRemoteServers().catch(() => undefined); return { csrfToken: auth.bootstrap(), server }; });
   // aggregate configured instance attention for authenticated clients
   app.get('/api/server-statuses', async (request) => {
     session(request);

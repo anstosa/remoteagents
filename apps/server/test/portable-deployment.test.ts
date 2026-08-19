@@ -24,6 +24,8 @@ describe('portable deployment', () => {
     expect(ignore).toContain('compose.override.yaml');
     expect(ignore).toContain('config/cloudflared.yml');
     expect(ignore).toContain('config/remote-agent-console.docker.json');
+    expect(example).toContain('${HOME}/.codex:/home/node/.codex:rw');
+    expect(example).not.toContain('.codex/auth.json:/home/node/.codex/auth.json');
     expect(example).toContain('/absolute/path/to/project:/worktrees/project:rw');
   });
 

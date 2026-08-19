@@ -1,6 +1,8 @@
 services:
   remote-agent-console:
     volumes:
+      # share the complete Codex home for atomic account switches
+      - ${HOME}/.codex:/home/node/.codex:rw
       # map each configured worktree on this host
       - /absolute/path/to/project:/worktrees/project:rw
       # keep research-only worktrees read-only

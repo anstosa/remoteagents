@@ -19,6 +19,27 @@ afterEach(() => { vi.unstubAllEnvs(); });
 describe('HTTP security boundary',()=>{let app:Awaited<ReturnType<typeof buildApp>>;afterEach(async()=>{await app?.close()});it('serves the browser application and its build version for the canonical host',async()=>{const hash=await argon2.hash('synthetic-password',{type:argon2.argon2id});app=await buildApp(config,{auth:new AuthService(hash,Buffer.alloc(32,2).toString('base64url'))});const response=await app.inject({method:'GET',url:'/',headers:{host:'agents.example.com'}});expect(response.statusCode).toBe(200);expect(response.headers['content-type']).toContain('text/html');expect(response.body).toContain('<!doctype html>');const version=await app.inject({method:'GET',url:'/api/ui-version',headers:{host:'agents.example.com'}});expect(version.statusCode).toBe(200);expect(version.json().version).toMatch(/^\/assets\/index-[\w-]+\.js$/)}, 15_000);it('requires canonical Host and Origin and creates a secure host cookie',async()=>{const hash=await argon2.hash('synthetic-password',{type:argon2.argon2id});app=await buildApp(config,{auth:new AuthService(hash,Buffer.alloc(32,2).toString('base64url'))});const bad=await app.inject({method:'GET',url:'/api/auth/bootstrap',headers:{host:'evil.example'}});expect(bad.statusCode).toBe(403);const boot=await app.inject({method:'GET',url:'/api/auth/bootstrap',headers:{host:'agents.example.com'}});const token=boot.json().csrfToken;const denied=await app.inject({method:'POST',url:'/api/auth/login',headers:{host:'agents.example.com','x-csrf-token':token},payload:{password:'synthetic-password'}});expect(denied.statusCode).toBe(403);const ok=await app.inject({method:'POST',url:'/api/auth/login',headers:{host:'agents.example.com',origin:'https://agents.example.com','x-csrf-token':token},payload:{password:'synthetic-password'}});expect(ok.statusCode).toBe(200);expect(ok.headers['set-cookie']).toContain('__Host-rac=');expect(ok.headers['set-cookie']).toContain('HttpOnly');expect(ok.headers['set-cookie']).toContain('Secure');expect(ok.headers['content-security-policy']).toContain("default-src 'self'")}, 15_000)});
 
 describe('server identity API', () => {
+  // verify authentication never waits for peers
+  it('keeps authentication independent of stalled remote status checks', async () => {
+    const namedConfig = { ...config, publicOrigin: new URL('https://x1carbon.santosa.dev'), remoteServers: [{ url: new URL('https://framework.santosa.dev') }] };
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    // hold peer discovery indefinitely
+    const instanceStatusPoller = { statuses: () => new Promise<never>(() => {}) };
+    const identityApp = await buildApp(namedConfig, { auth: new AuthService(hash, Buffer.alloc(32, 20).toString('base64url')), instanceStatusPoller });
+    // close the isolated app after assertions
+    try {
+      const bootstrap = await identityApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'x1carbon.santosa.dev' } });
+      expect(bootstrap.statusCode).toBe(200);
+      expect(bootstrap.json().server.remotes).toEqual([{ name: 'framework.santosa.dev', url: 'https://framework.santosa.dev' }]);
+      const login = await identityApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'x1carbon.santosa.dev', origin: 'https://x1carbon.santosa.dev', 'x-csrf-token': bootstrap.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      expect(login.statusCode).toBe(200);
+      expect(login.json().server.remotes).toEqual([{ name: 'framework.santosa.dev', url: 'https://framework.santosa.dev' }]);
+    } finally {
+      await identityApp.close();
+    }
+  }, 15_000);
+
+  // verify peer metadata refreshes through status polling
   it('publishes local and remote server choices before login and in sessions', async () => {
     const namedConfig = { ...config, name: 'X1 Carbon', icon: 'potato' as const, publicOrigin: new URL('https://x1carbon.santosa.dev'), remoteServers: [{ url: new URL('https://framework.santosa.dev') }] };
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
@@ -28,12 +49,18 @@ describe('server identity API', () => {
     // avoid host discovery in identity test
     const discovery = { dashboard: async () => ({ generation: 1, agents: [], worktrees: [] }) };
     const identityApp = await buildApp(namedConfig, { auth: new AuthService(hash, Buffer.alloc(32, 16).toString('base64url')), instanceStatusPoller, discovery: discovery as never });
+    // close the isolated app after assertions
     try {
       const bootstrap = await identityApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'x1carbon.santosa.dev' } });
       const expected = { name: 'X1 Carbon', icon: 'potato', url: 'https://x1carbon.santosa.dev', remotes: [{ name: 'Framework', icon: 'heart', url: 'https://framework.santosa.dev' }] };
-      expect(bootstrap.json().server).toEqual(expected);
+      expect(bootstrap.json().server).toMatchObject({ name: expected.name, icon: expected.icon, url: expected.url, remotes: [{ url: expected.remotes[0].url }] });
       const login = await identityApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'x1carbon.santosa.dev', origin: 'https://x1carbon.santosa.dev', 'x-csrf-token': bootstrap.json().csrfToken }, payload: { password: 'synthetic-password' } });
-      expect(login.json().server).toEqual(expected);
+      expect(login.statusCode).toBe(200);
+      const cookie = String(login.headers['set-cookie']).split(';')[0];
+      const statuses = await identityApp.inject({ method: 'GET', url: '/api/server-statuses', headers: { host: 'x1carbon.santosa.dev', cookie } });
+      expect(statuses.json().servers).toEqual([{ name: 'X1 Carbon', icon: 'potato', url: 'https://x1carbon.santosa.dev', attention: 'idle' }, { name: 'Framework', icon: 'heart', url: 'https://framework.santosa.dev', attention: 'idle' }]);
+      const current = await identityApp.inject({ method: 'GET', url: '/api/auth/session', headers: { host: 'x1carbon.santosa.dev', cookie } });
+      expect(current.json().server).toEqual(expected);
       const timestamp = String(Date.now());
       const signature = createHmac('sha256', statusSecret).update(`rac-instance-status-v1\n${namedConfig.publicOrigin.origin}\n${timestamp}`).digest('base64url');
       const published = await identityApp.inject({ method: 'GET', url: '/api/instance-status', headers: { host: 'x1carbon.santosa.dev', 'x-rac-status-timestamp': timestamp, 'x-rac-status-signature': signature } });
