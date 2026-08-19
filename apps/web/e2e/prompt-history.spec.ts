@@ -7,6 +7,7 @@ test('shows worktree prompt history and cycles it from the composer', async ({ p
     { id: 'history-entry-002', text: 'Second prompt', createdAt: '2026-08-04T01:02:00.000Z', answer: '## Second final answer\n\n- completed successfully', answeredAt: '2026-08-04T01:02:30.000Z' },
     { id: 'history-entry-001', text: 'First prompt', createdAt: '2026-08-04T01:01:00.000Z' }
   ];
+  let historyRequests = 0;
   await page.addInitScript(() => {
     class MockWebSocket {
       static readonly CONNECTING = 0;
@@ -39,7 +40,11 @@ test('shows worktree prompt history and cycles it from the composer', async ({ p
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
-    if (url.pathname === '/api/agents/agent-1/prompt-history' && request.method() === 'GET') return route.fulfill({ json: { prompts: history } });
+    // track background history refreshes
+    if (url.pathname === '/api/agents/agent-1/prompt-history' && request.method() === 'GET') {
+      historyRequests += 1;
+      return route.fulfill({ json: { prompts: history } });
+    }
     if (url.pathname === '/api/worktrees/cora/notes' && request.method() === 'GET') return route.fulfill({ json: { notes } });
     if (url.pathname === '/api/worktrees/cora/notes' && request.method() === 'POST') {
       const payload = request.postDataJSON() as { title?: string } | null;
@@ -81,6 +86,13 @@ test('shows worktree prompt history and cycles it from the composer', async ({ p
   await expect(historyPrompts.last().locator('span')).toHaveCSS('font-weight', '400');
   await expect(answerButtons).toHaveCount(2);
   await expect(answerButtons.first()).toBeDisabled();
+  // simulate reading older prompts
+  await historyList.hover();
+  await page.mouse.wheel(0, -500);
+  await expect.poll(() => historyList.evaluate(element => element.scrollTop)).toBe(0);
+  const refreshBaseline = historyRequests;
+  await expect.poll(() => historyRequests).toBeGreaterThanOrEqual(refreshBaseline + 2);
+  expect(await historyList.evaluate(element => element.scrollTop)).toBe(0);
   await answerButtons.last().click();
   const secondAnswer = historyMenu.getByRole('region', { name: 'Answer for Second prompt' });
   await expect(secondAnswer).toContainText('## Second final answer\n\n- completed successfully');

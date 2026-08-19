@@ -2803,6 +2803,9 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
   const [toolbarExpanded, setToolbarExpanded] = useState<'git'>();
   const { anchorRef: historyAnchorRef, flyoutRef: historyFlyoutRef, style: historyFlyoutStyle } = useViewportFlyout(historyOpen);
   const historyListRef = useRef<HTMLDivElement | null>(null);
+  const historyPanelOpenRef = useRef(false);
+  const historyPinnedToLatestRef = useRef(true);
+  const historyScrollIntentRef = useRef(false);
   const lastPromptRef = useRef<HTMLButtonElement | null>(null);
   const [scrolledUp, setScrolledUp] = useState(false);
   const [inputActive, setInputActive] = useState(terminalMode);
@@ -2846,22 +2849,54 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
     return () => document.removeEventListener('mousedown', close);
   }, [historyOpen, historyAnchorRef, historyFlyoutRef]);
   useLayoutEffect(() => {
-    // require the open history list
-    if (!historyOpen || historyListRef.current === null) return;
     const list = historyListRef.current;
-    // align latest prompts or the open answer
-    const alignHistory = () => {
-      list.scrollTop = list.scrollHeight;
-      const openAnswer = list.querySelector<HTMLElement>('.prompt-history-entry.answer-open');
-      // keep the selected answer visible
-      if (openAnswer !== null) openAnswer.scrollIntoView({ block: 'nearest' });
-    };
-    alignHistory();
-    const frame = window.requestAnimationFrame(alignHistory);
-    const observer = new ResizeObserver(alignHistory);
+    // reset closed history tracking
+    if (!historyOpen || list === null) {
+      historyPanelOpenRef.current = false;
+      historyScrollIntentRef.current = false;
+      return;
+    }
+    const opening = !historyPanelOpenRef.current;
+    historyPanelOpenRef.current = true;
+    // reset user intent for each opening
+    if (opening) historyScrollIntentRef.current = false;
+    let alignmentFrame: number | undefined;
+    // follow latest only when opening or already pinned
+    if (opening || historyPinnedToLatestRef.current) {
+      // align after both current and pending layout
+      const alignLatest = () => {
+        list.scrollTop = list.scrollHeight;
+        historyPinnedToLatestRef.current = true;
+      };
+      alignLatest();
+      alignmentFrame = window.requestAnimationFrame(() => {
+        // preserve immediate user scrolling
+        if (historyPinnedToLatestRef.current) alignLatest();
+      });
+    }
+    const openAnswer = list.querySelector<HTMLElement>('.prompt-history-entry.answer-open');
+    // keep the selected answer visible
+    if (openAnswer !== null) openAnswer.scrollIntoView({ block: 'nearest' });
+    const observer = new ResizeObserver(() => {
+      // follow layout changes only while pinned
+      if (historyPinnedToLatestRef.current) list.scrollTop = list.scrollHeight;
+    });
     observer.observe(list);
-    return () => { window.cancelAnimationFrame(frame); observer.disconnect(); };
+    return () => {
+      observer.disconnect();
+      // cancel pending alignment
+      if (alignmentFrame !== undefined) window.cancelAnimationFrame(alignmentFrame);
+    };
   }, [historyOpen, history, historyAnswerId]);
+  // mark deliberate history navigation
+  const markHistoryScrollIntent = () => { historyScrollIntentRef.current = true; };
+  // track whether history should follow new prompts
+  const updateHistoryPin = () => {
+    const list = historyListRef.current;
+    // ignore closed or programmatic scrolling
+    if (list === null || !historyScrollIntentRef.current) return;
+    historyPinnedToLatestRef.current = Math.abs(list.scrollHeight - list.clientHeight - list.scrollTop) <= 1;
+  };
   useEffect(() => {
     let socket: WebSocket | undefined;
     let closed = false;
@@ -3479,7 +3514,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
     setHistoryAnswerId(undefined);
     void worktreeNotes.createWithText(entry.answer, assistantNoteTitle(entry.answer));
   };
-  const historyPanel = historyOpen && createPortal(<section className="prompt-history-menu more-menu flyout-menu" ref={historyFlyoutRef} style={historyFlyoutStyle} aria-label="Prompt history"><header><strong>Prompt history</strong><span>{history.length}</span></header><div className="prompt-history-list" ref={historyListRef}>{history.length === 0 ? <p>No prompts have been queued for this worktree yet.</p> : [...history].reverse().map(entry => <div className={`prompt-history-entry${historyAnswerId === entry.id ? ' answer-open' : ''}`} key={entry.id}><button className="prompt-history-prompt" type="button" title={entry.text} onClick={() => useHistoryEntry(entry)}><span>{entry.text}</span><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time></button><button className="prompt-history-answer-toggle" type="button" disabled={entry.answer === undefined} title={entry.answer === undefined ? 'Answer not recorded yet' : 'View final answer'} aria-label={`View answer for ${entry.text}`} aria-expanded={historyAnswerId === entry.id} onClick={() => toggleHistoryAnswer(entry)}>View answer</button>{historyAnswerId === entry.id && entry.answer !== undefined && <div className="prompt-history-answer" role="region" aria-label={`Answer for ${entry.text}`}><button className="prompt-history-save-note" type="button" disabled={!worktreeNotes.canCreate || entry.answer.length > 30_000} onClick={() => saveHistoryAnswer(entry)}>Save as note</button><div className="prompt-history-answer-text">{entry.answer}</div></div>}</div>)}</div></section>, document.body);
+  const historyPanel = historyOpen && createPortal(<section className="prompt-history-menu more-menu flyout-menu" ref={historyFlyoutRef} style={historyFlyoutStyle} aria-label="Prompt history"><header><strong>Prompt history</strong><span>{history.length}</span></header><div className="prompt-history-list" ref={historyListRef} onScroll={updateHistoryPin} onWheel={markHistoryScrollIntent} onTouchStart={markHistoryScrollIntent} onPointerDown={markHistoryScrollIntent} onKeyDown={markHistoryScrollIntent}>{history.length === 0 ? <p>No prompts have been queued for this worktree yet.</p> : [...history].reverse().map(entry => <div className={`prompt-history-entry${historyAnswerId === entry.id ? ' answer-open' : ''}`} key={entry.id}><button className="prompt-history-prompt" type="button" title={entry.text} onClick={() => useHistoryEntry(entry)}><span>{entry.text}</span><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time></button><button className="prompt-history-answer-toggle" type="button" disabled={entry.answer === undefined} title={entry.answer === undefined ? 'Answer not recorded yet' : 'View final answer'} aria-label={`View answer for ${entry.text}`} aria-expanded={historyAnswerId === entry.id} onClick={() => toggleHistoryAnswer(entry)}>View answer</button>{historyAnswerId === entry.id && entry.answer !== undefined && <div className="prompt-history-answer" role="region" aria-label={`Answer for ${entry.text}`}><button className="prompt-history-save-note" type="button" disabled={!worktreeNotes.canCreate || entry.answer.length > 30_000} onClick={() => saveHistoryAnswer(entry)}>Save as note</button><div className="prompt-history-answer-text">{entry.answer}</div></div>}</div>)}</div></section>, document.body);
   // open or close prompt history
   const toggleHistory = () => {
     const open = !historyOpen;
