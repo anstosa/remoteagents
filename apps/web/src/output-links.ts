@@ -8,6 +8,12 @@ const outputFile = /(?:^|[\s'"`(<\[])(@?(?:(?:file:\/\/)?(?:\/|\.{1,2}\/)?(?:[A-
 export type OutputLink = { kind: 'url'|'file'; uri: string; range: IBufferRange };
 export type OutputLinkSegment = { column: number; row: number; columns: number };
 
+// compare one output URL with the configured stack host
+export const outputUrlMatchesHost = (candidate: string, homeUrl: string) => {
+  try { return new URL(candidate).host === new URL(homeUrl).host; }
+  catch { return false; }
+};
+
 // normalize one file-preview request path
 const outputFilePath = (value: string) => value.replace(/^@/u, '').replace(/^file:\/\//u, '').replace(/#L\d+(?:-L\d+)?$/iu, '').replace(/:\d+(?::\d+)?$/u, '');
 
@@ -108,7 +114,8 @@ export const outputLinkSegments = (range: IBufferRange, columns: number, rows: n
   return segments;
 };
 
-export const createOutputLinkOverlays = (container: HTMLElement, onOpen: () => void, onOpenFile?: (path: string) => void) => {
+// render semantic overlays for detected output links
+export const createOutputLinkOverlays = (container: HTMLElement, onOpen: () => void, onOpenFile?: (path: string) => void, onOpenUrl?: (url: string) => boolean) => {
   const anchors = new Map<string, HTMLAnchorElement>();
   // remove every active overlay
   const clear = () => {
@@ -162,6 +169,8 @@ export const createOutputLinkOverlays = (container: HTMLElement, onOpen: () => v
             onOpen();
             // open file links in the internal preview
             if (link.kind === 'file') { event.preventDefault(); onOpenFile?.(link.uri); }
+            // route ordinary same-stack clicks internally
+            else if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey && onOpenUrl?.(link.uri)) event.preventDefault();
           });
           container.append(anchor);
           anchors.set(key, anchor);

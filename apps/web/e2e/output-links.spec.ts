@@ -1,5 +1,12 @@
 import { expect, test } from '@playwright/test';
-import { outputLinkSegments } from '../src/output-links';
+import { outputLinkSegments, outputUrlMatchesHost } from '../src/output-links';
+
+// verify output host matching
+test('matches output URLs to the configured stack host', () => {
+  expect(outputUrlMatchesHost('https://project.example.com/details?view=files', 'https://project.example.com')).toBe(true);
+  expect(outputUrlMatchesHost('https://outside.example.com/details', 'https://project.example.com')).toBe(false);
+  expect(outputUrlMatchesHost('not a URL', 'https://project.example.com')).toBe(false);
+});
 
 test('maps wrapped output links to visible terminal-cell overlays', () => {
   expect(outputLinkSegments(

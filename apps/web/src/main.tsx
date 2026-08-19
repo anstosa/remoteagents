@@ -6,7 +6,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { BoundedTextCache, nextLiveSnapshot } from './client-cache.js';
 import { createAnimationFrameTextBatcher, pollWhileVisible } from './client-scheduling.js';
-import { createOutputLinkOverlays } from './output-links.js';
+import { createOutputLinkOverlays, outputUrlMatchesHost } from './output-links.js';
 import { containOutputScroll } from './output-scroll.js';
 import { preserveOutputLongPressSelection } from './output-touch.js';
 import { NoteMarkdown } from './note-markdown.js';
@@ -2347,6 +2347,7 @@ const desktopBrowserQuery = '(min-width: 769px)';
 const browserViewportKey = (worktreeId: string) => `rac.browser-viewport:${worktreeId}`;
 const browserSplitKey = (worktreeId: string) => `rac.browser-split:${worktreeId}`;
 const browserUrlKey = (worktreeId: string) => `rac.browser-url:${worktreeId}`;
+type ProjectBrowserNavigationRequest = { sequence: number; url: string };
 // normalize project-owned locations
 const normalizeBrowserUrl = (candidate: string, homeUrl: string) => {
   try {
@@ -2397,6 +2398,7 @@ const saveBrowserSplit = (worktreeId: string | undefined, open: boolean) => {
 function useProjectBrowser(homeUrl?: string, worktreeId?: string) {
   const [open, setOpen] = useState(() => homeUrl !== undefined && window.matchMedia(desktopBrowserQuery).matches && savedBrowserSplit(worktreeId));
   const [currentUrl, setCurrentUrl] = useState(() => homeUrl === undefined ? undefined : savedBrowserUrl(homeUrl, worktreeId));
+  const [navigationRequest, setNavigationRequest] = useState<ProjectBrowserNavigationRequest>();
   useEffect(() => {
     const desktop = window.matchMedia(desktopBrowserQuery);
     // enforce desktop-only split behavior
@@ -2423,11 +2425,26 @@ function useProjectBrowser(homeUrl?: string, worktreeId?: string) {
     setCurrentUrl(next);
     return true;
   }, [homeUrl, worktreeId]);
+  // request one explicit frame navigation
+  const openUrl = useCallback((candidate: string) => {
+    // reject missing or cross-origin locations
+    if (homeUrl === undefined) return false;
+    const next = normalizeBrowserUrl(candidate, homeUrl);
+    // reject malformed locations
+    if (next === undefined) return false;
+    saveBrowserUrl(worktreeId, next);
+    setCurrentUrl(next);
+    // distinguish repeated clicks on one retained URL
+    setNavigationRequest(current => ({ sequence: (current?.sequence ?? 0) + 1, url: next }));
+    return true;
+  }, [homeUrl, worktreeId]);
   return {
     open: open && homeUrl !== undefined,
     homeUrl,
     url: open ? currentUrl : undefined,
     navigate,
+    navigationRequest,
+    openUrl,
     toggle: () => {
       // ignore unavailable browser panes
       if (homeUrl === undefined || !window.matchMedia(desktopBrowserQuery).matches) return;
@@ -2443,7 +2460,7 @@ const isProjectBrowserLocationMessage = (value: unknown): value is ProjectBrowse
   && (value as ProjectBrowserLocationMessage).type === 'rac-browser-location'
   && typeof (value as ProjectBrowserLocationMessage).url === 'string';
 // render project navigation controls and content
-function ProjectBrowserPane({ url, homeUrl, worktreeId, onNavigate, onClose }: { url: string; homeUrl: string; worktreeId?: string; onNavigate: (url: string) => boolean; onClose: () => void }) {
+function ProjectBrowserPane({ url, homeUrl, worktreeId, navigationRequest, onNavigate, onClose }: { url: string; homeUrl: string; worktreeId?: string; navigationRequest?: ProjectBrowserNavigationRequest; onNavigate: (url: string) => boolean; onClose: () => void }) {
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(false);
   const [mobile, setMobile] = useState(() => savedBrowserMobile(worktreeId));
@@ -2453,15 +2470,30 @@ function ProjectBrowserPane({ url, homeUrl, worktreeId, onNavigate, onClose }: {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const loadedFrameSource = useRef(url);
   const expectedFrameLoad = useRef(true);
+  const appliedNavigationSequence = useRef(navigationRequest?.sequence);
   const normalizedHomeUrl = normalizeBrowserUrl(homeUrl, homeUrl) ?? homeUrl;
   const normalizedUrl = normalizeBrowserUrl(url, homeUrl) ?? normalizedHomeUrl;
   const atHome = normalizedUrl === normalizedHomeUrl && !frameAwayFromKnownUrl;
   useEffect(() => setAddress(url), [url]);
   // navigate without replacing the frame
-  const loadFrame = (target: string) => {
+  const loadFrame = useCallback((target: string) => {
+    loadedFrameSource.current = target;
     setFrameSource(target);
     frameRef.current?.setAttribute('src', target);
-  };
+  }, []);
+  // apply parent-directed navigation
+  useEffect(() => {
+    const explicitlyRequested = navigationRequest !== undefined && appliedNavigationSequence.current !== navigationRequest.sequence;
+    const target = explicitlyRequested ? navigationRequest.url : normalizedUrl;
+    // skip retained locations already loaded by the pane
+    if (!explicitlyRequested && loadedFrameSource.current === target) return;
+    // consume one explicit navigation request
+    if (explicitlyRequested) appliedNavigationSequence.current = navigationRequest.sequence;
+    expectedFrameLoad.current = true;
+    setLoading(true);
+    setFrameAwayFromKnownUrl(false);
+    loadFrame(target);
+  }, [loadFrame, navigationRequest, normalizedUrl]);
   useEffect(() => {
     // accept location reports only from this frame and project origin
     const syncReportedLocation = (event: MessageEvent<unknown>) => {
@@ -2753,7 +2785,7 @@ function GitStatus({ branch, summary, prSummary, expanded = false, onToggle, onO
 }
 
 // render live agent output
-function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshHistory, onQuestion, cleanupControl, browserUrl, browserHomeUrl, onBrowserNavigate, onBrowserClose, terminalMode = false, onReview, reviewOpen = false, reviewUnavailable, processingLabel, processingDetail }: { id: string; worktreeId?: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; history: PromptHistoryEntry[]; refreshHistory: () => Promise<void>; onQuestion: (question: ChoiceQuestion | undefined) => void; cleanupControl?: ReactNode; browserUrl?: string; browserHomeUrl?: string; onBrowserNavigate?: (url: string) => boolean; onBrowserClose?: () => void; terminalMode?: boolean; onReview?: (scope: ReviewScope) => void; reviewOpen?: boolean; reviewUnavailable?: string; processingLabel?: string; processingDetail?: string }) {
+function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshHistory, onQuestion, cleanupControl, browserUrl, browserHomeUrl, browserNavigationRequest, onBrowserNavigate, onBrowserOpen, onBrowserClose, terminalMode = false, onReview, reviewOpen = false, reviewUnavailable, processingLabel, processingDetail }: { id: string; worktreeId?: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; history: PromptHistoryEntry[]; refreshHistory: () => Promise<void>; onQuestion: (question: ChoiceQuestion | undefined) => void; cleanupControl?: ReactNode; browserUrl?: string; browserHomeUrl?: string; browserNavigationRequest?: ProjectBrowserNavigationRequest; onBrowserNavigate?: (url: string) => boolean; onBrowserOpen?: (url: string) => boolean; onBrowserClose?: () => void; terminalMode?: boolean; onReview?: (scope: ReviewScope) => void; reviewOpen?: boolean; reviewUnavailable?: string; processingLabel?: string; processingDetail?: string }) {
   const canvas = useRef<HTMLDivElement | null>(null);
   const primaryHost = useRef<HTMLDivElement | null>(null);
   const secondaryHost = useRef<HTMLDivElement | null>(null);
@@ -2783,6 +2815,9 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
   // retain preview handling across terminal connections
   const openOutputFileRef = useRef(responseFiles.openFile);
   openOutputFileRef.current = responseFiles.openFile;
+  // retain browser routing across terminal connections
+  const openOutputUrlRef = useRef<(url: string) => boolean>(() => false);
+  openOutputUrlRef.current = url => browserUrl !== undefined && browserHomeUrl !== undefined && onBrowserOpen !== undefined && outputUrlMatchesHost(url, browserHomeUrl) && onBrowserOpen(url);
   // preview one changed branch file
   const openGitFile = (path: string) => {
     setToolbarExpanded(undefined);
@@ -2871,7 +2906,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
     const terminals = [new XTerm(terminalOptions), new XTerm(terminalOptions)];
     const fits = [new FitAddon(), new FitAddon()];
     let suppressOutputFocusUntil = 0;
-    const overlays = createOutputLinkOverlays(canvas.current!, () => { suppressOutputFocusUntil = performance.now() + 250; }, path => { void openOutputFileRef.current(path); });
+    const overlays = createOutputLinkOverlays(canvas.current!, () => { suppressOutputFocusUntil = performance.now() + 250; }, path => { void openOutputFileRef.current(path); }, url => openOutputUrlRef.current(url));
     const releaseScrollContainment = containOutputScroll(canvas.current!);
     let activeFrame: 0 | 1 = 0;
     let terminal = terminals[activeFrame];
@@ -3461,7 +3496,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
   const gitSection = <GitStatus branch={branch} summary={gitStatus} prSummary={gitPrStatus} expanded={toolbarExpanded === 'git'} onToggle={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'git' ? undefined : 'git'); }} onOpenFile={openGitFile} onReview={scope => { setToolbarExpanded(undefined); onReview?.(scope); }} reviewOpen={reviewOpen} reviewUnavailable={reviewUnavailable} />;
   // distinguish retained output from live frames
   const output = <div className={`log-output${cached ? ' cached' : ''}`}><ServerSwitcher className="output-server-switcher" /><div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'}><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{cached && <div className="log-cached-treatment" aria-hidden="true"><span>Cached view · reconnecting</span></div>}{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!terminalMode && <div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{responseFiles.control}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><div className="page-down-controls">{scrolledUp && <button className="log-control page-arrow back-to-bottom" aria-label="Back to bottom" title="Back to bottom" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(0)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19h14M6 8l6 6 6-6" /></svg></button>}<button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div>}</div></div>;
-  const browserPane = browserUrl === undefined || browserHomeUrl === undefined || onBrowserNavigate === undefined || onBrowserClose === undefined ? null : <ProjectBrowserPane url={browserUrl} homeUrl={browserHomeUrl} worktreeId={worktreeId} onNavigate={onBrowserNavigate} onClose={onBrowserClose} />;
+  const browserPane = browserUrl === undefined || browserHomeUrl === undefined || onBrowserNavigate === undefined || onBrowserClose === undefined ? null : <ProjectBrowserPane url={browserUrl} homeUrl={browserHomeUrl} worktreeId={worktreeId} navigationRequest={browserNavigationRequest} onNavigate={onBrowserNavigate} onClose={onBrowserClose} />;
   return <section className="log-shell"><div className={`log${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{selectionActions}{responseFiles.dialog}{gitFilePreview.dialog}<div className={`log-topbar${toolbarExpanded === undefined ? '' : ' expanded'}`}>{promptSection}{gitSection}</div></section>;
 }
 
@@ -3800,7 +3835,7 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
     if (response.ok) await promptHistory.refresh();
     return response.ok;
   };
-  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} onBrowserNavigate={projectBrowser.navigate} onBrowserClose={projectBrowser.close} terminalMode={swapped} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />{tabBar}<UpstreamRebaseBanner summary={agent.gitUpstream} onRebase={queueRebase} /><PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) }); if (response.ok) await promptHistory.refresh(); return response.ok; }} /><Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} sleeping={sleeping} swapping={swapping} swapped={swapped} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSleep={!active && agent.worktreeId !== undefined ? () => void sleep() : undefined} onSwap={() => void changePaneMode()} onSelectTarget={onSelectTarget} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={omxQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} pushAction={agent.push} stack={agent.stack} review={review} /></article>;
+  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} browserNavigationRequest={projectBrowser.navigationRequest} onBrowserNavigate={projectBrowser.navigate} onBrowserOpen={projectBrowser.openUrl} onBrowserClose={projectBrowser.close} terminalMode={swapped} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />{tabBar}<UpstreamRebaseBanner summary={agent.gitUpstream} onRebase={queueRebase} /><PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) }); if (response.ok) await promptHistory.refresh(); return response.ok; }} /><Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} sleeping={sleeping} swapping={swapping} swapped={swapped} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSleep={!active && agent.worktreeId !== undefined ? () => void sleep() : undefined} onSwap={() => void changePaneMode()} onSelectTarget={onSelectTarget} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={omxQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} pushAction={agent.push} stack={agent.stack} review={review} /></article>;
 }
 
 function launchError(response: Response): Promise<string> {

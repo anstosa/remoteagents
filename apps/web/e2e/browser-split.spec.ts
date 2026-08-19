@@ -17,8 +17,17 @@ test('opens the configured project in a desktop browser split pane', async ({ pa
       onclose: ((event: CloseEvent) => void) | null = null;
       onerror: ((event: Event) => void) | null = null;
       onmessage: ((event: MessageEvent) => void) | null = null;
+      private outputSent = false;
       constructor(readonly url: string | URL) { window.setTimeout(() => { this.readyState = MockWebSocket.OPEN; this.onopen?.(new Event('open')); }); }
-      send() {}
+      // publish one output frame after viewport negotiation
+      send(value: string) {
+        const request: { type?: unknown } = JSON.parse(value);
+        // ignore non-output sockets and later requests
+        if (this.outputSent || !String(this.url).includes('/ws/logs/') || request.type !== 'viewport') return;
+        this.outputSent = true;
+        const text = 'Home https://project.example.com/\nLocal https://project.example.com/from-output?view=files#changed\nExternal https://outside.example.com/resource';
+        window.setTimeout(() => this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ v: 1, type: 'reset', text }) })));
+      }
       close() { this.readyState = MockWebSocket.CLOSED; this.onclose?.(new CloseEvent('close')); }
     }
     Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
@@ -58,6 +67,12 @@ test('opens the configured project in a desktop browser split pane', async ({ pa
   await expect(projectControls.locator('.project-open + .project-browser-toggle + .project-stack-toggle')).toHaveCount(1);
   const split = page.getByRole('button', { name: 'Open project in split view' });
   await expect(split).toBeVisible();
+  const localOutputLink = page.getByRole('link', { name: 'Open https://project.example.com/from-output?view=files#changed' });
+  await expect(localOutputLink).toBeVisible();
+  const closedSplitPopupPromise = page.waitForEvent('popup');
+  await localOutputLink.click();
+  const closedSplitPopup = await closedSplitPopupPromise;
+  await closedSplitPopup.close();
   await split.click();
 
   const browser = page.getByRole('dialog', { name: 'Browser' });
@@ -66,6 +81,20 @@ test('opens the configured project in a desktop browser split pane', async ({ pa
   const preview = page.frameLocator('iframe[title="Project browser"]');
   await expect(preview.locator('main')).toHaveAttribute('data-location', '/');
   await expect(browser.getByRole('button', { name: 'Go to project home' })).toBeDisabled();
+
+  await localOutputLink.click();
+  await expect(preview.locator('main')).toHaveAttribute('data-location', '/from-output?view=files');
+  await expect(browser.getByRole('textbox', { name: 'Browser address' })).toHaveValue('https://project.example.com/from-output?view=files#changed');
+  await browser.getByRole('button', { name: 'Go to project home' }).click();
+  await expect(preview.locator('main')).toHaveAttribute('data-location', '/');
+
+  const externalOutputLink = page.getByRole('link', { name: 'Open https://outside.example.com/resource' }).first();
+  await expect(externalOutputLink).toHaveAttribute('href', 'https://outside.example.com/resource');
+  const popupPromise = page.waitForEvent('popup');
+  await externalOutputLink.click();
+  const popup = await popupPromise;
+  await popup.close();
+  await expect(preview.locator('main')).toHaveAttribute('data-location', '/');
 
   await page.getByRole('button', { name: 'Notes (1)' }).click();
   await page.getByRole('button', { name: 'Keep notes beside the browser.…' }).click();
@@ -211,7 +240,8 @@ test('opens the configured project in a desktop browser split pane', async ({ pa
   await preview.getByRole('link', { name: 'Open unreported page' }).click();
   await expect(preview.locator('main')).toHaveAttribute('data-location', '/unreported');
   await expect(browser.getByRole('button', { name: 'Go to project home' })).toBeVisible();
-  await browser.getByRole('button', { name: 'Go to project home' }).click();
+  const homeOutputLink = page.getByRole('link', { name: 'Open https://project.example.com/', exact: true });
+  await homeOutputLink.click();
   await expect(preview.locator('main')).toHaveAttribute('data-location', '/');
   await expect(browser.getByRole('button', { name: 'Go to project home' })).toBeDisabled();
   await browser.getByRole('button', { name: 'Enter browser fullscreen' }).click();
