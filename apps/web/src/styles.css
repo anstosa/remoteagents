@@ -560,7 +560,7 @@ html.software-keyboard-open .tabs { display: none; }
 .response-file-dialog header .response-file-copy-path { display: inline-flex; width: auto; height: 2rem; padding: .35rem .65rem; border-color: var(--blue); background: transparent; color: var(--blue); font: 700 .7rem var(--font-mono); box-shadow: none; }
 .response-file-dialog header .response-file-copy-path:not(:disabled):hover { background: color-mix(in srgb, var(--blue) 14%, transparent); color: var(--sky); filter: none; }
 .response-file-dialog header svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 2; }
-.response-file-dialog pre { min-width: 0; min-height: 0; overflow: auto; margin: 0; padding: 0; background: var(--crust); color: var(--text); font: .75rem/1.55 var(--font-mono); tab-size: 2; white-space: pre; }
+.response-file-dialog pre { min-width: 0; min-height: 0; overflow: auto; margin: 0; padding: 0; background: var(--crust); color: var(--text); font: var(--output-font-size)/1.55 var(--font-mono); tab-size: 2; white-space: pre; }
 .response-file-dialog pre code { display: grid; width: max-content; min-width: 100%; padding: .8rem 0; font: inherit; }
 .response-file-dialog .syntax-line { display: grid; min-height: 1.55em; grid-template-columns: minmax(3.5rem, auto) minmax(max-content, 1fr); }
 .response-file-dialog .syntax-line-number { position: sticky; left: 0; z-index: 1; padding: 0 .75rem 0 1rem; border-right: 1px solid var(--surface-1); background: var(--crust); color: var(--overlay-0); text-align: right; user-select: none; }

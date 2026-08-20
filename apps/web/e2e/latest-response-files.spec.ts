@@ -89,8 +89,11 @@ test('lists and previews files from the latest assistant response above notes', 
   const dialog = page.getByRole('dialog', { name: 'File preview: apps/web/src/main.tsx' });
   const dialogSurface = dialog.locator(':scope > div');
   const preview = dialog.getByLabel('Contents of apps/web/src/main.tsx');
+  // read shared output sizing
+  const outputFontSize = await page.locator(':root').evaluate(element => getComputedStyle(element).getPropertyValue('--output-font-size').trim());
   await expect(dialogSurface).toHaveCSS('width', '900px');
   await expect(dialogSurface).toHaveCSS('height', '600px');
+  await expect(preview).toHaveCSS('font-size', outputFontSize);
   await expect(preview).toContainText('export const ready = true;');
   await expect(preview.locator('.syntax-line-number')).toHaveText(['1', '2', '3']);
   await expect(preview.locator('.syntax-line-number').first()).toHaveCSS('position', 'sticky');
