@@ -385,6 +385,7 @@ html.software-keyboard-open .tabs { display: none; }
 .note-markdown pre { overflow: auto; border: 1px solid var(--surface-1); border-radius: var(--control-radius); padding: .7rem; background: var(--crust); }
 .note-markdown pre code { padding: 0; background: transparent; color: var(--text); white-space: pre; }
 .note-markdown a { color: var(--blue); text-decoration: underline; text-underline-offset: .16em; }
+.note-markdown del { text-decoration: line-through; }
 .note-markdown hr { margin: 1rem 0; border: 0; border-top: 1px solid var(--surface-1); }
 .note-table-scroll { max-width: 100%; overflow-x: auto; margin: 0 0 .85em; border: 1px solid var(--surface-1); border-radius: var(--control-radius); }
 .note-markdown table { width: 100%; min-width: 34rem; border-collapse: collapse; background: color-mix(in srgb, var(--mantle) 82%, transparent); }

@@ -6,17 +6,18 @@ test('renders saved notes with stable lists, links, selection actions, and infer
     '',
     'Review **carefully** and use [the guide](https://example.com/docs).',
     '',
-    '- First item',
+    '- ~~First item~~',
     '- [x] Verified',
     '',
     '1. First ordered item',
     '',
-    '2. Second ordered item',
+    '2. ~Second ordered item~',
     '   with a continuation line',
     '3. Third ordered item',
-    '   - Nested detail',
+    '   - ~Nested detail~',
     '',
     'Bare links work at https://example.com/bare and www.example.org/docs.',
+    'Keep ~literal tildes~ outside lists.',
     '',
     '> Important',
     '',
@@ -94,6 +95,10 @@ test('renders saved notes with stable lists, links, selection actions, and infer
     'Third ordered itemNested detail'
   ]);
   await expect(preview.locator(':scope > ol > li').nth(2).locator('ul > li')).toHaveText('Nested detail');
+  await expect(preview.locator('li del')).toHaveText(['First item', 'Second ordered item', 'Nested detail']);
+  await expect(preview.locator('del')).toHaveCount(3);
+  await expect(preview.locator('li del').first()).toHaveCSS('text-decoration-line', 'line-through');
+  await expect(preview).toContainText('Keep ~literal tildes~ outside lists.');
   await expect(preview.getByRole('checkbox')).toBeChecked();
   await expect(preview.locator('blockquote')).toHaveText('Important');
   await expect(preview.locator('pre code')).toHaveText('const ready = true;');

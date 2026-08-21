@@ -3,6 +3,7 @@ import { Fragment, type ReactNode, type Ref } from 'react';
 const safeLink = (value: string) => /^(?:https?:|mailto:)/iu.test(value) ? value : undefined;
 const inlinePattern = /(`([^`\n]+)`|\[([^\]]+)\]\(([^)\s]+)\)|\*\*([^*\n]+)\*\*|__([^_\n]+)__|~~([^~\n]+)~~|\*([^*\n]+)\*|_([^_\n]+)_)/gu;
 const bareLinkPattern = /(?:https?:\/\/|mailto:|www\.)[^\s<]+/giu;
+const singleTildeListStrike = /(^|[^~])~([^~\n]+)~(?!~)/gu;
 
 const trimLinkSuffix = (value: string) => {
   let end = value.length;
@@ -163,8 +164,9 @@ const parseList = (lines: string[], start: number, first: ListMarker): { list: P
   return { list, next: index };
 };
 
+// render nested lists with paired single-tilde compatibility
 const renderList = (list: ParsedList, key: string): ReactNode => {
-  const items = list.items.map((item, index) => <li key={`${key}-item-${index}`}>{item.marker.checked !== undefined && <input type="checkbox" checked={item.marker.checked} readOnly tabIndex={-1} />}{inlineMarkdown(item.lines.join(' '), `${key}-item-${index}`)}{item.children.map((child, childIndex) => renderList(child, `${key}-item-${index}-child-${childIndex}`))}</li>);
+  const items = list.items.map((item, index) => <li key={`${key}-item-${index}`}>{item.marker.checked !== undefined && <input type="checkbox" checked={item.marker.checked} readOnly tabIndex={-1} />}{inlineMarkdown(item.lines.join(' ').replace(singleTildeListStrike, '$1~~$2~~'), `${key}-item-${index}`)}{item.children.map((child, childIndex) => renderList(child, `${key}-item-${index}-child-${childIndex}`))}</li>);
   return list.ordered ? <ol key={key} start={list.start}>{items}</ol> : <ul key={key}>{items}</ul>;
 };
 
