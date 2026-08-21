@@ -1,12 +1,12 @@
 import { type CSSProperties, useLayoutEffect, useRef, useState } from 'react';
 
 type ViewportFlyoutPlacement = 'vertical'|'left';
-type ViewportFlyoutOptions = { placement?: ViewportFlyoutPlacement; boundarySelector?: string; boundaryRootSelector?: string };
+type ViewportFlyoutOptions = { placement?: ViewportFlyoutPlacement; boundarySelector?: string; boundaryRootSelector?: string; contentSized?: boolean };
 type ViewportFlyoutStyle = CSSProperties & { '--flyout-available-height'?: string };
 
 // position one portal flyout within the viewport
 export function useViewportFlyout<T extends HTMLElement = HTMLSpanElement>(open: boolean, options: ViewportFlyoutOptions = {}) {
-  const { placement = 'vertical', boundarySelector, boundaryRootSelector } = options;
+  const { placement = 'vertical', boundarySelector, boundaryRootSelector, contentSized = false } = options;
   const anchorRef = useRef<T | null>(null);
   const flyoutRef = useRef<HTMLDivElement | null>(null);
   const [style, setStyle] = useState<ViewportFlyoutStyle>({ visibility: 'hidden' });
@@ -34,7 +34,7 @@ export function useViewportFlyout<T extends HTMLElement = HTMLSpanElement>(open:
         const height = Math.min(flyout.getBoundingClientRect().height, availableHeight);
         const flyoutTop = Math.max(upperEdge, Math.min(top, lowerEdge - height));
         const left = Math.max(leftEdge, anchorLeft - sideWidth - gap);
-        setStyle({ position: 'fixed', top: flyoutTop, left, right: 'auto', bottom: 'auto', width: sideWidth, maxWidth: `${window.innerWidth - margin * 2}px`, '--flyout-available-height': `${availableHeight}px`, visibility: 'visible' });
+        setStyle({ position: 'fixed', top: flyoutTop, left, right: 'auto', bottom: 'auto', width: contentSized ? 'max-content' : sideWidth, maxWidth: `${contentSized ? availableWidth : window.innerWidth - margin * 2}px`, '--flyout-available-height': `${availableHeight}px`, visibility: 'visible' });
         return;
       }
       const below = window.innerHeight - bottom - gap;
@@ -53,6 +53,6 @@ export function useViewportFlyout<T extends HTMLElement = HTMLSpanElement>(open:
     window.addEventListener('resize', position);
     window.addEventListener('scroll', position, true);
     return () => { observer.disconnect(); window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true); };
-  }, [boundaryRootSelector, boundarySelector, open, placement]);
+  }, [boundaryRootSelector, boundarySelector, contentSized, open, placement]);
   return { anchorRef, flyoutRef, style };
 }

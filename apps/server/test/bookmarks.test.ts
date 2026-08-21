@@ -27,9 +27,11 @@ describe('Codex bookmarks', () => {
       const service = new CodexBookmarkService({ file: join(directory, 'bookmarks.json'), codexHome: directory });
       const selected = [{ id: '0198c333-3333-7333-8333-333333333333', relativePath: current.slice(directory.length + 1) }];
 
+      const currentThreadId = await service.currentThreadId(selected);
       const first = await service.bookmarkCurrent('potato', selected);
       const duplicate = await service.bookmarkCurrent('potato', selected);
 
+      expect(currentThreadId).toBe('0198c333-3333-7333-8333-333333333333');
       expect(first).toMatchObject({ threadId: '0198c333-3333-7333-8333-333333333333', title: 'Add shared worktree bookmarks with a useful title' });
       expect(duplicate).toEqual(first);
       await expect(service.list('potato')).resolves.toEqual([first]);
@@ -62,6 +64,10 @@ describe('Codex bookmarks', () => {
       const service = new CodexBookmarkService({ file: join(directory, 'bookmarks.json'), codexHome: directory });
 
       await expect(service.bookmarkCurrent('potato', [
+        { id: '0198c111-1111-7111-8111-111111111111', relativePath: first.slice(directory.length + 1) },
+        { id: '0198c333-3333-7333-8333-333333333333', relativePath: second.slice(directory.length + 1) }
+      ])).resolves.toBeUndefined();
+      await expect(service.currentThreadId([
         { id: '0198c111-1111-7111-8111-111111111111', relativePath: first.slice(directory.length + 1) },
         { id: '0198c333-3333-7333-8333-333333333333', relativePath: second.slice(directory.length + 1) }
       ])).resolves.toBeUndefined();

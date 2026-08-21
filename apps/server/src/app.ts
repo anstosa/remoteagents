@@ -448,11 +448,28 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.get('/api/worktrees/:id/bookmarks', async (request, reply) => {
     controlled(request);
     const id = (request.params as { id: string }).id;
+    const agentId = (request.query as { agentId?: unknown }).agentId;
     const saveKey = worktreeSaveKey(id);
     // require one configured group
     if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    // reject malformed agent context
+    if (agentId !== undefined && (typeof agentId !== 'string' || !agentId)) return reply.code(400).send({ error: 'invalid agent' });
     const stored = await bookmarks.list(saveKey);
-    return stored === undefined ? reply.code(400).send({ error: 'invalid bookmark group' }) : { bookmarks: stored, canResume: configuredWorktree(id)?.resumeCommand !== undefined };
+    // require one valid shared group
+    if (stored === undefined) return reply.code(400).send({ error: 'invalid bookmark group' });
+    let currentBookmarkId: string | undefined;
+    // resolve current state only for the live worktree agent
+    if (typeof agentId === 'string') {
+      const target = await discovery.target(agentId);
+      const targetWorktree = target === undefined ? undefined : configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
+      // ignore stale or mismatched agent identities
+      if (targetWorktree?.id === id) {
+        const sessions = await discovery.sessions(agentId);
+        const threadId = sessions === undefined ? undefined : await bookmarks.currentThreadId(sessions);
+        currentBookmarkId = stored.find(bookmark => bookmark.threadId === threadId)?.id;
+      }
+    }
+    return { bookmarks: stored, canResume: configuredWorktree(id)?.resumeCommand !== undefined, ...(currentBookmarkId === undefined ? {} : { currentBookmarkId }) };
   });
   // bookmark the current top-level Codex chat
   app.post('/api/agents/:id/bookmarks', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {

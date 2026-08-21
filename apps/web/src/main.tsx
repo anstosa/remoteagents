@@ -1917,6 +1917,7 @@ const bookmarkDate = (createdAt: string) => {
 function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
   const [bookmarks, setBookmarks] = useState<CodexBookmark[]>();
   const [canResume, setCanResume] = useState(false);
+  const [currentBookmarkId, setCurrentBookmarkId] = useState<string>();
   const [menuOpen, setMenuOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1925,13 +1926,15 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
   const [renamingId, setRenamingId] = useState<string>();
   const [deletingId, setDeletingId] = useState<string>();
   const [error, setError] = useState('');
+  const loadGeneration = useRef(0);
   const lifecycleSwitching = usePendingOperation(restartOperationKey(worktreeId ?? 'unavailable'));
-  const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen, { placement: 'left', boundarySelector: '.log', boundaryRootSelector: '.agent-view, .worktree-view' });
+  const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen, { placement: 'left', boundarySelector: '.log', boundaryRootSelector: '.agent-view, .worktree-view', contentSized: true });
 
-  // reset state between worktrees
+  // reset state between bookmark contexts
   useEffect(() => {
     setBookmarks(undefined);
     setCanResume(false);
+    setCurrentBookmarkId(undefined);
     setMenuOpen(false);
     setLoading(false);
     setSaving(false);
@@ -1940,7 +1943,7 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
     setRenamingId(undefined);
     setDeletingId(undefined);
     setError('');
-  }, [worktreeId]);
+  }, [agentId, worktreeId]);
 
   // close the portaled menu from outside clicks
   useEffect(() => {
@@ -1957,29 +1960,45 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
   }, [menuOpen]);
 
   // load one shared bookmark group
-  const load = async () => {
+  const load = useCallback(async () => {
     // require one configured worktree
     if (worktreeId === undefined) return undefined;
+    const generation = ++loadGeneration.current;
     setLoading(true);
     setError('');
     try {
-      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/bookmarks`);
+      const query = agentId === undefined ? '' : `?agentId=${encodeURIComponent(agentId)}`;
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/bookmarks${query}`);
       // require a successful list response
       if (!response.ok) throw new Error('bookmark list unavailable');
       const payload: unknown = await response.json();
       // validate every bookmark
-      if (payload === null || typeof payload !== 'object' || !Array.isArray((payload as { bookmarks?: unknown }).bookmarks) || !(payload as { bookmarks: unknown[] }).bookmarks.every(isCodexBookmark) || typeof (payload as { canResume?: unknown }).canResume !== 'boolean') throw new Error('invalid bookmark list');
+      if (payload === null || typeof payload !== 'object' || !Array.isArray((payload as { bookmarks?: unknown }).bookmarks) || !(payload as { bookmarks: unknown[] }).bookmarks.every(isCodexBookmark) || typeof (payload as { canResume?: unknown }).canResume !== 'boolean' || ((payload as { currentBookmarkId?: unknown }).currentBookmarkId !== undefined && typeof (payload as { currentBookmarkId?: unknown }).currentBookmarkId !== 'string')) throw new Error('invalid bookmark list');
       const loaded = (payload as { bookmarks: CodexBookmark[] }).bookmarks;
+      const currentId = (payload as { currentBookmarkId?: string }).currentBookmarkId;
+      // require the selected bookmark to exist in the group
+      if (currentId !== undefined && !loaded.some(bookmark => bookmark.id === currentId)) throw new Error('invalid current bookmark');
+      // ignore a superseded worktree load
+      if (generation !== loadGeneration.current) return undefined;
       setBookmarks(loaded);
       setCanResume((payload as { canResume: boolean }).canResume);
+      setCurrentBookmarkId(currentId);
       return loaded;
     } catch {
-      setError('Unable to load bookmarks');
+      // ignore a superseded worktree failure
+      if (generation === loadGeneration.current) setError('Unable to load bookmarks');
       return undefined;
     } finally {
-      setLoading(false);
+      // retain loading state for the newest request
+      if (generation === loadGeneration.current) setLoading(false);
     }
-  };
+  }, [agentId, worktreeId]);
+
+  // preload the bookmark count for the closed control
+  useEffect(() => {
+    void load();
+    return () => { loadGeneration.current += 1; };
+  }, [load]);
 
   // toggle the bookmark flyout
   const toggle = async () => {
@@ -2004,6 +2023,7 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
       // require one complete bookmark
       if (!isCodexBookmark(saved)) throw new Error('bookmark unavailable');
       setBookmarks(current => [saved, ...(current ?? []).filter(bookmark => bookmark.id !== saved.id)]);
+      setCurrentBookmarkId(saved.id);
     } catch (reason) {
       setError(reason instanceof Error && reason.message ? reason.message : 'Unable to bookmark this chat');
     } finally {
@@ -2027,6 +2047,7 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
       const nextAgentId = payload !== null && typeof payload === 'object' ? (payload as { agentId?: unknown }).agentId : undefined;
       // require the replacement identity
       if (typeof nextAgentId !== 'string') throw new Error(response.ok ? 'The bookmarked chat opened without a replacement agent.' : await launchError(response));
+      setCurrentBookmarkId(bookmark.id);
       const pending = pendingWorktreeLaunches.get(worktreeId);
       // avoid restoring a handoff already confirmed by dashboard push
       if (pending !== undefined) pendingWorktreeLaunches.set(worktreeId, { ...pending, agentId: nextAgentId });
@@ -2079,6 +2100,8 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
       // require one successful delete
       if (!response.ok) throw new Error('Unable to delete bookmark');
       setBookmarks(current => current?.filter(candidate => candidate.id !== bookmark.id));
+      // clear current state with its deleted bookmark
+      if (currentBookmarkId === bookmark.id) setCurrentBookmarkId(undefined);
       // close a deleted rename draft
       if (renameDraft?.id === bookmark.id) setRenameDraft(undefined);
     } catch {
@@ -2093,13 +2116,14 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
   const count = bookmarks?.length ?? 0;
   const label = `Bookmarked chats (${count})`;
   const busy = loading || saving || switchingId !== undefined || renamingId !== undefined || deletingId !== undefined || lifecycleSwitching;
-  const control = <div className="bookmarks-control" ref={anchorRef}><button className={`log-control page-arrow bookmarks-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18l-6-4-6 4V4Z" /></svg>}{count > 0 && <span className="saved-prompts-count bookmarks-count" aria-hidden="true">{count}</span>}</button>{menuOpen && createPortal(<div ref={flyoutRef} className="bookmarks-menu" style={flyoutStyle} aria-label="Bookmarked chats"><button className="log-control bookmark-current" type="button" disabled={agentId === undefined || busy || renameDraft !== undefined} onClick={() => void saveCurrent()}>{saving ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>}<span>{agentId === undefined ? 'Launch an agent to bookmark a chat' : 'Bookmark this chat'}</span></button>{error && <p className="bookmark-error" role="alert">{error}</p>}{!canResume && count > 0 && <p className="bookmark-warning">Exact chat resume is not configured for this worktree.</p>}{bookmarks?.map(bookmark => {
+  const control = <div className="bookmarks-control" ref={anchorRef}><button className={`log-control page-arrow bookmarks-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18l-6-4-6 4V4Z" /></svg>}{count > 0 && <span className="saved-prompts-count bookmarks-count" aria-hidden="true">{count}</span>}</button>{menuOpen && createPortal(<div ref={flyoutRef} className="bookmarks-menu" style={flyoutStyle} aria-label="Bookmarked chats"><button className="log-control bookmark-current" type="button" disabled={agentId === undefined || busy || renameDraft !== undefined || currentBookmarkId !== undefined} onClick={() => void saveCurrent()}>{saving ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>}<span>{agentId === undefined ? 'Launch an agent to bookmark a chat' : 'Bookmark this chat'}</span></button>{error && <p className="bookmark-error" role="alert">{error}</p>}{!canResume && count > 0 && <p className="bookmark-warning">Exact chat resume is not configured for this worktree.</p>}{bookmarks?.map(bookmark => {
     // render one saved chat row
     const editing = renameDraft?.id === bookmark.id;
-    return <div className="bookmark-row" key={bookmark.id}>{editing ? <form className="bookmark-rename-form" onSubmit={event => { event.preventDefault(); void saveRename(); }} onKeyDown={event => {
+    const current = currentBookmarkId === bookmark.id;
+    return <div className={`bookmark-row${current ? ' selected' : ''}`} key={bookmark.id}>{editing ? <form className="bookmark-rename-form" onSubmit={event => { event.preventDefault(); void saveRename(); }} onKeyDown={event => {
       // save or cancel from the keyboard
       if (event.key === 'Escape') { event.preventDefault(); setRenameDraft(undefined); }
-    }}><input aria-label="Chat name" value={renameDraft.title} maxLength={120} autoFocus disabled={renamingId !== undefined} onChange={event => setRenameDraft({ id: bookmark.id, title: event.target.value })} /><button className="log-control bookmark-rename-save" type="submit" disabled={busy || !renameDraft.title.trim()} aria-label="Save chat name" title="Save chat name">{renamingId === bookmark.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>}</button><button className="log-control bookmark-rename-cancel" type="button" disabled={busy} aria-label="Cancel chat rename" title="Cancel" onClick={() => setRenameDraft(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><button className="log-control bookmark-choice" type="button" disabled={busy || renameDraft !== undefined || !canResume} title={canResume ? bookmark.title : 'Exact chat resume is not configured for this worktree'} onClick={() => void switchTo(bookmark)}>{switchingId === bookmark.id ? <span className="spinner" /> : <span className="bookmark-details"><strong>{bookmark.title}</strong><small>{bookmarkDate(bookmark.createdAt)}</small></span>}</button><span className="bookmark-actions"><button className="log-control bookmark-rename" type="button" disabled={busy || renameDraft !== undefined} aria-label={`Rename saved chat: ${bookmark.title}`} title="Rename saved chat" onClick={() => setRenameDraft({ id: bookmark.id, title: bookmark.title })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button><button className="log-control bookmark-delete" type="button" disabled={busy || renameDraft !== undefined} aria-label={`Delete saved chat: ${bookmark.title}`} title="Delete saved chat" onClick={() => void remove(bookmark)}>{deletingId === bookmark.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg>}</button></span></>}</div>;
+    }}><input aria-label="Chat name" value={renameDraft.title} maxLength={120} autoFocus disabled={renamingId !== undefined} onChange={event => setRenameDraft({ id: bookmark.id, title: event.target.value })} /><button className="log-control bookmark-rename-save" type="submit" disabled={busy || !renameDraft.title.trim()} aria-label="Save chat name" title="Save chat name">{renamingId === bookmark.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>}</button><button className="log-control bookmark-rename-cancel" type="button" disabled={busy} aria-label="Cancel chat rename" title="Cancel" onClick={() => setRenameDraft(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><button className="log-control bookmark-choice" type="button" aria-current={current ? 'true' : undefined} disabled={busy || renameDraft !== undefined || !canResume} title={canResume ? bookmark.title : 'Exact chat resume is not configured for this worktree'} onClick={() => void switchTo(bookmark)}>{switchingId === bookmark.id ? <span className="spinner" /> : <span className="bookmark-details"><strong>{bookmark.title}</strong><small>{bookmarkDate(bookmark.createdAt)}</small></span>}</button><span className="bookmark-actions"><button className="log-control bookmark-rename" type="button" disabled={busy || renameDraft !== undefined} aria-label={`Rename saved chat: ${bookmark.title}`} title="Rename saved chat" onClick={() => setRenameDraft({ id: bookmark.id, title: bookmark.title })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button><button className="log-control bookmark-delete" type="button" disabled={busy || renameDraft !== undefined} aria-label={`Delete saved chat: ${bookmark.title}`} title="Delete saved chat" onClick={() => void remove(bookmark)}>{deletingId === bookmark.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg>}</button></span></>}</div>;
   })}</div>, document.body)}</div>;
   return { control };
 }

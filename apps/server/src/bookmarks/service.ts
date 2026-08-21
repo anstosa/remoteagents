@@ -169,10 +169,18 @@ export class CodexBookmarkService {
   async bookmarkCurrent(saveKey: string, sessions: CodexSessionRef[]): Promise<CodexBookmark | undefined> {
     // require one safe group and exact session identities
     if (!validSaveKey(saveKey) || sessions.length === 0 || sessions.some(session => !validSessionRef(session))) return undefined;
-    const session = await this.selectedSession(sessions);
+    const selected = await this.selectedSession(sessions);
     // report unavailable session records
-    if (session === undefined) return undefined;
-    return await this.create(saveKey, { threadId: session.id, title: session.title, createdAt: new Date().toISOString() });
+    if (selected === undefined) return undefined;
+    const title = await sessionTitle(selected.file).catch(() => undefined);
+    return await this.create(saveKey, { threadId: selected.id, title: title ?? `Codex chat ${selected.id.slice(0, 8)}`, createdAt: new Date().toISOString() });
+  }
+
+  // resolve the selected agent's top-level Codex thread
+  async currentThreadId(sessions: CodexSessionRef[]): Promise<string | undefined> {
+    // require exact session identities
+    if (sessions.length === 0 || sessions.some(session => !validSessionRef(session))) return undefined;
+    return (await this.selectedSession(sessions))?.id;
   }
 
   // rename one saved chat
@@ -205,7 +213,7 @@ export class CodexBookmarkService {
   }
 
   // locate the selected pane's one top-level rollout
-  private async selectedSession(sessions: CodexSessionRef[]): Promise<{ id: string; title: string } | undefined> {
+  private async selectedSession(sessions: CodexSessionRef[]): Promise<{ id: string; file: string } | undefined> {
     const matches: Array<{ id: string; file: string }> = [];
     // inspect only rollouts held open by the selected pane
     for (const session of sessions) {
@@ -216,9 +224,7 @@ export class CodexBookmarkService {
     }
     // fail closed on missing or ambiguous pane identity
     if (matches.length !== 1) return undefined;
-    const [match] = matches;
-    const title = await sessionTitle(match.file).catch(() => undefined);
-    return { id: match.id, title: title ?? `Codex chat ${match.id.slice(0, 8)}` };
+    return matches[0];
   }
 
   // serialize bookmark mutations

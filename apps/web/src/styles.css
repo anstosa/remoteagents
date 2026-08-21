@@ -331,6 +331,8 @@ html.software-keyboard-open .tabs { display: none; }
 .bookmarks-menu .bookmark-current { display: flex; width: 100%; min-height: 2.6rem; align-items: center; gap: .55rem; justify-content: center; border-color: color-mix(in srgb, var(--mauve) 68%, var(--surface-1)); color: var(--mauve); }
 .bookmarks-menu .bookmark-current svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 2; }
 .bookmark-row { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) auto; overflow: hidden; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: color-mix(in srgb, var(--surface-0) 52%, transparent); }
+.bookmark-row.selected { border-color: color-mix(in srgb, var(--mauve) 72%, var(--surface-1)); background: color-mix(in srgb, var(--mauve) 12%, var(--surface-0)); box-shadow: inset .18rem 0 var(--mauve); }
+.bookmark-row.selected .bookmark-details strong { color: var(--mauve); }
 .bookmarks-menu .bookmark-choice { display: flex; width: 100%; min-width: 0; min-height: 3.25rem; align-items: center; overflow: hidden; border: 0; border-radius: 0; padding: .5rem .6rem; background: transparent; text-align: left; }
 .bookmark-details { display: grid; width: max-content; max-width: 100%; min-width: 0; gap: .2rem; }
 .bookmark-details strong { overflow: hidden; color: var(--text); font-size: .72rem; line-height: 1.35; overflow-wrap: anywhere; white-space: normal; }
