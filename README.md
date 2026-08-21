@@ -32,7 +32,7 @@ pull-request state without losing the terminal-native workflow underneath.
 | **Live output** | Stream the active pane, page through history, open detected links, copy selected output, answer guided questions, and temporarily switch to an interactive terminal. |
 | **Prompt workflow** | Use per-worktree prompt history, arrow-key recall, saved drafts, attachments, skill/slash-command autocomplete, press-and-hold voice dictation, and persistent queued prompt management. |
 | **Worktree context** | Show branch and full Git status, changed filenames, pull-request checks and review issues, GitHub Actions, project links, and trusted stack commands. |
-| **Working notes** | Keep autosaved Markdown notes beside output, copy them, save the latest response, or send a note back as a prompt. |
+| **Bookmarks and notes** | Bookmark Codex chats for exact resume, and keep autosaved Markdown notes beside output. Both can be isolated or shared across configured worktrees. |
 | **Guided review** | Generate an AI-narrated tour of active Working or All PR implementation changes, visit or skip each logical step, and send consolidated feedback to the agent. |
 | **Operations** | Install as a browser app, enable notifications, review stale runtime cleanup targets, and deploy with Docker Compose plus an optional Cloudflare Tunnel. |
 | **Conversational control** | Connect ChatGPT through scoped remote MCP or use the built-in OpenAI Realtime voice dialog to inspect and direct the same agents. |
@@ -96,7 +96,7 @@ flowchart LR
 The server discovers tmux panes, verifies that their process trees belong to
 Codex/OMX, and streams bounded viewport captures to the browser. Prompts and
 terminal input are sent only to the pane selected through a freshly validated
-agent target. Persistent state—notes, prompt history, saved prompts, queues,
+agent target. Persistent state—chat bookmarks, notes, prompt history, saved prompts, queues,
 device names, and optional push subscriptions—stays in local JSON files.
 
 ## Requirements
@@ -185,6 +185,8 @@ and customized prompt actions.
       "label": "My project",
       "path": "/absolute/path/to/project",
       "command": "codex",
+      "resumeCommand": "codex resume {threadId} -C .",
+      "saveKey": "my-project",
       "pinned": true,
       "newTask": "detach && new {taskId}",
       "push": { "label": "Finish and PR", "prompt": "$finish" }

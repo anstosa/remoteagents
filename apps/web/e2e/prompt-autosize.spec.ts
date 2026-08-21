@@ -61,13 +61,55 @@ test('caps the prompt at half the viewport and scrolls overflowing content', asy
   expect(dimensions.overflowY).toBe('auto');
 });
 
-// verify contextual prompt glyphs
-test('enables contextual ligatures in the prompt composer', async ({ page }) => {
-  await page.setContent('<section class="prompt"><textarea aria-label="Prompt">-&gt; -- =&gt;</textarea></section>');
-  await page.addStyleTag({ path: 'src/styles.css' });
+// preserve prompt ligature shaping
+test('uses the upstream ligature font in the prompt composer', async ({ page }) => {
+  await page.route('**/api/**', route => {
+    const url = new URL(route.request().url());
+    // serve one controlled browser
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    // serve one idle agent
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready' }], worktrees: [] } });
+    // disable optional browser services
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  await page.goto('/');
 
   const prompt = page.getByRole('textbox', { name: 'Prompt' });
+  await expect(prompt).toHaveCSS('font-family', /JetBrains Mono Prompt/u);
   await expect(prompt).toHaveCSS('font-variant-ligatures', 'contextual');
   await expect(prompt).toHaveCSS('font-feature-settings', '"calt"');
   await expect(prompt).toHaveCSS('text-rendering', 'optimizelegibility');
+  const loadedFaces = await prompt.evaluate(async () => (await document.fonts.load('400 16px "JetBrains Mono Prompt"', '.. ... -> -> ')).length);
+  expect(loadedFaces).toBe(1);
+  const promptBounds = await prompt.boundingBox();
+  expect(promptBounds).not.toBeNull();
+  // require one visible prompt region
+  if (promptBounds === null) throw new Error('prompt bounds unavailable');
+  // compare shaping without unrelated border antialiasing
+  const promptTextScreenshot = () => page.screenshot({ clip: { x: promptBounds.x + 4, y: promptBounds.y + 4, width: 160, height: 36 } });
+
+  await prompt.pressSequentially('...');
+  await prompt.evaluate(input => input.blur());
+  const typedDots = await promptTextScreenshot();
+  await prompt.fill('...');
+  await prompt.evaluate(input => input.blur());
+  const settledDots = await promptTextScreenshot();
+  expect(typedDots.equals(settledDots)).toBe(true);
+
+  await prompt.fill('');
+  await prompt.pressSequentially('-> ');
+  await prompt.evaluate(input => input.blur());
+  const typedArrow = await promptTextScreenshot();
+  await prompt.fill('-> ');
+  await prompt.evaluate(input => input.blur());
+  const settledArrow = await promptTextScreenshot();
+  expect(typedArrow.equals(settledArrow)).toBe(true);
+  await prompt.evaluate(input => { input.style.fontFeatureSettings = '"calt" 0'; });
+  const unligatedArrow = await promptTextScreenshot();
+  // prove the contextual arrow glyph is visible
+  expect(settledArrow.equals(unligatedArrow)).toBe(false);
+  await expect(prompt).toHaveValue('-> ');
 });

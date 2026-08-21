@@ -41,6 +41,30 @@ describe('LaunchService', () => {
     expect(calls[1]).toEqual(['enter', '%4']);
   });
 
+  it('resumes a bookmarked Codex conversation through its explicit template', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false, command: 'codex', resumeCommand: 'codex resume {threadId} -C .' };
+    const calls: string[][] = [];
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', pane, buffer, command]); return true; }, enter: async (_socket: SocketRef, pane: string) => { calls.push(['enter', pane]); return true; } };
+    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [socket] }, panes as never);
+
+    await expect(service.resumeConversation(worktree.id, '0198c333-3333-7333-8333-333333333333')).resolves.toBe(true);
+    await expect(service.resumeConversation(worktree.id, 'bad; rm -rf /')).resolves.toBe(false);
+
+    expect(calls[0]).toMatchObject(['paste', '%4', expect.stringMatching(/^rac-launch-/), 'codex resume 0198c333-3333-7333-8333-333333333333 -C .']);
+    expect(calls[1]).toEqual(['enter', '%4']);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('rejects exact resume before launch when no resume template is configured', async () => {
+    const worktree: Worktree = { id: 'legacy', label: 'Legacy', path: '/worktrees/legacy', identity: '/worktrees/legacy', available: true, pinned: false, launch: { program: '/bin/echo', args: ['{worktreePath}'] } };
+    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [] });
+
+    expect(service.canResumeConversation(worktree.id)).toBe(false);
+    await expect(service.resumeConversation(worktree.id, '0198c333-3333-7333-8333-333333333333')).resolves.toBe(false);
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it('marks home-launched agents as Scratch without replacing their tmux title', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });

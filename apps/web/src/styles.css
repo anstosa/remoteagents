@@ -7,6 +7,14 @@
 }
 
 @font-face {
+  font-family: "JetBrains Mono Prompt";
+  src: url("/fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
   font-family: "JetBrainsMono Nerd Font";
   src: url("/fonts/JetBrainsMonoNerdFont-Italic.ttf") format("truetype");
   font-style: italic;
@@ -314,6 +322,32 @@ html.software-keyboard-open .tabs { display: none; }
 .notes-menu .log-control { display: block; width: 100%; min-height: 2.6rem; overflow: hidden; padding: .55rem .65rem; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .notes-menu .new-note { border-color: color-mix(in srgb, var(--yellow) 65%, var(--surface-1)); color: var(--yellow); }
 .notes-menu .save-latest-response { border-color: color-mix(in srgb, var(--blue) 72%, var(--surface-1)); color: var(--blue); }
+.bookmarks-control { position: relative; z-index: 4; }
+.bookmarks-toggle { overflow: visible; }
+.bookmarks-toggle.active { border-color: var(--mauve); color: var(--mauve); }
+.bookmarks-toggle > svg { fill: color-mix(in srgb, currentColor 20%, transparent); stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
+.bookmarks-toggle .spinner { width: 1rem; height: 1rem; }
+.bookmarks-menu { position: absolute; z-index: var(--layer-popover); top: 0; right: calc(100% + .45rem); display: grid; width: max-content; max-width: calc(100vw - 4.5rem); max-height: min(24rem, 70vh, var(--flyout-available-height, 100vh)); gap: .35rem; overflow: auto; padding: .4rem; border: 1px solid color-mix(in srgb, var(--mauve) 48%, var(--surface-1)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 94%, transparent); box-shadow: 0 .8rem 2rem #11111bcc; backdrop-filter: blur(10px); }
+.bookmarks-menu .bookmark-current { display: flex; width: 100%; min-height: 2.6rem; align-items: center; gap: .55rem; justify-content: center; border-color: color-mix(in srgb, var(--mauve) 68%, var(--surface-1)); color: var(--mauve); }
+.bookmarks-menu .bookmark-current svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 2; }
+.bookmark-row { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) auto; overflow: hidden; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: color-mix(in srgb, var(--surface-0) 52%, transparent); }
+.bookmarks-menu .bookmark-choice { display: flex; width: 100%; min-width: 0; min-height: 3.25rem; align-items: center; overflow: hidden; border: 0; border-radius: 0; padding: .5rem .6rem; background: transparent; text-align: left; }
+.bookmark-details { display: grid; width: max-content; max-width: 100%; min-width: 0; gap: .2rem; }
+.bookmark-details strong { overflow: hidden; color: var(--text); font-size: .72rem; line-height: 1.35; overflow-wrap: anywhere; white-space: normal; }
+.bookmark-details small { color: var(--subtext-0); font: 600 .6rem var(--font-mono); }
+.bookmark-actions { display: grid; grid-auto-flow: column; grid-auto-columns: 2.4rem; align-content: stretch; border-left: 1px solid var(--surface-1); }
+.bookmarks-menu .bookmark-actions button { display: grid; width: 2.4rem; min-height: 2.6rem; padding: 0; place-items: center; border: 0; border-radius: 0; background: transparent; }
+.bookmarks-menu .bookmark-actions button + button { border-left: 1px solid var(--surface-1); }
+.bookmarks-menu .bookmark-rename { color: var(--mauve); }
+.bookmarks-menu .bookmark-delete { color: var(--red); }
+.bookmark-actions svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.bookmark-rename-form { display: grid; min-width: 0; min-height: 3.25rem; grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr) 2.4rem 2.4rem; }
+.bookmark-rename-form input { min-width: 0; border: 0; border-radius: 0; padding: .5rem .6rem; background: color-mix(in srgb, var(--surface-0) 82%, transparent); color: var(--text); font-size: .72rem; }
+.bookmarks-menu .bookmark-rename-form button { display: grid; width: 2.4rem; min-height: 3.25rem; padding: 0; place-items: center; border: 0; border-left: 1px solid var(--surface-1); border-radius: 0; background: transparent; color: var(--mauve); }
+.bookmarks-menu .bookmark-rename-form button:last-child { color: var(--subtext-0); }
+.bookmark-rename-form svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.bookmark-error, .bookmark-warning { margin: 0; padding: .35rem .5rem; color: var(--red); font: 650 .64rem/1.35 var(--font-mono); }
+.bookmark-warning { color: var(--yellow); }
 .note-pane { position: relative; z-index: 1; display: grid; min-width: 0; min-height: 0; grid-template-rows: auto minmax(0, 1fr); border-top: 1px solid color-mix(in srgb, var(--yellow) 52%, var(--surface-1)); background: linear-gradient(160deg, color-mix(in srgb, var(--mantle) 97%, var(--yellow) 3%), var(--crust)); box-shadow: inset 0 1px #ffffff0a; animation: note-pane-appear .15s ease-out; }
 .note-pane.expanded { width: 100%; height: 100%; border: 0; }
 .note-pane header { display: flex; min-width: 0; min-height: 2.8rem; align-items: center; gap: .55rem; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; padding: .4rem .55rem; border-bottom: 1px solid var(--surface-1); color: var(--yellow); scrollbar-width: thin; -webkit-overflow-scrolling: touch; }
@@ -417,7 +451,7 @@ html.software-keyboard-open .tabs { display: none; }
 .log-status.sleeping { --log-status-color: var(--blue); color: var(--crust); }
 .prompt { display: grid; min-width: 0; gap: .375rem; }
 .prompt textarea.voice-listening, .prompt textarea.voice-listening:focus-visible { border-color: var(--red); outline: 0; box-shadow: inset 0 0 0 1px var(--red); animation: voice-listening 1s ease-in-out infinite alternate; }
-.prompt textarea { min-height: 4.5rem; max-height: calc(var(--app-height, 100dvh) * .5); overflow-y: auto; resize: none; padding: .45rem .55rem; line-height: 1.35; font-variant-ligatures: contextual; font-feature-settings: "calt" 1; text-rendering: optimizeLegibility; }
+.prompt textarea { min-height: 4.5rem; max-height: calc(var(--app-height, 100dvh) * .5); overflow-y: auto; resize: none; padding: .45rem .55rem; line-height: 1.35; font-family: "JetBrains Mono Prompt", var(--font-mono); font-variant-ligatures: contextual; font-feature-settings: "calt" 1; text-rendering: optimizeLegibility; }
 .prompt-composer { position: relative; }
 .prompt-composer textarea { display: block; width: 100%; }
 .command-menu { position: absolute; right: 0; bottom: calc(100% + .35rem); left: 0; z-index: var(--layer-popover); display: grid; max-height: 15rem; overflow: auto; padding: .3rem; border: 1px solid color-mix(in srgb, var(--lavender) 55%, var(--surface-1)); border-radius: var(--control-radius); background: var(--mantle); box-shadow: 0 .7rem 1.8rem #11111bcc; }

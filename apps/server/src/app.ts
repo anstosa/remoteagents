@@ -55,8 +55,9 @@ import { federationForwarder, verifyFederationRequest } from './integrations/fed
 import { IntegrationControlService } from './integrations/control/index.js';
 import { ServerAdminService } from './server-admin/service.js';
 import { CodexAccountService, safeAccountId, type AccountRateLimitWindow, type AccountSummary } from './accounts/index.js';
+import { CodexBookmarkService } from './bookmarks/service.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; skills?: SkillService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'> };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; bookmarks?: CodexBookmarkService; skills?: SkillService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'> };
 const cookieName = '__Host-rac';
 // bound full history scans
 const logMetadataRefreshMs = 30_000;
@@ -78,7 +79,7 @@ export function logFrame(last: string, value: string, refreshMetadata = false): 
 }
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, config.worktrees, promptHistory, queuedPrompts, savedPrompts); const notes = deps.notes ?? new WorktreeNoteService(); const skills = deps.skills ?? new SkillService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = new WorktreeCommandService(config); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.worktrees, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews])); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, config.worktrees, new CodexExecReviewTourGenerator()); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, config.worktrees, promptHistory, queuedPrompts, savedPrompts); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new CodexBookmarkService(); const skills = deps.skills ?? new SkillService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = new WorktreeCommandService(config); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.worktrees, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews])); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, config.worktrees, new CodexExecReviewTourGenerator()); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
   const accounts = deps.accounts ?? new CodexAccountService();
   const paneViewports = new PaneViewportCoordinator();
   // retain sleeping tabs during this server session
@@ -426,18 +427,70 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return { targets };
   });
   const configuredWorktree = (id: string) => config.worktrees.find(worktree => worktree.id === id);
+  // resolve one configured shared persistence group
+  const worktreeSaveKey = (id: string) => {
+    const worktree = configuredWorktree(id);
+    return worktree === undefined ? undefined : worktree.saveKey ?? worktree.id;
+  };
   // resolve the observed branch for one configured worktree
   const reviewBranch = async (id: string): Promise<string | undefined> => {
     const discovered = await discovery.dashboard(config.worktrees);
     return discovered.agents.find(agent => agent.worktreeId === id)?.branch ?? discovered.worktrees.find(worktree => worktree.id === id)?.branch;
   };
-  app.get('/api/worktrees/:id/notes', async (request, reply) => { controlled(request); const id = (request.params as { id: string }).id; if (configuredWorktree(id) === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const stored = await notes.list(id); return stored === undefined ? reply.code(400).send({ error: 'invalid worktree' }) : { notes: stored }; });
+  app.get('/api/worktrees/:id/notes', async (request, reply) => { controlled(request); const id = (request.params as { id: string }).id; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const stored = await notes.list(saveKey); return stored === undefined ? reply.code(400).send({ error: 'invalid worktree' }) : { notes: stored }; });
   // create an optionally titled note
-  app.post('/api/worktrees/:id/notes', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const title = body(request).title; if (configuredWorktree(id) === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0'))) return reply.code(400).send({ error: 'invalid note title' }); const note = await notes.create(id, title as string | undefined); return note === undefined ? reply.code(409).send({ error: 'note limit reached' }) : reply.code(201).send(note); });
-  app.put('/api/worktrees/:id/notes/:noteId', { bodyLimit: 128_000 }, async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const text = body(request).text; if (configuredWorktree(id) === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof text !== 'string' || text.length > 30_000 || text.includes('\0')) return reply.code(400).send({ error: 'invalid note' }); const note = await notes.update(id, noteId, text); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
+  app.post('/api/worktrees/:id/notes', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const saveKey = worktreeSaveKey(id); const title = body(request).title; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0'))) return reply.code(400).send({ error: 'invalid note title' }); const note = await notes.create(saveKey, title as string | undefined); return note === undefined ? reply.code(409).send({ error: 'note limit reached' }) : reply.code(201).send(note); });
+  app.put('/api/worktrees/:id/notes/:noteId', { bodyLimit: 128_000 }, async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); const text = body(request).text; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof text !== 'string' || text.length > 30_000 || text.includes('\0')) return reply.code(400).send({ error: 'invalid note' }); const note = await notes.update(saveKey, noteId, text); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
   // rename one note
-  app.patch('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const title = body(request).title; if (configuredWorktree(id) === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid note title' }); const note = await notes.rename(id, noteId, title); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
-  app.delete('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; if (configuredWorktree(id) === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const note = await notes.delete(id, noteId); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
+  app.patch('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); const title = body(request).title; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid note title' }); const note = await notes.rename(saveKey, noteId, title); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
+  app.delete('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const note = await notes.delete(saveKey, noteId); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
+  // list one worktree's shared chat bookmarks
+  app.get('/api/worktrees/:id/bookmarks', async (request, reply) => {
+    controlled(request);
+    const id = (request.params as { id: string }).id;
+    const saveKey = worktreeSaveKey(id);
+    // require one configured group
+    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const stored = await bookmarks.list(saveKey);
+    return stored === undefined ? reply.code(400).send({ error: 'invalid bookmark group' }) : { bookmarks: stored, canResume: configuredWorktree(id)?.resumeCommand !== undefined };
+  });
+  // bookmark the current top-level Codex chat
+  app.post('/api/agents/:id/bookmarks', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+    controlled(request, true);
+    const id = (request.params as { id: string }).id;
+    const target = await discovery.target(id);
+    const worktree = target === undefined ? undefined : configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
+    // require one configured live agent
+    if (target === undefined || worktree === undefined) return reply.code(404).send({ error: 'configured agent unavailable' });
+    const sessions = await discovery.sessions(id);
+    // require one exact pane-to-session mapping
+    if (sessions === undefined || sessions.length === 0) return reply.code(409).send({ error: 'Unable to identify this agent\'s Codex chat.' });
+    const bookmark = await bookmarks.bookmarkCurrent(worktree.saveKey ?? worktree.id, sessions);
+    return bookmark === undefined ? reply.code(409).send({ error: 'This agent has an ambiguous or unavailable Codex chat.' }) : reply.code(201).send(bookmark);
+  });
+  // rename one shared chat bookmark
+  app.patch('/api/worktrees/:id/bookmarks/:bookmarkId', async (request, reply) => {
+    controlled(request, true);
+    const { id, bookmarkId } = request.params as { id: string; bookmarkId: string };
+    const saveKey = worktreeSaveKey(id);
+    const title = body(request).title;
+    // require one configured group
+    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    // require one bounded display title
+    if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid bookmark title' });
+    const renamed = await bookmarks.rename(saveKey, bookmarkId, title);
+    return renamed === undefined ? reply.code(404).send({ error: 'bookmark unavailable' }) : renamed;
+  });
+  // remove one shared chat bookmark
+  app.delete('/api/worktrees/:id/bookmarks/:bookmarkId', async (request, reply) => {
+    controlled(request, true);
+    const { id, bookmarkId } = request.params as { id: string; bookmarkId: string };
+    const saveKey = worktreeSaveKey(id);
+    // require one configured group
+    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const removed = await bookmarks.remove(saveKey, bookmarkId);
+    return removed === undefined ? reply.code(404).send({ error: 'bookmark unavailable' }) : removed;
+  });
   // preview one configured worktree file
   app.post('/api/worktrees/:id/file-preview', async (request, reply) => {
     controlled(request, true);
@@ -654,7 +707,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   };
   type IdleRestartResult = { status: 'restarted'; worktreeId: string; agentId: string } | { status: 'skipped'|'failed'; worktreeId: string; reason: 'unavailable'|'not-idle'|'launch-failed'|'timed-out'; error: string };
   // restart one still-idle configured agent
-  const restartIdleConfiguredAgent = async (id: string, expectedWorktreeId?: string, expectedMutationVersion?: number, expectedMutationGeneration?: number): Promise<IdleRestartResult> => {
+  const restartIdleConfiguredAgent = async (id: string, expectedWorktreeId?: string, expectedMutationVersion?: number, expectedMutationGeneration?: number, threadId?: string): Promise<IdleRestartResult> => {
     const releaseRestart = await prompts.acquireRestartLock(id, expectedMutationVersion, expectedMutationGeneration);
     // reject overlapping prompt and lifecycle work
     if (releaseRestart === undefined) return { status: 'skipped', worktreeId: expectedWorktreeId ?? 'unknown', reason: 'not-idle', error: 'The worktree is no longer idle.' };
@@ -672,12 +725,15 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       const queued = await queuedPrompts.list(promptStorageKeyForAgent(observed)).then(prompts => prompts?.length).catch(() => undefined);
       // preserve queued or unreadable prompt work
       if (queued === undefined || queued > 0) return { status: 'skipped', worktreeId, reason: 'not-idle', error: 'The worktree has queued prompts.' };
+      // validate exact resume before closing the current agent
+      if (threadId !== undefined && !launch.canResumeConversation(worktree.id)) return { status: 'failed', worktreeId, reason: 'launch-failed', error: 'Exact chat resume is not configured for this worktree.' };
       const before = new Set(current.agents.map(agent => agent.id));
       // require the original agent to close
       if (!await prompts.close(id)) return { status: 'skipped', worktreeId, reason: 'unavailable', error: 'The worktree agent could not be closed.' };
       sleepingWorktrees.add(worktree.id);
+      const resumed = threadId === undefined ? await launch.resume(worktree.id) : await launch.resumeConversation(worktree.id, threadId);
       // require the resume alias to start
-      if (!await launch.resume(worktree.id)) {
+      if (!resumed) {
         await dashboardUpdates.refresh().catch(() => undefined);
         return { status: 'failed', worktreeId, reason: 'launch-failed', error: 'The agent closed, but the resume alias could not restart it.' };
       }
@@ -796,6 +852,43 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.delete('/api/codex/accounts/login/:id', async (request, reply) => {
     controlled(request, true);
     return await accounts.cancelAddAccount((request.params as { id: string }).id) ? reply.code(204).send() : reply.code(404).send({ error: 'ChatGPT login unavailable.' });
+  });
+  // switch one worktree into an exact bookmarked Codex chat
+  app.post('/api/worktrees/:id/bookmarks/:bookmarkId/switch', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+    controlled(request, true);
+    const { id, bookmarkId } = request.params as { id: string; bookmarkId: string };
+    const worktree = configuredWorktree(id);
+    // require one configured worktree
+    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const bookmark = await bookmarks.get(worktree.saveKey ?? worktree.id, bookmarkId);
+    // require one bookmark in the configured group
+    if (bookmark === undefined) return reply.code(404).send({ error: 'bookmark unavailable' });
+    // fail before any destructive handoff
+    if (!launch.canResumeConversation(worktree.id)) return reply.code(409).send({ error: 'Exact chat resume is not configured for this worktree.' });
+    const selectionMutationGeneration = prompts.mutationGeneration();
+    const current = await discovery.dashboard(config.worktrees, true);
+    const open = current.agents.filter(agent => agent.worktreeId === worktree.id);
+    // avoid an ambiguous destructive handoff
+    if (open.length > 1) return reply.code(409).send({ error: 'Close duplicate worktree agents before switching chats.' });
+    const activeAgent = open[0];
+    // restart one existing idle agent safely
+    if (activeAgent !== undefined) {
+      const result = await restartIdleConfiguredAgent(activeAgent.id, worktree.id, prompts.mutationVersion(activeAgent.id), selectionMutationGeneration, bookmark.threadId);
+      // return one successful replacement
+      if (result.status === 'restarted') return reply.code(201).send({ agentId: result.agentId });
+      // distinguish stale targets from active work
+      if (result.status === 'skipped') return reply.code(result.reason === 'unavailable' ? 404 : 409).send({ error: result.error });
+      return reply.code(result.reason === 'timed-out' ? 504 : 409).send({ error: result.error });
+    }
+    const before = new Set(current.agents.map(agent => agent.id));
+    // launch inactive worktrees directly into the bookmark
+    if (!await launch.resumeConversation(worktree.id, bookmark.threadId)) return reply.code(409).send({ error: 'Could not resume the bookmarked chat.' });
+    const agent = await waitForAgent(before, worktree.id);
+    // surface slow or failed resume handoffs
+    if (agent === undefined) return reply.code(504).send({ error: `The bookmarked chat started, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
+    sleepingWorktrees.delete(worktree.id);
+    await dashboardUpdates.refresh().catch(() => undefined);
+    return reply.code(201).send({ agentId: agent.id });
   });
   // restart one idle configured agent through the host resume alias
   app.post('/api/agents/:id/restart', async (request, reply) => {

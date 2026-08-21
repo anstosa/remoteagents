@@ -45,8 +45,9 @@ Mount read-only agent worktrees read-only.
    mount if needed. Set an optional `newTask` command to expose **New Task**
    for that worktree; `{taskId}` is replaced with an 8-character URL-safe
    random task ID. The command runs only when the working copy is clean and
-   fully pushed. Set `HOST_UID` in `.env` if the host tmux server is not
-   owned by UID 1000.
+   fully pushed. Set the same optional `saveKey` on related worktrees when
+   they should share chat bookmarks and sticky notes. Set `HOST_UID` in `.env`
+   if the host tmux server is not owned by UID 1000.
 3. Copy `config/cloudflared.example.yml` to `config/cloudflared.yml`. Set the
    tunnel UUID and preserve the browser-facing hostname in each `hostname` and
    `httpHostHeader`. Route both project previews and the console to port 8787;
@@ -105,8 +106,8 @@ normal zsh configuration before running the configured command. Configure
 commands with an alias name directly:
 
 ```json
-{ "id": "main", "path": "/workspace", "command": "codex" }
-{ "id": "research", "path": "/workspace/research", "command": "alex" }
+{ "id": "main", "path": "/workspace", "command": "codex", "resumeCommand": "codex resume {threadId} -C ." }
+{ "id": "research", "path": "/workspace/research", "command": "alex", "resumeCommand": "alex resume {threadId} -C ." }
 ```
 
 All console-managed Codex launch paths, including worktree launch, scratch

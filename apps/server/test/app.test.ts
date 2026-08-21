@@ -635,7 +635,7 @@ describe('prompt history API', () => {
 describe('worktree notes API', () => {
   it('lists, creates, updates, and deletes notes for the configured worktree', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, command: 'codex' };
+    const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', saveKey: 'potato', available: true, command: 'codex' };
     const stored: Array<{ id: string; text: string; title?: string }> = [{ id: 'note-identifier-001', text: 'Existing note' }];
     const keys: string[] = [];
     const notes = {
@@ -665,7 +665,7 @@ describe('worktree notes API', () => {
       expect(renamed.json()).toEqual({ id: 'note-identifier-002', text: 'Autosaved note', title: 'Release checklist' });
       expect(deleted.json()).toEqual({ id: 'note-identifier-001', text: 'Existing note' });
       expect(missing.statusCode).toBe(404);
-      expect(keys).toEqual(['list:cora', 'create:cora:Assistant response', 'update:cora:note-identifier-002', 'rename:cora:note-identifier-002', 'delete:cora:note-identifier-001']);
+      expect(keys).toEqual(['list:potato', 'create:potato:Assistant response', 'update:potato:note-identifier-002', 'rename:potato:note-identifier-002', 'delete:potato:note-identifier-001']);
     } finally { await notesApp.close(); }
   }, 15_000);
 });

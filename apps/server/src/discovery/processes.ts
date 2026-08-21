@@ -1,4 +1,5 @@
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, readlink } from 'node:fs/promises';
+import type { CodexSessionRef } from '../domain/models.js';
 const allowed = /^(codex|omx)(?:\.js)?$/i;
 const codex = /^codex(?:\.js)?$/i;
 const node = /^(?:node|nodejs)(?:\.exe)?$/i;
@@ -23,10 +24,43 @@ export function isHudWatcherCommand(cmdline: string): boolean {
 export type HostProcess = { pid: number; parentPid: number; startTime: string; comm: string; cmdline: string };
 export interface HostProcessInspector { listProcesses(): Promise<HostProcess[]>; }
 
-export interface ProcessInspector { hasCodexDescendant(pid: number): Promise<boolean>; }
+export interface ProcessInspector { hasCodexDescendant(pid: number): Promise<boolean>; sessionsForDescendants?(pid: number): Promise<CodexSessionRef[]>; }
 export class ProcInspector implements ProcessInspector {
   private readonly procRoot = process.env.RAC_HOST_PROC ?? '/proc';
   async hasCodexDescendant(root: number): Promise<boolean> { const pending = [root], seen = new Set<number>(); while (pending.length && seen.size < 256) { const pid = pending.pop()!; if (seen.has(pid)) continue; seen.add(pid); try { const comm = (await readFile(`${this.procRoot}/${pid}/comm`, 'utf8')).trim(); const cmdline = await readFile(`${this.procRoot}/${pid}/cmdline`, 'utf8'); if (isAgentCommand(comm, cmdline)) return true; const children = (await readFile(`${this.procRoot}/${pid}/task/${pid}/children`, 'utf8')).trim().split(/\s+/).filter(Boolean).map(Number); for (const child of children) if (Number.isInteger(child) && child > 0) pending.push(child); } catch { /* exited/unreadable is not an agent */ } } return false; }
+
+  // collect exact rollout identities held by one pane tree
+  async sessionsForDescendants(root: number): Promise<CodexSessionRef[]> {
+    const pending = [root];
+    const seen = new Set<number>();
+    const sessions = new Map<string, CodexSessionRef>();
+    let inspectedDescriptors = 0;
+    // bound process and descriptor traversal
+    while (pending.length > 0 && seen.size < 256 && inspectedDescriptors < 4_096) {
+      const pid = pending.pop()!;
+      // inspect each live process once
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      try {
+        const children = (await readFile(`${this.procRoot}/${pid}/task/${pid}/children`, 'utf8')).trim().split(/\s+/u).filter(Boolean).map(Number);
+        // retain live descendants
+        for (const child of children) if (Number.isInteger(child) && child > 0) pending.push(child);
+        const descriptors = await readdir(`${this.procRoot}/${pid}/fd`);
+        // read bounded open-file targets
+        for (const descriptor of descriptors) {
+          if (inspectedDescriptors >= 4_096) break;
+          inspectedDescriptors += 1;
+          const target = await readlink(`${this.procRoot}/${pid}/fd/${descriptor}`).catch(() => '');
+          const match = /(?:^|\/)(sessions\/[^\0]{1,3800}\/rollout-[^/]*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl)$/iu.exec(target);
+          // retain exact Codex session filenames only
+          if (match?.[1] !== undefined && match[2] !== undefined && !match[1].split('/').includes('..')) sessions.set(`${match[2]}:${match[1]}`, { id: match[2], relativePath: match[1] });
+        }
+      } catch {
+        // ignore exited or unreadable processes
+      }
+    }
+    return [...sessions.values()];
+  }
 
   async listProcesses(): Promise<HostProcess[]> {
     const entries = await readdir(this.procRoot, { withFileTypes: true }).catch(() => []);

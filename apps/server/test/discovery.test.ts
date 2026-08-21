@@ -137,6 +137,26 @@ describe('DiscoveryService dashboard', () => {
     expect(dashboard.worktrees).toEqual([]);
   });
 
+  it('resolves open Codex sessions from the selected agent pane only', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const finder = { find: async () => [socket] };
+    const tmux = { listPanes: async () => [
+      { paneId: '%1', sessionId: '$0', pid: 123, path: '/host/cora', title: 'Cora' },
+      { paneId: '%2', sessionId: '$1', pid: 456, path: '/host/cora', title: 'Cora copy' }
+    ] };
+    const processes = {
+      hasCodexDescendant: async () => true,
+      sessionsForDescendants: async (pid: number) => pid === 123
+        ? [{ id: '0198c111-1111-7111-8111-111111111111', relativePath: 'sessions/2026/08/20/rollout-first-0198c111-1111-7111-8111-111111111111.jsonl' }]
+        : [{ id: '0198c333-3333-7333-8333-333333333333', relativePath: 'sessions/2026/08/20/rollout-second-0198c333-3333-7333-8333-333333333333.jsonl' }]
+    };
+    const service = new DiscoveryService(finder, tmux as never, processes);
+    const agents = await service.refresh();
+
+    await expect(service.sessions(agents[0]!.id)).resolves.toEqual([{ id: '0198c111-1111-7111-8111-111111111111', relativePath: 'sessions/2026/08/20/rollout-first-0198c111-1111-7111-8111-111111111111.jsonl' }]);
+    await expect(service.sessions(agents[1]!.id)).resolves.toEqual([{ id: '0198c333-3333-7333-8333-333333333333', relativePath: 'sessions/2026/08/20/rollout-second-0198c333-3333-7333-8333-333333333333.jsonl' }]);
+  });
+
   it('preserves a custom tmux display label for launched scratch agents', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const finder = { find: async () => [socket] };

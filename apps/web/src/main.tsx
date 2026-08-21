@@ -101,6 +101,14 @@ const isQueuedPrompt = (value: unknown): value is QueuedPrompt => value !== null
   && typeof (value as QueuedPrompt).createdAt === 'string'
   && ((value as QueuedPrompt).attachments === undefined || Array.isArray((value as QueuedPrompt).attachments) && (value as QueuedPrompt).attachments!.every(attachment => attachment !== null && typeof attachment === 'object' && typeof attachment.name === 'string' && Number.isInteger(attachment.size) && attachment.size >= 0));
 type WorktreeNote = { id: string; text: string; title?: string };
+type CodexBookmark = { id: string; threadId: string; title: string; createdAt: string };
+// validate one bookmark response
+const isCodexBookmark = (value: unknown): value is CodexBookmark => value !== null
+  && typeof value === 'object'
+  && typeof (value as CodexBookmark).id === 'string'
+  && typeof (value as CodexBookmark).threadId === 'string'
+  && typeof (value as CodexBookmark).title === 'string'
+  && typeof (value as CodexBookmark).createdAt === 'string';
 type AssistantFile = { path: string; size: number };
 type AssistantFilePreview = AssistantFile & { truncated: boolean } & ({ binary: true } | { binary: false; content: string });
 type InstanceIcon = 'terminal'|'potato'|'heart';
@@ -1897,6 +1905,205 @@ function useLatestAssistantFiles(agentId: string, message?: string) {
   return { control, ...filePreview };
 }
 
+// format one saved bookmark time
+const bookmarkDate = (createdAt: string) => {
+  const date = new Date(createdAt);
+  // fall back for malformed legacy data
+  if (!Number.isFinite(date.getTime())) return 'Saved chat';
+  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(date);
+};
+
+// manage shared Codex chat bookmarks
+function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
+  const [bookmarks, setBookmarks] = useState<CodexBookmark[]>();
+  const [canResume, setCanResume] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [switchingId, setSwitchingId] = useState<string>();
+  const [renameDraft, setRenameDraft] = useState<{ id: string; title: string }>();
+  const [renamingId, setRenamingId] = useState<string>();
+  const [deletingId, setDeletingId] = useState<string>();
+  const [error, setError] = useState('');
+  const lifecycleSwitching = usePendingOperation(restartOperationKey(worktreeId ?? 'unavailable'));
+  const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen, { placement: 'left', boundarySelector: '.log', boundaryRootSelector: '.agent-view, .worktree-view' });
+
+  // reset state between worktrees
+  useEffect(() => {
+    setBookmarks(undefined);
+    setCanResume(false);
+    setMenuOpen(false);
+    setLoading(false);
+    setSaving(false);
+    setSwitchingId(undefined);
+    setRenameDraft(undefined);
+    setRenamingId(undefined);
+    setDeletingId(undefined);
+    setError('');
+  }, [worktreeId]);
+
+  // close the portaled menu from outside clicks
+  useEffect(() => {
+    // bind only while visible
+    if (!menuOpen) return;
+    const close = (event: MouseEvent) => {
+      const target = event.target as Node;
+      // preserve both portal boundaries
+      if (anchorRef.current?.contains(target) || flyoutRef.current?.contains(target)) return;
+      setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [menuOpen]);
+
+  // load one shared bookmark group
+  const load = async () => {
+    // require one configured worktree
+    if (worktreeId === undefined) return undefined;
+    setLoading(true);
+    setError('');
+    try {
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/bookmarks`);
+      // require a successful list response
+      if (!response.ok) throw new Error('bookmark list unavailable');
+      const payload: unknown = await response.json();
+      // validate every bookmark
+      if (payload === null || typeof payload !== 'object' || !Array.isArray((payload as { bookmarks?: unknown }).bookmarks) || !(payload as { bookmarks: unknown[] }).bookmarks.every(isCodexBookmark) || typeof (payload as { canResume?: unknown }).canResume !== 'boolean') throw new Error('invalid bookmark list');
+      const loaded = (payload as { bookmarks: CodexBookmark[] }).bookmarks;
+      setBookmarks(loaded);
+      setCanResume((payload as { canResume: boolean }).canResume);
+      return loaded;
+    } catch {
+      setError('Unable to load bookmarks');
+      return undefined;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // toggle the bookmark flyout
+  const toggle = async () => {
+    // close an open menu
+    if (menuOpen) return setMenuOpen(false);
+    await load();
+    // expose either bookmarks or the load error
+    setMenuOpen(true);
+  };
+
+  // save the current Codex chat
+  const saveCurrent = async () => {
+    // require one live agent
+    if (agentId === undefined || saving) return;
+    setSaving(true);
+    setError('');
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(agentId)}/bookmarks`, { method: 'POST' });
+      // surface bounded server diagnostics
+      if (!response.ok) throw new Error(await launchError(response));
+      const saved: unknown = await response.json();
+      // require one complete bookmark
+      if (!isCodexBookmark(saved)) throw new Error('bookmark unavailable');
+      setBookmarks(current => [saved, ...(current ?? []).filter(bookmark => bookmark.id !== saved.id)]);
+    } catch (reason) {
+      setError(reason instanceof Error && reason.message ? reason.message : 'Unable to bookmark this chat');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // resume one exact saved chat
+  const switchTo = async (bookmark: CodexBookmark) => {
+    // serialize worktree chat switches
+    if (worktreeId === undefined || switchingId !== undefined || !canResume) return;
+    const operationKey = restartOperationKey(worktreeId);
+    // share lifecycle state with the worktree tab
+    if (!beginPendingOperation(operationKey)) return;
+    pendingWorktreeLaunches.set(worktreeId, { operationKey, ...(agentId === undefined ? {} : { sourceAgentId: agentId }) });
+    setSwitchingId(bookmark.id);
+    setError('');
+    try {
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/bookmarks/${encodeURIComponent(bookmark.id)}/switch`, { method: 'POST' });
+      const payload: unknown = response.ok ? await response.json() : undefined;
+      const nextAgentId = payload !== null && typeof payload === 'object' ? (payload as { agentId?: unknown }).agentId : undefined;
+      // require the replacement identity
+      if (typeof nextAgentId !== 'string') throw new Error(response.ok ? 'The bookmarked chat opened without a replacement agent.' : await launchError(response));
+      const pending = pendingWorktreeLaunches.get(worktreeId);
+      // avoid restoring a handoff already confirmed by dashboard push
+      if (pending !== undefined) pendingWorktreeLaunches.set(worktreeId, { ...pending, agentId: nextAgentId });
+      else setPendingOperation(operationKey, false);
+      setMenuOpen(false);
+    } catch (reason) {
+      pendingWorktreeLaunches.delete(worktreeId);
+      setPendingOperation(operationKey, false);
+      setError(reason instanceof Error && reason.message ? reason.message : 'Unable to switch chats');
+    } finally {
+      setSwitchingId(undefined);
+    }
+  };
+
+  // persist one saved chat title
+  const saveRename = async () => {
+    const title = renameDraft?.title.trim();
+    // require one valid rename operation
+    if (worktreeId === undefined || renameDraft === undefined || renamingId !== undefined || !title) return;
+    const bookmark = bookmarks?.find(candidate => candidate.id === renameDraft.id);
+    // close unchanged names without writing
+    if (bookmark?.title === title) {
+      setRenameDraft(undefined);
+      return;
+    }
+    setRenamingId(renameDraft.id);
+    setError('');
+    try {
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/bookmarks/${encodeURIComponent(renameDraft.id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title }) });
+      const renamed: unknown = response.ok ? await response.json() : undefined;
+      // require one complete saved chat
+      if (!isCodexBookmark(renamed)) throw new Error('bookmark rename unavailable');
+      setBookmarks(current => current?.map(candidate => candidate.id === renamed.id ? renamed : candidate));
+      setRenameDraft(undefined);
+    } catch {
+      setError('Unable to rename saved chat');
+    } finally {
+      setRenamingId(undefined);
+    }
+  };
+
+  // delete one saved chat link
+  const remove = async (bookmark: CodexBookmark) => {
+    // serialize bookmark deletes
+    if (worktreeId === undefined || deletingId !== undefined) return;
+    setDeletingId(bookmark.id);
+    setError('');
+    try {
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/bookmarks/${encodeURIComponent(bookmark.id)}`, { method: 'DELETE' });
+      // require one successful delete
+      if (!response.ok) throw new Error('Unable to delete bookmark');
+      setBookmarks(current => current?.filter(candidate => candidate.id !== bookmark.id));
+      // close a deleted rename draft
+      if (renameDraft?.id === bookmark.id) setRenameDraft(undefined);
+    } catch {
+      setError('Unable to delete bookmark');
+    } finally {
+      setDeletingId(undefined);
+    }
+  };
+
+  // hide bookmarks for scratch agents
+  if (worktreeId === undefined) return { control: null };
+  const count = bookmarks?.length ?? 0;
+  const label = `Bookmarked chats (${count})`;
+  const busy = loading || saving || switchingId !== undefined || renamingId !== undefined || deletingId !== undefined || lifecycleSwitching;
+  const control = <div className="bookmarks-control" ref={anchorRef}><button className={`log-control page-arrow bookmarks-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18l-6-4-6 4V4Z" /></svg>}{count > 0 && <span className="saved-prompts-count bookmarks-count" aria-hidden="true">{count}</span>}</button>{menuOpen && createPortal(<div ref={flyoutRef} className="bookmarks-menu" style={flyoutStyle} aria-label="Bookmarked chats"><button className="log-control bookmark-current" type="button" disabled={agentId === undefined || busy || renameDraft !== undefined} onClick={() => void saveCurrent()}>{saving ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>}<span>{agentId === undefined ? 'Launch an agent to bookmark a chat' : 'Bookmark this chat'}</span></button>{error && <p className="bookmark-error" role="alert">{error}</p>}{!canResume && count > 0 && <p className="bookmark-warning">Exact chat resume is not configured for this worktree.</p>}{bookmarks?.map(bookmark => {
+    // render one saved chat row
+    const editing = renameDraft?.id === bookmark.id;
+    return <div className="bookmark-row" key={bookmark.id}>{editing ? <form className="bookmark-rename-form" onSubmit={event => { event.preventDefault(); void saveRename(); }} onKeyDown={event => {
+      // save or cancel from the keyboard
+      if (event.key === 'Escape') { event.preventDefault(); setRenameDraft(undefined); }
+    }}><input aria-label="Chat name" value={renameDraft.title} maxLength={120} autoFocus disabled={renamingId !== undefined} onChange={event => setRenameDraft({ id: bookmark.id, title: event.target.value })} /><button className="log-control bookmark-rename-save" type="submit" disabled={busy || !renameDraft.title.trim()} aria-label="Save chat name" title="Save chat name">{renamingId === bookmark.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>}</button><button className="log-control bookmark-rename-cancel" type="button" disabled={busy} aria-label="Cancel chat rename" title="Cancel" onClick={() => setRenameDraft(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><button className="log-control bookmark-choice" type="button" disabled={busy || renameDraft !== undefined || !canResume} title={canResume ? bookmark.title : 'Exact chat resume is not configured for this worktree'} onClick={() => void switchTo(bookmark)}>{switchingId === bookmark.id ? <span className="spinner" /> : <span className="bookmark-details"><strong>{bookmark.title}</strong><small>{bookmarkDate(bookmark.createdAt)}</small></span>}</button><span className="bookmark-actions"><button className="log-control bookmark-rename" type="button" disabled={busy || renameDraft !== undefined} aria-label={`Rename saved chat: ${bookmark.title}`} title="Rename saved chat" onClick={() => setRenameDraft({ id: bookmark.id, title: bookmark.title })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button><button className="log-control bookmark-delete" type="button" disabled={busy || renameDraft !== undefined} aria-label={`Delete saved chat: ${bookmark.title}`} title="Delete saved chat" onClick={() => void remove(bookmark)}>{deletingId === bookmark.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg>}</button></span></>}</div>;
+  })}</div>, document.body)}</div>;
+  return { control };
+}
+
 // manage persistent worktree notes
 function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistantMessage?: string, latestAssistantMessageOverflows = false, onPromptHistoryChanged?: () => void | Promise<void>, promptHistory: PromptHistoryEntry[] = []) {
   const [notes, setNotes] = useState<WorktreeNote[]>();
@@ -2812,6 +3019,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
   const [selectionActive, setSelectionActive] = useState(false);
   const [selectionToolbar, setSelectionToolbar] = useState<{ text: string; top: number }>();
   const copyOutputSelectionRef = useRef<(value: string) => Promise<void>>(copyText);
+  const worktreeBookmarks = useWorktreeBookmarks(worktreeId, id);
   const worktreeNotes = useWorktreeNotes(worktreeId, id, latestAssistantMessage, latestAssistantMessageOverflows, refreshHistory, history);
   const responseFiles = useLatestAssistantFiles(id, latestAssistantMessage);
   const gitFilePreview = useFilePreview(`/api/agents/${encodeURIComponent(id)}/file-preview`);
@@ -3530,7 +3738,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
   const promptSection = !terminalMode ? <div className="toolbar-prompt-group">{historyToggle}{visibleLastPrompt !== undefined && <button ref={lastPromptRef} className="toolbar-prompt" type="button" aria-label="Last prompt" aria-expanded={historyOpen} title={visibleLastPrompt} onClick={toggleHistory}><span className="toolbar-prompt-text">{visibleLastPrompt}</span></button>}</div> : null;
   const gitSection = <GitStatus branch={branch} summary={gitStatus} prSummary={gitPrStatus} expanded={toolbarExpanded === 'git'} onToggle={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'git' ? undefined : 'git'); }} onOpenFile={openGitFile} onReview={scope => { setToolbarExpanded(undefined); onReview?.(scope); }} reviewOpen={reviewOpen} reviewUnavailable={reviewUnavailable} />;
   // distinguish retained output from live frames
-  const output = <div className={`log-output${cached ? ' cached' : ''}`}><ServerSwitcher className="output-server-switcher" /><div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'}><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{cached && <div className="log-cached-treatment" aria-hidden="true"><span>Cached view · reconnecting</span></div>}{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!terminalMode && <div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{responseFiles.control}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><div className="page-down-controls">{scrolledUp && <button className="log-control page-arrow back-to-bottom" aria-label="Back to bottom" title="Back to bottom" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(0)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19h14M6 8l6 6 6-6" /></svg></button>}<button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div>}</div></div>;
+  const output = <div className={`log-output${cached ? ' cached' : ''}`}><ServerSwitcher className="output-server-switcher" /><div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'}><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{cached && <div className="log-cached-treatment" aria-hidden="true"><span>Cached view · reconnecting</span></div>}{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!terminalMode && <div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{responseFiles.control}{worktreeBookmarks.control}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><div className="page-down-controls">{scrolledUp && <button className="log-control page-arrow back-to-bottom" aria-label="Back to bottom" title="Back to bottom" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(0)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19h14M6 8l6 6 6-6" /></svg></button>}<button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div>}</div></div>;
   const browserPane = browserUrl === undefined || browserHomeUrl === undefined || onBrowserNavigate === undefined || onBrowserClose === undefined ? null : <ProjectBrowserPane url={browserUrl} homeUrl={browserHomeUrl} worktreeId={worktreeId} navigationRequest={browserNavigationRequest} onNavigate={onBrowserNavigate} onClose={onBrowserClose} />;
   return <section className="log-shell"><div className={`log${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{selectionActions}{responseFiles.dialog}{gitFilePreview.dialog}<div className={`log-topbar${toolbarExpanded === undefined ? '' : ' expanded'}`}>{promptSection}{gitSection}</div></section>;
 }
@@ -3905,6 +4113,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperatio
   const sleeping = worktree.sleeping === true;
   const processing = launching || restarting || waking || startingNewTask;
   const presentation = inactiveWorktreePresentation(worktree.label, { startingNewTask, restarting, waking, launching, sleeping });
+  const worktreeBookmarks = useWorktreeBookmarks(worktree.id);
   const worktreeNotes = useWorktreeNotes(worktree.id);
   const projectBrowser = useProjectBrowser(worktree.projectUrl, worktree.id);
   const filePreview = useFilePreview(`/api/worktrees/${encodeURIComponent(worktree.id)}/file-preview`);
@@ -3961,7 +4170,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperatio
       }
     }
   };
-  const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className={`log-loading inactive${sleeping ? ' sleeping' : ''}`} role={processing || sleeping ? 'status' : undefined} aria-label={presentation.ariaLabel}>{processing ? <span className="spinner" /> : sleeping ? <svg className="sleeping-agent-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg> : null}<strong>{presentation.heading}</strong><span>{presentation.detail}</span>{sleeping && !processing && <button className="wake-agent" type="button" disabled={!worktree.available} onClick={() => void start()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>}</div><span className={`status log-status ${processing ? 'connecting' : sleeping ? 'sleeping' : 'inactive'}`}>{presentation.status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div>;
+  const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className={`log-loading inactive${sleeping ? ' sleeping' : ''}`} role={processing || sleeping ? 'status' : undefined} aria-label={presentation.ariaLabel}>{processing ? <span className="spinner" /> : sleeping ? <svg className="sleeping-agent-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg> : null}<strong>{presentation.heading}</strong><span>{presentation.detail}</span>{sleeping && !processing && <button className="wake-agent" type="button" disabled={!worktree.available} onClick={() => void start()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>}</div><span className={`status log-status ${processing ? 'connecting' : sleeping ? 'sleeping' : 'inactive'}`}>{presentation.status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeBookmarks.control}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div>;
   const browserPane = projectBrowser.url === undefined || projectBrowser.homeUrl === undefined ? null : <ProjectBrowserPane url={projectBrowser.url} homeUrl={projectBrowser.homeUrl} worktreeId={worktree.id} onNavigate={projectBrowser.navigate} onClose={projectBrowser.close} />;
   return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{filePreview.dialog}<div className={`log-topbar${gitExpanded ? ' expanded' : ''}`}><GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} expanded={gitExpanded} onToggle={() => setGitExpanded(value => !value)} onOpenFile={openGitFile} reviewUnavailable="Launch agent to review" /></div></section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} /><PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions"><span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} />{!sleeping && <button className="queue" disabled={!worktree.available || processing} onClick={() => void start()}>{processing && <span className="spinner" />}{presentation.buttonLabel}</button>}</div></section></article>;
 }

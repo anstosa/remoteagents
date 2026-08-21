@@ -80,6 +80,22 @@ export class LaunchService {
     return await this.launchWorktree(worktreeId, 'resume');
   }
 
+  // resume one exact bookmarked Codex conversation
+  async resumeConversation(worktreeId: string, threadId: string): Promise<boolean> {
+    // keep the host command free of shell input
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(threadId)) return false;
+    const worktree = this.config.worktrees.find(candidate => candidate.id === worktreeId);
+    // require one explicit exact-resume capability
+    if (worktree?.resumeCommand === undefined) return false;
+    const command = worktree.resumeCommand.replace('{threadId}', threadId);
+    return await this.launchWorktree(worktreeId, command);
+  }
+
+  // expose exact-resume support before destructive lifecycle work
+  canResumeConversation(worktreeId: string): boolean {
+    return this.config.worktrees.some(worktree => worktree.id === worktreeId && worktree.resumeCommand !== undefined);
+  }
+
   // start one worktree with its configured or requested command
   private async launchWorktree(worktreeId: string, requestedCommand?: string): Promise<boolean> {
     const worktree = this.config.worktrees.find(candidate => candidate.id === worktreeId);

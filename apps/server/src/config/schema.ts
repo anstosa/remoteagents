@@ -33,7 +33,7 @@ const sourceSchema = z.object({
   newAgentCommand: command.default('codex'),
   integrations: integrationFeatures,
   launch: launchSchema.optional(),
-  worktrees: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), label: z.string().max(120).optional(), path: z.string().min(1), hostPath: z.string().startsWith('/').optional(), pinned: z.boolean().default(false), port: z.number().int().min(1).max(65535).optional(), hostname: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/).optional(), command: command.optional(), launch: launchSchema.optional(), commands: stackCommands.optional(), newTask: command.optional(), push: pushAction }).strict()).min(1).max(100)
+  worktrees: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), label: z.string().max(120).optional(), path: z.string().min(1), hostPath: z.string().startsWith('/').optional(), saveKey: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/).optional(), pinned: z.boolean().default(false), port: z.number().int().min(1).max(65535).optional(), hostname: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/).optional(), command: command.optional(), resumeCommand: command.optional(), launch: launchSchema.optional(), commands: stackCommands.optional(), newTask: command.optional(), push: pushAction }).strict()).min(1).max(100)
 }).strict();
 export type ConfigInput = z.input<typeof sourceSchema>;
 export type RemoteServer = { url: URL };
@@ -50,6 +50,11 @@ function canonicalOrigin(value: string, label = 'publicOrigin'): URL {
 }
 function validateNewTask(template: string): void {
   if (/\{(?!taskId\})/.test(template)) throw new Error('unknown new task placeholder');
+}
+// require one exact thread substitution
+function validateResumeCommand(template: string): void {
+  const placeholders = template.match(/\{threadId\}/gu) ?? [];
+  if (placeholders.length !== 1 || /\{(?!threadId\})/u.test(template)) throw new Error('resume command must contain exactly one {threadId} placeholder');
 }
 function validateTemplate(template: LaunchTemplate): void {
   if (!template.program.startsWith('/')) throw new Error('launch program must be absolute');
@@ -84,12 +89,13 @@ export async function validateConfig(input: unknown): Promise<ValidatedConfig> {
     const path = await realpath(raw.path); const info = await stat(path); if (!info.isDirectory()) throw new Error(`worktree ${raw.id} is not a directory`);
     if (raw.command !== undefined && raw.launch !== undefined) throw new Error(`worktree ${raw.id} cannot define both command and launch`);
     if (raw.newTask !== undefined) validateNewTask(raw.newTask);
+    if (raw.resumeCommand !== undefined) validateResumeCommand(raw.resumeCommand);
     const launch = raw.command === undefined ? raw.launch ?? parsed.launch : undefined;
     if (raw.command === undefined) { if (!launch) throw new Error(`worktree ${raw.id} must define command or launch`); validateTemplate(launch); await access(launch.program, constants.X_OK); }
     const identity = await gitRoot(path); if (identities.has(identity)) throw new Error('duplicate worktree identity'); identities.add(identity);
     if ((raw.port === undefined) !== (raw.hostname === undefined)) throw new Error(`worktree ${raw.id} must define both port and hostname`);
     const projectUrl = raw.hostname === undefined ? undefined : `https://${raw.hostname}`;
-    worktrees.push({ id: raw.id, label: raw.label ?? raw.id, path, identity, hostPath: raw.hostPath === undefined ? undefined : resolve(raw.hostPath), available: true, pinned: raw.pinned, command: raw.command, launch, projectUrl, projectPort: raw.port, push: raw.push, ...(raw.commands === undefined ? {} : { commands: raw.commands as StackCommands }), ...(raw.newTask === undefined ? {} : { newTask: raw.newTask }) });
+    worktrees.push({ id: raw.id, label: raw.label ?? raw.id, path, identity, hostPath: raw.hostPath === undefined ? undefined : resolve(raw.hostPath), saveKey: raw.saveKey ?? raw.id, available: true, pinned: raw.pinned, command: raw.command, ...(raw.resumeCommand === undefined ? {} : { resumeCommand: raw.resumeCommand }), launch, projectUrl, projectPort: raw.port, push: raw.push, ...(raw.commands === undefined ? {} : { commands: raw.commands as StackCommands }), ...(raw.newTask === undefined ? {} : { newTask: raw.newTask }) });
   }
   return { listen: { host: parsed.listen.host as '127.0.0.1'|'::1', port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, newAgentCommand: parsed.newAgentCommand, integrations: parsed.integrations, worktrees };
 }

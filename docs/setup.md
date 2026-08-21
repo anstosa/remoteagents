@@ -43,7 +43,8 @@ paths and project-local tooling:
 {
   "id": "my-project",
   "path": "/absolute/path/to/project",
-  "command": "codex"
+  "command": "codex",
+  "resumeCommand": "codex resume {threadId} -C ."
 }
 ```
 
@@ -52,6 +53,11 @@ loading the operator's `~/.zshenv` and `~/.zshrc` (which may in turn source
 `~/.bash_aliases`). This keeps console-launched worktree, scratch,
 change-directory, and new-task sessions on the same Codex/OMX launch policy as
 operator-opened zsh sessions.
+
+Set `resumeCommand` to enable exact saved-chat switching. It must contain one
+`{threadId}` placeholder. The console validates this capability before closing
+an open agent, so generic commands and legacy launch templates are never
+guessed to support Codex resume syntax.
 
 An optional `newTask` command adds a **New Task** action for a worktree. It
 uses `{taskId}` for an 8-character URL-safe random ID and is enabled only when
@@ -72,6 +78,25 @@ prompt per worktree with `push`:
 The legacy `launch` template remains supported for existing configurations. A
 worktree must define either `command` or `launch` (or inherit the top-level
 `launch`); it cannot define both.
+
+## Shared bookmarks and notes
+
+Chat bookmarks and sticky notes use the worktree `id` as their persistence
+group by default. Set the same optional `saveKey` on multiple worktrees to
+share both lists. This is useful for related Git worktrees that should resume
+the same Codex chats and use the same project notes:
+
+```json
+{ "id": "cora", "path": "/worktrees/cora", "command": "codex", "saveKey": "potato" }
+{ "id": "owen", "path": "/worktrees/owen", "command": "codex", "saveKey": "potato" }
+{ "id": "dave", "path": "/worktrees/dave", "command": "codex", "saveKey": "potato" }
+```
+
+Keep `saveKey` omitted for ordinary worktrees that should retain independent
+bookmark and note groups. Changing a deployed worktree's key selects another
+group; it does not move entries from the previous group automatically. Save keys
+may contain letters, numbers, underscores, and hyphens and are limited to 80
+characters.
 
 The default server listener is `127.0.0.1:8787`; `/healthz` is loopback-only and reveals only `{ "ok": true }`. Do not put passwords, prompts, session cookies, CSRF tokens, or WebSocket tickets in configuration or logs.
 

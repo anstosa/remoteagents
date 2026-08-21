@@ -7,7 +7,7 @@ import { run } from '../tmux/command.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { ProcInspector, type ProcessInspector } from './processes.js';
 import { PullRequestService } from '../pull-requests/service.js';
-import type { Agent, Dashboard, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, Pane, SocketRef, Worktree } from '../domain/models.js';
+import type { Agent, CodexSessionRef, Dashboard, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, Pane, SocketRef, Worktree } from '../domain/models.js';
 import { classifyReviewPath } from '../git/change-classification.js';
 
 export interface SocketFinder { find(): Promise<SocketRef[]>; }
@@ -316,6 +316,7 @@ const omxWorkerStartup = /(?:^|\/)\.omx\/state\/team\/[^/]+\/runtime\/worker-\d+
 export const isOmxWorkerPane = (pane: Pane) => omxWorkerWorktree.test(pane.path) || omxWorkerStartup.test(pane.startCommand ?? '');
 export class DiscoveryService {
   private generation = 0; private snapshot: Agent[] = [];
+  private panePids = new Map<string, number>();
   private readonly serverStartedAt = Date.now();
   private refreshedAt = 0;
   private refreshInFlight?: Promise<Agent[]>;
@@ -359,12 +360,16 @@ export class DiscoveryService {
   private async discover(): Promise<Agent[]> {
     const sockets = await this.sockets(true);
     const panes = (await Promise.all(sockets.map(async (socket) => (await this.tmux.listPanes(socket)).map(pane => ({ ...pane, socket }))))).flat();
+    const panePids = new Map<string, number>();
     const agents: Agent[] = (await Promise.all(panes.filter(pane => !isOmxWorkerPane(pane)).map(async (pane): Promise<Agent | undefined> => {
       if (!await this.processes.hasCodexDescendant(pane.pid)) return undefined;
       const workspace = await workspaceRoot(pane.path);
-      return { id: `${pane.socket.fingerprint}:${pane.paneId}`, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, workspace, title: pane.title, ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }) };
+      const id = `${pane.socket.fingerprint}:${pane.paneId}`;
+      panePids.set(id, pane.pid);
+      return { id, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, workspace, title: pane.title, ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }) };
     }))).filter((agent): agent is Agent => agent !== undefined);
     this.snapshot = agents;
+    this.panePids = panePids;
     this.refreshedAt = Date.now();
     this.generation++;
     return agents;
@@ -380,6 +385,15 @@ export class DiscoveryService {
     if (agent === undefined) return undefined;
     const socket = (await this.sockets()).find(candidate => candidate.fingerprint === agent!.socketFingerprint);
     return socket === undefined ? undefined : { agent, socket };
+  }
+
+  // resolve session files held by one selected agent pane
+  async sessions(id: string): Promise<CodexSessionRef[] | undefined> {
+    const target = await this.target(id);
+    const pid = target === undefined ? undefined : this.panePids.get(target.agent.id);
+    // require exact pane and process inspection support
+    if (pid === undefined || this.processes.sessionsForDescendants === undefined) return undefined;
+    return await this.processes.sessionsForDescendants(pid);
   }
   // build or reuse one dashboard view
   async dashboard(worktrees: Worktree[], force = false): Promise<Dashboard> {
