@@ -519,7 +519,8 @@ html.software-keyboard-open .tabs { display: none; }
 .prompt-actions .saved-prompts-toggle { position: relative; display: grid; flex: 0 0 2.6rem; width: 2.6rem; overflow: visible; border-left: 0; border-radius: 0 var(--control-radius) var(--control-radius) 0; padding: 0; place-items: center; }
 .saved-prompts-toggle svg { width: .9rem; height: .9rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.2; }
 .saved-prompts-count { position: absolute; top: -.4rem; right: -.35rem; display: grid; min-width: 1.05rem; height: 1.05rem; padding: 0 .24rem; place-items: center; border: 1px solid var(--mantle); border-radius: 999px; background: var(--mauve); color: var(--crust); font: 800 .6rem/1 var(--font-mono); box-shadow: 0 .2rem .55rem #11111b99; pointer-events: none; }
-.more-menu.saved-prompts-panel { display: grid; width: calc(100vw - 1rem); max-width: calc(100vw - 1rem); max-height: min(34rem, calc(100vh - 1rem)); overflow: hidden; }
+/* keep the draft list as the shrinking scroll track */
+.more-menu.saved-prompts-panel { display: grid; width: calc(100vw - 1rem); max-width: calc(100vw - 1rem); max-height: min(34rem, calc(100vh - 1rem)); grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
 .saved-prompts-list { display: grid; width: 100%; min-height: 0; overflow: auto; }
 .saved-prompt-item { display: grid; width: 100%; min-width: 0; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; border-bottom: 1px solid color-mix(in srgb, var(--surface-1) 72%, transparent); }
 .saved-prompt-item:last-child { border-bottom: 0; }

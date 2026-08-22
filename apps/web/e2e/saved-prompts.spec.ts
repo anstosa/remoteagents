@@ -128,6 +128,49 @@ test('closes the saved prompts flyout after selecting one of several drafts', as
   await expect(page.getByRole('textbox', { name: 'Prompt' })).toHaveValue('First saved draft');
 });
 
+// keep long saved-prompt lists within one scrollable flyout
+test('scrolls a long saved prompt list within the viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 500 });
+  // build enough drafts to exceed the viewport
+  const saved = Array.from({ length: 30 }, (_, index) => ({ id: `saved-prompt-${index}`, text: `Saved draft ${index + 1}` }));
+  // serve one long saved-prompt list
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    // restore one active test session
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    // render one active agent
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready' }], worktrees: [] } });
+    // skip push setup
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    // grant one log ticket
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    // return the long draft list
+    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: saved } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Saved prompts (30)' }).click();
+  const panel = page.locator('.saved-prompts-panel');
+  const list = panel.locator('.saved-prompts-list');
+  await expect(panel).toBeVisible();
+  // measure one rendered scrolling region
+  const metrics = await list.evaluate(element => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+    panelBottom: element.parentElement?.getBoundingClientRect().bottom ?? 0,
+    viewportHeight: innerHeight
+  }));
+  expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
+  expect(metrics.panelBottom).toBeLessThanOrEqual(metrics.viewportHeight);
+  // scroll through the rendered draft list
+  await list.hover();
+  await page.mouse.wheel(0, 1_200);
+  // confirm the browser moved the list
+  await expect.poll(() => list.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+});
+
 test('queues a saved draft from its purple send button through the saved-prompt endpoint', async ({ page }) => {
   const savedDraft = { id: 'saved-prompt-001', text: 'Queue this saved draft' };
   let saved = [savedDraft];
