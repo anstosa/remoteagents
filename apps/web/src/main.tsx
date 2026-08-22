@@ -1094,27 +1094,26 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   return <span ref={anchorRef} className="server-switcher-settings-wrap"><button type="button" className="server-switcher-button server-switcher-settings" aria-label="Global settings" aria-haspopup="menu" aria-expanded={open} onClick={toggleSettings}>⋮</button>{flyout}{renameDialog}{updateDialog}{progressDialog}{accountLoginDialog}</span>;
 }
 
-// render every server as a direct navigation button
+// render native links for remote server handoff
 function ServerSwitcher({ className = '' }: { className?: string }) {
   const server = useContext(ServerContext) ?? fallbackServerInfo();
   const statuses = useContext(ServerStatusContext);
   const voice = useContext(VoiceTriggerContext);
   const clientSettings = useContext(ClientSettingsContext);
   const targets = [{ name: server.name, url: server.url, icon: server.icon }, ...server.remotes];
-  // navigate directly to one server origin
-  const switchServer = (target: RemoteServer) => {
-    // avoid reloading the current instance
-    if (target.url === server.url) return;
-    window.location.assign(target.url);
-  };
   // render the current server first
-  const buttons = targets.map(target => {
+  const serverTargets = targets.map(target => {
     const attention = statuses[target.url] ?? 'idle';
     const attentionLabel = instanceAttentionLabel(attention);
-    return <button key={target.url} type="button" className={`server-switcher-button attention-${attention}`} aria-current={target.url === server.url ? 'page' : undefined} aria-label={`${target.name}${attentionLabel === undefined ? '' : ` — ${attentionLabel}`}`} onClick={() => switchServer(target)}><img src={serverIconPath(target.icon)} alt="" /><span>{target.name}</span><i className={`server-switcher-attention ${attention}`} aria-hidden="true" title={attentionLabel} /></button>;
+    // share one target body
+    const content = <><img src={serverIconPath(target.icon)} alt="" /><span>{target.name}</span><i className={`server-switcher-attention ${attention}`} aria-hidden="true" title={attentionLabel} /></>;
+    // keep the active instance stable
+    if (target.url === server.url) return <button key={target.url} type="button" className={`server-switcher-button attention-${attention}`} aria-current="page" aria-label={`${target.name}${attentionLabel === undefined ? '' : ` — ${attentionLabel}`}`}>{content}</button>;
+    // expose an OS-capturable HTTPS link
+    return <a key={target.url} href={target.url} className={`server-switcher-button attention-${attention}`} aria-label={`${target.name}${attentionLabel === undefined ? '' : ` — ${attentionLabel}`}`}>{content}</a>;
   });
   const voiceLabel = voice?.active ? voice.visible ? 'Ongoing Davo call' : 'Show ongoing Davo call' : 'Call Davo';
-  return <div className={`server-switcher${className ? ` ${className}` : ''}`} role="group" aria-label="Davo and Remote Agents servers">{voice && <button type="button" className={`server-switcher-button server-switcher-voice${voice.active ? ' active' : ''}`} aria-label={voiceLabel} aria-pressed={voice.visible} onClick={voice.open}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.69 2.8a2 2 0 0 1-.45 2.11L8.08 9.9a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.9.33 1.84.56 2.8.69A2 2 0 0 1 22 16.92Z" /></svg><span>{voice.active ? 'Ongoing' : 'Call Davo'}</span></button>}{buttons}{clientSettings && <ClientSettingsMenu settings={clientSettings} />}</div>;
+  return <div className={`server-switcher${className ? ` ${className}` : ''}`} role="group" aria-label="Davo and Remote Agents servers">{voice && <button type="button" className={`server-switcher-button server-switcher-voice${voice.active ? ' active' : ''}`} aria-label={voiceLabel} aria-pressed={voice.visible} onClick={voice.open}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.69 2.8a2 2 0 0 1-.45 2.11L8.08 9.9a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.9.33 1.84.56 2.8.69A2 2 0 0 1 22 16.92Z" /></svg><span>{voice.active ? 'Ongoing' : 'Call Davo'}</span></button>}{serverTargets}{clientSettings && <ClientSettingsMenu settings={clientSettings} />}</div>;
 }
 
 function Login({ done, initialError }: { done: (session: SessionInfo) => void; initialError?: string }) {

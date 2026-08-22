@@ -71,36 +71,39 @@ test('shows and switches the configured server on authentication and output scre
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 
-  // verify direct server buttons
-  const expectServerButtons = async (remoteLabel?: string) => {
+  // verify direct server targets
+  const expectServerTargets = async (remoteLabel?: string) => {
     const group = page.getByRole('group', { name: 'Remote Agents servers' });
-    const buttons = group.locator('button.server-switcher-button:not(.server-switcher-voice):not(.server-switcher-settings)');
+    const targets = group.locator('.server-switcher-button:not(.server-switcher-voice):not(.server-switcher-settings)');
     await expect(group).toBeVisible();
-    await expect(buttons).toHaveText(['X1 Carbon', 'Framework']);
+    await expect(targets).toHaveText(['X1 Carbon', 'Framework']);
     // require the current server on the left
-    await expect(buttons.nth(0)).toHaveAttribute('aria-current', 'page');
-    await expect(buttons.nth(1)).not.toHaveAttribute('aria-current', 'page');
-    await expect(buttons.nth(0).locator('img')).toHaveAttribute('src', '/instance-icons/potato.svg');
-    await expect(buttons.nth(1).locator('img')).toHaveAttribute('src', '/instance-icons/heart.svg');
+    await expect(targets.nth(0)).toHaveAttribute('aria-current', 'page');
+    await expect(targets.nth(1)).not.toHaveAttribute('aria-current', 'page');
+    await expect(targets.nth(0).locator('img')).toHaveAttribute('src', '/instance-icons/potato.svg');
+    await expect(targets.nth(1).locator('img')).toHaveAttribute('src', '/instance-icons/heart.svg');
+    // preserve Android WebAPK link capture
+    await expect(group.locator('button.server-switcher-button:not(.server-switcher-voice):not(.server-switcher-settings)')).toHaveCount(1);
+    await expect(group.locator('a.server-switcher-button')).toHaveAttribute('href', remoteServer.url);
     // verify an attention label when requested
-    if (remoteLabel !== undefined) await expect(buttons.nth(1)).toHaveAccessibleName(remoteLabel);
-    return { group, current: buttons.nth(0), remote: buttons.nth(1) };
+    if (remoteLabel !== undefined) await expect(targets.nth(1)).toHaveAccessibleName(remoteLabel);
+    return { group, current: targets.nth(0), remote: targets.nth(1) };
   };
 
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Console access' })).toBeVisible();
-  await expectServerButtons();
+  await expectServerTargets();
   await expect(page.getByRole('combobox', { name: /Remote Agents server/u })).toHaveCount(0);
 
   screen = 'control';
   await page.reload();
   await expect(page.getByText('Desk iPad is active')).toBeVisible();
-  await expectServerButtons('Framework — Working');
+  await expectServerTargets('Framework — Working');
 
   screen = 'output';
   await page.reload();
   await expect(page.getByLabel('Live log')).toBeVisible({ timeout: 15_000 });
-  const outputServers = await expectServerButtons('Framework — Working');
+  const outputServers = await expectServerTargets('Framework — Working');
   await expect(outputServers.group).toHaveClass(/output-server-switcher/u);
   await expect(page.locator('.log-output .server-switcher')).toHaveCount(1);
   await expect(outputServers.group.locator('.server-switcher-attention.working')).toHaveCount(2);
