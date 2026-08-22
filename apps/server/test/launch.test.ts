@@ -94,6 +94,7 @@ describe('LaunchService', () => {
   it('moves a colliding named session aside before launching a worktree agent', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     run
+      .mockResolvedValueOnce({ code: 0, stdout: '$42\n', stderr: '' })
       .mockResolvedValueOnce({ code: 0, stdout: 'owen\n', stderr: '' })
       .mockResolvedValue({ code: 0, stdout: '', stderr: '' });
     const worktree: Worktree = { id: 'owen', label: 'Owen', path: '/worktrees/owen', identity: '/worktrees/owen', hostPath: '/home/ubuntu/owen', available: true, pinned: true, command: 'codex' };
@@ -101,8 +102,9 @@ describe('LaunchService', () => {
 
     await expect(service.launch(worktree.id)).resolves.toBe(true);
 
-    expect(run.mock.calls[1]?.[1]).toEqual(['-S', '/host-tmux/default', 'rename-session', '-t', 'owen', expect.stringMatching(/^rac-replacing-[a-f0-9]+$/u)]);
-    expect(run.mock.calls[2]?.[1]).toEqual(expect.arrayContaining(['-S', '/host-tmux/default', 'new-session', '-d', '-s', 'owen', '-c', worktree.hostPath]));
+    expect(run.mock.calls[0]?.[1]).toEqual(['-S', '/host-tmux/default', 'display-message', '-p', '-t', '=owen:', '#{session_id}']);
+    expect(run.mock.calls[2]?.[1]).toEqual(['-S', '/host-tmux/default', 'rename-session', '-t', '$42', expect.stringMatching(/^rac-replacing-[a-f0-9]+$/u)]);
+    expect(run.mock.calls[3]?.[1]).toEqual(expect.arrayContaining(['-S', '/host-tmux/default', 'new-session', '-d', '-s', 'owen', '-c', worktree.hostPath]));
   });
 
   it('preserves ordinary worktree names and removes tmux target separators', () => {
@@ -110,19 +112,23 @@ describe('LaunchService', () => {
     expect(worktreeSessionName('/home/ubuntu/feature:demo')).toBe('feature-demo');
   });
 
-  it('moves an existing named session aside while replacing it', async () => {
+  it('moves an existing dotted session aside by stable id while replacing it', async () => {
     run
-      .mockResolvedValueOnce({ code: 0, stdout: 'owen\n', stderr: '' })
+      .mockResolvedValueOnce({ code: 0, stdout: '$42\n', stderr: '' })
+      .mockResolvedValueOnce({ code: 0, stdout: 'ferry.fyi\n', stderr: '' })
       .mockResolvedValue({ code: 0, stdout: '', stderr: '' });
 
-    await expect(startNamedReplacementSession('/usr/bin/tmux', '/tmp/tmux', '$1', 'owen', ['-c', '/home/ubuntu/owen', 'codex'])).resolves.toBe(true);
+    await expect(startNamedReplacementSession('/usr/bin/tmux', '/tmp/tmux', 'ferry.fyi', 'ferry.fyi', ['-c', '/home/ubuntu/ferry.fyi', 'codex'])).resolves.toBe(true);
 
-    expect(run.mock.calls[1]?.[1]).toEqual(['-S', '/tmp/tmux', 'rename-session', '-t', '$1', expect.stringMatching(/^rac-replacing-[a-f0-9]+$/u)]);
-    expect(run.mock.calls[2]?.[1]).toEqual(['-S', '/tmp/tmux', 'new-session', '-d', '-s', 'owen', '-c', '/home/ubuntu/owen', 'codex']);
+    expect(run.mock.calls[0]?.[1]).toEqual(['-S', '/tmp/tmux', 'display-message', '-p', '-t', '=ferry.fyi:', '#{session_id}']);
+    expect(run.mock.calls[1]?.[1]).toEqual(['-S', '/tmp/tmux', 'display-message', '-p', '-t', '$42', '#{session_name}']);
+    expect(run.mock.calls[2]?.[1]).toEqual(['-S', '/tmp/tmux', 'rename-session', '-t', '$42', expect.stringMatching(/^rac-replacing-[a-f0-9]+$/u)]);
+    expect(run.mock.calls[3]?.[1]).toEqual(['-S', '/tmp/tmux', 'new-session', '-d', '-s', 'ferry.fyi', '-c', '/home/ubuntu/ferry.fyi', 'codex']);
   });
 
   it('restores the old session name when its replacement cannot start', async () => {
     run
+      .mockResolvedValueOnce({ code: 0, stdout: '$42\n', stderr: '' })
       .mockResolvedValueOnce({ code: 0, stdout: 'owen\n', stderr: '' })
       .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' })
       .mockResolvedValueOnce({ code: 1, stdout: '', stderr: 'failed' })
@@ -130,8 +136,7 @@ describe('LaunchService', () => {
 
     await expect(startNamedReplacementSession('/usr/bin/tmux', '/tmp/tmux', '$1', 'owen', ['codex'])).resolves.toBe(false);
 
-    const temporaryName = run.mock.calls[1]?.[1]?.at(-1);
-    expect(run.mock.calls[3]?.[1]).toEqual(['-S', '/tmp/tmux', 'rename-session', '-t', temporaryName, 'owen']);
+    expect(run.mock.calls[4]?.[1]).toEqual(['-S', '/tmp/tmux', 'rename-session', '-t', '$42', 'owen']);
   });
 
   it('uses an existing pane in the configured worktree before creating a session', async () => {

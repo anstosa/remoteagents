@@ -16,7 +16,8 @@ describe('new task', () => {
     const tmux = { closeSession: async () => { calls.push('close-session'); return true; } };
     const command = async (binary: string, args: string[]) => {
       calls.push(`${binary} ${args.join(' ')}`);
-      if (args.includes('display-message')) return { code: 0, stdout: 'cora\n' };
+      // return the requested stable session field
+      if (args.includes('display-message')) return { code: 0, stdout: args.at(-1) === '#{session_id}' ? '$1\n' : 'cora\n' };
       return cleanCommand(binary, args);
     };
     const service = new NewTaskService(config, discovery as never, tmux as never, command);
