@@ -931,6 +931,16 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (!agent) return reply.code(504).send({ error: `The worktree session started, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
     return reply.code(201).send({ agentId: agent.id });
   });
+  // forget one retained sleeping worktree tab
+  app.post('/api/worktrees/:id/deactivate', async (request, reply) => {
+    controlled(request, true);
+    const worktreeId = (request.params as { id: string }).id;
+    // require a configured sleeping worktree
+    if (configuredWorktree(worktreeId) === undefined || !sleepingWorktrees.has(worktreeId)) return reply.code(409).send({ error: 'worktree is not sleeping' });
+    sleepingWorktrees.delete(worktreeId);
+    await dashboardUpdates.refresh().catch(() => undefined);
+    return reply.code(204).send();
+  });
   // wake one sleeping worktree through the host resume alias
   app.post('/api/worktrees/:id/wake', async (request, reply) => {
     controlled(request, true);

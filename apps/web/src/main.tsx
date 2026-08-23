@@ -288,6 +288,8 @@ const worktreePendingOperation = (worktree: Worktree): DashboardOperation | unde
   if (pendingOperations.has(newTaskOperationKey(worktree.id))) return 'new-task';
   // preserve restart handoff state
   if (pendingOperations.has(restartOperationKey(worktree.id))) return 'restarting';
+  // expose sleeping-tab shutdown
+  if (pendingOperations.has(deactivateOperationKey(worktree.id))) return 'deactivating';
   // expose wake transitions
   if (pendingOperations.has(wakeOperationKey(worktree.id))) return 'waking';
   // expose fresh launches
@@ -1173,8 +1175,11 @@ class ConsoleBoundary extends Component<{ children: ReactNode }, { failed: boole
   }
 }
 
-// render idle configured-agent power choices
-function AgentPowerMenu({ pending, onRestart, onClear, onSleep, onTurnOff }: { pending: boolean; onRestart: () => void; onClear: () => void; onSleep: () => void; onTurnOff: () => void }) {
+// define state-specific power actions
+type AgentPowerMenuProps = { pending: boolean; onTurnOff: () => void } & ({ mode: 'active'; onRestart: () => void; onClear: () => void; onSleep: () => void } | { mode: 'sleeping'; onWake: () => void });
+// render configured-agent power choices
+function AgentPowerMenu(props: AgentPowerMenuProps) {
+  const { pending, onTurnOff } = props;
   const [open, setOpen] = useState(false);
   const { anchorRef, flyoutRef, style } = useViewportFlyout(open);
   // close after outside interaction
@@ -1197,7 +1202,11 @@ function AgentPowerMenu({ pending, onRestart, onClear, onSleep, onTurnOff }: { p
     setOpen(false);
     action();
   };
-  return <><span className="power-menu-wrap" ref={anchorRef}><button className="danger icon-button deactivate-agent" disabled={pending} aria-label="Agent power options" aria-expanded={open} aria-haspopup="menu" title="Agent power options" onClick={() => setOpen(current => !current)}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button></span>{open && createPortal(<div className="more-menu flyout-menu agent-power-menu" ref={flyoutRef} style={style} role="menu" aria-label="Agent power options"><button type="button" role="menuitem" onClick={() => choose(onRestart)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart</button><button type="button" role="menuitem" onClick={() => choose(onClear)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 15 8-8 5 5-8 8H4v-5Zm7-7 5 5M10 20h10" /></svg>Clear</button><button type="button" role="menuitem" onClick={() => choose(onSleep)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg>Sleep</button><button className="agent-power-off" type="button" role="menuitem" onClick={() => choose(onTurnOff)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>Turn off</button></div>, document.body)}</>;
+  // limit sleeping tabs to wake and shutdown
+  const stateActions = props.mode === 'sleeping'
+    ? <button type="button" role="menuitem" onClick={() => choose(props.onWake)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>
+    : <><button type="button" role="menuitem" onClick={() => choose(props.onRestart)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart</button><button type="button" role="menuitem" onClick={() => choose(props.onClear)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 15 8-8 5 5-8 8H4v-5Zm7-7 5 5M10 20h10" /></svg>Clear</button><button type="button" role="menuitem" onClick={() => choose(props.onSleep)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg>Sleep</button></>;
+  return <><span className="power-menu-wrap" ref={anchorRef}><button className="danger icon-button deactivate-agent" disabled={pending} aria-label="Agent power options" aria-expanded={open} aria-haspopup="menu" title="Agent power options" onClick={() => setOpen(current => !current)}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button></span>{open && createPortal(<div className="more-menu flyout-menu agent-power-menu" ref={flyoutRef} style={style} role="menu" aria-label="Agent power options">{stateActions}<button className="agent-power-off" type="button" role="menuitem" onClick={() => choose(onTurnOff)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>Turn off</button></div>, document.body)}</>;
 }
 
 // render the agent prompt controls
@@ -1691,7 +1700,7 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
   const mobileKeys = <div className="mobile-terminal-keys" aria-label="Terminal keys"><div className="mobile-control-keys"><button type="button" aria-label="Esc" onPointerDown={event => { event.preventDefault(); mobileControl('\x1b'); }}>Esc</button><button type="button" aria-label="Ctrl+C" onPointerDown={event => { event.preventDefault(); mobileControl('\x03'); }}>Ctrl+C</button></div><div className="mobile-key-modifiers"><button type="button" aria-label="Tab" onPointerDown={event => { event.preventDefault(); mobileKey('tab'); }}>Tab</button><button type="button" className={shiftActive ? 'active' : ''} aria-pressed={shiftActive} onPointerDown={event => { event.preventDefault(); toggleModifier('shift'); }}>Shift</button><button type="button" className={ctrlActive ? 'active' : ''} aria-pressed={ctrlActive} onPointerDown={event => { event.preventDefault(); toggleModifier('ctrl'); }}>Ctrl</button><button type="button" className={altActive ? 'active' : ''} aria-pressed={altActive} onPointerDown={event => { event.preventDefault(); toggleModifier('alt'); }}>Alt</button></div><div className="mobile-arrow-keys"><button type="button" aria-label="Slash" onPointerDown={event => { event.preventDefault(); mobileKey('slash'); }}>/</button><button type="button" aria-label="Up arrow" onPointerDown={event => { event.preventDefault(); mobileKey('up'); }}><MobileKeyIcon name="up" /></button><button type="button" aria-label="Dollar" onPointerDown={event => { event.preventDefault(); mobileKey('dollar'); }}>$</button><button type="button" aria-label="Left arrow" onPointerDown={event => { event.preventDefault(); mobileKey('left'); }}><MobileKeyIcon name="left" /></button><button type="button" aria-label="Down arrow" onPointerDown={event => { event.preventDefault(); mobileKey('down'); }}><MobileKeyIcon name="down" /></button><button type="button" aria-label="Right arrow" onPointerDown={event => { event.preventDefault(); mobileKey('right'); }}><MobileKeyIcon name="right" /></button></div></div>;
   const cancelButton = <button className="danger icon-button cancel-agent" disabled={!canCancel || cancelling} aria-label="Cancel agent" title="Cancel agent" onClick={onCancel}>{cancelling ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>}</button>;
   const deleteButton = <button className="danger icon-button delete-agent" disabled={deleting} aria-label="Delete agent" title="Delete agent" onClick={onDelete}>{deleting ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button>;
-  const powerMenu = onRestart === undefined || onClear === undefined || onDeactivate === undefined || onSleep === undefined ? null : <AgentPowerMenu pending={restarting || clearing || deactivating || sleeping} onRestart={onRestart} onClear={onClear} onSleep={onSleep} onTurnOff={onDeactivate} />;
+  const powerMenu = onRestart === undefined || onClear === undefined || onDeactivate === undefined || onSleep === undefined ? null : <AgentPowerMenu mode="active" pending={restarting || clearing || deactivating || sleeping} onRestart={onRestart} onClear={onClear} onSleep={onSleep} onTurnOff={onDeactivate} />;
   const stop = powerMenu ?? (onDelete === undefined ? cancelButton : deleteButton);
   const swapLabel = swapped ? 'Return to agent output' : 'Swap to terminal';
   const swap = <button className={`swap-agent icon-button${swapped ? ' active' : ''}`} disabled={swapping} aria-label={swapLabel} title={swapped ? 'Return to agent output' : 'Background agent and show terminal'} onClick={onSwap}>{swapping ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h13m0 0-4-4m4 4-4 4M19 17H6m0 0 4 4m-4-4 4-4" /></svg>}</button>;
@@ -4110,11 +4119,13 @@ function launchError(response: Response): Promise<string> {
 
 type InactiveWorktreePresentation = { ariaLabel?: string; heading: string; detail: string; status: string; buttonLabel: string };
 // describe one inactive worktree state
-const inactiveWorktreePresentation = (label: string, state: { startingNewTask: boolean; restarting: boolean; waking: boolean; launching: boolean; sleeping: boolean }): InactiveWorktreePresentation => {
+const inactiveWorktreePresentation = (label: string, state: { startingNewTask: boolean; restarting: boolean; turningOff: boolean; waking: boolean; launching: boolean; sleeping: boolean }): InactiveWorktreePresentation => {
   // describe a fresh conversation
   if (state.startingNewTask) return { ariaLabel: 'Starting new task', heading: 'Starting new task…', detail: 'Waiting for the fresh agent session to become ready.', status: 'Starting', buttonLabel: 'Starting new task' };
   // describe a restarted conversation
   if (state.restarting) return { ariaLabel: `Restarting ${label}`, heading: 'Restarting agent…', detail: 'Running the resume alias and reconnecting the previous conversation.', status: 'Restarting', buttonLabel: 'Restarting' };
+  // describe sleeping-tab shutdown
+  if (state.turningOff) return { ariaLabel: `Turning off ${label}`, heading: 'Turning off…', detail: 'Removing the retained sleeping tab.', status: 'Turning off', buttonLabel: 'Turning off' };
   // describe a waking conversation
   if (state.waking) return { ariaLabel: `Waking ${label}`, heading: 'Waking up…', detail: 'Running the resume alias and reconnecting the previous conversation.', status: 'Waking', buttonLabel: 'Wake up' };
   // describe a fresh launch
@@ -4125,17 +4136,19 @@ const inactiveWorktreePresentation = (label: string, state: { startingNewTask: b
 };
 
 // render an inactive worktree
-function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperationFeedback }: { worktree: Worktree; tabBar: ReactNode; cleanupControl?: ReactNode; onLaunched: (agentId: string, worktree: Worktree, operationKey: string) => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
+function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOff, onOperationFeedback }: { worktree: Worktree; tabBar: ReactNode; cleanupControl?: ReactNode; onLaunched: (agentId: string, worktree: Worktree, operationKey: string) => void; onTurnedOff: () => Promise<void>; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
   const launchKey = launchOperationKey(worktree.id);
   const restartKey = restartOperationKey(worktree.id);
+  const deactivateKey = deactivateOperationKey(worktree.id);
   const wakeKey = wakeOperationKey(worktree.id);
   const launching = usePendingOperation(launchKey);
   const restarting = usePendingOperation(restartKey);
+  const turningOff = usePendingOperation(deactivateKey);
   const waking = usePendingOperation(wakeKey);
   const startingNewTask = usePendingOperation(newTaskOperationKey(worktree.id));
   const sleeping = worktree.sleeping === true;
-  const processing = launching || restarting || waking || startingNewTask;
-  const presentation = inactiveWorktreePresentation(worktree.label, { startingNewTask, restarting, waking, launching, sleeping });
+  const processing = launching || restarting || turningOff || waking || startingNewTask;
+  const presentation = inactiveWorktreePresentation(worktree.label, { startingNewTask, restarting, turningOff, waking, launching, sleeping });
   const worktreeBookmarks = useWorktreeBookmarks(worktree.id);
   const worktreeNotes = useWorktreeNotes(worktree.id);
   const projectBrowser = useProjectBrowser(worktree.projectUrl, worktree.id);
@@ -4193,9 +4206,33 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperatio
       }
     }
   };
+  // forget one retained sleeping tab
+  const turnOff = async () => {
+    // serialize sleeping worktree actions
+    if (!sleeping || processing || !beginPendingOperation(deactivateKey)) return;
+    setError('');
+    onOperationFeedback({ tone: 'pending', message: `Turning off ${worktree.label}…`, detail: 'Removing the retained sleeping tab while leaving the worktree available.', worktreeId: worktree.id });
+    try {
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/deactivate`, { method: 'POST' });
+      // surface failed shutdowns
+      if (!response.ok) {
+        const message = await launchError(response);
+        setError(message);
+        return onOperationFeedback({ tone: 'error', message: `${worktree.label} could not be turned off`, detail: message, worktreeId: worktree.id });
+      }
+      await onTurnedOff();
+      onOperationFeedback({ tone: 'success', message: `${worktree.label} is off`, detail: 'The worktree remains available from the launcher.' });
+    } catch {
+      const message = 'Unable to reach the console while turning off the sleeping agent.';
+      setError(message);
+      onOperationFeedback({ tone: 'error', message: `${worktree.label} could not be turned off`, detail: message, worktreeId: worktree.id });
+    } finally {
+      setPendingOperation(deactivateKey, false);
+    }
+  };
   const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className={`log-loading inactive${sleeping ? ' sleeping' : ''}`} role={processing || sleeping ? 'status' : undefined} aria-label={presentation.ariaLabel}>{processing ? <span className="spinner" /> : sleeping ? <svg className="sleeping-agent-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg> : null}<strong>{presentation.heading}</strong><span>{presentation.detail}</span>{sleeping && !processing && <button className="wake-agent" type="button" disabled={!worktree.available} onClick={() => void start()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>}</div><span className={`status log-status ${processing ? 'connecting' : sleeping ? 'sleeping' : 'inactive'}`}>{presentation.status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeBookmarks.control}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div>;
   const browserPane = projectBrowser.url === undefined || projectBrowser.homeUrl === undefined ? null : <ProjectBrowserPane url={projectBrowser.url} homeUrl={projectBrowser.homeUrl} worktreeId={worktree.id} onNavigate={projectBrowser.navigate} onClose={projectBrowser.close} />;
-  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{filePreview.dialog}<div className={`log-topbar${gitExpanded ? ' expanded' : ''}`}><GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} expanded={gitExpanded} onToggle={() => setGitExpanded(value => !value)} onOpenFile={openGitFile} reviewUnavailable="Launch agent to review" /></div></section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} /><PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions"><span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} />{!sleeping && <button className="queue" disabled={!worktree.available || processing} onClick={() => void start()}>{processing && <span className="spinner" />}{presentation.buttonLabel}</button>}</div></section></article>;
+  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{filePreview.dialog}<div className={`log-topbar${gitExpanded ? ' expanded' : ''}`}><GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} expanded={gitExpanded} onToggle={() => setGitExpanded(value => !value)} onOpenFile={openGitFile} reviewUnavailable="Launch agent to review" /></div></section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} /><PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions"><span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} />{sleeping ? <AgentPowerMenu mode="sleeping" pending={!worktree.available || processing} onWake={() => void start()} onTurnOff={() => void turnOff()} /> : <button className="queue" disabled={!worktree.available || processing} onClick={() => void start()}>{processing && <span className="spinner" />}{presentation.buttonLabel}</button>}</div></section></article>;
 }
 
 // render browser notification enrollment
@@ -4908,7 +4945,7 @@ function DashboardView({ onUnauthorized, onInactive, clientUpdateAvailable, serv
   })}<NotificationControl />{(clientUpdateAvailable || serverUpdateAvailable) && <button className="update-ready" type="button" onClick={onUpdate}>Update available <span>{clientUpdateAvailable ? 'Reload' : 'Restart'}</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><button disabled={creatingAgent} onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
   const consoleClass = `console${voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{reviewDialog}</article></main></VoiceTriggerContext.Provider>;
-  return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{reviewDialog}</main></VoiceTriggerContext.Provider>;
+  return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{reviewDialog}</main></VoiceTriggerContext.Provider>;
 }
 
 // coordinate console session and update lifecycle

@@ -281,7 +281,7 @@ describe('configured worktree deactivation', () => {
     } finally { await deactivateApp.close(); }
   }, 15_000);
 
-  it('sleeps an idle agent and wakes it through the resume alias', async () => {
+  it('sleeps, wakes, and turns off a retained worktree tab', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false, command: 'codex' };
     const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' };
@@ -317,6 +317,19 @@ describe('configured worktree deactivation', () => {
       expect(woke.statusCode).toBe(201);
       expect(woke.json()).toEqual({ agentId: agent.id });
       expect(resumed).toBe('cora');
+
+      // retain the tab again for shutdown
+      const sleptAgain = await sleepApp.inject({ method: 'POST', url: '/api/agents/agent-1/sleep', headers });
+      expect(sleptAgain.statusCode).toBe(204);
+      const turnedOff = await sleepApp.inject({ method: 'POST', url: '/api/worktrees/cora/deactivate', headers });
+      expect(turnedOff.statusCode).toBe(204);
+      const inactiveDashboard = await sleepApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: headers.host, cookie: headers.cookie } });
+      expect(inactiveDashboard.json().worktrees).toEqual([expect.objectContaining({ id: 'cora' })]);
+      expect(inactiveDashboard.json().worktrees[0].sleeping).toBeUndefined();
+
+      // reject wake after permanent shutdown
+      const wakeAfterTurnOff = await sleepApp.inject({ method: 'POST', url: '/api/worktrees/cora/wake', headers });
+      expect(wakeAfterTurnOff.statusCode).toBe(409);
     } finally { await sleepApp.close(); }
   }, 15_000);
 

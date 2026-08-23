@@ -183,7 +183,10 @@ test('sleeps an idle agent and wakes the retained tab through resume', async ({ 
   await expect(page.getByRole('button', { name: 'Wake up' })).toBeEnabled();
   await expect(page.locator('.prompt-actions').getByRole('button', { name: 'Launch agent' })).toHaveCount(0);
 
-  await page.getByRole('button', { name: 'Wake up' }).click();
+  await page.getByRole('button', { name: 'Agent power options' }).click();
+  const sleepingPowerMenu = page.getByRole('menu', { name: 'Agent power options' });
+  await expect(sleepingPowerMenu.getByRole('menuitem')).toHaveText(['Wake up', 'Turn off']);
+  await sleepingPowerMenu.getByRole('menuitem', { name: 'Wake up' }).click();
   await expect.poll(() => wakeRequests).toBe(1);
   await expect(page.getByRole('tab', { name: 'Cora — Waking up' })).toHaveAttribute('aria-busy', 'true');
   await expect(page.getByRole('status', { name: 'Waking Cora', exact: true })).toBeVisible();
@@ -191,4 +194,41 @@ test('sleeps an idle agent and wakes the retained tab through resume', async ({ 
   finishWake();
   await expect(page.getByRole('status').filter({ hasText: 'Cora is awake' })).toBeVisible();
   await expect(page.getByRole('tab', { name: 'Cora — Prompt done' })).toBeVisible();
+});
+
+// verify sleeping-tab permanent shutdown
+test('turns off a retained sleeping tab from its power menu', async ({ page }) => {
+  let sleeping = true;
+  let turnOffRequests = 0;
+
+  // serve one retained sleeping lifecycle
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    // authenticate the browser
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    // expose or remove the sleeping tab
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: sleeping ? 1 : 2, agents: [], worktrees: [{ id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: false, ...(sleeping ? { sleeping: true } : {}), order: 0 }] } });
+    // disable push setup
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    // provide empty worktree notes
+    if (url.pathname === '/api/worktrees/cora/notes') return route.fulfill({ json: { notes: [] } });
+    // forget the retained tab
+    if (url.pathname === '/api/worktrees/cora/deactivate' && request.method() === 'POST') {
+      turnOffRequests += 1;
+      sleeping = false;
+      return route.fulfill({ status: 204 });
+    }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Agent power options' }).click();
+  const powerMenu = page.getByRole('menu', { name: 'Agent power options' });
+  await expect(powerMenu.getByRole('menuitem')).toHaveText(['Wake up', 'Turn off']);
+  await powerMenu.getByRole('menuitem', { name: 'Turn off' }).click();
+
+  await expect.poll(() => turnOffRequests).toBe(1);
+  await expect(page.getByRole('heading', { name: 'No sessions' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Cora is off' })).toContainText('worktree remains available');
 });
