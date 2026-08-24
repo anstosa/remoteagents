@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { classifyReviewPath } from '../src/git/change-classification.js';
-import { parseGeneratedReviewTour, parseReviewTourInput, prohibitedNarration, type ReviewSnapshot, type ReviewTour } from '../src/review-tour/contracts.js';
+import { parseGeneratedReviewTour, parseReviewRequestId, parseReviewTourInput, prohibitedNarration, type ReviewSnapshot, type ReviewTour } from '../src/review-tour/contracts.js';
 import { ReviewTourJobs } from '../src/review-tour/jobs.js';
 import type { PreparedReviewTour, ReviewTourService } from '../src/review-tour/service.js';
 
@@ -34,6 +34,8 @@ describe('review tour contracts', () => {
     expect(parseReviewTourInput({ scope: 'working', includeTests: false, includeDocs: true })).toEqual({ scope: 'working', includeTests: false, includeDocs: true });
     expect(parseReviewTourInput({ scope: 'working', includeTests: false, includeDocs: true, unexpected: true })).toBeUndefined();
     expect(parseReviewTourInput({ scope: 'branch', includeTests: false, includeDocs: false })).toBeUndefined();
+    expect(parseReviewRequestId('review-start_1234567890')).toBe('review-start_1234567890');
+    expect(parseReviewRequestId('short')).toBeUndefined();
   });
 
   it('accepts complete one-time change assignments and rejects finding-shaped narration', () => {
@@ -62,6 +64,25 @@ describe('review tour jobs', () => {
       await viWait();
       expect(jobs.get('owner-a', started.job.id)?.state.kind).toBe('ready');
       expect(saved).toMatchObject([{ worktreeId: 'cora', branch: 'feature/review-tour' }]);
+    } finally { jobs.close(); }
+  });
+
+  it('replays one idempotent start without superseding its job', async () => {
+    let prepares = 0;
+    let generations = 0;
+    const service = {
+      prepare: async () => { prepares += 1; return prepared(); },
+      generate: async () => { generations += 1; return await new Promise<ReviewTour>(() => {}); }
+    } as unknown as ReviewTourService;
+    const jobs = new ReviewTourJobs(service);
+    try {
+      const input = { scope: 'working' as const, includeTests: false, includeDocs: false };
+      const first = await jobs.start('owner-a', 'agent-cora', input, 'review-start_1234567890');
+      const replay = await jobs.start('owner-a', 'agent-cora', input, 'review-start_1234567890');
+      expect(replay).toEqual(first);
+      expect(prepares).toBe(1);
+      expect(generations).toBe(1);
+      await expect(jobs.start('owner-a', 'agent-cora', { ...input, includeTests: true }, 'review-start_1234567890')).rejects.toMatchObject({ code: 'invalid_request', retryable: false });
     } finally { jobs.close(); }
   });
 

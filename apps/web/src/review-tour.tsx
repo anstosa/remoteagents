@@ -7,11 +7,12 @@ export type ReviewTourIndicator = { generating: boolean; stale: boolean };
 type ReviewChange = { id: string; file: string; originalFile?: string; category: 'implementation' | 'test' | 'doc'; kind: 'hunk' | 'binary' | 'rename' | 'metadata' | 'untracked'; patch: string };
 type ReviewStep = { id: string; title: string; explanation: string; changeIds: string[] };
 export type ReviewTour = { title: string; overview: string; scope: ReviewScope; base: string; includeTests: boolean; includeDocs: boolean; fingerprint: string; changes: ReviewChange[]; steps: ReviewStep[] };
-type ReviewRequest = (url: string, init?: RequestInit) => Promise<Response>;
+type ReviewRequest = (url: string, init?: RequestInit, observeReachability?: boolean) => Promise<Response>;
 type StepState = 'unvisited' | 'visited' | 'skipped';
 type Job = { id: string; expiresAt: string; retryAfterMs: number };
 type Snapshot = { scope: ReviewScope; base: string; includeTests: boolean; includeDocs: boolean; fingerprint: string };
 type ViewState = 'loading' | 'tour' | 'summary' | 'empty' | 'error' | 'cancelled';
+type ReviewFailure = { code?: string; message?: string };
 
 const maxFeedback = 4_000;
 const maxFeedbackTotal = 20_000;
@@ -55,10 +56,33 @@ function isSnapshot(value: unknown): value is Snapshot {
   return value !== null && typeof value === 'object' && ((value as Snapshot).scope === 'working' || (value as Snapshot).scope === 'pr') && typeof (value as Snapshot).base === 'string' && typeof (value as Snapshot).includeTests === 'boolean' && typeof (value as Snapshot).includeDocs === 'boolean' && typeof (value as Snapshot).fingerprint === 'string';
 }
 
-// translate typed server failures
-function errorMessage(code: string | undefined): string {
+// extract structured and transport failures
+function responseFailure(body: Record<string, unknown>): ReviewFailure {
+  const failure = body.error;
+  // retain standard API messages
+  if (typeof failure === 'string') return { message: failure };
+  // reject absent or malformed envelopes
+  if (failure === null || typeof failure !== 'object') return {};
+  const record = failure as { code?: unknown; message?: unknown };
+  return { ...(typeof record.code === 'string' ? { code: record.code } : {}), ...(typeof record.message === 'string' ? { message: record.message } : {}) };
+}
+
+// identify retryable transport failures
+function transientTransportFailure(response: Response, failure: ReviewFailure): boolean {
+  // preserve typed terminal failures
+  if (failure.code !== undefined) return false;
+  return response.status === 502 || response.status === 503 || response.status === 504 || response.status >= 520 && response.status <= 530;
+}
+
+// translate typed and transport failures
+function errorMessage(failure: ReviewFailure, status: number): string {
+  const { code, message } = failure;
   // select recoverable user copy
   if (code === 'scope_unavailable') return 'The selected Git comparison is unavailable.';
+  // explain stale agent targets
+  if (code === 'target_unavailable') return 'The selected agent changed or closed. Reopen its changed files and try again.';
+  // explain stale client contracts
+  if (code === 'invalid_request') return 'The tour request was rejected. Refresh the console and try again.';
   if (code === 'conflicted_unavailable') return 'Resolve merge conflicts before generating a tour.';
   if (code === 'too_large') return 'This change is too large for a complete guided tour.';
   if (code === 'timed_out') return 'Tour generation timed out.';
@@ -72,7 +96,19 @@ function errorMessage(code: string | undefined): string {
   if (code === 'malformed_result') return 'The generated tour was incomplete. Try again.';
   // explain unclassified process failures
   if (code === 'generation_failed') return 'Codex exited before returning a guided tour. Try again; if it keeps failing, verify the server’s Codex login and network access.';
-  return 'The guided tour could not be generated.';
+  // explain expired browser sessions
+  if (status === 401) return 'Your console session expired. Sign in again, then try again.';
+  // explain rejected browser authority
+  if (status === 403) return 'This browser is no longer authorized to build a tour. Refresh the console and try again.';
+  // explain active-client conflicts
+  if (status === 423 || message === 'another client is active') return 'Another browser controls this console. Take control, then try again.';
+  // explain request throttling
+  if (status === 429) return 'Too many tour requests were sent. Wait a moment, then try again.';
+  // explain exhausted transport retries
+  if (status >= 500) return 'The console connection was interrupted while building the tour. Check the connection, then try again.';
+  // explain invalid success envelopes
+  if (status >= 200 && status < 300) return 'The server returned an invalid guided tour. Refresh the console and try again.';
+  return 'The server rejected the guided tour request. Refresh the console and try again.';
 }
 
 // read one response safely
@@ -167,6 +203,9 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     let closed = false;
     let timer: number | undefined;
     let createdJob: Job | undefined;
+    let transientStartFailures = 0;
+    const startDeadline = Date.now() + 30_000;
+    const startRequestId = crypto.randomUUID();
     const run = ++generation.current;
     setState('loading');
     setError('');
@@ -176,8 +215,11 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     setSent(false);
     // poll one bounded job
     const poll = async (next: Job) => {
-      const response = await request(`/api/review-tour/jobs/${encodeURIComponent(next.id)}`);
+      // stop obsolete polls before transport
+      if (closed || generation.current !== run) return;
+      const response = await request(`/api/review-tour/jobs/${encodeURIComponent(next.id)}`, undefined, false);
       const body = await responseBody(response);
+      const failure = responseFailure(body);
       // ignore replaced generations
       if (closed || generation.current !== run) return;
       // keep polling pending work
@@ -205,18 +247,25 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
       }
       // publish an empty selection
       if (response.ok && body.status === 'empty') { setState('empty'); return; }
-      const failure = body.error as { code?: unknown } | undefined;
-      setError(errorMessage(typeof failure?.code === 'string' ? failure.code : undefined));
+      // retry transient polls for the job lifetime
+      if (transientTransportFailure(response, failure) && Date.now() < Date.parse(next.expiresAt)) {
+        timer = window.setTimeout(() => void poll(next), Math.max(250, Math.min(5_000, next.retryAfterMs)));
+        return;
+      }
+      setError(errorMessage(failure, response.status));
       setState(response.status === 410 ? 'cancelled' : 'error');
     };
     // create one generation job
     const start = async () => {
-      const response = await request(`/api/agents/${encodeURIComponent(launch.agentId)}/review-tour/jobs`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scope: launch.scope, includeTests, includeDocs }) });
+      // stop obsolete retries before transport
+      if (closed || generation.current !== run) return;
+      const response = await request(`/api/agents/${encodeURIComponent(launch.agentId)}/review-tour/jobs`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': startRequestId }, body: JSON.stringify({ scope: launch.scope, includeTests, includeDocs }) }, false);
       const body = await responseBody(response);
       const pending = body.job;
+      const failure = responseFailure(body);
       // reap jobs created after local closure
       if (closed || generation.current !== run) {
-        if (response.status === 202 && body.status === 'pending' && isJob(pending)) void request(`/api/review-tour/jobs/${encodeURIComponent(pending.id)}`, { method: 'DELETE' });
+        if (response.status === 202 && body.status === 'pending' && isJob(pending)) void request(`/api/review-tour/jobs/${encodeURIComponent(pending.id)}`, { method: 'DELETE' }, false);
         return;
       }
       // publish an empty selection
@@ -228,8 +277,14 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
         await poll(pending);
         return;
       }
-      const failure = body.error as { code?: unknown } | undefined;
-      setError(errorMessage(typeof failure?.code === 'string' ? failure.code : undefined));
+      // retry transient starts within one bounded window
+      if (transientTransportFailure(response, failure) && Date.now() < startDeadline) {
+        transientStartFailures += 1;
+        const retryDelay = Math.min(5_000, 500 * 2 ** Math.min(transientStartFailures - 1, 4));
+        timer = window.setTimeout(() => void start(), retryDelay);
+        return;
+      }
+      setError(errorMessage(failure, response.status));
       setState('error');
     };
     void start();
@@ -237,7 +292,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     return () => {
       closed = true;
       if (timer !== undefined) window.clearTimeout(timer);
-      if (createdJob !== undefined) void request(`/api/review-tour/jobs/${encodeURIComponent(createdJob.id)}`, { method: 'DELETE' });
+      if (createdJob !== undefined) void request(`/api/review-tour/jobs/${encodeURIComponent(createdJob.id)}`, { method: 'DELETE' }, false);
     };
   }, [launch.agentId, launch.scope, includeTests, includeDocs, retry, request, initialTour]);
 
@@ -248,7 +303,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     let stopped = false;
     const check = async () => {
       const query = new URLSearchParams({ scope: launch.scope, includeTests: String(includeTests), includeDocs: String(includeDocs) });
-      const response = await request(`/api/agents/${encodeURIComponent(launch.agentId)}/review-tour/fingerprint?${query}`);
+      const response = await request(`/api/agents/${encodeURIComponent(launch.agentId)}/review-tour/fingerprint?${query}`, undefined, false);
       const body = await responseBody(response);
       const snapshot = body.snapshot;
       const currentSnapshot = response.ok && isSnapshot(snapshot) && snapshot.scope === launch.scope && snapshot.includeTests === includeTests && snapshot.includeDocs === includeDocs && snapshot.fingerprint === tour.fingerprint;
@@ -288,7 +343,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     // require a generated artifact
     if (tour === undefined) return false;
     const query = new URLSearchParams({ scope: launch.scope, includeTests: String(includeTests), includeDocs: String(includeDocs) });
-    const response = await request(`/api/agents/${encodeURIComponent(launch.agentId)}/review-tour/fingerprint?${query}`);
+    const response = await request(`/api/agents/${encodeURIComponent(launch.agentId)}/review-tour/fingerprint?${query}`, undefined, false);
     const body = await responseBody(response);
     const snapshot = body.snapshot;
     const currentSnapshot = response.ok && isSnapshot(snapshot) && snapshot.scope === launch.scope && snapshot.includeTests === includeTests && snapshot.includeDocs === includeDocs && snapshot.fingerprint === tour.fingerprint;
@@ -383,7 +438,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     <header className="review-tour-header"><div><small>{scopeLabel} guided review</small><h2 id="review-tour-title">{tour?.title ?? 'Generating change tour'}</h2>{tour && <p>{tour.overview}</p>}</div><button type="button" aria-label="Minimize guided review" title="Minimize" onClick={minimize}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg></button></header>
     <div className="review-tour-content">
     {tour && stale && <div className="review-tour-stale" role="alert"><strong>Changes updated</strong><span>This cached review is out of date.</span>{dismissError && <span>{dismissError}</span>}<button type="button" disabled={dismissing} onClick={() => void dismiss()}>{dismissing ? 'Dismissing…' : 'Dismiss'}</button><button type="button" disabled={dismissing} onClick={() => { setStale(false); setRetry(value => value + 1); setState('loading'); }}>Regenerate</button></div>}
-    {state === 'loading' && <div className="review-tour-message" role="status"><span className="spinner" /><strong>Building the narrated tour…</strong><p>The AI is organizing the selected implementation changes into logical steps.</p><button type="button" onClick={() => { generation.current += 1; if (job !== undefined) void request(`/api/review-tour/jobs/${encodeURIComponent(job.id)}`, { method: 'DELETE' }); setState('cancelled'); }}>Cancel</button></div>}
+    {state === 'loading' && <div className="review-tour-message" role="status"><span className="spinner" /><strong>Building the narrated tour…</strong><p>The AI is organizing the selected implementation changes into logical steps.</p><button type="button" onClick={() => { generation.current += 1; if (job !== undefined) void request(`/api/review-tour/jobs/${encodeURIComponent(job.id)}`, { method: 'DELETE' }, false); setState('cancelled'); }}>Cancel</button></div>}
     {state === 'empty' && <div className="review-tour-message" role="status"><strong>No included changes</strong><p>Implementation changes are empty for this scope. Enable Tests or Docs if those are the only changed files.</p></div>}
     {(state === 'error' || state === 'cancelled') && <div className="review-tour-message error" role="alert"><strong>{state === 'cancelled' ? 'Tour cancelled' : 'Unable to build tour'}</strong><p>{error || 'Generate again when you are ready.'}</p><button type="button" onClick={() => { setRetry(value => value + 1); setState('loading'); }}>Try again</button></div>}
     {tour && state === 'tour' && step && <><div className="review-tour-progress"><span>Step {current + 1} of {tour.steps.length}</span><span>{Object.values(statuses).filter(value => value === 'visited').length} visited · {Object.values(statuses).filter(value => value === 'skipped').length} skipped</span></div><main className="review-tour-step"><section className="review-tour-narration"><small>Logical change</small><h3>{step.title}</h3><p>{step.explanation}</p><label>Feedback for this change<textarea value={stepFeedback} maxLength={maxFeedback} onChange={event => updateFeedback(step.id, event.target.value)} />{stepFeedback.length >= maxFeedback && <span role="status">{maxFeedback.toLocaleString()} character limit reached</span>}</label>{orphanFeedback !== '' && <label>Feedback from regenerated steps<textarea value={orphanFeedback} maxLength={maxFeedbackTotal} onChange={event => updateOrphanFeedback(event.target.value)} />{orphanFeedback.length >= maxFeedbackTotal && <span role="status">{maxFeedbackTotal.toLocaleString()} retained feedback character limit reached</span>}</label>}</section><section className="review-tour-diffs" aria-label="Relevant changes">{changes.map(change => <article key={change.id}><header><strong>{change.originalFile === undefined ? change.file : `${change.originalFile} → ${change.file}`}</strong><small>{change.kind}</small></header><ReviewPatch patch={change.patch} /></article>)}</section></main><footer className="review-tour-actions"><button type="button" disabled={current === 0} onClick={back}>Back</button><button type="button" onClick={skip}>Skip</button><span>{feedbackTotal >= maxFeedbackTotal ? `${maxFeedbackTotal.toLocaleString()} total feedback character limit reached` : null}</span>{complete ? <button type="button" disabled={stale || feedbackTotal > maxFeedbackTotal} onClick={() => void summarize()}>Review summary</button> : <button type="button" onClick={next}>Next</button>}</footer></>}

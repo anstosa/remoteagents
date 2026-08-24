@@ -49,6 +49,18 @@ async function fulfillAgentSupport(route: Route, pathname: string): Promise<bool
   return false;
 }
 
+// serve one authenticated review console
+async function fulfillReviewConsole(route: Route, pathname: string): Promise<boolean> {
+  // serve the authenticated browser
+  if (pathname === '/api/auth/session') { await route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } }); return true; }
+  // expose one reviewable agent
+  if (pathname === '/api/dashboard') {
+    await route.fulfill({ json: { generation: 1, reviewTour: { available: true }, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/owen', worktreeId: 'owen', worktreeLabel: 'Owen', branch: 'feature/review-tour', title: 'Ready', gitStatus: { files: 1, staged: 0, unstaged: 1, untracked: 0, conflicted: 0, changes: [{ code: ' M', path: 'src/route.ts', additions: 2, deletions: 1, category: 'implementation' }] }, gitPrStatus: { base: 'origin/main', files: 1, changes: [{ code: 'M ', path: 'src/route.ts', additions: 2, deletions: 1, category: 'implementation' }] } }], worktrees: [] } });
+    return true;
+  }
+  return await fulfillAgentSupport(route, pathname);
+}
+
 // verify generation, notification, and feedback flow
 test('guides a human through active-scope implementation changes and sends consolidated feedback', async ({ page }) => {
   const jobRequests: Array<{ scope: string; includeTests: boolean; includeDocs: boolean }> = [];
@@ -275,12 +287,8 @@ test('explains when the server Codex login expires', async ({ page }) => {
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
-    // serve the authenticated console fixture
-    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    // expose one reviewable agent
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, reviewTour: { available: true }, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/owen', worktreeId: 'owen', worktreeLabel: 'Owen', branch: 'feature/review-tour', title: 'Ready', gitStatus: { files: 1, staged: 0, unstaged: 1, untracked: 0, conflicted: 0, changes: [{ code: ' M', path: 'src/route.ts', additions: 2, deletions: 1, category: 'implementation' }] }, gitPrStatus: { base: 'origin/main', files: 1, changes: [{ code: 'M ', path: 'src/route.ts', additions: 2, deletions: 1, category: 'implementation' }] } }], worktrees: [] } });
-    // serve common agent dependencies
-    if (await fulfillAgentSupport(route, url.pathname)) return;
+    // serve the review console fixture
+    if (await fulfillReviewConsole(route, url.pathname)) return;
     // start one bounded tour job
     if (url.pathname === '/api/agents/agent-1/review-tour/jobs' && request.method() === 'POST') return route.fulfill({ status: 202, json: { status: 'pending', job: { id: 'job-auth', expiresAt: '2026-08-17T23:00:00.000Z', retryAfterMs: 10 } } });
     // report the expired generator login
@@ -299,6 +307,159 @@ test('explains when the server Codex login expires', async ({ page }) => {
   const dialog = page.getByRole('dialog', { name: 'Generating change tour' });
   await expect(dialog.getByText('Unable to build tour', { exact: true })).toBeVisible();
   await expect(dialog.getByText('The server’s Codex login expired. Sign in to Codex on the server, then try again.')).toBeVisible();
+});
+
+// verify transient polling recovery
+test('keeps polling through temporary console failures', async ({ page }) => {
+  let polls = 0;
+  const tour = { title: 'Recovered routing tour', overview: 'Follow the recovered request path.', scope: 'working', base: 'HEAD', includeTests: false, includeDocs: false, fingerprint: 'recovered-fingerprint-123456', changes: [{ id: 'chg_route0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', patch: '@@ -1 +1 @@\n-old\n+new' }], steps: [{ id: 'route', title: 'Apply the route', explanation: 'The route applies the recovered change.', changeIds: ['chg_route0001'] }] };
+  await installAgentWebSocket(page);
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    // serve the review console fixture
+    if (await fulfillReviewConsole(route, url.pathname)) return;
+    // start one bounded tour job
+    if (url.pathname === '/api/agents/agent-1/review-tour/jobs' && request.method() === 'POST') return route.fulfill({ status: 202, json: { status: 'pending', job: { id: 'job-recovered', expiresAt: '2099-08-24T23:00:00.000Z', retryAfterMs: 10 } } });
+    // recover after repeated transient poll failures
+    if (url.pathname === '/api/review-tour/jobs/job-recovered' && request.method() === 'GET') {
+      polls += 1;
+      // simulate a temporary console outage
+      if (polls <= 5) return route.fulfill({ status: 503, json: { error: 'Console unavailable' } });
+      return route.fulfill({ json: { status: 'ready', tour } });
+    }
+    // reap obsolete jobs
+    if (url.pathname === '/api/review-tour/jobs/job-recovered' && request.method() === 'DELETE') return route.fulfill({ status: 204 });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  let reconnectFlashes = 0;
+  // capture accessible reconnect appearances
+  page.on('console', message => {
+    // count only the observer marker
+    if (message.text() === 'review-tour-reconnect-flash') reconnectFlashes += 1;
+  });
+  await page.evaluate(() => {
+    let overlayVisible = false;
+    // count each reconnect overlay appearance
+    const observer = new MutationObserver(() => {
+      const visible = document.querySelector('[role="alert"][aria-label="Reconnecting to console"]') !== null;
+      // record only new appearances
+      if (visible && !overlayVisible) console.debug('review-tour-reconnect-flash');
+      overlayVisible = visible;
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  });
+  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Working' }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
+  const reviewButton = page.locator('.review-tour-toggle');
+  await expect(reviewButton).toHaveAttribute('aria-busy', 'false');
+  expect(polls).toBe(6);
+  await reviewButton.click();
+  await expect(page.getByRole('dialog', { name: 'Recovered routing tour' })).toBeVisible();
+  expect(reconnectFlashes).toBe(0);
+});
+
+// verify transient start recovery
+test('retries temporary failures while starting a tour', async ({ page }) => {
+  let starts = 0;
+  const requestIds: string[] = [];
+  const tour = { title: 'Recovered start tour', overview: 'Follow the request after startup recovery.', scope: 'working', base: 'HEAD', includeTests: false, includeDocs: false, fingerprint: 'recovered-start-1234567890', changes: [{ id: 'chg_route0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', patch: '@@ -1 +1 @@\n-old\n+new' }], steps: [{ id: 'route', title: 'Apply the route', explanation: 'The route applies the recovered change.', changeIds: ['chg_route0001'] }] };
+  await installAgentWebSocket(page);
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    // serve the review console fixture
+    if (await fulfillReviewConsole(route, url.pathname)) return;
+    // recover after two transient start failures
+    if (url.pathname === '/api/agents/agent-1/review-tour/jobs' && request.method() === 'POST') {
+      starts += 1;
+      requestIds.push(request.headers()['idempotency-key'] ?? '');
+      // simulate lost start acknowledgements
+      if (starts <= 2) return route.fulfill({ status: 503, json: { error: 'Console unavailable' } });
+      return route.fulfill({ status: 202, json: { status: 'pending', job: { id: 'job-start-recovered', expiresAt: '2099-08-24T23:00:00.000Z', retryAfterMs: 10 } } });
+    }
+    // return the recovered tour
+    if (url.pathname === '/api/review-tour/jobs/job-start-recovered' && request.method() === 'GET') return route.fulfill({ json: { status: 'ready', tour } });
+    // reap obsolete jobs
+    if (url.pathname === '/api/review-tour/jobs/job-start-recovered' && request.method() === 'DELETE') return route.fulfill({ status: 204 });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Working' }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
+  const reviewButton = page.locator('.review-tour-toggle');
+  await expect(reviewButton).toHaveAttribute('aria-busy', 'false');
+  expect(starts).toBe(3);
+  expect(new Set(requestIds).size).toBe(1);
+  expect(requestIds[0]).not.toBe('');
+  await reviewButton.click();
+  await expect(page.getByRole('dialog', { name: 'Recovered start tour' })).toBeVisible();
+});
+
+// verify cancellation stops scheduled starts
+test('does not retry a tour start after cancellation', async ({ page }) => {
+  let starts = 0;
+  let releaseStartFailure = () => {};
+  const startFailure = new Promise<void>(resolve => { releaseStartFailure = resolve; });
+  await installAgentWebSocket(page);
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    // serve the review console fixture
+    if (await fulfillReviewConsole(route, url.pathname)) return;
+    // leave one retry waiting in backoff
+    if (url.pathname === '/api/agents/agent-1/review-tour/jobs' && request.method() === 'POST') {
+      starts += 1;
+      // hold the first response until the dialog opens
+      if (starts === 1) await startFailure;
+      return route.fulfill({ status: 503, json: { error: 'Console unavailable' } });
+    }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Working' }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
+  await expect.poll(() => starts).toBe(1);
+  await page.getByRole('button', { name: 'Open generating guided review' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Generating change tour' });
+  const failedStart = page.waitForResponse(response => new URL(response.url()).pathname === '/api/agents/agent-1/review-tour/jobs' && response.status() === 503);
+  releaseStartFailure();
+  await failedStart;
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog.getByText('Tour cancelled', { exact: true })).toBeVisible();
+  await page.waitForTimeout(750);
+  expect(starts).toBe(1);
+});
+
+// verify control-loss feedback
+test('explains when another browser controls the console', async ({ page }) => {
+  await installAgentWebSocket(page);
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    // serve the review console fixture
+    if (await fulfillReviewConsole(route, url.pathname)) return;
+    // reject a generation after control moves elsewhere
+    if (url.pathname === '/api/agents/agent-1/review-tour/jobs' && request.method() === 'POST') return route.fulfill({ status: 423, json: { error: 'another client is active' } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
+  const reviewButton = page.locator('.review-tour-toggle');
+  await expect(reviewButton).toHaveAttribute('aria-busy', 'false');
+  await reviewButton.click();
+  const dialog = page.getByRole('dialog', { name: 'Generating change tour' });
+  await expect(dialog.getByText('Unable to build tour', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Another browser controls this console. Take control, then try again.')).toBeVisible();
 });
 
 test('restores the worktree review after reload and dismisses it when stale', async ({ page }) => {

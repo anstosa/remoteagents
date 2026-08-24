@@ -38,7 +38,7 @@ import { CodexExecReviewTourGenerator } from './review-tour/generator.js';
 import { ReviewTourService } from './review-tour/service.js';
 import { ReviewTourJobs } from './review-tour/jobs.js';
 import { ReviewTourStore } from './review-tour/store.js';
-import { parseReviewTourInput, REVIEW_REQUEST_BODY_BYTES, ReviewTourError, type ReviewErrorCode, type ReviewTourInput } from './review-tour/contracts.js';
+import { parseReviewRequestId, parseReviewTourInput, REVIEW_REQUEST_BODY_BYTES, ReviewTourError, type ReviewErrorCode, type ReviewTourInput } from './review-tour/contracts.js';
 import { configuredWorktreeForWorkspace } from './workspaces/resolver.js';
 import { WorkspaceFileService } from './workspace-files/service.js';
 import { instanceIconSvg, isInstanceIcon } from './instance-icon.js';
@@ -619,10 +619,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.post('/api/agents/:id/review-tour/jobs', { bodyLimit: REVIEW_REQUEST_BODY_BYTES }, async (request, reply) => {
     const owner = controlled(request, true).id;
     const input = parseReviewTourInput(request.body);
+    const requestIdHeader = request.headers['idempotency-key'];
+    const requestId = requestIdHeader === undefined ? undefined : parseReviewRequestId(requestIdHeader);
     // reject malformed review requests
-    if (input === undefined) return reply.code(400).send({ status: 'error', error: { code: 'invalid_request', retryable: false } });
+    if (input === undefined || requestIdHeader !== undefined && requestId === undefined) return reply.code(400).send({ status: 'error', error: { code: 'invalid_request', retryable: false } });
     try {
-      const started = await reviewJobs.start(owner, (request.params as { id: string }).id, input);
+      const started = await reviewJobs.start(owner, (request.params as { id: string }).id, input, requestId);
       // return empty selections without a job
       if (started.kind === 'empty') return reply.code(200).send({ status: 'empty', snapshot: started.snapshot });
       return reply.code(202).send({ status: 'pending', job: started.job });

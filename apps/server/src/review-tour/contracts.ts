@@ -53,6 +53,7 @@ export class ReviewTourError extends Error {
 }
 
 const inputSchema = z.object({ scope: z.enum(['working', 'pr']), includeTests: z.boolean(), includeDocs: z.boolean() }).strict();
+const requestIdSchema = z.string().min(16).max(128).regex(/^[A-Za-z0-9_-]+$/u);
 const generatedStepSchema = z.object({ id: z.string().min(1).max(80), title: z.string().trim().min(1).max(240), explanation: z.string().trim().min(1).max(4_000), changeIds: z.array(z.string().min(8).max(100)).min(1).max(MAX_REVIEW_CHANGES) }).strict();
 const generatedTourSchema = z.object({ title: z.string().trim().min(1).max(240), overview: z.string().trim().min(1).max(2_000), steps: z.array(generatedStepSchema).min(1).max(MAX_REVIEW_CHANGES) }).strict();
 const reviewChangeSchema = z.object({ id: z.string().min(8).max(100), file: z.string().min(1).max(4_096), originalFile: z.string().min(1).max(4_096).optional(), category: z.enum(['implementation', 'test', 'doc']), kind: z.enum(['hunk', 'binary', 'rename', 'metadata', 'untracked']), oldStart: z.number().int().nonnegative().optional(), oldLines: z.number().int().nonnegative().optional(), newStart: z.number().int().nonnegative().optional(), newLines: z.number().int().nonnegative().optional(), patch: z.string().max(MAX_REVIEW_FILE_BYTES) }).strict();
@@ -62,6 +63,12 @@ const prohibitedPrefix = /^(?:finding|findings|warning|warnings|issue|issues|rec
 // parse the fixed review request
 export function parseReviewTourInput(value: unknown): ReviewTourInput | undefined {
   const parsed = inputSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
+// parse one bounded idempotency key
+export function parseReviewRequestId(value: unknown): string | undefined {
+  const parsed = requestIdSchema.safeParse(value);
   return parsed.success ? parsed.data : undefined;
 }
 

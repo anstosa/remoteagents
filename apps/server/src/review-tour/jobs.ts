@@ -11,16 +11,49 @@ type GoneJob = { kind: 'gone'; code: 'job_cancelled' | 'job_superseded' | 'job_e
 export type ReviewJobState = PendingJob | ReadyJob | EmptyJob | FailedJob | GoneJob;
 export type StoredReviewJob = { id: string; owner: string; agentId: string; worktreeId: string; persistenceVersion: number; expiresAt: number; state: ReviewJobState; expiry: NodeJS.Timeout; removal?: NodeJS.Timeout };
 export type StartedReviewJob = { id: string; expiresAt: string; retryAfterMs: number };
+type ReviewJobStart = { kind: 'empty'; snapshot: PublicReviewSnapshot } | { kind: 'pending'; job: StartedReviewJob };
+type IdempotentStart = { agentId: string; input: ReviewTourInput; promise: Promise<ReviewJobStart>; expiry?: NodeJS.Timeout };
 
 export class ReviewTourJobs {
   private readonly jobs = new Map<string, StoredReviewJob>();
   private readonly latestByWorktree = new Map<string, string>();
   private readonly persistenceVersions = new Map<string, number>();
+  private readonly idempotentStarts = new Map<string, IdempotentStart>();
 
   constructor(private readonly service: ReviewTourService, private readonly store?: ReviewTourStore, private readonly onStored?: () => void | Promise<void>) {}
 
   // start one latest-wins generation
-  async start(owner: string, agentId: string, input: ReviewTourInput): Promise<{ kind: 'empty'; snapshot: PublicReviewSnapshot } | { kind: 'pending'; job: StartedReviewJob }> {
+  async start(owner: string, agentId: string, input: ReviewTourInput, requestId?: string): Promise<ReviewJobStart> {
+    // preserve legacy callers without retry identity
+    if (requestId === undefined) return await this.create(owner, agentId, input);
+    const key = `${owner}\0${requestId}`;
+    const existing = this.idempotentStarts.get(key);
+    // replay only the same logical request
+    if (existing !== undefined) {
+      // reject request-key reuse across inputs
+      if (existing.agentId !== agentId || !this.sameInput(existing.input, input)) throw new ReviewTourError('invalid_request', false);
+      return await existing.promise;
+    }
+    const promise = this.create(owner, agentId, input);
+    const retained: IdempotentStart = { agentId, input, promise };
+    this.idempotentStarts.set(key, retained);
+    try {
+      const started = await promise;
+      // retain completed starts through the retry window
+      if (this.idempotentStarts.get(key) === retained) {
+        retained.expiry = setTimeout(() => this.idempotentStarts.delete(key), REVIEW_JOB_TTL_MS);
+        retained.expiry.unref?.();
+      }
+      return started;
+    } catch (error) {
+      // allow retries after a terminal start failure
+      if (this.idempotentStarts.get(key) === retained) this.idempotentStarts.delete(key);
+      throw error;
+    }
+  }
+
+  // create one latest-wins generation
+  private async create(owner: string, agentId: string, input: ReviewTourInput): Promise<ReviewJobStart> {
     const prepared = await this.service.prepare(agentId, input);
     const storeWithCurrency = this.store as (ReviewTourStore & { invalidate?: ReviewTourStore['invalidate']; saveIfCurrent?: ReviewTourStore['saveIfCurrent'] }) | undefined;
     const persistenceVersion = await storeWithCurrency?.invalidate?.(prepared.snapshot.worktreeId, prepared.snapshot.branch) ?? (this.persistenceVersions.get(prepared.snapshot.worktreeId) ?? 0) + 1;
@@ -141,8 +174,19 @@ export class ReviewTourJobs {
   close(): void {
     // remove all jobs
     for (const id of [...this.jobs.keys()]) this.remove(id);
+    // clear retained start identities
+    for (const start of this.idempotentStarts.values()) {
+      // clear completed retention timers
+      if (start.expiry !== undefined) clearTimeout(start.expiry);
+    }
+    this.idempotentStarts.clear();
   }
 
   // scope latest jobs by owner and worktree
   private latestKey(owner: string, worktreeId: string): string { return `${owner}\0${worktreeId}`; }
+
+  // compare one fixed generation request
+  private sameInput(left: ReviewTourInput, right: ReviewTourInput): boolean {
+    return left.scope === right.scope && left.includeTests === right.includeTests && left.includeDocs === right.includeDocs;
+  }
 }

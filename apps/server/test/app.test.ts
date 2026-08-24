@@ -411,9 +411,10 @@ describe('guided review API boundary', () => {
   it('normalizes malformed and oversized requests while accepting the exact request shape', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const snapshot = { agentId: 'agent-1', worktreeId: 'cora', workspace: '/worktrees/cora', scope: 'working', base: 'HEAD', includeTests: false, includeDocs: false, fingerprint: 'empty-fingerprint', changes: [] };
+    let prepares = 0;
     const reviewTours = {
       capability: async () => ({ available: true }),
-      prepare: async () => ({ snapshot, resolved: {} }),
+      prepare: async () => { prepares += 1; return { snapshot, resolved: {} }; },
       fingerprint: async () => ({ snapshot: { scope: 'working', base: 'HEAD', fingerprint: 'empty-fingerprint', includeTests: false, includeDocs: false }, empty: true })
     };
     const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' };
@@ -432,7 +433,10 @@ describe('guided review API boundary', () => {
       const malformed = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers, payload: '{"scope":' });
       const oversized = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers, payload: JSON.stringify({ scope: 'working', includeTests: false, includeDocs: false, padding: 'x'.repeat(1_100) }) });
       const unexpected = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers, payload: JSON.stringify({ scope: 'working', includeTests: false, includeDocs: false, unexpected: true }) });
-      const valid = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers, payload: JSON.stringify({ scope: 'working', includeTests: false, includeDocs: false }) });
+      const idempotentHeaders = { ...headers, 'idempotency-key': 'review-start_1234567890' };
+      const invalidRequestId = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers: { ...headers, 'idempotency-key': 'short' }, payload: JSON.stringify({ scope: 'working', includeTests: false, includeDocs: false }) });
+      const valid = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers: idempotentHeaders, payload: JSON.stringify({ scope: 'working', includeTests: false, includeDocs: false }) });
+      const replay = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/review-tour/jobs', headers: idempotentHeaders, payload: JSON.stringify({ scope: 'working', includeTests: false, includeDocs: false }) });
       const invalidFingerprint = await reviewApp.inject({ method: 'GET', url: '/api/agents/agent-1/review-tour/fingerprint?scope=working&includeTests=maybe&includeDocs=false', headers: { host: headers.host, cookie: headers.cookie } });
       const fingerprint = await reviewApp.inject({ method: 'GET', url: '/api/agents/agent-1/review-tour/fingerprint?scope=working&includeTests=false&includeDocs=false', headers: { host: headers.host, cookie: headers.cookie } });
       const maximumPrompt = await reviewApp.inject({ method: 'POST', url: '/api/agents/agent-1/prompt', headers, payload: JSON.stringify({ prompt: 'x'.repeat(32_000), attachments: [] }) });
@@ -443,8 +447,13 @@ describe('guided review API boundary', () => {
       expect(oversized.json()).toEqual({ status: 'error', error: { code: 'invalid_request', retryable: false } });
       expect(unexpected.statusCode).toBe(400);
       expect(unexpected.json()).toEqual({ status: 'error', error: { code: 'invalid_request', retryable: false } });
+      expect(invalidRequestId.statusCode).toBe(400);
+      expect(invalidRequestId.json()).toEqual({ status: 'error', error: { code: 'invalid_request', retryable: false } });
       expect(valid.statusCode).toBe(200);
       expect(valid.json()).toEqual({ status: 'empty', snapshot: { scope: 'working', base: 'HEAD', fingerprint: 'empty-fingerprint', includeTests: false, includeDocs: false } });
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json()).toEqual(valid.json());
+      expect(prepares).toBe(1);
       expect(invalidFingerprint.statusCode).toBe(400);
       expect(invalidFingerprint.json()).toEqual({ status: 'error', error: { code: 'invalid_request', retryable: false } });
       expect(fingerprint.statusCode).toBe(200);
