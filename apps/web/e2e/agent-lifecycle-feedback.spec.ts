@@ -151,7 +151,7 @@ test('sleeps an idle agent and wakes the retained tab through resume', async ({ 
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     if (url.pathname === '/api/dashboard') return route.fulfill({ json: state === 'active'
       ? { generation: agentId === 'agent-1' ? 1 : 3, agents: [{ id: agentId, sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' }], worktrees: [] }
-      : { generation: 2, agents: [], worktrees: [{ id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: false, sleeping: true, order: 0 }] } });
+      : { generation: 2, agents: [], worktrees: [{ id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: false, sleeping: true, projectUrl: 'https://example.test', order: 0 }] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (/^\/api\/agents\/agent-[12]\/(?:saved-prompts|prompt-history)$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });
@@ -182,6 +182,9 @@ test('sleeps an idle agent and wakes the retained tab through resume', async ({ 
   await expect(page.getByRole('status', { name: 'Cora sleeping', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Wake up' })).toBeEnabled();
   await expect(page.locator('.prompt-actions').getByRole('button', { name: 'Launch agent' })).toHaveCount(0);
+  const powerButtonBounds = await page.getByRole('button', { name: 'Agent power options' }).boundingBox();
+  const projectButtonBounds = await page.getByRole('link', { name: 'Open' }).boundingBox();
+  expect(powerButtonBounds?.x).toBeLessThan(projectButtonBounds?.x ?? 0);
 
   await page.getByRole('button', { name: 'Agent power options' }).click();
   const sleepingPowerMenu = page.getByRole('menu', { name: 'Agent power options' });
