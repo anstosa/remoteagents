@@ -67,6 +67,8 @@ describe('project browser proxy', () => {
     expect(bridge.status).toBe(200);
     expect(bridge.contentType).toContain('text/javascript');
     expect(bridge.body).toContain("wrap('pushState')");
+    expect(bridge.body).toContain("type: 'rac-browser-refresh'");
+    expect(bridge.body).toContain("window.addEventListener('keydown', refresh)");
     expect(bridge.body).toContain('"https://agents.example.com"');
 
     const forwarded = await request(proxyPort, '/echo', { method: 'POST', body: 'retained request body' });

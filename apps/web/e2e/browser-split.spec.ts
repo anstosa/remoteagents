@@ -44,8 +44,9 @@ test('opens the configured project in a desktop browser split pane', async ({ pa
     const location = `${projectUrl.pathname}${projectUrl.search}`;
     const links = projectUrl.pathname === '/' ? '<a href="/details?view=files#changed">View details</a><a href="/unreported">Open unreported page</a><a href="/spa">Open SPA page</a>' : '';
     const locationReport = projectUrl.pathname === '/unreported' ? '' : '<script>parent.postMessage({ type: \'rac-browser-location\', url: location.href }, \'*\')</script>';
+    const keyboardBridge = '<script>window.addEventListener(\'keydown\', event => { /* reload only the embedded browser */ if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === \'r\') { event.preventDefault(); parent.postMessage({ type: \'rac-browser-refresh\' }, \'*\'); } });</script>';
     const spaNavigation = projectUrl.pathname === '/' ? `<script>document.querySelector('a[href="/spa"]').addEventListener('click', event => { event.preventDefault(); history.pushState({}, '', '/spa'); document.querySelector('main').dataset.location = '/spa'; parent.postMessage({ type: 'rac-browser-location', url: location.href }, '*'); });</script>` : '';
-    await route.fulfill({ contentType: 'text/html', body: `<main data-location="${location}">Project preview ${previewLoads}</main>${links}${locationReport}${spaNavigation}` }).catch(() => undefined);
+    await route.fulfill({ contentType: 'text/html', body: `<main data-location="${location}">Project preview ${previewLoads}</main>${links}${locationReport}${keyboardBridge}${spaNavigation}` }).catch(() => undefined);
   });
   await page.route('**/api/**', async route => {
     const request = route.request();
@@ -82,6 +83,14 @@ test('opens the configured project in a desktop browser split pane', async ({ pa
   await expect(preview.locator('main')).toHaveAttribute('data-location', '/');
   await expect(browser.getByRole('button', { name: 'Go to project home' })).toBeDisabled();
 
+  await page.evaluate(() => { (window as typeof window & { topLevelRetained?: boolean }).topLevelRetained = true; });
+  const loadsBeforeShortcutRefresh = previewLoads;
+  // dispatch one iframe-scoped reload chord
+  const shortcutPrevented = await preview.locator('main').evaluate(element => !element.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', ctrlKey: true, bubbles: true, cancelable: true })));
+  expect(shortcutPrevented).toBe(true);
+  await expect.poll(() => previewLoads).toBeGreaterThan(loadsBeforeShortcutRefresh);
+  expect(await page.evaluate(() => (window as typeof window & { topLevelRetained?: boolean }).topLevelRetained)).toBe(true);
+
   await localOutputLink.click();
   await expect(preview.locator('main')).toHaveAttribute('data-location', '/from-output?view=files');
   await expect(browser.getByRole('textbox', { name: 'Browser address' })).toHaveValue('https://project.example.com/from-output?view=files#changed');
@@ -97,7 +106,7 @@ test('opens the configured project in a desktop browser split pane', async ({ pa
   await expect(preview.locator('main')).toHaveAttribute('data-location', '/');
 
   await page.getByRole('button', { name: 'Notes (1)' }).click();
-  await page.getByRole('button', { name: 'Keep notes beside the browser.…' }).click();
+  await page.getByRole('button', { name: 'Keep notes beside the browser.…', exact: true }).click();
   const note = page.getByRole('dialog', { name: 'Note' });
   const output = page.locator('.log-output');
   const noteDivider = page.getByRole('separator', { name: 'Resize agent and note panels' });

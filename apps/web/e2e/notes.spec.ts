@@ -116,7 +116,7 @@ test('creates, previews, edits, autosaves, and deletes per-worktree notes', asyn
   await expect(notesButton).toBeFocused();
 
   await notesButton.click();
-  await expect(page.getByRole('button', { name: 'Remember to review the migration plan…' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Remember to review the migration plan…', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '+ New note' }).click();
   failNextSave = true;
   await editor.fill('Second useful reminder');
@@ -124,7 +124,7 @@ test('creates, previews, edits, autosaves, and deletes per-worktree notes', asyn
   await expect.poll(() => failedSaves).toBe(1);
 
   await notesButton.click();
-  await page.getByRole('button', { name: 'Second useful reminder…' }).click();
+  await page.getByRole('button', { name: 'Second useful reminder…', exact: true }).click();
   await expect.poll(() => savedTexts).toContain('Second useful reminder');
   await expect(page.getByText('Saved', { exact: true })).toHaveCount(0);
   await page.getByLabel('Note preview').click();
@@ -136,7 +136,7 @@ test('creates, previews, edits, autosaves, and deletes per-worktree notes', asyn
   await notesButton.click();
   await expect(page.locator('.notes-menu .note-choice')).toHaveCount(2);
   await expect(notesButton.locator('.notes-count')).toHaveText('2');
-  await page.getByRole('button', { name: 'Second useful reminder…' }).click();
+  await page.getByRole('button', { name: 'Second useful reminder…', exact: true }).click();
   await page.getByLabel('Note preview').click();
   await expect(editor).toHaveValue('Second useful reminder');
   failNextSave = true;
@@ -149,7 +149,7 @@ test('creates, previews, edits, autosaves, and deletes per-worktree notes', asyn
   await expect(page.getByRole('button', { name: 'Notes (2)' })).toBeVisible();
   await page.getByRole('button', { name: 'Close note' }).click();
   await notesButton.click();
-  await page.getByRole('button', { name: 'Second useful reminder with a dirty…' }).click();
+  await page.getByRole('button', { name: 'Second useful reminder with a dirty…', exact: true }).click();
   await page.getByLabel('Note preview').click();
   await expect(editor).toHaveValue('Second useful reminder with a dirty delete');
   await expect.poll(() => savedTexts).toContain('Second useful reminder with a dirty delete');
@@ -163,9 +163,12 @@ test('creates, previews, edits, autosaves, and deletes per-worktree notes', asyn
 
 // preserve leftward note flyouts inside the output
 test('keeps note flyouts left-aligned and shifts long menus within the output boundary', async ({ page }) => {
-  const notes = Array.from({ length: 4 }, (_, index) => ({ id: `note-identifier-${String(index + 1).padStart(3, '0')}`, text: `Sticky note option ${index + 1}` }));
+  const originalTitle = 'W'.repeat(120);
+  const notes = Array.from({ length: 4 }, (_, index) => ({ id: `note-identifier-${String(index + 1).padStart(3, '0')}`, text: `Sticky note option ${index + 1}`, ...(index === 0 ? { title: originalTitle } : {}) }));
   let visibleNotes: typeof notes = [];
-  await page.setViewportSize({ width: 1_000, height: 600 });
+  let renamedNote = '';
+  let deletedNote = '';
+  await page.setViewportSize({ width: 520, height: 600 });
   // serve the focused note layout fixture
   await page.route('**/api/**', route => {
     const request = route.request();
@@ -182,6 +185,28 @@ test('keeps note flyouts left-aligned and shifts long menus within the output bo
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
     // serve the active sticky note set
     if (url.pathname === '/api/worktrees/cora/notes' && request.method() === 'GET') return route.fulfill({ json: { notes: visibleNotes } });
+    const noteMatch = /^\/api\/worktrees\/cora\/notes\/([^/]+)$/u.exec(url.pathname);
+    // rename one sticky note
+    if (noteMatch && request.method() === 'PATCH') {
+      const title = (request.postDataJSON() as { title: string }).title;
+      const note = visibleNotes.find(candidate => candidate.id === noteMatch[1]);
+      // require the fixture note
+      if (note === undefined) return route.fulfill({ status: 404, json: { error: 'note unavailable' } });
+      note.title = title;
+      renamedNote = title;
+      return route.fulfill({ json: note });
+    }
+    // delete one sticky note
+    if (noteMatch && request.method() === 'DELETE') {
+      const noteId = noteMatch[1];
+      // require the captured note identifier
+      if (noteId === undefined) return route.fulfill({ status: 404, json: { error: 'note unavailable' } });
+      deletedNote = noteId;
+      const index = visibleNotes.findIndex(candidate => candidate.id === noteId);
+      // require the fixture note
+      if (index < 0) return route.fulfill({ status: 404, json: { error: 'note unavailable' } });
+      return route.fulfill({ json: visibleNotes.splice(index, 1)[0] });
+    }
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 
@@ -198,14 +223,27 @@ test('keeps note flyouts left-aligned and shifts long menus within the output bo
 
   visibleNotes = notes;
   await page.reload();
-  const longMenuButton = page.getByRole('button', { name: 'Notes (4)' });
+  const longMenuButton = page.getByRole('button', { name: 'Notes (4)', exact: true });
   await longMenuButton.click();
   const [longMenuBounds, longMenuButtonBounds, longOutputBounds] = await Promise.all([renderedBounds(menu), renderedBounds(longMenuButton), renderedBounds(page.locator('.log'))]);
   expect(longMenuBounds.x).toBeGreaterThanOrEqual(longOutputBounds.x);
   expect(longMenuBounds.x + longMenuBounds.width).toBeLessThan(longMenuButtonBounds.x);
+  expect(longMenuBounds.width).toBeGreaterThan(288);
+  expect(longMenuBounds.x - longOutputBounds.x).toBeLessThanOrEqual(10);
   expect(longMenuBounds.y).toBeLessThan(longMenuButtonBounds.y);
   expect(longMenuBounds.y).toBeGreaterThanOrEqual(longOutputBounds.y);
   expect(longMenuBounds.y + longMenuBounds.height).toBeLessThanOrEqual(longOutputBounds.y + longOutputBounds.height);
+
+  await menu.getByRole('button', { name: `Rename note: ${originalTitle}` }).click();
+  const noteName = menu.getByRole('textbox', { name: 'Note name' });
+  await noteName.fill('Release coordination checklist');
+  await menu.getByRole('button', { name: 'Save note name' }).click();
+  await expect.poll(() => renamedNote).toBe('Release coordination checklist');
+  await expect(menu.getByRole('button', { name: 'Release coordination checklist', exact: true })).toBeVisible();
+  await menu.getByRole('button', { name: 'Delete note: Release coordination checklist' }).click();
+  await expect.poll(() => deletedNote).toBe('note-identifier-001');
+  await expect(menu.getByRole('button', { name: 'Release coordination checklist', exact: true })).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Notes (3)', exact: true })).toBeVisible();
 });
 
 test('switches sticky notes between vertical and horizontal output splits', async ({ page }) => {
@@ -225,7 +263,7 @@ test('switches sticky notes between vertical and horizontal output splits', asyn
 
   await page.goto('/');
   await page.getByRole('button', { name: 'Notes (1)' }).click();
-  await page.getByRole('button', { name: 'Keep this note beside the output.…' }).click();
+  await page.getByRole('button', { name: 'Keep this note beside the output.…', exact: true }).click();
   const log = page.locator('.log');
   const output = page.locator('.log-output');
   const outputStatus = output.locator('> .log-status');

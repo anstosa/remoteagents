@@ -8,6 +8,13 @@ const browserBridgePath = '/__rac/browser-bridge.js';
 const browserBridge = (parentOrigin: string) => `(() => {
   // report the visible location
   const report = () => window.parent.postMessage({ type: 'rac-browser-location', url: window.location.href }, ${JSON.stringify(parentOrigin)});
+  // forward embedded reload shortcuts
+  const refresh = (event) => {
+    // intercept only one browser reload chord
+    if (event.repeat || !(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== 'r') return;
+    event.preventDefault();
+    window.parent.postMessage({ type: 'rac-browser-refresh' }, ${JSON.stringify(parentOrigin)});
+  };
   // wrap history navigation
   const wrap = (name) => {
     const original = window.history[name];
@@ -22,6 +29,7 @@ const browserBridge = (parentOrigin: string) => `(() => {
   window.addEventListener('popstate', report);
   window.addEventListener('hashchange', report);
   window.addEventListener('pageshow', report);
+  window.addEventListener('keydown', refresh);
   report();
 })();`;
 const browserBridgeTag = `<script src="${browserBridgePath}"></script>`;

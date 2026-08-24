@@ -318,8 +318,23 @@ html.software-keyboard-open .tabs { display: none; }
 .notes-toggle.latest-response-available::before { position: absolute; top: .22rem; left: .22rem; width: .5rem; height: .5rem; border: 1px solid color-mix(in srgb, var(--blue) 70%, white); border-radius: 50%; background: var(--blue); box-shadow: 0 0 .65rem color-mix(in srgb, var(--blue) 80%, transparent); content: ''; }
 .notes-toggle .notes-icon-sheet { fill: color-mix(in srgb, currentColor 18%, transparent); }
 .notes-toggle .spinner { width: 1rem; height: 1rem; }
-.notes-menu { position: absolute; z-index: var(--layer-popover); top: 0; right: calc(100% + .45rem); display: grid; width: min(18rem, calc(100vw - 4.5rem)); max-height: min(22rem, 70vh, var(--flyout-available-height, 100vh)); gap: .35rem; overflow: auto; padding: .4rem; border: 1px solid color-mix(in srgb, var(--yellow) 45%, var(--surface-1)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 94%, transparent); box-shadow: 0 .8rem 2rem #11111bcc; backdrop-filter: blur(10px); }
+.notes-menu { position: absolute; z-index: var(--layer-popover); top: 0; right: calc(100% + .45rem); display: grid; width: max-content; max-width: calc(100vw - 1rem); max-height: min(22rem, 70vh, var(--flyout-available-height, 100vh)); gap: .35rem; overflow: auto; padding: .4rem; border: 1px solid color-mix(in srgb, var(--yellow) 45%, var(--surface-1)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 94%, transparent); box-shadow: 0 .8rem 2rem #11111bcc; backdrop-filter: blur(10px); }
 .notes-menu .log-control { display: block; width: 100%; min-height: 2.6rem; overflow: hidden; padding: .55rem .65rem; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.note-row { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) auto; overflow: hidden; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: color-mix(in srgb, var(--surface-0) 52%, transparent); }
+.notes-menu .note-choice { min-width: 0; border: 0; border-radius: 0; background: transparent; }
+.note-menu-name { display: block; width: max-content; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.note-menu-actions { display: grid; grid-auto-flow: column; grid-auto-columns: 2.4rem; align-content: stretch; border-left: 1px solid var(--surface-1); }
+.notes-menu .note-menu-actions button { display: grid; width: 2.4rem; min-height: 2.6rem; padding: 0; place-items: center; border: 0; border-radius: 0; background: transparent; }
+.notes-menu .note-menu-actions button + button { border-left: 1px solid var(--surface-1); }
+.notes-menu .note-menu-rename { color: var(--yellow); }
+.notes-menu .note-menu-delete { color: var(--red); }
+.note-menu-actions svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.note-menu-rename-form { display: grid; min-width: 0; min-height: 3.25rem; grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr) 2.4rem 2.4rem; }
+.note-menu-rename-form input { min-width: 0; border: 0; border-radius: 0; padding: .5rem .6rem; background: color-mix(in srgb, var(--surface-0) 82%, transparent); color: var(--text); font-size: .72rem; }
+.notes-menu .note-menu-rename-form button { display: grid; width: 2.4rem; min-height: 3.25rem; padding: 0; place-items: center; border: 0; border-left: 1px solid var(--surface-1); border-radius: 0; background: transparent; color: var(--yellow); }
+.notes-menu .note-menu-rename-form button:last-child { color: var(--subtext-0); }
+.note-menu-rename-form svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.note-menu-error { margin: 0; padding: .35rem .5rem; color: var(--red); font: 650 .64rem/1.35 var(--font-mono); }
 .notes-menu .new-note { border-color: color-mix(in srgb, var(--yellow) 65%, var(--surface-1)); color: var(--yellow); }
 .notes-menu .save-latest-response { border-color: color-mix(in srgb, var(--blue) 72%, var(--surface-1)); color: var(--blue); }
 .bookmarks-control { position: relative; z-index: 4; }

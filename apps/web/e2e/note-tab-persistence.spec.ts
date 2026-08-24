@@ -25,7 +25,7 @@ test('restores each workspace open note and fullscreen state after switching tab
   await page.goto('/');
   const dialog = page.getByRole('dialog', { name: 'Note' });
   await page.getByRole('button', { name: 'Notes (1)' }).click();
-  await page.getByRole('button', { name: 'Cora retained note…' }).click();
+  await page.getByRole('button', { name: 'Cora retained note…', exact: true }).click();
   await expect(dialog).toContainText('Cora retained note');
   await page.getByRole('button', { name: 'Expand note' }).click();
   await expect(dialog).toHaveClass(/expanded/u);
@@ -33,7 +33,7 @@ test('restores each workspace open note and fullscreen state after switching tab
   await page.getByRole('tab', { name: 'Owen — Prompt done' }).click();
   await expect(dialog).toHaveCount(0);
   await page.getByRole('button', { name: 'Notes (1)' }).click();
-  await page.getByRole('button', { name: 'Owen retained note…' }).click();
+  await page.getByRole('button', { name: 'Owen retained note…', exact: true }).click();
   await expect(dialog).toContainText('Owen retained note');
   await expect(page.getByRole('button', { name: 'Expand note' })).toHaveAttribute('aria-pressed', 'false');
 

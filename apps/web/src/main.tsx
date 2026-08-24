@@ -2149,11 +2149,15 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   const [draft, setDraft] = useState('');
   const [loading, setLoading] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [menuRenameDraft, setMenuRenameDraft] = useState<{ id: string; title: string }>();
+  const [menuRenamingId, setMenuRenamingId] = useState<string>();
+  const [menuDeletingId, setMenuDeletingId] = useState<string>();
+  const [menuError, setMenuError] = useState('');
   const [copyState, setCopyState] = useState<'idle'|'copied'|'error'>('idle');
   const [sendState, setSendState] = useState<'idle'|'sending'|'queued'|'error'>('idle');
   const [dirtyCount, setDirtyCount] = useState(0);
   const [saveStatus, setSaveStatus] = useState<'saved'|'saving'|'error'>('saved');
-  const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen, { placement: 'left', boundarySelector: '.log', boundaryRootSelector: '.agent-view, .worktree-view' });
+  const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen, { placement: 'left', boundarySelector: '.log', boundaryRootSelector: '.agent-view, .worktree-view', contentSized: true });
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const titleEditorRef = useRef<HTMLInputElement | null>(null);
@@ -2255,6 +2259,10 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     setRenaming(false);
     setRenamePending(false);
     setTitleDraft('');
+    setMenuRenameDraft(undefined);
+    setMenuRenamingId(undefined);
+    setMenuDeletingId(undefined);
+    setMenuError('');
     activeNoteRef.current = undefined;
     draftRef.current = '';
     acknowledgedTexts.current.clear();
@@ -2477,58 +2485,129 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
       setPendingOperation(promptPendingKey, false);
     }
   };
+  // persist one note title while retaining local text
+  const renameNote = async (note: WorktreeNote, title: string) => {
+    // require one configured worktree
+    if (worktreeId === undefined) throw new Error('note rename unavailable');
+    const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/notes/${encodeURIComponent(note.id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title }) });
+    // require a complete renamed note
+    if (!response.ok) throw new Error('note rename unavailable');
+    const saved: unknown = await response.json();
+    // reject malformed rename responses
+    if (!isWorktreeNote(saved) || saved.title === undefined) throw new Error('note rename unavailable');
+    setNotes(current => current?.map(candidate => candidate.id === note.id ? { ...candidate, title: saved.title } : candidate));
+    const current = activeNoteRef.current;
+    // keep the open note synchronized
+    if (current?.id === note.id) {
+      const renamed = { ...current, title: saved.title, text: dirtyTexts.current.get(note.id) ?? draftRef.current };
+      activeNoteRef.current = renamed;
+      setActiveNote(renamed);
+      setTitleDraft(saved.title);
+    }
+    return saved.title;
+  };
   // persist a note title
   const saveTitle = async () => {
     const note = activeNoteRef.current;
     const title = titleDraft.trim();
+    // require one valid pane rename
     if (worktreeId === undefined || note === undefined || renamePending || !title) return;
+    // close unchanged names without writing
     if (title === note.title) {
       setRenaming(false);
       return;
     }
     setRenamePending(true);
     try {
-      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/notes/${encodeURIComponent(note.id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title }) });
-      if (!response.ok) throw new Error();
-      const saved: unknown = await response.json();
-      if (!isWorktreeNote(saved) || saved.title === undefined) throw new Error();
-      const renamed = { ...note, title: saved.title, text: dirtyTexts.current.get(note.id) ?? draftRef.current };
-      activeNoteRef.current = renamed;
-      setActiveNote(renamed);
-      setNotes(current => current?.map(candidate => candidate.id === note.id ? { ...candidate, title: saved.title } : candidate));
-      setTitleDraft(saved.title);
+      await renameNote(note, title);
       setRenaming(false);
     } catch { setSaveStatus('error'); }
     finally { setRenamePending(false); }
   };
-  const remove = () => {
-    const note = activeNoteRef.current;
-    if (worktreeId === undefined || note === undefined || deleting) return;
-    if (saveTimer.current !== undefined) window.clearTimeout(saveTimer.current);
-    saveTimer.current = undefined;
-    setDeleting(true);
-    saveQueue.current = saveQueue.current.then(async () => {
-      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/notes/${encodeURIComponent(note.id)}`, { method: 'DELETE' });
-      if (!response.ok) throw new Error();
-      acknowledgedTexts.current.delete(note.id);
-      dirtyTexts.current.delete(note.id);
-      queuedTexts.current.delete(note.id);
-      failedNotes.current.delete(note.id);
-      saveVersions.current.delete(note.id);
-      setDirtyCount(dirtyTexts.current.size);
-      setNotes(current => current?.filter(candidate => candidate.id !== note.id));
+  // persist an inline flyout title
+  const saveMenuTitle = async () => {
+    const title = menuRenameDraft?.title.trim();
+    const note = notes?.find(candidate => candidate.id === menuRenameDraft?.id);
+    // require one valid menu rename
+    if (note === undefined || menuRenameDraft === undefined || menuRenamingId !== undefined || !title) return;
+    // close unchanged names without writing
+    if (title === note.title) {
+      setMenuRenameDraft(undefined);
+      return;
+    }
+    setMenuRenamingId(note.id);
+    setMenuError('');
+    try {
+      await renameNote(note, title);
+      setMenuRenameDraft(undefined);
+    } catch {
+      setMenuError('Unable to rename note');
+    } finally {
+      setMenuRenamingId(undefined);
+    }
+  };
+  // remove one deleted note from local state
+  const forgetNote = (note: WorktreeNote, restoreFocusAfterClose: boolean) => {
+    acknowledgedTexts.current.delete(note.id);
+    dirtyTexts.current.delete(note.id);
+    queuedTexts.current.delete(note.id);
+    failedNotes.current.delete(note.id);
+    saveVersions.current.delete(note.id);
+    setDirtyCount(dirtyTexts.current.size);
+    setNotes(current => current?.filter(candidate => candidate.id !== note.id));
+    setMenuRenameDraft(current => current?.id === note.id ? undefined : current);
+    // close the pane when it displayed the deleted note
+    if (activeNoteRef.current?.id === note.id) {
       activeNoteRef.current = undefined;
-      clearWorktreeNoteView(worktreeId);
+      if (worktreeId !== undefined) clearWorktreeNoteView(worktreeId);
       setActiveNote(undefined);
       setExpanded(false);
       setEditing(false);
       setRenaming(false);
-      restoreTriggerFocus();
-    }).catch(() => {
+      // restore toolbar focus for pane deletes
+      if (restoreFocusAfterClose) restoreTriggerFocus();
+    }
+  };
+  // delete one note after pending saves settle
+  const deleteNote = async (note: WorktreeNote, restoreFocusAfterClose: boolean) => {
+    // discard a pending autosave for this note
+    if (activeNoteRef.current?.id === note.id && saveTimer.current !== undefined) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = undefined;
+    }
+    await saveQueue.current;
+    // require one configured worktree
+    if (worktreeId === undefined) throw new Error('note delete unavailable');
+    const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/notes/${encodeURIComponent(note.id)}`, { method: 'DELETE' });
+    // retain the note after a failed delete
+    if (!response.ok) throw new Error('note delete unavailable');
+    forgetNote(note, restoreFocusAfterClose);
+  };
+  const remove = () => {
+    const note = activeNoteRef.current;
+    // serialize pane deletes
+    if (worktreeId === undefined || note === undefined || deleting) return;
+    setDeleting(true);
+    void deleteNote(note, true).catch(() => {
+      // preserve dirty state after a failed pane delete
       if (dirtyTexts.current.has(note.id)) failedNotes.current.add(note.id);
       setDirtyCount(dirtyTexts.current.size);
       setSaveStatus('error');
     }).finally(() => setDeleting(false));
+  };
+  // delete one note from the flyout
+  const removeFromMenu = async (note: WorktreeNote) => {
+    // serialize menu deletes
+    if (menuDeletingId !== undefined || menuRenamingId !== undefined) return;
+    setMenuDeletingId(note.id);
+    setMenuError('');
+    try {
+      await deleteNote(note, false);
+    } catch {
+      setMenuError('Unable to delete note');
+    } finally {
+      setMenuDeletingId(undefined);
+    }
   };
   const close = () => {
     if (!draftRef.current.trim()) {
@@ -2551,7 +2630,27 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   const latestResponseAvailable = notes !== undefined && substantialResponse !== undefined && !notes.some(note => note.text === substantialResponse);
   const highlightLatestResponse = latestResponseAvailable && substantialResponse === latestAssistantMessage && latestAssistantMessageOverflows;
   const notesLabel = dirtyCount === 0 ? `Notes (${noteCount})` : `Notes (${noteCount}; ${dirtyCount} unsaved)`;
-  const control = <div className="notes-control" ref={anchorRef}><button ref={triggerRef} className={`log-control page-arrow notes-toggle${menuOpen || activeNote !== undefined ? ' active' : ''}${dirtyCount > 0 ? ' unsaved' : ''}${highlightLatestResponse ? ' latest-response-available' : ''}`} aria-label={notesLabel} title={notesLabel} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}{noteCount > 0 && <span className="saved-prompts-count notes-count" aria-hidden="true">{noteCount}</span>}</button>{menuOpen && createPortal(<div ref={flyoutRef} className="notes-menu" style={flyoutStyle} aria-label="Worktree notes"><button className="log-control save-latest-response" disabled={!latestResponseAvailable} onClick={() => { if (substantialResponse !== undefined) void create(substantialResponse, assistantNoteTitle(substantialResponse)); }}>Save latest response</button>{notes?.map(note => <button key={note.id} className="log-control note-choice" title={(note.title ?? note.text) || 'Blank note'} onClick={() => open(note)}>{noteName(note)}</button>)}<button className="log-control new-note" onClick={() => void create()}>+ New note</button></div>, document.body)}</div>;
+  const noteMenuBusy = menuRenamingId !== undefined || menuDeletingId !== undefined;
+  const control = <div className="notes-control" ref={anchorRef}>
+    <button ref={triggerRef} className={`log-control page-arrow notes-toggle${menuOpen || activeNote !== undefined ? ' active' : ''}${dirtyCount > 0 ? ' unsaved' : ''}${highlightLatestResponse ? ' latest-response-available' : ''}`} aria-label={notesLabel} title={notesLabel} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}{noteCount > 0 && <span className="saved-prompts-count notes-count" aria-hidden="true">{noteCount}</span>}</button>
+    {menuOpen && createPortal(<div ref={flyoutRef} className="notes-menu" style={flyoutStyle} aria-label="Worktree notes">
+      <button className="log-control save-latest-response" disabled={!latestResponseAvailable || noteMenuBusy || menuRenameDraft !== undefined} onClick={() => {
+        // save only an available response
+        if (substantialResponse !== undefined) void create(substantialResponse, assistantNoteTitle(substantialResponse));
+      }}>Save latest response</button>
+      {menuError && <p className="note-menu-error" role="alert">{menuError}</p>}
+      {notes?.map(note => {
+        // render one sticky note row
+        const label = noteName(note);
+        const editingTitle = menuRenameDraft?.id === note.id;
+        return <div className="note-row" key={note.id}>{editingTitle ? <form className="note-menu-rename-form" onSubmit={event => { event.preventDefault(); void saveMenuTitle(); }} onKeyDown={event => {
+          // save or cancel from the keyboard
+          if (event.key === 'Escape') { event.preventDefault(); setMenuRenameDraft(undefined); }
+        }}><input aria-label="Note name" value={menuRenameDraft.title} maxLength={120} autoFocus disabled={menuRenamingId !== undefined} onChange={event => setMenuRenameDraft({ id: note.id, title: event.target.value })} /><button className="log-control note-menu-rename-save" type="submit" disabled={noteMenuBusy || !menuRenameDraft.title.trim()} aria-label="Save note name" title="Save note name">{menuRenamingId === note.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>}</button><button className="log-control note-menu-rename-cancel" type="button" disabled={noteMenuBusy} aria-label="Cancel note rename" title="Cancel" onClick={() => setMenuRenameDraft(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><button className="log-control note-choice" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} title={(note.title ?? note.text) || 'Blank note'} onClick={() => open(note)}><span className="note-menu-name">{label}</span></button><span className="note-menu-actions"><button className="log-control note-menu-rename" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Rename note: ${label}`} title="Rename note" onClick={() => setMenuRenameDraft({ id: note.id, title: Array.from(note.title ?? label).slice(0, 120).join('') })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button><button className="log-control note-menu-delete" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Delete note: ${label}`} title="Delete note" onClick={() => void removeFromMenu(note)}>{menuDeletingId === note.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg>}</button></span></>}</div>;
+      })}
+      <button className="log-control new-note" disabled={noteMenuBusy || menuRenameDraft !== undefined} onClick={() => void create()}>+ New note</button>
+    </div>, document.body)}
+  </div>;
   const actionStatus = copyState === 'error' ? 'Copy failed' : sendState === 'queued' ? 'Queued' : sendState === 'error' ? 'Queue failed' : '';
   const toggleExpanded = () => setExpanded(value => {
     const next = !value;
@@ -2694,10 +2793,14 @@ function useProjectBrowser(homeUrl?: string, worktreeId?: string) {
 }
 
 type ProjectBrowserLocationMessage = { type: 'rac-browser-location'; url: string };
+type ProjectBrowserRefreshMessage = { type: 'rac-browser-refresh' };
 // recognize cooperative frame navigation reports
 const isProjectBrowserLocationMessage = (value: unknown): value is ProjectBrowserLocationMessage => value !== null && typeof value === 'object'
   && (value as ProjectBrowserLocationMessage).type === 'rac-browser-location'
   && typeof (value as ProjectBrowserLocationMessage).url === 'string';
+// recognize cooperative frame refresh requests
+const isProjectBrowserRefreshMessage = (value: unknown): value is ProjectBrowserRefreshMessage => value !== null && typeof value === 'object'
+  && (value as ProjectBrowserRefreshMessage).type === 'rac-browser-refresh';
 // render project navigation controls and content
 function ProjectBrowserPane({ url, homeUrl, worktreeId, navigationRequest, onNavigate, onClose }: { url: string; homeUrl: string; worktreeId?: string; navigationRequest?: ProjectBrowserNavigationRequest; onNavigate: (url: string) => boolean; onClose: () => void }) {
   const [loading, setLoading] = useState(true);
@@ -2720,6 +2823,13 @@ function ProjectBrowserPane({ url, homeUrl, worktreeId, navigationRequest, onNav
     setFrameSource(target);
     frameRef.current?.setAttribute('src', target);
   }, []);
+  // refresh the retained location
+  const refreshFrame = useCallback(() => {
+    expectedFrameLoad.current = true;
+    setLoading(true);
+    setFrameAwayFromKnownUrl(false);
+    loadFrame(loadedFrameSource.current);
+  }, [loadFrame]);
   // apply parent-directed navigation
   useEffect(() => {
     const explicitlyRequested = navigationRequest !== undefined && appliedNavigationSequence.current !== navigationRequest.sequence;
@@ -2734,19 +2844,23 @@ function ProjectBrowserPane({ url, homeUrl, worktreeId, navigationRequest, onNav
     loadFrame(target);
   }, [loadFrame, navigationRequest, normalizedUrl]);
   useEffect(() => {
-    // accept location reports only from this frame and project origin
-    const syncReportedLocation = (event: MessageEvent<unknown>) => {
+    // accept reports only from this frame and project origin
+    const syncReportedFrame = (event: MessageEvent<unknown>) => {
       // ignore unrelated messages
-      if (event.source !== frameRef.current?.contentWindow || event.origin !== new URL(homeUrl).origin || !isProjectBrowserLocationMessage(event.data)) return;
+      if (event.source !== frameRef.current?.contentWindow || event.origin !== new URL(homeUrl).origin) return;
+      // reload only the embedded browser
+      if (isProjectBrowserRefreshMessage(event.data)) { refreshFrame(); return; }
+      // ignore unrelated project messages
+      if (!isProjectBrowserLocationMessage(event.data)) return;
       // mark cooperative navigation
       if (onNavigate(event.data.url)) {
         loadedFrameSource.current = event.data.url;
         setFrameAwayFromKnownUrl(false);
       }
     };
-    window.addEventListener('message', syncReportedLocation);
-    return () => window.removeEventListener('message', syncReportedLocation);
-  }, [homeUrl, onNavigate]);
+    window.addEventListener('message', syncReportedFrame);
+    return () => window.removeEventListener('message', syncReportedFrame);
+  }, [homeUrl, onNavigate, refreshFrame]);
   // sync readable same-origin frame locations
   const syncFrameLocation = () => {
     const expected = expectedFrameLoad.current;
@@ -2788,13 +2902,6 @@ function ProjectBrowserPane({ url, homeUrl, worktreeId, navigationRequest, onNav
     setFrameAwayFromKnownUrl(false);
     loadFrame(homeUrl);
     onNavigate(homeUrl);
-  };
-  // refresh the retained location
-  const refreshFrame = () => {
-    expectedFrameLoad.current = true;
-    setLoading(true);
-    setFrameAwayFromKnownUrl(false);
-    loadFrame(loadedFrameSource.current);
   };
   // stop the active frame navigation
   const stopFrame = () => {
