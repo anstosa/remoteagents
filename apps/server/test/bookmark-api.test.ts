@@ -70,6 +70,54 @@ describe('chat bookmark API', () => {
     }
   }, 15_000);
 
+  it('keeps scratch bookmarks in one stable workspace group', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: true, command: 'codex' };
+    const firstAgent = { id: 'scratch-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu', title: 'Scratch' };
+    const secondAgent = { ...firstAgent, id: 'scratch-2', paneId: '%2', sessionId: 'socket:$2' };
+    const renamedBookmark = { ...bookmark, title: 'Scratch release plan' };
+    const calls: string[] = [];
+    const bookmarks = {
+      list: async (key: string) => { calls.push(`list:${key}`); return [bookmark]; },
+      // resolve the selected scratch conversation
+      currentThreadId: async () => bookmark.threadId,
+      bookmarkCurrent: async (key: string) => { calls.push(`create:${key}`); return bookmark; },
+      rename: async (key: string, id: string) => { calls.push(`rename:${key}:${id}`); return renamedBookmark; },
+      remove: async (key: string, id: string) => { calls.push(`remove:${key}:${id}`); return bookmark; }
+    };
+    const discovery = {
+      // resolve either scratch agent in the shared workspace
+      target: async (id: string) => {
+        const agent = [firstAgent, secondAgent].find(candidate => candidate.id === id);
+        return agent === undefined ? undefined : { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } };
+      },
+      // expose one selected Codex conversation
+      sessions: async () => [{ id: bookmark.threadId, relativePath: `sessions/2026/08/20/rollout-current-${bookmark.threadId}.jsonl` }],
+      dashboard: async () => ({ generation: 1, agents: [firstAgent, secondAgent], worktrees: [] })
+    };
+    const app = await buildApp({ listen: { host: '127.0.0.1', port: 8787 }, name: 'Test', publicOrigin: new URL('https://agents.example.com'), remoteServers: [], trustedProxyIps: new Set(['127.0.0.1']), pollIntervalMs: 500, newAgentCommand: 'codex', worktrees: [worktree] } as never, { auth: new AuthService(hash, Buffer.alloc(32, 25).toString('base64url')), discovery: discovery as never, bookmarks: bookmarks as never });
+    try {
+      const headers = await authenticatedHeaders(app);
+
+      const firstList = await app.inject({ method: 'GET', url: `/api/agents/${firstAgent.id}/bookmarks`, headers: { host: headers.host, cookie: headers.cookie } });
+      const secondList = await app.inject({ method: 'GET', url: `/api/agents/${secondAgent.id}/bookmarks`, headers: { host: headers.host, cookie: headers.cookie } });
+      const created = await app.inject({ method: 'POST', url: `/api/agents/${firstAgent.id}/bookmarks`, headers });
+      const renamed = await app.inject({ method: 'PATCH', url: `/api/agents/${firstAgent.id}/bookmarks/${bookmark.id}`, headers, payload: { title: renamedBookmark.title } });
+      const removed = await app.inject({ method: 'DELETE', url: `/api/agents/${secondAgent.id}/bookmarks/${bookmark.id}`, headers });
+
+      expect(firstList.json()).toEqual({ bookmarks: [bookmark], canResume: false, currentBookmarkId: bookmark.id });
+      expect(secondList.json()).toEqual(firstList.json());
+      expect(created.statusCode).toBe(201);
+      expect(renamed.json()).toEqual(renamedBookmark);
+      expect(removed.json()).toEqual(bookmark);
+      const keys = calls.map(call => call.split(':')[1]);
+      expect(new Set(keys).size).toBe(1);
+      expect(keys[0]).toMatch(/^scratch_[A-Za-z0-9_-]{40}$/u);
+    } finally {
+      await app.close();
+    }
+  }, 15_000);
+
   it('launches an inactive worktree into the selected bookmarked chat', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', saveKey: 'potato', available: true, pinned: true, command: 'codex' };

@@ -1921,6 +1921,15 @@ const bookmarkDate = (createdAt: string) => {
   return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(date);
 };
 
+// resolve one configured or scratch persistence API
+function persistenceResourceBase(worktreeId?: string, agentId?: string): string | undefined {
+  // prefer stable configured worktree storage
+  if (worktreeId !== undefined) return `/api/worktrees/${encodeURIComponent(worktreeId)}`;
+  // fall back to one live scratch agent
+  if (agentId !== undefined) return `/api/agents/${encodeURIComponent(agentId)}`;
+  return undefined;
+}
+
 // manage shared Codex chat bookmarks
 function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
   const [bookmarks, setBookmarks] = useState<CodexBookmark[]>();
@@ -1935,6 +1944,7 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
   const [deletingId, setDeletingId] = useState<string>();
   const [error, setError] = useState('');
   const loadGeneration = useRef(0);
+  const resourceBase = persistenceResourceBase(worktreeId, agentId);
   const lifecycleSwitching = usePendingOperation(restartOperationKey(worktreeId ?? 'unavailable'));
   const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen, { placement: 'left', boundarySelector: '.log', boundaryRootSelector: '.agent-view, .worktree-view', contentSized: true });
 
@@ -1969,14 +1979,14 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
 
   // load one shared bookmark group
   const load = useCallback(async () => {
-    // require one configured worktree
-    if (worktreeId === undefined) return undefined;
+    // require one persistence context
+    if (resourceBase === undefined) return undefined;
     const generation = ++loadGeneration.current;
     setLoading(true);
     setError('');
     try {
-      const query = agentId === undefined ? '' : `?agentId=${encodeURIComponent(agentId)}`;
-      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/bookmarks${query}`);
+      const query = worktreeId === undefined || agentId === undefined ? '' : `?agentId=${encodeURIComponent(agentId)}`;
+      const response = await request(`${resourceBase}/bookmarks${query}`);
       // require a successful list response
       if (!response.ok) throw new Error('bookmark list unavailable');
       const payload: unknown = await response.json();
@@ -2000,7 +2010,7 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
       // retain loading state for the newest request
       if (generation === loadGeneration.current) setLoading(false);
     }
-  }, [agentId, worktreeId]);
+  }, [agentId, resourceBase, worktreeId]);
 
   // preload the bookmark count for the closed control
   useEffect(() => {
@@ -2074,7 +2084,7 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
   const saveRename = async () => {
     const title = renameDraft?.title.trim();
     // require one valid rename operation
-    if (worktreeId === undefined || renameDraft === undefined || renamingId !== undefined || !title) return;
+    if (resourceBase === undefined || renameDraft === undefined || renamingId !== undefined || !title) return;
     const bookmark = bookmarks?.find(candidate => candidate.id === renameDraft.id);
     // close unchanged names without writing
     if (bookmark?.title === title) {
@@ -2084,7 +2094,7 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
     setRenamingId(renameDraft.id);
     setError('');
     try {
-      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/bookmarks/${encodeURIComponent(renameDraft.id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title }) });
+      const response = await request(`${resourceBase}/bookmarks/${encodeURIComponent(renameDraft.id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title }) });
       const renamed: unknown = response.ok ? await response.json() : undefined;
       // require one complete saved chat
       if (!isCodexBookmark(renamed)) throw new Error('bookmark rename unavailable');
@@ -2100,11 +2110,11 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
   // delete one saved chat link
   const remove = async (bookmark: CodexBookmark) => {
     // serialize bookmark deletes
-    if (worktreeId === undefined || deletingId !== undefined) return;
+    if (resourceBase === undefined || deletingId !== undefined) return;
     setDeletingId(bookmark.id);
     setError('');
     try {
-      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/bookmarks/${encodeURIComponent(bookmark.id)}`, { method: 'DELETE' });
+      const response = await request(`${resourceBase}/bookmarks/${encodeURIComponent(bookmark.id)}`, { method: 'DELETE' });
       // require one successful delete
       if (!response.ok) throw new Error('Unable to delete bookmark');
       setBookmarks(current => current?.filter(candidate => candidate.id !== bookmark.id));
@@ -2119,19 +2129,20 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
     }
   };
 
-  // hide bookmarks for scratch agents
-  if (worktreeId === undefined) return { control: null };
+  // hide bookmarks without any persistence context
+  if (resourceBase === undefined) return { control: null };
   const count = bookmarks?.length ?? 0;
   const label = `Bookmarked chats (${count})`;
   const busy = loading || saving || switchingId !== undefined || renamingId !== undefined || deletingId !== undefined || lifecycleSwitching;
-  const control = <div className="bookmarks-control" ref={anchorRef}><button className={`log-control page-arrow bookmarks-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18l-6-4-6 4V4Z" /></svg>}{count > 0 && <span className="saved-prompts-count bookmarks-count" aria-hidden="true">{count}</span>}</button>{menuOpen && createPortal(<div ref={flyoutRef} className="bookmarks-menu" style={flyoutStyle} aria-label="Bookmarked chats"><button className="log-control bookmark-current" type="button" disabled={agentId === undefined || busy || renameDraft !== undefined || currentBookmarkId !== undefined} onClick={() => void saveCurrent()}>{saving ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>}<span>{agentId === undefined ? 'Launch an agent to bookmark a chat' : 'Bookmark this chat'}</span></button>{error && <p className="bookmark-error" role="alert">{error}</p>}{!canResume && count > 0 && <p className="bookmark-warning">Exact chat resume is not configured for this worktree.</p>}{bookmarks?.map(bookmark => {
+  const resumeUnavailable = worktreeId === undefined ? 'Exact chat resume is not available for scratch agents.' : 'Exact chat resume is not configured for this worktree.';
+  const control = <div className="bookmarks-control" ref={anchorRef}><button className={`log-control page-arrow bookmarks-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18l-6-4-6 4V4Z" /></svg>}{count > 0 && <span className="saved-prompts-count bookmarks-count" aria-hidden="true">{count}</span>}</button>{menuOpen && createPortal(<div ref={flyoutRef} className="bookmarks-menu" style={flyoutStyle} aria-label="Bookmarked chats"><button className="log-control bookmark-current" type="button" disabled={agentId === undefined || busy || renameDraft !== undefined || currentBookmarkId !== undefined} onClick={() => void saveCurrent()}>{saving ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>}<span>{agentId === undefined ? 'Launch an agent to bookmark a chat' : 'Bookmark this chat'}</span></button>{error && <p className="bookmark-error" role="alert">{error}</p>}{!canResume && count > 0 && <p className="bookmark-warning">{resumeUnavailable}</p>}{bookmarks?.map(bookmark => {
     // render one saved chat row
     const editing = renameDraft?.id === bookmark.id;
     const current = currentBookmarkId === bookmark.id;
     return <div className={`bookmark-row${current ? ' selected' : ''}`} key={bookmark.id}>{editing ? <form className="bookmark-rename-form" onSubmit={event => { event.preventDefault(); void saveRename(); }} onKeyDown={event => {
       // save or cancel from the keyboard
       if (event.key === 'Escape') { event.preventDefault(); setRenameDraft(undefined); }
-    }}><input aria-label="Chat name" value={renameDraft.title} maxLength={120} autoFocus disabled={renamingId !== undefined} onChange={event => setRenameDraft({ id: bookmark.id, title: event.target.value })} /><button className="log-control bookmark-rename-save" type="submit" disabled={busy || !renameDraft.title.trim()} aria-label="Save chat name" title="Save chat name">{renamingId === bookmark.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>}</button><button className="log-control bookmark-rename-cancel" type="button" disabled={busy} aria-label="Cancel chat rename" title="Cancel" onClick={() => setRenameDraft(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><button className="log-control bookmark-choice" type="button" aria-current={current ? 'true' : undefined} disabled={busy || renameDraft !== undefined || !canResume} title={canResume ? bookmark.title : 'Exact chat resume is not configured for this worktree'} onClick={() => void switchTo(bookmark)}>{switchingId === bookmark.id ? <span className="spinner" /> : <span className="bookmark-details"><strong>{bookmark.title}</strong><small>{bookmarkDate(bookmark.createdAt)}</small></span>}</button><span className="bookmark-actions"><button className="log-control bookmark-rename" type="button" disabled={busy || renameDraft !== undefined} aria-label={`Rename saved chat: ${bookmark.title}`} title="Rename saved chat" onClick={() => setRenameDraft({ id: bookmark.id, title: bookmark.title })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button><button className="log-control bookmark-delete" type="button" disabled={busy || renameDraft !== undefined} aria-label={`Delete saved chat: ${bookmark.title}`} title="Delete saved chat" onClick={() => void remove(bookmark)}>{deletingId === bookmark.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg>}</button></span></>}</div>;
+    }}><input aria-label="Chat name" value={renameDraft.title} maxLength={120} autoFocus disabled={renamingId !== undefined} onChange={event => setRenameDraft({ id: bookmark.id, title: event.target.value })} /><button className="log-control bookmark-rename-save" type="submit" disabled={busy || !renameDraft.title.trim()} aria-label="Save chat name" title="Save chat name">{renamingId === bookmark.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>}</button><button className="log-control bookmark-rename-cancel" type="button" disabled={busy} aria-label="Cancel chat rename" title="Cancel" onClick={() => setRenameDraft(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><button className="log-control bookmark-choice" type="button" aria-current={current ? 'true' : undefined} disabled={busy || renameDraft !== undefined || !canResume} title={canResume ? bookmark.title : resumeUnavailable} onClick={() => void switchTo(bookmark)}>{switchingId === bookmark.id ? <span className="spinner" /> : <span className="bookmark-details"><strong>{bookmark.title}</strong><small>{bookmarkDate(bookmark.createdAt)}</small></span>}</button><span className="bookmark-actions"><button className="log-control bookmark-rename" type="button" disabled={busy || renameDraft !== undefined} aria-label={`Rename saved chat: ${bookmark.title}`} title="Rename saved chat" onClick={() => setRenameDraft({ id: bookmark.id, title: bookmark.title })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button><button className="log-control bookmark-delete" type="button" disabled={busy || renameDraft !== undefined} aria-label={`Delete saved chat: ${bookmark.title}`} title="Delete saved chat" onClick={() => void remove(bookmark)}>{deletingId === bookmark.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg>}</button></span></>}</div>;
   })}</div>, document.body)}</div>;
   return { control };
 }
@@ -2157,6 +2168,8 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   const [sendState, setSendState] = useState<'idle'|'sending'|'queued'|'error'>('idle');
   const [dirtyCount, setDirtyCount] = useState(0);
   const [saveStatus, setSaveStatus] = useState<'saved'|'saving'|'error'>('saved');
+  const resourceBase = persistenceResourceBase(worktreeId, agentId);
+  const noteViewId = worktreeId ?? (agentId === undefined ? undefined : `agent:${agentId}`);
   const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen, { placement: 'left', boundarySelector: '.log', boundaryRootSelector: '.agent-view, .worktree-view', contentSized: true });
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
@@ -2188,7 +2201,8 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   };
 
   const persist = useCallback((noteId: string, text: string, immediate = false) => {
-    if (worktreeId === undefined || (!immediate && queuedTexts.current.get(noteId) === text)) return;
+    // skip unavailable or duplicate saves
+    if (resourceBase === undefined || (!immediate && queuedTexts.current.get(noteId) === text)) return;
     queuedTexts.current.set(noteId, text);
     const version = (saveVersions.current.get(noteId) ?? 0) + 1;
     saveVersions.current.set(noteId, version);
@@ -2196,7 +2210,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     const save = async () => {
       if (!immediate && saveVersions.current.get(noteId) !== version) return;
       try {
-        const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/notes/${encodeURIComponent(noteId)}`, { method: 'PUT', keepalive: true, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
+        const response = await request(`${resourceBase}/notes/${encodeURIComponent(noteId)}`, { method: 'PUT', keepalive: true, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
         if (!response.ok) throw new Error('note save failed');
         const saved: unknown = await response.json();
         if (!isWorktreeNote(saved)) throw new Error('invalid saved note');
@@ -2220,7 +2234,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     };
     if (immediate) void save();
     else saveQueue.current = saveQueue.current.then(save, save);
-  }, [worktreeId]);
+  }, [resourceBase]);
 
   const flush = useCallback(() => {
     if (saveTimer.current !== undefined) window.clearTimeout(saveTimer.current);
@@ -2250,7 +2264,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     if (selectionCopiedTimer.current !== undefined) window.clearTimeout(selectionCopiedTimer.current);
   }, []);
   useEffect(() => {
-    const retained = worktreeId === undefined ? undefined : getWorktreeNoteView(worktreeId);
+    const retained = noteViewId === undefined ? undefined : getWorktreeNoteView(noteViewId);
     setNotes(undefined);
     setMenuOpen(false);
     setActiveNote(undefined);
@@ -2273,12 +2287,13 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     setCopyState('idle');
     setSendState('idle');
     setDirtyCount(0);
-  }, [worktreeId]);
+  }, [noteViewId]);
   useEffect(() => {
-    if (worktreeId === undefined) return;
+    // require one configured or scratch persistence context
+    if (resourceBase === undefined || noteViewId === undefined) return;
     let cancelled = false;
     setLoading(true);
-    void request(`/api/worktrees/${encodeURIComponent(worktreeId)}/notes`).then(async response => {
+    void request(`${resourceBase}/notes`).then(async response => {
       if (!response.ok) throw new Error();
       const payload: unknown = await response.json();
       if (payload === null || typeof payload !== 'object' || !Array.isArray((payload as { notes?: unknown }).notes)) throw new Error();
@@ -2286,10 +2301,10 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
       if (cancelled) return;
       for (const note of loaded) acknowledgedTexts.current.set(note.id, note.text);
       setNotes(loaded);
-      const retained = getWorktreeNoteView(worktreeId);
+      const retained = getWorktreeNoteView(noteViewId);
       if (retained !== undefined) {
         const note = loaded.find(candidate => candidate.id === retained.noteId);
-        if (note === undefined) clearWorktreeNoteView(worktreeId);
+        if (note === undefined) clearWorktreeNoteView(noteViewId);
         else {
           activeNoteRef.current = note;
           draftRef.current = note.text;
@@ -2305,7 +2320,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
-  }, [worktreeId]);
+  }, [noteViewId, resourceBase]);
   useEffect(() => {
     if (!menuOpen) return;
     const close = (event: MouseEvent) => {
@@ -2359,7 +2374,8 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     setDraft(text);
     setActiveNote(opened);
     setExpanded(expandOnOpen);
-    if (worktreeId !== undefined) setWorktreeNoteView(worktreeId, { noteId: note.id, expanded: expandOnOpen });
+    // retain this context's open note
+    if (noteViewId !== undefined) setWorktreeNoteView(noteViewId, { noteId: note.id, expanded: expandOnOpen });
     setEditing(editingOnOpen);
     setRenaming(false);
     setTitleDraft(note.title ?? '');
@@ -2395,11 +2411,12 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     }, 500);
   };
   const load = async () => {
-    if (worktreeId === undefined) return undefined;
+    // require one persistence context
+    if (resourceBase === undefined) return undefined;
     if (notes !== undefined) return notes;
     setLoading(true);
     try {
-      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/notes`);
+      const response = await request(`${resourceBase}/notes`);
       if (!response.ok) throw new Error();
       const payload: unknown = await response.json();
       if (payload === null || typeof payload !== 'object' || !Array.isArray((payload as { notes?: unknown }).notes)) throw new Error();
@@ -2414,10 +2431,11 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   };
   // create an optionally titled note
   const create = async (text = '', title?: string) => {
-    if (worktreeId === undefined || loading) return;
+    // require one idle persistence context
+    if (resourceBase === undefined || loading) return;
     setLoading(true);
     try {
-      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/notes`, { method: 'POST', ...(title === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title }) }) });
+      const response = await request(`${resourceBase}/notes`, { method: 'POST', ...(title === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title }) }) });
       const note: unknown = response.ok ? await response.json() : undefined;
       if (!isWorktreeNote(note)) throw new Error();
       acknowledgedTexts.current.set(note.id, note.text);
@@ -2487,9 +2505,9 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   };
   // persist one note title while retaining local text
   const renameNote = async (note: WorktreeNote, title: string) => {
-    // require one configured worktree
-    if (worktreeId === undefined) throw new Error('note rename unavailable');
-    const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/notes/${encodeURIComponent(note.id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title }) });
+    // require one persistence context
+    if (resourceBase === undefined) throw new Error('note rename unavailable');
+    const response = await request(`${resourceBase}/notes/${encodeURIComponent(note.id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title }) });
     // require a complete renamed note
     if (!response.ok) throw new Error('note rename unavailable');
     const saved: unknown = await response.json();
@@ -2511,7 +2529,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     const note = activeNoteRef.current;
     const title = titleDraft.trim();
     // require one valid pane rename
-    if (worktreeId === undefined || note === undefined || renamePending || !title) return;
+    if (resourceBase === undefined || note === undefined || renamePending || !title) return;
     // close unchanged names without writing
     if (title === note.title) {
       setRenaming(false);
@@ -2559,7 +2577,8 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     // close the pane when it displayed the deleted note
     if (activeNoteRef.current?.id === note.id) {
       activeNoteRef.current = undefined;
-      if (worktreeId !== undefined) clearWorktreeNoteView(worktreeId);
+      // clear this context's retained note
+      if (noteViewId !== undefined) clearWorktreeNoteView(noteViewId);
       setActiveNote(undefined);
       setExpanded(false);
       setEditing(false);
@@ -2576,9 +2595,9 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
       saveTimer.current = undefined;
     }
     await saveQueue.current;
-    // require one configured worktree
-    if (worktreeId === undefined) throw new Error('note delete unavailable');
-    const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/notes/${encodeURIComponent(note.id)}`, { method: 'DELETE' });
+    // require one persistence context
+    if (resourceBase === undefined) throw new Error('note delete unavailable');
+    const response = await request(`${resourceBase}/notes/${encodeURIComponent(note.id)}`, { method: 'DELETE' });
     // retain the note after a failed delete
     if (!response.ok) throw new Error('note delete unavailable');
     forgetNote(note, restoreFocusAfterClose);
@@ -2586,7 +2605,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   const remove = () => {
     const note = activeNoteRef.current;
     // serialize pane deletes
-    if (worktreeId === undefined || note === undefined || deleting) return;
+    if (resourceBase === undefined || note === undefined || deleting) return;
     setDeleting(true);
     void deleteNote(note, true).catch(() => {
       // preserve dirty state after a failed pane delete
@@ -2616,7 +2635,8 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     }
     flush();
     activeNoteRef.current = undefined;
-    if (worktreeId !== undefined) clearWorktreeNoteView(worktreeId);
+    // clear this context's retained note
+    if (noteViewId !== undefined) clearWorktreeNoteView(noteViewId);
     setActiveNote(undefined);
     setExpanded(false);
     setEditing(false);
@@ -2624,7 +2644,8 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     restoreTriggerFocus();
   };
 
-  if (worktreeId === undefined) return { active: false, expanded: false, appendToActive, canAppendToActive, canCreate: false, control: null, createWithText: create, pane: null };
+  // hide notes without any persistence context
+  if (resourceBase === undefined) return { active: false, expanded: false, appendToActive, canAppendToActive, canCreate: false, control: null, createWithText: create, pane: null };
   const noteCount = notes?.length ?? 0;
   const substantialResponse = latestSubstantialResponse(latestAssistantMessage, promptHistory);
   const latestResponseAvailable = notes !== undefined && substantialResponse !== undefined && !notes.some(note => note.text === substantialResponse);
@@ -2633,7 +2654,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   const noteMenuBusy = menuRenamingId !== undefined || menuDeletingId !== undefined;
   const control = <div className="notes-control" ref={anchorRef}>
     <button ref={triggerRef} className={`log-control page-arrow notes-toggle${menuOpen || activeNote !== undefined ? ' active' : ''}${dirtyCount > 0 ? ' unsaved' : ''}${highlightLatestResponse ? ' latest-response-available' : ''}`} aria-label={notesLabel} title={notesLabel} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}{noteCount > 0 && <span className="saved-prompts-count notes-count" aria-hidden="true">{noteCount}</span>}</button>
-    {menuOpen && createPortal(<div ref={flyoutRef} className="notes-menu" style={flyoutStyle} aria-label="Worktree notes">
+    {menuOpen && createPortal(<div ref={flyoutRef} className="notes-menu" style={flyoutStyle} aria-label={worktreeId === undefined ? 'Scratch notes' : 'Worktree notes'}>
       <button className="log-control save-latest-response" disabled={!latestResponseAvailable || noteMenuBusy || menuRenameDraft !== undefined} onClick={() => {
         // save only an available response
         if (substantialResponse !== undefined) void create(substantialResponse, assistantNoteTitle(substantialResponse));
@@ -2654,7 +2675,8 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   const actionStatus = copyState === 'error' ? 'Copy failed' : sendState === 'queued' ? 'Queued' : sendState === 'error' ? 'Queue failed' : '';
   const toggleExpanded = () => setExpanded(value => {
     const next = !value;
-    if (worktreeId !== undefined && activeNote !== undefined) setWorktreeNoteView(worktreeId, { noteId: activeNote.id, expanded: next });
+    // retain this context's pane state
+    if (noteViewId !== undefined && activeNote !== undefined) setWorktreeNoteView(noteViewId, { noteId: activeNote.id, expanded: next });
     return next;
   });
   const inferEditing = (target: EventTarget | null) => {
@@ -2669,7 +2691,8 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     }
     if (window.matchMedia('(max-width: 600px)').matches) {
       setExpanded(true);
-      if (worktreeId !== undefined && activeNote !== undefined) setWorktreeNoteView(worktreeId, { noteId: activeNote.id, expanded: true });
+      // retain mobile expansion state
+      if (noteViewId !== undefined && activeNote !== undefined) setWorktreeNoteView(noteViewId, { noteId: activeNote.id, expanded: true });
     }
     setEditing(true);
   };

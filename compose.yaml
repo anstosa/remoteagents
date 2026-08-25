@@ -12,14 +12,8 @@ services:
     env_file:
       - .env
     environment:
-      RAC_CONFIG: /config/remote-agent-console.docker.json
+      RAC_CONFIG: /workspace/config/remote-agent-console.docker.json
       RAC_CONFIG_WRITE_PATH: /workspace/config/remote-agent-console.docker.json
-      RAC_HOST_PROC: /host-proc
-      RAC_HOST_TMUX_DIR: /host-tmux
-      RAC_HOST_TMUX_SOURCE: ${HOST_TMUX_DIR:-${HOME}/.local/state/tmux/tmux-${HOST_UID:-1000}}
-      RAC_HOST_UID: ${HOST_UID:-1000}
-      RAC_TMUX_BIN: /usr/local/bin/host-tmux
-      RAC_HOST_REPOSITORY: ${RAC_HOST_REPOSITORY:-${PWD}}
       # linux host networking reaches project ports through loopback
       RAC_PROJECT_PROXY_HOST: ${RAC_PROJECT_PROXY_HOST:-127.0.0.1}
       RAC_DEVICE_NAMES_FILE: /workspace/.data/device-names.json
@@ -34,19 +28,6 @@ services:
       RAC_INTEGRATION_AUDIT_FILE: /workspace/.data/integration-audit.jsonl
     volumes:
       - ./:/workspace:rw
-      - ${HOME}/.bash_aliases:/home/node/.bash_aliases:ro
-      - ${HOME}/.zshenv:/home/node/.zshenv:ro
-      - ${HOME}/.zprofile:/home/node/.zprofile:ro
-      - ${HOME}/.zshrc:/home/node/.zshrc:ro
-      - ${HOME}/.gitignore:/home/node/.config/git/ignore:ro
-      - ${HOME}/.config/gh/hosts.yml:/home/node/.config/gh/hosts.yml:ro
-      - ./config/remote-agent-console.docker.json:/config/remote-agent-console.docker.json:ro
-      # Discovery needs the host tmux server and process tree. The socket is
-      # mounted read-only; interaction remains limited to tmux's own protocol.
-      - /proc:/host-proc:ro
-      - ${HOST_TMUX_DIR:-${HOME}/.local/state/tmux/tmux-${HOST_UID:-1000}}:/host-tmux:ro
-      - /home/linuxbrew:/home/linuxbrew:ro
-      - /usr/lib:/host-lib:ro
       - codex-home:/home/node/.codex
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/healthz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
@@ -57,6 +38,7 @@ services:
 
   cloudflared:
     image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
     # The host configuration and tunnel credential are intentionally
     # owner-readable only. Run this sidecar as root so its read-only bind mounts
     # remain usable without weakening their host permissions.
@@ -69,8 +51,18 @@ services:
         condition: service_healthy
     command: tunnel --config /etc/cloudflared/config.yml run
     volumes:
-      - ./config/cloudflared.yml:/etc/cloudflared/config.yml:ro
-      - ${CLOUDFLARED_CREDENTIALS_FILE:?set CLOUDFLARED_CREDENTIALS_FILE to the tunnel credential JSON path}:/etc/cloudflared/credentials.json:ro
+      - type: bind
+        source: ./config/cloudflared.yml
+        target: /etc/cloudflared/config.yml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CLOUDFLARED_CREDENTIALS_FILE:-./config/cloudflared.credentials.json}
+        target: /etc/cloudflared/credentials.json
+        read_only: true
+        bind:
+          create_host_path: false
 
 volumes:
   codex-home:

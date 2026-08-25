@@ -4,6 +4,7 @@
   "packageManager": "pnpm@11.13.1",
   "scripts": {
     "dev": "pnpm --parallel --filter @rac/server --filter @rac/web dev",
+    "config:check": "pnpm --filter @rac/server config:check",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",

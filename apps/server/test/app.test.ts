@@ -690,6 +690,63 @@ describe('worktree notes API', () => {
       expect(keys).toEqual(['list:potato', 'create:potato:Assistant response', 'update:potato:note-identifier-002', 'rename:potato:note-identifier-002', 'delete:potato:note-identifier-001']);
     } finally { await notesApp.close(); }
   }, 15_000);
+
+  it('keeps scratch notes available through the live agent', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, command: 'codex' };
+    const agent = { id: 'scratch-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu', title: 'Scratch' };
+    const stored: Array<{ id: string; text: string; title?: string }> = [{ id: 'note-identifier-001', text: 'Scratch note' }];
+    const keys: string[] = [];
+    const notes = {
+      list: async (key: string) => { keys.push(key); return [...stored]; },
+      create: async (key: string, title?: string) => { keys.push(key); const note = { id: 'note-identifier-002', text: '', ...(title === undefined ? {} : { title }) }; stored.unshift(note); return note; },
+      update: async (key: string, noteId: string, text: string) => {
+        keys.push(key);
+        const note = stored.find(candidate => candidate.id === noteId);
+        // require one fixture note
+        if (note === undefined) return undefined;
+        note.text = text;
+        return { ...note };
+      },
+      rename: async (key: string, noteId: string, title: string) => {
+        keys.push(key);
+        const note = stored.find(candidate => candidate.id === noteId);
+        // require one fixture note
+        if (note === undefined) return undefined;
+        note.title = title;
+        return { ...note };
+      },
+      delete: async (key: string, noteId: string) => { keys.push(key); const index = stored.findIndex(candidate => candidate.id === noteId); return index < 0 ? undefined : stored.splice(index, 1)[0]; }
+    };
+    const discovery = {
+      // resolve the live scratch agent
+      target: async (id: string) => id === agent.id ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined,
+      dashboard: async () => ({ generation: 1, agents: [agent], worktrees: [] })
+    };
+    const notesApp = await buildApp({ ...config, worktrees: [worktree] } as never, { auth: new AuthService(hash, Buffer.alloc(32, 26).toString('base64url')), discovery: discovery as never, notes: notes as never });
+    try {
+      const boot = await notesApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await notesApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      const base = `/api/agents/${agent.id}/notes`;
+
+      const listed = await notesApp.inject({ method: 'GET', url: base, headers: { host: headers.host, cookie: headers.cookie } });
+      const created = await notesApp.inject({ method: 'POST', url: base, headers, payload: { title: 'Scratch checklist' } });
+      const updated = await notesApp.inject({ method: 'PUT', url: `${base}/note-identifier-002`, headers, payload: { text: 'Keep this in scratch' } });
+      const renamed = await notesApp.inject({ method: 'PATCH', url: `${base}/note-identifier-002`, headers, payload: { title: 'Scratch plan' } });
+      const deleted = await notesApp.inject({ method: 'DELETE', url: `${base}/note-identifier-001`, headers });
+      const missing = await notesApp.inject({ method: 'GET', url: '/api/agents/missing/notes', headers: { host: headers.host, cookie: headers.cookie } });
+
+      expect(listed.json()).toEqual({ notes: [{ id: 'note-identifier-001', text: 'Scratch note' }] });
+      expect(created.statusCode).toBe(201);
+      expect(updated.json()).toEqual({ id: 'note-identifier-002', text: 'Keep this in scratch', title: 'Scratch checklist' });
+      expect(renamed.json()).toEqual({ id: 'note-identifier-002', text: 'Keep this in scratch', title: 'Scratch plan' });
+      expect(deleted.json()).toEqual({ id: 'note-identifier-001', text: 'Scratch note' });
+      expect(missing.statusCode).toBe(404);
+      expect(new Set(keys).size).toBe(1);
+      expect(keys[0]).toMatch(/^scratch_[A-Za-z0-9_-]{40}$/u);
+    } finally { await notesApp.close(); }
+  }, 15_000);
 });
 
 describe('workspace files API', () => {

@@ -43,7 +43,7 @@ import { configuredWorktreeForWorkspace } from './workspaces/resolver.js';
 import { WorkspaceFileService } from './workspace-files/service.js';
 import { instanceIconSvg, isInstanceIcon } from './instance-icon.js';
 import { instanceAttention, RemoteInstanceStatusPoller, validInstanceStatusRequest, type InstanceStatus } from './instance-status.js';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { defaultIntegrationConfig } from './config/schema.js';
 import { OrchestrationService } from './orchestration/index.js';
 import { IntegrationAuthService, registerIntegrationAuthServer, type IntegrationScope, type LocalIntegrationSubject } from './integrations/auth/index.js';
@@ -58,7 +58,8 @@ import { CodexAccountService, safeAccountId, type AccountRateLimitWindow, type A
 import { CodexBookmarkService } from './bookmarks/service.js';
 
 export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; bookmarks?: CodexBookmarkService; skills?: SkillService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'> };
-const cookieName = '__Host-rac';
+// derive one stable opaque scratch persistence group
+const scratchSaveKey = (workspace: string) => `scratch_${createHash('sha256').update(workspace).digest('base64url').slice(0, 40)}`;
 // bound full history scans
 const logMetadataRefreshMs = 30_000;
 const body = (request: FastifyRequest): Record<string, unknown> => (request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {});
@@ -113,6 +114,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     });
   });
   const expectedHost = config.publicOrigin.host;
+  const secureOrigin = config.publicOrigin.protocol === 'https:';
+  const cookieName = secureOrigin ? '__Host-rac' : 'rac-local';
+  const websocketScheme = secureOrigin ? 'wss' : 'ws';
   const projectFrameSources = [...new Set(config.worktrees.flatMap(worktree => worktree.projectUrl === undefined ? [] : [new URL(worktree.projectUrl).origin]))];
   const frameSourcePolicy = `frame-src 'self'${projectFrameSources.length === 0 ? '' : ` ${projectFrameSources.join(' ')}`}`;
   const forbidden = () => Object.assign(new Error('forbidden'), { statusCode: 403 });
@@ -226,7 +230,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return instanceAttention({ agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent) })) });
   };
   dashboardUpdates.setLoader(dashboard);
-  app.addHook('onSend', async (_request, reply, payload) => { reply.header('Cache-Control', 'no-store').header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains').header('X-Frame-Options', 'DENY').header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()').header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups').header('Cross-Origin-Resource-Policy', 'same-origin').header('Content-Security-Policy', `default-src 'self'; connect-src 'self' wss://${expectedHost}${integrationConfig.realtime.enabled ? ' https://api.openai.com' : ''}; style-src 'self' 'unsafe-inline'; ${frameSourcePolicy}; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`); return payload; });
+  app.addHook('onSend', async (_request, reply, payload) => {
+    reply.header('Cache-Control', 'no-store').header('X-Frame-Options', 'DENY').header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()').header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups').header('Cross-Origin-Resource-Policy', 'same-origin').header('Content-Security-Policy', `default-src 'self'; connect-src 'self' ${websocketScheme}://${expectedHost}${integrationConfig.realtime.enabled ? ' https://api.openai.com' : ''}; style-src 'self' 'unsafe-inline'; ${frameSourcePolicy}; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
+    // publish HSTS only for HTTPS deployments
+    if (secureOrigin) reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    return payload;
+  });
   // expose the same shared services through remote transports
   if (integrationConfig.enabled) {
     const resource = `${config.publicOrigin.origin}/mcp`;
@@ -357,7 +366,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     await refreshRemoteServers(remotes);
     return { servers: [{ url: config.publicOrigin.origin, name: server.name, ...(server.icon === undefined ? {} : { icon: server.icon }), attention: localAttention }, ...remotes] };
   });
-  app.post('/api/auth/login', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request, reply) => { browser(request, true); const data = body(request); const preauth = request.headers['x-csrf-token']; if (typeof data.password !== 'string' || typeof preauth !== 'string') return reply.code(401).send({ error: 'invalid credentials' }); const s = await auth.login(data.password, preauth); if (!s) return reply.code(401).send({ error: 'invalid credentials' }); reply.setCookie(cookieName, auth.sign(s), { path: '/', secure: true, httpOnly: true, sameSite: 'lax', signed: false, maxAge: 400 * 24 * 60 * 60 }); return await sessionState(s, control.connect(s.id)); });
+  app.post('/api/auth/login', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request, reply) => { browser(request, true); const data = body(request); const preauth = request.headers['x-csrf-token']; if (typeof data.password !== 'string' || typeof preauth !== 'string') return reply.code(401).send({ error: 'invalid credentials' }); const s = await auth.login(data.password, preauth); if (!s) return reply.code(401).send({ error: 'invalid credentials' }); reply.setCookie(cookieName, auth.sign(s), { path: '/', secure: secureOrigin, httpOnly: true, sameSite: 'lax', signed: false, maxAge: 400 * 24 * 60 * 60 }); return await sessionState(s, control.connect(s.id)); });
   app.post('/api/auth/take-control', async (request, reply) => {
     const s = session(request, true);
     const providedName = body(request).deviceName;
@@ -415,7 +424,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // require the configured host bridge
     return available === undefined ? reply.code(503).send({ error: 'Server update checks are unavailable on this deployment.' }) : { available };
   });
-  app.post('/api/auth/logout', async (request, reply) => { const s = session(request, true); control.release(s.id); auth.logout(s.id); reply.clearCookie(cookieName, { path: '/', secure: true, httpOnly: true, sameSite: 'lax' }); return reply.code(204).send(); });
+  app.post('/api/auth/logout', async (request, reply) => { const s = session(request, true); control.release(s.id); auth.logout(s.id); reply.clearCookie(cookieName, { path: '/', secure: secureOrigin, httpOnly: true, sameSite: 'lax' }); return reply.code(204).send(); });
   app.get('/api/dashboard', async (request) => { controlled(request); return await dashboardUpdates.refresh(); });
   app.post('/api/dashboard/ticket', async (request) => { const s = controlled(request, true); return { ticket: tickets.mint(s.id, 'dashboard', 'dashboard').id }; });
   app.get('/api/cleanup', async (request) => { controlled(request); const targets = await cleanup.scan(); await dashboardUpdates.refresh().catch(() => undefined); return { targets }; });
@@ -432,6 +441,14 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const worktree = configuredWorktree(id);
     return worktree === undefined ? undefined : worktree.saveKey ?? worktree.id;
   };
+  // resolve durable persistence for one live agent
+  const agentPersistence = async (id: string) => {
+    const target = await discovery.target(id);
+    // require one current agent target
+    if (target === undefined) return undefined;
+    const worktree = configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
+    return { worktree, saveKey: worktree?.saveKey ?? worktree?.id ?? scratchSaveKey(target.agent.workspace) };
+  };
   // resolve the observed branch for one configured worktree
   const reviewBranch = async (id: string): Promise<string | undefined> => {
     const discovered = await discovery.dashboard(config.worktrees);
@@ -444,6 +461,63 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // rename one note
   app.patch('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); const title = body(request).title; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid note title' }); const note = await notes.rename(saveKey, noteId, title); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
   app.delete('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const note = await notes.delete(saveKey, noteId); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
+  // list one live agent's notes
+  app.get('/api/agents/:id/notes', async (request, reply) => {
+    controlled(request);
+    const persistence = await agentPersistence((request.params as { id: string }).id);
+    // require one current persistence group
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    const stored = await notes.list(persistence.saveKey);
+    return stored === undefined ? reply.code(400).send({ error: 'invalid note group' }) : { notes: stored };
+  });
+  // create one live agent note
+  app.post('/api/agents/:id/notes', async (request, reply) => {
+    controlled(request, true);
+    const persistence = await agentPersistence((request.params as { id: string }).id);
+    const title = body(request).title;
+    // require one current persistence group
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    // require one bounded optional title
+    if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0'))) return reply.code(400).send({ error: 'invalid note title' });
+    const note = await notes.create(persistence.saveKey, typeof title === 'string' ? title : undefined);
+    return note === undefined ? reply.code(409).send({ error: 'note limit reached' }) : reply.code(201).send(note);
+  });
+  // update one live agent note
+  app.put('/api/agents/:id/notes/:noteId', { bodyLimit: 128_000 }, async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const persistence = await agentPersistence(id);
+    const text = body(request).text;
+    // require one current persistence group
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    // require bounded note content
+    if (typeof text !== 'string' || text.length > 30_000 || text.includes('\0')) return reply.code(400).send({ error: 'invalid note' });
+    const note = await notes.update(persistence.saveKey, noteId, text);
+    return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note;
+  });
+  // rename one live agent note
+  app.patch('/api/agents/:id/notes/:noteId', async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const persistence = await agentPersistence(id);
+    const title = body(request).title;
+    // require one current persistence group
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    // require one bounded title
+    if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid note title' });
+    const note = await notes.rename(persistence.saveKey, noteId, title);
+    return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note;
+  });
+  // delete one live agent note
+  app.delete('/api/agents/:id/notes/:noteId', async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const persistence = await agentPersistence(id);
+    // require one current persistence group
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    const note = await notes.delete(persistence.saveKey, noteId);
+    return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note;
+  });
   // list one worktree's shared chat bookmarks
   app.get('/api/worktrees/:id/bookmarks', async (request, reply) => {
     controlled(request);
@@ -471,18 +545,32 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     }
     return { bookmarks: stored, canResume: configuredWorktree(id)?.resumeCommand !== undefined, ...(currentBookmarkId === undefined ? {} : { currentBookmarkId }) };
   });
+  // list one live agent's chat bookmarks
+  app.get('/api/agents/:id/bookmarks', async (request, reply) => {
+    controlled(request);
+    const id = (request.params as { id: string }).id;
+    const persistence = await agentPersistence(id);
+    // require one current persistence group
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    const stored = await bookmarks.list(persistence.saveKey);
+    // require one valid shared group
+    if (stored === undefined) return reply.code(400).send({ error: 'invalid bookmark group' });
+    const sessions = await discovery.sessions(id);
+    const threadId = sessions === undefined ? undefined : await bookmarks.currentThreadId(sessions);
+    const currentBookmarkId = stored.find(bookmark => bookmark.threadId === threadId)?.id;
+    return { bookmarks: stored, canResume: persistence.worktree?.resumeCommand !== undefined, ...(currentBookmarkId === undefined ? {} : { currentBookmarkId }) };
+  });
   // bookmark the current top-level Codex chat
   app.post('/api/agents/:id/bookmarks', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
     controlled(request, true);
     const id = (request.params as { id: string }).id;
-    const target = await discovery.target(id);
-    const worktree = target === undefined ? undefined : configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
-    // require one configured live agent
-    if (target === undefined || worktree === undefined) return reply.code(404).send({ error: 'configured agent unavailable' });
+    const persistence = await agentPersistence(id);
+    // require one live agent
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
     const sessions = await discovery.sessions(id);
     // require one exact pane-to-session mapping
     if (sessions === undefined || sessions.length === 0) return reply.code(409).send({ error: 'Unable to identify this agent\'s Codex chat.' });
-    const bookmark = await bookmarks.bookmarkCurrent(worktree.saveKey ?? worktree.id, sessions);
+    const bookmark = await bookmarks.bookmarkCurrent(persistence.saveKey, sessions);
     return bookmark === undefined ? reply.code(409).send({ error: 'This agent has an ambiguous or unavailable Codex chat.' }) : reply.code(201).send(bookmark);
   });
   // rename one shared chat bookmark
@@ -506,6 +594,29 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // require one configured group
     if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
     const removed = await bookmarks.remove(saveKey, bookmarkId);
+    return removed === undefined ? reply.code(404).send({ error: 'bookmark unavailable' }) : removed;
+  });
+  // rename one live agent chat bookmark
+  app.patch('/api/agents/:id/bookmarks/:bookmarkId', async (request, reply) => {
+    controlled(request, true);
+    const { id, bookmarkId } = request.params as { id: string; bookmarkId: string };
+    const persistence = await agentPersistence(id);
+    const title = body(request).title;
+    // require one current persistence group
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    // require one bounded display title
+    if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid bookmark title' });
+    const renamed = await bookmarks.rename(persistence.saveKey, bookmarkId, title);
+    return renamed === undefined ? reply.code(404).send({ error: 'bookmark unavailable' }) : renamed;
+  });
+  // delete one live agent chat bookmark
+  app.delete('/api/agents/:id/bookmarks/:bookmarkId', async (request, reply) => {
+    controlled(request, true);
+    const { id, bookmarkId } = request.params as { id: string; bookmarkId: string };
+    const persistence = await agentPersistence(id);
+    // require one current persistence group
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    const removed = await bookmarks.remove(persistence.saveKey, bookmarkId);
     return removed === undefined ? reply.code(404).send({ error: 'bookmark unavailable' }) : removed;
   });
   // preview one configured worktree file

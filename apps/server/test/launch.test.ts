@@ -4,15 +4,22 @@ const { run, expandLaunch } = vi.hoisted(() => ({ run: vi.fn(), expandLaunch: vi
 vi.mock('../src/tmux/command.js', () => ({ run }));
 vi.mock('../src/config/schema.js', () => ({ expandLaunch }));
 
-import { LaunchService, expandCommand, expandHomeCommand, hostCommand, scratchLabel } from '../src/launch/service.js';
+import { LaunchService, expandCommand, expandHomeCommand, scratchLabel } from '../src/launch/service.js';
+import { hostCommand } from '../src/tmux/interactive-shell.js';
 import { startNamedReplacementSession, worktreeSessionName } from '../src/tmux/session-name.js';
 import type { SocketRef, Worktree } from '../src/domain/models.js';
 
 const hostTmuxDirectory = process.env.RAC_HOST_TMUX_DIR;
+const hostInteractiveShell = process.env.RAC_HOST_INTERACTIVE_SHELL;
+const hostPath = process.env.RAC_HOST_PATH;
 afterEach(() => {
   run.mockReset();
   if (hostTmuxDirectory === undefined) delete process.env.RAC_HOST_TMUX_DIR;
   else process.env.RAC_HOST_TMUX_DIR = hostTmuxDirectory;
+  if (hostInteractiveShell === undefined) delete process.env.RAC_HOST_INTERACTIVE_SHELL;
+  else process.env.RAC_HOST_INTERACTIVE_SHELL = hostInteractiveShell;
+  if (hostPath === undefined) delete process.env.RAC_HOST_PATH;
+  else process.env.RAC_HOST_PATH = hostPath;
 });
 
 describe('LaunchService', () => {
@@ -72,12 +79,13 @@ describe('LaunchService', () => {
 
     await expect(service.launchHome()).resolves.toBe(true);
 
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['/home/linuxbrew/.linuxbrew/bin/zsh', '-lc', expect.stringContaining('source "$HOME/.zshrc"')]));
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['/usr/bin/zsh', '-lc', expect.stringContaining('source "$HOME/.zshrc"')]));
     expect(run).toHaveBeenLastCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', expect.stringMatching(/^rac-[\w-]+$/u), '@rac_display_label', scratchLabel]);
   });
 
-  it('restores the host Node and OMX PATH before starting a host pane', () => {
-    expect(hostCommand('exec codex', '/home/ubuntu')).toContain('export PATH="$HOME/n/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH"');
+  it('restores an explicitly configured host PATH before starting a host pane', () => {
+    expect(hostCommand('exec codex', '/home/ubuntu', '/opt/node/bin:/usr/bin:/bin')).toContain("export PATH='/opt/node/bin:/usr/bin:/bin'");
+    expect(hostCommand('exec codex', '/home/ubuntu')).not.toContain('export PATH=');
   });
 
   it('names a new tmux session after the worktree directory', async () => {
@@ -167,7 +175,20 @@ describe('LaunchService', () => {
     await expect(service.launch('owen')).resolves.toBe(true);
 
     expect(panes.pastePrompt).not.toHaveBeenCalled();
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['/home/linuxbrew/.linuxbrew/bin/zsh', '-lc', expect.stringContaining('source "$HOME/.zshrc"')]));
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['/usr/bin/zsh', '-lc', expect.stringContaining('source "$HOME/.zshrc"')]));
+  });
+
+  it('reuses an existing pane for the configured host shell', async () => {
+    process.env.RAC_HOST_INTERACTIVE_SHELL = '/bin/bash';
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const worktree: Worktree = { id: 'bash-project', label: 'Bash project', path: '/worktrees/bash-project', identity: '/worktrees/bash-project', hostPath: '/home/operator/bash-project', available: true, command: 'codex' };
+    const panes = { listPanes: async () => [{ paneId: '%7', sessionId: '$7', pid: 456, path: worktree.hostPath!, command: 'bash', title: '', socket }], pastePrompt: vi.fn(async () => true), enter: vi.fn(async () => true) };
+    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [socket] }, panes as never);
+
+    await expect(service.launch(worktree.id)).resolves.toBe(true);
+
+    expect(panes.pastePrompt).toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
   });
 
   it('does not launch Owen inside a transient stack command session', async () => {

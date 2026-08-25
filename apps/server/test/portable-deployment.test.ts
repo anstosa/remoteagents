@@ -8,12 +8,15 @@ async function repositoryFile(path: string): Promise<string> {
 
 describe('portable deployment', () => {
   // keep worktree mounts outside tracked compose
-  it('uses an environment-controlled proxy and no base worktree mounts', async () => {
+  it('keeps the default service container-local and the tunnel opt-in', async () => {
     const compose = await repositoryFile('compose.yaml');
 
     expect(compose).toContain('RAC_PROJECT_PROXY_HOST: ${RAC_PROJECT_PROXY_HOST:-127.0.0.1}');
     expect(compose).toContain('RAC_BOOKMARKS_FILE: /workspace/.data/bookmarks.json');
+    expect(compose).toContain('profiles: ["tunnel"]');
     expect(compose).not.toMatch(/:\/worktrees\//);
+    expect(compose).not.toContain('/host-proc');
+    expect(compose).not.toContain('/home/linuxbrew');
     expect(compose).not.toContain('network_mode: "service:remote-agent-console"');
   });
 
@@ -27,7 +30,20 @@ describe('portable deployment', () => {
     expect(ignore).toContain('config/remote-agent-console.docker.json');
     expect(example).toContain('${HOME}/.codex:/home/node/.codex:rw');
     expect(example).not.toContain('.codex/auth.json:/home/node/.codex/auth.json');
+    expect(example).toContain('${HOST_TMUX_BIN:-/usr/bin/tmux}:/host-tools/tmux:ro');
+    expect(example).toContain('RAC_HOST_INTERACTIVE_SHELL:');
     expect(example).toContain('/absolute/path/to/project:/worktrees/project:rw');
+  });
+
+  // prevent architecture-specific host runtime assumptions
+  it('keeps the image and starter configuration portable', async () => {
+    const dockerfile = await repositoryFile('Dockerfile');
+    const config = JSON.parse(await repositoryFile('config/remote-agent-console.example.json')) as { publicOrigin?: string; worktrees?: unknown[] };
+
+    expect(dockerfile).not.toContain('x86_64-linux-gnu');
+    expect(dockerfile).not.toContain('/home/linuxbrew');
+    expect(config.publicOrigin).toBe('http://127.0.0.1:8787');
+    expect(config.worktrees).toEqual([]);
   });
 
   // require target-host source builds

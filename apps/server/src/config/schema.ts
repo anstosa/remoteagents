@@ -33,7 +33,8 @@ const sourceSchema = z.object({
   newAgentCommand: command.default('codex'),
   integrations: integrationFeatures,
   launch: launchSchema.optional(),
-  worktrees: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), label: z.string().max(120).optional(), path: z.string().min(1), hostPath: z.string().startsWith('/').optional(), saveKey: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/).optional(), pinned: z.boolean().default(false), port: z.number().int().min(1).max(65535).optional(), hostname: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/).optional(), command: command.optional(), resumeCommand: command.optional(), launch: launchSchema.optional(), commands: stackCommands.optional(), newTask: command.optional(), push: pushAction }).strict()).min(1).max(100)
+  // allow a scratch-only first run
+  worktrees: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), label: z.string().max(120).optional(), path: z.string().min(1), hostPath: z.string().startsWith('/').optional(), saveKey: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/).optional(), pinned: z.boolean().default(false), port: z.number().int().min(1).max(65535).optional(), hostname: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/).optional(), command: command.optional(), resumeCommand: command.optional(), launch: launchSchema.optional(), commands: stackCommands.optional(), newTask: command.optional(), push: pushAction }).strict()).max(100).default([])
 }).strict();
 export type ConfigInput = z.input<typeof sourceSchema>;
 export type RemoteServer = { url: URL };
@@ -42,10 +43,17 @@ export type ValidatedConfig = { listen: { host: '127.0.0.1'|'::1'; port: number 
 // support legacy test fixtures
 export const defaultIntegrationConfig: IntegrationConfig = integrationFeatures.parse(undefined);
 
-// require one canonical HTTPS origin
-function canonicalOrigin(value: string, label = 'publicOrigin'): URL {
-  let url: URL; try { url = new URL(value); } catch { throw new Error(`${label} must be an absolute HTTPS URL`); }
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')) throw new Error(`${label} must be canonical HTTPS origin only`);
+// require one canonical browser origin
+function canonicalOrigin(value: string, label = 'publicOrigin', allowLoopbackHttp = false): URL {
+  let url: URL;
+  // reject malformed absolute origins
+  try { url = new URL(value); } catch { throw new Error(`${label} must be an absolute URL`); }
+  const localHttpHosts = new Set(['127.0.0.1', '[::1]', 'localhost']);
+  const allowedLocalHttp = allowLoopbackHttp && url.protocol === 'http:' && localHttpHosts.has(url.hostname);
+  // require HTTPS except for a direct loopback browser
+  if (url.protocol !== 'https:' && !allowedLocalHttp) throw new Error(`${label} must use HTTPS or loopback HTTP`);
+  // reject credentials and non-origin URL parts
+  if (url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')) throw new Error(`${label} must be a canonical origin only`);
   return url;
 }
 function validateNewTask(template: string): void {
@@ -74,7 +82,7 @@ export async function validateConfig(input: unknown): Promise<ValidatedConfig> {
   const parsed = sourceSchema.parse(input);
   if (!loopback.has(parsed.listen.host)) throw new Error('listener must bind to loopback');
   if (parsed.proxy.trustedSourceIps.some((ip) => !loopback.has(ip))) throw new Error('only loopback proxy sources are permitted');
-  const publicOrigin = canonicalOrigin(parsed.publicOrigin);
+  const publicOrigin = canonicalOrigin(parsed.publicOrigin, 'publicOrigin', true);
   // retain only canonical remote origins
   const remoteServers = parsed.remoteServers.map(server => ({ url: canonicalOrigin(server.url, 'remote server') }));
   const serverUrls = new Set([publicOrigin.origin]);

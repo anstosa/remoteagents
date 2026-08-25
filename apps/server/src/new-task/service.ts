@@ -6,7 +6,7 @@ import type { Worktree } from '../domain/models.js';
 import { cleanAndPushedOrDetached, type GitCommand } from '../git/worktree-state.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { run } from '../tmux/command.js';
-import { hostInteractiveShell, interactiveShell, interactiveShellBootstrap } from '../tmux/interactive-shell.js';
+import { hostCommand, hostInteractiveShellPath, interactiveShellBootstrap, interactiveShellPath } from '../tmux/interactive-shell.js';
 import { startNamedReplacementSession, worktreeSessionName } from '../tmux/session-name.js';
 
 export type NewTaskAvailability = { enabled: boolean; reason?: string };
@@ -35,10 +35,10 @@ export class NewTaskService {
     const path = worktree.hostPath ?? worktree.identity;
     const home = dirname(path);
     const task = worktree.newTask.replaceAll('{taskId}', taskId());
-    const script = `export HOME=${quote(home)}\nexport PATH="$HOME/n/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH"\ncd -- ${quote(path)} && eval ${quote(task)}`;
+    const script = hostCommand(`cd -- ${quote(path)} && eval ${quote(task)}`, home);
     const session = worktreeSessionName(path);
     const currentSession = target.agent.sessionId.slice(target.agent.socketFingerprint.length + 1);
-    const shell = process.env.RAC_HOST_TMUX_DIR === undefined ? interactiveShell : hostInteractiveShell;
+    const shell = process.env.RAC_HOST_TMUX_DIR === undefined ? interactiveShellPath() : hostInteractiveShellPath();
     if (!await startNamedReplacementSession(this.tmuxBinary, target.socket.path, currentSession, session, ['-c', path, shell, '-lc', interactiveShellBootstrap(script, home, shell)], this.command)) return false;
     return await this.tmux.closeSession(target.socket, currentSession);
   }

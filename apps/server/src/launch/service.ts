@@ -5,7 +5,7 @@ import type { ValidatedConfig } from '../config/schema.js';
 import { expandLaunch } from '../config/schema.js';
 import { run } from '../tmux/command.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
-import { hostInteractiveShell, interactiveShell, interactiveShellBootstrap } from '../tmux/interactive-shell.js';
+import { hostCommand, hostInteractiveShellPath, interactiveShellBootstrap, interactiveShellName, interactiveShellPath } from '../tmux/interactive-shell.js';
 import { startNamedReplacementSession, worktreeSessionName } from '../tmux/session-name.js';
 import { ProcSocketFinder, type SocketFinder } from '../discovery/service.js';
 import type { Pane, SocketRef, Worktree } from '../domain/models.js';
@@ -20,22 +20,20 @@ export function expandHomeCommand(command: string, home: string): string {
   return expandCommand(command, { identity: home });
 }
 
-export function hostCommand(command: string, home: string): string {
-  const directory = `'${home.replaceAll("'", "'\\''")}'`;
-  return `export HOME=${directory}\nexport PATH="$HOME/n/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH"\n${command}`;
-}
-
 export const scratchLabel = '~ Scratch';
 
 export class LaunchService {
   private pending = new Set<string>(); private readonly root = `/tmp/remote-agent-console-${process.getuid?.() ?? 0}`; private readonly tmux = process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux'; private readonly hostSocket = process.env.RAC_HOST_TMUX_DIR === undefined ? undefined : join(process.env.RAC_HOST_TMUX_DIR, 'default');
+  private readonly localShell = interactiveShellPath();
+  private readonly hostShell = hostInteractiveShellPath();
+  private readonly hostShellName = interactiveShellName(this.hostShell);
   constructor(private readonly config: ValidatedConfig, private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly panes: TmuxAdapter = new TmuxAdapter()) {}
   private async existingPane(worktree: Worktree): Promise<{ socket: SocketRef; pane: Pane } | undefined> {
     const roots = [worktree.hostPath, worktree.identity].filter((path): path is string => path !== undefined);
     for (const socket of await this.finder.find()) for (const pane of await this.panes.listPanes(socket)) {
       if (!roots.some(root => pane.path === root || pane.path.startsWith(`${root}/`))) continue;
       if (pane.sessionName?.startsWith('rac-stack-')) continue;
-      if (pane.command !== 'zsh') continue;
+      if (pane.command !== this.hostShellName) continue;
       return { socket, pane };
     }
     return undefined;
@@ -55,13 +53,13 @@ export class LaunchService {
       const home = hostPath === undefined ? process.env.HOME ?? '/' : dirname(hostPath);
       const command = expandHomeCommand(this.config.newAgentCommand, home);
       if (this.hostSocket !== undefined) {
-        if ((await run(this.tmux, ['-S', this.hostSocket, 'new-session', '-d', '-s', session, '-c', home, hostInteractiveShell, '-lc', interactiveShellBootstrap(hostCommand(command, home), home, hostInteractiveShell)])).code !== 0) return false;
+        if ((await run(this.tmux, ['-S', this.hostSocket, 'new-session', '-d', '-s', session, '-c', home, this.hostShell, '-lc', interactiveShellBootstrap(hostCommand(command, home), home, this.hostShell)])).code !== 0) return false;
         return await this.labelScratchSession(session);
       }
       await mkdir(this.root, { recursive: true, mode: 0o700 });
       const descriptor = join(this.root, `${id}.json`);
       const handle = await open(descriptor, 'wx', 0o600);
-      await handle.writeFile(JSON.stringify({ program: interactiveShell, args: ['-lc', interactiveShellBootstrap(command)], cwd: home }));
+      await handle.writeFile(JSON.stringify({ program: this.localShell, args: ['-lc', interactiveShellBootstrap(command, '$HOME', this.localShell)], cwd: home }));
       await handle.close();
       const runner = new URL('./runner.js', import.meta.url).pathname;
       const created = await run(this.tmux, ['new-session', '-d', '-s', session, process.execPath, runner, descriptor]);
@@ -120,14 +118,14 @@ export class LaunchService {
       if (this.hostSocket !== undefined && command !== undefined) {
         const hostWorktree = { ...worktree, identity: worktree.hostPath ?? worktree.identity };
         const home = dirname(hostWorktree.identity);
-        const tail = ['-c', hostWorktree.identity, hostInteractiveShell, '-lc', interactiveShellBootstrap(hostCommand(expandCommand(command, hostWorktree), home), home, hostInteractiveShell)];
+        const tail = ['-c', hostWorktree.identity, this.hostShell, '-lc', interactiveShellBootstrap(hostCommand(expandCommand(command, hostWorktree), home), home, this.hostShell)];
         return await startNamedReplacementSession(this.tmux, this.hostSocket, session, session, tail);
       }
       await mkdir(this.root, { recursive: true, mode: 0o700 });
       const descriptor = join(this.root, `${id}.json`);
       const payload = command === undefined
         ? { program: worktree.launch!.program, args: expandLaunch(worktree.launch!, worktree), cwd: worktree.identity }
-        : { program: interactiveShell, args: ['-lc', interactiveShellBootstrap(expandCommand(command, worktree))], cwd: worktree.identity };
+        : { program: this.localShell, args: ['-lc', interactiveShellBootstrap(expandCommand(command, worktree), '$HOME', this.localShell)], cwd: worktree.identity };
       const handle = await open(descriptor, 'wx', 0o600);
       await handle.writeFile(JSON.stringify(payload));
       await handle.close();

@@ -123,7 +123,7 @@ test('saves the newest response with at least fifty words and only highlights cu
 
   await page.getByRole('button', { name: 'Close note' }).click();
   await notesButton.click();
-  await expect(page.getByRole('button', { name: 'Release checklist' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Release checklist', exact: true })).toBeVisible();
   await notesButton.click();
 
   await emit('Same completed response refreshed', firstResponse, true);

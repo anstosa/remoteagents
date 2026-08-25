@@ -1,1 +1,10 @@
-{"listen":{"host":"127.0.0.1","port":8787},"name":"My server","publicOrigin":"https://agents.example.com","remoteServers":[{"url":"https://other-agents.example.com"}],"proxy":{"trustedSourceIps":["127.0.0.1","::1"]},"tmux":{"pollIntervalMs":500},"newAgentCommand":"codex","worktrees":[{"id":"my-project","label":"My project","path":"/absolute/path/to/project","hostPath":"/absolute/host/path/to/project","port":3000,"hostname":"my-project.example.com","command":"codex","resumeCommand":"codex resume {threadId} -C .","pinned":true,"newTask":"detach && new {taskId}","push":{"label":"Commit/Push","prompt":"review, commit, and push"},"saveKey":"my-project"}],"integrations":{"enabled":false,"mcp":{"readEnabled":true,"writeEnabled":false,"dangerousEnabled":false},"realtime":{"enabled":false,"writeToolsEnabled":false},"multiInstance":{"enabled":false}}}
+{
+  "listen": {
+    "host": "127.0.0.1",
+    "port": 8787
+  },
+  "name": "My server",
+  "publicOrigin": "http://127.0.0.1:8787",
+  "newAgentCommand": "codex",
+  "worktrees": []
+}

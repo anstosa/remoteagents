@@ -5,6 +5,8 @@ dist/
 .env
 compose.override.yaml
 config/cloudflared.yml
+config/cloudflared.credentials.json
+config/host-tmux
 config/remote-agent-console.docker.json
 coverage/
 playwright-report/

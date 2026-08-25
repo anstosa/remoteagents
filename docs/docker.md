@@ -1,161 +1,149 @@
 # Run with Docker Compose
 
-Compose runs the console and a `cloudflared` sidecar. The sidecar maintains the
-outbound Cloudflare Tunnel and reconnects after the laptop changes networks.
-Both services use host networking so they can share the loopback-only origin
-without coupling the tunnel connector to the application container lifecycle.
-The console reads the host tmux socket directory and process table to discover
-the host user's existing Codex sessions; it does not discover sessions owned by
-another UID.
-It also uses the host's tmux client, ensuring the client protocol matches the
-host tmux server. On Ubuntu hosts this requires a read-only mount of the host
-runtime libraries because the Homebrew tmux binary may require a newer glibc
-than the container image.
-The source checkout is mounted at `/workspace`, so the default worktree changes
-to this repository and runs its configured `codex` command.
+The default Compose deployment runs only Remote Agent Console. It includes
+Node, Codex, zsh, and tmux, and it can launch scratch agents in container-local
+tmux without access to the host process tree, host worktrees, or a tunnel.
+Host tmux integration and Cloudflare are independent opt-in layers.
 
-The supplied Docker configuration keeps host worktrees out of the tracked base
-Compose file. Copy `compose.override.example.yaml` to the ignored
-`compose.override.yaml`, then add the configured host worktrees under
-`/worktrees`. When adding a worktree, add both a `worktrees` entry in the ignored
-`config/remote-agent-console.docker.json` and a matching bind mount in the local
-override. Set `path` to the container path used to launch an agent and
-`hostPath` to the matching host path so existing tmux panes are associated with
-that worktree instead of appearing as a duplicate idle card.
-For linked Git worktrees, also expose the absolute common Git directory path
-referenced by each worktree's `.git` file at the same container path through a
-read-only bind. Keep each content mount writable only when the console must stage
-prompt attachments there. Before making shared Git metadata read-only, ensure
-the repository ignores `node_modules/.remote-agent-console/` or add
-`/node_modules/.remote-agent-console/` to the host common Git `info/exclude`.
-Mount read-only agent worktrees read-only.
+## Start the scratch-only console
 
-## Start
-
-1. Create `.env` from `.env.example` and supply an Argon2id password hash, a
-   session secret, and the absolute path to the Cloudflare Tunnel credential
-   JSON. Wrap the Argon2 value in single quotes because its `$` characters
-   otherwise trigger Compose variable interpolation. Keep
-   `RAC_PROJECT_PROXY_HOST=127.0.0.1` on Linux host networking. Override it only
-   when the target container runtime exposes host project ports through another
-   stable name, such as `host.docker.internal`.
-2. Update `config/remote-agent-console.docker.json`: set `publicOrigin` to the
-   canonical HTTPS origin (for example, `https://agents.santosa.dev`) and
-   adjust each worktree's `path`, `hostPath`, and `command` or the `/workspace`
-   mount if needed. Set an optional `newTask` command to expose **New Task**
-   for that worktree; `{taskId}` is replaced with an 8-character URL-safe
-   random task ID. The command runs only when the working copy is clean and
-   fully pushed. Set the same optional `saveKey` on related worktrees when
-   they should share chat bookmarks and sticky notes. Set `HOST_UID` in `.env`
-   if the host tmux server is not owned by UID 1000.
-3. Copy `config/cloudflared.example.yml` to `config/cloudflared.yml`. Set the
-   tunnel UUID and preserve the browser-facing hostname in each `hostname` and
-   `httpHostHeader`. Route both project previews and the console to port 8787;
-   the console forwards configured project hosts to their fixed loopback ports
-   and injects browser navigation reporting. Leave `credentials-file` as
-   `/etc/cloudflared/credentials.json`; Compose maps the host credentials file
-   there read-only. The sidecar reads these mounts as root, so you can keep both
-   host files owner-readable only (for example, modes `600` and `400`
-   respectively).
-4. Build and start both services:
+1. Create the ignored environment and Docker configuration files:
 
    ```bash
-   docker compose up --build
+   cp .env.example .env
+   cp config/remote-agent-console.example.json config/remote-agent-console.docker.json
    ```
 
-   For background operation, use `docker compose up -d --build`. The service is
-   configured with `restart: unless-stopped`, so Docker restarts it after a
-   daemon or process restart unless it was explicitly stopped.
+2. Generate and set `RAC_PASSWORD_HASH` and `RAC_SESSION_SECRET` in `.env`.
+   Wrap the Argon2 value in single quotes because its `$` characters otherwise
+   trigger Compose interpolation.
 
-5. Configure ChatGPT accounts from **Global settings → Add account**. Open the
-   displayed ChatGPT device-login link, enter its one-time code, then select the
-   new account in the same menu. Repeat this for each account. The named
-   `codex-home` volume preserves the private login files between rebuilds.
-   Adding an account does not select it. If an account query fails, use its
-   **Re-login** action to replace only that account's credentials without
-   changing the active selection.
+3. Validate the configuration before building:
 
-   Opening Global settings refreshes the usage windows and available reset
-   count for every configured account. Selecting another account atomically
-   changes the Codex login, then restarts open idle worktrees so their resumed
-   sessions use it. Working worktrees and worktrees waiting for an answer are
-   left untouched.
-
-   Deployments that launch agents through the host tmux server must expose the
-   same host Codex home to the container. Put this host-specific bind mount in
-   the ignored `compose.override.yaml`:
-
-   ```yaml
-   services:
-     remote-agent-console:
-       volumes:
-         - ${HOME}/.codex:/home/node/.codex:rw
+   ```bash
+   pnpm config:check --compose config/remote-agent-console.docker.json
    ```
 
-   Mount the complete directory, not only `auth.json`. Codex replaces the
-   credential file atomically during refreshes and account changes. A
-   single-file bind mount remains attached to the replaced inode, so the
-   console can read or update stale credentials instead of the host login.
+4. Build and start the console:
 
-## Agent shell configuration
+   ```bash
+   docker compose up -d --build
+   docker compose ps
+   curl http://127.0.0.1:8787/healthz
+   ```
 
-The Compose service mounts `${HOME}/.zshenv`, `${HOME}/.zprofile`,
-`${HOME}/.zshrc`, and `${HOME}/.bash_aliases` into the container. Console-managed
-agents start from interactive Homebrew zsh shells, which load the operator's
-normal zsh configuration before running the configured command. Configure
-commands with an alias name directly:
+Open `http://127.0.0.1:8787`. The starter configuration intentionally has no
+worktrees. Use **New Agent** to launch a scratch agent inside the container.
+Loopback HTTP is local-only; configure canonical HTTPS before remote access.
+
+## Add container-managed worktrees
+
+The repository checkout is already mounted at `/workspace`. Add it or other
+bind-mounted projects to `config/remote-agent-console.docker.json`:
 
 ```json
-{ "id": "main", "path": "/workspace", "command": "codex", "resumeCommand": "codex resume {threadId} -C ." }
-{ "id": "research", "path": "/workspace/research", "command": "alex", "resumeCommand": "alex resume {threadId} -C ." }
+{
+  "id": "remoteagents",
+  "path": "/workspace",
+  "command": "codex",
+  "resumeCommand": "codex resume {threadId} -C ."
+}
 ```
 
-All console-managed Codex launch paths, including worktree launch, scratch
-launch, change directory, and new task, therefore use the same zsh functions,
-aliases, PATH, and hooks as an operator-opened terminal.
+For additional projects, copy `compose.override.example.yaml` to the ignored
+`compose.override.yaml`, remove the host-tmux settings if they are not needed,
+and add each project bind under `/worktrees`. The configuration `path` must
+match the container bind destination.
 
-Shell configuration is trusted code and must work inside the container: use
-container paths (such as `/workspace`) and ensure their executables are present
-in the image. Changes apply to the next worktree launch; no rebuild is needed.
+## Connect to the host tmux server
 
-The Compose setup uses Linux host networking so the console's loopback-only
-listener remains available at `127.0.0.1:8787` on the Docker host. The bundled
-`cloudflared` service is the only public ingress and does not publish a Docker
-port. It runs in its own host network namespace, so rebuilding the application
-does not require recreating the connector. Both services use
-`restart: unless-stopped`, so Docker restores them after a reboot or network
-interruption as long as Compose has not been explicitly stopped. A local health
-check is available at:
+Copy `compose.override.example.yaml` to `compose.override.yaml` when the console
+must discover and control Codex sessions already running on the host. The
+override adds the host process tree, tmux socket, tmux client, Codex home, and
+worktree mounts. For every host-backed worktree:
 
-```bash
-curl http://127.0.0.1:8787/healthz
-```
+- Set `path` to its container path.
+- Set `hostPath` to the corresponding absolute host path.
+- Add a matching bind mount to `compose.override.yaml`.
+- For linked Git worktrees, mount the common Git directory at the same absolute
+  path referenced by the worktree's `.git` file.
+- Keep research-only worktrees read-only.
+
+The host bridge is controlled by environment variables rather than image
+assumptions:
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `HOST_TMUX_BIN` | Host tmux executable or wrapper mounted into the container | `/usr/bin/tmux` |
+| `HOST_TMUX_DIR` | Host tmux socket directory | `$HOME/.local/state/tmux/tmux-$HOST_UID` |
+| `HOST_UID` | UID owning the host tmux server | `1000` |
+| `RAC_HOST_INTERACTIVE_SHELL` | Absolute zsh or bash path executed by the host tmux server | `/usr/bin/zsh` |
+| `RAC_HOST_PATH` | Complete PATH exported before host agent and stack commands | `/usr/local/bin:/usr/bin:/bin` |
+| `RAC_INTERACTIVE_SHELL` | Absolute zsh or bash path for container-managed sessions | `/usr/bin/zsh` |
+
+The mounted tmux client must run inside the container and speak the same
+protocol as the host server. On hosts whose tmux binary needs incompatible
+runtime libraries, point `HOST_TMUX_BIN` at an installation-local wrapper and
+add its binary and library mounts to the ignored override. The tracked image no
+longer assumes Homebrew, an x86-64 loader, or a particular host library layout.
+
+Mount the complete host `${HOME}/.codex` directory, not only `auth.json`. Codex
+replaces credentials atomically during refreshes and account changes; a
+single-file bind can remain attached to a stale inode.
+
+## Add the optional Cloudflare Tunnel
+
+1. Change `publicOrigin` in the Docker configuration to the canonical HTTPS
+   origin, such as `https://agents.example.com`.
+2. Copy `config/cloudflared.example.yml` to the ignored
+   `config/cloudflared.yml` and configure the tunnel UUID and hostname.
+3. Set `CLOUDFLARED_CREDENTIALS_FILE` in `.env` to the absolute credential JSON
+   path.
+4. Start the tunnel profile:
+
+   ```bash
+   docker compose --profile tunnel up -d --build
+   docker compose --profile tunnel ps
+   ```
+
+Both services use host networking. The application remains bound to loopback,
+and `cloudflared` provides the public ingress. Keep
+`RAC_PROJECT_PROXY_HOST=127.0.0.1` on Linux host networking unless the container
+runtime provides project ports through another stable name.
+
+## Account configuration
+
+Use **Global settings → Add account** after startup. The named `codex-home`
+volume preserves container-local account files between rebuilds. Host-tmux
+deployments should use the complete host Codex-home bind from the override so
+host and console launches select the same account.
 
 ## Operations
 
 ```bash
 docker compose logs -f remote-agent-console
-docker compose logs -f cloudflared
+docker compose --profile tunnel logs -f cloudflared
 docker compose restart remote-agent-console
 docker compose stop                 # prevents automatic restart
-docker compose down                 # removes the container but retains Codex login
+docker compose down                 # retains the Codex login volume
 docker compose down -v              # also removes the Codex login volume
 ```
 
 Set `CODEX_VERSION` in the shell or `.env` before building to use a different
-Codex package version. The image defaults to `0.144.5`.
+Codex package version. The image default is defined in `compose.yaml`.
 
 ## Remote deployment
 
-Keep `.env`, `compose.override.yaml`, `config/cloudflared.yml`, and
-`config/remote-agent-console.docker.json` local to each host. Deploy by updating
-and building inside the target checkout:
+Keep `.env`, `compose.override.yaml`, `config/cloudflared.yml`, tunnel
+credentials, and `config/remote-agent-console.docker.json` local to each host.
+Deploy by updating and building inside the target checkout:
 
 ```bash
 ssh target-host \
   'cd /path/to/remoteagents && git pull --ff-only && docker compose up -d --build && docker compose ps'
 ```
 
+Add `--profile tunnel` to both Compose commands when that host uses the tunnel.
 Do not synchronize a source tree, Docker image, generated web assets, or local
-configuration between hosts. Each host pulls the same repository revision and
-builds its own image with its own ignored configuration.
+configuration between hosts. Each host pulls the same revision and builds with
+its own ignored configuration.

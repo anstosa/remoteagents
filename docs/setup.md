@@ -2,7 +2,7 @@
 
 ## Security boundary
 
-This is a **single trusted operator** console: terminal and prompt access execute code as the Unix account running the server. It binds only to loopback; never expose it directly to the Internet. Publish it only through an HTTPS reverse proxy/tunnel that preserves the configured Host and Origin.
+This is a **single trusted operator** console: terminal and prompt access execute code as the Unix account running the server. It binds only to loopback; never expose it directly to the Internet. Loopback HTTP is supported for local evaluation only. Publish the console beyond the local machine only through an HTTPS reverse proxy or tunnel that preserves the configured Host and Origin.
 
 ## Prerequisites
 
@@ -11,7 +11,7 @@ Linux with `/proc`, tmux, Node 22+ (Node 24 is supported), pnpm, a C/C++ build t
 ```bash
 pnpm install
 cp config/remote-agent-console.example.json ~/remote-agent-console.json
-# Edit every absolute path and the HTTPS publicOrigin.
+# The starter configuration is valid scratch-only loopback HTTP.
 node -e "require('argon2').hash('choose-a-long-password',{type:require('argon2').argon2id}).then(console.log)"
 node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
@@ -19,9 +19,14 @@ export RAC_PASSWORD_HASH='paste-the-argon2id-hash'
 export RAC_SESSION_SECRET='paste-unique-32+-random-base64url-bytes'
 export RAC_INSTANCE_STATUS_SECRET='paste-shared-32+-random-base64url-bytes'
 export RAC_CONFIG="$HOME/remote-agent-console.json"
+pnpm config:check "$RAC_CONFIG"
 pnpm build
 pnpm start
 ```
+
+Open `http://127.0.0.1:8787`. Leave `worktrees` empty or omit it entirely to
+launch scratch agents without configuring a repository. Before publishing the
+console, replace `publicOrigin` with its canonical HTTPS origin.
 
 When `remoteServers` connects multiple console instances, configure the same
 separately generated `RAC_INSTANCE_STATUS_SECRET` on every peer. Keep each
@@ -48,11 +53,13 @@ paths and project-local tooling:
 }
 ```
 
-The `codex` command is resolved from an interactive Homebrew zsh shell after
-loading the operator's `~/.zshenv` and `~/.zshrc` (which may in turn source
-`~/.bash_aliases`). This keeps console-launched worktree, scratch,
-change-directory, and new-task sessions on the same Codex/OMX launch policy as
-operator-opened zsh sessions.
+The `codex` command is resolved from an interactive zsh shell by default.
+Set `RAC_INTERACTIVE_SHELL` for container or direct sessions and
+`RAC_HOST_INTERACTIVE_SHELL` for host-tmux sessions. Absolute zsh and bash paths
+are supported; each loads the operator's normal `.zshenv`/`.zshrc` or `.bashrc`
+before starting the configured command. Set `RAC_HOST_PATH` to a complete PATH
+when host commands require executables outside the host shell's normal startup
+environment.
 
 Set `resumeCommand` to enable exact saved-chat switching. It must contain one
 `{threadId}` placeholder. The console validates this capability before closing
@@ -97,6 +104,11 @@ bookmark and note groups. Changing a deployed worktree's key selects another
 group; it does not move entries from the previous group automatically. Save keys
 may contain letters, numbers, underscores, and hyphens and are limited to 80
 characters.
+
+Scratch agents also expose bookmarks and notes. The console derives their
+persistence group from the scratch workspace, so scratch agents opened in the
+same directory share entries across restarts. Exact bookmark resume still
+requires a configured worktree with `resumeCommand`.
 
 The default server listener is `127.0.0.1:8787`; `/healthz` is loopback-only and reveals only `{ "ok": true }`. Do not put passwords, prompts, session cookies, CSRF tokens, or WebSocket tickets in configuration or logs.
 

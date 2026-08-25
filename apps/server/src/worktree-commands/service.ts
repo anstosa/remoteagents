@@ -6,11 +6,16 @@ import { stackActions, type StackAction, type Worktree } from '../domain/models.
 import { run } from '../tmux/command.js';
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-const commandPath = '/usr/local/bin/host-tmux';
 type Command = (binary: string, args: string[]) => Promise<{ code: number; stdout: string; stderr?: string }>;
 type StackOperation = { action: StackAction; session: string; startedAt: string; completedAt?: string; logFile?: string };
 export type StackOperationLog = { action: StackAction; active: boolean; startedAt: string; completedAt?: string; output: string };
 const maxStackLogBytes = 128 * 1024;
+
+// prepend an explicitly configured host executable path
+const hostPathExport = () => {
+  const path = process.env.RAC_HOST_PATH?.trim();
+  return path ? `export PATH=${quote(path)}; ` : '';
+};
 
 // remove terminal controls from persisted command output
 const plainLog = (value: string) => value
@@ -36,6 +41,7 @@ const readLogTail = async (path: string): Promise<string> => {
 
 export class WorktreeCommandService {
   private readonly socket = process.env.RAC_HOST_TMUX_DIR === undefined ? undefined : join(process.env.RAC_HOST_TMUX_DIR, 'default');
+  private readonly tmuxBinary = process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux';
   private readonly hostWorkspace: string | undefined;
   private readonly statusCache = new Map<string, { value: boolean; expiresAt: number }>();
   private readonly statusRefreshes = new Map<string, Promise<void>>();
@@ -122,7 +128,7 @@ export class WorktreeCommandService {
       try {
         const hostFile = join(this.hostWorkspace!, '.data', 'stack-status', name);
         await mkdir(dirname(containerFile), { recursive: true, mode: 0o700 });
-        const script = `export PATH="$HOME/n/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; cd -- ${quote(worktree.hostPath ?? worktree.identity)}; { ${command}; }; printf '%s' "$?" > ${quote(hostFile)}`;
+        const script = `${hostPathExport()}cd -- ${quote(worktree.hostPath ?? worktree.identity)}; { ${command}; }; printf '%s' "$?" > ${quote(hostFile)}`;
         if (!await this.detached(worktree, script)) return;
         for (let attempt = 0; attempt < 20; attempt += 1) {
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -186,7 +192,7 @@ export class WorktreeCommandService {
   private async sessionStatus(session: string): Promise<'active'|'absent'|'unknown'> {
     // reject unavailable host tmux access
     if (this.socket === undefined) return 'unknown';
-    const result = await this.command(commandPath, ['-S', this.socket, 'has-session', '-t', `=${session}`]);
+    const result = await this.command(this.tmuxBinary, ['-S', this.socket, 'has-session', '-t', `=${session}`]);
     // recognize an existing session
     if (result.code === 0) return 'active';
     // preserve injected command compatibility and explicit absence
@@ -216,8 +222,8 @@ export class WorktreeCommandService {
       await mkdir(dirname(logFile), { recursive: true, mode: 0o700 });
     }
     const invocation = hostLogFile === undefined ? command : `{ ${command}; } > ${quote(hostLogFile)} 2>&1`;
-    const script = `export PATH="$HOME/n/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"; cd -- ${quote(directory)} && ${invocation}`;
-    const launched = (await this.command(commandPath, ['-S', this.socket, 'new-session', '-d', '-s', session, '-c', directory, '/bin/bash', '-lc', script])).code === 0;
+    const script = `${hostPathExport()}cd -- ${quote(directory)} && ${invocation}`;
+    const launched = (await this.command(this.tmuxBinary, ['-S', this.socket, 'new-session', '-d', '-s', session, '-c', directory, '/bin/bash', '-lc', script])).code === 0;
     // return simple status probes without operation metadata
     if (!launched || action === undefined) return launched ? session : undefined;
     return { action, session, startedAt: new Date().toISOString(), ...(logFile === undefined ? {} : { logFile }) };

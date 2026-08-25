@@ -109,8 +109,9 @@ device names, and optional push subscriptions—stays in local JSON files.
 - An HTTPS reverse proxy or tunnel for access beyond the local machine
 
 Docker Compose is the recommended deployment because it packages Node, Codex,
-and the native build/runtime dependencies while still connecting to the host
-tmux server.
+tmux, and the native build/runtime dependencies. It starts in an isolated
+scratch-only mode; connecting to a host tmux server and adding a public tunnel
+are separate opt-in steps.
 
 ## Quick start
 
@@ -133,7 +134,11 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 ```
 
 Set `RAC_PASSWORD_HASH`, `RAC_SESSION_SECRET`, and `RAC_CONFIG` in `.env`, then
-edit every absolute path and `publicOrigin` in the JSON configuration.
+validate the scratch-only starter configuration:
+
+```bash
+pnpm config:check ~/remote-agent-console.json
+```
 
 ### 2. Run directly
 
@@ -142,33 +147,41 @@ pnpm build
 pnpm start
 ```
 
-The default listener is `127.0.0.1:8787`.
+Open `http://127.0.0.1:8787`. Loopback HTTP is accepted only for local use;
+every non-loopback deployment still requires canonical HTTPS.
 
 ### Or run with Docker Compose
 
-The included stack connects to the host tmux server and starts a Cloudflare
-Tunnel sidecar:
+Copy the scratch-only configuration into the ignored Compose location, then
+start the console:
 
 ```bash
+cp config/remote-agent-console.example.json config/remote-agent-console.docker.json
+pnpm config:check --compose config/remote-agent-console.docker.json
 docker compose up -d --build
 docker compose ps
 ```
+
+The default stack runs only the console and manages its own container-local
+tmux sessions. Enable the optional Cloudflare sidecar with
+`docker compose --profile tunnel up -d --build`.
 
 After startup, use **Global settings → Add account** to connect one or more
 ChatGPT accounts through device-code login and select the active Codex login.
 Failed account queries offer **Re-login** without changing the active account.
 
-Docker requires host-specific bind mounts, worktree paths, and tunnel
-credentials. Follow the [Docker Compose guide](docs/docker.md) before starting
-the supplied stack. Keep those values in ignored `.env`,
-`compose.override.yaml`, and `config/` files. Remote deployments pull the
-repository and build on the target host rather than copying local artifacts.
+Connecting Docker to existing host tmux sessions requires host-specific bind
+mounts, worktree paths, and runtime settings. Follow the
+[Docker Compose guide](docs/docker.md) for that optional bridge and for tunnel
+setup. Keep host values in ignored `.env`, `compose.override.yaml`, and
+`config/` files.
 
 ## Configuration
 
-Each worktree has a stable ID, canonical path, label, and trusted launch
-command. Optional fields expose project links, stack actions, new-task flows,
-and customized prompt actions.
+The `worktrees` array may be empty or omitted for scratch-only use. Each added
+worktree has a stable ID, canonical path, label, and trusted launch command.
+Optional fields expose project links, stack actions, new-task flows, and
+customized prompt actions.
 
 ```json
 {
