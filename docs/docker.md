@@ -91,6 +91,14 @@ Mount the complete host `${HOME}/.codex` directory, not only `auth.json`. Codex
 replaces credentials atomically during refreshes and account changes; a
 single-file bind can remain attached to a stale inode.
 
+Pull-request lookup also needs GitHub credentials inside the container. The
+override example mounts the complete host `${HOME}/.config/gh` directory
+read-only so GitHub CLI credential updates remain visible. This works when the
+host `hosts.yml` contains an `oauth_token`; GitHub CLI credentials held only in
+an operating-system credential store are not available inside the container.
+In that case, set `RAC_GITHUB_TOKEN` in the ignored `.env` instead. Do not copy
+a token into tracked Compose configuration.
+
 ## Add the optional Cloudflare Tunnel
 
 1. Change `publicOrigin` in the Docker configuration to the canonical HTTPS

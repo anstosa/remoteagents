@@ -13,6 +13,8 @@ services:
     volumes:
       # share the complete Codex home for atomic account switches
       - ${HOME}/.codex:/home/node/.codex:rw
+      # share GitHub CLI credentials for pull request lookups
+      - ${HOME}/.config/gh:/home/node/.config/gh:ro
       # expose the host process tree, tmux socket, and a compatible tmux client
       - /proc:/host-proc:ro
       - ${HOST_TMUX_DIR:-${HOME}/.local/state/tmux/tmux-${HOST_UID:-1000}}:/host-tmux:ro
