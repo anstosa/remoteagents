@@ -699,12 +699,13 @@ html.software-keyboard-open .tabs { display: none; }
 .operation-feedback-copy > span { overflow: hidden; color: var(--subtext-0); font: 500 .64rem/1.35 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .operation-feedback > button { display: grid; width: 1.65rem; height: 1.65rem; place-items: center; border: 0; padding: 0; background: transparent; color: var(--subtext-0); box-shadow: none; font-size: 1rem; }
 .operation-feedback > button:hover { color: var(--text); }
-.console-recovery { justify-items: start; color: var(--subtext-0); }
+.console-recovery { width: max-content; max-width: calc(100vw - 2rem); justify-items: start; color: var(--subtext-0); }
+.console-recovery .server-switcher-button { flex: none; max-width: none; }
 .console-recovery strong { color: var(--text); }
 .console-recovery .control-owner { width: 100%; text-align: center; }
 .console-recovery label, .console-recovery input { width: 100%; }
 .console-recovery > span:not(.auth-error) { color: var(--subtext-0); font-size: .78rem; }
-.console-recovery button { width: 100%; justify-content: center; }
+.console-recovery > button { width: 100%; justify-content: center; }
 .tabs .new-agent-tab { flex: 0 0 2.8rem; padding: .5rem; font-size: 1.15rem; }
 .voice-dialog > div { position: relative; isolation: isolate; display: grid; width: min(44rem, 100%); height: min(42rem, 92vh); min-height: 24rem; grid-template-rows: auto auto minmax(0, 1fr) auto auto; overflow: hidden; padding: 0; border-color: color-mix(in srgb, var(--mauve) 58%, var(--surface-1)); background: linear-gradient(160deg, color-mix(in srgb, var(--base) 92%, var(--mauve)), var(--mantle)); }
 .voice-dialog > div > :not(.voice-soundwaves) { position: relative; z-index: 1; }

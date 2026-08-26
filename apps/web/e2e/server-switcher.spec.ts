@@ -76,7 +76,7 @@ test('shows and switches the configured server on authentication and output scre
     const group = page.getByRole('group', { name: 'Remote Agents servers' });
     const targets = group.locator('.server-switcher-button:not(.server-switcher-voice):not(.server-switcher-settings)');
     await expect(group).toBeVisible();
-    await expect(targets).toHaveText(['X1 Carbon', 'Framework']);
+    await expect(targets).toHaveText(['X1 Carbon', remoteServer.name]);
     // require the current server on the left
     await expect(targets.nth(0)).toHaveAttribute('aria-current', 'page');
     await expect(targets.nth(1)).not.toHaveAttribute('aria-current', 'page');
@@ -95,11 +95,35 @@ test('shows and switches the configured server on authentication and output scre
   await expectServerTargets();
   await expect(page.getByRole('combobox', { name: /Remote Agents server/u })).toHaveCount(0);
 
+  remoteServer.name = 'Framework Workstation';
+  remoteName = remoteServer.name;
   screen = 'control';
   await page.reload();
   await expect(page.getByText('Desk iPad is active')).toBeVisible();
-  await expectServerTargets('Framework — Working');
+  const controlServers = await expectServerTargets(`${remoteName} — Working`);
+  // preserve takeover-screen status markers
+  const controlStatusDots = controlServers.group.locator('.server-switcher-attention.working');
+  await expect(controlStatusDots).toHaveCount(2);
+  await expect(controlStatusDots.first()).toBeVisible();
+  await expect(controlStatusDots.last()).toBeVisible();
+  await expect(controlStatusDots.first()).toHaveCSS('opacity', '1');
+  await expect(controlStatusDots.last()).toHaveCSS('opacity', '1');
+  // require the takeover card to expand with complete labels
+  const [controlCardBounds, controlGroupBounds] = await Promise.all([renderedBounds(page.locator('.console-recovery')), renderedBounds(controlServers.group)]);
+  expect(controlCardBounds.width).toBeGreaterThan(320);
+  expect(controlCardBounds.width).toBeGreaterThan(controlGroupBounds.width);
+  // keep the expanded card within a narrow viewport
+  await page.setViewportSize({ width: 390, height: 844 });
+  const narrowControlCardBounds = await renderedBounds(page.locator('.console-recovery'));
+  expect(narrowControlCardBounds.x).toBeGreaterThanOrEqual(0);
+  expect(narrowControlCardBounds.x + narrowControlCardBounds.width).toBeLessThanOrEqual(390);
+  const narrowControlLabelsFit = await controlServers.group.locator('.server-switcher-button > span').evaluateAll(labels => labels.every(label => label.scrollWidth <= label.clientWidth));
+  expect(narrowControlLabelsFit).toBe(true);
+  const narrowControlScrolls = await controlServers.group.evaluate(group => group.scrollWidth > group.clientWidth);
+  expect(narrowControlScrolls).toBe(true);
 
+  remoteServer.name = 'Framework';
+  remoteName = remoteServer.name;
   screen = 'output';
   await page.reload();
   await expect(page.getByLabel('Live log')).toBeVisible({ timeout: 15_000 });
