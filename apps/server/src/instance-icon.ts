@@ -8,6 +8,9 @@ const ornaments: Record<InstanceIcon, string> = {
   heart: '<path d="M40 40c-2.7-2.6-16-10.7-16-20.9 0-10 12.7-13 16-5.5 3.3-7.5 16-4.5 16 5.5C56 29.3 42.7 37.4 40 40Z" fill="#a6e3a1" stroke="#11111b" stroke-width="2.5" stroke-linejoin="round"/>'
 };
 
+// texture the shared display background
+const scanLines = '<path d="M6 11.5h52M6 16.5h52M6 21.5h52M6 26.5h52M6 31.5h52M6 36.5h52M6 41.5h52M6 46.5h52M6 51.5h52M6 56.5h52" fill="none" stroke="#45475a" stroke-width="1" stroke-opacity=".42"/>';
+
 // recognize one bundled icon name
 export function isInstanceIcon(value: string): value is InstanceIcon {
   return instanceIconNames.includes(value as InstanceIcon);
@@ -15,5 +18,5 @@ export function isInstanceIcon(value: string): value is InstanceIcon {
 
 // render one self-contained browser icon
 export function instanceIconSvg(icon: InstanceIcon = 'terminal'): string {
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1e1e2e"/><rect x="5" y="5" width="54" height="54" rx="10" fill="#11111b" stroke="#45475a" stroke-width="2"/>${ornaments[icon]}<path d="m11 40 6 5-6 5" fill="none" stroke="#cba6f7" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M20 51h9" fill="none" stroke="#89b4fa" stroke-width="3.5" stroke-linecap="round"/></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1e1e2e"/><rect x="5" y="5" width="54" height="54" rx="10" fill="#11111b" stroke="#45475a" stroke-width="2"/>${scanLines}${ornaments[icon]}<path d="m11 40 6 5-6 5" fill="none" stroke="#cba6f7" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M20 51h9" fill="none" stroke="#89b4fa" stroke-width="3.5" stroke-linecap="round"/></svg>`;
 }
