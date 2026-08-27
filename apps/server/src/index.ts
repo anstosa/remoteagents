@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { validateConfig } from './config/schema.js';
+import { applyListenOverrides, validateConfig } from './config/schema.js';
 import { buildApp } from './app.js';
 import { DiscoveryService } from './discovery/service.js';
 import { TmuxAdapter } from './tmux/adapter.js';
@@ -14,7 +14,7 @@ const envFile = new URL('../../../.env', import.meta.url);
 if (existsSync(envFile)) process.loadEnvFile(envFile);
 
 const file = process.env.RAC_CONFIG; if (!file) throw new Error('RAC_CONFIG must point to a server-local configuration file');
-const config = await validateConfig(JSON.parse(await readFile(file, 'utf8'))); const tmux = new TmuxAdapter(); const discovery = new DiscoveryService(undefined, tmux); const push = new PushService(); const cleanup = new CleanupService(discovery, undefined, tmux);
+const config = await validateConfig(applyListenOverrides(JSON.parse(await readFile(file, 'utf8')), process.env)); const tmux = new TmuxAdapter(); const discovery = new DiscoveryService(undefined, tmux); const push = new PushService(); const cleanup = new CleanupService(discovery, undefined, tmux);
 const notificationPollMs = Math.max(1_000, config.pollIntervalMs);
 const notifications = new AgentNotificationCoordinator(notification => push.notify(notification), Math.max(2_000, notificationPollMs * 2));
 const dashboardUpdates = new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.worktrees, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews]));

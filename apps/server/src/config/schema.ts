@@ -4,8 +4,11 @@ import { constants } from 'node:fs';
 import { z } from 'zod';
 import type { LaunchTemplate, StackCommands, Worktree } from '../domain/models.js';
 import { instanceIconNames, type InstanceIcon } from '../instance-icon.js';
+import { isIP } from 'node:net';
 
 const loopback = new Set(['127.0.0.1', '::1']);
+// wildcard binds expose every interface; require an explicit address instead
+const wildcard = new Set(['0.0.0.0', '::']);
 const arg = z.string().max(4096).refine((v) => !v.includes('\0'), 'NUL is forbidden');
 const command = z.string().min(1).max(32_000).refine((v) => !v.includes('\0'), 'NUL is forbidden');
 const stackCommands = z.object({ start: command.optional(), stop: command.optional(), build: command.optional(), restart: command.optional(), migrate: command.optional(), status: command.optional() }).strict();
@@ -39,7 +42,7 @@ const sourceSchema = z.object({
 export type ConfigInput = z.input<typeof sourceSchema>;
 export type RemoteServer = { url: URL };
 export type IntegrationConfig = z.output<typeof integrationFeatures>;
-export type ValidatedConfig = { listen: { host: '127.0.0.1'|'::1'; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; newAgentCommand: string; integrations?: IntegrationConfig; worktrees: Worktree[] };
+export type ValidatedConfig = { listen: { host: string; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; newAgentCommand: string; integrations?: IntegrationConfig; worktrees: Worktree[] };
 // support legacy test fixtures
 export const defaultIntegrationConfig: IntegrationConfig = integrationFeatures.parse(undefined);
 
@@ -77,10 +80,23 @@ async function gitRoot(path: string): Promise<string> {
     child.on('error', () => resolve(path));
   });
 }
+// let RAC_LISTEN_HOST / RAC_LISTEN_PORT in the environment override the file's listen block
+export function applyListenOverrides(input: unknown, env: Record<string, string | undefined>): unknown {
+  const host = env.RAC_LISTEN_HOST?.trim(); const port = env.RAC_LISTEN_PORT?.trim();
+  if (!host && !port) return input;
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return input;
+  const source = input as Record<string, unknown>;
+  const current = typeof source.listen === 'object' && source.listen !== null ? source.listen as Record<string, unknown> : {};
+  const listen: Record<string, unknown> = { host: current.host ?? '127.0.0.1', port: current.port ?? 8787 };
+  if (host) listen.host = host;
+  if (port) { if (!/^\d{1,5}$/.test(port)) throw new Error('RAC_LISTEN_PORT must be an integer'); listen.port = Number(port); }
+  return { ...source, listen };
+}
 // validate and canonicalize console configuration
 export async function validateConfig(input: unknown): Promise<ValidatedConfig> {
   const parsed = sourceSchema.parse(input);
-  if (!loopback.has(parsed.listen.host)) throw new Error('listener must bind to loopback');
+  if (isIP(parsed.listen.host) === 0) throw new Error('listener host must be an IP address literal');
+  if (wildcard.has(parsed.listen.host)) throw new Error('listener must bind to a specific address, not a wildcard');
   if (parsed.proxy.trustedSourceIps.some((ip) => !loopback.has(ip))) throw new Error('only loopback proxy sources are permitted');
   const publicOrigin = canonicalOrigin(parsed.publicOrigin, 'publicOrigin', true);
   // retain only canonical remote origins
@@ -105,6 +121,6 @@ export async function validateConfig(input: unknown): Promise<ValidatedConfig> {
     const projectUrl = raw.hostname === undefined ? undefined : `https://${raw.hostname}`;
     worktrees.push({ id: raw.id, label: raw.label ?? raw.id, path, identity, hostPath: raw.hostPath === undefined ? undefined : resolve(raw.hostPath), saveKey: raw.saveKey ?? raw.id, available: true, pinned: raw.pinned, command: raw.command, ...(raw.resumeCommand === undefined ? {} : { resumeCommand: raw.resumeCommand }), launch, projectUrl, projectPort: raw.port, push: raw.push, ...(raw.commands === undefined ? {} : { commands: raw.commands as StackCommands }), ...(raw.newTask === undefined ? {} : { newTask: raw.newTask }) });
   }
-  return { listen: { host: parsed.listen.host as '127.0.0.1'|'::1', port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, newAgentCommand: parsed.newAgentCommand, integrations: parsed.integrations, worktrees };
+  return { listen: { host: parsed.listen.host, port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, newAgentCommand: parsed.newAgentCommand, integrations: parsed.integrations, worktrees };
 }
 export function expandLaunch(template: LaunchTemplate, worktree: Worktree): string[] { return template.args.map((arg) => arg.replaceAll('{worktreePath}', worktree.identity).replaceAll('{worktreeId}', worktree.id)); }
