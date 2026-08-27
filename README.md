@@ -176,6 +176,12 @@ mounts, worktree paths, and runtime settings. Follow the
 setup. Keep host values in ignored `.env`, `compose.override.yaml`, and
 `config/` files.
 
+### Or run with systemd
+
+To run directly as the host user, use the portable user-unit installer in the
+[systemd deployment guide](docs/systemd.md). Native execution connects to the
+user's tmux socket and Codex configuration without Docker bind mounts.
+
 ## Configuration
 
 The `worktrees` array may be empty or omitted for scratch-only use. Each added
@@ -264,6 +270,7 @@ compose.yaml   Local production stack
 
 - [Setup, configuration, and browser capabilities](docs/setup.md)
 - [Docker Compose deployment](docs/docker.md)
+- [systemd deployment](docs/systemd.md)
 - [Using an existing Cloudflare Tunnel](docs/cloudflare-tunnel.md)
 - [ChatGPT, MCP, Realtime voice, and federation](docs/integrations.md)
 - [Security policy and deployment expectations](SECURITY.md)
