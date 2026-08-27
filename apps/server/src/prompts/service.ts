@@ -13,6 +13,7 @@ import { QueuedPromptService, type QueuedPromptSummary } from './queue.js';
 import { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentData, promptAttachmentName, validPrompt, validPromptAttachments, type PromptAttachment } from './validation.js';
 import { configuredWorktreeForWorkspace } from '../workspaces/resolver.js';
 import { isUpdateAdvisorLabel, updateAdvisorLabel, updateAdvisorPendingLabel } from '../update-advisor.js';
+import { isFullGitSha } from '../git/revision.js';
 export { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentBytes, validPromptAttachments, type PromptAttachment } from './validation.js';
 
 /**
@@ -86,7 +87,7 @@ export class PromptService {
   // submit one server-owned advisor prompt directly
   async submitUpdateAdvisor(agentId: string, targetSha: string, prompt: string): Promise<boolean> {
     // require one exact pending advisor and valid generated prompt
-    if (!/^[0-9a-f]{40}$/u.test(targetSha) || !validPrompt(prompt, [])) return false;
+    if (!isFullGitSha(targetSha) || !validPrompt(prompt, [])) return false;
     const target = await this.discovery.target(agentId);
     if (target === undefined || target.agent.displayLabel !== updateAdvisorPendingLabel(targetSha)) return false;
     return await this.send(agentId, prompt, [], target, 'confirmed-enter');
@@ -95,7 +96,7 @@ export class PromptService {
   // mark one advisor reusable only after its initial prompt is scheduled
   async markUpdateAdvisorReady(agentId: string, targetSha: string): Promise<boolean> {
     // require one server-owned target and live advisor pane
-    if (!/^[0-9a-f]{40}$/u.test(targetSha)) return false;
+    if (!isFullGitSha(targetSha)) return false;
     const target = await this.discovery.target(agentId);
     if (target === undefined || target.agent.displayLabel !== updateAdvisorPendingLabel(targetSha)) return false;
     return await this.tmux.label(target.socket, target.agent.paneId, updateAdvisorLabel(targetSha));

@@ -10,6 +10,7 @@ import { startNamedReplacementSession, worktreeSessionName } from '../tmux/sessi
 import { ProcSocketFinder, type SocketFinder } from '../discovery/service.js';
 import type { Pane, SocketRef, Worktree } from '../domain/models.js';
 import { updateAdvisorPendingLabel } from '../update-advisor.js';
+import { isFullGitSha } from '../git/revision.js';
 
 export function expandCommand(command: string, worktree: Pick<Worktree, 'identity'>): string {
   const directory = `'${worktree.identity.replaceAll("'", "'\\''")}'`;
@@ -59,7 +60,7 @@ export class LaunchService {
   // launch one dedicated advisor in a fixed server-owned checkout
   async launchUpdateAdvisor(repository: string, targetSha: string): Promise<boolean> {
     // reject malformed internal paths
-    if (!repository.startsWith('/') || repository.includes('\0') || !/^[0-9a-f]{40}$/u.test(targetSha)) return false;
+    if (!repository.startsWith('/') || repository.includes('\0') || !isFullGitSha(targetSha)) return false;
     return await this.launchScratch(repository, updateAdvisorPendingLabel(targetSha), updateAdvisorCommand, this.agentHome());
   }
 

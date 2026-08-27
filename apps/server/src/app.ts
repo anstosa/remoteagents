@@ -57,6 +57,7 @@ import { ServerAdminService } from './server-admin/service.js';
 import { CodexAccountService, safeAccountId, type AccountRateLimitWindow, type AccountSummary } from './accounts/index.js';
 import { CodexBookmarkService } from './bookmarks/service.js';
 import { isUpdateAdvisorForTarget, isUpdateAdvisorLabel, updateAdvisorLabel, updateAdvisorPendingLabel } from './update-advisor.js';
+import { isFullGitSha } from './git/revision.js';
 
 export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; bookmarks?: CodexBookmarkService; skills?: SkillService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'> };
 // derive one stable opaque scratch persistence group
@@ -466,7 +467,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const expectedTargetSha = data.expectedTargetSha;
     const advisoryAcknowledged = data.advisoryAcknowledged === true;
     // reject malformed reviewed targets
-    if (typeof expectedTargetSha !== 'string' || !/^[0-9a-f]{40}$/u.test(expectedTargetSha)) return reply.code(400).send({ error: 'Invalid server update target.' });
+    if (!isFullGitSha(expectedTargetSha)) return reply.code(400).send({ error: 'Invalid server update target.' });
     const preview = await serverAdmin.updatePreview();
     // require one fresh host preview
     if (preview === undefined) return reply.code(503).send({ error: 'Server updates are unavailable on this deployment.' });
@@ -994,7 +995,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     controlled(request, true);
     const targetSha = body(request).targetSha;
     // require one reviewed target
-    if (typeof targetSha !== 'string' || !/^[0-9a-f]{40}$/u.test(targetSha)) return reply.code(400).send({ error: 'Invalid update advisor target.' });
+    if (!isFullGitSha(targetSha)) return reply.code(400).send({ error: 'Invalid update advisor target.' });
     const agentId = await withUpdateAdvisorLifecycle(targetSha, async () => await launchUpdateAdvisor(targetSha));
     return agentId === undefined ? reply.code(503).send({ error: 'Unable to start the update advisor.' }) : reply.code(201).send({ agentId, targetSha });
   });
@@ -1003,7 +1004,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     controlled(request, true);
     const targetSha = body(request).targetSha;
     // require one reviewed target
-    if (typeof targetSha !== 'string' || !/^[0-9a-f]{40}$/u.test(targetSha)) return reply.code(400).send({ error: 'Invalid update advisor target.' });
+    if (!isFullGitSha(targetSha)) return reply.code(400).send({ error: 'Invalid update advisor target.' });
     const result = await withUpdateAdvisorLifecycle(targetSha, async () => {
       // preserve advice throughout an active host update
       if (await serverAdmin.activeUpdateTarget() === targetSha) return 'active' as const;

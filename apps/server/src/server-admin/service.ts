@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { ValidatedConfig } from '../config/schema.js';
 import { run } from '../tmux/command.js';
+import { isFullGitSha } from '../git/revision.js';
 
 export type ServerUpdateState = 'queued' | 'running' | 'complete' | 'failed';
 export type ServerUpdateStatus = { id: string; kind: 'update'; state: ServerUpdateState; targetSha: string };
@@ -24,10 +25,11 @@ export type ServerAdminOptions = {
 };
 
 const operationPattern = /^[A-Za-z0-9_-]{20,64}$/u;
-const gitShaPattern = /^[0-9a-f]{40}$/u;
 const maxPreviewBytes = 512_000;
 const maxCommitFieldLength = 1_000;
 const maxChangedPathLength = 4_096;
+// recognize one durable update state
+const isServerUpdateState = (value: unknown): value is ServerUpdateState => value === 'queued' || value === 'running' || value === 'complete' || value === 'failed';
 
 // classify changed paths that may require host-local action
 const advisoryReasons = (paths: string[], fastForwardable: boolean): ServerUpdateAdvisoryReason[] => {
@@ -96,7 +98,7 @@ export class ServerAdminService {
   // launch the fixed host update script
   async startUpdate(targetSha: string): Promise<ServerUpdateStatus | ServerUpdateTargetConflict | undefined> {
     // require one reviewed git target
-    if (!gitShaPattern.test(targetSha)) return undefined;
+    if (!isFullGitSha(targetSha)) return undefined;
     // share only a launch for the same reviewed target
     if (this.updateLaunch !== undefined) return this.updateLaunch.targetSha === targetSha ? await this.updateLaunch.promise : { kind: 'target-conflict', targetSha: this.updateLaunch.targetSha };
     const promise = this.launchUpdate(targetSha).finally(() => {
@@ -188,10 +190,16 @@ export class ServerAdminService {
   private parseUpdateStatus(raw: string, expectedId?: string): ServerUpdateStatus | undefined {
     // reject oversized operation state
     if (raw.length > 4_096) return undefined;
-    const value = JSON.parse(raw) as Partial<ServerUpdateStatus>;
+    const decoded: unknown = JSON.parse(raw);
+    // require one object envelope
+    if (decoded === null || typeof decoded !== 'object') return undefined;
+    const value = decoded as Partial<ServerUpdateStatus>;
+    const id = value.id;
+    const state = value.state;
+    const targetSha = value.targetSha;
     // require one canonical target-pinned status
-    if (!operationPattern.test(value.id ?? '') || expectedId !== undefined && value.id !== expectedId || value.kind !== 'update' || !['queued', 'running', 'complete', 'failed'].includes(value.state ?? '') || !gitShaPattern.test(value.targetSha ?? '')) return undefined;
-    return value as ServerUpdateStatus;
+    if (typeof id !== 'string' || !operationPattern.test(id) || expectedId !== undefined && id !== expectedId || value.kind !== 'update' || !isServerUpdateState(state) || !isFullGitSha(targetSha)) return undefined;
+    return { id, kind: 'update', state, targetSha };
   }
 
   // read the latest durable update lifecycle state
@@ -230,7 +238,7 @@ export class ServerAdminService {
       const commitCount = value.commitCount;
       // require the fixed availability contract
       if (value.kind !== 'update-availability' || !['available', 'current', 'failed'].includes(value.state ?? '') || value.state === 'failed'
-        || typeof baseSha !== 'string' || !gitShaPattern.test(baseSha) || typeof targetSha !== 'string' || !gitShaPattern.test(targetSha)
+        || !isFullGitSha(baseSha) || !isFullGitSha(targetSha)
         || typeof value.fastForwardable !== 'boolean' || typeof commitCount !== 'number' || !Number.isSafeInteger(commitCount) || commitCount < 0
         || typeof value.commitsTruncated !== 'boolean' || typeof value.filesTruncated !== 'boolean') return undefined;
       const commitFields = commitsRaw.toString('utf8').split('\0');
@@ -243,7 +251,7 @@ export class ServerAdminService {
       for (let index = 0; index < commitFields.length; index += 4) {
         const [sha, author, authoredAt, subject] = commitFields.slice(index, index + 4) as [string, string, string, string];
         // reject malformed git output
-        if (!gitShaPattern.test(sha) || !author || !subject || Number.isNaN(Date.parse(authoredAt))) return undefined;
+        if (!isFullGitSha(sha) || !author || !subject || Number.isNaN(Date.parse(authoredAt))) return undefined;
         commits.push({ sha, subject, author, authoredAt });
       }
       const changedPaths = filesRaw.toString('utf8').split('\0');
@@ -266,7 +274,7 @@ export class ServerAdminService {
   // build one fixed approval-gated advisor request
   updateAdvisor(preview: ServerUpdatePreview): { repository: string; prompt: string } | undefined {
     // require a configured host checkout and advisory evidence
-    if (this.hostRepository === undefined || !preview.advisory.required || !gitShaPattern.test(preview.baseSha) || !gitShaPattern.test(preview.targetSha)) return undefined;
+    if (this.hostRepository === undefined || !preview.advisory.required || !isFullGitSha(preview.baseSha) || !isFullGitSha(preview.targetSha)) return undefined;
     const reasons = preview.advisory.reasons.map(reason => `${reason.kind}: ${reason.paths.length === 0 ? 'git history requires manual reconciliation' : `${reason.paths.length} changed ${reason.paths.length === 1 ? 'path' : 'paths'}`}`);
     // include bounded-preview uncertainty in the fixed prompt
     if (preview.filesTruncated) reasons.push('other: the changed-path preview was truncated; inspect the complete committed range');
