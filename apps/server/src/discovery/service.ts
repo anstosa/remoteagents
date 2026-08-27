@@ -42,7 +42,11 @@ export class ProcSocketFinder implements SocketFinder {
     const seen = new Set<string>();
     for (const row of text.split('\n').slice(1).map(line => line.trim().split(/\s+/)).filter(parts => parts.length >= 8 && parts[7]?.startsWith('/'))) {
       const hostPath = row[7]!;
-      const path = mountedSocketRoot !== undefined && hostPath.startsWith(`${hostSocketRoot}/`) ? join(mountedSocketRoot, hostPath.slice(hostSocketRoot.length)) : hostPath;
+      // Probe only tmux's own socket directory. Other services' sockets accept
+      // the connection but never answer the tmux handshake, so each one would
+      // block list-panes until the command timeout.
+      if (!hostPath.startsWith(`${hostSocketRoot}/`)) continue;
+      const path = mountedSocketRoot !== undefined ? join(mountedSocketRoot, hostPath.slice(hostSocketRoot.length)) : hostPath;
       const socket = await this.socket(path, uid);
       if (socket === undefined) continue;
       const key = `${socket.path}:${socket.device}:${socket.inode}`;

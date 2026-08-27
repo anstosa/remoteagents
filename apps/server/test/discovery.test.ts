@@ -122,6 +122,31 @@ describe('DiscoveryService dashboard', () => {
     }
   });
 
+  it('ignores listening sockets outside the tmux socket directory', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-unix-'));
+    const tmuxDirectory = join(directory, 'tmux-1000');
+    await mkdir(tmuxDirectory);
+    const tmuxSocket = join(tmuxDirectory, 'default');
+    const otherSocket = join(directory, 'other.sock');
+    const table = join(directory, 'unix');
+    const servers = [createServer(), createServer()];
+    const previous = { dir: process.env.RAC_HOST_TMUX_DIR, source: process.env.RAC_HOST_TMUX_SOURCE, table: process.env.RAC_HOST_UNIX_SOCKETS };
+    delete process.env.RAC_HOST_TMUX_DIR;
+    process.env.RAC_HOST_TMUX_SOURCE = tmuxDirectory;
+    process.env.RAC_HOST_UNIX_SOCKETS = table;
+    try {
+      await Promise.all([tmuxSocket, otherSocket].map((path, index) => new Promise<void>((resolve, reject) => servers[index]!.once('error', reject).listen(path, resolve))));
+      await writeFile(table, `Num RefCount Protocol Flags Type St Inode Path\n0001: 00000002 00000000 00010000 0001 01 1 ${otherSocket}\n0002: 00000002 00000000 00010000 0001 01 2 ${tmuxSocket}\n`);
+      await expect(new ProcSocketFinder().find()).resolves.toEqual([expect.objectContaining({ path: tmuxSocket })]);
+    } finally {
+      await Promise.all(servers.map(server => new Promise<void>(resolve => server.close(() => resolve()))));
+      for (const [key, value] of [['RAC_HOST_TMUX_DIR', previous.dir], ['RAC_HOST_TMUX_SOURCE', previous.source], ['RAC_HOST_UNIX_SOCKETS', previous.table]] as const) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('associates host tmux paths with configured worktrees', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const finder = { find: async () => [socket] };
