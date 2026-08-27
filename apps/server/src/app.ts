@@ -56,6 +56,7 @@ import { IntegrationControlService } from './integrations/control/index.js';
 import { ServerAdminService } from './server-admin/service.js';
 import { CodexAccountService, safeAccountId, type AccountRateLimitWindow, type AccountSummary } from './accounts/index.js';
 import { CodexBookmarkService } from './bookmarks/service.js';
+import { isUpdateAdvisorForTarget, isUpdateAdvisorLabel, updateAdvisorLabel, updateAdvisorPendingLabel } from './update-advisor.js';
 
 export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; bookmarks?: CodexBookmarkService; skills?: SkillService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'> };
 // derive one stable opaque scratch persistence group
@@ -83,6 +84,24 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, config.worktrees, promptHistory, queuedPrompts, savedPrompts); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new CodexBookmarkService(); const skills = deps.skills ?? new SkillService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = new WorktreeCommandService(config); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.worktrees, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews])); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, config.worktrees, new CodexExecReviewTourGenerator()); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
   const accounts = deps.accounts ?? new CodexAccountService();
   const paneViewports = new PaneViewportCoordinator();
+  const updateAdvisors = new Map<string, string>();
+  const updateAdvisorLifecycles = new Map<string, Promise<void>>();
+  // serialize launch and stop operations for one reviewed target
+  const withUpdateAdvisorLifecycle = async <T>(targetSha: string, operation: () => Promise<T>): Promise<T> => {
+    const previous = updateAdvisorLifecycles.get(targetSha) ?? Promise.resolve();
+    let release = () => {};
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const tail = previous.catch(() => undefined).then(async () => await gate);
+    updateAdvisorLifecycles.set(targetSha, tail);
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+      // discard only the final queued lifecycle
+      if (updateAdvisorLifecycles.get(targetSha) === tail) updateAdvisorLifecycles.delete(targetSha);
+    }
+  };
   // retain sleeping tabs during this server session
   const sleepingWorktrees = new Set<string>();
   let accountSwitching = false;
@@ -197,7 +216,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     ...(account.error === undefined ? {} : { error: account.error })
   });
   // share durable prompt queue scopes
-  const promptStorageKeyForAgent = (agent: Pick<Agent, 'id' | 'workspace'>) => {
+  const promptStorageKeyForAgent = (agent: Pick<Agent, 'displayLabel' | 'id' | 'workspace'>) => {
+    // isolate modal advisors from the configured repository prompt queue
+    if (isUpdateAdvisorLabel(agent.displayLabel)) return `agent:${agent.id}`;
     const worktree = configuredWorktreeForWorkspace(config.worktrees, agent.workspace);
     return worktree === undefined ? `agent:${agent.id}` : `worktree:${worktree.id}`;
   };
@@ -403,18 +424,74 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       return reply.code(503).send({ error: 'Unable to update the server configuration.' });
     }
   });
+  // stop every advisor tied to one reviewed target
+  const stopUpdateAdvisors = async (targetSha: string): Promise<boolean> => {
+    const advisorIds = new Set<string>();
+    const mappedId = updateAdvisors.get(targetSha);
+    // include the in-memory target after an uninterrupted launch
+    if (mappedId !== undefined) advisorIds.add(mappedId);
+    let dashboard;
+    try {
+      dashboard = await discovery.dashboard(config.worktrees);
+    } catch {
+      // never claim cleanup when pane discovery failed
+      return false;
+    }
+    // recover every target-pinned advisor after a server restart
+    for (const agent of dashboard?.agents ?? []) if (isUpdateAdvisorForTarget(agent.displayLabel, targetSha)) advisorIds.add(agent.id);
+    let allClosed = true;
+    // close only live server-owned advisors for this target
+    for (const advisorId of advisorIds) {
+      let target;
+      try {
+        target = await discovery.target(advisorId);
+      } catch {
+        // retain the mapping for a later cleanup retry
+        allClosed = false;
+        continue;
+      }
+      // treat already-vanished panes as stopped
+      if (target === undefined) continue;
+      // fail closed if an identifier no longer names the expected advisor
+      if (!isUpdateAdvisorForTarget(target.agent.displayLabel, targetSha) || !await prompts.close(advisorId).catch(() => false)) allClosed = false;
+    }
+    // forget only targets with no surviving advisor
+    if (allClosed) updateAdvisors.delete(targetSha);
+    return allClosed;
+  };
   // pull and rebuild this server on its host
   app.post('/api/server/update', { config: { rateLimit: { max: 2, timeWindow: '1 hour' } } }, async (request, reply) => {
     controlled(request, true);
-    const status = await serverAdmin.startUpdate();
+    const data = body(request);
+    const expectedTargetSha = data.expectedTargetSha;
+    const advisoryAcknowledged = data.advisoryAcknowledged === true;
+    // reject malformed reviewed targets
+    if (typeof expectedTargetSha !== 'string' || !/^[0-9a-f]{40}$/u.test(expectedTargetSha)) return reply.code(400).send({ error: 'Invalid server update target.' });
+    const preview = await serverAdmin.updatePreview();
+    // require one fresh host preview
+    if (preview === undefined) return reply.code(503).send({ error: 'Server updates are unavailable on this deployment.' });
+    // stop stale modals from installing a newer revision
+    if (expectedTargetSha !== preview.targetSha) return reply.code(409).send({ error: 'The upstream update changed. Review the latest commits before updating.' });
+    // require operator review for flagged host changes
+    if (preview.advisory.required && !advisoryAcknowledged) return reply.code(409).send({ error: 'Review and acknowledge the update advisor guidance before updating.' });
+    // reject current or divergent ranges
+    const retryingReviewedTarget = preview.rebuildRetryAvailable && !preview.available && preview.baseSha === expectedTargetSha && preview.targetSha === expectedTargetSha;
+    // allow a failed Compose rebuild to retry after Git reached the reviewed target
+    if (!preview.available && !retryingReviewedTarget) return reply.code(409).send({ error: 'The server is already current.' });
+    if (!preview.fastForwardable) return reply.code(409).send({ error: 'The server checkout cannot be fast-forwarded automatically.' });
+    const status = await serverAdmin.startUpdate(preview.targetSha);
     // require the configured host bridge
     if (status === undefined) return reply.code(503).send({ error: 'Server updates are unavailable on this deployment.' });
+    // reject a different target already mutating this host
+    if (status.kind === 'target-conflict') return reply.code(409).send({ error: `Another reviewed server update is already running for ${status.targetSha.slice(0, 7)}.` });
     return reply.code(status.state === 'failed' ? 503 : 202).send(status);
   });
   // report one surviving host update
   app.get('/api/server/update/:id', async (request, reply) => {
     controlled(request);
     const status = await serverAdmin.updateStatus((request.params as { id: string }).id);
+    // retain advice through the update, then close every target pane
+    if (status?.state === 'complete') await stopUpdateAdvisors(status.targetSha);
     return status === undefined ? reply.code(404).send({ error: 'Server update unavailable.' }) : status;
   });
   // check whether origin main is ahead of local main
@@ -423,6 +500,13 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const available = await serverAdmin.updateAvailable();
     // require the configured host bridge
     return available === undefined ? reply.code(503).send({ error: 'Server update checks are unavailable on this deployment.' }) : { available };
+  });
+  // preview the exact fetched update range
+  app.get('/api/server/update-preview', async (request, reply) => {
+    controlled(request);
+    const preview = await serverAdmin.updatePreview();
+    // require the configured host bridge
+    return preview === undefined ? reply.code(503).send({ error: 'Server update previews are unavailable on this deployment.' }) : preview;
   });
   app.post('/api/auth/logout', async (request, reply) => { const s = session(request, true); control.release(s.id); auth.logout(s.id); reply.clearCookie(cookieName, { path: '/', secure: secureOrigin, httpOnly: true, sameSite: 'lax' }); return reply.code(204).send(); });
   app.get('/api/dashboard', async (request) => { controlled(request); return await dashboardUpdates.refresh(); });
@@ -823,11 +907,13 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // delay between launch checks
   const launchPollDelay = deps.launchPollDelay ?? (async () => await new Promise(resolve => setTimeout(resolve, launchPollIntervalMs)));
   // wait for slow agent startup
-  const waitForAgent = async (before: Set<string>, worktreeId?: string) => {
+  const waitForAgent = async (before: Set<string>, worktreeId?: string, displayLabel?: string) => {
     // poll for up to sixty seconds
     for (let attempt = 0; attempt < launchPollAttempts; attempt += 1) {
       const dashboard = await discovery.dashboard(config.worktrees);
-      const agent = dashboard.agents.find(candidate => !before.has(candidate.id) && (worktreeId === undefined || candidate.worktreeId === worktreeId));
+      const agent = dashboard.agents.find(candidate => !before.has(candidate.id)
+        && (worktreeId === undefined || candidate.worktreeId === worktreeId)
+        && (displayLabel === undefined || candidate.displayLabel === displayLabel));
       // return the ready agent
       if (agent) return agent;
       // pause before retrying
@@ -835,6 +921,97 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     }
     return undefined;
   };
+  // launch and pre-prompt one dedicated update advisor
+  const launchUpdateAdvisor = async (targetSha: string): Promise<string | undefined> => {
+    const preview = await serverAdmin.updatePreview();
+    // require the exact current advisory range
+    if (preview === undefined || preview.targetSha !== targetSha) return undefined;
+    const advisor = serverAdmin.updateAdvisor(preview);
+    // require a server-owned advisor request
+    if (advisor === undefined) return undefined;
+    const dashboard = await discovery.dashboard(config.worktrees);
+    const activeTarget = await serverAdmin.activeUpdateTarget();
+    const protectedLabels = new Set([updateAdvisorLabel(targetSha), ...(activeTarget === undefined ? [] : [updateAdvisorLabel(activeTarget)])]);
+    const protectedIds = new Set<string>();
+    // retain only the newest pane for each protected target
+    for (const label of protectedLabels) {
+      const candidates = dashboard.agents.filter(candidate => candidate.displayLabel === label);
+      const newest = candidates.sort((left, right) => Number(right.paneId.slice(1)) - Number(left.paneId.slice(1)))[0];
+      // preserve one current advisor
+      if (newest !== undefined) protectedIds.add(newest.id);
+    }
+    const prunedIds = new Set<string>();
+    // close mapped advisors superseded by the current target
+    for (const [candidateTarget, candidateId] of updateAdvisors) {
+      // preserve the requested and actively updating targets
+      if (candidateTarget === targetSha || candidateTarget === activeTarget) continue;
+      const closed = await prompts.close(candidateId).catch(() => false);
+      // forget only panes confirmed closed
+      if (closed) {
+        updateAdvisors.delete(candidateTarget);
+        prunedIds.add(candidateId);
+      }
+    }
+    // recover and prune superseded advisor panes after server restarts
+    for (const candidate of dashboard.agents) {
+      // retain ordinary agents and one pane for each protected target
+      if (!isUpdateAdvisorLabel(candidate.displayLabel) || protectedIds.has(candidate.id) || prunedIds.has(candidate.id)) continue;
+      const closed = await prompts.close(candidate.id).catch(() => false);
+      // remove recovered mappings only after confirmed cleanup
+      if (closed) {
+        prunedIds.add(candidate.id);
+        for (const [candidateTarget, candidateId] of updateAdvisors) if (candidateId === candidate.id) updateAdvisors.delete(candidateTarget);
+      }
+    }
+    const currentLabel = updateAdvisorLabel(targetSha);
+    const existingId = [...protectedIds].find(candidateId => dashboard.agents.some(candidate => candidate.id === candidateId && candidate.displayLabel === currentLabel));
+    // reuse one surviving advisor for the reviewed target
+    if (existingId !== undefined && await discovery.target(existingId) !== undefined) {
+      updateAdvisors.set(targetSha, existingId);
+      return existingId;
+    }
+    const before = new Set(dashboard.agents.map(agent => agent.id));
+    // launch inside the fixed host checkout
+    if (!await launch.launchUpdateAdvisor(advisor.repository, targetSha)) return undefined;
+    const agent = await waitForAgent(before, undefined, updateAdvisorPendingLabel(targetSha));
+    // stop after a failed discovery handoff
+    if (agent === undefined) return undefined;
+    // close an unprompted scratch pane
+    if (!await prompts.submitUpdateAdvisor(agent.id, targetSha, advisor.prompt)) {
+      await prompts.close(agent.id).catch(() => false);
+      return undefined;
+    }
+    // trust recovered panes only after the initial prompt is scheduled
+    if (!await prompts.markUpdateAdvisorReady(agent.id, targetSha)) {
+      await prompts.close(agent.id).catch(() => false);
+      return undefined;
+    }
+    updateAdvisors.set(targetSha, agent.id);
+    return agent.id;
+  };
+  // start or reuse a fixed update advisor
+  app.post('/api/server/update-advisor', async (request, reply) => {
+    controlled(request, true);
+    const targetSha = body(request).targetSha;
+    // require one reviewed target
+    if (typeof targetSha !== 'string' || !/^[0-9a-f]{40}$/u.test(targetSha)) return reply.code(400).send({ error: 'Invalid update advisor target.' });
+    const agentId = await withUpdateAdvisorLifecycle(targetSha, async () => await launchUpdateAdvisor(targetSha));
+    return agentId === undefined ? reply.code(503).send({ error: 'Unable to start the update advisor.' }) : reply.code(201).send({ agentId, targetSha });
+  });
+  // stop the advisor when its owning update modal closes
+  app.delete('/api/server/update-advisor', async (request, reply) => {
+    controlled(request, true);
+    const targetSha = body(request).targetSha;
+    // require one reviewed target
+    if (typeof targetSha !== 'string' || !/^[0-9a-f]{40}$/u.test(targetSha)) return reply.code(400).send({ error: 'Invalid update advisor target.' });
+    const result = await withUpdateAdvisorLifecycle(targetSha, async () => {
+      // preserve advice throughout an active host update
+      if (await serverAdmin.activeUpdateTarget() === targetSha) return 'active' as const;
+      return await stopUpdateAdvisors(targetSha) ? 'stopped' as const : 'failed' as const;
+    });
+    if (result === 'active') return reply.code(409).send({ error: 'The update advisor is retained while its host update is active.' });
+    return result === 'stopped' ? reply.code(204).send() : reply.code(503).send({ error: 'Unable to stop the update advisor.' });
+  });
   type IdleRestartResult = { status: 'restarted'; worktreeId: string; agentId: string } | { status: 'skipped'|'failed'; worktreeId: string; reason: 'unavailable'|'not-idle'|'launch-failed'|'timed-out'; error: string };
   // restart one still-idle configured agent
   const restartIdleConfiguredAgent = async (id: string, expectedWorktreeId?: string, expectedMutationVersion?: number, expectedMutationGeneration?: number, threadId?: string): Promise<IdleRestartResult> => {

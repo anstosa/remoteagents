@@ -60,6 +60,38 @@ it('records successful submissions in the configured worktree history', async ()
   expect(recorded).toEqual([['worktree:cora', 'first prompt']]);
 });
 
+it('isolates update advisor prompts from the configured repository queue', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'rac-advisor-scope-'));
+  const queue = new QueuedPromptService(join(directory, 'queue.json'));
+  const normalAgent = { ...agent, id: 'socket:%1', paneId: '%1', workspace: '/tmp' };
+  const advisorAgent = { ...agent, id: 'socket:%2', paneId: '%2', workspace: '/tmp', displayLabel: 'Update Advisor Starting v4 2222222' };
+  const pasted: string[][] = [];
+  const entered: string[] = [];
+  const queued: string[] = [];
+  const advisorPrompt = 'Review the pending update with enough additional instructions that the composer may clip the trailing content before submission';
+  let advisorStarted = false;
+  let captureCount = 0;
+  const discovery = { target: async (id: string) => ({ agent: id === advisorAgent.id ? { ...advisorAgent, title: advisorStarted ? '⠋ Reviewing' : 'Ready' } : normalAgent, socket }) };
+  const tmux = { pastePrompt: async (_socket: unknown, pane: string, _buffer: string, prompt: string) => { pasted.push([pane, prompt]); return true; }, capture: async () => ++captureCount < 3 ? 'Starting Codex' : pasted.length === 0 ? '› ' : `› [Pasted Content ${advisorPrompt.length + 1} chars]`, enter: async (_socket: unknown, pane: string) => { entered.push(pane); advisorStarted = entered.length >= 2; return true; }, queue: async (_socket: unknown, pane: string) => { queued.push(pane); return true; }, interrupt: async () => true };
+  const history = { record: async (scope: string, text: string) => ({ id: 'history-advisor', scope, text }) };
+  const worktree = { id: 'remoteagents', label: 'Remote Agents', path: '/tmp', identity: '/tmp', available: true, pinned: false };
+  const service = new PromptService(discovery as never, tmux as never, [worktree], history as never, queue);
+  try {
+    const release = await service.acquireRestartLock(normalAgent.id);
+    await expect(service.submitUpdateAdvisor(advisorAgent.id, '2'.repeat(40), advisorPrompt)).resolves.toBe(true);
+
+    expect(pasted).toEqual([['%2', `${advisorPrompt} `]]);
+    expect(captureCount).toBeGreaterThanOrEqual(8);
+    expect(entered).toEqual(['%2', '%2']);
+    expect(queued).toEqual([]);
+    await expect(queue.list('worktree:remoteagents')).resolves.toEqual([]);
+    await expect(queue.list(`agent:${advisorAgent.id}`)).resolves.toEqual([]);
+    release?.();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it('queues prompts that arrive while an idle restart holds the worktree lock', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-restart-lock-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));

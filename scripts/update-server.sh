@@ -2,9 +2,15 @@
 set -Eeuo pipefail
 
 operation_id="${1:-}"
+target_sha="${2:-}"
 
 # accept only server-generated identifiers
 if [[ ! "$operation_id" =~ ^[A-Za-z0-9_-]{20,64}$ ]]; then
+  exit 2
+fi
+
+# accept only fetched git object identifiers
+if [[ ! "$target_sha" =~ ^[0-9a-f]{40}$ ]]; then
   exit 2
 fi
 
@@ -12,6 +18,8 @@ repository="$(pwd -P)"
 status_directory="$repository/.data"
 status_file="$status_directory/server-update-$operation_id.json"
 temporary_file="$status_file.tmp"
+last_status_file="$status_directory/server-update-last.json"
+last_temporary_file="$last_status_file.$operation_id.tmp"
 log_file="$status_directory/server-update-$operation_id.log"
 lock_file="$status_directory/server-update.lock"
 
@@ -24,10 +32,14 @@ exec >> "$log_file" 2>&1
 # publish one atomic lifecycle state
 write_status() {
   local state="$1"
+  local payload
   mkdir -p "$status_directory"
-  printf '{"id":"%s","kind":"update","state":"%s"}\n' "$operation_id" "$state" > "$temporary_file"
-  chmod 600 "$temporary_file"
+  printf -v payload '{"id":"%s","kind":"update","state":"%s","targetSha":"%s"}\n' "$operation_id" "$state" "$target_sha"
+  printf '%s' "$payload" > "$temporary_file"
+  printf '%s' "$payload" > "$last_temporary_file"
+  chmod 600 "$temporary_file" "$last_temporary_file"
   mv -f "$temporary_file" "$status_file"
+  mv -f "$last_temporary_file" "$last_status_file"
 }
 
 # preserve a readable failure state
@@ -61,7 +73,25 @@ if [[ "$(git symbolic-ref --short HEAD)" != "main" ]]; then
   printf '[%s] server update requires the main branch\n' "$(date -Is)"
   fail_update 1
 fi
-git pull --ff-only origin main
+
+# preserve local tracked changes
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  printf '[%s] server update requires a clean tracked working tree\n' "$(date -Is)"
+  fail_update 1
+fi
+
+# install only the reviewed upstream revision
+git fetch --quiet origin '+refs/heads/main:refs/remotes/origin/main'
+fetched_target="$(git rev-parse refs/remotes/origin/main)"
+if [[ "$fetched_target" != "$target_sha" ]]; then
+  printf '[%s] upstream changed after review; expected %s and found %s\n' "$(date -Is)" "$target_sha" "$fetched_target"
+  fail_update 1
+fi
+if ! git merge-base --is-ancestor refs/heads/main "$target_sha"; then
+  printf '[%s] reviewed update is not a fast-forward from local main\n' "$(date -Is)"
+  fail_update 1
+fi
+git merge --ff-only "$target_sha"
 docker compose up -d --build --wait
 docker compose ps
 write_status complete

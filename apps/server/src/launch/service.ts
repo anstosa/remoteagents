@@ -9,6 +9,7 @@ import { hostCommand, hostInteractiveShellPath, interactiveShellBootstrap, inter
 import { startNamedReplacementSession, worktreeSessionName } from '../tmux/session-name.js';
 import { ProcSocketFinder, type SocketFinder } from '../discovery/service.js';
 import type { Pane, SocketRef, Worktree } from '../domain/models.js';
+import { updateAdvisorPendingLabel } from '../update-advisor.js';
 
 export function expandCommand(command: string, worktree: Pick<Worktree, 'identity'>): string {
   const directory = `'${worktree.identity.replaceAll("'", "'\\''")}'`;
@@ -21,6 +22,8 @@ export function expandHomeCommand(command: string, home: string): string {
 }
 
 export const scratchLabel = '~ Scratch';
+// allow approved host repairs and verification
+const updateAdvisorCommand = 'command codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen';
 
 export class LaunchService {
   private pending = new Set<string>(); private readonly root = `/tmp/remote-agent-console-${process.getuid?.() ?? 0}`; private readonly tmux = process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux'; private readonly hostSocket = process.env.RAC_HOST_TMUX_DIR === undefined ? undefined : join(process.env.RAC_HOST_TMUX_DIR, 'default');
@@ -28,6 +31,11 @@ export class LaunchService {
   private readonly hostShell = hostInteractiveShellPath();
   private readonly hostShellName = interactiveShellName(this.hostShell);
   constructor(private readonly config: ValidatedConfig, private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly panes: TmuxAdapter = new TmuxAdapter()) {}
+  // resolve the authenticated account home independently from the launch directory
+  private agentHome(): string {
+    const hostPath = this.config.worktrees.find(worktree => worktree.hostPath !== undefined)?.hostPath;
+    return hostPath === undefined ? process.env.HOME ?? '/' : dirname(hostPath);
+  }
   private async existingPane(worktree: Worktree): Promise<{ socket: SocketRef; pane: Pane } | undefined> {
     const roots = [worktree.hostPath, worktree.identity].filter((path): path is string => path !== undefined);
     for (const socket of await this.finder.find()) for (const pane of await this.panes.listPanes(socket)) {
@@ -38,33 +46,48 @@ export class LaunchService {
     }
     return undefined;
   }
-  private async labelScratchSession(session: string): Promise<boolean> {
+  private async labelScratchSession(session: string, label = scratchLabel): Promise<boolean> {
     const socket = this.hostSocket === undefined ? [] : ['-S', this.hostSocket];
-    return (await run(this.tmux, [...socket, 'set-option', '-p', '-t', session, '@rac_display_label', scratchLabel])).code === 0;
+    return (await run(this.tmux, [...socket, 'set-option', '-p', '-t', session, '@rac_display_label', label])).code === 0;
   }
+  // launch one ordinary home scratch agent
   async launchHome(): Promise<boolean> {
-    const key = 'home';
+    const home = this.agentHome();
+    return await this.launchScratch(home, scratchLabel);
+  }
+
+  // launch one dedicated advisor in a fixed server-owned checkout
+  async launchUpdateAdvisor(repository: string, targetSha: string): Promise<boolean> {
+    // reject malformed internal paths
+    if (!repository.startsWith('/') || repository.includes('\0') || !/^[0-9a-f]{40}$/u.test(targetSha)) return false;
+    return await this.launchScratch(repository, updateAdvisorPendingLabel(targetSha), updateAdvisorCommand, this.agentHome());
+  }
+
+  // launch one uniquely labeled scratch session
+  private async launchScratch(directory: string, label: string, agentCommand = this.config.newAgentCommand, home = directory): Promise<boolean> {
+    const key = `scratch:${directory}:${label}`;
+    // serialize matching scratch launches
     if (this.pending.has(key)) return false;
     this.pending.add(key);
     try {
       const id = randomBytes(18).toString('base64url');
       const session = `rac-${id.slice(0, 12)}`;
-      const hostPath = this.config.worktrees.find(worktree => worktree.hostPath !== undefined)?.hostPath;
-      const home = hostPath === undefined ? process.env.HOME ?? '/' : dirname(hostPath);
-      const command = expandHomeCommand(this.config.newAgentCommand, home);
+      const command = expandHomeCommand(agentCommand, directory);
+      // launch through the host bridge when configured
       if (this.hostSocket !== undefined) {
-        if ((await run(this.tmux, ['-S', this.hostSocket, 'new-session', '-d', '-s', session, '-c', home, this.hostShell, '-lc', interactiveShellBootstrap(hostCommand(command, home), home, this.hostShell)])).code !== 0) return false;
-        return await this.labelScratchSession(session);
+        if ((await run(this.tmux, ['-S', this.hostSocket, 'new-session', '-d', '-s', session, '-c', directory, this.hostShell, '-lc', interactiveShellBootstrap(hostCommand(command, home), home, this.hostShell)])).code !== 0) return false;
+        return await this.labelScratchSession(session, label);
       }
       await mkdir(this.root, { recursive: true, mode: 0o700 });
       const descriptor = join(this.root, `${id}.json`);
       const handle = await open(descriptor, 'wx', 0o600);
-      await handle.writeFile(JSON.stringify({ program: this.localShell, args: ['-lc', interactiveShellBootstrap(command, '$HOME', this.localShell)], cwd: home }));
+      await handle.writeFile(JSON.stringify({ program: this.localShell, args: ['-lc', interactiveShellBootstrap(command, home, this.localShell)], cwd: directory }));
       await handle.close();
       const runner = new URL('./runner.js', import.meta.url).pathname;
       const created = await run(this.tmux, ['new-session', '-d', '-s', session, process.execPath, runner, descriptor]);
+      // clean failed launch descriptors
       if (created.code !== 0) { await unlink(descriptor).catch(() => {}); return false; }
-      return await this.labelScratchSession(session);
+      return await this.labelScratchSession(session, label);
     } finally { this.pending.delete(key); }
   }
 

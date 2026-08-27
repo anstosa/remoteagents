@@ -226,6 +226,13 @@ export class TmuxAdapter {
     });
   }
 
+  // assign one server-owned pane label
+  async label(socket: SocketRef, pane: string, label: string): Promise<boolean> {
+    // reject unsafe pane coordinates and control characters
+    if (!paneId.test(pane) || label.length === 0 || label.length > 120 || /[\0\r\n]/u.test(label)) return false;
+    return (await run(this.binary, ['-S', socket.path, 'set-option', '-p', '-t', pane, '@rac_display_label', label])).code === 0;
+  }
+
   async capture(socket: SocketRef, pane: string): Promise<string | undefined> {
     if (!paneId.test(pane)) return undefined;
     const out = await run(this.binary, ['-S', socket.path, 'capture-pane', '-e', '-p', '-t', pane, '-S', '-800']);

@@ -27,6 +27,7 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
   let renamedServer: unknown;
   let updateStarted = false;
   let currentServerName = 'Framework';
+  const updateTargetSha = '2'.repeat(40);
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -48,6 +49,10 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
       updateStarted = true;
       return route.fulfill({ status: 202, json: { id: 'server_update_operation_1234', kind: 'update', state: 'queued' } });
     }
+    // preview one exact host update
+    if (url.pathname === '/api/server/update-preview') return route.fulfill({ json: { available: true, rebuildRetryAvailable: false, baseSha: '1'.repeat(40), targetSha: updateTargetSha, fastForwardable: true, commitCount: 1, commits: [{ sha: updateTargetSha, subject: 'Update server settings', author: 'Ansel', authoredAt: '2026-08-27T12:00:00-07:00' }], commitsTruncated: false, filesTruncated: false, advisory: { required: false, reasons: [] } } });
+    // expose the reviewed update entry point
+    if (url.pathname === '/api/server/update-available') return route.fulfill({ json: { available: true } });
     // expose an empty account store
     if (url.pathname === '/api/codex/accounts') return route.fulfill({ json: { accounts: [] } });
     // retain the progress state
@@ -90,7 +95,8 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
   await expect(clientCard).toContainText('Test device');
   await expect(serverCard).toContainText('Framework');
   await expect(serverCard).toContainText('framework.santosa.dev');
-  await expect(globalMenu.getByRole('menuitem')).toHaveText(['Rename', 'Rename', 'Update', '+ Add account']);
+  await expect(globalMenu.getByRole('menuitem')).toHaveText(['Rename', 'Rename', '+ Add account']);
+  await expect(globalMenu.getByRole('menuitem', { name: 'Update Server' })).toHaveCount(0);
   await page.getByRole('menuitem', { name: 'Rename Client' }).click();
   await expect(page.getByRole('menu', { name: 'Global settings' })).toHaveCount(0);
   const renameDialog = page.getByRole('dialog', { name: 'Rename Client' });
@@ -146,10 +152,12 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
   expect(realtimeBody).toMatchObject({ worktreeId: 'cora', agentId: 'agent-cora', voiceSessionId: expect.any(String) });
   await settings.click();
   await expect(globalMenu.getByRole('group', { name: 'Server' })).toContainText('Garage Server');
-  await page.getByRole('menuitem', { name: 'Update Server' }).click();
-  const updateDialog = page.getByRole('dialog', { name: 'Update Server' });
-  await updateDialog.getByRole('button', { name: 'Update Server', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: 'Updating Server' })).toContainText('Pulling, rebuilding, and restarting…');
+  await expect(globalMenu.getByRole('menuitem', { name: 'Update Server' })).toHaveCount(0);
+  await settings.click();
+  await page.getByRole('button', { name: 'Upstream update View' }).click();
+  const updateDialog = page.getByRole('dialog', { name: 'Review update' });
+  await updateDialog.getByRole('button', { name: 'Update', exact: true }).click();
+  await expect(updateDialog).toContainText('Pulling the reviewed revision, rebuilding, and restarting…');
   expect(updateStarted).toBe(true);
 });
 

@@ -9,6 +9,7 @@ import { ProcInspector, type ProcessInspector } from './processes.js';
 import { PullRequestService } from '../pull-requests/service.js';
 import type { Agent, CodexSessionRef, Dashboard, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, Pane, SocketRef, Worktree } from '../domain/models.js';
 import { classifyReviewPath } from '../git/change-classification.js';
+import { isUpdateAdvisorLabel } from '../update-advisor.js';
 
 export interface SocketFinder { find(): Promise<SocketRef[]>; }
 export class ProcSocketFinder implements SocketFinder {
@@ -375,7 +376,9 @@ export class DiscoveryService {
     return agents;
   }
   // resolve known panes without blocking on dashboard enrichment
-  async target(id: string): Promise<{ agent: Agent; socket: SocketRef } | undefined> {
+  async target(id: string, force = false): Promise<{ agent: Agent; socket: SocketRef } | undefined> {
+    // refresh launch-sensitive pane state on demand
+    if (force) await this.refresh(true);
     let agent = this.snapshot.find(candidate => candidate.id === id);
     // discover only targets absent from the runtime snapshot
     if (agent === undefined) {
@@ -438,7 +441,8 @@ export class DiscoveryService {
       return value;
     };
     const agents = await Promise.all(discovered.map(async (agent) => {
-      const order = worktrees.findIndex(candidate => agent.workspace === candidate.identity || agent.workspace === candidate.hostPath);
+      // keep modal advisors outside configured worktree identity
+      const order = isUpdateAdvisorLabel(agent.displayLabel) ? -1 : worktrees.findIndex(candidate => agent.workspace === candidate.identity || agent.workspace === candidate.hostPath);
       const worktree = order < 0 ? undefined : worktrees[order];
       const workspace = worktree?.identity ?? agent.workspace;
       const [meta, question] = await Promise.all([
@@ -453,7 +457,8 @@ export class DiscoveryService {
         : { ...agent, branch, ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }), workspace: worktree.identity, worktreeId: worktree.id, worktreeLabel: worktree.label, worktreeOrder: order, ...(worktree.newTask === undefined ? {} : { newTaskConfigured: true }), push: worktree.push, projectUrl: worktree.projectUrl };
       return { ...details, ...(pullRequest === undefined ? {} : { pullRequest }), ...(question === undefined ? {} : { question }) };
     }));
-    const active = new Set(agents.map(agent => agent.workspace));
+    // do not let a modal advisor hide the configured repository placeholder
+    const active = new Set(agents.filter(agent => !isUpdateAdvisorLabel(agent.displayLabel)).map(agent => agent.workspace));
     const inactive = await Promise.all(worktrees.filter(worktree => !active.has(worktree.identity)).map(async (worktree) => {
       const meta = await metadataFor(worktree.identity);
       const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, meta.branch);

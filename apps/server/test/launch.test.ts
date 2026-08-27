@@ -83,6 +83,23 @@ describe('LaunchService', () => {
     expect(run).toHaveBeenLastCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', expect.stringMatching(/^rac-[\w-]+$/u), '@rac_display_label', scratchLabel]);
   });
 
+  it('launches a dedicated update advisor in the fixed repository', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    const service = new LaunchService({ newAgentCommand: 'codex --dangerously-bypass-approvals-and-sandbox', worktrees: [{ hostPath: '/home/ubuntu/remoteagents' }] } as never);
+
+    await expect(service.launchUpdateAdvisor('/home/ubuntu/remoteagents', '2'.repeat(40))).resolves.toBe(true);
+
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['new-session', '-c', '/home/ubuntu/remoteagents']));
+    const command = (run.mock.calls[0]?.[1] as string[]).join(' ');
+    expect(command).toContain('command codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen');
+    expect(command).toContain("export HOME='/home/ubuntu'");
+    expect(command).not.toContain("export HOME='/home/ubuntu/remoteagents'");
+    expect(command).not.toContain('--sandbox read-only');
+    expect(command).not.toContain('--ask-for-approval never');
+    expect(run).toHaveBeenLastCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', expect.stringMatching(/^rac-[\w-]+$/u), '@rac_display_label', 'Update Advisor Starting v4 2222222']);
+  });
+
   it('restores an explicitly configured host PATH before starting a host pane', () => {
     expect(hostCommand('exec codex', '/home/ubuntu', '/opt/node/bin:/usr/bin:/bin')).toContain("export PATH='/opt/node/bin:/usr/bin:/bin'");
     expect(hostCommand('exec codex', '/home/ubuntu')).not.toContain('export PATH=');

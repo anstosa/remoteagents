@@ -2,9 +2,9 @@ import { randomBytes } from 'node:crypto';
 import { appendFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { DiscoveryService } from '../discovery/service.js';
-import { latestCompletedAssistantTurn, TmuxAdapter } from '../tmux/adapter.js';
+import { lastPromptFromHistory, latestCompletedAssistantTurn, TmuxAdapter } from '../tmux/adapter.js';
 import { omxQuestion } from '../discovery/service.js';
-import type { Worktree } from '../domain/models.js';
+import type { Agent, Worktree } from '../domain/models.js';
 import { run } from '../tmux/command.js';
 import type { PromptHistoryService } from '../prompt-history/service.js';
 import type { SavedPromptService } from '../saved-prompts/service.js';
@@ -12,6 +12,7 @@ import { agentAttentionState } from '../notifications.js';
 import { QueuedPromptService, type QueuedPromptSummary } from './queue.js';
 import { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentData, promptAttachmentName, validPrompt, validPromptAttachments, type PromptAttachment } from './validation.js';
 import { configuredWorktreeForWorkspace } from '../workspaces/resolver.js';
+import { isUpdateAdvisorLabel, updateAdvisorLabel, updateAdvisorPendingLabel } from '../update-advisor.js';
 export { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentBytes, validPromptAttachments, type PromptAttachment } from './validation.js';
 
 /**
@@ -22,11 +23,18 @@ export { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentBytes, 
 const queueReadyPrompt = (prompt: string) => /\s$/u.test(prompt) ? prompt : `${prompt} `;
 const answerCaptureGraceMs = 10_000;
 const attachmentIgnoreRule = '/node_modules/.remote-agent-console/';
+const updateAdvisorComposerAttempts = 100;
+const updateAdvisorReadyStableMs = 500;
+const updateAdvisorStartAttempts = 50;
+const updateAdvisorPollMs = 100;
 // normalize terminal-wrapped prompts
 const normalizedPrompt = (value: string) => value.replace(/\s+/gu, ' ').trim();
+// normalize one styled terminal snapshot
+const normalizedTerminalText = (value: string) => normalizedPrompt(value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, ''));
 type PromptCompletion = 'completed' | 'failed' | 'pending';
 type PromptReconciliation = 'pending' | 'settled' | 'recorded';
 type PromptPhase = { state: 'awaiting-start' | 'working' | 'awaiting-answer' | 'halted'; changedAt: number; historyEntryId?: string; historyPrompt?: string; baselineCompletion?: string };
+type DiscoveredTarget = NonNullable<Awaited<ReturnType<DiscoveryService['target']>>>;
 export class PromptService {
   private readonly phases = new Map<string, PromptPhase>();
   private readonly dispatching = new Set<string>();
@@ -52,7 +60,7 @@ export class PromptService {
       releaseMutation?.();
       return false;
     }
-    const scope = this.historyScope(first.agent.workspace, agentId);
+    const scope = this.historyScope(first.agent, agentId);
     // queue work arriving during a restart handoff
     if (releaseMutation === undefined || this.restartLocks.has(scope)) {
       releaseMutation?.();
@@ -75,12 +83,30 @@ export class PromptService {
     }
   }
 
+  // submit one server-owned advisor prompt directly
+  async submitUpdateAdvisor(agentId: string, targetSha: string, prompt: string): Promise<boolean> {
+    // require one exact pending advisor and valid generated prompt
+    if (!/^[0-9a-f]{40}$/u.test(targetSha) || !validPrompt(prompt, [])) return false;
+    const target = await this.discovery.target(agentId);
+    if (target === undefined || target.agent.displayLabel !== updateAdvisorPendingLabel(targetSha)) return false;
+    return await this.send(agentId, prompt, [], target, 'confirmed-enter');
+  }
+
+  // mark one advisor reusable only after its initial prompt is scheduled
+  async markUpdateAdvisorReady(agentId: string, targetSha: string): Promise<boolean> {
+    // require one server-owned target and live advisor pane
+    if (!/^[0-9a-f]{40}$/u.test(targetSha)) return false;
+    const target = await this.discovery.target(agentId);
+    if (target === undefined || target.agent.displayLabel !== updateAdvisorPendingLabel(targetSha)) return false;
+    return await this.tmux.label(target.socket, target.agent.paneId, updateAdvisorLabel(targetSha));
+  }
+
   // reserve one agent for an idle restart
   async acquireRestartLock(agentId: string, expectedMutationVersion?: number, expectedMutationGeneration?: number): Promise<(() => void) | undefined> {
     const target = await this.discovery.target(agentId);
     // require a current target
     if (target === undefined) return undefined;
-    const scope = this.historyScope(target.agent.workspace, agentId);
+    const scope = this.historyScope(target.agent, agentId);
     // reject overlapping input and lifecycle work
     if (this.restartLocks.has(scope) || this.lockedAgentIds.has(agentId) || this.phases.has(scope) || (this.activeMutations.get(agentId) ?? 0) > 0
       || (expectedMutationVersion !== undefined && this.mutationVersion(agentId) !== expectedMutationVersion)
@@ -128,27 +154,27 @@ export class PromptService {
 
   async listQueued(agentId: string): Promise<QueuedPromptSummary[] | undefined> {
     const target = await this.discovery.target(agentId);
-    return target === undefined || this.queued === undefined ? undefined : await this.queued.list(this.historyScope(target.agent.workspace, agentId));
+    return target === undefined || this.queued === undefined ? undefined : await this.queued.list(this.historyScope(target.agent, agentId));
   }
 
   async updateQueued(agentId: string, promptId: string, text: string): Promise<QueuedPromptSummary | undefined> {
     const target = await this.discovery.target(agentId);
-    return target === undefined || this.queued === undefined ? undefined : await this.queued.update(this.historyScope(target.agent.workspace, agentId), promptId, text);
+    return target === undefined || this.queued === undefined ? undefined : await this.queued.update(this.historyScope(target.agent, agentId), promptId, text);
   }
 
   async moveQueued(agentId: string, promptId: string, direction: 'earlier' | 'later'): Promise<QueuedPromptSummary[] | undefined> {
     const target = await this.discovery.target(agentId);
-    return target === undefined || this.queued === undefined ? undefined : await this.queued.move(this.historyScope(target.agent.workspace, agentId), promptId, direction);
+    return target === undefined || this.queued === undefined ? undefined : await this.queued.move(this.historyScope(target.agent, agentId), promptId, direction);
   }
 
   async removeQueued(agentId: string, promptId: string): Promise<boolean> {
     const target = await this.discovery.target(agentId);
-    return target !== undefined && this.queued !== undefined && await this.queued.remove(this.historyScope(target.agent.workspace, agentId), promptId) !== undefined;
+    return target !== undefined && this.queued !== undefined && await this.queued.remove(this.historyScope(target.agent, agentId), promptId) !== undefined;
   }
 
   // advance managed prompt completion
   async observe(agent: Parameters<typeof agentAttentionState>[0]): Promise<void> {
-    const scope = this.historyScope(agent.workspace, agent.id);
+    const scope = this.historyScope(agent, agent.id);
     // pause queue dispatch during restart handoffs
     if (this.restartLocks.has(scope)) return;
     const busy = agentAttentionState(agent) !== 'finished';
@@ -236,16 +262,21 @@ export class PromptService {
   }
 
   // send one prompt to a stable pane
-  private async send(agentId: string, prompt: string, attachments: PromptAttachment[], discovered?: NonNullable<Awaited<ReturnType<DiscoveryService['target']>>>): Promise<boolean> {
+  private async send(agentId: string, prompt: string, attachments: PromptAttachment[], discovered?: DiscoveredTarget, submission: 'queue' | 'enter' | 'confirmed-enter' = 'queue'): Promise<boolean> {
     const first = discovered ?? await this.discovery.target(agentId);
     if (!first) return false;
-    const scope = this.historyScope(first.agent.workspace, agentId);
+    const scope = this.historyScope(first.agent, agentId);
     const workspace = this.workspaceFor(first.agent.workspace);
     const staged = await this.stageAttachments(workspace, attachments);
     if (staged === undefined) return false;
     const attachmentPrompt = staged.length === 0 ? prompt : `${prompt}${prompt ? '\n\n' : ''}Attached files:\n${staged.map(path => `@${path}`).join('\n')}`;
     const shellMode = attachments.length === 0 && prompt.startsWith('!');
     const buffer = `rac-${randomBytes(18).toString('base64url')}`;
+    // keep the server-owned prompt out of the startup shell
+    if (submission === 'confirmed-enter' && !await this.waitForUpdateAdvisorReady(agentId, first)) {
+      await this.removeStaged(workspace, staged);
+      return false;
+    }
     if (!await this.tmux.pastePrompt(first.socket, first.agent.paneId, buffer, shellMode ? attachmentPrompt : queueReadyPrompt(attachmentPrompt))) {
       await this.removeStaged(workspace, staged);
       return false;
@@ -255,9 +286,16 @@ export class PromptService {
       await this.removeStaged(workspace, staged);
       return false;
     }
+    // wait until the fresh advisor composer rendered the complete paste
+    if (submission === 'confirmed-enter' && !await this.waitForUpdateAdvisorComposer(agentId, second, attachmentPrompt)) {
+      await this.removeStaged(workspace, staged);
+      return false;
+    }
     // Codex queues regular prompts with Tab, while its `!` shell mode submits
     // with Enter. Tab only completes shell input and leaves the command open.
-    const submitted = shellMode ? await this.tmux.enter(second.socket, second.agent.paneId) : await this.tmux.queue(second.socket, second.agent.paneId);
+    let submitted = shellMode || submission === 'enter' || submission === 'confirmed-enter' ? await this.tmux.enter(second.socket, second.agent.paneId) : await this.tmux.queue(second.socket, second.agent.paneId);
+    // confirm the server-owned prompt left the composer
+    if (submitted && submission === 'confirmed-enter') submitted = await this.waitForUpdateAdvisorStart(agentId, second, attachmentPrompt);
     if (!submitted) await this.removeStaged(workspace, staged);
     else {
       // track the successful prompt
@@ -266,6 +304,66 @@ export class PromptService {
       if (this.queued !== undefined) this.phases.set(scope, { state: 'awaiting-start', changedAt: Date.now(), historyPrompt: attachmentPrompt, ...(entry === undefined ? {} : { historyEntryId: entry.id }) });
     }
     return submitted;
+  }
+
+  // wait for one stable empty Codex composer before pasting
+  private async waitForUpdateAdvisorReady(agentId: string, expected: DiscoveredTarget): Promise<boolean> {
+    let readySince: number | undefined;
+    // bound fresh-process startup
+    for (let attempt = 0; attempt < updateAdvisorComposerAttempts; attempt += 1) {
+      const target = await this.discovery.target(agentId, true);
+      // reject pane replacement during launch
+      if (target === undefined || target.socket.fingerprint !== expected.socket.fingerprint || target.agent.paneId !== expected.agent.paneId || target.agent.displayLabel !== expected.agent.displayLabel) return false;
+      const captured = await this.tmux.capture(target.socket, target.agent.paneId);
+      const plain = captured?.replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '');
+      const ready = agentAttentionState(target.agent) === 'finished' && plain !== undefined && /(?:^|\n)›(?:\s|$)/u.test(plain);
+      // retain only uninterrupted readiness
+      if (!ready) readySince = undefined;
+      else if (readySince === undefined) readySince = Date.now();
+      else if (Date.now() - readySince >= updateAdvisorReadyStableMs) return true;
+      await new Promise(resolve => setTimeout(resolve, updateAdvisorPollMs));
+    }
+    return false;
+  }
+
+  // wait for one pasted advisor prompt to reach Codex
+  private async waitForUpdateAdvisorComposer(agentId: string, expected: DiscoveredTarget, prompt: string): Promise<boolean> {
+    const normalized = normalizedPrompt(prompt);
+    // match the visible tail because Codex scrolls long composers to the cursor
+    const visibleSuffix = normalized.slice(-Math.min(96, normalized.length));
+    // match Codex's exact long-paste placeholder
+    const collapsedPaste = `[Pasted Content ${queueReadyPrompt(prompt).length} chars]`;
+    // bound fresh-process startup
+    for (let attempt = 0; attempt < updateAdvisorComposerAttempts; attempt += 1) {
+      const target = await this.discovery.target(agentId, true);
+      // reject pane replacement during launch
+      if (target === undefined || target.socket.fingerprint !== expected.socket.fingerprint || target.agent.paneId !== expected.agent.paneId || target.agent.displayLabel !== expected.agent.displayLabel) return false;
+      const captured = await this.tmux.capture(target.socket, target.agent.paneId);
+      // submit only after the pasted prompt begins rendering
+      const composer = captured === undefined ? '' : normalizedTerminalText(captured);
+      if (composer.includes(visibleSuffix) || composer.includes(collapsedPaste)) return true;
+      await new Promise(resolve => setTimeout(resolve, updateAdvisorPollMs));
+    }
+    return false;
+  }
+
+  // confirm one advisor prompt actually started
+  private async waitForUpdateAdvisorStart(agentId: string, expected: DiscoveredTarget, prompt: string): Promise<boolean> {
+    const normalized = normalizedPrompt(prompt);
+    // bound submission confirmation and retry dropped Enter keys
+    for (let attempt = 0; attempt < updateAdvisorStartAttempts; attempt += 1) {
+      const target = await this.discovery.target(agentId, true);
+      // reject pane replacement during submission
+      if (target === undefined || target.socket.fingerprint !== expected.socket.fingerprint || target.agent.paneId !== expected.agent.paneId || target.agent.displayLabel !== expected.agent.displayLabel) return false;
+      // accept working, questioning, or already completed prompts
+      if (agentAttentionState(target.agent) !== 'finished') return true;
+      const captured = await this.tmux.capture(target.socket, target.agent.paneId);
+      if (normalizedPrompt(lastPromptFromHistory(captured ?? '') ?? '') === normalized) return true;
+      // retry only after Codex had time to process the first key
+      if ((attempt === 9 || attempt === 24) && !await this.tmux.enter(target.socket, target.agent.paneId)) return false;
+      await new Promise(resolve => setTimeout(resolve, updateAdvisorPollMs));
+    }
+    return false;
   }
 
   // restore the latest matching unanswered entry
@@ -381,8 +479,10 @@ export class PromptService {
     return configuredWorktreeForWorkspace(this.worktrees, workspace)?.identity ?? workspace;
   }
 
-  private historyScope(workspace: string, agentId: string): string {
-    const worktree = configuredWorktreeForWorkspace(this.worktrees, workspace);
+  private historyScope(agent: Pick<Agent, 'displayLabel' | 'workspace'>, agentId: string): string {
+    // prevent advisor prompts and feedback from entering the repository queue
+    if (isUpdateAdvisorLabel(agent.displayLabel)) return `agent:${agentId}`;
+    const worktree = configuredWorktreeForWorkspace(this.worktrees, agent.workspace);
     return worktree === undefined ? `agent:${agentId}` : `worktree:${worktree.id}`;
   }
 
@@ -465,7 +565,7 @@ export class PromptService {
     const target = await this.discovery.target(agentId);
     if (target === undefined || !await this.tmux.interrupt(target.socket, target.agent.paneId)) return false;
     // prevent cancellation from releasing queued prompts
-    if (this.queued !== undefined) this.phases.set(this.historyScope(target.agent.workspace, agentId), { state: 'halted', changedAt: Date.now() });
+    if (this.queued !== undefined) this.phases.set(this.historyScope(target.agent, agentId), { state: 'halted', changedAt: Date.now() });
     return true;
   }
   async close(agentId: string): Promise<boolean> { const target = await this.discovery.target(agentId); return target !== undefined && this.tmux.close(target.socket, target.agent.paneId); }

@@ -158,6 +158,8 @@ const commandTokenAt = (value: string, cursor: number): CommandToken | undefined
 const actionRequired = (agent: Agent) => agent.question !== undefined || /action required/i.test(agent.title);
 const agentState = (agent: Agent): AgentState => actionRequired(agent) ? 'action-required' : /^[\u2800-\u28ff]/u.test(agent.title) ? 'working' : 'prompt-done';
 const agentLabel = (agent: Agent) => (agent.worktreeLabel ?? agent.displayLabel ?? (actionRequired(agent) ? agent.title.replace(/(?:\[\s*.\s*\]\s*)?action required\s*\|?\s*/i, '🚨 ') : agent.title)) || agent.workspace;
+// keep server-owned update advisors inside their modal surface
+const isEmbeddedUpdateAdvisor = (agent: Pick<Agent, 'displayLabel' | 'worktreeId'>): boolean => agent.worktreeId === undefined && /^Update Advisor (?:(?:Starting v[34]|v[234]) )?[0-9a-f]{7}$/u.test(agent.displayLabel ?? '');
 // list other open worktrees once
 const otherOpenWorktrees = (agents: Agent[], activeWorktreeId: string | undefined): VoiceWorktree[] => {
   const worktrees = new Map<string, VoiceWorktree>();
@@ -634,14 +636,15 @@ const ServerStatusContext = createContext<Readonly<Record<string, InstanceAttent
 const VoiceTriggerContext = createContext<{ open: () => void; active: boolean; visible: boolean } | undefined>(undefined);
 type ServerUpdateState = 'queued' | 'running' | 'complete' | 'failed';
 type ServerUpdateAvailability = { available: boolean };
+type ServerUpdateCommit = { sha: string; subject: string; author: string; authoredAt: string };
+type ServerUpdateAdvisoryReason = { kind: 'config' | 'compose' | 'runtime' | 'dependency' | 'state' | 'other'; paths: string[] };
+type ServerUpdatePreview = { available: boolean; rebuildRetryAvailable: boolean; baseSha: string; targetSha: string; fastForwardable: boolean; commitCount: number; commits: ServerUpdateCommit[]; commitsTruncated: boolean; filesTruncated: boolean; advisory: { required: boolean; reasons: ServerUpdateAdvisoryReason[] } };
 type ClientSettings = {
   deviceName: string;
   serverName: string;
   serverUrl: string;
   renameClient: (name: string) => Promise<string | undefined>;
   renameServer: (name: string) => Promise<string | undefined>;
-  startServerUpdate: () => Promise<{ id?: string; error?: string }>;
-  serverUpdateStatus: (id: string) => Promise<ServerUpdateState | undefined>;
   codexAccounts: () => Promise<{ accounts?: CodexAccount[]; error?: string }>;
   switchCodexAccount: (id: string) => Promise<{ account?: CodexAccount; restarts?: CodexAccountRestart[]; error?: string }>;
   resetCodexAccount: (id: string) => Promise<{ outcome?: CodexAccountResetOutcome; account?: CodexAccount; error?: string }>;
@@ -660,6 +663,41 @@ const serverHostLabel = (url: string): string => {
 };
 // validate one upstream availability response
 const isServerUpdateAvailability = (value: unknown): value is ServerUpdateAvailability => value !== null && typeof value === 'object' && typeof (value as ServerUpdateAvailability).available === 'boolean';
+// validate one bounded upstream commit
+const isServerUpdateCommit = (value: unknown): value is ServerUpdateCommit => value !== null
+  && typeof value === 'object'
+  && /^[0-9a-f]{40}$/u.test((value as ServerUpdateCommit).sha)
+  && typeof (value as ServerUpdateCommit).subject === 'string'
+  && typeof (value as ServerUpdateCommit).author === 'string'
+  && typeof (value as ServerUpdateCommit).authoredAt === 'string';
+// validate one advisory reason
+const isServerUpdateAdvisoryReason = (value: unknown): value is ServerUpdateAdvisoryReason => value !== null
+  && typeof value === 'object'
+  && ['config', 'compose', 'runtime', 'dependency', 'state', 'other'].includes((value as ServerUpdateAdvisoryReason).kind)
+  && Array.isArray((value as ServerUpdateAdvisoryReason).paths)
+  && (value as ServerUpdateAdvisoryReason).paths.every(path => typeof path === 'string');
+// validate one exact update preview
+const isServerUpdatePreview = (value: unknown): value is ServerUpdatePreview => {
+  // require one object envelope
+  if (value === null || typeof value !== 'object') return false;
+  const preview = value as ServerUpdatePreview;
+  const advisory = preview.advisory;
+  return typeof preview.available === 'boolean'
+    && typeof preview.rebuildRetryAvailable === 'boolean'
+    && /^[0-9a-f]{40}$/u.test(preview.baseSha)
+    && /^[0-9a-f]{40}$/u.test(preview.targetSha)
+    && typeof preview.fastForwardable === 'boolean'
+    && Number.isSafeInteger(preview.commitCount)
+    && Array.isArray(preview.commits)
+    && preview.commits.every(isServerUpdateCommit)
+    && typeof preview.commitsTruncated === 'boolean'
+    && typeof preview.filesTruncated === 'boolean'
+    && advisory !== null
+    && typeof advisory === 'object'
+    && typeof advisory.required === 'boolean'
+    && Array.isArray(advisory.reasons)
+    && advisory.reasons.every(isServerUpdateAdvisoryReason);
+};
 // validate one configured icon name
 const isInstanceIcon = (value: unknown): value is InstanceIcon => value === 'terminal' || value === 'potato' || value === 'heart';
 // validate one server switch target
@@ -781,15 +819,290 @@ function CodexLimitUsage({ window, now }: { window: CodexLimitWindow; now: numbe
   return <span className={`chatgpt-limit${window.usedPercent >= 100 ? ' at-limit' : ''}`}><span className="chatgpt-limit-heading"><small>{duration} limit</small><small>{window.usedPercent}% consumed</small></span><progress aria-label={`${duration} ChatGPT limit consumed`} max={100} value={window.usedPercent}>{window.usedPercent}%</progress>{countdown !== undefined && <small className="chatgpt-limit-reset">Resets in {countdown}</small>}</span>;
 }
 
+const updateAdvisoryLabels: Record<ServerUpdateAdvisoryReason['kind'], string> = { config: 'Configuration', compose: 'Compose', runtime: 'Host runtime', dependency: 'Dependencies', state: 'Persisted state', other: 'Other changes' };
+// format one commit timestamp
+const updateCommitDate = (value: string): string => {
+  const date = new Date(value);
+  // preserve malformed server values visibly
+  return Number.isNaN(date.valueOf()) ? value : date.toLocaleString();
+};
+// encode one terminal input frame
+const encodeTerminalInput = (value: string): string => btoa(String.fromCharCode(...new TextEncoder().encode(value))).replace(/\+/gu, '-').replace(/\//gu, '_').replace(/=+$/u, '');
+const emptyPromptHistory: PromptHistoryEntry[] = [];
+// keep embedded output history stable
+const refreshEmbeddedHistory = async (): Promise<void> => {};
+
+// render one isolated full advisor output
+function EmbeddedAgentOutput({ id, onMetadata }: { id: string; onMetadata: (response: string | undefined, question: ChoiceQuestion | undefined) => void }) {
+  const onMetadataRef = useRef(onMetadata);
+  const responseRef = useRef<string | undefined>(undefined);
+  const questionRef = useRef<ChoiceQuestion | undefined>(undefined);
+  onMetadataRef.current = onMetadata;
+  // publish one complete response
+  const publishResponse = useCallback((response: string | undefined) => {
+    responseRef.current = response;
+    onMetadataRef.current(response, questionRef.current);
+  }, []);
+  // publish one inferred question
+  const publishQuestion = useCallback((question: ChoiceQuestion | undefined) => {
+    questionRef.current = question;
+    onMetadataRef.current(responseRef.current, question);
+  }, []);
+  return <div className="update-advisor-output" aria-label="Update advisor output"><Log id={id} history={emptyPromptHistory} refreshHistory={refreshEmbeddedHistory} onQuestion={publishQuestion} onMetadata={publishResponse} embedded /><MobileTerminalKeys id={id} /></div>;
+}
+
+// review and launch one exact server update
+function ServerUpdateDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [preview, setPreview] = useState<ServerUpdatePreview>();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [updateId, setUpdateId] = useState<string>();
+  const [updateState, setUpdateState] = useState<ServerUpdateState>();
+  const [updateSubmitting, setUpdateSubmitting] = useState(false);
+  const [advisorId, setAdvisorId] = useState<string>();
+  const [advisorState, setAdvisorState] = useState<AgentState>();
+  const [advisorQuestion, setAdvisorQuestion] = useState<ChoiceQuestion>();
+  const [inferredQuestion, setInferredQuestion] = useState<ChoiceQuestion>();
+  const [advisorResponse, setAdvisorResponse] = useState<string>();
+  const [advisorResponsePending, setAdvisorResponsePending] = useState(false);
+  const advisorResponseBaseline = useRef<string | undefined>(undefined);
+  const [advisorError, setAdvisorError] = useState('');
+  const [advisorAcknowledged, setAdvisorAcknowledged] = useState(false);
+  const [feedback, setFeedback] = useState('');
+  const [feedbackPending, setFeedbackPending] = useState(false);
+  const [feedbackMessage, setFeedbackMessage] = useState('');
+  const visibleQuestion = advisorQuestion ?? inferredQuestion;
+  const updating = updateSubmitting || updateState === 'queued' || updateState === 'running';
+  // load one fresh preview and advisor
+  useEffect(() => {
+    // stop hidden preview work
+    if (!open) return;
+    let active = true;
+    setPreview(undefined);
+    setLoading(true);
+    setError('');
+    setUpdateId(undefined);
+    setUpdateState(undefined);
+    setUpdateSubmitting(false);
+    setAdvisorId(undefined);
+    setAdvisorState(undefined);
+    setAdvisorQuestion(undefined);
+    setInferredQuestion(undefined);
+    setAdvisorResponse(undefined);
+    setAdvisorResponsePending(false);
+    advisorResponseBaseline.current = undefined;
+    setAdvisorError('');
+    setAdvisorAcknowledged(false);
+    setFeedback('');
+    setFeedbackMessage('');
+    // resolve the exact current range
+    const load = async () => {
+      const response = await request('/api/server/update-preview');
+      const payload: unknown = await response.json().catch(() => undefined);
+      // retain a visible preview failure
+      if (!response.ok || !isServerUpdatePreview(payload)) {
+        if (active) {
+          setLoading(false);
+          setError('Unable to load the pending update.');
+        }
+        return;
+      }
+      if (!active) return;
+      setPreview(payload);
+      setLoading(false);
+      // launch advice only for conservatively flagged ranges
+      if (!payload.available || !payload.advisory.required) return;
+      const advisorResponse = await request('/api/server/update-advisor', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ targetSha: payload.targetSha }) });
+      const advisorPayload = await advisorResponse.json().catch(() => undefined) as { agentId?: unknown; error?: unknown } | undefined;
+      // retain advisor launch failures without losing the commit review
+      if (!active) return;
+      if (!advisorResponse.ok || typeof advisorPayload?.agentId !== 'string') {
+        setAdvisorError(typeof advisorPayload?.error === 'string' ? advisorPayload.error : 'Unable to start the update advisor.');
+        return;
+      }
+      setAdvisorId(advisorPayload.agentId);
+    };
+    void load();
+    return () => { active = false; };
+  }, [open]);
+  // follow advisor state and structured questions
+  useEffect(() => {
+    // require one launched advisor
+    if (!open || advisorId === undefined) return;
+    let active = true;
+    const refresh = async () => {
+      const response = await request('/api/dashboard', undefined, false);
+      const payload: unknown = await response.json().catch(() => undefined);
+      // retain the last good advisor state
+      if (!active || !response.ok || !isDashboard(payload)) return;
+      const agent = payload.agents.find(candidate => candidate.id === advisorId);
+      // report vanished advisor sessions
+      if (agent === undefined) {
+        setAdvisorError('The update advisor is no longer available.');
+        return;
+      }
+      setAdvisorState(agentState(agent));
+      setAdvisorQuestion(advisorResponsePending || agent.question === undefined ? undefined : { text: agent.question.text, choices: agent.question.choices.map(choiceFromLabel), omxId: agent.question.id });
+    };
+    void refresh();
+    const interval = window.setInterval(() => { void refresh(); }, 1_000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, [advisorId, advisorResponsePending, open]);
+  // follow one update across the expected restart
+  useEffect(() => {
+    // require one active operation
+    if (!open || updateId === undefined || updateState === 'complete' || updateState === 'failed') return;
+    let active = true;
+    const poll = async () => {
+      const response = await request(`/api/server/update/${encodeURIComponent(updateId)}`);
+      // tolerate the rebuild outage
+      if (!active || !response.ok) return;
+      const payload = await response.json().catch(() => undefined) as { state?: unknown } | undefined;
+      // accept one canonical lifecycle state
+      if (payload?.state === 'queued' || payload?.state === 'running' || payload?.state === 'complete' || payload?.state === 'failed') setUpdateState(payload.state);
+    };
+    void poll();
+    const interval = window.setInterval(() => { void poll(); }, 1_000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, [open, updateId, updateState]);
+  // answer one advisor choice
+  const answerAdvisor = async (answerIndex: number) => {
+    // require one current question
+    if (advisorId === undefined || visibleQuestion === undefined || feedbackPending) return;
+    setFeedbackPending(true);
+    setFeedbackMessage('');
+    const url = visibleQuestion.omxId === undefined ? `/api/agents/${encodeURIComponent(advisorId)}/question` : `/api/agents/${encodeURIComponent(advisorId)}/omx-question`;
+    const payload = visibleQuestion.omxId === undefined ? { index: answerIndex } : { index: answerIndex, questionId: visibleQuestion.omxId };
+    const response = await request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+    setFeedbackPending(false);
+    // retain rejected answers
+    if (!response.ok) {
+      setFeedbackMessage('Unable to answer the advisor question.');
+      return;
+    }
+    // require review of the advisor's next response
+    advisorResponseBaseline.current = advisorResponse;
+    setAdvisorResponsePending(true);
+    setAdvisorAcknowledged(false);
+    setAdvisorQuestion(undefined);
+    setInferredQuestion(undefined);
+  };
+  // send direct terminal input for free-form question feedback
+  const sendAdvisorInput = async (value: string): Promise<boolean> => {
+    // require one advisor target
+    if (advisorId === undefined) return false;
+    const ticketResponse = await request(`/api/agents/${encodeURIComponent(advisorId)}/tickets`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'input' }) });
+    // require one input ticket
+    if (!ticketResponse.ok) return false;
+    const ticketPayload = await ticketResponse.json().catch(() => undefined) as { ticket?: unknown } | undefined;
+    // reject malformed tickets
+    if (typeof ticketPayload?.ticket !== 'string') return false;
+    return await new Promise(resolve => {
+      const socket = new WebSocket(`${location.origin.replace(/^http/u, 'ws')}/ws/input/${encodeURIComponent(advisorId)}`, ['rac', ticketPayload.ticket as string]);
+      let settled = false;
+      let sent = false;
+      // settle one transport outcome
+      const finish = (result: boolean) => {
+        // ignore duplicate socket events
+        if (settled) return;
+        settled = true;
+        socket.close();
+        resolve(result);
+      };
+      socket.onopen = () => {
+        sent = true;
+        socket.send(JSON.stringify({ v: 1, type: 'input', data: encodeTerminalInput(`${value}\r`) }));
+        window.setTimeout(() => finish(true), 100);
+      };
+      socket.onerror = () => finish(false);
+      socket.onclose = () => finish(sent);
+      window.setTimeout(() => finish(false), 5_000);
+    });
+  };
+  // submit one advisor follow-up
+  const submitFeedback = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const value = feedback.trim();
+    // prevent empty or duplicate feedback
+    if (!value || advisorId === undefined || feedbackPending || advisorResponsePending || advisorResponse === undefined) return;
+    setFeedbackPending(true);
+    setFeedbackMessage('');
+    const directInput = advisorState === 'action-required' && visibleQuestion === undefined;
+    const sent = directInput
+      ? await sendAdvisorInput(value)
+      : (await request(`/api/agents/${encodeURIComponent(advisorId)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: value, attachments: [] }) })).ok;
+    setFeedbackPending(false);
+    // retain failed feedback
+    if (!sent) {
+      setFeedbackMessage('Unable to send feedback to the advisor.');
+      return;
+    }
+    // require review of the advisor's follow-up response
+    advisorResponseBaseline.current = advisorResponse;
+    setAdvisorResponsePending(true);
+    setAdvisorAcknowledged(false);
+    setFeedback('');
+    setFeedbackMessage(directInput ? 'Feedback sent.' : 'Feedback queued.');
+  };
+  // start one pinned host update
+  const startUpdate = async () => {
+    // require one current preview
+    if (preview === undefined || updating) return;
+    setError('');
+    setUpdateSubmitting(true);
+    const response = await request('/api/server/update', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ expectedTargetSha: preview.targetSha, advisoryAcknowledged: advisorAcknowledged }) });
+    const payload = await response.json().catch(() => undefined) as { id?: unknown; state?: unknown; error?: unknown } | undefined;
+    // retain launch or stale-preview failures
+    if (!response.ok || typeof payload?.id !== 'string') {
+      setUpdateSubmitting(false);
+      setError(typeof payload?.error === 'string' ? payload.error : 'Unable to start the server update.');
+      return;
+    }
+    setUpdateId(payload.id);
+    setUpdateState(payload.state === 'running' ? 'running' : 'queued');
+    setUpdateSubmitting(false);
+  };
+  // close the modal and stop its dedicated advisor
+  const closeDialog = () => {
+    // preserve the advisor throughout an active host update
+    if (updating) return;
+    const targetSha = preview?.targetSha;
+    onClose();
+    // serialize server cleanup behind any in-flight advisor launch
+    if (targetSha !== undefined) void request('/api/server/update-advisor', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ targetSha }) });
+  };
+  // omit the portal while closed
+  if (!open) return null;
+  const adviceReady = advisorResponse !== undefined && !advisorResponsePending && advisorState === 'prompt-done' && visibleQuestion === undefined;
+  const updateBlocked = preview === undefined || !preview.available && !preview.rebuildRetryAvailable || !preview.fastForwardable || updating || updateState === 'complete' || preview.advisory.required && (!adviceReady || !advisorAcknowledged);
+  let body: ReactNode;
+  // render preview loading
+  if (loading) {
+    body = <div className="update-review-loading" role="status"><span className="spinner" />Fetching commits from origin/main…</div>;
+  // render preview failure
+  } else if (preview === undefined) {
+    body = <div className="update-review-loading error" role="alert">{error || 'Update preview unavailable.'}</div>;
+  // render a durable rebuild retry
+  } else if (preview.rebuildRetryAvailable) {
+    body = <div className="update-review-loading"><strong>Host rebuild needs another attempt.</strong><span>Git reached {preview.targetSha.slice(0, 7)}, but the last Compose rebuild failed.</span></div>;
+  // render current state
+  } else if (!preview.available) {
+    body = <div className="update-review-loading"><strong>Server is current.</strong><span>No upstream commits are waiting.</span></div>;
+  // render the exact pending range
+  } else {
+    body = <div className="update-review-body"><section className="update-review-summary"><div><small>{preview.baseSha.slice(0, 7)}</small><span aria-hidden="true">→</span><strong>{preview.targetSha.slice(0, 7)}</strong></div><span>{preview.commitCount} new {preview.commitCount === 1 ? 'commit' : 'commits'}{preview.commitsTruncated ? ` · showing ${preview.commits.length}` : ''}</span></section>{!preview.fastForwardable && <p className="update-review-warning" role="alert">Local main cannot be fast-forwarded to this update. Resolve the checkout manually before updating.</p>}<ol className="update-commit-list" aria-label="Pending commits">{preview.commits.map(commit => <li key={commit.sha}><code>{commit.sha.slice(0, 7)}</code><span><strong>{commit.subject}</strong><small>{commit.author} · {updateCommitDate(commit.authoredAt)}</small></span></li>)}</ol>{preview.advisory.required && <section className="update-advisor"><header><div><small>UPDATE ADVISOR</small><h3>Host changes need review</h3></div><span className={`update-advisor-state ${advisorState ?? 'starting'}`}>{advisorState === 'working' ? 'Reviewing' : advisorState === 'action-required' ? 'Needs input' : advisorState === 'prompt-done' ? 'Ready' : 'Starting'}</span></header><p>The changed paths below may require host-local actions. The advisor inspects the exact commit range without modifying it.</p><div className="update-advisory-reasons">{preview.advisory.reasons.map(reason => <div key={reason.kind}><strong>{updateAdvisoryLabels[reason.kind]}</strong>{reason.paths.length === 0 ? <span>Manual Git reconciliation required</span> : reason.paths.map(path => <code key={path}>{path}</code>)}</div>)}</div>{preview.filesTruncated && <small className="update-review-warning">Changed-path review was truncated; the advisor will inspect the complete Git range.</small>}{advisorError ? <div className="update-advisor-error" role="alert">{advisorError}</div> : advisorId === undefined ? <div className="update-advisor-launching" role="status"><span className="spinner" />Starting a dedicated advisor…</div> : <><EmbeddedAgentOutput id={advisorId} onMetadata={(response, question) => { /* ignore metadata from the turn before current feedback */ setAdvisorResponse(response); if (advisorResponsePending && (response === undefined || response === advisorResponseBaseline.current)) return; if (advisorResponsePending) setAdvisorResponsePending(false); setInferredQuestion(question); }} />{visibleQuestion !== undefined && <div className="update-advisor-question"><strong>{visibleQuestion.text}</strong><div>{visibleQuestion.choices.map(choice => <button type="button" key={`${choice.answerIndex}-${choice.label}`} disabled={feedbackPending} onClick={() => void answerAdvisor(choice.answerIndex)}><b>{choice.number}</b><span>{choice.label}</span></button>)}</div></div>}<form className="update-advisor-feedback" onSubmit={event => void submitFeedback(event)}><label>Approval or feedback<textarea value={feedback} maxLength={32_000} disabled={advisorResponsePending || advisorResponse === undefined} placeholder={advisorResponsePending ? 'Waiting for the advisor response…' : advisorState === 'action-required' && visibleQuestion === undefined ? 'Reply to the advisor…' : 'Queue a follow-up for the advisor…'} onFocus={() => { /* leave terminal input */ if (advisorId !== undefined) exitTerminalInput.get(advisorId)?.(); }} onChange={event => setFeedback(event.target.value)} /></label><button type="submit" disabled={feedbackPending || advisorResponsePending || advisorResponse === undefined || !feedback.trim()}>{feedbackPending ? <><span className="spinner" />Sending…</> : 'Send'}</button></form>{feedbackMessage && <small className="update-advisor-feedback-status" role="status">{feedbackMessage}</small>}{adviceReady && <label className="update-advisor-acknowledgement"><input type="checkbox" checked={advisorAcknowledged} onChange={event => setAdvisorAcknowledged(event.target.checked)} /><span>I reviewed the advisor guidance for this exact update.</span></label>}</>}</section>}</div>;
+  }
+  const progress = updateState === undefined ? null : <div className={`update-review-progress ${updateState}`} role="status">{updateState === 'failed' ? <span>Update failed. Check the server update log.</span> : updateState === 'complete' ? <><strong>Update complete.</strong><button type="button" onClick={() => location.reload()}>Reload</button></> : <><span className="spinner" /><span>{updateState === 'queued' ? 'Waiting for the host…' : 'Pulling the reviewed revision, rebuilding, and restarting…'}</span></>}</div>;
+  return createPortal(<div className="dialog server-update-dialog" role="dialog" aria-modal="true" aria-labelledby="server-update-review-title" onKeyDown={event => { /* close idle dialogs on escape */ if (event.key === 'Escape' && !updating) closeDialog(); }}><div><header><div><small>SERVER UPDATE</small><h2 id="server-update-review-title">Review update</h2></div><button type="button" aria-label="Close server update" disabled={updating} onClick={closeDialog}>×</button></header>{body}{error && preview !== undefined && <p className="update-review-error" role="alert">{error}</p>}{progress}<footer><span>{preview?.advisory.required && !advisorAcknowledged ? 'Advisor acknowledgement required' : preview?.fastForwardable === false ? 'Manual Git reconciliation required' : preview?.rebuildRetryAvailable ? 'Retry the failed host rebuild.' : 'The update will rebuild this host only.'}</span><button type="button" disabled={updateBlocked} onClick={() => void startUpdate()}>{updating ? <><span className="spinner" />Updating…</> : preview?.rebuildRetryAvailable ? 'Retry rebuild' : 'Update'}</button></footer></div></div>, document.body);
+}
+
 // render the client settings flyout
 function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const [open, setOpen] = useState(false);
-  const [dialog, setDialog] = useState<'client' | 'server' | 'update' | 'progress' | 'account-login'>();
+  const [dialog, setDialog] = useState<'client' | 'server' | 'account-login'>();
   const [name, setName] = useState(settings.deviceName);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
-  const [updateId, setUpdateId] = useState<string>();
-  const [updateState, setUpdateState] = useState<ServerUpdateState>('queued');
   const [accounts, setAccounts] = useState<CodexAccount[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [switchingAccountId, setSwitchingAccountId] = useState<string>();
@@ -848,12 +1161,6 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     setError('');
     setOpen(false);
     setDialog(target);
-  };
-  // open update confirmation
-  const beginUpdate = () => {
-    setOpen(false);
-    setError('');
-    setDialog('update');
   };
   // switch the global Codex account
   const switchAccount = async (account: CodexAccount) => {
@@ -977,39 +1284,6 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     }
     setDialog(undefined);
   };
-  // start one guarded host update
-  const confirmUpdate = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    // prevent duplicate launches
-    if (pending) return;
-    setPending(true);
-    setError('');
-    const result = await settings.startServerUpdate();
-    setPending(false);
-    // retain confirmation after launch failure
-    if (result.id === undefined) {
-      setError(result.error ?? 'Unable to start the server update.');
-      return;
-    }
-    setUpdateId(result.id);
-    setUpdateState('queued');
-    setDialog('progress');
-  };
-  // poll through the expected restart outage
-  useEffect(() => {
-    // require an active update
-    if (dialog !== 'progress' || updateId === undefined || updateState === 'complete' || updateState === 'failed') return;
-    let active = true;
-    const poll = async () => {
-      const state = await settings.serverUpdateStatus(updateId);
-      // ignore transient restart failures
-      if (!active || state === undefined) return;
-      setUpdateState(state);
-    };
-    void poll();
-    const interval = window.setInterval(() => { void poll(); }, 1_000);
-    return () => { active = false; window.clearInterval(interval); };
-  }, [dialog, settings, updateId, updateState]);
   // poll one device-code login
   useEffect(() => {
     // require an active login
@@ -1056,24 +1330,10 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     return <div key={account.id} className="chatgpt-account-option"><button className="chatgpt-account-select" type="button" role="menuitemradio" aria-checked={account.active} disabled={account.active || busy} onClick={() => void switchAccount(account)}><span className="chatgpt-account-check" aria-hidden="true">{switchingAccountId === account.id ? <span className="spinner" /> : account.active ? '✓' : ''}</span><span className="chatgpt-account-copy"><strong>{email}{inlinePlan}</strong>{details.map((window, index) => <CodexLimitUsage key={`${account.id}:${index}`} window={window} now={accountClock} />)}{account.resetCount !== undefined && account.resetCount > 0 && <small>{account.resetCount} {account.resetCount === 1 ? 'reset' : 'resets'} available</small>}{account.error !== undefined && <small className="chatgpt-account-error">{account.error}</small>}</span></button>{atLimit && account.resetCount !== undefined && account.resetCount > 0 && <button className="chatgpt-account-reset" type="button" role="menuitem" aria-label={`Use reset for ${email}`} disabled={busy} onClick={() => void useAccountReset(account)}>{resettingAccountId === account.id ? <><span className="spinner" />Using reset…</> : 'Use reset'}</button>}{account.error !== undefined && <button className="chatgpt-account-relogin" type="button" role="menuitem" aria-label={`Re-login to ${email}`} disabled={busy} onClick={() => void beginAccountLogin(account)}>Re-login</button>}</div>;
   });
   // render current client and server identities
-  const settingsCards = <div className="client-settings-overview" role="presentation"><div className="client-settings-card" role="group" aria-label="Client"><header><small>CLIENT</small><span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Rename Client" onClick={() => beginRename('client')}>Rename</button></span></header><strong>{settings.deviceName}</strong></div><div className="client-settings-card" role="group" aria-label="Server"><header><small>SERVER</small><span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Rename Server" onClick={() => beginRename('server')}>Rename</button><button type="button" role="menuitem" aria-label="Update Server" onClick={beginUpdate}>Update</button></span></header><strong>{settings.serverName}</strong><span>{serverHostLabel(settings.serverUrl)}</span></div></div>;
+  const settingsCards = <div className="client-settings-overview" role="presentation"><div className="client-settings-card" role="group" aria-label="Client"><header><small>CLIENT</small><span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Rename Client" onClick={() => beginRename('client')}>Rename</button></span></header><strong>{settings.deviceName}</strong></div><div className="client-settings-card" role="group" aria-label="Server"><header><small>SERVER</small><span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Rename Server" onClick={() => beginRename('server')}>Rename</button></span></header><strong>{settings.serverName}</strong><span>{serverHostLabel(settings.serverUrl)}</span></div></div>;
   const flyout = !open ? null : createPortal(<div ref={flyoutRef} className="client-settings-menu more-menu flyout-menu" style={style} role="menu" aria-label="Global settings" aria-busy={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined}>{settingsCards}<hr className="more-menu-divider" />{accountsLoading && accounts.length === 0 ? <button className="chatgpt-account-loading" type="button" role="menuitem" disabled><span className="spinner" />Loading ChatGPT accounts…</button> : accountRows}{accountMessage && <span className="chatgpt-account-message" role="status">{accountMessage}</span>}<button className="chatgpt-account-add" type="button" role="menuitem" disabled={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined} onClick={() => void beginAccountLogin()}>+ Add account</button></div>, document.body);
   const renameTarget = dialog === 'client' || dialog === 'server' ? dialog : undefined;
   const renameDialog = renameTarget === undefined ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-rename-title" onKeyDown={event => { /* close on escape */ if (event.key === 'Escape') closeDialog(); }}><div><header><div><small>GLOBAL SETTINGS</small><h2 id="settings-rename-title">Rename {renameTarget === 'client' ? 'Client' : 'Server'}</h2></div><button type="button" aria-label={`Close rename ${renameTarget}`} disabled={pending} onClick={closeDialog}>×</button></header><form onSubmit={event => void submitRename(event)}><label>{renameTarget === 'client' ? 'Client' : 'Server'} name<input autoFocus type="text" value={name} maxLength={renameTarget === 'client' ? 64 : 80} autoComplete="nickname" onChange={event => setName(event.target.value)} /></label>{error && <span className="auth-error" role="alert">{error}</span>}<footer><button type="button" disabled={pending} onClick={closeDialog}>Cancel</button><button type="submit" disabled={pending || !name.trim()}>{pending ? <><span className="spinner" />Renaming…</> : 'Save'}</button></footer></form></div></div>, document.body);
-  const updateDialog = dialog !== 'update' ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="server-update-title" onKeyDown={event => { /* close on escape */ if (event.key === 'Escape') closeDialog(); }}><div><header><div><small>GLOBAL SETTINGS</small><h2 id="server-update-title">Update Server</h2></div><button type="button" aria-label="Close update server" disabled={pending} onClick={closeDialog}>×</button></header><form onSubmit={event => void confirmUpdate(event)}><p>Pull the latest Remote Agents code and rebuild the local stack?</p>{error && <span className="auth-error" role="alert">{error}</span>}<footer><button type="button" disabled={pending} onClick={closeDialog}>Cancel</button><button type="submit" disabled={pending}>{pending ? <><span className="spinner" />Starting…</> : 'Update Server'}</button></footer></form></div></div>, document.body);
-  let progressContent: ReactNode;
-  // render failed progress
-  if (updateState === 'failed') {
-    progressContent = <span className="auth-error">Update failed. Check the server logs.</span>;
-  // render completed progress
-  } else if (updateState === 'complete') {
-    progressContent = <><strong>Update complete.</strong><button type="button" onClick={() => location.reload()}>Reload</button></>;
-  // render active progress
-  } else {
-    const progressLabel = updateState === 'queued' ? 'Waiting for the host…' : 'Pulling, rebuilding, and restarting…';
-    progressContent = <><span className="spinner" /><span>{progressLabel}</span></>;
-  }
-  const progressDialog = dialog !== 'progress' ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="server-update-progress-title"><div><header><div><small>GLOBAL SETTINGS</small><h2 id="server-update-progress-title">Updating Server</h2></div>{(updateState === 'complete' || updateState === 'failed') && <button type="button" aria-label="Close server update" onClick={closeDialog}>×</button>}</header><div className="server-update-progress" role="status">{progressContent}</div></div></div>, document.body);
   let accountLoginContent: ReactNode;
   // render a failed login
   if (accountLoginState === 'failed') {
@@ -1093,7 +1353,7 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     setOpen(current => !current);
     setError('');
   };
-  return <span ref={anchorRef} className="server-switcher-settings-wrap"><button type="button" className="server-switcher-button server-switcher-settings" aria-label="Global settings" aria-haspopup="menu" aria-expanded={open} onClick={toggleSettings}>⋮</button>{flyout}{renameDialog}{updateDialog}{progressDialog}{accountLoginDialog}</span>;
+  return <span ref={anchorRef} className="server-switcher-settings-wrap"><button type="button" className="server-switcher-button server-switcher-settings" aria-label="Global settings" aria-haspopup="menu" aria-expanded={open} onClick={toggleSettings}>⋮</button>{flyout}{renameDialog}{accountLoginDialog}</span>;
 }
 
 // render native links for remote server handoff
@@ -1207,6 +1467,36 @@ function AgentPowerMenu(props: AgentPowerMenuProps) {
     ? <button type="button" role="menuitem" onClick={() => choose(props.onWake)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>
     : <><button type="button" role="menuitem" onClick={() => choose(props.onRestart)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart</button><button type="button" role="menuitem" onClick={() => choose(props.onClear)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 15 8-8 5 5-8 8H4v-5Zm7-7 5 5M10 20h10" /></svg>Clear</button><button type="button" role="menuitem" onClick={() => choose(props.onSleep)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg>Sleep</button></>;
   return <><span className="power-menu-wrap" ref={anchorRef}><button className="danger icon-button deactivate-agent" disabled={pending} aria-label="Agent power options" aria-expanded={open} aria-haspopup="menu" title="Agent power options" onClick={() => setOpen(current => !current)}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button></span>{open && createPortal(<div className="more-menu flyout-menu agent-power-menu" ref={flyoutRef} style={style} role="menu" aria-label="Agent power options">{stateActions}<button className="agent-power-off" type="button" role="menuitem" onClick={() => choose(onTurnOff)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>Turn off</button></div>, document.body)}</>;
+}
+
+// render reusable mobile terminal controls
+function MobileTerminalKeys({ id }: { id: string }) {
+  const [ctrlActive, setCtrlActive] = useState(false);
+  const [shiftActive, setShiftActive] = useState(false);
+  const [altActive, setAltActive] = useState(false);
+  useEffect(() => {
+    mobileModifiers.set(id, { alt: altActive, ctrl: ctrlActive, shift: shiftActive });
+    return () => { mobileModifiers.delete(id); };
+  }, [id, altActive, ctrlActive, shiftActive]);
+  // toggle one sticky modifier
+  const toggleModifier = (name: 'alt'|'ctrl'|'shift') => {
+    const setters = { alt: setAltActive, ctrl: setCtrlActive, shift: setShiftActive };
+    const current = mobileModifiers.get(id) ?? { alt: false, ctrl: false, shift: false };
+    mobileModifiers.set(id, { ...current, [name]: !current[name] });
+    setters[name](value => !value);
+  };
+  // send one mobile key sequence
+  const mobileKey = (key: 'tab'|'up'|'down'|'left'|'right'|'dollar'|'slash') => {
+    const { alt, ctrl, shift } = mobileModifiers.get(id) ?? { alt: false, ctrl: false, shift: false };
+    const arrows = { up: 'A', down: 'B', right: 'C', left: 'D' };
+    let value = key === 'tab' ? (shift ? '\x1b[Z' : '\t') : key === 'dollar' ? '$' : key === 'slash' ? '/' : (ctrl || shift || alt ? `\x1b[1;${ctrl && shift ? 6 : ctrl && alt ? 7 : shift && alt ? 4 : ctrl ? 5 : shift ? 2 : 3}${arrows[key]}` : `\x1b[${arrows[key]}`);
+    // prefix modified printable keys
+    if (alt && (key === 'dollar' || key === 'slash' || key === 'tab')) value = `\x1b${value}`;
+    terminalInputs.get(id)?.(value);
+  };
+  // send one direct control character
+  const mobileControl = (value: '\x1b'|'\x03') => { terminalInputs.get(id)?.(value); };
+  return <div className="mobile-terminal-keys" aria-label="Terminal keys"><div className="mobile-control-keys"><button type="button" aria-label="Esc" onPointerDown={event => { event.preventDefault(); mobileControl('\x1b'); }}>Esc</button><button type="button" aria-label="Ctrl+C" onPointerDown={event => { event.preventDefault(); mobileControl('\x03'); }}>Ctrl+C</button></div><div className="mobile-key-modifiers"><button type="button" aria-label="Tab" onPointerDown={event => { event.preventDefault(); mobileKey('tab'); }}>Tab</button><button type="button" className={shiftActive ? 'active' : ''} aria-pressed={shiftActive} onPointerDown={event => { event.preventDefault(); toggleModifier('shift'); }}>Shift</button><button type="button" className={ctrlActive ? 'active' : ''} aria-pressed={ctrlActive} onPointerDown={event => { event.preventDefault(); toggleModifier('ctrl'); }}>Ctrl</button><button type="button" className={altActive ? 'active' : ''} aria-pressed={altActive} onPointerDown={event => { event.preventDefault(); toggleModifier('alt'); }}>Alt</button></div><div className="mobile-arrow-keys"><button type="button" aria-label="Slash" onPointerDown={event => { event.preventDefault(); mobileKey('slash'); }}>/</button><button type="button" aria-label="Up arrow" onPointerDown={event => { event.preventDefault(); mobileKey('up'); }}><MobileKeyIcon name="up" /></button><button type="button" aria-label="Dollar" onPointerDown={event => { event.preventDefault(); mobileKey('dollar'); }}>$</button><button type="button" aria-label="Left arrow" onPointerDown={event => { event.preventDefault(); mobileKey('left'); }}><MobileKeyIcon name="left" /></button><button type="button" aria-label="Down arrow" onPointerDown={event => { event.preventDefault(); mobileKey('down'); }}><MobileKeyIcon name="down" /></button><button type="button" aria-label="Right arrow" onPointerDown={event => { event.preventDefault(); mobileKey('right'); }}><MobileKeyIcon name="right" /></button></div></div>;
 }
 
 // render the agent prompt controls
@@ -1342,9 +1632,6 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
     return () => observer.disconnect();
   }, []);
   const [listening, setListening] = useState(false);
-  const [ctrlActive, setCtrlActive] = useState(false);
-  const [shiftActive, setShiftActive] = useState(false);
-  const [altActive, setAltActive] = useState(false);
   const recognition = useRef<SpeechRecognitionInstance | undefined>(undefined);
   const voiceHoldTimer = useRef<number | undefined>(undefined);
   const voiceHoldPointer = useRef<number | undefined>(undefined);
@@ -1363,7 +1650,6 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
     voiceEnabled.current = false;
     recognition.current?.abort();
   }, []);
-  useEffect(() => { mobileModifiers.set(id, { alt: altActive, ctrl: ctrlActive, shift: shiftActive }); return () => { mobileModifiers.delete(id); }; }, [id, altActive, ctrlActive, shiftActive]);
   const chooseAttachments = (files: FileList | File[] | null) => {
     if (!files) return;
     const next = [...attachments, ...Array.from(files)];
@@ -1681,23 +1967,6 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
     }
     voiceHoldStarted.current = false;
   };
-  const toggleModifier = (name: 'alt'|'ctrl'|'shift') => {
-    const setters = { alt: setAltActive, ctrl: setCtrlActive, shift: setShiftActive };
-    const current = mobileModifiers.get(id) ?? { alt: false, ctrl: false, shift: false };
-    mobileModifiers.set(id, { ...current, [name]: !current[name] });
-    setters[name](value => !value);
-  };
-  const mobileKey = (key: 'tab'|'up'|'down'|'left'|'right'|'dollar'|'slash') => {
-    const { alt, ctrl, shift } = mobileModifiers.get(id) ?? { alt: false, ctrl: false, shift: false };
-    const arrows = { up: 'A', down: 'B', right: 'C', left: 'D' };
-    let value = key === 'tab' ? (shift ? '\x1b[Z' : '\t') : key === 'dollar' ? '$' : key === 'slash' ? '/' : (ctrl || shift || alt ? `\x1b[1;${ctrl && shift ? 6 : ctrl && alt ? 7 : shift && alt ? 4 : ctrl ? 5 : shift ? 2 : 3}${arrows[key]}` : `\x1b[${arrows[key]}`);
-    if (alt && (key === 'dollar' || key === 'slash' || key === 'tab')) value = `\x1b${value}`;
-    terminalInputs.get(id)?.(value);
-  };
-  // send direct control characters
-  const mobileControl = (value: '\x1b'|'\x03') => { terminalInputs.get(id)?.(value); };
-  // keep direct controls in the left column
-  const mobileKeys = <div className="mobile-terminal-keys" aria-label="Terminal keys"><div className="mobile-control-keys"><button type="button" aria-label="Esc" onPointerDown={event => { event.preventDefault(); mobileControl('\x1b'); }}>Esc</button><button type="button" aria-label="Ctrl+C" onPointerDown={event => { event.preventDefault(); mobileControl('\x03'); }}>Ctrl+C</button></div><div className="mobile-key-modifiers"><button type="button" aria-label="Tab" onPointerDown={event => { event.preventDefault(); mobileKey('tab'); }}>Tab</button><button type="button" className={shiftActive ? 'active' : ''} aria-pressed={shiftActive} onPointerDown={event => { event.preventDefault(); toggleModifier('shift'); }}>Shift</button><button type="button" className={ctrlActive ? 'active' : ''} aria-pressed={ctrlActive} onPointerDown={event => { event.preventDefault(); toggleModifier('ctrl'); }}>Ctrl</button><button type="button" className={altActive ? 'active' : ''} aria-pressed={altActive} onPointerDown={event => { event.preventDefault(); toggleModifier('alt'); }}>Alt</button></div><div className="mobile-arrow-keys"><button type="button" aria-label="Slash" onPointerDown={event => { event.preventDefault(); mobileKey('slash'); }}>/</button><button type="button" aria-label="Up arrow" onPointerDown={event => { event.preventDefault(); mobileKey('up'); }}><MobileKeyIcon name="up" /></button><button type="button" aria-label="Dollar" onPointerDown={event => { event.preventDefault(); mobileKey('dollar'); }}>$</button><button type="button" aria-label="Left arrow" onPointerDown={event => { event.preventDefault(); mobileKey('left'); }}><MobileKeyIcon name="left" /></button><button type="button" aria-label="Down arrow" onPointerDown={event => { event.preventDefault(); mobileKey('down'); }}><MobileKeyIcon name="down" /></button><button type="button" aria-label="Right arrow" onPointerDown={event => { event.preventDefault(); mobileKey('right'); }}><MobileKeyIcon name="right" /></button></div></div>;
   const cancelButton = <button className="danger icon-button cancel-agent" disabled={!canCancel || cancelling} aria-label="Cancel agent" title="Cancel agent" onClick={onCancel}>{cancelling ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>}</button>;
   const deleteButton = <button className="danger icon-button delete-agent" disabled={deleting} aria-label="Delete agent" title="Delete agent" onClick={onDelete}>{deleting ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button>;
   const powerMenu = onRestart === undefined || onClear === undefined || onDeactivate === undefined || onSleep === undefined ? null : <AgentPowerMenu mode="active" pending={restarting || clearing || deactivating || sleeping} onRestart={onRestart} onClear={onClear} onSleep={onSleep} onTurnOff={onDeactivate} />;
@@ -1773,7 +2042,7 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
   const queuePanel = queuedPromptsOpen && createPortal(<section className="queued-prompts-panel more-menu flyout-menu" ref={queuedPromptFlyoutRef} style={queuedPromptFlyoutStyle} aria-label="Queued prompts"><header><strong>Queued prompts</strong></header>{queuedPromptError && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<div className="queued-prompts-list">{queuedPrompts.map((queued, index) => { const label = queued.text || queued.attachments?.map(attachment => attachment.name).join(', ') || 'Attachments only'; const editing = queuedPromptEdit?.id === queued.id; const busy = queuedPromptAction !== undefined; return <div className={`queued-prompt-item${editing ? ' editing' : ''}`} key={queued.id}><span className="queued-prompt-order"><strong className="queued-prompt-position" aria-label={`Queue position ${index + 1}`}>{index + 1}</strong><span className="queued-prompt-order-buttons"><button type="button" disabled={busy || index === 0} aria-label={`Move queued prompt earlier: ${label}`} title="Move earlier" onClick={() => void moveQueuedPrompt(queued, 'earlier')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button type="button" disabled={busy || index === queuedPrompts.length - 1} aria-label={`Move queued prompt later: ${label}`} title="Move later" onClick={() => void moveQueuedPrompt(queued, 'later')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></span></span>{editing ? <textarea aria-label={`Edit queued prompt: ${label}`} value={queuedPromptEdit.text} maxLength={32_000} autoFocus onChange={event => setQueuedPromptEdit({ id: queued.id, text: event.target.value })} /> : <button className="queued-prompt-copy" type="button" disabled={busy} title={label} onClick={() => setQueuedPromptEdit({ id: queued.id, text: queued.text })}><span>{queued.text || 'Attachments only'}</span>{queued.attachments?.length ? <small>{queued.attachments.map(attachment => attachment.name).join(', ')}</small> : null}</button>}<span className="queued-prompt-actions">{editing ? <><button type="button" disabled={busy || !queuedPromptEdit.text.trim() && queued.attachments === undefined} aria-label={`Save queued prompt changes: ${label}`} title="Save changes" onClick={() => void saveQueuedPromptEdit(queued)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={busy} aria-label={`Stop editing queued prompt: ${label}`} title="Stop editing" onClick={() => setQueuedPromptEdit(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></> : <button type="button" disabled={busy} aria-label={`Save queued prompt: ${label}`} title="Move to saved prompts" onClick={() => void moveQueuedPromptToSaved(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'save' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5V3Zm3 0v6h8V3M8 21v-7h8v7" /></svg>}</button>}<button className="queued-prompt-cancel" type="button" disabled={busy} aria-label={`Cancel queued prompt: ${label}`} title="Cancel queued prompt" onClick={() => void cancelQueuedPrompt(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'cancel' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button></span></div>; })}</div></section>, document.body);
   const queuedToggle = !swapped && queuedPrompts.length > 0 ? <button className={`queued-prompts-toggle icon-button${queuedPromptsOpen ? ' active' : ''}`} type="button" disabled={pending} aria-label={`Queued prompts (${queuedPrompts.length})`} aria-expanded={queuedPromptsOpen} title={`${queuedPrompts.length} queued prompt${queuedPrompts.length === 1 ? '' : 's'}`} onClick={() => setQueuedPromptsOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg><span className="saved-prompts-count queued-prompts-count" aria-hidden="true">{queuedPrompts.length}</span></button> : null;
   const queueControls = <><span className={`queue-prompt-group${queuedToggle === null ? '' : ' has-queued-prompts'}`} ref={element => { queuedPromptGroupRef.current = element; queuedPromptAnchorRef.current = element; }} role="group" aria-label="Queue controls"><button className="queue icon-button" disabled={pending || (!swapped && !value && attachments.length === 0)} aria-label={queueLabel} title={queueLabel} onClick={() => void submit()}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button>{queuedToggle}</span>{queuePanel}</>;
-  return <section className="prompt">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{savedPromptError && <p className="saved-prompt-error" role="alert">{savedPromptError}</p>}{queuedPromptError && !queuedPromptsOpen && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{stop}{swapped && swap}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}<More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} pushAction={pushAction} attachDisabled={pending} onAttach={swapped ? undefined : () => attachmentInput.current?.click()} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onPromptQueued={onHistoryChanged} onSelectTarget={onSelectTarget} onOperationFeedback={onOperationFeedback} /><ProjectOpen url={projectUrl} stack={stack} browserOpen={browserOpen} onBrowserToggle={onBrowserToggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} />{saveControls}{queueControls}</div>{mobileKeys}</section>;
+  return <section className="prompt">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{savedPromptError && <p className="saved-prompt-error" role="alert">{savedPromptError}</p>}{queuedPromptError && !queuedPromptsOpen && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{stop}{swapped && swap}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}<More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} pushAction={pushAction} attachDisabled={pending} onAttach={swapped ? undefined : () => attachmentInput.current?.click()} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onPromptQueued={onHistoryChanged} onSelectTarget={onSelectTarget} onOperationFeedback={onOperationFeedback} /><ProjectOpen url={projectUrl} stack={stack} browserOpen={browserOpen} onBrowserToggle={onBrowserToggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} />{saveControls}{queueControls}</div><MobileTerminalKeys id={id} /></section>;
 }
 
 type MobileKeyIconName = 'control'|'shift'|'tab'|'up'|'down'|'left'|'right';
@@ -3153,8 +3422,10 @@ function GitStatus({ branch, summary, prSummary, expanded = false, onToggle, onO
   return <span ref={wrapRef} className={`git-status-wrap${expanded ? ' expanded' : ''}`}><button className={`git-status-summary ${state}`} type="button" aria-label={label} aria-expanded={expanded} title={label} onPointerDown={pointerToggle} onClick={clickToggle}><span className="git-branch">{branch}</span><span className="git-status-separator" aria-hidden="true">·</span><span className="git-worktree-state">{stateLabel}</span></button>{expanded && <span className="git-status-panel" role="region" aria-label="Changed files" style={{ maxHeight: panelMaxHeight }}><span className="git-status-panel-header"><strong>{mode === 'working' ? 'Working changes' : 'PR changes'}</strong>{panelDetails.length > 0 && <small className="git-status-details">{panelDetails.join(' · ')}</small>}</span>{changedFiles !== undefined && changedFiles.length > 0 ? <span className="git-status-files"><GitChangeGroup label="Implementation" changes={implementationChanges} onOpenFile={onOpenFile} /><GitChangeGroup label="TESTS & DOCS" changes={supportingChanges} onOpenFile={onOpenFile} /></span> : <span className="git-status-empty">{emptyLabel}</span>}<span className="git-status-panel-footer"><button className="git-status-review" type="button" disabled={onReview === undefined || disabledReviewReason !== undefined} title={disabledReviewReason ?? (reviewOpen ? 'Open the current guided review' : `Start guided review of ${mode === 'working' ? 'Working' : 'All PR'} changes`)} onClick={() => onReview?.(mode)}>{reviewLabel}</button><span className="git-status-mode" role="group" aria-label="Git change view"><button type="button" aria-pressed={mode === 'working'} onClick={() => setMode('working')}>Working</button><button type="button" aria-pressed={mode === 'pr'} disabled={prSummary === undefined} title={prSummary === undefined ? 'Merge target unavailable' : `Compare with ${prSummary.base}`} onClick={() => setMode('pr')}>All PR</button></span></span></span>}</span>;
 }
 
-// render live agent output
-function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshHistory, onQuestion, cleanupControl, browserUrl, browserHomeUrl, browserNavigationRequest, onBrowserNavigate, onBrowserOpen, onBrowserClose, terminalMode = false, onReview, reviewOpen = false, reviewUnavailable, processingLabel, processingDetail }: { id: string; worktreeId?: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; history: PromptHistoryEntry[]; refreshHistory: () => Promise<void>; onQuestion: (question: ChoiceQuestion | undefined) => void; cleanupControl?: ReactNode; browserUrl?: string; browserHomeUrl?: string; browserNavigationRequest?: ProjectBrowserNavigationRequest; onBrowserNavigate?: (url: string) => boolean; onBrowserOpen?: (url: string) => boolean; onBrowserClose?: () => void; terminalMode?: boolean; onReview?: (scope: ReviewScope) => void; reviewOpen?: boolean; reviewUnavailable?: string; processingLabel?: string; processingDetail?: string }) {
+type LogProps = { id: string; worktreeId?: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; history: PromptHistoryEntry[]; refreshHistory: () => Promise<void>; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined) => void; cleanupControl?: ReactNode; browserUrl?: string; browserHomeUrl?: string; browserNavigationRequest?: ProjectBrowserNavigationRequest; onBrowserNavigate?: (url: string) => boolean; onBrowserOpen?: (url: string) => boolean; onBrowserClose?: () => void; terminalMode?: boolean; embedded?: boolean; onReview?: (scope: ReviewScope) => void; reviewOpen?: boolean; reviewUnavailable?: string; processingLabel?: string; processingDetail?: string };
+
+// render reusable live agent output
+function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshHistory, onQuestion, onMetadata, cleanupControl, browserUrl, browserHomeUrl, browserNavigationRequest, onBrowserNavigate, onBrowserOpen, onBrowserClose, terminalMode = false, embedded = false, onReview, reviewOpen = false, reviewUnavailable, processingLabel, processingDetail }: LogProps) {
   const canvas = useRef<HTMLDivElement | null>(null);
   const primaryHost = useRef<HTMLDivElement | null>(null);
   const secondaryHost = useRef<HTMLDivElement | null>(null);
@@ -3181,9 +3452,11 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
   const [selectionActive, setSelectionActive] = useState(false);
   const [selectionToolbar, setSelectionToolbar] = useState<{ text: string; top: number }>();
   const copyOutputSelectionRef = useRef<(value: string) => Promise<void>>(copyText);
+  const onMetadataRef = useRef(onMetadata);
+  onMetadataRef.current = onMetadata;
   const worktreeBookmarks = useWorktreeBookmarks(worktreeId, id);
-  const worktreeNotes = useWorktreeNotes(worktreeId, id, latestAssistantMessage, latestAssistantMessageOverflows, refreshHistory, history);
-  const responseFiles = useLatestAssistantFiles(id, latestAssistantMessage);
+  const worktreeNotes = useWorktreeNotes(worktreeId, id, embedded ? undefined : latestAssistantMessage, embedded ? false : latestAssistantMessageOverflows, refreshHistory, history);
+  const responseFiles = useLatestAssistantFiles(id, embedded ? undefined : latestAssistantMessage);
   const gitFilePreview = useFilePreview(`/api/agents/${encodeURIComponent(id)}/file-preview`);
   // retain preview handling across terminal connections
   const openOutputFileRef = useRef(responseFiles.openFile);
@@ -3642,7 +3915,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
       terminal.focus();
       void connectInteractive();
     }
-    const cachedSnapshot = terminalMode ? undefined : logSnapshots.get(id);
+    const cachedSnapshot = terminalMode || embedded ? undefined : logSnapshots.get(id);
     let outputRendered = false;
     const markRendered = () => {
       if (outputRendered) return;
@@ -3785,11 +4058,13 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
             latestAgentMessage = metadata.latestAgentMessage ?? undefined;
             setLatestAssistantMessage(metadata.latestAssistantMessage ?? undefined);
             setLatestAssistantMessageOverflows(metadata.latestAssistantMessageOverflows);
+            onMetadataRef.current?.(metadata.latestAssistantMessage?.trim() || undefined);
             metadataRefreshPending = false;
             metadataFresh = true;
             metadataInitialized = true;
           }
-          if (!terminalMode && latest) cacheLogFrame(id, frame);
+          // keep modal-only advisors out of shared tab caches
+          if (!terminalMode && !embedded && latest) cacheLogFrame(id, frame);
           // invalidate completeness after newer cheap output
           if (!metadataRefreshed && text) metadataFresh = false;
           // apply authoritative empty resets
@@ -3851,16 +4126,16 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
     };
     void connect();
     return () => { closed = true; appendWrites.clear(); cancelConnectedPaint(); if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (answeredQuestionActions.get(id) === answeredQuestion) answeredQuestionActions.delete(id); if (retry !== undefined) window.clearTimeout(retry); if (flushFrame !== undefined) window.cancelAnimationFrame(flushFrame); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (overlayFrame !== undefined) window.cancelAnimationFrame(overlayFrame); if (analysisFrame !== undefined) window.cancelAnimationFrame(analysisFrame); if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer); selectionSubscriptions.forEach(subscription => subscription.dispose()); inputSubscriptions.forEach(subscription => subscription.dispose()); window.removeEventListener('resize', scheduleViewport); window.visualViewport?.removeEventListener('resize', scheduleViewport); document.removeEventListener('visibilitychange', syncVisibleViewport); window.removeEventListener('pageshow', scheduleViewport); document.removeEventListener('selectionchange', syncSelectionMode); window.removeEventListener('keydown', interruptOutput, true); document.removeEventListener('keydown', copySelectionShortcut, true); document.removeEventListener('copy', nativeOutputCopied); canvas.current?.closest('.log')?.classList.remove('selection-copied'); canvas.current?.removeEventListener('pointerdown', captureSelectionMode, true); canvas.current?.removeEventListener('click', focus); releaseLongPressSelection(); releaseScrollContainment(); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; overlays.clear(); terminals.forEach(candidate => candidate.dispose()); };
-  }, [id, onQuestion, terminalMode]);
+  }, [embedded, id, onQuestion, terminalMode]);
   const processing = processingLabel !== undefined;
   const loading = !hasRendered || processing;
   const visibleStatus = processing ? 'Starting' : terminalMode && status === 'Live' ? 'Terminal' : hasRendered && status === 'Connecting' ? 'Cached' : status;
   const cached = visibleStatus === 'Cached';
   const loadingLabel = processingLabel ?? (terminalMode ? 'Connecting to pane' : status === 'Live' ? 'Waiting for output' : status);
-  const selectionActions = selectionToolbar === undefined || worktreeNotes.expanded ? null : createPortal(<div className="output-selection-toolbar" role="toolbar" aria-label="Output selection actions" style={{ top: selectionToolbar.top }} onPointerDown={event => event.preventDefault()}>
-    <button type="button" disabled={!worktreeNotes.canCreate || selectionToolbar.text.length > 30_000} onClick={() => void worktreeNotes.createWithText(selectionToolbar.text, assistantNoteTitle(selectionToolbar.text))}>Create note</button>
-    {worktreeNotes.active && <button type="button" disabled={!worktreeNotes.canAppendToActive(selectionToolbar.text)} onClick={() => worktreeNotes.appendToActive(selectionToolbar.text)}>Append to note</button>}
-    <button type="button" onClick={() => setPromptDraft(id, current => appendTextBlock(current, selectionToolbar.text))}>Add to prompt</button>
+  const selectionActions = selectionToolbar === undefined || (!embedded && worktreeNotes.expanded) ? null : createPortal(<div className={`output-selection-toolbar${embedded ? ' embedded' : ''}`} role="toolbar" aria-label="Output selection actions" style={{ top: selectionToolbar.top }} onPointerDown={event => event.preventDefault()}>
+    {!embedded && <button type="button" disabled={!worktreeNotes.canCreate || selectionToolbar.text.length > 30_000} onClick={() => void worktreeNotes.createWithText(selectionToolbar.text, assistantNoteTitle(selectionToolbar.text))}>Create note</button>}
+    {!embedded && worktreeNotes.active && <button type="button" disabled={!worktreeNotes.canAppendToActive(selectionToolbar.text)} onClick={() => worktreeNotes.appendToActive(selectionToolbar.text)}>Append to note</button>}
+    {!embedded && <button type="button" onClick={() => setPromptDraft(id, current => appendTextBlock(current, selectionToolbar.text))}>Add to prompt</button>}
     <button type="button" onClick={() => void copyOutputSelectionRef.current(selectionToolbar.text)}>Copy</button>
   </div>, document.body);
   // restore a previous prompt
@@ -3898,11 +4173,11 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
   // prefer the refreshed prompt history over a stale log frame
   const visibleLastPrompt = history[0]?.text ?? lastPrompt;
   const promptSection = !terminalMode ? <div className="toolbar-prompt-group">{historyToggle}{visibleLastPrompt !== undefined && <button ref={lastPromptRef} className="toolbar-prompt" type="button" aria-label="Last prompt" aria-expanded={historyOpen} title={visibleLastPrompt} onClick={toggleHistory}><span className="toolbar-prompt-text">{visibleLastPrompt}</span></button>}</div> : null;
-  const gitSection = <GitStatus branch={branch} summary={gitStatus} prSummary={gitPrStatus} expanded={toolbarExpanded === 'git'} onToggle={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'git' ? undefined : 'git'); }} onOpenFile={openGitFile} onReview={scope => { setToolbarExpanded(undefined); onReview?.(scope); }} reviewOpen={reviewOpen} reviewUnavailable={reviewUnavailable} />;
+  const gitSection = embedded ? null : <GitStatus branch={branch} summary={gitStatus} prSummary={gitPrStatus} expanded={toolbarExpanded === 'git'} onToggle={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'git' ? undefined : 'git'); }} onOpenFile={openGitFile} onReview={scope => { setToolbarExpanded(undefined); onReview?.(scope); }} reviewOpen={reviewOpen} reviewUnavailable={reviewUnavailable} />;
   // distinguish retained output from live frames
-  const output = <div className={`log-output${cached ? ' cached' : ''}`}><ServerSwitcher className="output-server-switcher" /><div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'}><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{cached && <div className="log-cached-treatment" aria-hidden="true"><span>Cached view · reconnecting</span></div>}{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!terminalMode && <div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{responseFiles.control}{worktreeBookmarks.control}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><div className="page-down-controls">{scrolledUp && <button className="log-control page-arrow back-to-bottom" aria-label="Back to bottom" title="Back to bottom" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(0)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19h14M6 8l6 6 6-6" /></svg></button>}<button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div>}</div></div>;
+  const output = <div className={`log-output${cached ? ' cached' : ''}`}>{!embedded && <ServerSwitcher className="output-server-switcher" />}<div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'}><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{cached && <div className="log-cached-treatment" aria-hidden="true"><span>Cached view · reconnecting</span></div>}{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!terminalMode && <div className="log-controls-bottom"><div className="page-controls">{!embedded && cleanupControl}{!embedded && responseFiles.control}{!embedded && worktreeBookmarks.control}{!embedded && worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><div className="page-down-controls">{scrolledUp && <button className="log-control page-arrow back-to-bottom" aria-label="Back to bottom" title="Back to bottom" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(0)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19h14M6 8l6 6 6-6" /></svg></button>}<button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div>}</div></div>;
   const browserPane = browserUrl === undefined || browserHomeUrl === undefined || onBrowserNavigate === undefined || onBrowserClose === undefined ? null : <ProjectBrowserPane url={browserUrl} homeUrl={browserHomeUrl} worktreeId={worktreeId} navigationRequest={browserNavigationRequest} onNavigate={onBrowserNavigate} onClose={onBrowserClose} />;
-  return <section className="log-shell"><div className={`log${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{selectionActions}{responseFiles.dialog}{gitFilePreview.dialog}<div className={`log-topbar${toolbarExpanded === undefined ? '' : ' expanded'}`}>{promptSection}{gitSection}</div></section>;
+  return <section className={`log-shell${embedded ? ' embedded-log-shell' : ''}`}><div className={`log${embedded ? ' embedded-log' : ''}${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit output={output} note={embedded ? undefined : worktreeNotes.pane} browser={browserPane} /></div>{selectionActions}{!embedded && responseFiles.dialog}{!embedded && gitFilePreview.dialog}{!embedded && <div className={`log-topbar${toolbarExpanded === undefined ? '' : ' expanded'}`}>{promptSection}{gitSection}</div>}</section>;
 }
 
 type MoreMenuIconName = 'actions'|'attachment'|'new-task'|'pull-request'|'push'|'swap';
@@ -4240,7 +4515,9 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
     if (response.ok) await promptHistory.refresh();
     return response.ok;
   };
-  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} browserNavigationRequest={projectBrowser.navigationRequest} onBrowserNavigate={projectBrowser.navigate} onBrowserOpen={projectBrowser.openUrl} onBrowserClose={projectBrowser.close} terminalMode={swapped} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />{tabBar}<UpstreamRebaseBanner summary={agent.gitUpstream} onRebase={queueRebase} /><PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) }); if (response.ok) await promptHistory.refresh(); return response.ok; }} /><Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} sleeping={sleeping} swapping={swapping} swapped={swapped} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSleep={!active && agent.worktreeId !== undefined ? () => void sleep() : undefined} onSwap={() => void changePaneMode()} onSelectTarget={onSelectTarget} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={omxQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} pushAction={agent.push} stack={agent.stack} review={review} /></article>;
+  // reserve Remote Agents repository updates for the reviewed host update flow
+  const upstreamRebase = agent.worktreeId === 'remoteagents' ? null : <UpstreamRebaseBanner summary={agent.gitUpstream} onRebase={queueRebase} />;
+  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} browserNavigationRequest={projectBrowser.navigationRequest} onBrowserNavigate={projectBrowser.navigate} onBrowserOpen={projectBrowser.openUrl} onBrowserClose={projectBrowser.close} terminalMode={swapped} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />{tabBar}{upstreamRebase}<PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) }); if (response.ok) await promptHistory.refresh(); return response.ok; }} /><Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} sleeping={sleeping} swapping={swapping} swapped={swapped} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSleep={!active && agent.worktreeId !== undefined ? () => void sleep() : undefined} onSwap={() => void changePaneMode()} onSelectTarget={onSelectTarget} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={omxQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} pushAction={agent.push} stack={agent.stack} review={review} /></article>;
 }
 
 function launchError(response: Response): Promise<string> {
@@ -4788,7 +5065,7 @@ function DashboardView({ onUnauthorized, onInactive, clientUpdateAvailable, serv
     return () => { closed = true; sockets.forEach(socket => socket.close()); };
   }, [agentIds]);
   const items: DashboardItem[] = data === undefined ? [] : [
-    ...data.agents.map(agent => {
+    ...data.agents.filter(agent => !isEmbeddedUpdateAdvisor(agent)).map(agent => {
       const operation = agentPendingOperation(agent);
       return { key: `agent-${agent.id}`, label: agentLabel(agent), state: agentState(agent), order: agent.worktreeOrder ?? Number.MAX_SAFE_INTEGER, unread: agent.unread === true, operation, agent };
     }),
@@ -5070,11 +5347,13 @@ function DashboardView({ onUnauthorized, onInactive, clientUpdateAvailable, serv
   const storedReview = item?.agent?.worktreeId === undefined ? undefined : data.reviews?.find(review => review.worktreeId === item.agent!.worktreeId);
   const localReview = item?.agent?.worktreeId !== undefined && item.agent.worktreeId === reviewLaunch?.worktreeId;
   const activeReview = localReview ? { ...reviewIndicator, onOpen: openLocalReview } : item?.agent !== undefined && storedReview !== undefined ? { generating: reviewRestoringWorktreeId === storedReview.worktreeId, stale: false, onOpen: () => void openStoredReview(item.agent!, storedReview) } : undefined;
+  // distinguish local bundles from reviewed upstream repository updates
+  const updateLabel = clientUpdateAvailable ? 'Local update' : 'Upstream update';
   const tabBar = <><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => {
     const transition = dashboardOperationLabel(entry.operation);
     const label = transition ?? stateLabel[entry.state];
     return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
-  })}<NotificationControl />{(clientUpdateAvailable || serverUpdateAvailable) && <button className="update-ready" type="button" onClick={onUpdate}>Update available <span>{clientUpdateAvailable ? 'Reload' : 'Restart'}</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><button disabled={creatingAgent} onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
+  })}<NotificationControl />{(clientUpdateAvailable || serverUpdateAvailable) && <button className="update-ready" type="button" onClick={onUpdate}>{updateLabel} <span>{clientUpdateAvailable ? 'Reload' : 'View'}</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><button disabled={creatingAgent} onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
   const consoleClass = `console${voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{reviewDialog}</article></main></VoiceTriggerContext.Provider>;
   return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{reviewDialog}</main></VoiceTriggerContext.Provider>;
@@ -5089,8 +5368,7 @@ function App() {
   const [error, setError] = useState('');
   const [clientUpdateAvailable, setClientUpdateAvailable] = useState(false);
   const [serverUpdateAvailable, setServerUpdateAvailable] = useState(false);
-  const [updateError, setUpdateError] = useState<string>();
-  const [restarting, setRestarting] = useState(false);
+  const [serverUpdateOpen, setServerUpdateOpen] = useState(false);
   const [reconnecting, setReconnecting] = useState(!consoleReachable);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const applySession = useCallback((current: SessionInfo) => {
@@ -5124,22 +5402,8 @@ function App() {
     if (isServerInfo(payload.server)) setServerInfo(payload.server);
     return undefined;
   }, []);
-  // launch one host-managed update
-  const startServerUpdate = useCallback(async (): Promise<{ id?: string; error?: string }> => {
-    const response = await request('/api/server/update', { method: 'POST' });
-    const payload = await response.json().catch(() => undefined) as { id?: unknown; error?: unknown } | undefined;
-    // require one canonical operation identifier
-    if (!response.ok || typeof payload?.id !== 'string') return { error: typeof payload?.error === 'string' ? payload.error : 'Unable to start the server update.' };
-    return { id: payload.id };
-  }, []);
-  // read one host-managed update state
-  const serverUpdateStatus = useCallback(async (id: string): Promise<ServerUpdateState | undefined> => {
-    const response = await request(`/api/server/update/${encodeURIComponent(id)}`);
-    // tolerate expected restart outages
-    if (!response.ok) return undefined;
-    const payload = await response.json().catch(() => undefined) as { state?: unknown } | undefined;
-    return payload?.state === 'queued' || payload?.state === 'running' || payload?.state === 'complete' || payload?.state === 'failed' ? payload.state : undefined;
-  }, []);
+  // open one shared update review
+  const openServerUpdate = useCallback(() => setServerUpdateOpen(true), []);
   // load every configured Codex account and its limits
   const codexAccounts = useCallback(async (): Promise<{ accounts?: CodexAccount[]; error?: string }> => {
     const response = await request('/api/codex/accounts');
@@ -5387,50 +5651,16 @@ function App() {
     window.addEventListener('focus', checkControl);
     return () => window.removeEventListener('focus', checkControl);
   }, [refreshSession, state]);
-  // pull origin main and restart the host stack
-  const restart = useCallback(async () => {
-    // prevent duplicate restart requests
-    if (restarting) return;
-    setRestarting(true);
-    setUpdateError(undefined);
-    const result = await startServerUpdate();
-    // restore the banner after launch failure
-    if (result.id === undefined) {
-      setRestarting(false);
-      setUpdateError(result.error ?? 'Unable to restart the server.');
-      return;
-    }
-    const deadline = Date.now() + 300_000;
-    // follow the operation across the expected outage
-    while (Date.now() < deadline) {
-      const status = await serverUpdateStatus(result.id);
-      // load the rebuilt client after success
-      if (status === 'complete') {
-        location.reload();
-        return;
-      }
-      // restore the console after a host failure
-      if (status === 'failed') {
-        setRestarting(false);
-        setUpdateError('Restart failed. Check the server logs.');
-        return;
-      }
-      await new Promise(resolve => window.setTimeout(resolve, 1_000));
-    }
-    setRestarting(false);
-    setUpdateError('Restart is taking longer than expected. Check the server status before trying again.');
-  }, [restarting, serverUpdateStatus, startServerUpdate]);
-  const screen = restarting
-    ? <LoadingScreen label="Restarting" />
-    : state === 'checking'
+  const screen = state === 'checking'
       ? <LoadingScreen />
       : state === 'ready'
-        ? <DashboardView onUnauthorized={handleUnauthorized} onInactive={handleInactive} clientUpdateAvailable={clientUpdateAvailable} serverUpdateAvailable={serverUpdateAvailable} updateError={updateError} onUpdate={clientUpdateAvailable ? () => location.reload() : () => void restart()} />
+        ? <DashboardView onUnauthorized={handleUnauthorized} onInactive={handleInactive} clientUpdateAvailable={clientUpdateAvailable} serverUpdateAvailable={serverUpdateAvailable} onUpdate={clientUpdateAvailable ? () => location.reload() : openServerUpdate} />
         : (state === 'inactive' || state === 'naming') && sessionInfo !== undefined
           ? <ControlScreen session={sessionInfo} claimed={applySession} />
           : <Login initialError={error} done={applySession} />;
-  const clientSettings = useMemo<ClientSettings | undefined>(() => state === 'ready' && sessionInfo?.deviceName !== undefined ? { deviceName: sessionInfo.deviceName, serverName: serverInfo.name, serverUrl: serverInfo.url, renameClient, renameServer, startServerUpdate, serverUpdateStatus, codexAccounts, switchCodexAccount, resetCodexAccount, startCodexAccountLogin, codexAccountLoginStatus, cancelCodexAccountLogin } : undefined, [cancelCodexAccountLogin, codexAccountLoginStatus, codexAccounts, renameClient, renameServer, resetCodexAccount, serverInfo.name, serverInfo.url, serverUpdateStatus, sessionInfo?.deviceName, startCodexAccountLogin, startServerUpdate, state, switchCodexAccount]);
-  return <ServerContext.Provider value={serverInfo}><ServerStatusContext.Provider value={serverStatuses}><ClientSettingsContext.Provider value={clientSettings}>{screen}{reconnecting && <ReconnectingOverlay />}</ClientSettingsContext.Provider></ServerStatusContext.Provider></ServerContext.Provider>;
+  // expose settings without a manual server update bypass
+  const clientSettings = useMemo<ClientSettings | undefined>(() => state === 'ready' && sessionInfo?.deviceName !== undefined ? { deviceName: sessionInfo.deviceName, serverName: serverInfo.name, serverUrl: serverInfo.url, renameClient, renameServer, codexAccounts, switchCodexAccount, resetCodexAccount, startCodexAccountLogin, codexAccountLoginStatus, cancelCodexAccountLogin } : undefined, [cancelCodexAccountLogin, codexAccountLoginStatus, codexAccounts, renameClient, renameServer, resetCodexAccount, serverInfo.name, serverInfo.url, sessionInfo?.deviceName, startCodexAccountLogin, state, switchCodexAccount]);
+  return <ServerContext.Provider value={serverInfo}><ServerStatusContext.Provider value={serverStatuses}><ClientSettingsContext.Provider value={clientSettings}>{screen}<ServerUpdateDialog open={serverUpdateOpen} onClose={() => setServerUpdateOpen(false)} />{reconnecting && <ReconnectingOverlay />}</ClientSettingsContext.Provider></ServerStatusContext.Provider></ServerContext.Provider>;
 }
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');
 createRoot(document.getElementById('root')!).render(<ConsoleBoundary><App /></ConsoleBoundary>);

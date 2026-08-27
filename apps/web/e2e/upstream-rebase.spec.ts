@@ -41,3 +41,27 @@ test('queues the tracked upstream rebase workflow from the active branch banner'
 
   await expect.poll(() => queuedPrompt).toEqual({ prompt: '$rebase origin/feature/console', attachments: [] });
 });
+
+test('hides the branch rebase banner for the Remote Agents host repository', async ({ page }) => {
+  await page.route('**/api/**', async route => {
+    const url = new URL(route.request().url());
+    // restore one controlling session
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    // expose a behind host repository agent
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-remoteagents', sessionId: 'socket:$1', workspace: '/workspace', worktreeId: 'remoteagents', worktreeLabel: 'Remote Agents', branch: 'main', gitUpstream: { upstream: 'origin/main', ahead: 0, behind: 2 }, title: 'Ready' }], worktrees: [] } });
+    // keep the reviewed host updater current for this banner check
+    if (url.pathname === '/api/server/update-available') return route.fulfill({ json: { available: false } });
+    // authorize the visible agent output
+    if (url.pathname === '/api/agents/agent-remoteagents/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    // return empty prompt stores
+    if (/^\/api\/agents\/agent-remoteagents\/(?:saved-prompts|queued-prompts|prompt-history|skills)$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [], skills: [] } });
+    // disable push enrollment
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await expect(page.getByRole('tab', { name: /Remote Agents/u })).toBeVisible();
+  await expect(page.getByText('Upstream updates available')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Rebase onto origin/main' })).toHaveCount(0);
+});

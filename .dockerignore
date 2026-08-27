@@ -1,4 +1,5 @@
 .git
+.codex
 .omx
 .env
 compose.override.yaml

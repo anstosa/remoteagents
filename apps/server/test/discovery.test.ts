@@ -167,6 +167,21 @@ describe('DiscoveryService dashboard', () => {
     await expect(service.dashboard([])).resolves.toMatchObject({ agents: [{ displayLabel: '~ Scratch' }] });
   });
 
+  it('keeps an update advisor separate from its configured repository worktree', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const finder = { find: async () => [socket] };
+    const tmux = { listPanes: async () => [{ paneId: '%2', sessionId: '$1', pid: 456, path: '/host/remoteagents', title: 'Ready', displayLabel: 'Update Advisor Starting v4 2222222' }] };
+    const processes = { hasCodexDescendant: async () => true };
+    const service = new DiscoveryService(finder, tmux as never, processes);
+    const worktree: Worktree = { id: 'remoteagents', label: 'Remote Agents', path: '/workspace', identity: '/workspace', hostPath: '/host/remoteagents', available: true, pinned: true };
+
+    const dashboard = await service.dashboard([worktree]);
+
+    expect(dashboard.agents).toEqual([expect.objectContaining({ paneId: '%2', workspace: '/host/remoteagents', displayLabel: 'Update Advisor Starting v4 2222222' })]);
+    expect(dashboard.agents[0]).not.toHaveProperty('worktreeId');
+    expect(dashboard.worktrees).toEqual([expect.objectContaining({ id: 'remoteagents' })]);
+  });
+
   it('does not expose OMX team workers as dashboard agents', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const finder = { find: async () => [socket] };
@@ -278,6 +293,22 @@ describe('DiscoveryService dashboard', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('refreshes a known target when launch confirmation requires current pane state', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    let title = 'Framework';
+    let listings = 0;
+    const finder = { find: async () => [socket] };
+    const tmux = { listPanes: async () => { listings += 1; return [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/host/ferry', title }]; } };
+    const processes = { hasCodexDescendant: async () => true };
+    const service = new DiscoveryService(finder, tmux as never, processes);
+
+    const [agent] = await service.refresh();
+    title = 'Ready';
+
+    await expect(service.target(agent!.id, true)).resolves.toMatchObject({ agent: { title: 'Ready' }, socket });
+    expect(listings).toBe(2);
   });
 
   it('coalesces concurrent dashboard enrichment so slow polls cannot accumulate', async () => {

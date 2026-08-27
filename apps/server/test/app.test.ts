@@ -73,12 +73,17 @@ describe('server administration API', () => {
   it('renames and updates only from the controlling browser', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const renamed: string[] = [];
+    const targetSha = '2'.repeat(40);
+    const reviewedPreview = { available: true, rebuildRetryAvailable: false, baseSha: '1'.repeat(40), targetSha, fastForwardable: true, commitCount: 1, commits: [{ sha: targetSha, subject: 'Update server', author: 'Ansel', authoredAt: '2026-08-27T12:00:00-07:00' }], commitsTruncated: false, filesTruncated: false, advisory: { required: false, reasons: [] as Array<{ kind: 'config'; paths: string[] }> } };
+    let preview = reviewedPreview;
+    const startUpdate = vi.fn(async () => ({ id: 'server_update_operation_1234', kind: 'update' as const, state: 'queued' as const, targetSha }));
     const serverAdmin = {
       renameServer: async (name: string) => { renamed.push(name); return name.trim() || undefined; },
-      startUpdate: async () => ({ id: 'server_update_operation_1234', kind: 'update' as const, state: 'queued' as const }),
-      updateStatus: async (id: string) => id === 'server_update_operation_1234' ? ({ id, kind: 'update' as const, state: 'running' as const }) : undefined,
+      startUpdate,
+      updateStatus: async (id: string) => id === 'server_update_operation_1234' ? ({ id, kind: 'update' as const, state: 'running' as const, targetSha }) : undefined,
       // expose fetched upstream state
-      updateAvailable: async () => true
+      updateAvailable: async () => true,
+      updatePreview: async () => preview
     };
     const adminApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 19).toString('base64url')), serverAdmin: serverAdmin as never });
     try {
@@ -87,19 +92,221 @@ describe('server administration API', () => {
       const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
 
       const rename = await adminApp.inject({ method: 'PATCH', url: '/api/server/name', headers, payload: { name: 'Garage Server' } });
-      const update = await adminApp.inject({ method: 'POST', url: '/api/server/update', headers });
+      const update = await adminApp.inject({ method: 'POST', url: '/api/server/update', headers, payload: { expectedTargetSha: targetSha } });
       const status = await adminApp.inject({ method: 'GET', url: '/api/server/update/server_update_operation_1234', headers: { host: headers.host, cookie: headers.cookie } });
       const availability = await adminApp.inject({ method: 'GET', url: '/api/server/update-available', headers: { host: headers.host, cookie: headers.cookie } });
+      const updatePreview = await adminApp.inject({ method: 'GET', url: '/api/server/update-preview', headers: { host: headers.host, cookie: headers.cookie } });
+      // require explicit advisor acknowledgement for flagged previews
+      preview = { ...preview, advisory: { required: true, reasons: [{ kind: 'config', paths: ['.env.example'] }] } };
+      const unacknowledgedUpdate = await adminApp.inject({ method: 'POST', url: '/api/server/update', headers, payload: { expectedTargetSha: targetSha } });
 
       expect(rename.json()).toMatchObject({ name: 'Garage Server', server: { name: 'Garage Server' } });
       expect(renamed).toEqual(['Garage Server']);
       expect(update.statusCode).toBe(202);
       expect(update.json()).toMatchObject({ state: 'queued' });
+      expect(startUpdate).toHaveBeenCalledWith(targetSha);
       expect(status.json()).toMatchObject({ state: 'running' });
       expect(availability.json()).toEqual({ available: true });
+      expect(updatePreview.json()).toEqual(reviewedPreview);
+      expect(unacknowledgedUpdate.statusCode).toBe(409);
     } finally {
       await adminApp.close();
     }
+  }, 15_000);
+
+  it('requires the exact reviewed upstream target', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const targetSha = '2'.repeat(40);
+    const preview = { available: true, rebuildRetryAvailable: false, baseSha: '1'.repeat(40), targetSha, fastForwardable: true, commitCount: 1, commits: [], commitsTruncated: false, filesTruncated: false, advisory: { required: false, reasons: [] } };
+    const startUpdate = vi.fn();
+    const serverAdmin = { updatePreview: async () => preview, startUpdate, updateAvailable: async () => true };
+    const adminApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 21).toString('base64url')), serverAdmin: serverAdmin as never });
+    try {
+      const boot = await adminApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await adminApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+
+      const missing = await adminApp.inject({ method: 'POST', url: '/api/server/update', headers });
+      const stale = await adminApp.inject({ method: 'POST', url: '/api/server/update', headers, payload: { expectedTargetSha: '3'.repeat(40) } });
+
+      expect(missing.statusCode).toBe(400);
+      expect(stale.statusCode).toBe(409);
+      expect(startUpdate).not.toHaveBeenCalled();
+    } finally { await adminApp.close(); }
+  }, 15_000);
+
+  it('retries the reviewed rebuild after Git already reached its target', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const targetSha = '2'.repeat(40);
+    const preview = { available: false, rebuildRetryAvailable: true, baseSha: targetSha, targetSha, fastForwardable: true, commitCount: 0, commits: [], commitsTruncated: false, filesTruncated: false, advisory: { required: false, reasons: [] } };
+    const startUpdate = vi.fn(async () => ({ id: 'server_update_retry_123456', kind: 'update' as const, state: 'queued' as const, targetSha }));
+    const serverAdmin = { updatePreview: async () => preview, startUpdate, updateAvailable: async () => false };
+    const adminApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 22).toString('base64url')), serverAdmin: serverAdmin as never });
+    try {
+      const boot = await adminApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await adminApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+
+      const retry = await adminApp.inject({ method: 'POST', url: '/api/server/update', headers, payload: { expectedTargetSha: targetSha } });
+
+      expect(retry.statusCode).toBe(202);
+      expect(startUpdate).toHaveBeenCalledWith(targetSha);
+    } finally { await adminApp.close(); }
+  }, 15_000);
+
+  it('launches, reuses, and cleans one target-pinned update advisor', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const directory = await mkdtemp(join(tmpdir(), 'rac-update-advisor-api-'));
+    const targetSha = '2'.repeat(40);
+    const advisorId = 'update-advisor';
+    const socket = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const pendingAgent = { id: advisorId, paneId: '%8', sessionId: 'socket:$8', socketFingerprint: 'socket', workspace: '/host/repo', displayLabel: 'Update Advisor Starting v4 2222222', title: 'Ready' };
+    const readyAgent = { ...pendingAgent, displayLabel: 'Update Advisor v4 2222222' };
+    const oldAgent = { ...pendingAgent, id: 'old-update-advisor', paneId: '%7', sessionId: 'socket:$7' };
+    const preview = { available: true, rebuildRetryAvailable: false, baseSha: '1'.repeat(40), targetSha, fastForwardable: true, commitCount: 1, commits: [], commitsTruncated: false, filesTruncated: false, advisory: { required: true, reasons: [{ kind: 'config', paths: ['.env.example'] }] } };
+    let activeTarget: string | undefined;
+    let launched = false;
+    let advisorReady = false;
+    let advisorStarted = false;
+    let advisorClosed = false;
+    let oldAdvisorClosed = false;
+    let blockAdvisorClose = false;
+    let signalAdvisorCloseStarted = () => {};
+    let advisorCloseGate = Promise.resolve();
+    const discovery = {
+      dashboard: async () => ({ generation: launched ? 2 : 1, agents: [...(oldAdvisorClosed ? [] : [oldAgent]), ...(launched && !advisorClosed ? [{ ...(advisorReady ? readyAgent : pendingAgent), title: advisorStarted ? '⠋ Reviewing' : 'Ready' }] : [])], worktrees: [] }),
+      target: async (id: string) => launched && !advisorClosed && id === advisorId ? { agent: { ...(advisorReady ? readyAgent : pendingAgent), title: advisorStarted ? '⠋ Reviewing' : 'Ready' }, socket } : !oldAdvisorClosed && id === oldAgent.id ? { agent: oldAgent, socket } : undefined
+    };
+    const launch = { launchUpdateAdvisor: vi.fn(async () => { launched = true; advisorReady = false; advisorStarted = false; advisorClosed = false; return true; }) };
+    const tmux = { pastePrompt: vi.fn(async () => true), capture: vi.fn(async () => '› Inspect the fixed committed range without changing it. '), enter: vi.fn(async () => { advisorStarted = true; return true; }), queue: vi.fn(async () => true), label: vi.fn(async () => { advisorReady = true; return true; }), close: vi.fn(async (_socket: unknown, paneId: string) => {
+      // close interrupted launches immediately
+      if (paneId === oldAgent.paneId) oldAdvisorClosed = true;
+      // optionally hold one modal-close race
+      if (paneId === readyAgent.paneId) {
+        signalAdvisorCloseStarted();
+        if (blockAdvisorClose) await advisorCloseGate;
+        advisorClosed = true;
+      }
+      return true;
+    }) };
+    const serverAdmin = {
+      updatePreview: async () => preview,
+      updateAdvisor: () => ({ repository: '/host/repo', prompt: 'Inspect the fixed committed range without changing it.' }),
+      updateAvailable: async () => true,
+      activeUpdateTarget: async () => activeTarget,
+      startUpdate: async () => ({ id: 'server_update_advisor_1234', kind: 'update' as const, state: 'queued' as const, targetSha }),
+      updateStatus: async () => ({ id: 'server_update_advisor_1234', kind: 'update' as const, state: 'complete' as const, targetSha })
+    };
+    const adminApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 23).toString('base64url')), discovery: discovery as never, launch: launch as never, tmux: tmux as never, serverAdmin: serverAdmin as never, queuedPrompts: new QueuedPromptService(join(directory, 'queue.json')) });
+    try {
+      const boot = await adminApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await adminApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+
+      // reopen the modal beyond the former route limit
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const advisor = await adminApp.inject({ method: 'POST', url: '/api/server/update-advisor', headers, payload: { targetSha } });
+        expect(advisor.statusCode).toBe(201);
+        expect(advisor.json()).toEqual({ agentId: advisorId, targetSha });
+      }
+      expect(tmux.close).toHaveBeenCalledWith(socket, oldAgent.paneId);
+      expect(tmux.close).not.toHaveBeenCalledWith(socket, readyAgent.paneId);
+      let releaseAdvisorClose = () => {};
+      const advisorCloseStarted = new Promise<void>(resolve => { signalAdvisorCloseStarted = resolve; });
+      advisorCloseGate = new Promise<void>(resolve => { releaseAdvisorClose = resolve; });
+      blockAdvisorClose = true;
+      const racingClose = adminApp.inject({ method: 'DELETE', url: '/api/server/update-advisor', headers, payload: { targetSha } });
+      await advisorCloseStarted;
+      const racingReopen = adminApp.inject({ method: 'POST', url: '/api/server/update-advisor', headers, payload: { targetSha } });
+      blockAdvisorClose = false;
+      releaseAdvisorClose();
+      expect((await racingClose).statusCode).toBe(204);
+      expect((await racingReopen).statusCode).toBe(201);
+      expect(advisorClosed).toBe(false);
+      expect(launch.launchUpdateAdvisor).toHaveBeenCalledTimes(2);
+      activeTarget = targetSha;
+      const activeClose = await adminApp.inject({ method: 'DELETE', url: '/api/server/update-advisor', headers, payload: { targetSha } });
+      expect(activeClose.statusCode).toBe(409);
+      expect(advisorClosed).toBe(false);
+      activeTarget = undefined;
+      const closeAdvisor = await adminApp.inject({ method: 'DELETE', url: '/api/server/update-advisor', headers, payload: { targetSha } });
+      expect(closeAdvisor.statusCode).toBe(204);
+      expect(tmux.close).toHaveBeenCalledWith(socket, readyAgent.paneId);
+      const update = await adminApp.inject({ method: 'POST', url: '/api/server/update', headers, payload: { expectedTargetSha: targetSha, advisoryAcknowledged: true } });
+      expect(update.statusCode).toBe(202);
+      const status = await adminApp.inject({ method: 'GET', url: '/api/server/update/server_update_advisor_1234', headers: { host: headers.host, cookie: headers.cookie } });
+
+      expect(status.statusCode).toBe(200);
+      expect(launch.launchUpdateAdvisor).toHaveBeenCalledTimes(2);
+      expect(launch.launchUpdateAdvisor).toHaveBeenCalledWith('/host/repo', targetSha);
+      expect(tmux.pastePrompt).toHaveBeenCalledTimes(2);
+      expect(tmux.enter).toHaveBeenCalledTimes(2);
+      expect(tmux.enter).toHaveBeenCalledWith(socket, pendingAgent.paneId);
+      expect(tmux.queue).not.toHaveBeenCalled();
+      expect(tmux.label).toHaveBeenCalledWith(socket, pendingAgent.paneId, readyAgent.displayLabel);
+      expect(tmux.close).toHaveBeenCalledWith(socket, readyAgent.paneId);
+    } finally { await adminApp.close(); await rm(directory, { recursive: true, force: true }); }
+  }, 15_000);
+
+  it('closes a legacy advisor recovered after an update restart', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const targetSha = '2'.repeat(40);
+    const socket = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const legacy = { id: 'legacy-advisor', paneId: '%7', sessionId: 'socket:$7', socketFingerprint: 'socket', workspace: '/host/repo', displayLabel: 'Update Advisor 2222222', title: 'Ready' };
+    let closed = false;
+    let dashboardFails = false;
+    const discovery = {
+      dashboard: async () => { if (dashboardFails) throw new Error('tmux unavailable'); return { generation: 1, agents: closed ? [] : [legacy], worktrees: [] }; },
+      target: async (id: string) => !closed && id === legacy.id ? { agent: legacy, socket } : undefined
+    };
+    const tmux = { close: vi.fn(async () => { closed = true; return true; }) };
+    const serverAdmin = { updateStatus: async () => ({ id: 'server_update_advisor_1234', kind: 'update' as const, state: 'complete' as const, targetSha }), updateAvailable: async () => false, activeUpdateTarget: async () => undefined };
+    const adminApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 25).toString('base64url')), discovery: discovery as never, tmux: tmux as never, serverAdmin: serverAdmin as never });
+    try {
+      const boot = await adminApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await adminApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+
+      const status = await adminApp.inject({ method: 'GET', url: '/api/server/update/server_update_advisor_1234', headers });
+
+      expect(status.statusCode).toBe(200);
+      expect(tmux.close).toHaveBeenCalledWith(socket, legacy.paneId);
+      dashboardFails = true;
+      const failedCleanup = await adminApp.inject({ method: 'DELETE', url: '/api/server/update-advisor', headers, payload: { targetSha } });
+      expect(failedCleanup.statusCode).toBe(503);
+    } finally { await adminApp.close(); }
+  }, 15_000);
+
+  it('keeps only the newest same-target update advisor', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const targetSha = '2'.repeat(40);
+    const socket = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const older = { id: 'older-advisor', paneId: '%8', sessionId: 'socket:$8', socketFingerprint: 'socket', workspace: '/host/repo', displayLabel: 'Update Advisor v4 2222222', title: 'Framework' };
+    const newer = { ...older, id: 'newer-advisor', paneId: '%9', sessionId: 'socket:$9', title: 'remoteagents' };
+    let olderClosed = false;
+    const discovery = {
+      dashboard: async () => ({ generation: 1, agents: [...(olderClosed ? [] : [older]), newer], worktrees: [] }),
+      target: async (id: string) => id === newer.id ? { agent: newer, socket } : !olderClosed && id === older.id ? { agent: older, socket } : undefined
+    };
+    const launch = { launchUpdateAdvisor: vi.fn(async () => true) };
+    const tmux = { pastePrompt: vi.fn(async () => true), queue: vi.fn(async () => true), close: vi.fn(async (_socket: unknown, paneId: string) => { if (paneId === older.paneId) olderClosed = true; return true; }) };
+    const preview = { available: true, rebuildRetryAvailable: false, baseSha: '1'.repeat(40), targetSha, fastForwardable: true, commitCount: 1, commits: [], commitsTruncated: false, filesTruncated: false, advisory: { required: true, reasons: [{ kind: 'config', paths: ['.env.example'] }] } };
+    const serverAdmin = { updatePreview: async () => preview, updateAdvisor: () => ({ repository: '/host/repo', prompt: 'Inspect the fixed committed range without changing it.' }), updateAvailable: async () => true, activeUpdateTarget: async () => undefined };
+    const adminApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 24).toString('base64url')), discovery: discovery as never, launch: launch as never, tmux: tmux as never, serverAdmin: serverAdmin as never });
+    try {
+      const boot = await adminApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await adminApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+
+      const advisor = await adminApp.inject({ method: 'POST', url: '/api/server/update-advisor', headers, payload: { targetSha } });
+
+      expect(advisor.statusCode).toBe(201);
+      expect(advisor.json()).toEqual({ agentId: newer.id, targetSha });
+      expect(tmux.close).toHaveBeenCalledWith(socket, older.paneId);
+      expect(tmux.close).not.toHaveBeenCalledWith(socket, newer.paneId);
+      expect(launch.launchUpdateAdvisor).not.toHaveBeenCalled();
+      expect(tmux.pastePrompt).not.toHaveBeenCalled();
+    } finally { await adminApp.close(); }
   }, 15_000);
 });
 
