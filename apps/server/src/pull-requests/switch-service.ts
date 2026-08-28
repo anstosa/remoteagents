@@ -20,8 +20,8 @@ export class PullRequestSwitchService {
     const target = await this.discovery.target(agentId);
     const worktree = target === undefined ? undefined : this.worktree(target.agent.workspace);
     if (worktree === undefined || !await this.pullRequests.supports(worktree.identity)) return undefined;
-    const [enabled, pullRequests, dashboard] = await Promise.all([
-      this.cleanAndPushed(worktree),
+    // load slow remote metadata before taking the readiness snapshot
+    const [pullRequests, dashboard] = await Promise.all([
       this.pullRequests.ownOpen(worktree.identity),
       this.discovery.dashboard(this.config.worktrees).catch(() => undefined)
     ]);
@@ -34,6 +34,8 @@ export class PullRequestSwitchService {
       if (candidate.branch === undefined || checkedOut.has(candidate.branch)) continue;
       checkedOut.set(candidate.branch, { worktreeId: candidate.id, worktreeName: candidate.label });
     }
+    // reflect git changes completed while GitHub was loading
+    const enabled = await this.cleanAndPushed(worktree);
     return {
       enabled,
       pullRequests: pullRequests.map(pullRequest => {

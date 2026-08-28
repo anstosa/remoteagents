@@ -33,6 +33,30 @@ describe('pull request switching', () => {
     await expect(service.switch(agent.id, 7)).resolves.toBe(false);
   });
 
+  // preserve the newest git state after remote metadata loading
+  it('checks worktree readiness after loading pull request metadata', async () => {
+    let pullRequestsLoaded = false;
+    const discovery = { target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], worktrees: [] }) };
+    const pulls = {
+      supports: async () => true,
+      ownOpen: async () => {
+        // delay the simulated remote lookup
+        await Promise.resolve();
+        // finish the worktree transition
+        pullRequestsLoaded = true;
+        return choices;
+      }
+    };
+    const command = async (_binary: string, args: string[]) => {
+      // expose the state transition to clean
+      if (args.includes('status')) return { code: 0, stdout: pullRequestsLoaded ? '' : ' M apps/server/src/app.ts\n' };
+      return { code: 0, stdout: 'refs/remotes/origin/feature/current\n' };
+    };
+    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, command);
+
+    await expect(service.available(agent.id)).resolves.toMatchObject({ enabled: true });
+  });
+
   it('identifies a pull request checked out in an inactive worktree', async () => {
     const discovery = { target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], worktrees: [{ id: 'delta', label: 'Delta', branch: 'feature/draft' }] }) };
     const pulls = { supports: async () => true, ownOpen: async () => choices };
