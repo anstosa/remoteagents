@@ -47,8 +47,8 @@ const advisoryReasons = (paths: string[], fastForwardable: boolean): ServerUpdat
     if (path === 'package.json' || path === 'pnpm-lock.yaml' || path === 'pnpm-workspace.yaml' || /\/package\.json$/u.test(path)) kinds.push('dependency');
     // flag explicit persisted-state migrations
     if (/(?:^|\/)(?:migrations?|state-migrations?)(?:\/|\.|$)/iu.test(path)) kinds.push('state');
-    // review every non-frontend surface that lacks a stronger classification
-    if (kinds.length === 0 && !path.startsWith('apps/web/')) kinds.push('other');
+    // review unclassified repository infrastructure outside application code
+    if (kinds.length === 0 && !path.startsWith('apps/')) kinds.push('other');
     // retain one path under every applicable reason
     for (const kind of kinds) groups.set(kind, [...(groups.get(kind) ?? []), path]);
   }

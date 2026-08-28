@@ -79,17 +79,35 @@ describe('server administration', () => {
     const runCommand = vi.fn(async () => {
       await writeFile(statusPath, `${JSON.stringify({ kind: 'update-availability', state, baseSha, targetSha, fastForwardable: true, commitCount: state === 'available' ? 1 : 0, commitsTruncated: false, filesTruncated: false })}\n`);
       await writeFile(commitsPath, state === 'available' ? [targetSha, 'Ansel', '2026-08-27T12:00:00-07:00', 'Add config migration', ''].join('\0') : '');
-      await writeFile(filesPath, state === 'available' ? 'compose.yaml\0apps/web/src/main.tsx\0apps/server/src/bookmarks/service.ts\0' : '');
+      await writeFile(filesPath, state === 'available' ? 'compose.yaml\0apps/web/src/main.tsx\0apps/server/src/pull-requests/switch-service.ts\0' : '');
       return { code: 0, stdout: '', stderr: '' };
     });
     const service = new ServerAdminService(config, { hostRepository: '/host/repo', statusDirectory: root, tmuxBinary: '/usr/local/bin/host-tmux', tmuxSocket: '/host-tmux/default', runCommand });
 
-    await expect(service.updatePreview()).resolves.toEqual({ available: true, rebuildRetryAvailable: false, baseSha, targetSha, fastForwardable: true, commitCount: 1, commits: [{ sha: targetSha, subject: 'Add config migration', author: 'Ansel', authoredAt: '2026-08-27T12:00:00-07:00' }], commitsTruncated: false, filesTruncated: false, advisory: { required: true, reasons: [{ kind: 'compose', paths: ['compose.yaml'] }, { kind: 'other', paths: ['apps/server/src/bookmarks/service.ts'] }] } });
+    await expect(service.updatePreview()).resolves.toEqual({ available: true, rebuildRetryAvailable: false, baseSha, targetSha, fastForwardable: true, commitCount: 1, commits: [{ sha: targetSha, subject: 'Add config migration', author: 'Ansel', authoredAt: '2026-08-27T12:00:00-07:00' }], commitsTruncated: false, filesTruncated: false, advisory: { required: true, reasons: [{ kind: 'compose', paths: ['compose.yaml'] }] } });
     state = 'current';
     await expect(service.updateAvailable()).resolves.toBe(false);
 
     expect(runCommand).toHaveBeenCalledWith('/usr/local/bin/host-tmux', ['-S', '/host-tmux/default', 'run-shell', "/bin/bash '/host/repo/scripts/check-server-update.sh'"], undefined, 30_000);
     expect(runCommand).toHaveBeenCalledTimes(2);
+  });
+
+  // allow ordinary deployable application changes
+  it('does not require advisor review for application-only changes', async () => {
+    root = await mkdtemp(join(tmpdir(), 'rac-server-admin-'));
+    const statusPath = join(root, 'server-update-availability.json');
+    const commitsPath = join(root, 'server-update-commits.bin');
+    const filesPath = join(root, 'server-update-files.bin');
+    // publish one application-only preview
+    const runCommand = vi.fn(async () => {
+      await writeFile(statusPath, `${JSON.stringify({ kind: 'update-availability', state: 'available', baseSha, targetSha, fastForwardable: true, commitCount: 1, commitsTruncated: false, filesTruncated: false })}\n`);
+      await writeFile(commitsPath, [targetSha, 'Ansel', '2026-08-28T11:41:46-07:00', 'Fix stale pull request switch readiness', ''].join('\0'));
+      await writeFile(filesPath, 'apps/server/src/pull-requests/switch-service.ts\0apps/server/test/pull-request-switch.test.ts\0');
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const service = new ServerAdminService(config, { hostRepository: '/host/repo', statusDirectory: root, tmuxSocket: '/host-tmux/default', runCommand });
+
+    await expect(service.updatePreview()).resolves.toMatchObject({ advisory: { required: false, reasons: [] } });
   });
 
   it('builds an approval-gated advisor prompt only for flagged previews', () => {

@@ -131,8 +131,11 @@ test('opens the commit review before starting and retains update failures in the
   const dialog = page.getByRole('dialog', { name: 'Review update' });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText('Add safer update review')).toBeVisible();
+  await expect(dialog.getByText('Host changes need review')).toHaveCount(0);
   expect(updateStarts).toBe(0);
-  await dialog.getByRole('button', { name: 'Update', exact: true }).click();
+  const update = dialog.getByRole('button', { name: 'Update', exact: true });
+  await expect(update).toBeEnabled();
+  await update.click();
   await expect.poll(() => updateStarts).toBe(1);
   await expect(dialog.getByRole('button', { name: 'Close server update' })).toBeDisabled();
   releaseUpdate();
