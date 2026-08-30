@@ -45,7 +45,7 @@ function dependencies(overrides: Partial<OrchestrationDependencies> = {}): Orche
       moveQueued: async () => [],
       removeQueued: async () => true,
       answerOmxQuestion: async () => true,
-      cancel: async () => true,
+      cancel: async () => 'ok',
       close: async () => true
     },
     promptHistory: { list: async () => [] },
@@ -66,6 +66,15 @@ function dependencies(overrides: Partial<OrchestrationDependencies> = {}): Orche
 }
 
 describe('OrchestrationService', () => {
+  it('maps each interrupt outcome to its result', async () => {
+    const cancelled = new OrchestrationService(dependencies({ prompts: { ...dependencies().prompts, cancel: async () => 'ok' } }));
+    await expect(cancelled.cancel(activeAgent.id)).resolves.toMatchObject({ ok: true, value: { cancelled: true } });
+    const finished = new OrchestrationService(dependencies({ prompts: { ...dependencies().prompts, cancel: async () => 'not-working' } }));
+    await expect(finished.cancel(activeAgent.id)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } });
+    const missing = new OrchestrationService(dependencies({ prompts: { ...dependencies().prompts, cancel: async () => 'unavailable' } }));
+    await expect(missing.cancel(activeAgent.id)).resolves.toMatchObject({ ok: false, error: { code: 'not_found' } });
+  });
+
   it('merges active agents and inactive worktrees in configured order', async () => {
     const service = new OrchestrationService(dependencies());
 
@@ -135,7 +144,7 @@ describe('OrchestrationService', () => {
         moveQueued: async (_agentId, id, direction) => { calls.push(`move:${id}:${direction}`); return [{ id, text: 'Edited', createdAt: '2026-08-13T00:00:00.000Z' }]; },
         removeQueued: async (_agentId, id) => { calls.push(`remove:${id}`); return true; },
         answerOmxQuestion: async () => true,
-        cancel: async () => true,
+        cancel: async () => 'ok',
         close: async () => true
       },
       worktreeCommands: {
@@ -168,7 +177,7 @@ describe('OrchestrationService', () => {
         moveQueued: async () => undefined,
         removeQueued: async () => false,
         answerOmxQuestion: async () => false,
-        cancel: async () => false,
+        cancel: async () => 'unavailable',
         close: async () => { closed += 1; return true; }
       }
     }));

@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { run } = vi.hoisted(() => ({ run: vi.fn() }));
 vi.mock('../src/tmux/command.js', () => ({ run }));
 
-import { latestAgentMessageFromHistory, latestCompletedAssistantMessage, latestCompletedAssistantTurn, TmuxAdapter } from '../src/tmux/adapter.js';
+import { TmuxAdapter } from '../src/tmux/adapter.js';
+import { latestAgentMessageFromHistory, latestCompletedAssistantMessage, latestCompletedAssistantTurn } from '../src/adapters/codex-turns.js';
 
 describe('TmuxAdapter capture', () => {
   beforeEach(() => {
@@ -66,12 +67,51 @@ describe('TmuxAdapter capture', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
-  it('confirms Codex choices from the initially selected first option', async () => {
+  it('sends an Adapter key sequence one send-keys invocation per key', async () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
 
-    await expect(new TmuxAdapter().selectOption(socket, '%1', 2)).resolves.toBe(true);
+    await expect(new TmuxAdapter().sendKeys(socket, '%1', ['Down', 'Down', 'Enter'])).resolves.toBe(true);
 
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-t', '%1', 'Down', 'Down', 'Enter']);
+    expect(run.mock.calls).toEqual([
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-t', '%1', 'Down']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-t', '%1', 'Down']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-t', '%1', 'Enter']],
+    ]);
+  });
+
+  it('waits after Escape so a following key is not read as a Meta chord', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    let escapeAt = 0;
+    let ctrlCAt = 0;
+    run.mockImplementation((_binary: string, args: string[]) => {
+      if (args.at(-1) === 'Escape') escapeAt = performance.now();
+      if (args.at(-1) === 'C-c') ctrlCAt = performance.now();
+      return { code: 0, stdout: '', stderr: '' };
+    });
+
+    await expect(new TmuxAdapter().sendKeys(socket, '%1', ['Escape', 'C-c'])).resolves.toBe(true);
+
+    expect(run.mock.calls.map(call => (call[1] as string[]).at(-1))).toEqual(['Escape', 'C-c']);
+    expect(ctrlCAt - escapeAt).toBeGreaterThanOrEqual(100);
+  });
+
+  it('refuses to send keys for an unsafe pane coordinate or an empty sequence', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    await expect(new TmuxAdapter().sendKeys(socket, 'bad', ['Enter'])).resolves.toBe(false);
+    await expect(new TmuxAdapter().sendKeys(socket, '%1', [])).resolves.toBe(false);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('writes a console-owned attention state only for a known state word', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+
+    await expect(new TmuxAdapter().setReportedAttention(socket, '%1', 'finished')).resolves.toBe(true);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'set-option', '-p', '-t', '%1', '@rac_attention', 'finished']);
+
+    run.mockClear();
+    await expect(new TmuxAdapter().setReportedAttention(socket, '%1', 'bogus' as never)).resolves.toBe(false);
+    expect(run).not.toHaveBeenCalled();
   });
 
   it('suspends the foreground agent so the pane shell can become interactive', async () => {

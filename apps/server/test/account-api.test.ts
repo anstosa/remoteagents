@@ -129,7 +129,7 @@ describe('Codex account API', () => {
     const tmux = {
       // hold a submitted prompt across the switch
       pastePrompt: async () => { markPasteStarted(); await pasteBlocked; return true; },
-      queue: async () => true,
+      sendKeys: async () => true,
       close: async () => { closed.push(idleCora.id); return true; }
     };
     app = await buildApp({ ...baseConfig, worktrees: [cora] }, {

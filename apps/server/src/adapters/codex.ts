@@ -1,6 +1,5 @@
 import { isAgentCommand } from '../discovery/processes.js';
-import { failedTurnFromCapture, queueReadyPrompt } from '../prompts/service.js';
-import { lastPromptFromHistory, latestAgentMessageFromHistory, latestCompletedAssistantTurn } from '../tmux/adapter.js';
+import { failedTurnFromCapture, lastPromptFromHistory, latestAgentMessageFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from './codex-turns.js';
 import { validCodexThreadId } from '../bookmarks/service.js';
 import type { Adapter, AttentionState } from './types.js';
 

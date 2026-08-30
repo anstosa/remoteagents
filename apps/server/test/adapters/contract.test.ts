@@ -72,6 +72,14 @@ describe('Adapter contract suite', () => {
       }
     });
 
+    if (has(adapter.kind, 'submission.json')) it('reproduces the interrupt and option-select key sequences', () => {
+      const fixture = load<{ interrupt: TmuxKey[]; selectOption: Array<{ index: number; keys: TmuxKey[] }> }>(adapter.kind, 'submission.json');
+      expect(adapter.submission.interrupt, `${adapter.kind} interrupt`).toEqual(fixture.interrupt);
+      for (const { index, keys } of fixture.selectOption) {
+        expect(adapter.submission.selectOption(index), `${adapter.kind} selectOption(${index})`).toEqual(keys);
+      }
+    });
+
     const turns = adapter.turns;
     if (turns && has(adapter.kind, 'captures.json')) it('reads turns from raw capture-pane snapshots', () => {
       for (const c of load<CaptureFixture[]>(adapter.kind, 'captures.json')) {

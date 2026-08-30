@@ -179,7 +179,7 @@ describe('server administration API', () => {
       target: async (id: string) => launched && !advisorClosed && id === advisorId ? { agent: stated({ ...(advisorReady ? readyAgent : pendingAgent), title: advisorStarted ? '⠋ Reviewing' : 'Ready' }), socket } : !oldAdvisorClosed && id === oldAgent.id ? { agent: oldAgent, socket } : undefined
     };
     const launch = { launchUpdateAdvisor: vi.fn(async () => { launched = true; advisorReady = false; advisorStarted = false; advisorClosed = false; return true; }) };
-    const tmux = { pastePrompt: vi.fn(async () => true), capture: vi.fn(async () => '› Inspect the fixed committed range without changing it. '), enter: vi.fn(async () => { advisorStarted = true; return true; }), queue: vi.fn(async () => true), label: vi.fn(async () => { advisorReady = true; return true; }), close: vi.fn(async (_socket: unknown, paneId: string) => {
+    const tmux = { pastePrompt: vi.fn(async () => true), capture: vi.fn(async () => '› Inspect the fixed committed range without changing it. '), sendKeys: vi.fn(async (_socket: unknown, _pane: string, keys: string[]) => { if (keys.includes('Enter')) advisorStarted = true; return true; }), label: vi.fn(async () => { advisorReady = true; return true; }), close: vi.fn(async (_socket: unknown, paneId: string) => {
       // close interrupted launches immediately
       if (paneId === oldAgent.paneId) oldAdvisorClosed = true;
       // optionally hold one modal-close race
@@ -241,9 +241,10 @@ describe('server administration API', () => {
       expect(launch.launchUpdateAdvisor).toHaveBeenCalledTimes(2);
       expect(launch.launchUpdateAdvisor).toHaveBeenCalledWith('/host/repo', targetSha);
       expect(tmux.pastePrompt).toHaveBeenCalledTimes(2);
-      expect(tmux.enter).toHaveBeenCalledTimes(2);
-      expect(tmux.enter).toHaveBeenCalledWith(socket, pendingAgent.paneId);
-      expect(tmux.queue).not.toHaveBeenCalled();
+      expect(tmux.sendKeys).toHaveBeenCalledTimes(2);
+      expect(tmux.sendKeys).toHaveBeenCalledWith(socket, pendingAgent.paneId, ['Enter']);
+      // the advisor is submitted with Enter, never Codex's Tab queue key
+      expect(tmux.sendKeys.mock.calls.every(call => !(call[2] as string[]).includes('Tab'))).toBe(true);
       expect(tmux.label).toHaveBeenCalledWith(socket, pendingAgent.paneId, readyAgent.displayLabel);
       expect(tmux.close).toHaveBeenCalledWith(socket, readyAgent.paneId);
     } finally { await adminApp.close(); await rm(directory, { recursive: true, force: true }); }
@@ -632,7 +633,7 @@ describe('guided review API boundary', () => {
       auth: new AuthService(hash, Buffer.alloc(32, 19).toString('base64url')),
       reviewTours: reviewTours as never,
       discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined } as never,
-      tmux: { pastePrompt: async (_socket: typeof socket, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt); return true; }, queue: async () => true } as never
+      tmux: { pastePrompt: async (_socket: typeof socket, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt); return true; }, sendKeys: async () => true } as never
     });
     try {
       const boot = await reviewApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
@@ -793,7 +794,7 @@ describe('saved prompt API', () => {
     const savedApp = await buildApp({ ...config, worktrees: [worktree] }, {
       auth: new AuthService(hash, Buffer.alloc(32, 9).toString('base64url')),
       discovery: { target: async (id: string) => { const agent = agents.find(candidate => candidate.id === id); return agent === undefined ? undefined : { agent, socket }; } } as never,
-      tmux: { pastePrompt: async (_socket: unknown, _paneId: string, _buffer: string, prompt: string) => { queued.push(prompt); return true; }, queue: async () => true } as never,
+      tmux: { pastePrompt: async (_socket: unknown, _paneId: string, _buffer: string, prompt: string) => { queued.push(prompt); return true; }, sendKeys: async () => true } as never,
       savedPrompts: savedPrompts as never
     });
     try {
@@ -842,7 +843,7 @@ describe('prompt history API', () => {
     const historyApp = await buildApp({ ...config, worktrees: [worktree] }, {
       auth: new AuthService(hash, Buffer.alloc(32, 10).toString('base64url')),
       discovery: { target: async (id: string) => { const agent = agents.find(candidate => candidate.id === id); return agent === undefined ? undefined : { agent, socket }; } } as never,
-      tmux: { pastePrompt: async () => true, queue: async () => true } as never,
+      tmux: { pastePrompt: async () => true, sendKeys: async () => true } as never,
       promptHistory: promptHistory as never
     });
     try {

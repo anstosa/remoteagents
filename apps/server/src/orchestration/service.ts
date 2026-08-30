@@ -538,9 +538,13 @@ export class OrchestrationService {
   async cancel(agentId: string): Promise<OrchestrationResult<{ cancelled: true }>> {
     // reject malformed identifiers
     if (!validIdentifier(agentId)) return failure('invalid_request', 'Invalid agent identifier.');
-    return await this.operation(async () => await this.dependencies.prompts.cancel(agentId)
-      ? success({ cancelled: true as const })
-      : failure('not_found', 'Agent not found.'));
+    return await this.operation(async () => {
+      const outcome = await this.dependencies.prompts.cancel(agentId);
+      // 'ok' interrupted; 'not-working' refused a finished agent; 'unavailable' had no target
+      if (outcome === 'ok') return success({ cancelled: true as const });
+      if (outcome === 'not-working') return failure('conflict', 'The agent is not working; there is nothing to interrupt.');
+      return failure('not_found', 'Agent not found.');
+    });
   }
 
   // launch one configured worktree

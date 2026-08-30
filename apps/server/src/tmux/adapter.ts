@@ -1,174 +1,15 @@
 import type { Pane, SocketRef } from '../domain/models.js';
+import { lastPromptFromHistory, latestAgentMessageFromHistory, latestCompletedAssistantMessage } from '../adapters/codex-turns.js';
+import type { AttentionState, TmuxKey } from '../adapters/types.js';
 import { run } from './command.js';
 
 const paneId = /^%\d+$/;
 const sessionId = /^\$?[-\w.]+$/;
-const selectedChoice = /^›\s+(?:\[[ xX]\]\s*)?\d+[.)]\s/u;
+const attentionStates: ReadonlySet<string> = new Set(['working', 'finished', 'question']);
 
-/**
- * `capture-pane -e` preserves the SGR codes tmux uses for its rendered
- * snapshot.  Keep those color/style codes, but discard every other terminal
- * control sequence: Codex can emit alternate-screen and OSC controls while a
- * completion menu is open, and replaying those in the browser xterm changes
- * its terminal state instead of just rendering the snapshot.
- */
-export function lastPromptFromHistory(value: string): string | undefined {
-  const lines = value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '').split(/\r?\n/u);
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const match = /^›\s+(.+)$/u.exec(lines[index]!);
-    if (!match || selectedChoice.test(lines[index]!)) continue;
-    const prompt = [match[1]];
-    let continuation = index + 1;
-    while (continuation < lines.length && /^ {2}\S/u.test(lines[continuation]!)) prompt.push(lines[continuation++]!.trim());
-    while (continuation < lines.length && lines[continuation] === '') continuation += 1;
-    if (/^•\s/u.test(lines[continuation] ?? '')) return prompt.join(' ');
-  }
-  return undefined;
-}
-
-const assistantMarkdown = (value: string) => {
-  const withoutOsc = value.replace(/\x1b\](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\)/gu, '');
-  const sgr = /\x1b\[([0-9;]*)m/gu;
-  let markdown = '';
-  let cursor = 0;
-  let codeColor = false;
-  let underlined = false;
-  let codeOpen = false;
-  const syncCode = () => {
-    const next = codeColor && !underlined;
-    if (next !== codeOpen) markdown += '`';
-    codeOpen = next;
-  };
-  for (const match of withoutOsc.matchAll(sgr)) {
-    markdown += withoutOsc.slice(cursor, match.index);
-    const parameters = (match[1] || '0').split(';').map(Number);
-    for (let index = 0; index < parameters.length; index += 1) {
-      const parameter = parameters[index]!;
-      if (parameter === 0) { codeColor = false; underlined = false; }
-      else if (parameter === 4) underlined = true;
-      else if (parameter === 24) underlined = false;
-      else if (parameter === 39) codeColor = false;
-      else if (parameter === 36) codeColor = true;
-      else if ((parameter >= 30 && parameter <= 37) || (parameter >= 90 && parameter <= 97)) codeColor = false;
-      else if (parameter === 38 && parameters[index + 1] === 5 && parameters[index + 2] !== undefined) {
-        codeColor = parameters[index + 2] === 6;
-        index += 2;
-      } else if (parameter === 38 && parameters[index + 1] === 2 && parameters[index + 4] !== undefined) {
-        codeColor = false;
-        index += 4;
-      }
-    }
-    syncCode();
-    cursor = (match.index ?? 0) + match[0].length;
-  }
-  markdown += withoutOsc.slice(cursor);
-  if (codeOpen) markdown += '`';
-  return markdown.replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '').replace(/\r/gu, '');
-};
-
-// strip styling without adding semantic markup
-const plainTerminalText = (value: string) => value
-  .replace(/\x1b\](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\)/gu, '')
-  .replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '')
-  .replace(/\r/gu, '');
-
-export type CompletedAssistantTurn = { prompt?: string; text: string; rows: number };
-
-// find the prompt associated with one completion boundary
-const promptBeforeCompletion = (lines: string[], completedAt: number): { index: number; text: string } | undefined => {
-  // search backward for the nearest started prompt
-  for (let index = completedAt - 1; index >= 0; index -= 1) {
-    const match = /^›\s+(.+)$/u.exec(lines[index]!);
-    // skip non-prompt rows
-    if (match === null || selectedChoice.test(lines[index]!)) continue;
-    const prompt = [match[1]!];
-    let following = index + 1;
-    // collect wrapped prompt rows
-    while (following < completedAt && /^ {2}\S/u.test(lines[following]!)) prompt.push(lines[following++]!.trim());
-    // skip prompt spacing
-    while (following < completedAt && lines[following] === '') following += 1;
-    // require assistant activity for this prompt
-    if (!/^•(?:\s|$)/u.test(lines[following] ?? '')) continue;
-    return { index, text: prompt.join(' ') };
-  }
-  return undefined;
-};
-
-// detect output that makes an earlier boundary stale
-const hasLaterAssistantActivity = (lines: string[], completedAt: number): boolean => {
-  // inspect output after the candidate boundary
-  for (let index = completedAt + 1; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    // ignore non-response status announcements
-    if (/^• Model changed to\b/u.test(line)) continue;
-    // reject any later assistant response activity
-    if (/^•(?:\s|$)/u.test(line)) return true;
-  }
-  return false;
-};
-
-// capture the newest prompt-coherent completed turn
-export function latestCompletedAssistantTurn(value: string): CompletedAssistantTurn | undefined {
-  const lines = assistantMarkdown(value).split('\n');
-  // inspect completion boundaries newest first
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const timed = /^─ Worked for\b/u.test(lines[index]!);
-    const untimed = /^─{3,}$/u.test(lines[index]!);
-    // skip ordinary output rows
-    if (!timed && !untimed) continue;
-    // reject an intermediate divider or older completed turn
-    if (hasLaterAssistantActivity(lines, index)) return undefined;
-    const prompt = promptBeforeCompletion(lines, index);
-    // require a prompt for ambiguous untimed dividers
-    if (untimed && prompt === undefined) continue;
-    const lowerBound = prompt?.index ?? -1;
-    let start = index - 1;
-    // find the final assistant message within this turn
-    while (start > lowerBound && !/^•(?:\s|$)/u.test(lines[start]!)) start -= 1;
-    // require final message content
-    if (start <= lowerBound) continue;
-    let contentEnd = index;
-    // trim completion spacing
-    while (contentEnd > start && !lines[contentEnd - 1]!.trim()) contentEnd -= 1;
-    const rendered = lines.slice(start, contentEnd);
-    rendered[0] = rendered[0]!.replace(/^•\s?/u, '');
-    // remove terminal indentation
-    for (let row = 1; row < rendered.length; row += 1) rendered[row] = rendered[row]!.replace(/^ {2}/u, '');
-    const text = rendered.join('\n').trim();
-    // return the first valid newest boundary
-    if (text) return { ...(prompt === undefined ? {} : { prompt: prompt.text }), text, rows: contentEnd - start };
-  }
-  return undefined;
-}
-
-// expose only the completed response text
-export function latestCompletedAssistantMessage(value: string): { text: string; rows: number } | undefined {
-  const turn = latestCompletedAssistantTurn(value);
-  return turn === undefined ? undefined : { text: turn.text, rows: turn.rows };
-}
-
-// capture the complete response after the latest prompt
-export function latestAgentMessageFromHistory(value: string): string | undefined {
-  const lines = plainTerminalText(value).split('\n');
-  let promptAt = -1;
-  // find the latest prompt boundary
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    // ignore selected numbered choices
-    if (/^›\s+\S/u.test(lines[index]!) && !selectedChoice.test(lines[index]!)) { promptAt = index; break; }
-  }
-  if (promptAt < 0) return undefined;
-  let start = promptAt + 1;
-  // skip wrapped prompt text
-  while (start < lines.length && /^ {2}\S/u.test(lines[start]!)) start += 1;
-  // skip prompt separation
-  while (start < lines.length && !lines[start]!.trim()) start += 1;
-  let end = lines.length;
-  // trim unused terminal rows
-  while (end > start && !lines[end - 1]!.trim()) end -= 1;
-  const message = lines.slice(start, end).join('\n').trim();
-  if (!message) return undefined;
-  return message.length <= 64_000 ? message : message.slice(-64_000);
-}
+// a chord written in one send-keys is read as Meta; wait this long after Escape
+const postEscapeDelayMs = 120;
+const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
 function safeSnapshot(value: string): string {
   let result = '';
@@ -338,29 +179,32 @@ export class TmuxAdapter {
     return (await run(this.binary, ['-S', socket.path, 'paste-buffer', '-p', '-d', '-b', buffer, '-t', pane])).code === 0;
   }
 
+  // submit the composed launch command into a reused idle shell (launch path)
   async enter(socket: SocketRef, pane: string): Promise<boolean> {
     return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, 'Enter'])).code === 0;
   }
 
-  async queue(socket: SocketRef, pane: string): Promise<boolean> {
-    return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, 'Tab'])).code === 0;
+  /**
+   * Send an Adapter-composed key sequence one `send-keys` at a time (ADR 0002).
+   * The keys are the Adapter's own words (submit, interrupt, option select); the
+   * console performs the side effect. One invocation per key keeps a chord from
+   * being read as Meta, and a key following `Escape` waits so the same does not
+   * happen across the pair (Claude's interrupt is `Escape` then `C-c`).
+   */
+  async sendKeys(socket: SocketRef, pane: string, keys: readonly TmuxKey[]): Promise<boolean> {
+    if (!paneId.test(pane) || keys.length === 0) return false;
+    for (let index = 0; index < keys.length; index += 1) {
+      const key = keys[index]!;
+      if ((await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, key])).code !== 0) return false;
+      if (key === 'Escape' && index + 1 < keys.length) await delay(postEscapeDelayMs);
+    }
+    return true;
   }
 
-  async dismissCompletion(socket: SocketRef, pane: string): Promise<boolean> {
-    return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, 'Escape'])).code === 0;
-  }
-
-  async selectOption(socket: SocketRef, pane: string, index: number): Promise<boolean> {
-    if (!paneId.test(pane) || !Number.isInteger(index) || index < 0 || index > 15) return false;
-    // Codex presents the first choice as selected. `Home` is handled by its
-    // editor rather than its confirmation list, so only move down from that
-    // default selection before confirming.
-    const keys = [...Array.from({ length: index }, () => 'Down'), 'Enter'];
-    return (await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, ...keys])).code === 0;
-  }
-
-  async interrupt(socket: SocketRef, pane: string): Promise<boolean> {
-    return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, 'C-c'])).code === 0;
+  // write a console-owned Attention state on a pane (e.g. `finished` after an interrupt)
+  async setReportedAttention(socket: SocketRef, pane: string, state: AttentionState): Promise<boolean> {
+    if (!paneId.test(pane) || !attentionStates.has(state)) return false;
+    return (await run(this.binary, ['-S', socket.path, 'set-option', '-p', '-t', pane, '@rac_attention', state])).code === 0;
   }
 
   async suspend(socket: SocketRef, pane: string): Promise<boolean> {
