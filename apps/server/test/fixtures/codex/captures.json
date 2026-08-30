@@ -1,0 +1,53 @@
+[
+  {
+    "name": "newest untimed completion wins over an older timed one",
+    "lines": ["› Old prompt", "", "• Old final answer", "─ Worked for 1s", "", "› New prompt", "", "• New final answer", "────────", ""],
+    "latestCompletedTurn": { "prompt": "New prompt", "text": "New final answer" },
+    "failed": false
+  },
+  {
+    "name": "numbered and multi-select choices are skipped while matching the completed turn",
+    "lines": ["› Original request", "", "• Choose the implementation scope", "› 1. Focused change", "  2. Broader refactor", "› [x] 1. Include validation", "  [ ] 2. Skip validation", "", "• Final answer", "", "  Completed the focused change.", "────────", ""],
+    "latestCompletedTurn": { "prompt": "Original request", "text": "Final answer\n\nCompleted the focused change." },
+    "failed": false
+  },
+  {
+    "name": "a completed turn with a timing label and its prompt",
+    "lines": ["› Active prompt", "", "• Completed successfully", "", "─ Worked for 1s", ""],
+    "latestCompletedTurn": { "prompt": "Active prompt", "text": "Completed successfully" },
+    "failed": false
+  },
+  {
+    "name": "an untimed divider is not attached to a newer active prompt",
+    "lines": ["› Old prompt", "", "• Old final answer", "────────", "", "› New prompt", "", "• Still working", ""],
+    "latestCompletedTurn": null,
+    "failed": false
+  },
+  {
+    "name": "a request failure is detected on the active turn",
+    "lines": ["› Earlier prompt", "", "• Earlier answer", "", "─ Worked for 1s", "", "› Active prompt", "", "■ Request failed", ""],
+    "latestCompletedTurn": { "prompt": "Earlier prompt", "text": "Earlier answer" },
+    "failed": true
+  },
+  {
+    "name": "a cancelled turn is detected and has no completed turn",
+    "lines": ["› Active prompt", "", "■ Cancelled", ""],
+    "latestCompletedTurn": null,
+    "failed": true
+  },
+  {
+    "name": "the last prompt and latest message survive a scrolled-out history",
+    "lines": ["› summarize this repository", "• Working", "output that is no longer visible", "latest output", ""],
+    "latestCompletedTurn": null,
+    "lastPrompt": "summarize this repository",
+    "latestMessage": "• Working\noutput that is no longer visible\nlatest output",
+    "failed": false
+  },
+  {
+    "name": "a numbered choice list is preserved in the latest message",
+    "lines": ["older output", "› choose a deployment target", "", "• Checking environments", "", "Where should OMX deploy?", "› 1. Staging", "  2. Production", "  3. Preview", "  4. Cancel", ""],
+    "latestCompletedTurn": null,
+    "latestMessage": "• Checking environments\n\nWhere should OMX deploy?\n› 1. Staging\n  2. Production\n  3. Preview\n  4. Cancel",
+    "failed": false
+  }
+]

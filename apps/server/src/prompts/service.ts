@@ -21,7 +21,7 @@ export { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentBytes, 
  * ends in a token, though, so the prompt never reaches the queue.  A trailing
  * space dismisses that menu without changing the submitted prompt's meaning.
  */
-const queueReadyPrompt = (prompt: string) => /\s$/u.test(prompt) ? prompt : `${prompt} `;
+export const queueReadyPrompt = (prompt: string) => /\s$/u.test(prompt) ? prompt : `${prompt} `;
 const answerCaptureGraceMs = 10_000;
 const attachmentIgnoreRule = '/node_modules/.remote-agent-console/';
 const updateAdvisorComposerAttempts = 100;

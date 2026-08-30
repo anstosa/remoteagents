@@ -1,17 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import argon2 from 'argon2';
 import { buildApp } from '../src/app.js';
-import { AuthService } from '../src/auth/service.js';
-import type { ValidatedConfig } from '../src/config/schema.js';
+import { testConfig } from './helpers/config.js';
+import { authenticatedHeaders, testAuthService } from './helpers/auth.js';
 
-const config: ValidatedConfig = { name: 'Remote Agents', remoteServers: [], listen: { host: '127.0.0.1', port: 8787 }, publicOrigin: new URL('https://agents.example.com'), trustedProxyIps: new Set(['127.0.0.1']), pollIntervalMs: 500, newAgentCommand: 'codex', worktrees: [] };
+const config = testConfig();
 
 describe('cleanup API', () => {
   let app: Awaited<ReturnType<typeof buildApp>> | undefined;
   afterEach(async () => { await app?.close(); });
 
   it('returns cleanup targets, validates selections, and exposes pending state on the dashboard', async () => {
-    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const target = { id: 'cleanup-abcdefghijklmnopqrstuvwx', kind: 'stale-agent', label: 'Stale Codex agent', detail: 'old agent' };
     let pending = [target];
     const cleanup = {
@@ -25,13 +23,11 @@ describe('cleanup API', () => {
     };
     const discovery = { dashboard: async () => ({ generation: 1, agents: [], worktrees: [] }) };
     app = await buildApp(config, {
-      auth: new AuthService(hash, Buffer.alloc(32, 12).toString('base64url')),
+      auth: await testAuthService(),
       cleanup: cleanup as never,
       discovery: discovery as never
     });
-    const bootstrap = await app.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
-    const login = await app.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': bootstrap.json().csrfToken }, payload: { password: 'synthetic-password' } });
-    const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+    const headers = await authenticatedHeaders(app);
 
     const listed = await app.inject({ method: 'GET', url: '/api/cleanup', headers: { host: headers.host, cookie: headers.cookie } });
     const dashboard = await app.inject({ method: 'GET', url: '/api/dashboard', headers: { host: headers.host, cookie: headers.cookie } });

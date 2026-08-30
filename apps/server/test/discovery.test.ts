@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { addUntrackedLineStats, DiscoveryService, gitComparisonSummary, gitStatusSummary, gitUpstreamSummary, omxQuestion, ProcSocketFinder } from '../src/discovery/service.js';
 import type { SocketRef, Worktree } from '../src/domain/models.js';
+import { paneLister, processInspector, socketFinder } from './helpers/discovery-stubs.js';
 
 describe('DiscoveryService dashboard', () => {
   it('summarizes staged, unstaged, untracked, and conflicted worktree files', () => {
@@ -148,10 +149,9 @@ describe('DiscoveryService dashboard', () => {
   });
 
   it('associates host tmux paths with configured worktrees', async () => {
-    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const finder = { find: async () => [socket] };
-    const tmux = { listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/host/ferry', title: 'Ferry' }] };
-    const processes = { hasCodexDescendant: async () => true };
+    const finder = socketFinder();
+    const tmux = paneLister([{ paneId: '%1', sessionId: '$0', pid: 123, path: '/host/ferry', title: 'Ferry' }]);
+    const processes = processInspector({ codex: true });
     const service = new DiscoveryService(finder, tmux as never, processes);
     const worktrees: Worktree[] = [{ id: 'ferry', label: 'Ferry FYI', path: '/worktrees/ferry', identity: '/worktrees/ferry', hostPath: '/host/ferry', available: true, command: 'codex', newTask: 'new {taskId}', push: { label: 'Commit/Push', prompt: '$push' }, projectUrl: 'https://ferry.agents.example.com' }];
 

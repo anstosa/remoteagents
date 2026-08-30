@@ -1,0 +1,9 @@
+[
+  { "title": "⠋ Working", "state": "working" },
+  { "title": "⠋ Reviewing", "state": "working" },
+  { "title": "Ready", "state": "finished" },
+  { "title": "Framework", "state": "finished" },
+  { "title": "Cora", "state": "finished" },
+  { "title": "action required", "state": "question" },
+  { "title": "[ ] action required | approve the plan", "state": "question" }
+]
