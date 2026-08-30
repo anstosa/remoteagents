@@ -22,6 +22,11 @@ export { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentBytes, 
 const answerCaptureGraceMs = 10_000;
 // a reported-state prompt must report `working` within this window or the dispatch is failed
 const reportedWorkingGraceMs = 5_000;
+// an interactive submit key (Codex's Tab) is swallowed when it races a composer
+// that has not yet rendered the paste; wait (briefly, bounded) for the paste to
+// land before submitting. Best-effort: if it never renders, submit anyway.
+const composerRenderAttempts = 12;
+const composerRenderPollMs = 50;
 // the console never composes submission through an unknown kind
 type AdapterView = Pick<Adapter, 'stateSource' | 'submission' | 'turns'>;
 type CancelOutcome = 'ok' | 'unavailable' | 'not-working';
@@ -343,17 +348,48 @@ export class PromptService {
       await this.removeStaged(workspace, staged);
       return false;
     }
+    // hold the scope so a quick second submit queues behind this one, then let the
+    // interactive paste settle in the composer before the submit key: a Tab that
+    // races an unrendered composer is swallowed, so the prompt never starts and the
+    // queued work behind it is later relocated to saved (the reported bug)
+    const settle = submission === 'queue' && mode === 'prompt' && adapter.turns !== undefined && this.queued !== undefined;
+    if (settle) {
+      this.phases.set(scope, { state: 'awaiting-start', changedAt: Date.now(), historyPrompt: attachmentPrompt });
+      await this.waitForComposerRender(second, attachmentPrompt);
+    }
     let submitted = await this.tmux.sendKeys(second.socket, second.agent.paneId, keys);
     // confirm the server-owned prompt left the composer
     if (submitted && submission === 'confirmed-enter') submitted = await this.waitForUpdateAdvisorStart(agentId, second, attachmentPrompt);
-    if (!submitted) await this.removeStaged(workspace, staged);
-    else {
+    if (!submitted) {
+      // release the scope held for the unsettled paste
+      if (settle) this.phases.delete(scope);
+      await this.removeStaged(workspace, staged);
+    } else {
       // track the successful prompt
       const entry = await this.history?.record(scope, attachmentPrompt).catch(() => undefined);
       // monitor managed prompt completion
       if (this.queued !== undefined) this.phases.set(scope, { state: 'awaiting-start', changedAt: Date.now(), historyPrompt: attachmentPrompt, ...(entry === undefined ? {} : { historyEntryId: entry.id }) });
     }
     return submitted;
+  }
+
+  // wait (briefly) for a pasted interactive prompt to render on the validated pane,
+  // so the submit key is not swallowed by a composer that has not yet caught up
+  private async waitForComposerRender(target: DiscoveredTarget, prompt: string): Promise<void> {
+    // cannot observe the composer: submit best-effort
+    if (typeof this.tmux.capture !== 'function') return;
+    const normalized = normalizedPrompt(prompt);
+    // match the visible tail because Codex scrolls long composers to the cursor
+    const visibleSuffix = normalized.slice(-Math.min(64, normalized.length));
+    // match Codex's exact long-paste placeholder
+    const collapsedPaste = `[Pasted Content ${queueReadyPrompt(prompt).length} chars]`;
+    for (let attempt = 0; attempt < composerRenderAttempts; attempt += 1) {
+      const captured = await this.tmux.capture(target.socket, target.agent.paneId).catch(() => undefined);
+      const composer = captured === undefined ? '' : normalizedTerminalText(captured);
+      // submit once the paste (or its collapsed placeholder) has begun rendering
+      if (composer.includes(visibleSuffix) || composer.includes(collapsedPaste)) return;
+      await new Promise(resolve => setTimeout(resolve, composerRenderPollMs));
+    }
   }
 
   // wait for one stable empty Codex composer before pasting
