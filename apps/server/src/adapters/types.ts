@@ -10,12 +10,14 @@
  * capability record can read their presence; later chunks fill them in.
  */
 
-export type AgentKind = 'codex' | 'claude' | 'pi' | 'opencode';   // closed union; the registry is code, not plugins
+export const agentKinds = ['codex', 'claude', 'pi', 'opencode'] as const;   // closed union; the registry is code, not plugins
+export type AgentKind = typeof agentKinds[number];
 export type AttentionState = 'working' | 'finished' | 'question';
 export type TmuxKey = 'Enter' | 'Tab' | 'Escape' | 'C-c' | 'Up' | 'Down' | 'M-Enter';
 
 export type SubmissionMode = 'prompt' | 'shell';
 export type Submission = { text: string; keys: TmuxKey[] };
+export type Conversation = { id: string; title?: string };
 export type Turn = { prompt?: string; text: string; rows?: number };
 export type InlineQuestion = { id: string; text: string; choices: string[]; source: 'structured' | 'parsed'; targetPaneId?: string };
 export type PromptCommand = { name: string; description?: string };
@@ -49,8 +51,9 @@ export interface Adapter {
   };
   readonly conversations?: {
     validId(id: string): boolean;
-    discover?(pid: number): Promise<{ id: string; title?: string } | undefined>;
-    title?(id: string, cwd: string): Promise<string | undefined>;
+    discover?(pid: number): Promise<Conversation | undefined>;
+    /** The title of one already-known conversation (its id is unique), used when the pane reports it through `@rac_session`. */
+    title?(id: string): Promise<string | undefined>;
   };
   readonly sandbox?: {
     needs: { domains: string[]; statePaths: string[]; protectedPaths: string[]; secrets: string[] };

@@ -71,7 +71,7 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
     if (url.pathname === '/api/agents/agent-cora/saved-prompts') return route.fulfill({ json: { prompts: [] } });
     if (url.pathname === '/api/agents/agent-cora/queued-prompts') return route.fulfill({ json: { prompts: [] } });
     if (url.pathname === '/api/agents/agent-cora/prompt-history') return route.fulfill({ json: { prompts: [] } });
-    if (url.pathname === '/api/agents/agent-cora/skills') return route.fulfill({ json: { skills: [] } });
+    if (url.pathname === '/api/agents/agent-cora/commands') return route.fulfill({ json: { commands: [] } });
     if (url.pathname === '/api/worktrees/cora/notes') return route.fulfill({ json: { notes: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     // capture the selected context before simulating missing provider setup
@@ -188,7 +188,7 @@ test('shows graceful Davo context fallbacks without worktree or instance data', 
     if (url.pathname === '/api/dashboard/ticket') return route.fulfill({ json: { ticket: 'dashboard-ticket' } });
     if (url.pathname === '/api/agents/agent-scratch/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     // return empty agent resources
-    if (/^\/api\/agents\/agent-scratch\/(?:saved-prompts|queued-prompts|prompt-history|skills)$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [], skills: [] } });
+    if (/^\/api\/agents\/agent-scratch\/(?:saved-prompts|queued-prompts|prompt-history|commands)$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [], commands: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/realtime/session') return route.fulfill({ status: 503, json: { error: 'Realtime voice is unavailable.' } });
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });

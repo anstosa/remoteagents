@@ -33,7 +33,7 @@ export class LaunchService {
   private readonly hostShellName = interactiveShellName(this.hostShell);
   constructor(private readonly config: ValidatedConfig, private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly panes: TmuxAdapter = new TmuxAdapter()) {}
   // resolve the authenticated account home independently from the launch directory
-  private agentHome(): string {
+  agentHome(): string {
     const hostPath = this.config.worktrees.find(worktree => worktree.hostPath !== undefined)?.hostPath;
     return hostPath === undefined ? process.env.HOME ?? '/' : dirname(hostPath);
   }

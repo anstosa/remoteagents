@@ -14,7 +14,6 @@ export type GitStatusSummary = { files: number; staged: number; unstaged: number
 export type GitComparisonSummary = { base: string; files: number; changes?: GitStatusChange[] };
 export type GitUpstreamSummary = { upstream: string; ahead: number; behind: number };
 export type Agent = { id: string; paneId: string; sessionId: string; socketFingerprint: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind: AgentKind; attention: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: InlineQuestion };
-export type CodexSessionRef = { id: string; relativePath: string };
 export type Worktree = { id: string; label: string; path: string; identity: string; hostPath?: string; saveKey?: string; available: boolean; pinned: boolean; command?: string; resumeCommand?: string; launch?: LaunchTemplate; projectUrl?: string; projectPort?: number; commands?: StackCommands; newTask?: string; push?: PromptAction };
 export type LaunchTemplate = { program: string; args: string[] };
 export type CleanupTargetKind = 'orphan-worker' | 'stale-agent' | 'hud-pane' | 'hud-process';

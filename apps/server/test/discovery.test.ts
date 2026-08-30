@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +8,29 @@ import { addUntrackedLineStats, DiscoveryService, gitComparisonSummary, gitStatu
 import { inlineQuestionId, pendingOmxQuestion } from '../src/adapters/codex-questions.js';
 import type { SocketRef, Worktree } from '../src/domain/models.js';
 import { paneLister, processInspector, socketFinder } from './helpers/discovery-stubs.js';
+
+// write one representative Codex rollout under a home, returning its absolute path
+async function writeRollout(home: string, id: string, prompt: string): Promise<string> {
+  const directory = join(home, 'sessions', '2026', '08', '20');
+  await mkdir(directory, { recursive: true });
+  const lines = [
+    { type: 'session_meta', payload: { id, cwd: '/host/cora', originator: 'codex-tui' } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: prompt }] } }
+  ];
+  const file = join(directory, `rollout-2026-08-20T12-00-00-${id}.jsonl`);
+  await writeFile(file, `${lines.map(line => JSON.stringify(line)).join('\n')}\n`);
+  return file;
+}
+
+// build a fake /proc where each pid holds the given rollout files open
+async function buildProc(proc: string, holdings: Record<number, string[]>): Promise<void> {
+  for (const [pid, files] of Object.entries(holdings)) {
+    await mkdir(join(proc, pid, 'task', pid), { recursive: true });
+    await writeFile(join(proc, pid, 'task', pid, 'children'), '');
+    await mkdir(join(proc, pid, 'fd'), { recursive: true });
+    await Promise.all(files.map((file, index) => symlink(file, join(proc, pid, 'fd', String(index + 3)))));
+  }
+}
 
 describe('DiscoveryService dashboard', () => {
   it('summarizes staged, unstaged, untracked, and conflicted worktree files', () => {
@@ -164,24 +187,66 @@ describe('DiscoveryService dashboard', () => {
     expect(dashboard.worktrees).toEqual([]);
   });
 
-  it('resolves open Codex sessions from the selected agent pane only', async () => {
+  it('prefers a valid reported @rac_session over the conversation the fd-walk finds, and reads its title', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const finder = { find: async () => [socket] };
+    const tmux = { listPanes: async () => [
+      // pane %1 reports a valid session; pane %2 reports garbage and must fall back to the fd-walk
+      { paneId: '%1', sessionId: '$0', pid: 123, path: '/host/cora', title: 'Cora', reportedSession: '0198c111-1111-7111-8111-111111111111' },
+      { paneId: '%2', sessionId: '$1', pid: 456, path: '/host/cora', title: 'Cora copy', reportedSession: 'not-a-session' }
+    ] };
+    const home = await mkdtemp(join(tmpdir(), 'rac-codex-home-'));
+    const proc = await mkdtemp(join(tmpdir(), 'rac-proc-'));
+    const previous = { proc: process.env.RAC_HOST_PROC, home: process.env.CODEX_HOME };
+    try {
+      await writeRollout(home, '0198c111-1111-7111-8111-111111111111', 'Reported conversation');
+      const walkedFirst = await writeRollout(home, '0198c333-3333-7333-8333-333333333333', 'Walked by pane one');
+      const walkedSecond = await writeRollout(home, '0198c777-7777-7777-8777-777777777777', 'Walked by pane two');
+      await buildProc(proc, { 123: [walkedFirst], 456: [walkedSecond] });
+      process.env.RAC_HOST_PROC = proc;
+      process.env.CODEX_HOME = home;
+      const service = new DiscoveryService(finder, tmux as never, processInspector());
+      const agents = await service.refresh();
+
+      // the valid reported id wins over the different conversation the fd-walk would return
+      await expect(service.conversationId(agents[0]!.id)).resolves.toBe('0198c111-1111-7111-8111-111111111111');
+      await expect(service.conversation(agents[0]!.id)).resolves.toEqual({ id: '0198c111-1111-7111-8111-111111111111', title: 'Reported conversation' });
+      // a malformed report is rejected and falls back to the fd-walk
+      await expect(service.conversationId(agents[1]!.id)).resolves.toBe('0198c777-7777-7777-8777-777777777777');
+    } finally {
+      if (previous.proc === undefined) delete process.env.RAC_HOST_PROC; else process.env.RAC_HOST_PROC = previous.proc;
+      if (previous.home === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous.home;
+      await Promise.all([rm(home, { recursive: true, force: true }), rm(proc, { recursive: true, force: true })]);
+    }
+  });
+
+  it('falls back to the fd-walk and isolates each pane to its own conversation', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const finder = { find: async () => [socket] };
     const tmux = { listPanes: async () => [
       { paneId: '%1', sessionId: '$0', pid: 123, path: '/host/cora', title: 'Cora' },
       { paneId: '%2', sessionId: '$1', pid: 456, path: '/host/cora', title: 'Cora copy' }
     ] };
-    const processes = {
-      recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }),
-      sessionsForDescendants: async (pid: number) => pid === 123
-        ? [{ id: '0198c111-1111-7111-8111-111111111111', relativePath: 'sessions/2026/08/20/rollout-first-0198c111-1111-7111-8111-111111111111.jsonl' }]
-        : [{ id: '0198c333-3333-7333-8333-333333333333', relativePath: 'sessions/2026/08/20/rollout-second-0198c333-3333-7333-8333-333333333333.jsonl' }]
-    };
-    const service = new DiscoveryService(finder, tmux as never, processes);
-    const agents = await service.refresh();
+    const home = await mkdtemp(join(tmpdir(), 'rac-codex-home-'));
+    const proc = await mkdtemp(join(tmpdir(), 'rac-proc-'));
+    const previous = { proc: process.env.RAC_HOST_PROC, home: process.env.CODEX_HOME };
+    try {
+      const first = await writeRollout(home, '0198c111-1111-7111-8111-111111111111', 'First conversation');
+      const second = await writeRollout(home, '0198c333-3333-7333-8333-333333333333', 'Second conversation');
+      await buildProc(proc, { 123: [first], 456: [second] });
+      process.env.RAC_HOST_PROC = proc;
+      process.env.CODEX_HOME = home;
+      const service = new DiscoveryService(finder, tmux as never, processInspector());
+      const agents = await service.refresh();
 
-    await expect(service.sessions(agents[0]!.id)).resolves.toEqual([{ id: '0198c111-1111-7111-8111-111111111111', relativePath: 'sessions/2026/08/20/rollout-first-0198c111-1111-7111-8111-111111111111.jsonl' }]);
-    await expect(service.sessions(agents[1]!.id)).resolves.toEqual([{ id: '0198c333-3333-7333-8333-333333333333', relativePath: 'sessions/2026/08/20/rollout-second-0198c333-3333-7333-8333-333333333333.jsonl' }]);
+      await expect(service.conversationId(agents[0]!.id)).resolves.toBe('0198c111-1111-7111-8111-111111111111');
+      await expect(service.conversationId(agents[1]!.id)).resolves.toBe('0198c333-3333-7333-8333-333333333333');
+      await expect(service.conversation(agents[0]!.id)).resolves.toEqual({ id: '0198c111-1111-7111-8111-111111111111', title: 'First conversation' });
+    } finally {
+      if (previous.proc === undefined) delete process.env.RAC_HOST_PROC; else process.env.RAC_HOST_PROC = previous.proc;
+      if (previous.home === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous.home;
+      await Promise.all([rm(home, { recursive: true, force: true }), rm(proc, { recursive: true, force: true })]);
+    }
   });
 
   it('preserves a custom tmux display label for launched scratch agents', async () => {
@@ -220,7 +285,7 @@ describe('DiscoveryService dashboard', () => {
 
     // reported 'question' wins over the title's inferred 'finished'
     expect(dashboard.agents[0]).toMatchObject({ kind: 'codex', attention: 'question', sandboxed: true, conversationId: 'abc-123' });
-    expect(dashboard.adapters).toMatchObject({ codex: { launchable: true, stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: true, commands: false, sandbox: false } });
+    expect(dashboard.adapters).toMatchObject({ codex: { launchable: true, stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: true, commands: true, sandbox: false } });
   });
 
   it('clears stale @rac_* only on a non-agent pane that still carries a report', async () => {

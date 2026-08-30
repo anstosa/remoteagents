@@ -126,26 +126,11 @@ type CodexAccountRestart = { worktreeId: string; status: 'restarted'|'skipped'|'
 type CodexAccountResetOutcome = 'reset'|'nothingToReset'|'noCredit'|'alreadyRedeemed';
 type CodexAccountLogin = { loginId: string; verificationUrl: string; userCode: string };
 type CodexAccountLoginStatus = { status: 'pending'|'succeeded'|'failed'; account?: CodexAccount; error?: string };
-type PromptCommand = { value: string; description: string };
+// The prompt box's `$skill`/`/slash` catalog is served per Agent by the server
+// from the addressed Agent's Adapter (ADR 0002); the web no longer hard-codes it.
+type PromptCommand = { value: string; description?: string };
 type CommandToken = { start: number; end: number; prefix: '$'|'/'; query: string };
-const skillCommands: PromptCommand[] = [
-  ['address', 'Address unresolved pull-request review threads'], ['ai-slop-cleaner', 'Clean up AI-generated code'], ['analyze', 'Run read-only repository analysis'], ['ask', 'Ask a local external advisor'], ['autopilot', 'Run the autonomous delivery workflow'], ['autoresearch', 'Run validator-gated research'], ['autoresearch-goal', 'Run durable goal-based research'], ['best-practice-research', 'Research upstream best practices'],
-  ['brooks-audit', 'Audit architecture and module dependencies'], ['brooks-debt', 'Assess and prioritize technical debt'], ['brooks-health', 'Create a codebase health dashboard'], ['brooks-review', 'Review code for maintainability decay'], ['brooks-sweep', 'Review and remediate codebase quality'], ['brooks-test', 'Review test quality'], ['cancel', 'Cancel an active OMX workflow'], ['cherry-pick', 'Cherry-pick commits onto this branch'],
-  ['code-review', 'Run a comprehensive code review'], ['commit', 'Commit current changes'], ['configure-notifications', 'Configure OMX notifications'], ['deep-interview', 'Clarify requirements through an interview'], ['deploy-notes', 'Generate deploy changelogs and test plans'], ['design', 'Create or update the repo design document'], ['doctor', 'Diagnose and repair OMX installation'], ['finish', 'Run the finish-PR workflow'],
-  ['fixup', 'Inspect and repair the current pull request'], ['full-review', 'Run the full review and remediation workflow'], ['github:gh-address-comments', 'Address GitHub PR review feedback'], ['github:gh-fix-ci', 'Fix failing GitHub Actions checks'], ['github:github', 'Triage GitHub repositories, PRs, and issues'], ['github:yeet', 'Commit, push, and open a draft PR'], ['hud', 'Show or configure the OMX HUD'], ['imagegen', 'Generate or edit raster images'],
-  ['merge', 'Merge a branch into the current branch'], ['omx-setup', 'Set up and configure OMX'], ['openai-docs', 'Find current OpenAI and Codex documentation'], ['performance-goal', 'Run goal-based performance optimization'], ['pipeline', 'Run a configurable workflow pipeline'], ['plan', 'Create a strategic implementation plan'], ['plugin-creator', 'Create or update a Codex plugin'], ['pr-ci-fix', 'Fix current PR CI failures'],
-  ['pr-cleanup-review', 'Review changed code for cleanup issues'], ['pr-draft', 'Create or update a GitHub draft PR'], ['prometheus-strict', 'Run interview-driven clean-room planning'], ['query', 'Answer with read-only investigation'], ['ralph', 'Run a completion and verification loop'], ['ralplan', 'Create a consensus implementation plan'], ['rebase', 'Rebase this branch onto another branch'], ['release', 'Build and release to target environments'],
-  ['resolve', 'Resolve a merge, rebase, or cherry-pick'], ['review-and-fix', 'Review, fix, commit, and push findings'], ['review-cockpit', 'Generate Neovim review artifacts'], ['sentry:sentry', 'Inspect Sentry issues and events'], ['skill', 'Manage local skills'], ['skill-creator', 'Create or update a Codex skill'], ['skill-installer', 'Install a curated or repository skill'], ['team', 'Coordinate a shared multi-agent task list'],
-  ['test-urls', 'Generate local browser test URLs'], ['ultragoal', 'Run durable repo-native goals'], ['ultraqa', 'Run adversarial end-to-end QA'], ['ultrawork', 'Run high-throughput parallel execution'], ['visual-ralph', 'Iterate a UI against visual references'], ['wiki', 'Manage the persistent project wiki']
-].map(([name, description]) => ({ value: `$${name}`, description }));
-const slashCommands: PromptCommand[] = [
-  { value: '/help', description: 'Show available commands' }, { value: '/skills', description: 'Browse available skills' }, { value: '/status', description: 'Show the current session status' }, { value: '/model', description: 'Choose a model' }, { value: '/compact', description: 'Compact the conversation' }, { value: '/new', description: 'Start a new conversation' }, { value: '/resume', description: 'Resume a conversation' }, { value: '/review', description: 'Review the current changes' }, { value: '/diff', description: 'Show the current diff' }, { value: '/init', description: 'Initialize project guidance' }, { value: '/clear', description: 'Clear the conversation' }, { value: '/quit', description: 'Exit the session' }
-];
-const mergeSkillCommands = (additional: PromptCommand[]) => {
-  const commands = new Map(skillCommands.map(command => [command.value, command]));
-  for (const command of additional) commands.set(command.value, command);
-  return [...commands.values()].sort((left, right) => left.value.localeCompare(right.value));
-};
+const validCommandValue = /^[$/][^\s]+$/u;
 const monoFontFamily = '"JetBrainsMono Nerd Font", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
 const commandTokenAt = (value: string, cursor: number): CommandToken | undefined => {
   const before = value.slice(0, cursor);
@@ -1439,7 +1424,7 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
   const [value, setValue] = usePromptDraft(id);
   const [commandToken, setCommandToken] = useState<CommandToken>();
   const [activeCommand, setActiveCommand] = useState(0);
-  const [projectSkillCommands, setProjectSkillCommands] = useState<PromptCommand[]>([]);
+  const [promptCommands, setPromptCommands] = useState<PromptCommand[]>([]);
   const pendingKey = `prompt:${id}`;
   const pending = usePendingOperation(pendingKey);
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -1467,20 +1452,19 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
   const { anchorRef: savedPromptAnchorRef, flyoutRef: savedPromptFlyoutRef, style: savedPromptFlyoutStyle } = useViewportFlyout(savedPromptsOpen);
   const queuedPromptGroupRef = useRef<HTMLSpanElement | null>(null);
   const { anchorRef: queuedPromptAnchorRef, flyoutRef: queuedPromptFlyoutRef, style: queuedPromptFlyoutStyle } = useViewportFlyout(queuedPromptsOpen);
-  const promptCommands = useMemo(() => [...mergeSkillCommands(projectSkillCommands), ...slashCommands], [projectSkillCommands]);
   const commandOptions = commandToken === undefined ? [] : promptCommands.filter(command => command.value.startsWith(commandToken.prefix) && command.value.slice(1).toLocaleLowerCase().includes(commandToken.query.toLocaleLowerCase()));
   useEffect(() => { historyIndex.current = undefined; historyDraft.current = ''; }, [id]);
   useEffect(() => {
     let cancelled = false;
-    setProjectSkillCommands([]);
-    void request(`/api/agents/${encodeURIComponent(id)}/skills`).then(response => response.ok ? response.json() : undefined).then((payload: unknown) => {
-      if (cancelled || payload === null || typeof payload !== 'object' || !Array.isArray((payload as { skills?: unknown }).skills)) return;
-      const commands = (payload as { skills: unknown[] }).skills.flatMap(skill => {
-        if (skill === null || typeof skill !== 'object') return [];
-        const { name, description } = skill as { name?: unknown; description?: unknown };
-        return typeof name === 'string' && /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/u.test(name) && typeof description === 'string' ? [{ value: `$${name}`, description }] : [];
+    setPromptCommands([]);
+    void request(`/api/agents/${encodeURIComponent(id)}/commands`).then(response => response.ok ? response.json() : undefined).then((payload: unknown) => {
+      if (cancelled || payload === null || typeof payload !== 'object' || !Array.isArray((payload as { commands?: unknown }).commands)) return;
+      const catalog = (payload as { commands: unknown[] }).commands.flatMap(command => {
+        if (command === null || typeof command !== 'object') return [];
+        const { value, description } = command as { value?: unknown; description?: unknown };
+        return typeof value === 'string' && validCommandValue.test(value) ? [{ value, ...(typeof description === 'string' ? { description } : {}) }] : [];
       });
-      setProjectSkillCommands(commands);
+      setPromptCommands(catalog);
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [id]);

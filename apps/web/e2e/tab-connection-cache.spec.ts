@@ -46,7 +46,7 @@ test('shows cached agent output immediately while a selected tab reconnects', as
     // issue live-output tickets
     if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
     // return empty prompt resources
-    if (/^\/api\/agents\/agent-[12]\/(?:skills|saved-prompts|prompt-history|queued-prompts)$/u.test(url.pathname)) return route.fulfill({ json: url.pathname.endsWith('/skills') ? { skills: [] } : { prompts: [] } });
+    if (/^\/api\/agents\/agent-[12]\/(?:commands|saved-prompts|prompt-history|queued-prompts)$/u.test(url.pathname)) return route.fulfill({ json: url.pathname.endsWith('/commands') ? { commands: [] } : { prompts: [] } });
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 

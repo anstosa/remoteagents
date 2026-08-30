@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isAgentCommand, isHudWatcherCommand, ProcInspector } from '../src/discovery/processes.js';
+import { openRollouts } from '../src/adapters/codex-conversations.js';
 
 describe('isAgentCommand', () => {
   it('recognizes the Node launcher used by current Codex installations', () => {
@@ -92,7 +93,7 @@ describe('ProcInspector recognizeAgent', () => {
   });
 });
 
-describe('ProcInspector sessions', () => {
+describe('openRollouts', () => {
   it('reads exact rollout identities from one pane process tree', async () => {
     const root = await mkdtemp(join(tmpdir(), 'rac-proc-'));
     const previous = process.env.RAC_HOST_PROC;
@@ -111,7 +112,7 @@ describe('ProcInspector sessions', () => {
         symlink('/tmp/unrelated.txt', join(root, '101', 'fd', '43'))
       ]);
 
-      await expect(new ProcInspector().sessionsForDescendants(100)).resolves.toEqual([{ id: '0198c333-3333-7333-8333-333333333333', relativePath: 'sessions/2026/08/21/rollout-2026-08-21T06-00-00-0198c333-3333-7333-8333-333333333333.jsonl' }]);
+      await expect(openRollouts(100)).resolves.toEqual([{ id: '0198c333-3333-7333-8333-333333333333', relativePath: 'sessions/2026/08/21/rollout-2026-08-21T06-00-00-0198c333-3333-7333-8333-333333333333.jsonl' }]);
     } finally {
       // restore process inspection state
       if (previous === undefined) delete process.env.RAC_HOST_PROC;

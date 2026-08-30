@@ -1,8 +1,25 @@
+import { join } from 'node:path';
 import { isAgentCommand } from '../discovery/processes.js';
 import { failedTurnFromCapture, lastPromptFromHistory, latestAgentMessageFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from './codex-turns.js';
 import { parseChoiceQuestion, pendingOmxQuestion } from './codex-questions.js';
-import { validCodexThreadId } from '../bookmarks/service.js';
-import type { Adapter, AttentionState } from './types.js';
+import { codexConversationTitle, discoverCodexConversation, validCodexThreadId } from './codex-conversations.js';
+import type { Adapter, AttentionState, PromptCommand } from './types.js';
+
+// Codex's curated slash commands, shown in the prompt box beside its `$skills`.
+const codexSlash: PromptCommand[] = [
+  { name: '/help', description: 'Show available commands' },
+  { name: '/skills', description: 'Browse available skills' },
+  { name: '/status', description: 'Show the current session status' },
+  { name: '/model', description: 'Choose a model' },
+  { name: '/compact', description: 'Compact the conversation' },
+  { name: '/new', description: 'Start a new conversation' },
+  { name: '/resume', description: 'Resume a conversation' },
+  { name: '/review', description: 'Review the current changes' },
+  { name: '/diff', description: 'Show the current diff' },
+  { name: '/init', description: 'Initialize project guidance' },
+  { name: '/clear', description: 'Clear the conversation' },
+  { name: '/quit', description: 'Exit the session' },
+];
 
 // Codex writes its Attention state into the pane title: a Braille spinner while
 // working, an "action required" banner when it needs input, anything else once
@@ -51,5 +68,16 @@ export const codexAdapter: Adapter = {
     parse: (capture) => parseChoiceQuestion(latestAgentMessageFromHistory(capture) ?? capture),
     pending: (workspace, paneId) => pendingOmxQuestion(workspace, paneId),
   },
-  conversations: { validId: validCodexThreadId },
+  commands: {
+    // The account-global skills override nothing; the workspace's `.codex/skills`
+    // shadow same-named entries. Codex invokes a skill as `$name`.
+    skillDirectories: (workspace, home) => [join(home, '.codex', 'skills'), join(workspace, '.codex', 'skills')],
+    slash: codexSlash,
+    skillInvocation: (name) => `$${name}`,
+  },
+  conversations: {
+    validId: validCodexThreadId,
+    discover: (pid) => discoverCodexConversation(pid),
+    title: (id) => codexConversationTitle(id),
+  },
 };

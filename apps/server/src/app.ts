@@ -28,7 +28,7 @@ import { NewTaskService } from './new-task/service.js';
 import { SavedPromptService } from './saved-prompts/service.js';
 import { agentAttentionState, AgentNotificationCoordinator } from './notifications.js';
 import { stackActions, type Agent, type StackAction } from './domain/models.js';
-import { SkillService } from './skills/service.js';
+import { CommandCatalogService } from './commands/service.js';
 import { LatestViewportScheduler, PaneViewportCoordinator } from './logs/viewport-scheduler.js';
 import { DashboardUpdates, type DashboardPayload } from './dashboard/updates.js';
 import { WorktreeNoteService } from './notes/service.js';
@@ -56,11 +56,11 @@ import { federationForwarder, verifyFederationRequest } from './integrations/fed
 import { IntegrationControlService } from './integrations/control/index.js';
 import { ServerAdminService } from './server-admin/service.js';
 import { CodexAccountService, safeAccountId, type AccountRateLimitWindow, type AccountSummary } from './accounts/index.js';
-import { CodexBookmarkService } from './bookmarks/service.js';
+import { BookmarkService } from './bookmarks/service.js';
 import { isUpdateAdvisorForTarget, isUpdateAdvisorLabel, updateAdvisorLabel, updateAdvisorPendingLabel } from './update-advisor.js';
 import { isFullGitSha } from './git/revision.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; bookmarks?: CodexBookmarkService; skills?: SkillService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'> };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; bookmarks?: BookmarkService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'> };
 // derive one stable opaque scratch persistence group
 const scratchSaveKey = (workspace: string) => `scratch_${createHash('sha256').update(workspace).digest('base64url').slice(0, 40)}`;
 // bound full history scans
@@ -83,7 +83,7 @@ export function logFrame(last: string, value: string, refreshMetadata = false): 
 }
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, config.worktrees, promptHistory, queuedPrompts, savedPrompts); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new CodexBookmarkService(); const skills = deps.skills ?? new SkillService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = new WorktreeCommandService(config); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.worktrees, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews])); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, config.worktrees, new CodexExecReviewTourGenerator()); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, config.worktrees, promptHistory, queuedPrompts, savedPrompts); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new BookmarkService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = new WorktreeCommandService(config); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.worktrees, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews])); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, config.worktrees, new CodexExecReviewTourGenerator()); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
   const accounts = deps.accounts ?? new CodexAccountService();
   const paneViewports = new PaneViewportCoordinator();
   const updateAdvisors = new Map<string, string>();
@@ -533,7 +533,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // require one current agent target
     if (target === undefined) return undefined;
     const worktree = configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
-    return { worktree, saveKey: worktree?.saveKey ?? worktree?.id ?? scratchSaveKey(target.agent.workspace) };
+    return { agent: target.agent, worktree, saveKey: worktree?.saveKey ?? worktree?.id ?? scratchSaveKey(target.agent.workspace) };
   };
   // resolve the observed branch for one configured worktree
   const reviewBranch = async (id: string): Promise<string | undefined> => {
@@ -624,8 +624,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       const targetWorktree = target === undefined ? undefined : configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
       // ignore stale or mismatched agent identities
       if (targetWorktree?.id === id) {
-        const sessions = await discovery.sessions(agentId);
-        const threadId = sessions === undefined ? undefined : await bookmarks.currentThreadId(sessions);
+        const threadId = await discovery.conversationId(agentId);
         currentBookmarkId = stored.find(bookmark => bookmark.threadId === threadId)?.id;
       }
     }
@@ -641,8 +640,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const stored = await bookmarks.list(persistence.saveKey);
     // require one valid shared group
     if (stored === undefined) return reply.code(400).send({ error: 'invalid bookmark group' });
-    const sessions = await discovery.sessions(id);
-    const threadId = sessions === undefined ? undefined : await bookmarks.currentThreadId(sessions);
+    const threadId = await discovery.conversationId(id);
     const currentBookmarkId = stored.find(bookmark => bookmark.threadId === threadId)?.id;
     return { bookmarks: stored, canResume: persistence.worktree?.resumeCommand !== undefined, ...(currentBookmarkId === undefined ? {} : { currentBookmarkId }) };
   });
@@ -653,11 +651,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const persistence = await agentPersistence(id);
     // require one live agent
     if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
-    const sessions = await discovery.sessions(id);
-    // require one exact pane-to-session mapping
-    if (sessions === undefined || sessions.length === 0) return reply.code(409).send({ error: 'Unable to identify this agent\'s Codex chat.' });
-    const bookmark = await bookmarks.bookmarkCurrent(persistence.saveKey, sessions);
-    return bookmark === undefined ? reply.code(409).send({ error: 'This agent has an ambiguous or unavailable Codex chat.' }) : reply.code(201).send(bookmark);
+    const conversation = await discovery.conversation(id);
+    // require one exact pane-to-conversation mapping
+    if (conversation === undefined) return reply.code(409).send({ error: 'This agent has an ambiguous or unavailable conversation.' });
+    // `create` omits a `codex` kind on disk, so pass the kind through unconditionally
+    const bookmark = await bookmarks.create(persistence.saveKey, { threadId: conversation.id, title: conversation.title ?? `Conversation ${conversation.id.slice(0, 8)}`, createdAt: new Date().toISOString(), kind: persistence.agent.kind });
+    return bookmark === undefined ? reply.code(409).send({ error: 'This agent has an ambiguous or unavailable conversation.' }) : reply.code(201).send(bookmark);
   });
   // rename one shared chat bookmark
   app.patch('/api/worktrees/:id/bookmarks/:bookmarkId', async (request, reply) => {
@@ -757,12 +756,15 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return key?.startsWith('agent:') ? key.slice('agent:'.length) : key;
   };
   app.get('/api/agents/:id/saved-prompts', async (request, reply) => { controlled(request); const key = await savedPromptKey((request.params as { id: string }).id); if (key === undefined) return reply.code(404).send({ error: 'target unavailable' }); const prompts = await savedPrompts.list(key); return prompts === undefined ? reply.code(400).send({ error: 'invalid agent' }) : { prompts }; });
-  app.get('/api/agents/:id/skills', async (request, reply) => {
+  app.get('/api/agents/:id/commands', async (request, reply) => {
     controlled(request);
     const target = await discovery.target((request.params as { id: string }).id);
     if (!target) return reply.code(404).send({ error: 'target unavailable' });
+    const adapter = adapterFor(target.agent.kind);
+    // an Adapter without a command catalog serves an empty one
+    if (adapter === undefined) return { commands: [] };
     const worktree = configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
-    return { skills: await skills.list(worktree?.path ?? target.agent.workspace) };
+    return { commands: await commandCatalog.catalog(adapter, worktree?.path ?? target.agent.workspace, launch.agentHome()) };
   });
   // list workspace files referenced by one completed response
   app.post('/api/agents/:id/message-files', async (request, reply) => {
@@ -1171,6 +1173,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const bookmark = await bookmarks.get(worktree.saveKey ?? worktree.id, bookmarkId);
     // require one bookmark in the configured group
     if (bookmark === undefined) return reply.code(404).send({ error: 'bookmark unavailable' });
+    // resume through the bookmark's own Adapter (absent kind = codex)
+    if (adapterFor(bookmark.kind ?? 'codex')?.conversations?.validId(bookmark.threadId) !== true) return reply.code(409).send({ error: 'This bookmark cannot be resumed.' });
     // fail before any destructive handoff
     if (!launch.canResumeConversation(worktree.id)) return reply.code(409).send({ error: 'Exact chat resume is not configured for this worktree.' });
     const selectionMutationGeneration = prompts.mutationGeneration();

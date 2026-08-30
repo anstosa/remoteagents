@@ -24,9 +24,7 @@ describe('chat bookmark API', () => {
     const renamedBookmark = { ...bookmark, title: 'Release readiness chat' };
     const bookmarks = {
       list: async (key: string) => { calls.push(`list:${key}`); return [bookmark]; },
-      // resolve the selected fixture thread
-      currentThreadId: async (sessions: Array<{ id: string }>) => { calls.push(`current:${sessions.map(session => session.id).join(',')}`); return bookmark.threadId; },
-      bookmarkCurrent: async (key: string, sessions: Array<{ id: string }>) => { calls.push(`create:${key}:${sessions.map(session => session.id).join(',')}`); return bookmark; },
+      create: async (key: string, value: { threadId: string; kind?: string }) => { calls.push(`create:${key}:${value.threadId}:${value.kind}`); return bookmark; },
       rename: async (key: string, id: string, title: string) => { calls.push(`rename:${key}:${id}:${title}`); return renamedBookmark; },
       remove: async (key: string, id: string) => { calls.push(`remove:${key}:${id}`); return bookmark; },
       get: async () => bookmark
@@ -37,8 +35,9 @@ describe('chat bookmark API', () => {
         const selected = [agent, otherAgent].find(candidate => candidate.id === id);
         return selected === undefined ? undefined : { agent: selected, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } };
       },
-      // expose one selected Codex conversation
-      sessions: async () => [{ id: '0198c333-3333-7333-8333-333333333333', relativePath: 'sessions/2026/08/20/rollout-current-0198c333-3333-7333-8333-333333333333.jsonl' }],
+      // expose one selected conversation, reported and with a title
+      conversationId: async () => bookmark.threadId,
+      conversation: async () => ({ id: bookmark.threadId, title: bookmark.title }),
       // expose both dashboard agents
       dashboard: async () => ({ generation: 1, agents: [agent, otherAgent], worktrees: [] })
     };
@@ -61,8 +60,7 @@ describe('chat bookmark API', () => {
       // require both shared-group list operations
       expect(calls.filter(call => call === 'list:potato')).toHaveLength(2);
       expect(calls).toEqual(expect.arrayContaining([
-        'current:0198c333-3333-7333-8333-333333333333',
-        'create:potato:0198c333-3333-7333-8333-333333333333',
+        'create:potato:0198c333-3333-7333-8333-333333333333:codex',
         `rename:potato:${bookmark.id}:${renamedBookmark.title}`,
         `remove:potato:${bookmark.id}`
       ]));
@@ -80,9 +78,7 @@ describe('chat bookmark API', () => {
     const calls: string[] = [];
     const bookmarks = {
       list: async (key: string) => { calls.push(`list:${key}`); return [bookmark]; },
-      // resolve the selected scratch conversation
-      currentThreadId: async () => bookmark.threadId,
-      bookmarkCurrent: async (key: string) => { calls.push(`create:${key}`); return bookmark; },
+      create: async (key: string) => { calls.push(`create:${key}`); return bookmark; },
       rename: async (key: string, id: string) => { calls.push(`rename:${key}:${id}`); return renamedBookmark; },
       remove: async (key: string, id: string) => { calls.push(`remove:${key}:${id}`); return bookmark; }
     };
@@ -92,8 +88,9 @@ describe('chat bookmark API', () => {
         const agent = [firstAgent, secondAgent].find(candidate => candidate.id === id);
         return agent === undefined ? undefined : { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } };
       },
-      // expose one selected Codex conversation
-      sessions: async () => [{ id: bookmark.threadId, relativePath: `sessions/2026/08/20/rollout-current-${bookmark.threadId}.jsonl` }],
+      // expose one selected conversation
+      conversationId: async () => bookmark.threadId,
+      conversation: async () => ({ id: bookmark.threadId, title: bookmark.title }),
       dashboard: async () => ({ generation: 1, agents: [firstAgent, secondAgent], worktrees: [] })
     };
     const app = await buildApp({ listen: { host: '127.0.0.1', port: 8787 }, name: 'Test', publicOrigin: new URL('https://agents.example.com'), remoteServers: [], trustedProxyIps: new Set(['127.0.0.1']), pollIntervalMs: 500, newAgentCommand: 'codex', worktrees: [worktree] } as never, { auth: new AuthService(hash, Buffer.alloc(32, 25).toString('base64url')), discovery: discovery as never, bookmarks: bookmarks as never });
@@ -188,6 +185,28 @@ describe('chat bookmark API', () => {
       expect(switched.statusCode).toBe(409);
       expect(switched.json()).toEqual({ error: 'Exact chat resume is not configured for this worktree.' });
       expect(closed).toBe(false);
+    } finally {
+      await app.close();
+    }
+  }, 15_000);
+
+  it('rejects a bookmark whose thread id its Adapter will not resume', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', saveKey: 'potato', available: true, pinned: true, command: 'codex' };
+    let resumed = false;
+    // a persisted bookmark whose thread id is not a valid Codex conversation id
+    const invalid = { ...bookmark, threadId: 'not-a-session' };
+    const launch = { canResumeConversation: () => true, resumeConversation: async () => { resumed = true; return true; } };
+    const app = await buildApp({ listen: { host: '127.0.0.1', port: 8787 }, name: 'Test', publicOrigin: new URL('https://agents.example.com'), remoteServers: [], trustedProxyIps: new Set(['127.0.0.1']), pollIntervalMs: 500, newAgentCommand: 'codex', worktrees: [worktree] } as never, { auth: new AuthService(hash, Buffer.alloc(32, 26).toString('base64url')), launch: launch as never, bookmarks: { get: async () => invalid } as never });
+    try {
+      const headers = await authenticatedHeaders(app);
+
+      const switched = await app.inject({ method: 'POST', url: `/api/worktrees/cora/bookmarks/${bookmark.id}/switch`, headers });
+
+      // the Adapter's validId gate fails closed before any resume
+      expect(switched.statusCode).toBe(409);
+      expect(switched.json()).toEqual({ error: 'This bookmark cannot be resumed.' });
+      expect(resumed).toBe(false);
     } finally {
       await app.close();
     }

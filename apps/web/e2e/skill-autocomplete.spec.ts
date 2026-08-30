@@ -9,7 +9,7 @@ test('includes repo-local skills in prompt autocomplete', async ({ page }) => {
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
-    if (url.pathname === '/api/agents/agent-1/skills') return route.fulfill({ json: { skills: [{ name: 'push', description: 'Review, commit, and push the current branch.' }] } });
+    if (url.pathname === '/api/agents/agent-1/commands') return route.fulfill({ json: { commands: [{ value: '$push', description: 'Review, commit, and push the current branch.' }, { value: '/help', description: 'Show available commands' }] } });
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 

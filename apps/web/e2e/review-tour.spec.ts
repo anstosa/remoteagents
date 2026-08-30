@@ -45,7 +45,7 @@ async function fulfillAgentSupport(route: Route, pathname: string): Promise<bool
   // return no queued prompts
   if (pathname === '/api/agents/agent-1/queued-prompts') { await route.fulfill({ json: { prompts: [] } }); return true; }
   // return no installed skills
-  if (pathname === '/api/agents/agent-1/skills') { await route.fulfill({ json: { skills: [] } }); return true; }
+  if (pathname === '/api/agents/agent-1/commands') { await route.fulfill({ json: { commands: [] } }); return true; }
   return false;
 }
 

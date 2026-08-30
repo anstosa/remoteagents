@@ -9,8 +9,8 @@ import { ProcInspector, type ProcessInspector } from './processes.js';
 import { PullRequestService } from '../pull-requests/service.js';
 import { parseReportedAttention, resolveAttention } from '../adapters/attention.js';
 import { adapterCapabilities, adapterFor } from '../adapters/registry.js';
-import type { AttentionState } from '../adapters/types.js';
-import type { Agent, CodexSessionRef, Dashboard, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, Pane, SocketRef, Worktree } from '../domain/models.js';
+import type { Adapter, AttentionState, Conversation } from '../adapters/types.js';
+import type { Agent, Dashboard, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, Pane, SocketRef, Worktree } from '../domain/models.js';
 import { classifyReviewPath } from '../git/change-classification.js';
 import { isUpdateAdvisorLabel } from '../update-advisor.js';
 
@@ -388,13 +388,41 @@ export class DiscoveryService {
     return socket === undefined ? undefined : { agent, socket };
   }
 
-  // resolve session files held by one selected agent pane
-  async sessions(id: string): Promise<CodexSessionRef[] | undefined> {
+  // resolve the selected pane, its Adapter, and the pid its conversation lives under
+  private async conversationContext(id: string): Promise<{ agent: Agent; adapter: Adapter['conversations'] & {}; pid: number } | undefined> {
     const target = await this.target(id);
-    const pid = target === undefined ? undefined : this.panePids.get(target.agent.id);
-    // require exact pane and process inspection support
-    if (pid === undefined || this.processes.sessionsForDescendants === undefined) return undefined;
-    return await this.processes.sessionsForDescendants(pid);
+    if (target === undefined) return undefined;
+    const conversations = adapterFor(target.agent.kind)?.conversations;
+    const pid = this.panePids.get(target.agent.id);
+    // require exact pane identity and an Adapter that resolves conversations
+    if (conversations === undefined || pid === undefined) return undefined;
+    return { agent: target.agent, adapter: conversations, pid };
+  }
+
+  // the pane's own reported conversation id (`@rac_session`), when the Adapter accepts it
+  private reportedConversationId(context: { agent: Agent; adapter: Adapter['conversations'] & {} }): string | undefined {
+    const reported = context.agent.conversationId;
+    return reported !== undefined && context.adapter.validId(reported) ? reported : undefined;
+  }
+
+  // the pane's current top-level conversation id: the reported `@rac_session`, else the Adapter's discovery
+  async conversationId(id: string): Promise<string | undefined> {
+    const context = await this.conversationContext(id);
+    if (context === undefined) return undefined;
+    return this.reportedConversationId(context) ?? (await context.adapter.discover?.(context.pid))?.id;
+  }
+
+  // the pane's current conversation with a title, for bookmarking
+  async conversation(id: string): Promise<Conversation | undefined> {
+    const context = await this.conversationContext(id);
+    if (context === undefined) return undefined;
+    const reported = this.reportedConversationId(context);
+    // a reported id skips the fd-walk; its title is read from the rollout by id
+    if (reported !== undefined) {
+      const title = await context.adapter.title?.(reported);
+      return { id: reported, ...(title === undefined ? {} : { title }) };
+    }
+    return await context.adapter.discover?.(context.pid);
   }
   // build or reuse one dashboard view
   async dashboard(worktrees: Worktree[], force = false): Promise<Dashboard> {
