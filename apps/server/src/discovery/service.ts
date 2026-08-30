@@ -8,7 +8,7 @@ import { TmuxAdapter } from '../tmux/adapter.js';
 import { ProcInspector, type ProcessInspector } from './processes.js';
 import { PullRequestService } from '../pull-requests/service.js';
 import { parseReportedAttention, resolveAttention } from '../adapters/attention.js';
-import { adapterCapabilities } from '../adapters/registry.js';
+import { adapterCapabilities, adapterFor } from '../adapters/registry.js';
 import type { AttentionState } from '../adapters/types.js';
 import type { Agent, CodexSessionRef, Dashboard, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, Pane, SocketRef, Worktree } from '../domain/models.js';
 import { classifyReviewPath } from '../git/change-classification.js';
@@ -297,28 +297,6 @@ async function gitMeta(path: string, rootKnown = false): Promise<GitMeta> {
   const sha = await run('/usr/bin/git', ['-C', workspace, 'rev-parse', '--short', 'HEAD']);
   return { workspace, ...(sha.code === 0 ? { branch: sha.stdout.trim() } : {}), ...(gitStatus === undefined ? {} : { gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }) };
 }
-type OmxRecord = { kind?: unknown; question_id?: unknown; status?: unknown; question?: unknown; options?: unknown; questions?: unknown; renderer?: { target?: unknown; return_target?: unknown } };
-const questionId = /^question-[A-Za-z0-9_.-]+$/;
-const readQuestion = (raw: OmxRecord, paneId: string) => {
-  if (raw.kind !== 'omx.question/v1' || (raw.status !== 'pending' && raw.status !== 'prompting') || raw.renderer?.return_target !== paneId || typeof raw.renderer.target !== 'string' || !/^%\d+$/.test(raw.renderer.target) || typeof raw.question_id !== 'string' || !questionId.test(raw.question_id)) return undefined;
-  const first = Array.isArray(raw.questions) ? raw.questions[0] as { question?: unknown; options?: unknown } : undefined;
-  const text = typeof first?.question === 'string' ? first.question : typeof raw.question === 'string' ? raw.question : undefined;
-  const options = Array.isArray(first?.options) ? first.options : Array.isArray(raw.options) ? raw.options : [];
-  const choices = options.map(option => option && typeof option === 'object' && typeof (option as { label?: unknown }).label === 'string' ? (option as { label: string }).label : undefined).filter((value): value is string => value !== undefined);
-  return text && choices.length >= 2 && choices.length <= 16 ? { id: raw.question_id, text, choices, paneId: raw.renderer.target } : undefined;
-};
-export async function omxQuestion(workspace: string, paneId: string) {
-  const root = join(workspace, '.omx', 'state');
-  const directories = [join(root, 'questions')];
-  const sessions = await readdir(join(root, 'sessions'), { withFileTypes: true }).catch(() => []);
-  for (const session of sessions) if (session.isDirectory()) directories.push(join(root, 'sessions', session.name, 'questions'));
-  for (const directory of directories) for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
-    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
-    const parsed = await readFile(join(directory, entry.name), 'utf8').then(value => JSON.parse(value) as OmxRecord).catch(() => undefined);
-    const question = parsed && readQuestion(parsed, paneId); if (question) return question;
-  }
-  return undefined;
-}
 const omxWorkerWorktree = /(?:^|\/)\.omx\/team\/[^/]+\/worktrees\/worker-\d+(?:\/|$)/u;
 const omxWorkerStartup = /(?:^|\/)\.omx\/state\/team\/[^/]+\/runtime\/worker-\d+-startup\.sh(?:['"\s]|$)/u;
 export const isOmxWorkerPane = (pane: Pane) => omxWorkerWorktree.test(pane.path) || omxWorkerStartup.test(pane.startCommand ?? '');
@@ -467,7 +445,7 @@ export class DiscoveryService {
       const workspace = worktree?.identity ?? agent.workspace;
       const [meta, question] = await Promise.all([
         metadataFor(workspace),
-        omxQuestion(workspace, agent.paneId)
+        adapterFor(agent.kind)?.questions?.pending?.(workspace, agent.paneId) ?? Promise.resolve(undefined)
       ]);
       const branch = meta.branch ?? agent.branch;
       const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, branch);

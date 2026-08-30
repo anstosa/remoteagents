@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { adapters as adaptersUnderTest } from '../../src/adapters/registry.js';
+import { inlineQuestionId } from '../../src/adapters/codex-questions.js';
 import type { AttentionState, Submission, SubmissionMode, TmuxKey } from '../../src/adapters/types.js';
 
 const fixturesRoot = fileURLToPath(new URL('../fixtures/', import.meta.url));
@@ -19,6 +20,11 @@ type CaptureFixture = {
   lastPrompt?: string;
   latestMessage?: string;
   failed: boolean;
+};
+type QuestionFixture = {
+  name: string;
+  lines: string[];
+  question: { text: string; choices: string[]; source: 'structured' | 'parsed' } | null;
 };
 
 // The generic key rules every Adapter must obey (spec §"Generic key rules").
@@ -91,6 +97,15 @@ describe('Adapter contract suite', () => {
         }
         if ('lastPrompt' in c) expect(turns.lastPrompt(capture), `${c.name} · lastPrompt`).toBe(c.lastPrompt);
         if ('latestMessage' in c) expect(turns.latestMessage(capture), `${c.name} · latestMessage`).toBe(c.latestMessage);
+      }
+    });
+
+    const questions = adapter.questions;
+    if (questions?.parse && has(adapter.kind, 'questions.json')) it('parses inline questions off raw pane captures', () => {
+      for (const c of load<QuestionFixture[]>(adapter.kind, 'questions.json')) {
+        const parsed = questions.parse!(c.lines.join('\n'));
+        if (c.question === null) { expect(parsed, `${c.name} · none`).toBeUndefined(); continue; }
+        expect(parsed, `${c.name} · shape`).toEqual({ ...c.question, id: inlineQuestionId(c.question.text, c.question.choices) });
       }
     });
 

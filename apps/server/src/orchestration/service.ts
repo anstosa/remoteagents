@@ -16,7 +16,7 @@ import { configuredWorktreeForWorkspace } from '../workspaces/resolver.js';
 import type { WorktreeCommandService } from '../worktree-commands/service.js';
 import type {
   AgentStatusV1,
-  AnswerOmxQuestionInputV1,
+  AnswerQuestionInputV1,
   AttentionSummaryV1,
   FilePreviewV1,
   InstanceV1,
@@ -51,11 +51,12 @@ const maxPreviewBytes = 256 * 1024;
 const maxTerminalBytes = 96 * 1024;
 const maxIntegrationPromptBytes = 8 * 1024;
 const promptIdPattern = /^[A-Za-z0-9_-]{12,64}$/u;
-const questionIdPattern = /^question-[A-Za-z0-9_.-]+$/u;
+// a unified Inline-question id: the 22-char base64url hash the Adapter derives
+const questionIdPattern = /^[A-Za-z0-9_-]{22}$/u;
 
 type DiscoveryFacade = Pick<DiscoveryService, 'target'>;
 type TmuxFacade = Pick<TmuxAdapter, 'captureWindow' | 'captureRecentWindow'>;
-type PromptFacade = Pick<PromptService, 'submit' | 'listQueued' | 'updateQueued' | 'moveQueued' | 'removeQueued' | 'answerOmxQuestion' | 'cancel' | 'close'>;
+type PromptFacade = Pick<PromptService, 'submit' | 'listQueued' | 'updateQueued' | 'moveQueued' | 'removeQueued' | 'answerQuestion' | 'cancel' | 'close'>;
 type HistoryFacade = Pick<PromptHistoryService, 'list'>;
 type WorktreeCommandFacade = Pick<WorktreeCommandService, 'actions' | 'state' | 'start' | 'log'>;
 type WorkspaceFileFacade = Pick<WorkspaceFileService, 'preview'>;
@@ -525,13 +526,13 @@ export class OrchestrationService {
       : failure('not_found', 'Queued prompt not found.'));
   }
 
-  // answer one still-current structured OMX question
-  async answerOmxQuestion(input: AnswerOmxQuestionInputV1): Promise<OrchestrationResult<{ answered: true }>> {
-    // enforce OMX question bounds
-    if (!validIdentifier(input.agentId) || !questionIdPattern.test(input.questionId) || !Number.isInteger(input.index) || input.index < 0 || input.index > 15) return failure('invalid_request', 'Invalid OMX question answer.');
-    return await this.operation(async () => await this.dependencies.prompts.answerOmxQuestion(input.agentId, input.questionId, input.index)
+  // answer one still-current Inline question (structured OMX or parsed list)
+  async answerQuestion(input: AnswerQuestionInputV1): Promise<OrchestrationResult<{ answered: true }>> {
+    // enforce Inline-question bounds
+    if (!validIdentifier(input.agentId) || !questionIdPattern.test(input.questionId) || !Number.isInteger(input.index) || input.index < 0 || input.index > 15) return failure('invalid_request', 'Invalid question answer.');
+    return await this.operation(async () => await this.dependencies.prompts.answerQuestion(input.agentId, input.questionId, input.index)
       ? success({ answered: true as const })
-      : failure('not_found', 'OMX question not found.'));
+      : failure('not_found', 'Question not found.'));
   }
 
   // cancel current agent work without releasing queued prompts

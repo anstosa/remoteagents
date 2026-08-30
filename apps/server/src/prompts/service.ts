@@ -6,7 +6,6 @@ import { TmuxAdapter } from '../tmux/adapter.js';
 import { failedTurnFromCapture, lastPromptFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from '../adapters/codex-turns.js';
 import { adapterFor } from '../adapters/registry.js';
 import type { Adapter, AgentKind, SubmissionMode, TmuxKey } from '../adapters/types.js';
-import { omxQuestion } from '../discovery/service.js';
 import type { Agent, Worktree } from '../domain/models.js';
 import { run } from '../tmux/command.js';
 import type { PromptHistoryService } from '../prompt-history/service.js';
@@ -28,7 +27,7 @@ const reportedWorkingGraceMs = 5_000;
 const composerRenderAttempts = 12;
 const composerRenderPollMs = 50;
 // the console never composes submission through an unknown kind
-type AdapterView = Pick<Adapter, 'stateSource' | 'submission' | 'turns'>;
+type AdapterView = Pick<Adapter, 'stateSource' | 'submission' | 'turns' | 'questions'>;
 type CancelOutcome = 'ok' | 'unavailable' | 'not-working';
 // an Adapter that announces its own Attention state (rather than the console
 // inferring it from the title): it must report `working` before a prompt counts
@@ -626,20 +625,26 @@ export class PromptService {
   }
 
 
-  async answerOption(agentId: string, index: number): Promise<boolean> {
-    if (!Number.isInteger(index) || index < 0 || index > 15) return false;
+  // answer one still-current Inline question through the Adapter's selectOption.
+  // The id (a hash of the question's text and choices) is re-derived from the
+  // live pane, so a stale click on a question the agent already moved past is
+  // refused. Structured OMX questions read authoritatively from their files;
+  // parsed numbered lists are re-parsed from the pane capture.
+  async answerQuestion(agentId: string, questionId: string, index: number): Promise<boolean> {
+    if (questionId.length === 0 || !Number.isInteger(index) || index < 0 || index > 15) return false;
     const first = await this.discovery.target(agentId); if (!first) return false;
-    const adapter = this.resolveAdapter(first.agent.kind); if (adapter === undefined) return false;
+    const adapter = this.resolveAdapter(first.agent.kind); if (adapter?.questions === undefined) return false;
+    const workspace = this.workspaceFor(first.agent.workspace);
+    let question = await adapter.questions.pending?.(workspace, first.agent.paneId);
+    if (question === undefined && adapter.questions.parse !== undefined) {
+      const capture = await this.tmux.capture(first.socket, first.agent.paneId).catch(() => undefined);
+      question = capture === undefined ? undefined : adapter.questions.parse(capture);
+    }
+    if (question === undefined || question.id !== questionId || index >= question.choices.length) return false;
+    // an OMX question is answered on its renderer pane, a parsed list on the agent's own
+    const targetPane = question.targetPaneId ?? first.agent.paneId;
     const second = await this.discovery.target(agentId); if (!second || second.socket.fingerprint !== first.socket.fingerprint || second.agent.paneId !== first.agent.paneId) return false;
-    return await this.tmux.sendKeys(second.socket, second.agent.paneId, adapter.submission.selectOption(index));
-  }
-  async answerOmxQuestion(agentId: string, questionId: string, index: number): Promise<boolean> {
-    if (!/^question-[A-Za-z0-9_.-]+$/.test(questionId) || !Number.isInteger(index) || index < 0 || index > 15) return false;
-    const target = await this.discovery.target(agentId); if (!target) return false;
-    const adapter = this.resolveAdapter(target.agent.kind); if (adapter === undefined) return false;
-    const workspace = this.worktrees.find(worktree => target.agent.workspace === worktree.identity || target.agent.workspace === worktree.hostPath)?.identity ?? target.agent.workspace;
-    const question = await omxQuestion(workspace, target.agent.paneId); if (!question || question.id !== questionId || index >= question.choices.length) return false;
-    return await this.tmux.sendKeys(target.socket, question.paneId, adapter.submission.selectOption(index));
+    return await this.tmux.sendKeys(second.socket, targetPane, adapter.submission.selectOption(index));
   }
 
   // interrupt a working Agent; a stray interrupt on a finished pane is refused so

@@ -4,7 +4,8 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { addUntrackedLineStats, DiscoveryService, gitComparisonSummary, gitStatusSummary, gitUpstreamSummary, omxQuestion, ProcSocketFinder } from '../src/discovery/service.js';
+import { addUntrackedLineStats, DiscoveryService, gitComparisonSummary, gitStatusSummary, gitUpstreamSummary, ProcSocketFinder } from '../src/discovery/service.js';
+import { inlineQuestionId, pendingOmxQuestion } from '../src/adapters/codex-questions.js';
 import type { SocketRef, Worktree } from '../src/domain/models.js';
 import { paneLister, processInspector, socketFinder } from './helpers/discovery-stubs.js';
 
@@ -219,7 +220,7 @@ describe('DiscoveryService dashboard', () => {
 
     // reported 'question' wins over the title's inferred 'finished'
     expect(dashboard.agents[0]).toMatchObject({ kind: 'codex', attention: 'question', sandboxed: true, conversationId: 'abc-123' });
-    expect(dashboard.adapters).toMatchObject({ codex: { launchable: true, stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: false, commands: false, sandbox: false } });
+    expect(dashboard.adapters).toMatchObject({ codex: { launchable: true, stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: true, commands: false, sandbox: false } });
   });
 
   it('clears stale @rac_* only on a non-agent pane that still carries a report', async () => {
@@ -414,7 +415,7 @@ describe('DiscoveryService dashboard', () => {
       const questions = join(workspace, '.omx', 'state', 'sessions', 'session', 'questions');
       await mkdir(questions, { recursive: true });
       await writeFile(join(questions, 'question-test.json'), JSON.stringify({ kind: 'omx.question/v1', question_id: 'question-test', status: 'prompting', question: 'Choose one?', options: [{ label: 'Yes' }, { label: 'No' }], renderer: { target: '%22', return_target: '%1' } }));
-      await expect(omxQuestion(workspace, '%1')).resolves.toEqual({ id: 'question-test', text: 'Choose one?', choices: ['Yes', 'No'], paneId: '%22' });
+      await expect(pendingOmxQuestion(workspace, '%1')).resolves.toEqual({ id: inlineQuestionId('Choose one?', ['Yes', 'No']), text: 'Choose one?', choices: ['Yes', 'No'], source: 'structured', targetPaneId: '%22' });
     } finally { await rm(workspace, { recursive: true, force: true }); }
   });
 
@@ -436,7 +437,7 @@ describe('DiscoveryService dashboard', () => {
       const dashboard = await service.dashboard([]);
 
       // the title infers 'finished', but the pending question outranks it
-      expect(dashboard.agents[0]).toMatchObject({ attention: 'question', question: { id: 'question-q1', text: 'Deploy?', choices: ['Yes', 'No'], paneId: '%9' } });
+      expect(dashboard.agents[0]).toMatchObject({ attention: 'question', question: { id: inlineQuestionId('Deploy?', ['Yes', 'No']), text: 'Deploy?', choices: ['Yes', 'No'], source: 'structured', targetPaneId: '%9' } });
     } finally { await rm(workspace, { recursive: true, force: true }); }
   });
 });

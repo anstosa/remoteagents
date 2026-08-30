@@ -26,7 +26,7 @@ describe('agent notifications', () => {
   afterEach(() => vi.useRealTimers());
 
   it('distinguishes questions from completed work', () => {
-    const questioning = agent({ title: '⠋ Working', question: { id: 'question-1', text: 'Deploy now?', choices: ['Yes', 'No'], paneId: '%2' } });
+    const questioning = agent({ title: '⠋ Working', question: { id: 'question-1', text: 'Deploy now?', choices: ['Yes', 'No'], source: 'structured', targetPaneId: '%2' } });
 
     expect(agentAttentionState(questioning)).toBe('question');
     expect(agentNotification('working', 'question', questioning)).toEqual({

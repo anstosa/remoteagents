@@ -152,7 +152,7 @@ export class IntegrationGateway {
       case 'update_queued_prompt': return await orchestration.updateQueuedPrompt({ agentId: input.agent_id as string, promptId: input.prompt_id as string, prompt: input.prompt as string });
       case 'move_queued_prompt': return await orchestration.moveQueuedPrompt({ agentId: input.agent_id as string, promptId: input.prompt_id as string, direction: input.direction as 'earlier' | 'later' });
       case 'remove_queued_prompt': return await orchestration.removeQueuedPrompt({ agentId: input.agent_id as string, promptId: input.prompt_id as string });
-      case 'answer_agent_question': return await orchestration.answerOmxQuestion({ agentId: input.agent_id as string, questionId: input.question_id as string, index: input.index as number });
+      case 'answer_agent_question': return await orchestration.answerQuestion({ agentId: input.agent_id as string, questionId: input.question_id as string, index: input.index as number });
       case 'cancel_agent': return await orchestration.cancel(input.agent_id as string);
       case 'launch_worktree_agent': return await orchestration.launchWorktree(input.worktree_id as string);
       case 'launch_scratch_agent': return await orchestration.launchScratch();

@@ -21,7 +21,9 @@ import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, ty
 import { VoiceDialog, type VoiceWorktree } from './voice/voice-dialog.js';
 import './styles.css';
 
-type OmxQuestion = { id: string; text: string; choices: string[]; paneId: string };
+// the fields the web reads off the server's inline-question payload; the server
+// also carries targetPaneId for its own keystroke targeting, which the web ignores
+type InlineQuestion = { id: string; text: string; choices: string[]; source: 'structured' | 'parsed' };
 type Stack = { actions: StackAction[]; running?: boolean; transition?: 'starting'|'migrating'; operation?: StackAction; tunnel?: boolean };
 type PullRequestChoice = { number: number; title: string; branch: string; draft: boolean; url: string } & Pick<PullRequestSummary, 'checks' | 'issues'>;
 type PullRequestWorktree = { worktreeId: string; worktreeName: string; agentId?: string };
@@ -37,7 +39,7 @@ type OperationFeedback = { id: number; tone: 'pending'|'success'|'error'; messag
 type CleanupTarget = { id: string; kind: 'orphan-worker'|'stale-agent'|'hud-pane'|'hud-process'; label: string; detail: string };
 type AgentKind = 'codex' | 'claude' | 'pi' | 'opencode';
 type AttentionState = 'working' | 'finished' | 'question';
-type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: OmxQuestion; stack?: Stack; unread?: boolean; queuedPromptCount: number };
+type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: InlineQuestion; stack?: Stack; unread?: boolean; queuedPromptCount: number };
 type Worktree = { id: string; label: string; path: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; sleeping?: boolean; order: number; projectUrl?: string; pullRequest?: PullRequestSummary; stack?: Stack };
 type ReviewTourCapability = { available: true } | { available: false; reason: 'generator_unavailable'|'unsupported_cli'|'configuration_invalid'|'authentication_required' };
 type StoredReviewSummary = { worktreeId: string; branch: string; savedAt: string; title: string; scope: ReviewScope; includeTests: boolean; includeDocs: boolean; fingerprint: string };
@@ -72,10 +74,9 @@ type AgentState = 'working' | 'prompt-done' | 'action-required' | 'closed' | 'sl
 type DashboardOperation = 'launching'|'restarting'|'clearing'|'deactivating'|'sleeping'|'waking'|'new-task';
 type DashboardItem = { key: string; label: string; state: AgentState; order: number; unread: boolean; operation?: DashboardOperation; agent?: Agent; worktree?: Worktree };
 type CompleteLogMetadata = { state: 'complete'; latestAgentMessage: string | null; latestAssistantMessage: string | null; latestAssistantMessageOverflows: boolean };
-type LogFrame = { type: 'append' | 'reset'; text?: string; older?: boolean; newer?: boolean; metadata?: CompleteLogMetadata; lastPrompt?: string; latestAgentMessage?: string; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean };
+type LogFrame = { type: 'append' | 'reset'; text?: string; older?: boolean; newer?: boolean; metadata?: CompleteLogMetadata; question?: InlineQuestion; lastPrompt?: string; latestAgentMessage?: string; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean };
 type ChoiceOption = { label: string; number: number; answerIndex: number };
-type ChoiceQuestion = { text: string; choices: ChoiceOption[]; omxId?: string };
-type DismissedQuestionState = { question: ChoiceQuestion; advanced: boolean };
+type ChoiceQuestion = { text: string; choices: ChoiceOption[]; id: string; source: 'structured' | 'parsed' };
 type SavedPromptAttachment = { name: string; size?: number; data?: string };
 type SavedPrompt = { id: string; text: string; attachments?: SavedPromptAttachment[] };
 type QueuedPrompt = { id: string; text: string; createdAt: string; attachments?: Array<{ name: string; size: number }> };
@@ -181,7 +182,8 @@ type SpeechRecognitionConstructor = new () => SpeechRecognitionInstance;
 const logSnapshots = new BoundedTextCache(64, 64 * 1024);
 const lastPrompts = new Map<string, string>();
 const latestAssistantMessages = new Map<string, string>();
-const latestAgentMessages = new Map<string, string>();
+// the inline question the server parsed from each viewed pane's latest metadata frame
+const latestQuestions = new Map<string, InlineQuestion>();
 const overflowingLatestAssistantMessages = new Set<string>();
 const promptDrafts = new Map<string, string>();
 const promptDraftListeners = new Map<string, Set<() => void>>();
@@ -225,7 +227,8 @@ const terminalInputs = new Map<string, (value: string) => void>();
 const exitTerminalInput = new Map<string, () => void>();
 const logHistoryRequests = new Map<string, (direction: -1 | 0 | 1) => void>();
 const answeredQuestionActions = new Map<string, (question: ChoiceQuestion) => void>();
-const dismissedQuestions = new Map<string, DismissedQuestionState>();
+// the id of a just-answered question, kept per agent so its optimistic dismissal survives a remount
+const dismissedQuestionIds = new Map<string, string>();
 const mobileModifiers = new Map<string, { alt: boolean; ctrl: boolean; shift: boolean }>();
 type WorktreeNoteView = { noteId: string; expanded: boolean };
 const retainedWorktreeNoteViews = new Map<string, WorktreeNoteView>();
@@ -360,10 +363,11 @@ const cacheLogFrame = (id: string, frame: LogFrame) => {
   if (frame.type === 'reset' && (text || metadata !== undefined)) logSnapshots.set(id, text);
   else if (text) logSnapshots.append(id, text);
   if (frame.lastPrompt !== undefined) lastPrompts.set(id, frame.lastPrompt);
+  // the inline question rides every frame; cache (or clear) it for tab bootstrap
+  if (frame.question === undefined) latestQuestions.delete(id);
+  else latestQuestions.set(id, frame.question);
   // preserve complete metadata across cheap viewport frames
   if (metadata === undefined) return;
-  if (metadata.latestAgentMessage === null) latestAgentMessages.delete(id);
-  else latestAgentMessages.set(id, metadata.latestAgentMessage);
   if (metadata.latestAssistantMessage === null) latestAssistantMessages.delete(id);
   else latestAssistantMessages.set(id, metadata.latestAssistantMessage);
   if (metadata.latestAssistantMessageOverflows) overflowingLatestAssistantMessages.add(id);
@@ -378,81 +382,10 @@ const choiceFromLabel = (label: string, answerIndex: number): ChoiceOption => {
     : { label: numbered[2]!, number: Number(numbered[1]), answerIndex };
 };
 
-const questionChoiceLine = /^([›❯>]\s*)?(?:\[([ xX])\]\s*)?(\d+)[.)]\s+(.+)$/u;
-// normalize one agent message into visible rows
-const agentMessageLines = (message: string) => message.replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '').split('\n').map(line => line.trim()).filter(Boolean);
-// detect wrapped questions from one complete message
-const questionFromAgentMessage = (message: string): ChoiceQuestion | undefined => {
-  const lines = agentMessageLines(message);
-  let detected: ChoiceQuestion | undefined;
-  // inspect the latest output
-  for (let start = Math.max(0, lines.length - 40); start < lines.length; start += 1) {
-    const choices: ChoiceOption[] = [];
-    let interactive = false;
-    let end = start;
-    let expectedNumber: number | undefined;
-    let wrappedLines = 0;
-    // bridge wrapped descriptions
-    while (end < lines.length && end - start < 32) {
-      const match = questionChoiceLine.exec(lines[end]!);
-      // retain sequential choices
-      if (match) {
-        const number = Number(match[3]);
-        // reject invalid displayed numbers
-        if (number < 1) break;
-        // stop at another numbered block
-        if (expectedNumber !== undefined && number !== expectedNumber) break;
-        interactive ||= match[1] !== undefined || match[2] !== undefined;
-        choices.push({ label: match[4]!, number, answerIndex: number - 1 });
-        expectedNumber = number + 1;
-        wrappedLines = 0;
-      } else {
-        wrappedLines += 1;
-        // bound continuation scanning
-        if (choices.length === 0 || wrappedLines > 8 || /^(?:tab|enter|esc|[↑↓←→])/i.test(lines[end]!)) break;
-      }
-      end += 1;
-    }
-    // require real choices
-    if (choices.length < 2) continue;
-    // skip starts inside this choice block
-    const choiceEnd = end;
-    const context = lines.slice(Math.max(0, start - 4), start).reverse();
-    const question = interactive
-      ? context.find(line => !/^question \d+ of \d+$/i.test(line))
-      : context.find(line => /[?]$|^(?:question|select|choose)\b/i.test(line));
-    // retain the latest question
-    if (question) detected = { text: question.replace(/^[›❯>]\s*/, ''), choices };
-    start = Math.max(start, choiceEnd - 1);
-  }
-  return detected;
-};
-
-// compare labels across terminal wrapping
-const sameChoiceLabel = (left: string, right: string) => {
-  const normalizedLeft = left.replace(/\s+/gu, ' ').trim();
-  const normalizedRight = right.replace(/\s+/gu, ' ').trim();
-  return normalizedLeft === normalizedRight || normalizedLeft.startsWith(normalizedRight) || normalizedRight.startsWith(normalizedLeft);
-};
-// compare prompts across terminal wrapping
-const sameQuestionText = (left: string, right: string) => {
-  const normalizedLeft = left.replace(/\s+/gu, ' ').trim();
-  const normalizedRight = right.replace(/\s+/gu, ' ').trim();
-  return normalizedLeft === normalizedRight || normalizedLeft.startsWith(normalizedRight) || normalizedRight.startsWith(normalizedLeft) || normalizedLeft.endsWith(normalizedRight) || normalizedRight.endsWith(normalizedLeft);
-};
-// compare one parsed question with its visible subset
-const sameQuestion = (complete: ChoiceQuestion, visible: ChoiceQuestion) => sameQuestionText(complete.text, visible.text) && visible.choices.every(choice => complete.choices.some(candidate => candidate.number === choice.number && sameChoiceLabel(candidate.label, choice.label)));
-// match partial and complete question identities
-const matchingQuestion = (left: ChoiceQuestion, right: ChoiceQuestion) => sameQuestion(left, right) || sameQuestion(right, left);
-// find evidence for a cropped complete question
-const questionHasVisibleChoice = (question: ChoiceQuestion, message: string) => agentMessageLines(message).some(line => {
-  const match = questionChoiceLine.exec(line);
-  // ignore non-choice rows
-  if (match === null) return false;
-  const number = Number(match[3]);
-  const label = match[4]!;
-  return question.choices.some(choice => choice.number === number && sameChoiceLabel(choice.label, label));
-});
+// project one server inline question into the renderable choice model. The
+// server parses numbered lists and reads OMX files now, so the web no longer
+// parses pane text; it only maps the labels to numbered choices.
+const choiceQuestionFromInline = (question: InlineQuestion): ChoiceQuestion => ({ id: question.id, text: question.text, choices: question.choices.map(choiceFromLabel), source: question.source });
 
 let csrf = '';
 const currentUiVersion = (() => {
@@ -945,7 +878,7 @@ function ServerUpdateDialog({ open, onClose }: { open: boolean; onClose: () => v
         return;
       }
       setAdvisorState(agentState(agent));
-      setAdvisorQuestion(advisorResponsePending || agent.question === undefined ? undefined : { text: agent.question.text, choices: agent.question.choices.map(choiceFromLabel), omxId: agent.question.id });
+      setAdvisorQuestion(advisorResponsePending || agent.question === undefined ? undefined : choiceQuestionFromInline(agent.question));
     };
     void refresh();
     const interval = window.setInterval(() => { void refresh(); }, 1_000);
@@ -974,9 +907,8 @@ function ServerUpdateDialog({ open, onClose }: { open: boolean; onClose: () => v
     if (advisorId === undefined || visibleQuestion === undefined || feedbackPending) return;
     setFeedbackPending(true);
     setFeedbackMessage('');
-    const url = visibleQuestion.omxId === undefined ? `/api/agents/${encodeURIComponent(advisorId)}/question` : `/api/agents/${encodeURIComponent(advisorId)}/omx-question`;
-    const payload = visibleQuestion.omxId === undefined ? { index: answerIndex } : { index: answerIndex, questionId: visibleQuestion.omxId };
-    const response = await request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+    // every inline question — structured or parsed — answers through one endpoint
+    const response = await request(`/api/agents/${encodeURIComponent(advisorId)}/question`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ questionId: visibleQuestion.id, index: answerIndex }) });
     setFeedbackPending(false);
     // retain rejected answers
     if (!response.ok) {
@@ -1889,11 +1821,10 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
     // require one current unanswered question
     if (question === undefined || pending || !beginPendingOperation(pendingKey)) return;
     try {
-      const url = question.omxId === undefined ? `/api/agents/${encodeURIComponent(id)}/question` : `/api/agents/${encodeURIComponent(id)}/omx-question`;
-      const body = question.omxId === undefined ? { index: answerIndex } : { index: answerIndex, questionId: question.omxId };
-      const response = await request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-      // retire successfully answered inferred questions
-      if (response.ok && question.omxId === undefined) answeredQuestionActions.get(id)?.(question);
+      // every inline question — structured or parsed — answers through one endpoint
+      const response = await request(`/api/agents/${encodeURIComponent(id)}/question`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ questionId: question.id, index: answerIndex }) });
+      // optimistically retire a parsed question the server will next report as gone
+      if (response.ok && question.source !== 'structured') answeredQuestionActions.get(id)?.(question);
     } finally { setPendingOperation(pendingKey, false); }
   };
   const startVoice = () => {
@@ -3548,7 +3479,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
     let closed = false;
     let retry: number | undefined;
     let snapshot = '';
-    let latestAgentMessage = latestAgentMessages.get(id);
+    let latestQuestion = latestQuestions.get(id);
     let interactiveSocket: WebSocket | undefined;
     let connectingInteractive = false;
     let attemptedLogConnection = false;
@@ -3564,9 +3495,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
     let awaitingConnectedPaint = true;
     let connectionUpdateVersion = 0;
     let metadataRefreshPending = false;
-    let metadataFresh = false;
-    let metadataInitialized = false;
-    let dismissedQuestion = dismissedQuestions.get(id);
+    let dismissedQuestionId = dismissedQuestionIds.get(id);
     let rerenderAfterResize = () => {};
     const pendingInput: string[] = [];
     setStatus('Connecting');
@@ -3776,69 +3705,23 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
       metadataRefreshPending = true;
       socket.send(JSON.stringify({ v: 1, type: 'metadata' }));
     };
-    // reconcile complete choices with current viewport evidence
-    const detectedQuestion = () => {
-      const complete = questionFromAgentMessage(latestAgentMessage ?? '');
-      const visible = questionFromAgentMessage(snapshot);
-      // suppress a just-answered question across stale captures
-      if (dismissedQuestion !== undefined) {
-        const completeWasDismissed = complete !== undefined && matchingQuestion(dismissedQuestion.question, complete);
-        const visibleWasDismissed = visible === undefined ? questionHasVisibleChoice(dismissedQuestion.question, snapshot) : matchingQuestion(dismissedQuestion.question, visible);
-        // allow an identical question after visible intervening work
-        if (dismissedQuestion.advanced && visible !== undefined && visibleWasDismissed) {
-          dismissedQuestions.delete(id);
-          dismissedQuestion = undefined;
-          requestMetadataRefresh();
-          return completeWasDismissed && metadataFresh ? complete : visible;
-        }
-        // mark a newer cheap viewport as a generation boundary
-        if (!metadataFresh && !visibleWasDismissed) {
-          const firstAdvance = !dismissedQuestion.advanced;
-          dismissedQuestion.advanced = true;
-          // discard stale complete metadata
-          if (completeWasDismissed) { latestAgentMessage = undefined; latestAgentMessages.delete(id); }
-          if (firstAdvance) requestMetadataRefresh();
-          return visible;
-        }
-        // show newer visible questions without reviving stale metadata
-        if (completeWasDismissed && visible !== undefined && !visibleWasDismissed) { requestMetadataRefresh(); return visible; }
-        // retain the dismissal while either transport view still matches
-        if (completeWasDismissed || visibleWasDismissed) return undefined;
-        // retire the tombstone after an authoritative replacement or clear
-        if (metadataFresh) { dismissedQuestions.delete(id); dismissedQuestion = undefined; }
-        // show a newer partial question while its metadata refreshes
-        else if (visible !== undefined) { requestMetadataRefresh(); return visible; }
+    // the server parses the viewed agent's inline question and sends the current
+    // one on each authoritative metadata frame; the web no longer parses pane
+    // text. `latestQuestion` mirrors that frame, cleared when it carries none.
+    const currentQuestion = (): ChoiceQuestion | undefined => {
+      // retire a stale optimistic dismissal once the answered question is gone or replaced
+      if (dismissedQuestionId !== undefined && latestQuestion?.id !== dismissedQuestionId) {
+        dismissedQuestionId = undefined;
+        dismissedQuestionIds.delete(id);
       }
-      // trust the matching detailed capture
-      if (complete !== undefined && metadataFresh) return complete;
-      // defer partial initial output while refreshing
-      if (complete === undefined) return metadataRefreshPending && !metadataInitialized ? undefined : visible;
-      // retain a complete list for the same visible question
-      if (visible !== undefined && sameQuestion(complete, visible)) return complete;
-      // replace a visibly different question immediately
-      if (visible !== undefined) { requestMetadataRefresh(); return visible; }
-      // retain cropped questions with matching choice evidence
-      if (questionHasVisibleChoice(complete, snapshot)) return complete;
-      requestMetadataRefresh();
-      return undefined;
+      if (latestQuestion === undefined || latestQuestion.id === dismissedQuestionId) return undefined;
+      return choiceQuestionFromInline(latestQuestion);
     };
-    // retire one answered inferred question
+    // optimistically hide one just-answered question until the server reports it gone
     const answeredQuestion = (answered: ChoiceQuestion) => {
-      const complete = questionFromAgentMessage(latestAgentMessage ?? '');
-      const visible = questionFromAgentMessage(snapshot);
-      const completeWasAnswered = complete !== undefined && matchingQuestion(answered, complete);
-      const visibleWasAnswered = visible !== undefined && matchingQuestion(answered, visible);
-      dismissedQuestion = { question: answered, advanced: false };
-      dismissedQuestions.set(id, dismissedQuestion);
-      // discard only matching complete metadata
-      if (completeWasAnswered) {
-        latestAgentMessage = undefined;
-        latestAgentMessages.delete(id);
-        metadataFresh = false;
-      }
-      // preserve a replacement question that arrived during the request
-      if (visible === undefined ? completeWasAnswered : visibleWasAnswered) onQuestion(undefined);
-      requestMetadataRefresh();
+      dismissedQuestionId = answered.id;
+      dismissedQuestionIds.set(id, answered.id);
+      onQuestion(undefined);
     };
     answeredQuestionActions.set(id, answeredQuestion);
     // defer question analysis until output settles
@@ -3848,7 +3731,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
       analysisFrame = window.requestAnimationFrame(() => {
         analysisFrame = undefined;
         if (closed) return;
-        onQuestion(detectedQuestion());
+        onQuestion(currentQuestion());
       });
     };
     const appendWrites = createAnimationFrameTextBatcher(text => {
@@ -3949,7 +3832,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
       });
     };
     // restore cached questions before the live socket reconnects
-    if (cachedSnapshot) { snapshot = cachedSnapshot; markRendered(); onQuestion(detectedQuestion()); terminal.write(cachedSnapshot, () => { scheduleOverlayRender(); syncScrollState(); }); }
+    if (cachedSnapshot) { snapshot = cachedSnapshot; markRendered(); onQuestion(currentQuestion()); terminal.write(cachedSnapshot, () => { scheduleOverlayRender(); syncScrollState(); }); }
     const reconnect = () => {
       if (closed || retry !== undefined) return;
       retry = window.setTimeout(() => {
@@ -4056,20 +3939,18 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
           const metadata = completeLogMetadata(frame);
           const metadataRefreshed = metadata !== undefined;
           if (!terminalMode && latest && frame.lastPrompt !== undefined) setLastPrompt(frame.lastPrompt);
+          // the inline question rides every live frame, so it appears and clears
+          // with the pane output rather than waiting on the periodic metadata frame
+          if (!terminalMode && latest) latestQuestion = frame.question;
           // update complete history only from metadata frames
           if (!terminalMode && latest && metadata !== undefined) {
-            latestAgentMessage = metadata.latestAgentMessage ?? undefined;
             setLatestAssistantMessage(metadata.latestAssistantMessage ?? undefined);
             setLatestAssistantMessageOverflows(metadata.latestAssistantMessageOverflows);
             onMetadataRef.current?.(metadata.latestAssistantMessage?.trim() || undefined);
             metadataRefreshPending = false;
-            metadataFresh = true;
-            metadataInitialized = true;
           }
           // keep modal-only advisors out of shared tab caches
           if (!terminalMode && !embedded && latest) cacheLogFrame(id, frame);
-          // invalidate completeness after newer cheap output
-          if (!metadataRefreshed && text) metadataFresh = false;
           // apply authoritative empty resets
           if (!text) {
             // retain legacy empty-frame behavior
@@ -4118,8 +3999,6 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
           awaitingConnectedPaint = true;
           connectionUpdateVersion = 0;
           metadataRefreshPending = false;
-          metadataFresh = false;
-          metadataInitialized = false;
           cancelConnectedPaint();
           setStatus('Connecting');
           reconnect();
@@ -4511,7 +4390,9 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
       : reviewCapability?.reason === 'authentication_required'
         ? 'Authenticate Codex to use guided review'
         : 'Guided review unavailable on this server';
-  const omxQuestion = agent.question === undefined ? undefined : { text: agent.question.text, choices: agent.question.choices.map(choiceFromLabel), omxId: agent.question.id };
+  // the inline question the dashboard reported for this agent (OMX files); the
+  // Log socket supplies the parsed one, and the dashboard's takes precedence
+  const dashboardQuestion = agent.question === undefined ? undefined : choiceQuestionFromInline(agent.question);
   const rebaseUpstream = agent.gitUpstream?.upstream;
   const queueRebase = rebaseUpstream === undefined ? undefined : async () => {
     const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: `$rebase ${rebaseUpstream}`, attachments: [] }) });
@@ -4520,7 +4401,7 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
   };
   // reserve Remote Agents repository updates for the reviewed host update flow
   const upstreamRebase = agent.worktreeId === 'remoteagents' ? null : <UpstreamRebaseBanner summary={agent.gitUpstream} onRebase={queueRebase} />;
-  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} browserNavigationRequest={projectBrowser.navigationRequest} onBrowserNavigate={projectBrowser.navigate} onBrowserOpen={projectBrowser.openUrl} onBrowserClose={projectBrowser.close} terminalMode={swapped} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />{tabBar}{upstreamRebase}<PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) }); if (response.ok) await promptHistory.refresh(); return response.ok; }} /><Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} sleeping={sleeping} swapping={swapping} swapped={swapped} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSleep={!active && agent.worktreeId !== undefined ? () => void sleep() : undefined} onSwap={() => void changePaneMode()} onSelectTarget={onSelectTarget} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={omxQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} pushAction={agent.push} stack={agent.stack} review={review} /></article>;
+  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} browserNavigationRequest={projectBrowser.navigationRequest} onBrowserNavigate={projectBrowser.navigate} onBrowserOpen={projectBrowser.openUrl} onBrowserClose={projectBrowser.close} terminalMode={swapped} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />{tabBar}{upstreamRebase}<PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) }); if (response.ok) await promptHistory.refresh(); return response.ok; }} /><Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} sleeping={sleeping} swapping={swapping} swapped={swapped} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSleep={!active && agent.worktreeId !== undefined ? () => void sleep() : undefined} onSwap={() => void changePaneMode()} onSelectTarget={onSelectTarget} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} pushAction={agent.push} stack={agent.stack} review={review} /></article>;
 }
 
 function launchError(response: Response): Promise<string> {
@@ -4812,9 +4693,9 @@ function DashboardView({ onUnauthorized, onInactive, clientUpdateAvailable, serv
     const activeAgentIds = new Set(nextPayload.agents.map(agent => agent.id));
     logSnapshots.retain(activeAgentIds);
     for (const id of lastPrompts.keys()) if (!activeAgentIds.has(id)) lastPrompts.delete(id);
-    for (const id of latestAgentMessages.keys()) if (!activeAgentIds.has(id)) latestAgentMessages.delete(id);
-    // retire tombstones for removed agents
-    for (const id of dismissedQuestions.keys()) if (!activeAgentIds.has(id)) dismissedQuestions.delete(id);
+    for (const id of latestQuestions.keys()) if (!activeAgentIds.has(id)) latestQuestions.delete(id);
+    // retire optimistic dismissals for removed agents
+    for (const id of dismissedQuestionIds.keys()) if (!activeAgentIds.has(id)) dismissedQuestionIds.delete(id);
     for (const id of latestAssistantMessages.keys()) if (!activeAgentIds.has(id)) latestAssistantMessages.delete(id);
     for (const id of overflowingLatestAssistantMessages) if (!activeAgentIds.has(id)) overflowingLatestAssistantMessages.delete(id);
     for (const id of promptDrafts.keys()) if (!activeAgentIds.has(id)) promptDrafts.delete(id);

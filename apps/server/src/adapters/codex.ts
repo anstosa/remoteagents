@@ -1,5 +1,6 @@
 import { isAgentCommand } from '../discovery/processes.js';
 import { failedTurnFromCapture, lastPromptFromHistory, latestAgentMessageFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from './codex-turns.js';
+import { parseChoiceQuestion, pendingOmxQuestion } from './codex-questions.js';
 import { validCodexThreadId } from '../bookmarks/service.js';
 import type { Adapter, AttentionState } from './types.js';
 
@@ -40,6 +41,15 @@ export const codexAdapter: Adapter = {
     lastPrompt: (capture) => lastPromptFromHistory(capture),
     latestMessage: (capture) => latestAgentMessageFromHistory(capture),
     failed: failedTurnFromCapture,
+  },
+  questions: {
+    // `capture` is either a raw pane capture or an already-isolated latest
+    // message. Isolate the agent's latest message when a prompt boundary is
+    // present (so the composer box below it never reads as a choice list); an
+    // already-isolated message has none and is parsed as-is. Both paths yield
+    // the same question — and so the same id — for a given on-screen list.
+    parse: (capture) => parseChoiceQuestion(latestAgentMessageFromHistory(capture) ?? capture),
+    pending: (workspace, paneId) => pendingOmxQuestion(workspace, paneId),
   },
   conversations: { validId: validCodexThreadId },
 };

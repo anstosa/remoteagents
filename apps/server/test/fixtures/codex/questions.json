@@ -1,0 +1,58 @@
+[
+  {
+    "name": "a numbered choice list drawn on the pane",
+    "lines": [
+      "› deploy the service",
+      "",
+      "• Sure — I can deploy this for you.",
+      "  Which environment should I target?",
+      "",
+      "1. Staging",
+      "2. Production",
+      "3. Cancel",
+      "",
+      "› "
+    ],
+    "question": { "text": "Which environment should I target?", "choices": ["Staging", "Production", "Cancel"], "source": "parsed" }
+  },
+  {
+    "name": "an interactive caret list keeps its choice order",
+    "lines": [
+      "› pick a plan",
+      "",
+      "Which plan should I follow?",
+      "",
+      "❯ 1. Approve the plan",
+      "  2. Revise the plan",
+      "  3. Reject",
+      "",
+      "  Press enter to confirm",
+      "› "
+    ],
+    "question": { "text": "Which plan should I follow?", "choices": ["Approve the plan", "Revise the plan", "Reject"], "source": "parsed" }
+  },
+  {
+    "name": "a completed turn with no choices is not a question",
+    "lines": [
+      "› what time is it",
+      "",
+      "• It is currently 3pm.",
+      "",
+      "─ Worked for 2s",
+      "› "
+    ],
+    "question": null
+  },
+  {
+    "name": "a single numbered item is not a choice list",
+    "lines": [
+      "› list one thing",
+      "",
+      "• Here is one item:",
+      "1. Only item",
+      "",
+      "› "
+    ],
+    "question": null
+  }
+]

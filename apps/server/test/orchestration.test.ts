@@ -44,7 +44,7 @@ function dependencies(overrides: Partial<OrchestrationDependencies> = {}): Orche
       updateQueued: async (_agentId, promptId, text) => ({ id: promptId, text, createdAt: '2026-08-13T00:00:00.000Z' }),
       moveQueued: async () => [],
       removeQueued: async () => true,
-      answerOmxQuestion: async () => true,
+      answerQuestion: async () => true,
       cancel: async () => 'ok',
       close: async () => true
     },
@@ -73,6 +73,20 @@ describe('OrchestrationService', () => {
     await expect(finished.cancel(activeAgent.id)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } });
     const missing = new OrchestrationService(dependencies({ prompts: { ...dependencies().prompts, cancel: async () => 'unavailable' } }));
     await expect(missing.cancel(activeAgent.id)).resolves.toMatchObject({ ok: false, error: { code: 'not_found' } });
+  });
+
+  it('answers an inline question only for a hashed id and an in-range index', async () => {
+    const calls: Array<[string, string, number]> = [];
+    const deps = dependencies({ prompts: { ...dependencies().prompts, answerQuestion: async (agentId, questionId, index) => { calls.push([agentId, questionId, index]); return questionId === 'i63eEMdg6bcC3vtLXiJd55'; } } });
+    const service = new OrchestrationService(deps);
+    // the legacy `question-…` id and an out-of-range index are rejected before the facade
+    await expect(service.answerQuestion({ agentId: activeAgent.id, questionId: 'question-legacy', index: 0 })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_request' } });
+    await expect(service.answerQuestion({ agentId: activeAgent.id, questionId: 'i63eEMdg6bcC3vtLXiJd55', index: 16 })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_request' } });
+    expect(calls).toHaveLength(0);
+    // a valid hashed id passes through; a facade miss becomes not_found
+    await expect(service.answerQuestion({ agentId: activeAgent.id, questionId: 'i63eEMdg6bcC3vtLXiJd55', index: 2 })).resolves.toMatchObject({ ok: true, value: { answered: true } });
+    await expect(service.answerQuestion({ agentId: activeAgent.id, questionId: 'AAAAAAAAAAAAAAAAAAAAAA', index: 2 })).resolves.toMatchObject({ ok: false, error: { code: 'not_found' } });
+    expect(calls).toEqual([[activeAgent.id, 'i63eEMdg6bcC3vtLXiJd55', 2], [activeAgent.id, 'AAAAAAAAAAAAAAAAAAAAAA', 2]]);
   });
 
   it('merges active agents and inactive worktrees in configured order', async () => {
@@ -143,7 +157,7 @@ describe('OrchestrationService', () => {
         updateQueued: async (_agentId, id, text) => { calls.push(`update:${id}:${text}`); return { id, text, createdAt: '2026-08-13T00:00:00.000Z' }; },
         moveQueued: async (_agentId, id, direction) => { calls.push(`move:${id}:${direction}`); return [{ id, text: 'Edited', createdAt: '2026-08-13T00:00:00.000Z' }]; },
         removeQueued: async (_agentId, id) => { calls.push(`remove:${id}`); return true; },
-        answerOmxQuestion: async () => true,
+        answerQuestion: async () => true,
         cancel: async () => 'ok',
         close: async () => true
       },
@@ -176,7 +190,7 @@ describe('OrchestrationService', () => {
         updateQueued: async () => undefined,
         moveQueued: async () => undefined,
         removeQueued: async () => false,
-        answerOmxQuestion: async () => false,
+        answerQuestion: async () => false,
         cancel: async () => 'unavailable',
         close: async () => { closed += 1; return true; }
       }

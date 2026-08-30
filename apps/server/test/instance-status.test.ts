@@ -29,7 +29,7 @@ describe('instance attention', () => {
   });
 
   it('prioritizes questions over active work', () => {
-    const question = { id: 'question-1', text: 'Deploy?', choices: ['Yes', 'No'], paneId: '%2' };
+    const question = { id: 'question-1', text: 'Deploy?', choices: ['Yes', 'No'], source: 'structured' as const, targetPaneId: '%2' };
 
     expect(instanceAttention({ agents: [agent('⠋ Working'), agent('Ready', false, { question })] })).toBe('question');
   });

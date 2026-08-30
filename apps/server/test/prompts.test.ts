@@ -4,6 +4,7 @@ import { readFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { maxPromptAttachmentBytes, PromptService } from '../src/prompts/service.js';
+import { inlineQuestionId } from '../src/adapters/codex-questions.js';
 import { QueuedPromptService } from '../src/prompts/queue.js';
 import { SavedPromptService } from '../src/saved-prompts/service.js';
 import { stated } from './helpers/agent.js';
@@ -768,12 +769,17 @@ it('interrupts a reported Agent and writes finished on its pane', async () => {
 
 it('confirms a numbered choice with the Adapter option-select keys on the discovered pane', async () => {
   const sent: string[][] = [];
+  // the live pane shows the parsed numbered list; its id is re-derived here
+  const capture = ['› pick', '', 'Which environment?', '', '1. Staging', '2. Production', '3. Cancel', '', '› '].join('\n');
   const discovery = { target: async () => ({ agent, socket }) };
-  const tmux = { sendKeys: async (_s: unknown, pane: string, keys: string[]) => { sent.push([pane, ...keys]); return true; } };
+  const tmux = { capture: async () => capture, sendKeys: async (_s: unknown, pane: string, keys: string[]) => { sent.push([pane, ...keys]); return true; } };
   const service = new PromptService(discovery as never, tmux as never);
+  const id = inlineQuestionId('Which environment?', ['Staging', 'Production', 'Cancel']);
   // Codex selects the first option by default, so index 2 moves down twice then confirms
-  await expect(service.answerOption(agent.id, 2)).resolves.toBe(true);
+  await expect(service.answerQuestion(agent.id, id, 2)).resolves.toBe(true);
   expect(sent).toEqual([['%1', 'Down', 'Down', 'Enter']]);
+  // a stale id (the agent moved past this question) is refused
+  await expect(service.answerQuestion(agent.id, 'a-stale-question-id000', 2)).resolves.toBe(false);
 });
 
 it('dismisses composer autocomplete before queuing a skill or plugin prompt',async()=>{const pasted:string[]=[];const discovery={target:async()=>({agent,socket})};const tmux={pastePrompt:async(_s:unknown,_p:string,_b:string,p:string)=>{pasted.push(p);return true},sendKeys:async()=>true};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'Use $my-plugin')).resolves.toBe(true);await expect(service.submit(agent.id,'/skill already resolved ')).resolves.toBe(true);expect(pasted).toEqual(['Use $my-plugin ','/skill already resolved '])});it('does not queue a stale target',async()=>{let count=0;const discovery={target:async()=>++count===1?{agent,socket}:undefined};const tmux={pastePrompt:async()=>true,sendKeys:async()=>true};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'synthetic')).resolves.toBe(false)});it('sends Ctrl-C only to the discovered agent pane',async()=>{const calls:string[][]=[];const discovery={target:async()=>({agent:stated({...agent,title:'⠋ Working'}),socket})};const tmux={sendKeys:async(_s:unknown,p:string,keys:string[])=>{if(keys.includes('C-c'))calls.push(['interrupt',p]);return true}};const service=new PromptService(discovery as never,tmux as never);await expect(service.cancel(agent.id)).resolves.toBe('ok');expect(calls).toEqual([['interrupt','%1']])});it('kills only the discovered pane when deleting an agent',async()=>{const calls:string[][]=[];const discovery={target:async()=>({agent,socket})};const tmux={close:async(_s:unknown,p:string)=>{calls.push(['close',p]);return true}};const service=new PromptService(discovery as never,tmux as never);await expect(service.close(agent.id)).resolves.toBe(true);expect(calls).toEqual([['close','%1']])})});

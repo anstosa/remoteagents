@@ -13,6 +13,7 @@ import { ControlService } from './auth/control.js';
 import { DeviceService } from './auth/devices.js';
 import { TicketStore, type TicketKind } from './auth/tickets.js';
 import { DiscoveryService } from './discovery/service.js';
+import { adapterFor } from './adapters/registry.js';
 import { TmuxAdapter } from './tmux/adapter.js';
 import { maxPromptAttachments, maxPromptAttachmentBytes, PromptService, type PromptAttachment } from './prompts/service.js';
 import { validPrompt } from './prompts/validation.js';
@@ -900,8 +901,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(204).send();
   });
-  app.post('/api/agents/:id/question', async (request, reply) => { controlled(request, true); const index = body(request).index; if (!Number.isInteger(index) || !await prompts.answerOption((request.params as { id: string }).id, index as number)) return reply.code(404).send({ error: 'question unavailable' }); return reply.code(204).send(); });
-  app.post('/api/agents/:id/omx-question', async (request, reply) => { controlled(request, true); const data = body(request); if (typeof data.questionId !== 'string' || !Number.isInteger(data.index) || !await prompts.answerOmxQuestion((request.params as { id: string }).id, data.questionId, data.index as number)) return reply.code(404).send({ error: 'question unavailable' }); return reply.code(204).send(); });
+  app.post('/api/agents/:id/question', async (request, reply) => { controlled(request, true); const data = body(request); if (typeof data.questionId !== 'string' || !Number.isInteger(data.index) || !await prompts.answerQuestion((request.params as { id: string }).id, data.questionId, data.index as number)) return reply.code(404).send({ error: 'question unavailable' }); return reply.code(204).send(); });
   const launchReadyTimeoutSeconds = 60;
   const launchPollIntervalMs = 250;
   const launchPollAttempts = launchReadyTimeoutSeconds * 1_000 / launchPollIntervalMs;
@@ -1337,8 +1337,13 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
           last = captured.text;
           lastResetAt = now;
           if (socket.readyState === socket.OPEN) {
-            const metadata = detailed ? { state: 'complete', latestAgentMessage: captured.latestAgentMessage ?? null, latestAssistantMessage: captured.latestAssistantMessage ?? null, latestAssistantMessageOverflows: captured.latestAssistantMessageOverflows === true } as const : undefined;
-            socket.send(JSON.stringify({ v: 1, ...frame, older: captured.older, newer: requestedHistory > 0, ...(metadata === undefined ? {} : { metadata }), ...(captured.lastPrompt === undefined ? {} : { lastPrompt: captured.lastPrompt }) }));
+            // parse the viewed agent's capture for an inline numbered choice
+            // list — on every frame (a detailed frame's isolated message, else the
+            // visible window) so the web renders it promptly rather than parsing
+            // pane text itself and without waiting on the periodic detailed frame
+            const question = adapterFor(target.agent.kind)?.questions?.parse?.(captured.latestAgentMessage ?? captured.text);
+            const metadata = detailed ? { state: 'complete' as const, latestAgentMessage: captured.latestAgentMessage ?? null, latestAssistantMessage: captured.latestAssistantMessage ?? null, latestAssistantMessageOverflows: captured.latestAssistantMessageOverflows === true } : undefined;
+            socket.send(JSON.stringify({ v: 1, ...frame, older: captured.older, newer: requestedHistory > 0, ...(metadata === undefined ? {} : { metadata }), ...(question === undefined ? {} : { question }), ...(captured.lastPrompt === undefined ? {} : { lastPrompt: captured.lastPrompt }) }));
             // defer the next successful full-history scan
             if (detailed && requestedHistory === 0) metadataRefreshAt = Date.now() + logMetadataRefreshMs;
           }
