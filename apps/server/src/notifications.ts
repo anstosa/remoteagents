@@ -1,6 +1,7 @@
 import type { Agent } from './domain/models.js';
+import type { AttentionState } from './adapters/types.js';
 
-export type AgentAttentionState = 'working' | 'question' | 'finished';
+export type AgentAttentionState = AttentionState;
 export type AgentNotification = {
   kind: 'question' | 'finished';
   title: string;
@@ -20,13 +21,12 @@ export type PushMessage = AgentNotification | CleanupNotification;
 
 type NotificationDelivery = (notification: AgentNotification) => void | Promise<void>;
 
-const workingTitle = /^[\u2800-\u28ff]/u;
-const actionRequiredTitle = /action required/iu;
 const attentionKey = (agent: Pick<Agent, 'id' | 'worktreeId'>) => agent.worktreeId === undefined ? `agent:${agent.id}` : `worktree:${agent.worktreeId}`;
 
-export function agentAttentionState(agent: Agent): AgentAttentionState {
-  if (agent.question !== undefined || actionRequiredTitle.test(agent.title)) return 'question';
-  return workingTitle.test(agent.title) ? 'working' : 'finished';
+// Attention is resolved once, server-side, in DiscoveryService (ADR 0001/0002);
+// every consumer, including this coordinator, reads that resolved state.
+export function agentAttentionState(agent: Pick<Agent, 'attention'>): AgentAttentionState {
+  return agent.attention;
 }
 
 export const agentNotificationTag = (agent: Pick<Agent, 'id' | 'worktreeId'>) => agent.worktreeId === undefined ? `agent-status-${agent.id}` : `worktree-status-${agent.worktreeId}`;

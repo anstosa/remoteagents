@@ -2,6 +2,7 @@ import argon2 from 'argon2';
 import { describe, expect, it } from 'vitest';
 import { AuthService } from '../src/auth/service.js';
 import { buildApp } from '../src/app.js';
+import { stated } from './helpers/agent.js';
 
 const bookmark = { id: 'bookmark-identifier-001', threadId: '0198c333-3333-7333-8333-333333333333', title: 'Shared Potato chat', createdAt: '2026-08-20T20:00:00.000Z' };
 
@@ -17,7 +18,7 @@ describe('chat bookmark API', () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', saveKey: 'potato', available: true, pinned: true, command: 'codex' };
     const otherWorktree = { ...worktree, id: 'owen', label: 'Owen', path: '/worktrees/owen', identity: '/worktrees/owen', hostPath: '/home/ubuntu/owen' };
-    const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', worktreeId: 'cora', title: 'Ready' };
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', worktreeId: 'cora', title: 'Ready' });
     const otherAgent = { ...agent, id: 'agent-2', paneId: '%2', sessionId: 'socket:$2', workspace: '/home/ubuntu/owen', worktreeId: 'owen' };
     const calls: string[] = [];
     const renamedBookmark = { ...bookmark, title: 'Release readiness chat' };
@@ -73,7 +74,7 @@ describe('chat bookmark API', () => {
   it('keeps scratch bookmarks in one stable workspace group', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: true, command: 'codex' };
-    const firstAgent = { id: 'scratch-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu', title: 'Scratch' };
+    const firstAgent = stated({ id: 'scratch-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu', title: 'Scratch' });
     const secondAgent = { ...firstAgent, id: 'scratch-2', paneId: '%2', sessionId: 'socket:$2' };
     const renamedBookmark = { ...bookmark, title: 'Scratch release plan' };
     const calls: string[] = [];
@@ -121,7 +122,7 @@ describe('chat bookmark API', () => {
   it('launches an inactive worktree into the selected bookmarked chat', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', saveKey: 'potato', available: true, pinned: true, command: 'codex' };
-    const replacement = { id: 'agent-2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', worktreeId: 'cora', title: 'Ready' };
+    const replacement = stated({ id: 'agent-2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', worktreeId: 'cora', title: 'Ready' });
     let launched = false;
     const discovery = { target: async () => undefined, dashboard: async () => ({ generation: launched ? 2 : 1, agents: launched ? [replacement] : [], worktrees: [] }) };
     const launch = { canResumeConversation: () => true, resumeConversation: async (worktreeId: string, threadId: string) => { launched = worktreeId === 'cora' && threadId === bookmark.threadId; return launched; } };
@@ -143,7 +144,7 @@ describe('chat bookmark API', () => {
   it('closes an idle agent before resuming the selected bookmarked chat', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', saveKey: 'potato', available: true, pinned: true, command: 'codex' };
-    const firstAgent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', worktreeId: 'cora', title: 'Ready' };
+    const firstAgent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', worktreeId: 'cora', title: 'Ready' });
     const replacement = { ...firstAgent, id: 'agent-2', paneId: '%2', sessionId: 'socket:$2' };
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const events: string[] = [];
@@ -174,7 +175,7 @@ describe('chat bookmark API', () => {
   it('preserves an open agent when exact resume is not configured', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', saveKey: 'potato', available: true, pinned: true, command: 'codex' };
-    const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', worktreeId: 'cora', title: 'Ready' };
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', worktreeId: 'cora', title: 'Ready' });
     let closed = false;
     const discovery = { dashboard: async () => ({ generation: 1, agents: [agent], worktrees: [] }), target: async () => ({ agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } }) };
     const launch = { canResumeConversation: () => false, resumeConversation: async () => false };

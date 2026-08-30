@@ -35,7 +35,9 @@ type GitComparisonSummary = { base: string; files: number; changes?: GitStatusCh
 type NewTaskAvailability = { enabled: boolean; reason?: string };
 type OperationFeedback = { id: number; tone: 'pending'|'success'|'error'; message: string; detail: string; worktreeId?: string };
 type CleanupTarget = { id: string; kind: 'orphan-worker'|'stale-agent'|'hud-pane'|'hud-process'; label: string; detail: string };
-type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: OmxQuestion; stack?: Stack; unread?: boolean; queuedPromptCount: number };
+type AgentKind = 'codex' | 'claude' | 'pi' | 'opencode';
+type AttentionState = 'working' | 'finished' | 'question';
+type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: OmxQuestion; stack?: Stack; unread?: boolean; queuedPromptCount: number };
 type Worktree = { id: string; label: string; path: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; sleeping?: boolean; order: number; projectUrl?: string; pullRequest?: PullRequestSummary; stack?: Stack };
 type ReviewTourCapability = { available: true } | { available: false; reason: 'generator_unavailable'|'unsupported_cli'|'configuration_invalid'|'authentication_required' };
 type StoredReviewSummary = { worktreeId: string; branch: string; savedAt: string; title: string; scope: ReviewScope; includeTests: boolean; includeDocs: boolean; fingerprint: string };
@@ -155,8 +157,9 @@ const commandTokenAt = (value: string, cursor: number): CommandToken | undefined
   return { start: cursor - token.length, end: cursor + suffix.length, prefix, query: `${match[2]}${suffix}` };
 };
 
-const actionRequired = (agent: Agent) => agent.question !== undefined || /action required/i.test(agent.title);
-const agentState = (agent: Agent): AgentState => actionRequired(agent) ? 'action-required' : /^[\u2800-\u28ff]/u.test(agent.title) ? 'working' : 'prompt-done';
+// Attention is resolved server-side (ADR 0001/0002); the web reads it and never regexes a title.
+const actionRequired = (agent: Agent) => agent.attention === 'question';
+const agentState = (agent: Agent): AgentState => agent.attention === 'question' ? 'action-required' : agent.attention === 'working' ? 'working' : 'prompt-done';
 const agentLabel = (agent: Agent) => (agent.worktreeLabel ?? agent.displayLabel ?? (actionRequired(agent) ? agent.title.replace(/(?:\[\s*.\s*\]\s*)?action required\s*\|?\s*/i, '🚨 ') : agent.title)) || agent.workspace;
 // keep server-owned update advisors inside their modal surface
 const isEmbeddedUpdateAdvisor = (agent: Pick<Agent, 'displayLabel' | 'worktreeId'>): boolean => agent.worktreeId === undefined && /^Update Advisor (?:(?:Starting v[34]|v[234]) )?[0-9a-f]{7}$/u.test(agent.displayLabel ?? '');

@@ -61,9 +61,9 @@ export class CleanupService {
     ]);
     const panes = (await Promise.all(sockets.map(socket => this.tmux.listPanes(socket)))).flat();
     const [codexFlags] = await Promise.all([
-      Promise.all(panes.map(pane => this.processInspector.hasCodexDescendant(pane.pid)))
+      Promise.all(panes.map(pane => this.processInspector.recognizeAgent(pane.pid)))
     ]);
-    const codexPanes = new Set(panes.filter((_pane, index) => codexFlags[index]).map(paneIdentity));
+    const codexPanes = new Set(panes.filter((_pane, index) => codexFlags[index] !== undefined).map(paneIdentity));
     const activeAgents = new Set(agents.map(agent => agent.id));
     const hudProcesses = processes.filter(process => isHudWatcherCommand(process.cmdline));
     const paneByPid = new Map(panes.map(pane => [pane.pid, pane]));

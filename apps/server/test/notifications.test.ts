@@ -1,18 +1,26 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Agent } from '../src/domain/models.js';
+import { resolveAttention } from '../src/adapters/attention.js';
 import { AgentNotificationCoordinator, agentAttentionState, agentNotification, type AgentNotification } from '../src/notifications.js';
 
-const agent = (overrides: Partial<Agent> = {}): Agent => ({
-  id: 'socket:%1',
-  paneId: '%1',
-  sessionId: '$1',
-  socketFingerprint: 'socket',
-  workspace: '/workspace',
-  title: 'Ready',
-  worktreeId: 'eric',
-  worktreeLabel: 'Eric',
-  ...overrides
-});
+// Resolve attention from the title exactly as DiscoveryService would, so the
+// coordinator reads the same resolved state the wire carries.
+const agent = (overrides: Partial<Agent> = {}): Agent => {
+  const title = overrides.title ?? 'Ready';
+  return {
+    id: 'socket:%1',
+    paneId: '%1',
+    sessionId: '$1',
+    socketFingerprint: 'socket',
+    workspace: '/workspace',
+    title,
+    kind: 'codex',
+    attention: resolveAttention({ kind: 'codex', title, hasQuestion: overrides.question !== undefined }),
+    worktreeId: 'eric',
+    worktreeLabel: 'Eric',
+    ...overrides
+  };
+};
 
 describe('agent notifications', () => {
   afterEach(() => vi.useRealTimers());

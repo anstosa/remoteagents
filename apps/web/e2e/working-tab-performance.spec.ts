@@ -9,9 +9,9 @@ test('uses one CSS label animation per working tab without per-letter DOM', asyn
       json: {
         generation: 1,
         agents: [
-          { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: '⠋ Working in Cora' },
-          { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/delta', title: '⠙ Working in Delta' },
-          { id: 'agent-3', sessionId: 'socket:$3', workspace: '/worktrees/echo', title: '⠹ Working in Echo' }
+          { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: '⠋ Working in Cora', attention: 'working' },
+          { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/delta', title: '⠙ Working in Delta', attention: 'working' },
+          { id: 'agent-3', sessionId: 'socket:$3', workspace: '/worktrees/echo', title: '⠹ Working in Echo', attention: 'working' }
         ],
         worktrees: []
       }

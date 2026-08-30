@@ -7,6 +7,9 @@ import { run } from '../tmux/command.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { ProcInspector, type ProcessInspector } from './processes.js';
 import { PullRequestService } from '../pull-requests/service.js';
+import { parseReportedAttention, resolveAttention } from '../adapters/attention.js';
+import { adapterCapabilities } from '../adapters/registry.js';
+import type { AttentionState } from '../adapters/types.js';
 import type { Agent, CodexSessionRef, Dashboard, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, Pane, SocketRef, Worktree } from '../domain/models.js';
 import { classifyReviewPath } from '../git/change-classification.js';
 import { isUpdateAdvisorLabel } from '../update-advisor.js';
@@ -322,6 +325,8 @@ export const isOmxWorkerPane = (pane: Pane) => omxWorkerWorktree.test(pane.path)
 export class DiscoveryService {
   private generation = 0; private snapshot: Agent[] = [];
   private panePids = new Map<string, number>();
+  // reported @rac_attention per agent id, so the dashboard re-resolves with the question
+  private paneReported = new Map<string, AttentionState>();
   private readonly serverStartedAt = Date.now();
   private refreshedAt = 0;
   private refreshInFlight?: Promise<Agent[]>;
@@ -366,15 +371,26 @@ export class DiscoveryService {
     const sockets = await this.sockets(true);
     const panes = (await Promise.all(sockets.map(async (socket) => (await this.tmux.listPanes(socket)).map(pane => ({ ...pane, socket }))))).flat();
     const panePids = new Map<string, number>();
+    const paneReported = new Map<string, AttentionState>();
     const agents: Agent[] = (await Promise.all(panes.filter(pane => !isOmxWorkerPane(pane)).map(async (pane): Promise<Agent | undefined> => {
-      if (!await this.processes.hasCodexDescendant(pane.pid)) return undefined;
+      const recognized = await this.processes.recognizeAgent(pane.pid);
+      if (recognized === undefined) {
+        // a pane whose agent is gone must not keep a stale report; nothing else clears it
+        if (pane.reportedAttention !== undefined || pane.reportedSession !== undefined || pane.reportedSandboxed !== undefined) void this.tmux.unsetReportedState(pane.socket, pane.paneId).catch(() => {});
+        return undefined;
+      }
       const workspace = await workspaceRoot(pane.path);
       const id = `${pane.socket.fingerprint}:${pane.paneId}`;
       panePids.set(id, pane.pid);
-      return { id, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, workspace, title: pane.title, ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }) };
+      const reported = parseReportedAttention(pane.reportedAttention);
+      if (reported !== undefined) paneReported.set(id, reported);
+      const attention = resolveAttention({ kind: recognized.kind, title: pane.title, reported, hasQuestion: false });
+      const conversationId = pane.reportedSession !== undefined && pane.reportedSession.length > 0 ? pane.reportedSession : undefined;
+      return { id, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, workspace, title: pane.title, kind: recognized.kind, attention, ...(pane.reportedSandboxed === '1' ? { sandboxed: true } : {}), ...(conversationId === undefined ? {} : { conversationId }), ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }) };
     }))).filter((agent): agent is Agent => agent !== undefined);
     this.snapshot = agents;
     this.panePids = panePids;
+    this.paneReported = paneReported;
     this.refreshedAt = Date.now();
     this.generation++;
     return agents;
@@ -459,7 +475,9 @@ export class DiscoveryService {
       const details = worktree === undefined
         ? { ...agent, branch, ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }) }
         : { ...agent, branch, ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }), workspace: worktree.identity, worktreeId: worktree.id, worktreeLabel: worktree.label, worktreeOrder: order, ...(worktree.newTask === undefined ? {} : { newTaskConfigured: true }), push: worktree.push, projectUrl: worktree.projectUrl };
-      return { ...details, ...(pullRequest === undefined ? {} : { pullRequest }), ...(question === undefined ? {} : { question }) };
+      // re-resolve now that a pending Inline question is known (precedence: reported → question → inferred → finished)
+      const attention = resolveAttention({ kind: agent.kind, title: agent.title, reported: this.paneReported.get(agent.id), hasQuestion: question !== undefined });
+      return { ...details, attention, ...(pullRequest === undefined ? {} : { pullRequest }), ...(question === undefined ? {} : { question }) };
     }));
     // do not let a modal advisor hide the configured repository placeholder
     const active = new Set(agents.filter(agent => !isUpdateAdvisorLabel(agent.displayLabel)).map(agent => agent.workspace));
@@ -469,6 +487,6 @@ export class DiscoveryService {
       const gitPrStatus = await gitPrComparisonForBase(meta, meta.branch, pullRequest?.baseBranch);
       return { id: worktree.id, label: worktree.label, path: worktree.path, available: worktree.available, pinned: worktree.pinned, projectUrl: worktree.projectUrl, order: worktrees.indexOf(worktree), ...(meta.branch === undefined ? {} : { branch: meta.branch }), ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }), ...(pullRequest === undefined ? {} : { pullRequest }) };
     }));
-    return { generation: this.generation, serverStartedAt: this.serverStartedAt, agents, worktrees: inactive };
+    return { generation: this.generation, serverStartedAt: this.serverStartedAt, adapters: adapterCapabilities(), agents, worktrees: inactive };
   }
 }

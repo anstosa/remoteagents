@@ -37,7 +37,7 @@ describe('TmuxAdapter capture', () => {
       socket
     }]);
 
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}']);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}']);
   });
 
   it('labels one exact server-owned pane', async () => {
@@ -46,6 +46,24 @@ describe('TmuxAdapter capture', () => {
     await expect(new TmuxAdapter().label(socket, '%1', 'Update Advisor v4 2222222')).resolves.toBe(true);
 
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'set-option', '-p', '-t', '%1', '@rac_display_label', 'Update Advisor v4 2222222']);
+  });
+
+  it('unsets every reported-state option on one exact pane', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+
+    await expect(new TmuxAdapter().unsetReportedState(socket, '%1')).resolves.toBe(true);
+
+    for (const option of ['@rac_attention', '@rac_session', '@rac_sandboxed']) {
+      expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'set-option', '-p', '-t', '%1', '-u', option]);
+    }
+    // never touches the server-owned display label
+    expect(run).not.toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'set-option', '-p', '-t', '%1', '-u', '@rac_display_label']);
+  });
+
+  it('refuses to unset reported state for an unsafe pane coordinate', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    await expect(new TmuxAdapter().unsetReportedState(socket, 'not-a-pane')).resolves.toBe(false);
+    expect(run).not.toHaveBeenCalled();
   });
 
   it('confirms Codex choices from the initially selected first option', async () => {

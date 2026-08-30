@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ValidatedConfig } from '../src/config/schema.js';
 import type { DashboardPayload } from '../src/dashboard/updates.js';
 import type { Agent, Worktree } from '../src/domain/models.js';
+import { stated } from './helpers/agent.js';
 import { OrchestrationService, type OrchestrationDependencies } from '../src/orchestration/service.js';
 
 const cora: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: true, command: 'codex', commands: { build: 'docker compose build' } };
@@ -17,7 +18,7 @@ const config: ValidatedConfig = {
   worktrees: [cora, dave]
 };
 const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
-const activeAgent: Agent = { id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.identity, branch: 'feature/cora', title: 'Ready', worktreeId: cora.id, worktreeLabel: cora.label, worktreeOrder: 0, gitStatus: { files: 2, staged: 0, unstaged: 2, untracked: 0, conflicted: 0 } };
+const activeAgent: Agent = stated({ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.identity, branch: 'feature/cora', title: 'Ready', worktreeId: cora.id, worktreeLabel: cora.label, worktreeOrder: 0, gitStatus: { files: 2, staged: 0, unstaged: 2, untracked: 0, conflicted: 0 } });
 
 // build one fully structural dependency set
 function dependencies(overrides: Partial<OrchestrationDependencies> = {}): OrchestrationDependencies {
@@ -156,7 +157,7 @@ describe('OrchestrationService', () => {
   });
 
   it('deactivates only idle agents in configured worktrees', async () => {
-    let agent: Agent = { ...activeAgent, title: '⠋ Working' };
+    let agent: Agent = stated({ ...activeAgent, title: '⠋ Working' });
     let closed = 0;
     const service = new OrchestrationService(dependencies({
       discovery: { target: async () => ({ agent, socket }) },
@@ -174,7 +175,7 @@ describe('OrchestrationService', () => {
 
     await expect(service.deactivate(activeAgent.id)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } });
     expect(closed).toBe(0);
-    agent = { ...activeAgent, title: 'Ready' };
+    agent = stated({ ...activeAgent, title: 'Ready' });
     await expect(service.deactivate(activeAgent.id)).resolves.toMatchObject({ ok: true, value: { deactivated: true } });
     expect(closed).toBe(1);
     agent = { ...activeAgent, workspace: '/scratch/repo', title: 'Ready' };

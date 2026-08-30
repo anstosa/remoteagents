@@ -880,7 +880,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const target = await discovery.target(id);
     const worktree = target === undefined ? undefined : configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
     // preserve active configured agents
-    if (!target || worktree === undefined || /^[\u2800-\u28ff]/u.test(target.agent.title)) return reply.code(409).send({ error: 'only idle configured agents can be turned off' });
+    if (!target || worktree === undefined || agentAttentionState(target.agent) === 'working') return reply.code(409).send({ error: 'only idle configured agents can be turned off' });
     // require a live target
     if (!await prompts.close(id)) return reply.code(404).send({ error: 'target unavailable' });
     sleepingWorktrees.delete(worktree.id);
@@ -893,7 +893,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const target = await discovery.target(id);
     const worktree = target === undefined ? undefined : configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
     // limit sleep to the same idle configured agents as turn off
-    if (!target || worktree === undefined || /^[\u2800-\u28ff]/u.test(target.agent.title)) return reply.code(409).send({ error: 'only idle configured agents can sleep' });
+    if (!target || worktree === undefined || agentAttentionState(target.agent) === 'working') return reply.code(409).send({ error: 'only idle configured agents can sleep' });
     // require a live target
     if (!await prompts.close(id)) return reply.code(404).send({ error: 'target unavailable' });
     sleepingWorktrees.add(worktree.id);

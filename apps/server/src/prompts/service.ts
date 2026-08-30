@@ -22,6 +22,13 @@ export { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentBytes, 
  * space dismisses that menu without changing the submitted prompt's meaning.
  */
 export const queueReadyPrompt = (prompt: string) => /\s$/u.test(prompt) ? prompt : `${prompt} `;
+
+// a request failure or cancellation banner on the active (latest) turn
+export function failedTurnFromCapture(capture: string): boolean {
+  const latestPrompt = capture.lastIndexOf('\n› ');
+  const latestTurn = latestPrompt < 0 ? capture : capture.slice(latestPrompt + 1);
+  return /^■ (?:Request failed|Cancelled)\b/mu.test(latestTurn);
+}
 const answerCaptureGraceMs = 10_000;
 const attachmentIgnoreRule = '/node_modules/.remote-agent-console/';
 const updateAdvisorComposerAttempts = 100;
@@ -174,7 +181,7 @@ export class PromptService {
   }
 
   // advance managed prompt completion
-  async observe(agent: Parameters<typeof agentAttentionState>[0]): Promise<void> {
+  async observe(agent: Pick<Agent, 'id' | 'displayLabel' | 'workspace' | 'attention'>): Promise<void> {
     const scope = this.historyScope(agent, agent.id);
     // pause queue dispatch during restart handoffs
     if (this.restartLocks.has(scope)) return;
@@ -430,7 +437,7 @@ export class PromptService {
     // require a completed response
     if (capture === undefined) return 'pending';
     // fail explicit terminal errors without waiting through the grace window
-    if (this.failedTurnFromCapture(capture)) return 'failed';
+    if (failedTurnFromCapture(capture)) return 'failed';
     // wait for the latest completed response
     if (turn === undefined) return 'pending';
     const completion = this.completionSignatureFromCapture(capture);
@@ -448,13 +455,6 @@ export class PromptService {
       if (stored === undefined) return 'pending';
     }
     return 'completed';
-  }
-
-  // recognize explicit failure for the latest prompt turn
-  private failedTurnFromCapture(capture: string): boolean {
-    const latestPrompt = capture.lastIndexOf('\n› ');
-    const latestTurn = latestPrompt < 0 ? capture : capture.slice(latestPrompt + 1);
-    return /^\u25a0 (?:Request failed|Cancelled)\b/mu.test(latestTurn);
   }
 
   // capture the latest completed turn identity

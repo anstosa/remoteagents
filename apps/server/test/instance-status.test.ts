@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Agent } from '../src/domain/models.js';
+import { resolveAttention } from '../src/adapters/attention.js';
 import { instanceAttention, RemoteInstanceStatusPoller, validInstanceStatusRequest } from '../src/instance-status.js';
 
 const secret = 'status-secret-with-at-least-thirty-two-bytes';
@@ -11,6 +12,8 @@ const agent = (title: string, unread = false, overrides: Partial<Agent> = {}) =>
   socketFingerprint: 'socket',
   workspace: '/workspace',
   title,
+  kind: 'codex' as const,
+  attention: resolveAttention({ kind: 'codex', title, hasQuestion: overrides.question !== undefined }),
   unread,
   ...overrides
 });

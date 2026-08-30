@@ -1,8 +1,12 @@
 import { readFile, readdir, readlink } from 'node:fs/promises';
 import type { CodexSessionRef } from '../domain/models.js';
+import { recognizeProcess } from '../adapters/registry.js';
+import type { AgentKind } from '../adapters/types.js';
 const allowed = /^(codex|omx)(?:\.js)?$/i;
 const codex = /^codex(?:\.js)?$/i;
 const node = /^(?:node|nodejs)(?:\.exe)?$/i;
+// srt/bwrap are the sandbox wrappers; an agent found beneath one is `wrapped`.
+const sandboxWrapper = /^(?:bwrap|srt)$/u;
 
 export function isAgentCommand(comm: string, cmdline: string): boolean {
   if (allowed.test(comm)) return true;
@@ -24,10 +28,34 @@ export function isHudWatcherCommand(cmdline: string): boolean {
 export type HostProcess = { pid: number; parentPid: number; startTime: string; comm: string; cmdline: string };
 export interface HostProcessInspector { listProcesses(): Promise<HostProcess[]>; }
 
-export interface ProcessInspector { hasCodexDescendant(pid: number): Promise<boolean>; sessionsForDescendants?(pid: number): Promise<CodexSessionRef[]>; }
+// One recognised agent beneath a pane: its kind, its own pid, and whether a
+// bwrap/srt sandbox wrapper was seen on the way to it (a generic cross-check).
+export type RecognizedAgent = { kind: AgentKind; pid: number; wrapped: boolean };
+
+export interface ProcessInspector { recognizeAgent(pid: number): Promise<RecognizedAgent | undefined>; sessionsForDescendants?(pid: number): Promise<CodexSessionRef[]>; }
 export class ProcInspector implements ProcessInspector {
   private readonly procRoot = process.env.RAC_HOST_PROC ?? '/proc';
-  async hasCodexDescendant(root: number): Promise<boolean> { const pending = [root], seen = new Set<number>(); while (pending.length && seen.size < 256) { const pid = pending.pop()!; if (seen.has(pid)) continue; seen.add(pid); try { const comm = (await readFile(`${this.procRoot}/${pid}/comm`, 'utf8')).trim(); const cmdline = await readFile(`${this.procRoot}/${pid}/cmdline`, 'utf8'); if (isAgentCommand(comm, cmdline)) return true; const children = (await readFile(`${this.procRoot}/${pid}/task/${pid}/children`, 'utf8')).trim().split(/\s+/).filter(Boolean).map(Number); for (const child of children) if (Number.isInteger(child) && child > 0) pending.push(child); } catch { /* exited/unreadable is not an agent */ } } return false; }
+  // walk one pane tree, asking every registered Adapter (registry order) per process
+  async recognizeAgent(root: number): Promise<RecognizedAgent | undefined> {
+    // carry wrapper-ancestry per path, so `wrapped` reflects this agent's own ancestors, not a sibling branch's
+    const pending: Array<{ pid: number; wrappedAbove: boolean }> = [{ pid: root, wrappedAbove: false }];
+    const seen = new Set<number>();
+    while (pending.length && seen.size < 256) {
+      const { pid, wrappedAbove } = pending.pop()!;
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      try {
+        const comm = (await readFile(`${this.procRoot}/${pid}/comm`, 'utf8')).trim();
+        const cmdline = await readFile(`${this.procRoot}/${pid}/cmdline`, 'utf8');
+        const adapter = recognizeProcess({ comm, argv: cmdline.split('\0').filter(Boolean) });
+        if (adapter !== undefined) return { kind: adapter.kind, pid, wrapped: wrappedAbove };
+        const wrappedBelow = wrappedAbove || sandboxWrapper.test(comm);
+        const children = (await readFile(`${this.procRoot}/${pid}/task/${pid}/children`, 'utf8')).trim().split(/\s+/).filter(Boolean).map(Number);
+        for (const child of children) if (Number.isInteger(child) && child > 0) pending.push({ pid: child, wrappedAbove: wrappedBelow });
+      } catch { /* exited/unreadable is not an agent */ }
+    }
+    return undefined;
+  }
 
   // collect exact rollout identities held by one pane tree
   async sessionsForDescendants(root: number): Promise<CodexSessionRef[]> {

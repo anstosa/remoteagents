@@ -32,7 +32,7 @@ test('suppresses an intermediate completion when the next queued prompt starts',
       const queuedPromptCount = dashboardRequests === 2 ? 1 : 0;
       return route.fulfill({
         json: {
-          agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: working ? '⠋ Working' : 'Ready', worktreeLabel: 'Cora', queuedPromptCount }],
+          agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: working ? '⠋ Working' : 'Ready', attention: working ? 'working' : 'finished', worktreeLabel: 'Cora', queuedPromptCount }],
           worktrees: []
         }
       });
@@ -91,7 +91,7 @@ test('notifies when the visible focused agent finishes', async ({ page }) => {
       dashboardRequests += 1;
       return route.fulfill({
         json: {
-          agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: dashboardRequests === 1 ? '⠋ Working' : 'Ready', worktreeLabel: 'Cora' }],
+          agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: dashboardRequests === 1 ? '⠋ Working' : 'Ready', attention: dashboardRequests === 1 ? 'working' : 'finished', worktreeLabel: 'Cora' }],
           worktrees: []
         }
       });
@@ -148,7 +148,7 @@ test('uses a warning chime when an agent asks a question', async ({ page }) => {
     if (url.pathname === '/api/dashboard') {
       dashboardRequests += 1;
       const question = dashboardRequests === 1 ? undefined : { id: 'question-1', text: 'Choose a deployment target?', choices: ['Staging', 'Production'], paneId: '%1' };
-      return route.fulfill({ json: { agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: question === undefined ? '⠋ Working' : 'Action required', worktreeLabel: 'Cora', question }], worktrees: [] } });
+      return route.fulfill({ json: { agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: question === undefined ? '⠋ Working' : 'Action required', attention: question === undefined ? 'working' : 'question', worktreeLabel: 'Cora', question }], worktrees: [] } });
     }
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });

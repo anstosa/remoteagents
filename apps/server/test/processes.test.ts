@@ -27,6 +27,71 @@ describe('isHudWatcherCommand', () => {
   });
 });
 
+describe('ProcInspector recognizeAgent', () => {
+  // build a fake /proc tree: comm, cmdline and children per pid
+  const buildTree = async (root: string, tree: Record<number, { comm: string; argv: string[]; children: number[] }>) => {
+    await Promise.all(Object.entries(tree).map(async ([pid, node]) => {
+      await mkdir(join(root, pid, 'task', pid), { recursive: true });
+      await Promise.all([
+        writeFile(join(root, pid, 'comm'), `${node.comm}\n`),
+        writeFile(join(root, pid, 'cmdline'), `${node.argv.join('\0')}\0`),
+        writeFile(join(root, pid, 'task', pid, 'children'), `${node.children.join(' ')}\n`)
+      ]);
+    }));
+  };
+  const withProcTree = async (tree: Record<number, { comm: string; argv: string[]; children: number[] }>, run: () => Promise<void>) => {
+    const root = await mkdtemp(join(tmpdir(), 'rac-recognize-'));
+    const previous = process.env.RAC_HOST_PROC;
+    process.env.RAC_HOST_PROC = root;
+    try {
+      await buildTree(root, tree);
+      await run();
+    } finally {
+      if (previous === undefined) delete process.env.RAC_HOST_PROC; else process.env.RAC_HOST_PROC = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  };
+
+  it('finds a codex descendant beneath a bwrap wrapper and flags it wrapped', async () => {
+    await withProcTree({
+      200: { comm: 'bash', argv: ['bash'], children: [201] },
+      201: { comm: 'bwrap', argv: ['bwrap', '--', 'codex'], children: [202] },
+      202: { comm: 'codex', argv: ['codex'], children: [] }
+    }, async () => {
+      await expect(new ProcInspector().recognizeAgent(200)).resolves.toEqual({ kind: 'codex', pid: 202, wrapped: true });
+    });
+  });
+
+  it('recognizes an unwrapped codex descendant without the wrapped flag', async () => {
+    await withProcTree({
+      300: { comm: 'bash', argv: ['bash'], children: [301] },
+      301: { comm: 'codex', argv: ['codex'], children: [] }
+    }, async () => {
+      await expect(new ProcInspector().recognizeAgent(300)).resolves.toEqual({ kind: 'codex', pid: 301, wrapped: false });
+    });
+  });
+
+  it('does not flag an agent wrapped when a bwrap sits only in a sibling branch', async () => {
+    await withProcTree({
+      500: { comm: 'bash', argv: ['bash'], children: [501, 503] },
+      501: { comm: 'bwrap', argv: ['bwrap', '--', 'vim'], children: [502] },
+      502: { comm: 'vim', argv: ['vim'], children: [] },
+      503: { comm: 'codex', argv: ['codex'], children: [] }
+    }, async () => {
+      await expect(new ProcInspector().recognizeAgent(500)).resolves.toEqual({ kind: 'codex', pid: 503, wrapped: false });
+    });
+  });
+
+  it('returns undefined when no registered agent runs in the tree', async () => {
+    await withProcTree({
+      400: { comm: 'bash', argv: ['bash'], children: [401] },
+      401: { comm: 'vim', argv: ['vim'], children: [] }
+    }, async () => {
+      await expect(new ProcInspector().recognizeAgent(400)).resolves.toBeUndefined();
+    });
+  });
+});
+
 describe('ProcInspector sessions', () => {
   it('reads exact rollout identities from one pane process tree', async () => {
     const root = await mkdtemp(join(tmpdir(), 'rac-proc-'));

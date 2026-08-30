@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { maxPromptAttachmentBytes, PromptService } from '../src/prompts/service.js';
 import { QueuedPromptService } from '../src/prompts/queue.js';
 import { SavedPromptService } from '../src/saved-prompts/service.js';
-const socket={fingerprint:'socket',path:'/tmp/sock',device:1,inode:1}; const agent={id:'socket:%1',paneId:'%1',sessionId:'socket:$1',socketFingerprint:'socket',workspace:'/tmp',title:''};
+import { stated } from './helpers/agent.js';
+const socket={fingerprint:'socket',path:'/tmp/sock',device:1,inode:1}; const agent=stated({id:'socket:%1',paneId:'%1',sessionId:'socket:$1',socketFingerprint:'socket',workspace:'/tmp',title:''});
 it('allows prompt attachments totaling 25 MiB', () => {
   expect(maxPromptAttachmentBytes).toBe(25 * 1024 * 1024);
 });
@@ -71,7 +72,7 @@ it('isolates update advisor prompts from the configured repository queue', async
   const advisorPrompt = 'Review the pending update with enough additional instructions that the composer may clip the trailing content before submission';
   let advisorStarted = false;
   let captureCount = 0;
-  const discovery = { target: async (id: string) => ({ agent: id === advisorAgent.id ? { ...advisorAgent, title: advisorStarted ? '⠋ Reviewing' : 'Ready' } : normalAgent, socket }) };
+  const discovery = { target: async (id: string) => ({ agent: id === advisorAgent.id ? stated({ ...advisorAgent, title: advisorStarted ? '⠋ Reviewing' : 'Ready' }) : normalAgent, socket }) };
   const tmux = { pastePrompt: async (_socket: unknown, pane: string, _buffer: string, prompt: string) => { pasted.push([pane, prompt]); return true; }, capture: async () => ++captureCount < 3 ? 'Starting Codex' : pasted.length === 0 ? '› ' : `› [Pasted Content ${advisorPrompt.length + 1} chars]`, enter: async (_socket: unknown, pane: string) => { entered.push(pane); advisorStarted = entered.length >= 2; return true; }, queue: async (_socket: unknown, pane: string) => { queued.push(pane); return true; }, interrupt: async () => true };
   const history = { record: async (scope: string, text: string) => ({ id: 'history-advisor', scope, text }) };
   const worktree = { id: 'remoteagents', label: 'Remote Agents', path: '/tmp', identity: '/tmp', available: true, pinned: false };
@@ -175,7 +176,7 @@ it('rejects a completed mutation between dashboard selection and the agent snaps
 it('records the final assistant answer when the busy state is missed', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-prompt-answer-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
-  const mutableAgent = { ...agent, title: 'Ready' };
+  const mutableAgent = stated({ ...agent, title: 'Ready' });
   const completed: Array<[string, string, string]> = [];
   const historyEntry = { id: 'prompt-history-001', text: 'Summarize this', createdAt: '2026-08-07T01:00:00.000Z' };
   const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
@@ -205,7 +206,7 @@ it('records the final assistant answer when the busy state is missed', async () 
 it('records a recovered answer before dispatching queued work after a restart', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-prompt-answer-restart-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
-  const mutableAgent = { ...agent, title: 'Ready' };
+  const mutableAgent = stated({ ...agent, title: 'Ready' });
   const events: string[] = [];
   const historyEntry = { id: 'prompt-history-restart', text: 'Active prompt', createdAt: '2026-08-07T01:00:00.000Z' };
   let capture = ['› Active prompt', '', '• Answer still rendering'].join('\n');
@@ -256,7 +257,7 @@ it('records a recovered answer before dispatching queued work after a restart', 
 it('retries answer recording after the agent first appears finished', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-prompt-answer-race-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
-  const mutableAgent = { ...agent, title: 'Ready' };
+  const mutableAgent = stated({ ...agent, title: 'Ready' });
   const completed: string[] = [];
   const historyEntry = { id: 'prompt-history-race', text: 'Explain the race', createdAt: '2026-08-07T01:00:00.000Z' };
   let capture = ['› Explain the race', '', '• Still rendering'].join('\n');
@@ -296,7 +297,7 @@ it('retries answer recording after the agent first appears finished', async () =
 it('records a completed answer after long output scrolls its prompt out of capture', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-prompt-answer-scrolled-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
-  const mutableAgent = { ...agent, title: 'Ready' };
+  const mutableAgent = stated({ ...agent, title: 'Ready' });
   const completed: string[] = [];
   const historyEntry = { id: 'prompt-history-scrolled', text: 'Run the long task', createdAt: '2026-08-07T01:00:00.000Z' };
   let capture = ['• Previous answer', '─ Worked for 1s', '', '› Run the long task', '', '• Working'].join('\n');
@@ -335,7 +336,7 @@ it('records a completed answer after long output scrolls its prompt out of captu
 
 // recover a restart-lost answer without its scrolled prompt
 it('records the newest unanswered completion after observing restarted work', async () => {
-  const mutableAgent = { ...agent, title: '⠋ Working' };
+  const mutableAgent = stated({ ...agent, title: '⠋ Working' });
   const completed: string[] = [];
   const historyEntry = { id: 'prompt-history-restarted-long', text: 'Run the restarted long task', createdAt: '2026-08-07T01:01:00.000Z' };
   const olderEntry = { id: 'prompt-history-older', text: 'Earlier task', createdAt: '2026-08-07T01:00:00.000Z', answer: 'Earlier answer', answeredAt: '2026-08-07T01:00:02.000Z' };
@@ -362,7 +363,7 @@ it('records the newest unanswered completion after observing restarted work', as
 
 // reject pre-restart output before a pending prompt starts
 it('does not assign a promptless completion to work not observed running', async () => {
-  const mutableAgent = { ...agent, title: 'Ready' };
+  const mutableAgent = stated({ ...agent, title: 'Ready' });
   const recorded: string[] = [];
   const pendingEntry = { id: 'prompt-history-pending', text: 'Pending task', createdAt: '2026-08-07T01:01:00.000Z' };
   const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
@@ -386,7 +387,7 @@ it('does not assign a promptless completion to work not observed running', async
 
 // avoid assigning an answered turn to stale unanswered history
 it('does not duplicate a promptless completion onto an older unanswered entry', async () => {
-  const mutableAgent = { ...agent, title: 'Ready' };
+  const mutableAgent = stated({ ...agent, title: 'Ready' });
   const recorded: string[] = [];
   const newestEntry = { id: 'prompt-history-newest', text: 'Newest task', createdAt: '2026-08-07T01:01:00.000Z', answer: 'Newest answer', answeredAt: '2026-08-07T01:01:02.000Z' };
   const staleEntry = { id: 'prompt-history-stale', text: 'Stale task', createdAt: '2026-08-07T01:00:00.000Z' };
@@ -413,7 +414,7 @@ it('does not duplicate a promptless completion onto an older unanswered entry', 
 it('does not settle completion until the answer is stored in history', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-prompt-answer-storage-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
-  const mutableAgent = { ...agent, title: 'Ready' };
+  const mutableAgent = stated({ ...agent, title: 'Ready' });
   const historyEntry = { id: 'prompt-history-storage', text: 'Persist this', createdAt: '2026-08-07T01:00:00.000Z' };
   let attempts = 0;
   const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
@@ -465,7 +466,7 @@ it('submits Codex shell-mode commands with Enter instead of queueing Tab', async
 it('holds prompts while an agent works and dispatches them in the managed order', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-managed-queue-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
-  const mutableAgent = { ...agent, title: '⠋ Working' };
+  const mutableAgent = stated({ ...agent, title: '⠋ Working' });
   const calls: string[] = [];
   const recorded: string[] = [];
   let capture = ['› Active prompt', '', '• Working'].join('\n');
@@ -508,7 +509,7 @@ it('saves queued prompts instead of dispatching them after active work fails', a
   const directory = await mkdtemp(join(tmpdir(), 'rac-failed-queue-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
   const saved = new SavedPromptService(join(directory, 'saved.json'));
-  const mutableAgent = { ...agent, title: '⠋ Working' };
+  const mutableAgent = stated({ ...agent, title: '⠋ Working' });
   const pasted: string[] = [];
   let capture = ['› Earlier prompt', '', '• Earlier answer', '', '─ Worked for 1s', '', '› Active prompt', '', '• Working'].join('\n');
   const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
@@ -540,7 +541,7 @@ it('saves queued prompts instead of dispatching them after active work fails', a
 it('keeps a failed queue transfer halted until every prompt is saved', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-halted-queue-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
-  const mutableAgent = { ...agent, title: '⠋ Working' };
+  const mutableAgent = stated({ ...agent, title: '⠋ Working' });
   const pasted: string[] = [];
   const transferred: string[] = [];
   let saveSucceeds = false;
@@ -583,7 +584,7 @@ it('marks queued prompts for saving when cancellation succeeds', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-cancelled-queue-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
   const saved = new SavedPromptService(join(directory, 'saved.json'));
-  const mutableAgent = { ...agent, title: '⠋ Working' };
+  const mutableAgent = stated({ ...agent, title: '⠋ Working' });
   const interrupts: string[] = [];
   const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
@@ -609,7 +610,7 @@ it('marks queued prompts for saving when cancellation succeeds', async () => {
 it('keeps a dispatching prompt durable when delivery fails while another prompt is enqueued', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-durable-queue-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
-  const mutableAgent = { ...agent, title: '⠋ Working' };
+  const mutableAgent = stated({ ...agent, title: '⠋ Working' });
   const pasted: string[] = [];
   let capture = ['› Active prompt', '', '• Working'].join('\n');
   let deliveryResult = false;

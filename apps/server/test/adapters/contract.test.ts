@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { adaptersUnderTest } from './registry.js';
-import type { AttentionState, Submission, SubmissionMode, TmuxKey } from './contract.js';
+import { adapters as adaptersUnderTest } from '../../src/adapters/registry.js';
+import type { AttentionState, Submission, SubmissionMode, TmuxKey } from '../../src/adapters/types.js';
 
 const fixturesRoot = fileURLToPath(new URL('../fixtures/', import.meta.url));
 const has = (kind: string, file: string) => existsSync(join(fixturesRoot, kind, file));
