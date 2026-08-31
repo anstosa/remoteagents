@@ -2973,10 +2973,10 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   return { active: activeNote !== undefined, expanded: activeNote !== undefined && expanded, appendToActive, canAppendToActive, canCreate: !loading, control, createWithText: create, pane };
 }
 
-const desktopBrowserQuery = '(min-width: 769px)';
 const browserViewportKey = (worktreeId: string) => `rac.browser-viewport:${worktreeId}`;
 const browserSplitKey = (worktreeId: string) => `rac.browser-split:${worktreeId}`;
 const browserUrlKey = (worktreeId: string) => `rac.browser-url:${worktreeId}`;
+const browserDesktopViewportWidth = 980;
 type ProjectBrowserNavigationRequest = { sequence: number; url: string };
 // normalize project-owned locations
 const normalizeBrowserUrl = (candidate: string, homeUrl: string) => {
@@ -3014,6 +3014,14 @@ const saveBrowserMobile = (worktreeId: string | undefined, mobile: boolean) => {
   try { localStorage.setItem(browserViewportKey(worktreeId), mobile ? 'mobile' : 'desktop'); }
   catch { /* browser storage is optional */ }
 };
+// route one frame load through the project device selector
+const browserDeviceUrl = (target: string, mobile: boolean) => {
+  const destination = new URL(target);
+  const deviceUrl = new URL('/__rac/browser-device', destination.origin);
+  deviceUrl.searchParams.set('mode', mobile ? 'mobile' : 'desktop');
+  deviceUrl.searchParams.set('location', `${destination.pathname}${destination.search}${destination.hash}`);
+  return deviceUrl.href;
+};
 const savedBrowserSplit = (worktreeId?: string) => {
   if (worktreeId === undefined) return false;
   try { return localStorage.getItem(browserSplitKey(worktreeId)) === 'open'; }
@@ -3026,20 +3034,15 @@ const saveBrowserSplit = (worktreeId: string | undefined, open: boolean) => {
 };
 // retain browser state for one worktree
 function useProjectBrowser(homeUrl?: string, worktreeId?: string) {
-  const [open, setOpen] = useState(() => homeUrl !== undefined && window.matchMedia(desktopBrowserQuery).matches && savedBrowserSplit(worktreeId));
+  const [open, setOpen] = useState(() => homeUrl !== undefined && savedBrowserSplit(worktreeId));
   const [currentUrl, setCurrentUrl] = useState(() => homeUrl === undefined ? undefined : savedBrowserUrl(homeUrl, worktreeId));
   const [navigationRequest, setNavigationRequest] = useState<ProjectBrowserNavigationRequest>();
+  // restore split state whenever the project context changes
   useEffect(() => {
-    const desktop = window.matchMedia(desktopBrowserQuery);
-    // enforce desktop-only split behavior
-    const enforceDesktop = () => {
-      // close unavailable browser panes
-      if (!desktop.matches || homeUrl === undefined) setOpen(false);
-      else if (worktreeId !== undefined) setOpen(savedBrowserSplit(worktreeId));
-    };
-    desktop.addEventListener('change', enforceDesktop);
-    enforceDesktop();
-    return () => desktop.removeEventListener('change', enforceDesktop);
+    // close unavailable browser panes
+    if (homeUrl === undefined) { setOpen(false); return; }
+    // restore scoped split preferences
+    if (worktreeId !== undefined) setOpen(savedBrowserSplit(worktreeId));
   }, [homeUrl, worktreeId]);
   useEffect(() => {
     setCurrentUrl(homeUrl === undefined ? undefined : savedBrowserUrl(homeUrl, worktreeId));
@@ -3077,7 +3080,7 @@ function useProjectBrowser(homeUrl?: string, worktreeId?: string) {
     openUrl,
     toggle: () => {
       // ignore unavailable browser panes
-      if (homeUrl === undefined || !window.matchMedia(desktopBrowserQuery).matches) return;
+      if (homeUrl === undefined) return;
       setOpen(value => { const next = !value; saveBrowserSplit(worktreeId, next); return next; });
     },
     close: () => { saveBrowserSplit(worktreeId, false); setOpen(false); }
@@ -3086,6 +3089,7 @@ function useProjectBrowser(homeUrl?: string, worktreeId?: string) {
 
 type ProjectBrowserLocationMessage = { type: 'rac-browser-location'; url: string };
 type ProjectBrowserRefreshMessage = { type: 'rac-browser-refresh' };
+type ProjectBrowserDeviceErrorMessage = { type: 'rac-browser-device-error'; properties: string[] };
 // recognize cooperative frame navigation reports
 const isProjectBrowserLocationMessage = (value: unknown): value is ProjectBrowserLocationMessage => value !== null && typeof value === 'object'
   && (value as ProjectBrowserLocationMessage).type === 'rac-browser-location'
@@ -3093,15 +3097,22 @@ const isProjectBrowserLocationMessage = (value: unknown): value is ProjectBrowse
 // recognize cooperative frame refresh requests
 const isProjectBrowserRefreshMessage = (value: unknown): value is ProjectBrowserRefreshMessage => value !== null && typeof value === 'object'
   && (value as ProjectBrowserRefreshMessage).type === 'rac-browser-refresh';
+// recognize failed browser identity overrides
+const isProjectBrowserDeviceErrorMessage = (value: unknown): value is ProjectBrowserDeviceErrorMessage => value !== null && typeof value === 'object'
+  && (value as ProjectBrowserDeviceErrorMessage).type === 'rac-browser-device-error'
+  && Array.isArray((value as ProjectBrowserDeviceErrorMessage).properties)
+  && (value as ProjectBrowserDeviceErrorMessage).properties.every(property => typeof property === 'string');
 // render project navigation controls and content
 function ProjectBrowserPane({ url, homeUrl, worktreeId, navigationRequest, onNavigate, onClose }: { url: string; homeUrl: string; worktreeId?: string; navigationRequest?: ProjectBrowserNavigationRequest; onNavigate: (url: string) => boolean; onClose: () => void }) {
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(false);
   const [mobile, setMobile] = useState(() => savedBrowserMobile(worktreeId));
+  const [deviceError, setDeviceError] = useState<string>();
   const [address, setAddress] = useState(url);
-  const [frameSource, setFrameSource] = useState(url);
+  const [frameSource, setFrameSource] = useState(() => browserDeviceUrl(url, mobile));
   const [frameAwayFromKnownUrl, setFrameAwayFromKnownUrl] = useState(false);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const frameShellRef = useRef<HTMLDivElement | null>(null);
   const loadedFrameSource = useRef(url);
   const expectedFrameLoad = useRef(true);
   const appliedNavigationSequence = useRef(navigationRequest?.sequence);
@@ -3109,12 +3120,35 @@ function ProjectBrowserPane({ url, homeUrl, worktreeId, navigationRequest, onNav
   const normalizedUrl = normalizeBrowserUrl(url, homeUrl) ?? normalizedHomeUrl;
   const atHome = normalizedUrl === normalizedHomeUrl && !frameAwayFromKnownUrl;
   useEffect(() => setAddress(url), [url]);
-  // navigate without replacing the frame
-  const loadFrame = useCallback((target: string) => {
-    loadedFrameSource.current = target;
-    setFrameSource(target);
-    frameRef.current?.setAttribute('src', target);
+  // scale one desktop layout viewport into the visible phone frame
+  useEffect(() => {
+    const shell = frameShellRef.current;
+    // skip an unavailable frame shell
+    if (shell === null) return;
+    // publish dimensions used by phone-only desktop emulation
+    const measure = () => {
+      const width = shell.clientWidth;
+      const height = shell.clientHeight;
+      // wait for a measurable frame
+      if (width <= 0 || height <= 0) return;
+      const scale = Math.min(width / browserDesktopViewportWidth, 1);
+      shell.style.setProperty('--browser-desktop-width', `${browserDesktopViewportWidth}px`);
+      shell.style.setProperty('--browser-desktop-scale', String(scale));
+      shell.style.setProperty('--browser-desktop-height', `${height / scale}px`);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(shell);
+    measure();
+    return () => observer.disconnect();
   }, []);
+  // navigate without replacing the frame
+  const loadFrame = useCallback((target: string, device = mobile) => {
+    loadedFrameSource.current = target;
+    const source = browserDeviceUrl(target, device);
+    setDeviceError(undefined);
+    setFrameSource(source);
+    frameRef.current?.setAttribute('src', source);
+  }, [mobile]);
   // refresh the retained location
   const refreshFrame = useCallback(() => {
     expectedFrameLoad.current = true;
@@ -3142,6 +3176,8 @@ function ProjectBrowserPane({ url, homeUrl, worktreeId, navigationRequest, onNav
       if (event.source !== frameRef.current?.contentWindow || event.origin !== new URL(homeUrl).origin) return;
       // reload only the embedded browser
       if (isProjectBrowserRefreshMessage(event.data)) { refreshFrame(); return; }
+      // surface failed identity emulation
+      if (isProjectBrowserDeviceErrorMessage(event.data)) { setDeviceError(`Unable to apply device mode: ${event.data.properties.join(', ')}`); return; }
       // ignore unrelated project messages
       if (!isProjectBrowserLocationMessage(event.data)) return;
       // mark cooperative navigation
@@ -3222,8 +3258,17 @@ function ProjectBrowserPane({ url, homeUrl, worktreeId, navigationRequest, onNav
     if (expanded) setExpanded(false);
     else onClose();
   };
-  const toggleMobile = () => setMobile(value => { const next = !value; saveBrowserMobile(worktreeId, next); return next; });
-  return <section className={`browser-pane ${mobile ? 'mobile' : 'desktop'}${expanded ? ' expanded' : ''}`} role="dialog" aria-label="Browser" onKeyDown={handleEscape}><header className="browser-toolbar" role="toolbar" aria-label="Browser actions"><strong>Browser</strong><form className="browser-address-form" onSubmit={submitAddress}><input type="text" inputMode="url" aria-label="Browser address" value={address} spellCheck={false} onChange={changeAddress} onBlur={navigate} /></form><button className="browser-home" type="button" aria-label="Go to project home" title="Home" disabled={atHome} onClick={goHome}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 9-8 9 8M5 10v11h14V10M9 21v-7h6v7" /></svg></button><button className="browser-device-toggle" type="button" aria-label={mobile ? 'Use desktop viewport' : 'Use mobile viewport'} aria-pressed={mobile} title={mobile ? 'Desktop viewport' : 'Mobile viewport'} onClick={toggleMobile}><svg viewBox="0 0 24 24" aria-hidden="true">{mobile ? <><rect x="3" y="5" width="18" height="13" rx="1" /><path d="M8 21h8M12 18v3" /></> : <><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M10 5h4M11 19h2" /></>}</svg></button><button className={`browser-refresh${loading ? ' loading' : ''}`} type="button" aria-label={loading ? 'Stop loading browser' : 'Refresh browser'} aria-busy={loading} title={loading ? 'Stop' : 'Refresh'} onClick={toggleFrameLoad}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={loading ? 'm6 6 12 12M18 6 6 18' : 'M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6'} /></svg></button><button className="browser-expand" type="button" aria-label={expanded ? 'Exit browser fullscreen' : 'Enter browser fullscreen'} aria-pressed={expanded} title={expanded ? 'Exit fullscreen' : 'Fullscreen'} onClick={() => setExpanded(value => !value)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="browser-close" type="button" aria-label="Close browser" title="Close" onClick={onClose}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header><div className={`browser-frame-shell ${mobile ? 'mobile' : 'desktop'}`}><iframe ref={frameRef} src={frameSource} title="Project browser" referrerPolicy="no-referrer" onLoad={syncFrameLocation} /></div></section>;
+  // apply both viewport and browser identity
+  const toggleDevice = () => {
+    const nextMobile = !mobile;
+    saveBrowserMobile(worktreeId, nextMobile);
+    setMobile(nextMobile);
+    expectedFrameLoad.current = true;
+    setLoading(true);
+    setFrameAwayFromKnownUrl(false);
+    loadFrame(loadedFrameSource.current, nextMobile);
+  };
+  return <section className={`browser-pane ${mobile ? 'mobile' : 'desktop'}${expanded ? ' expanded' : ''}`} role="dialog" aria-label="Browser" onKeyDown={handleEscape}><header className="browser-toolbar" role="toolbar" aria-label="Browser actions"><strong>Browser</strong>{deviceError && <span className="browser-device-error" role="alert" title={deviceError}>Mode failed</span>}<form className="browser-address-form" onSubmit={submitAddress}><input type="text" inputMode="url" aria-label="Browser address" value={address} spellCheck={false} onChange={changeAddress} onBlur={navigate} /></form><button className="browser-home" type="button" aria-label="Go to project home" title="Home" disabled={atHome} onClick={goHome}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 9-8 9 8M5 10v11h14V10M9 21v-7h6v7" /></svg></button><button className="browser-device-toggle" type="button" aria-label={mobile ? 'Use desktop viewport and user agent' : 'Use mobile viewport and user agent'} aria-pressed={mobile} title={mobile ? 'Desktop viewport and user agent' : 'Mobile viewport and user agent'} onClick={toggleDevice}><svg data-device={mobile ? 'mobile' : 'desktop'} viewBox="0 0 24 24" aria-hidden="true">{mobile ? <><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M10 5h4M11 19h2" /></> : <><rect x="3" y="5" width="18" height="13" rx="1" /><path d="M8 21h8M12 18v3" /></>}</svg></button><button className={`browser-refresh${loading ? ' loading' : ''}`} type="button" aria-label={loading ? 'Stop loading browser' : 'Refresh browser'} aria-busy={loading} title={loading ? 'Stop' : 'Refresh'} onClick={toggleFrameLoad}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={loading ? 'm6 6 12 12M18 6 6 18' : 'M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6'} /></svg></button><button className="browser-expand" type="button" aria-label={expanded ? 'Exit browser fullscreen' : 'Enter browser fullscreen'} aria-pressed={expanded} title={expanded ? 'Exit fullscreen' : 'Fullscreen'} onClick={() => setExpanded(value => !value)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="browser-close" type="button" aria-label="Close browser" title="Close" onClick={onClose}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header><div ref={frameShellRef} className={`browser-frame-shell ${mobile ? 'mobile' : 'desktop'}`}><iframe ref={frameRef} src={frameSource} title="Project browser" referrerPolicy="no-referrer" onLoad={syncFrameLocation} /></div></section>;
 }
 
 type SplitPanel = 'agent'|'note'|'browser';
@@ -3241,7 +3286,10 @@ function ResizableLogSplit({ output, note, browser }: { output: ReactNode; note?
   const hasBrowser = browser !== undefined && browser !== null;
   const signature = `${hasNote ? 'note' : ''}:${hasBrowser ? 'browser' : ''}`;
   const [sizes, setSizes] = useState<SplitSizes>({ agent: 1, note: 1, browser: 1 });
+  const [mobilePanel, setMobilePanel] = useState<'agent'|'browser'>(() => hasBrowser ? 'browser' : 'agent');
   useEffect(() => setSizes({ agent: 1, note: 1, browser: 1 }), [signature]);
+  // show a newly opened browser immediately on mobile
+  useEffect(() => setMobilePanel(hasBrowser ? 'browser' : 'agent'), [hasBrowser]);
   // collect current panel widths
   const measuredSizes = () => {
     const container = containerRef.current;
@@ -3297,10 +3345,14 @@ function ResizableLogSplit({ output, note, browser }: { output: ReactNode; note?
     setSizes({ ...measured, [left]: leftWidth, [right]: combined - leftWidth });
     event.preventDefault();
   };
+  // switch the retained mobile split panel
+  const toggleMobilePanel = () => setMobilePanel(current => current === 'browser' ? 'agent' : 'browser');
   const style: SplitStyle = { '--agent-split': `${sizes.agent}fr`, '--note-split': `${sizes.note}fr`, '--browser-split': `${sizes.browser}fr` };
   const noteDivider = hasNote ? <div className="split-resizer note-resizer" role="separator" aria-label="Resize agent and note panels" aria-orientation="vertical" tabIndex={0} data-left="agent" data-right="note" onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={stopResize} onPointerCancel={stopResize} onKeyDown={keyboardResize} /> : null;
   const browserDivider = hasBrowser ? <div className="split-resizer browser-resizer" role="separator" aria-label={`Resize ${hasNote ? 'note' : 'agent'} and browser panels`} aria-orientation="vertical" tabIndex={0} data-left={hasNote ? 'note' : 'agent'} data-right="browser" onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={stopResize} onPointerCancel={stopResize} onKeyDown={keyboardResize} /> : null;
-  return <div ref={containerRef} className={`log-split${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}`} style={style}>{output}{noteDivider}{note}{browserDivider}{browser}</div>;
+  // expose the hidden mobile split peer
+  const mobileSwitch = hasBrowser ? <button className="mobile-split-switch" type="button" aria-label={mobilePanel === 'browser' ? 'Show agent output' : 'Show project browser'} title={mobilePanel === 'browser' ? 'Agent output' : 'Project browser'} onClick={toggleMobilePanel}><svg viewBox="0 0 24 24" aria-hidden="true">{mobilePanel === 'browser' ? <><rect x="3" y="4" width="18" height="16" rx="1" /><path d="m7 9 3 3-3 3M12 15h5" /></> : <><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" /></>}</svg></button> : null;
+  return <div ref={containerRef} className={`log-split${hasNote ? ' has-note' : ''}${hasBrowser ? ` has-browser mobile-${mobilePanel}-view` : ''}`} style={style}>{output}{noteDivider}{note}{browserDivider}{browser}{mobileSwitch}</div>;
 }
 
 // format one git stat number

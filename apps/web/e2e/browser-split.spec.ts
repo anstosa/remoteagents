@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test';
 
 // verify retained browser navigation
-test('opens the configured project in a desktop browser split pane', async ({ page }) => {
+test('opens the configured project in desktop and mobile split views', async ({ page }) => {
   test.setTimeout(75_000);
   let previewLoads = 0;
+  const requestedDevices: string[] = [];
   let holdNextPreviewLoad = false;
   let releasePreviewLoad: (() => void) | undefined;
   await page.setViewportSize({ width: 1600, height: 900 });
@@ -34,19 +35,28 @@ test('opens the configured project in a desktop browser split pane', async ({ pa
   });
   // serve reported and unreported project navigation
   await page.route('https://project.example.com/**', async route => {
+    let projectUrl = new URL(route.request().url());
+    let deviceTransition = '';
+    // emulate the project proxy device redirect
+    if (projectUrl.pathname === '/__rac/browser-device') {
+      const mode = projectUrl.searchParams.get('mode');
+      const location = projectUrl.searchParams.get('location');
+      requestedDevices.push(mode ?? 'missing');
+      projectUrl = new URL(location ?? '/', projectUrl.origin);
+      deviceTransition = `<script>history.replaceState({}, '', ${JSON.stringify(`${projectUrl.pathname}${projectUrl.search}${projectUrl.hash}`)})</script>`;
+    }
     previewLoads += 1;
     // hold one reload for stop coverage
     if (holdNextPreviewLoad) {
       holdNextPreviewLoad = false;
       await new Promise<void>(resolve => { releasePreviewLoad = resolve; });
     }
-    const projectUrl = new URL(route.request().url());
     const location = `${projectUrl.pathname}${projectUrl.search}`;
     const links = projectUrl.pathname === '/' ? '<a href="/details?view=files#changed">View details</a><a href="/unreported">Open unreported page</a><a href="/spa">Open SPA page</a>' : '';
     const locationReport = projectUrl.pathname === '/unreported' ? '' : '<script>parent.postMessage({ type: \'rac-browser-location\', url: location.href }, \'*\')</script>';
     const keyboardBridge = '<script>window.addEventListener(\'keydown\', event => { /* reload only the embedded browser */ if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === \'r\') { event.preventDefault(); parent.postMessage({ type: \'rac-browser-refresh\' }, \'*\'); } });</script>';
     const spaNavigation = projectUrl.pathname === '/' ? `<script>document.querySelector('a[href="/spa"]').addEventListener('click', event => { event.preventDefault(); history.pushState({}, '', '/spa'); document.querySelector('main').dataset.location = '/spa'; parent.postMessage({ type: 'rac-browser-location', url: location.href }, '*'); });</script>` : '';
-    await route.fulfill({ contentType: 'text/html', body: `<main data-location="${location}">Project preview ${previewLoads}</main>${links}${locationReport}${keyboardBridge}${spaNavigation}` }).catch(() => undefined);
+    await route.fulfill({ contentType: 'text/html', body: `${deviceTransition}<main data-location="${location}">Project preview ${previewLoads}</main>${links}${locationReport}${keyboardBridge}${spaNavigation}` }).catch(() => undefined);
   });
   await page.route('**/api/**', async route => {
     const request = route.request();
@@ -79,6 +89,13 @@ test('opens the configured project in a desktop browser split pane', async ({ pa
   const browser = page.getByRole('dialog', { name: 'Browser' });
   await expect(browser).toBeVisible();
   await expect(browser.getByRole('toolbar', { name: 'Browser actions' })).toContainText('Browser');
+  const deviceToggle = browser.locator('.browser-device-toggle');
+  await expect(deviceToggle).toHaveCount(1);
+  await expect(deviceToggle).toHaveAttribute('aria-label', 'Use mobile viewport and user agent');
+  await expect(deviceToggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(deviceToggle.locator('svg')).toHaveCount(1);
+  await expect(deviceToggle.locator('svg')).toHaveAttribute('data-device', 'desktop');
+  expect(requestedDevices.at(-1)).toBe('desktop');
   const preview = page.frameLocator('iframe[title="Project browser"]');
   await expect(preview.locator('main')).toHaveAttribute('data-location', '/');
   await expect(browser.getByRole('button', { name: 'Go to project home' })).toBeDisabled();
@@ -174,8 +191,13 @@ test('opens the configured project in a desktop browser split pane', async ({ pa
   await expect(browser.getByRole('button', { name: 'Go to project home' })).toBeEnabled();
   expect(previewLoads).toBe(loadsBeforeSpaNavigation);
 
-  await browser.getByRole('button', { name: 'Use mobile viewport' }).click();
+  await deviceToggle.click();
   await expect(browser.locator('.browser-frame-shell')).toHaveClass(/mobile/u);
+  await expect(deviceToggle).toHaveAttribute('aria-label', 'Use desktop viewport and user agent');
+  await expect(deviceToggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(deviceToggle.locator('svg')).toHaveAttribute('data-device', 'mobile');
+  await expect(browser.locator('.browser-toolbar strong')).toBeVisible();
+  expect(requestedDevices.at(-1)).toBe('mobile');
   await expect(browser.getByRole('button', { name: 'Go to project home' })).toBeVisible();
   await expect(browserDivider).toBeHidden();
   await expect(noteDivider).toBeVisible();
@@ -185,13 +207,24 @@ test('opens the configured project in a desktop browser split pane', async ({ pa
     browser.evaluate(element => element.getBoundingClientRect().width),
     page.locator('.log-output').evaluate(element => element.getBoundingClientRect().width),
     browser.locator('.browser-address-form').boundingBox(),
-    browser.getByRole('button', { name: 'Use desktop viewport' }).boundingBox()
+    deviceToggle.boundingBox()
   ]);
   expect(frameWidth).toBeLessThanOrEqual(391);
   expect(Math.abs(frameWidth - shellWidth)).toBeLessThanOrEqual(2);
   expect(paneWidth).toBeLessThanOrEqual(391);
   expect(outputWidth).toBeGreaterThan(paneWidth);
-  expect(addressBounds!.y).toBeGreaterThan(deviceBounds!.y + deviceBounds!.height);
+  expect(Math.abs(addressBounds!.y - deviceBounds!.y)).toBeLessThanOrEqual(2);
+
+  await deviceToggle.click();
+  await expect(browser.locator('.browser-frame-shell')).toHaveClass(/desktop/u);
+  await expect(browser.locator('.browser-toolbar strong')).toBeVisible();
+  await expect(deviceToggle).toHaveAttribute('aria-label', 'Use mobile viewport and user agent');
+  await expect(deviceToggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(deviceToggle.locator('svg')).toHaveAttribute('data-device', 'desktop');
+  expect(requestedDevices.at(-1)).toBe('desktop');
+  await deviceToggle.click();
+  await expect(browser.locator('.browser-frame-shell')).toHaveClass(/mobile/u);
+  expect(requestedDevices.at(-1)).toBe('mobile');
 
   await browser.getByRole('button', { name: 'Close browser' }).click();
   await expect(note).toBeVisible();
@@ -262,7 +295,112 @@ test('opens the configured project in a desktop browser split pane', async ({ pa
   await expect(browser).toHaveCount(0);
   await expect(page.locator('.log-output')).toBeVisible();
   await expect(note).toBeVisible();
+});
 
-  await page.setViewportSize({ width: 428, height: 900 });
-  await expect(split).toBeHidden();
+test.describe('phone browser split', () => {
+  test.use({
+    hasTouch: true,
+    isMobile: true,
+    userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36',
+    viewport: { width: 428, height: 900 }
+  });
+
+  // verify phone-only rendering in a mobile browser context
+  test('uses full-width mobile and scaled desktop device modes', async ({ page }) => {
+    test.setTimeout(45_000);
+    const requestedDevices: string[] = [];
+    await page.addInitScript(() => {
+      class MockWebSocket {
+        static readonly CONNECTING = 0;
+        static readonly OPEN = 1;
+        static readonly CLOSED = 3;
+        readyState = MockWebSocket.CONNECTING;
+        onopen: ((event: Event) => void) | null = null;
+        onclose: ((event: CloseEvent) => void) | null = null;
+        onerror: ((event: Event) => void) | null = null;
+        onmessage: ((event: MessageEvent) => void) | null = null;
+        constructor() { window.setTimeout(() => { this.readyState = MockWebSocket.OPEN; this.onopen?.(new Event('open')); }); }
+        // ignore unused phone socket messages
+        send() { /* no output required */ }
+        // close the simulated socket
+        close() { this.readyState = MockWebSocket.CLOSED; this.onclose?.(new CloseEvent('close')); }
+      }
+      Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
+    });
+    await page.route('https://project.example.com/**', async route => {
+      let projectUrl = new URL(route.request().url());
+      // emulate the project proxy redirect
+      if (projectUrl.pathname === '/__rac/browser-device') {
+        requestedDevices.push(projectUrl.searchParams.get('mode') ?? 'missing');
+        projectUrl = new URL(projectUrl.searchParams.get('location') ?? '/', projectUrl.origin);
+      }
+      const location = `${projectUrl.pathname}${projectUrl.search}${projectUrl.hash}`;
+      await route.fulfill({ contentType: 'text/html', body: `<meta name="viewport" content="width=device-width, initial-scale=1"><main data-location="${location}">Phone preview</main>` });
+    });
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname;
+      // serve the active phone session
+      if (path === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+      // serve one project-enabled agent
+      if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready', projectUrl: 'https://project.example.com', stack: { running: true, tunnel: true } }], worktrees: [] } });
+      // serve the required log ticket
+      if (path === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+      // serve empty agent collections
+      if (path === '/api/agents/agent-1/saved-prompts' || path === '/api/agents/agent-1/prompt-history' || path === '/api/agents/agent-1/queued-prompts') return route.fulfill({ json: { prompts: [] } });
+      // serve an unavailable push key
+      if (path === '/api/push/public-key') return route.fulfill({ json: {} });
+      return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+    });
+
+    await page.goto('/');
+    expect(await page.evaluate(() => navigator.userAgent)).toContain('Mobile');
+    expect(await page.evaluate(() => navigator.maxTouchPoints)).toBeGreaterThan(0);
+    await page.getByRole('button', { name: 'Open project in split view' }).click();
+
+    const browser = page.getByRole('dialog', { name: 'Browser' });
+    const deviceToggle = browser.locator('.browser-device-toggle');
+    const preview = page.frameLocator('iframe[title="Project browser"]');
+    await expect(browser).toBeVisible();
+    await expect(browser.locator('.browser-toolbar strong')).toBeHidden();
+    await expect(deviceToggle.locator('svg')).toHaveCount(1);
+    await expect(deviceToggle.locator('svg')).toHaveAttribute('data-device', 'desktop');
+    expect(requestedDevices.at(-1)).toBe('desktop');
+    expect(await preview.locator('main').evaluate(() => window.innerWidth)).toBe(980);
+
+    await deviceToggle.click();
+    await expect(deviceToggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(deviceToggle.locator('svg')).toHaveAttribute('data-device', 'mobile');
+    expect(requestedDevices.at(-1)).toBe('mobile');
+    const [frameWidth, shellWidth, layoutWidth] = await Promise.all([
+      browser.locator('iframe').evaluate(element => element.getBoundingClientRect().width),
+      browser.locator('.browser-frame-shell').evaluate(element => element.getBoundingClientRect().width),
+      preview.locator('main').evaluate(() => window.innerWidth)
+    ]);
+    expect(Math.abs(frameWidth - shellWidth)).toBeLessThanOrEqual(2);
+    expect(layoutWidth).toBeLessThanOrEqual(428);
+
+    await deviceToggle.click();
+    await expect(deviceToggle).toHaveAttribute('aria-pressed', 'false');
+    await expect(deviceToggle.locator('svg')).toHaveAttribute('data-device', 'desktop');
+    expect(requestedDevices.at(-1)).toBe('desktop');
+    expect(await preview.locator('main').evaluate(() => window.innerWidth)).toBe(980);
+
+    const mobileSwitch = page.getByRole('button', { name: 'Show agent output' });
+    await expect(mobileSwitch).toBeVisible();
+    await mobileSwitch.click();
+    const browserSwitch = page.getByRole('button', { name: 'Show project browser' });
+    await expect(page.locator('.log-output')).toBeVisible();
+    await expect(browser).toBeHidden();
+    await expect(browserSwitch).toBeVisible();
+    const [browserSwitchBottom, mobileOutputBottom] = await Promise.all([
+      browserSwitch.evaluate(element => element.getBoundingClientRect().bottom),
+      page.locator('.log-output').evaluate(element => element.getBoundingClientRect().bottom)
+    ]);
+    expect(browserSwitchBottom).toBeLessThan(mobileOutputBottom);
+    expect(mobileOutputBottom - browserSwitchBottom).toBeLessThan(10);
+
+    await browserSwitch.click();
+    await expect(browser).toBeVisible();
+    await expect(page.locator('.log-output')).toBeHidden();
+  });
 });

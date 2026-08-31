@@ -4,10 +4,85 @@ import type { Duplex } from 'node:stream';
 import type { Worktree } from './domain/models.js';
 
 const browserBridgePath = '/__rac/browser-bridge.js';
+const browserDevicePath = '/__rac/browser-device';
+const browserDeviceCookie = '__rac_browser_device';
+type BrowserDevice = 'desktop' | 'mobile';
+type BrowserDeviceProfile = { appVersion: string; architecture: string; bitness: string; formFactors: string[]; mobile: boolean; model: string; navigatorPlatform: string; platform: string; platformVersion: string; userAgent: string; wow64: boolean };
+// build one browser identity from the requesting engine version
+const browserDeviceProfile = (device: BrowserDevice, currentUserAgent = ''): BrowserDeviceProfile => {
+  const chromiumVersion = /(?:Chrome|CriOS)\/([\d.]+)/u.exec(currentUserAgent)?.[1] ?? '120.0.0.0';
+  // identify the narrow touch profile
+  if (device === 'mobile') {
+    const userAgent = `Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromiumVersion} Mobile Safari/537.36`;
+    return { appVersion: userAgent.replace(/^Mozilla\//u, ''), architecture: 'arm', bitness: '64', formFactors: ['Mobile'], mobile: true, model: '', navigatorPlatform: 'Linux armv8l', platform: 'Android', platformVersion: '10.0.0', userAgent, wow64: false };
+  }
+  const userAgent = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromiumVersion} Safari/537.36`;
+  return { appVersion: userAgent.replace(/^Mozilla\//u, ''), architecture: 'x86', bitness: '64', formFactors: ['Desktop'], mobile: false, model: '', navigatorPlatform: 'Linux x86_64', platform: 'Linux', platformVersion: '6.0.0', userAgent, wow64: false };
+};
+// read the private device cookie
+const requestBrowserDevice = (headers: IncomingHttpHeaders): BrowserDevice | undefined => {
+  const cookie = Array.isArray(headers.cookie) ? headers.cookie.join(';') : headers.cookie;
+  // skip requests without cookies
+  if (cookie === undefined) return undefined;
+  const encoded = cookie.split(';').map(value => value.trim()).find(value => value.startsWith(`${browserDeviceCookie}=`))?.slice(browserDeviceCookie.length + 1);
+  return encoded === 'desktop' || encoded === 'mobile' ? encoded : undefined;
+};
+// remove the proxy-owned device cookie
+const upstreamCookie = (cookie: string | string[] | undefined) => {
+  // skip missing cookie headers
+  if (cookie === undefined) return undefined;
+  const values = (Array.isArray(cookie) ? cookie.join(';') : cookie).split(';').map(value => value.trim()).filter(value => value !== '' && !value.startsWith(`${browserDeviceCookie}=`));
+  return values.length === 0 ? undefined : values.join('; ');
+};
 // build a bridge restricted to the console origin
-const browserBridge = (parentOrigin: string) => `(() => {
+const browserBridge = (parentOrigin: string, profile?: BrowserDeviceProfile) => `(() => {
+  ${profile === undefined ? '' : `// expose the selected browser identity before application scripts run
+  const profile = ${JSON.stringify(profile)};
+  const identityFailures = [];
+  // apply one navigator property override
+  const override = (name, value) => {
+    try { Object.defineProperty(window.navigator, name, { configurable: true, get: () => value }); }
+    catch { identityFailures.push(name); }
+  };
+  override('userAgent', profile.userAgent);
+  override('appVersion', profile.appVersion);
+  override('platform', profile.navigatorPlatform);
+  const originalUserAgentData = window.navigator.userAgentData;
+  // preserve browser brands while normalizing device hints
+  if (originalUserAgentData) {
+    const highEntropyProfile = { architecture: profile.architecture, bitness: profile.bitness, formFactors: profile.formFactors, model: profile.model, platformVersion: profile.platformVersion, wow64: profile.wow64 };
+    const userAgentData = new Proxy(originalUserAgentData, {
+      // return one coherent client-hint surface
+      get(target, name) {
+        // normalize the mobile hint
+        if (name === 'mobile') return profile.mobile;
+        // normalize the platform hint
+        if (name === 'platform') return profile.platform;
+        // serialize normalized low-entropy hints
+        if (name === 'toJSON') return () => ({ brands: target.brands, mobile: profile.mobile, platform: profile.platform });
+        // normalize requested high-entropy hints
+        if (name === 'getHighEntropyValues') return async hints => {
+          const values = typeof target.getHighEntropyValues === 'function' ? await target.getHighEntropyValues(hints) : {};
+          // replace every requested device hint
+          for (const hint of hints) {
+            // replace supported device hints
+            if (Object.prototype.hasOwnProperty.call(highEntropyProfile, hint)) values[hint] = highEntropyProfile[hint];
+          }
+          return { ...values, brands: target.brands, mobile: profile.mobile, platform: profile.platform };
+        };
+        const value = Reflect.get(target, name, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+    });
+    override('userAgentData', userAgentData);
+  }
+  `}
   // report the visible location
-  const report = () => window.parent.postMessage({ type: 'rac-browser-location', url: window.location.href }, ${JSON.stringify(parentOrigin)});
+  const report = () => {
+    window.parent.postMessage({ type: 'rac-browser-location', url: window.location.href }, ${JSON.stringify(parentOrigin)});
+    // surface unsupported identity overrides
+    if (typeof identityFailures !== 'undefined' && identityFailures.length > 0) window.parent.postMessage({ type: 'rac-browser-device-error', properties: identityFailures }, ${JSON.stringify(parentOrigin)});
+  };
   // forward embedded reload shortcuts
   const refresh = (event) => {
     // intercept only one browser reload chord
@@ -34,6 +109,7 @@ const browserBridge = (parentOrigin: string) => `(() => {
 })();`;
 const browserBridgeTag = `<script src="${browserBridgePath}"></script>`;
 const hopByHopHeaders = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
+const browserIdentityHeaders = new Set(['sec-ch-ua-arch', 'sec-ch-ua-bitness', 'sec-ch-ua-form-factors', 'sec-ch-ua-mobile', 'sec-ch-ua-model', 'sec-ch-ua-platform', 'sec-ch-ua-platform-version', 'sec-ch-ua-wow64']);
 const maxHtmlBytes = 2 * 1024 * 1024;
 const maxRequestBytes = 16 * 1024 * 1024;
 const upstreamTimeoutMs = 30_000;
@@ -55,15 +131,56 @@ const requestHostname = (host: string | undefined) => {
 // omit transport-owned request headers
 const upstreamHeaders = (headers: IncomingHttpHeaders, target: ProjectTarget) => {
   const forwarded: IncomingHttpHeaders = {};
+  const device = requestBrowserDevice(headers);
   // retain end-to-end headers
   for (const [name, value] of Object.entries(headers)) {
     // skip connection-specific headers
-    if (hopByHopHeaders.has(name) || name === 'host' || name === 'accept-encoding') continue;
+    if (hopByHopHeaders.has(name) || name === 'host' || name === 'accept-encoding' || name === 'cookie' || device !== undefined && browserIdentityHeaders.has(name)) continue;
     forwarded[name] = value;
+  }
+  const cookie = upstreamCookie(headers.cookie);
+  // retain only project-owned cookies
+  if (cookie !== undefined) forwarded.cookie = cookie;
+  // override browser identity for an explicit preview mode
+  if (device !== undefined) {
+    const profile = browserDeviceProfile(device, typeof headers['user-agent'] === 'string' ? headers['user-agent'] : '');
+    forwarded['user-agent'] = profile.userAgent;
+    forwarded['sec-ch-ua-mobile'] = profile.mobile ? '?1' : '?0';
+    forwarded['sec-ch-ua-platform'] = `"${profile.platform}"`;
+    const highEntropyHeaders: Array<[string, string]> = [
+      ['sec-ch-ua-arch', `"${profile.architecture}"`],
+      ['sec-ch-ua-bitness', `"${profile.bitness}"`],
+      ['sec-ch-ua-form-factors', profile.formFactors.map(value => `"${value}"`).join(', ')],
+      ['sec-ch-ua-model', `"${profile.model}"`],
+      ['sec-ch-ua-platform-version', `"${profile.platformVersion}"`],
+      ['sec-ch-ua-wow64', profile.wow64 ? '?1' : '?0']
+    ];
+    // normalize only client-requested high-entropy hints
+    for (const [name, value] of highEntropyHeaders) {
+      // retain the browser's hint disclosure boundary
+      if (headers[name] !== undefined) forwarded[name] = value;
+    }
   }
   forwarded.host = `localhost:${target.port}`;
   forwarded['accept-encoding'] = 'identity';
   return forwarded;
+};
+
+// validate one same-origin device redirect
+const browserDeviceRedirect = (requestUrl: string | undefined) => {
+  // reject missing or malformed endpoint requests
+  if (requestUrl === undefined) return undefined;
+  try {
+    const request = new URL(requestUrl, 'http://project.invalid');
+    const device = request.searchParams.get('mode');
+    const location = request.searchParams.get('location');
+    // require a known mode and root-relative destination
+    if ((device !== 'desktop' && device !== 'mobile') || location === null || !location.startsWith('/') || location.startsWith('//')) return undefined;
+    const destination = new URL(location, request.origin);
+    // retain only same-origin paths
+    if (destination.origin !== request.origin) return undefined;
+    return { device, location: `${destination.pathname}${destination.search}${destination.hash}` };
+  } catch { return undefined; }
 };
 
 // omit transport-owned response headers
@@ -94,14 +211,14 @@ export class ProjectProxy {
   private readonly targets = new Map<string, ProjectTarget>();
   private readonly activeUpgrades = new Map<number, number>();
   private activeUpgradeCount = 0;
-  private readonly bridge: string;
+  private readonly parentOrigin: string;
   private readonly upstreamHost: string;
 
   // index fixed loopback targets
   constructor(worktrees: Worktree[], parentOrigin: string, upstreamHost = '127.0.0.1') {
     // restrict proxy destinations to local host gateways
     if (!allowedUpstreamHosts.has(upstreamHost)) throw new Error('invalid project proxy host');
-    this.bridge = browserBridge(parentOrigin);
+    this.parentOrigin = parentOrigin;
     this.upstreamHost = upstreamHost;
     // retain only complete project proxy configurations
     for (const worktree of worktrees) {
@@ -123,10 +240,26 @@ export class ProjectProxy {
     const target = this.target(request.headers.host);
     // leave console hosts to Fastify
     if (target === undefined) return false;
+    // set preview identity before loading the retained location
+    if (request.url === browserDevicePath || request.url?.startsWith(`${browserDevicePath}?`)) {
+      const redirect = browserDeviceRedirect(request.url);
+      // reject malformed device transitions
+      if (redirect === undefined) {
+        response.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+        response.end('invalid browser device');
+        return true;
+      }
+      response.writeHead(302, { 'cache-control': 'no-store', location: redirect.location, 'set-cookie': `${browserDeviceCookie}=${redirect.device}; Path=/; HttpOnly; Secure; SameSite=None; Partitioned` });
+      response.end();
+      return true;
+    }
     // serve the injected bridge from the project origin
     if (request.url === browserBridgePath) {
-      response.writeHead(200, { 'cache-control': 'no-store', 'content-type': 'text/javascript; charset=utf-8', 'content-length': Buffer.byteLength(this.bridge) });
-      response.end(this.bridge);
+      const device = requestBrowserDevice(request.headers);
+      const profile = device === undefined ? undefined : browserDeviceProfile(device, typeof request.headers['user-agent'] === 'string' ? request.headers['user-agent'] : '');
+      const bridge = browserBridge(this.parentOrigin, profile);
+      response.writeHead(200, { 'cache-control': 'no-store', 'content-type': 'text/javascript; charset=utf-8', 'content-length': Buffer.byteLength(bridge) });
+      response.end(bridge);
       return true;
     }
     const declaredRequestBytes = Number(request.headers['content-length'] ?? 0);
