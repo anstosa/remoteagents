@@ -12,7 +12,7 @@ const load = <T>(kind: string, file: string): T => JSON.parse(readFileSync(join(
 
 type ProcessFixture = { name: string; comm: string; argv: string[] };
 type TitleFixture = { title: string; state: AttentionState };
-type PromptFixture = { name: string; prompt: string; mode: SubmissionMode; text: string; keys: TmuxKey[] };
+type PromptFixture = { name: string; prompt: string; mode: SubmissionMode; text: string; keys: TmuxKey[]; idleKeys?: TmuxKey[] };
 type CaptureFixture = {
   name: string;
   lines: string[];
@@ -36,7 +36,9 @@ function assertNoForbiddenPairs(keys: readonly TmuxKey[], where: string): void {
   }
 }
 function assertEnterHasPaste(submission: Submission, where: string): void {
-  if (submission.keys.includes('Enter')) {
+  const submissionKeys = [...submission.keys, ...(submission.idleKeys ?? [])];
+  // require paste content for every direct-submit path
+  if (submissionKeys.includes('Enter')) {
     expect(submission.text.length, `${where}: Enter sent without a paste`).toBeGreaterThan(0);
   }
 }
@@ -66,8 +68,11 @@ describe('Adapter contract suite', () => {
         const submission = adapter.submission.prepare(c.prompt, c.mode);
         expect(submission.text, c.name).toBe(c.text);
         expect(submission.keys, c.name).toEqual(c.keys);
+        expect(submission.idleKeys, c.name).toEqual(c.idleKeys);
         assertEnterHasPaste(submission, c.name);
         assertNoForbiddenPairs(submission.keys, c.name);
+        // validate the optional idle path under the same generic key rules
+        if (submission.idleKeys !== undefined) assertNoForbiddenPairs(submission.idleKeys, `${c.name} idle`);
       }
     });
 

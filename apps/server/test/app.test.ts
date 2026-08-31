@@ -543,6 +543,7 @@ describe('configured worktree deactivation', () => {
   }, 15_000);
 
   it('closes an idle agent before restarting it through the resume alias', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-restart-agent-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false, command: 'codex' };
     const firstAgent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
@@ -568,7 +569,7 @@ describe('configured worktree deactivation', () => {
       // record the host alias handoff
       resume: async (id: string) => { events.push(`resume:${id}`); resumed = true; return true; }
     };
-    const restartApp = await buildApp({ ...config, worktrees: [worktree] }, { auth: new AuthService(hash, Buffer.alloc(32, 22).toString('base64url')), discovery: discovery as never, launch: launch as never, tmux: { close: async () => { events.push(`close:${firstAgent.id}`); return true; } } as never, launchPollDelay: async () => {} });
+    const restartApp = await buildApp({ ...config, worktrees: [worktree] }, { auth: new AuthService(hash, Buffer.alloc(32, 22).toString('base64url')), discovery: discovery as never, launch: launch as never, tmux: { close: async () => { events.push(`close:${firstAgent.id}`); return true; } } as never, queuedPrompts: new QueuedPromptService(join(directory, 'queue.json')), launchPollDelay: async () => {} });
     try {
       const boot = await restartApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
       const login = await restartApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
@@ -579,7 +580,7 @@ describe('configured worktree deactivation', () => {
       expect(restarted.statusCode).toBe(201);
       expect(restarted.json()).toEqual({ agentId: 'agent-2' });
       expect(events).toEqual(['close:agent-1', 'resume:cora']);
-    } finally { await restartApp.close(); }
+    } finally { await restartApp.close(); await rm(directory, { recursive: true, force: true }); }
   }, 15_000);
 });
 
@@ -700,6 +701,38 @@ describe('guided review API boundary', () => {
 });
 
 describe('queued prompt API', () => {
+  it('accepts a durable prompt when immediate agent acknowledgement is missing', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-unacknowledged-prompt-api-'));
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/tmp', title: 'Ready' });
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    let pasted = '';
+    const queuedApp = await buildApp(config, {
+      auth: new AuthService(hash, Buffer.alloc(32, 34).toString('base64url')),
+      discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined } as never,
+      queuedPrompts: new QueuedPromptService(join(directory, 'queue.json')),
+      tmux: {
+        pastePrompt: async (_socket: typeof socket, _pane: string, _buffer: string, prompt: string) => { pasted = prompt; return true; },
+        capture: async () => `› ${pasted}`,
+        // model a key accepted by tmux but ignored by Codex
+        sendKeys: async () => true
+      } as never
+    });
+    try {
+      const boot = await queuedApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await queuedApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      const submitted = await queuedApp.inject({ method: 'POST', url: '/api/agents/agent-1/prompt', headers, payload: { prompt: 'Retain this prompt', attachments: [] } });
+      const listed = await queuedApp.inject({ method: 'GET', url: '/api/agents/agent-1/queued-prompts', headers: { host: headers.host, cookie: headers.cookie } });
+
+      expect(submitted.statusCode).toBe(204);
+      expect(listed.json().prompts).toMatchObject([{ text: 'Retain this prompt' }]);
+    } finally {
+      await queuedApp.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   it('lists, reorders, edits, and cancels prompts waiting behind a busy agent', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-queued-prompt-api-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });

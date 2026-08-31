@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { isAgentCommand } from '../discovery/processes.js';
-import { failedTurnFromCapture, lastPromptFromHistory, latestAgentMessageFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from './codex-turns.js';
+import { codexDraftState, failedTurnFromCapture, lastPromptFromHistory, latestAgentMessageFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from './codex-turns.js';
 import { parseChoiceQuestion, pendingOmxQuestion } from './codex-questions.js';
 import { codexConversationTitle, codexRolloutBaseline, codexTurnSince, discoverCodexConversation, validCodexThreadId } from './codex-conversations.js';
 import type { Adapter, AttentionState, PromptCommand } from './types.js';
@@ -45,11 +45,12 @@ export const codexAdapter: Adapter = {
   recognizes: ({ comm, argv }) => isAgentCommand(comm, argv.join('\0')),
   inferState,
   submission: {
-    // Codex queues a normal prompt with Tab after a trailing space (which
-    // dismisses its completion menu); its `!` shell mode submits with Enter.
+    // codex submits idle prompts with Enter and queues active prompts with Tab
+    // a trailing space dismisses the completion menu before either key
     prepare: (prompt, mode) => mode === 'shell'
       ? { text: prompt, keys: ['Enter'] }
-      : { text: queueReadyPrompt(prompt), keys: ['Tab'] },
+      : { text: queueReadyPrompt(prompt), keys: ['Tab'], idleKeys: ['Enter'] },
+    observeDraft: codexDraftState,
     interrupt: ['C-c'],
     selectOption: (index) => [...Array.from({ length: index }, () => 'Down' as const), 'Enter'],
   },

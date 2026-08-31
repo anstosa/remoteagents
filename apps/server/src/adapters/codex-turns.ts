@@ -10,6 +10,8 @@
  * them here is what makes Turn capture the Adapter's concern, not the console's.
  */
 
+import type { SubmissionDraftState } from './types.js';
+
 const selectedChoice = /^›\s+(?:\[[ xX]\]\s*)?\d+[.)]\s/u;
 
 /**
@@ -18,6 +20,46 @@ const selectedChoice = /^›\s+(?:\[[ xX]\]\s*)?\d+[.)]\s/u;
  * space dismisses that menu without changing the submitted prompt's meaning.
  */
 export const queueReadyPrompt = (prompt: string) => /\s$/u.test(prompt) ? prompt : `${prompt} `;
+
+// strip styling without adding semantic markup
+const plainTerminalText = (value: string) => value
+  .replace(/\x1b\](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\)/gu, '')
+  .replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '')
+  .replace(/\r/gu, '');
+
+// read only the bottom-most live Codex composer, excluding matching scrollback
+function activeComposerFromCapture(value: string): string | undefined {
+  const lines = plainTerminalText(value).split('\n');
+  // inspect composer markers newest first
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const match = /^›(?:\s(.*))?$/u.exec(lines[index]!);
+    // skip non-composer rows
+    if (match === null) continue;
+    const draft = [match[1] ?? ''];
+    let continuation = index + 1;
+    // collect wrapped composer rows
+    while (continuation < lines.length && /^ {2}\S/u.test(lines[continuation]!)) draft.push(lines[continuation++]!.trim());
+    let following = continuation;
+    // skip spacing below the candidate composer
+    while (following < lines.length && !lines[following]!.trim()) following += 1;
+    // reject submitted prompt history followed by agent activity
+    if (/^[•■─]/u.test(lines[following]?.trim() ?? '')) continue;
+    return draft.join(' ');
+  }
+  return undefined;
+}
+
+// classify whether one exact Codex draft is still live after a paste or keypress
+export function codexDraftState(capture: string, prompt: string): SubmissionDraftState {
+  const composer = activeComposerFromCapture(capture);
+  // a transition without a structurally valid composer is inconclusive
+  if (composer === undefined) return 'unknown';
+  const normalizedComposer = composer.replace(/\s+/gu, ' ').trim();
+  const normalizedPrompt = prompt.replace(/\s+/gu, ' ').trim();
+  const visibleSuffix = normalizedPrompt.slice(-Math.min(64, normalizedPrompt.length));
+  const collapsedPaste = `[Pasted Content ${prompt.length} chars]`;
+  return normalizedComposer.includes(visibleSuffix) || normalizedComposer.includes(collapsedPaste) ? 'visible' : 'cleared';
+}
 
 // a request failure or cancellation banner on the active (latest) turn
 export function failedTurnFromCapture(capture: string): boolean {
@@ -86,12 +128,6 @@ const assistantMarkdown = (value: string) => {
   if (codeOpen) markdown += '`';
   return markdown.replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '').replace(/\r/gu, '');
 };
-
-// strip styling without adding semantic markup
-const plainTerminalText = (value: string) => value
-  .replace(/\x1b\](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\)/gu, '')
-  .replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '')
-  .replace(/\r/gu, '');
 
 export type CompletedAssistantTurn = { prompt?: string; text: string; rows: number };
 

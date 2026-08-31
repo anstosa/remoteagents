@@ -13,7 +13,24 @@ const socket={fingerprint:'socket',path:'/tmp/sock',device:1,inode:1}; const age
 it('allows prompt attachments totaling 25 MiB', () => {
   expect(maxPromptAttachmentBytes).toBe(25 * 1024 * 1024);
 });
-describe('safe prompt flow',()=>{it('pastes through a generated buffer and uses Tab to queue after the active turn',async()=>{const calls:string[][]=[];const discovery={target:async()=>({agent,socket})};const tmux={pastePrompt:async(_s:unknown,_p:string,b:string,p:string)=>{calls.push(['paste',b,p]);return true},sendKeys:async(_s:unknown,p:string,keys:string[])=>{calls.push([keys.join('+'),p]);return true}};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'hello; $(not-a-command)')).resolves.toBe(true);expect(calls[0]?.[0]).toBe('paste');expect(calls[0]?.[2]).toBe('hello; $(not-a-command) ');expect(calls.slice(1)).toEqual([['Tab','%1']]);expect(calls[0]?.[1]).toMatch(/^rac-/)});it('stages attached files in a Git-ignored location and references each one in the queued prompt', async () => {
+describe('safe prompt flow',()=>{it('pastes through a generated buffer and submits an idle Codex composer with Enter',async()=>{const calls:string[][]=[];const discovery={target:async()=>({agent,socket})};const tmux={pastePrompt:async(_s:unknown,_p:string,b:string,p:string)=>{calls.push(['paste',b,p]);return true},sendKeys:async(_s:unknown,p:string,keys:string[])=>{calls.push([keys.join('+'),p]);return true}};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'hello; $(not-a-command)')).resolves.toBe(true);expect(calls[0]?.[0]).toBe('paste');expect(calls[0]?.[2]).toBe('hello; $(not-a-command) ');expect(calls.slice(1)).toEqual([['Enter','%1']]);expect(calls[0]?.[1]).toMatch(/^rac-/)});
+
+it('uses the Adapter queue key if the pane becomes active while the prompt is pasted', async () => {
+  const working = stated({ ...agent, title: '⠋ Working' });
+  let targets = 0;
+  const sent: string[][] = [];
+  // expose the idle-to-working race across target revalidation
+  const discovery = { target: async () => ({ agent: targets++ === 0 ? agent : working, socket }) };
+  const tmux = {
+    pastePrompt: async () => true,
+    sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => { sent.push(keys); return true; }
+  };
+  const service = new PromptService(discovery as never, tmux as never);
+  await expect(service.submit(agent.id, 'follow active work')).resolves.toBe(true);
+  expect(sent).toEqual([['Tab']]);
+});
+
+it('stages attached files in a Git-ignored location and references each one in the queued prompt', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'rac-attachments-'));
   await writeFile(join(workspace, '.gitignore'), 'node_modules/\n');
   execFileSync('/usr/bin/git', ['init', '--quiet', workspace]);
@@ -180,11 +197,12 @@ it('records the final assistant answer when the busy state is missed', async () 
   const mutableAgent = stated({ ...agent, title: 'Ready' });
   const completed: Array<[string, string, string]> = [];
   const historyEntry = { id: 'prompt-history-001', text: 'Summarize this', createdAt: '2026-08-07T01:00:00.000Z' };
+  let submitted = false;
   const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
     pastePrompt: async () => true,
-    capture: async () => ['› Summarize this', '', '• Final summary', '', '  - One detail', '─ Worked for 2s', ''].join('\n'),
-    sendKeys: async () => true
+    capture: async () => submitted ? ['› Summarize this', '', '• Final summary', '', '  - One detail', '─ Worked for 2s', '', '› '].join('\n') : '› Summarize this ',
+    sendKeys: async () => { submitted = true; return true; }
   };
   const history = {
     record: async () => historyEntry,
@@ -216,12 +234,12 @@ it('records a recovered answer before dispatching queued work after a restart', 
   };
   const tmux = {
     // submit released queued work
-    pastePrompt: async () => { events.push('dispatch'); return true; },
+    pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { events.push('dispatch'); capture = `› ${prompt}`; return true; },
     // accept queued Codex input
     // expose current terminal history
     capture: async () => capture,
     // support prompt cancellation
-    sendKeys: async () => true
+    sendKeys: async () => { capture = '› '; return true; }
   };
   const history = {
     // expose the unanswered prompt
@@ -259,12 +277,13 @@ it('retries answer recording after the agent first appears finished', async () =
   const mutableAgent = stated({ ...agent, title: 'Ready' });
   const completed: string[] = [];
   const historyEntry = { id: 'prompt-history-race', text: 'Explain the race', createdAt: '2026-08-07T01:00:00.000Z' };
-  let capture = ['› Explain the race', '', '• Still rendering'].join('\n');
+  let submitted = false;
+  let capture = ['› Explain the race', '', '• Still rendering', '', '› '].join('\n');
   const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
     pastePrompt: async () => true,
-    capture: async () => capture,
-    sendKeys: async () => true
+    capture: async () => submitted ? capture : '› Explain the race ',
+    sendKeys: async () => { submitted = true; return true; }
   };
   const history = {
     record: async () => historyEntry,
@@ -284,7 +303,7 @@ it('retries answer recording after the agent first appears finished', async () =
     await service.observe(mutableAgent);
     expect(completed).toEqual([]);
 
-    capture = ['› Explain the race', '', '• Final answer', '', '─ Worked for 1s', ''].join('\n');
+    capture = ['› Explain the race', '', '• Final answer', '', '─ Worked for 1s', '', '› '].join('\n');
     await service.observe(mutableAgent);
 
     expect(completed).toEqual(['Final answer']);
@@ -298,12 +317,13 @@ it('records a completed answer after long output scrolls its prompt out of captu
   const mutableAgent = stated({ ...agent, title: 'Ready' });
   const completed: string[] = [];
   const historyEntry = { id: 'prompt-history-scrolled', text: 'Run the long task', createdAt: '2026-08-07T01:00:00.000Z' };
-  let capture = ['• Previous answer', '─ Worked for 1s', '', '› Run the long task', '', '• Working'].join('\n');
+  let submitted = false;
+  let capture = ['• Previous answer', '─ Worked for 1s', '', '› '].join('\n');
   const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
     pastePrompt: async () => true,
-    capture: async () => capture,
-    sendKeys: async () => true
+    capture: async () => submitted ? capture : ['• Previous answer', '─ Worked for 1s', '', '› Run the long task '].join('\n'),
+    sendKeys: async () => { submitted = true; return true; }
   };
   const history = {
     record: async () => historyEntry,
@@ -414,11 +434,12 @@ it('does not settle completion until the answer is stored in history', async () 
   const mutableAgent = stated({ ...agent, title: 'Ready' });
   const historyEntry = { id: 'prompt-history-storage', text: 'Persist this', createdAt: '2026-08-07T01:00:00.000Z' };
   let attempts = 0;
+  let submitted = false;
   const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
     pastePrompt: async () => true,
-    capture: async () => ['› Persist this', '', '• Durable answer', '', '─ Worked for 1s', ''].join('\n'),
-    sendKeys: async () => true
+    capture: async () => submitted ? ['› Persist this', '', '• Durable answer', '', '─ Worked for 1s', '', '› '].join('\n') : '› Persist this ',
+    sendKeys: async () => { submitted = true; return true; }
   };
   const history = {
     record: async () => historyEntry,
@@ -466,9 +487,9 @@ it('holds prompts while an agent works and dispatches them in the managed order'
   let capture = ['› Active prompt', '', '• Working'].join('\n');
   const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
-    pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { calls.push(prompt.trimEnd()); return true; },
+    pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { calls.push(prompt.trimEnd()); capture = `› ${prompt}`; return true; },
     capture: async () => capture,
-    sendKeys: async () => true
+    sendKeys: async () => { capture = '› '; return true; }
   };
   const history = { record: async (_scope: string, text: string) => { recorded.push(text); } };
   const service = new PromptService(discovery as never, tmux as never, [], history as never, queue);
@@ -614,7 +635,7 @@ it('dispatches a prompt queued behind a Codex turn that completes only in the ro
     // a native-Codex pane: a prompt and a working bullet, but never a completion boundary
     pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt.trimEnd()); composer = `› ${prompt} • Working`; return true; },
     capture: async () => composer || '› Ready',
-    sendKeys: async () => true
+    sendKeys: async () => { composer = ''; return true; }
   };
   const history = {
     record: async (_scope: string, text: string) => ({ id: `h-${pasted.length}`, text }),
@@ -650,6 +671,7 @@ it('dispatches a prompt queued behind a Codex turn that completes only in the ro
     await service.observe(mutableAgent);
     expect(pasted).toEqual(['First prompt', 'Second prompt']);
     expect(recorded).toEqual([['h-1', 'The answer.']]);
+    await expect(service.listQueued(agent.id)).resolves.toEqual([]);
     await expect(saved.list(agent.id)).resolves.toEqual([]);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
@@ -665,7 +687,7 @@ it('fails a rollout-tracked turn that the log records as aborted', async () => {
   const tmux = {
     pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt.trimEnd()); composer = `› ${prompt} • Working`; return true; },
     capture: async () => composer || '› Ready',
-    sendKeys: async () => true
+    sendKeys: async () => { composer = ''; return true; }
   };
   const view = { ...codexAdapter, completion: { baseline: async () => ({ rollout: 'rollout.jsonl', ordinal: 0 }), since: async (baseline: { ordinal: number }) => ({ kind: 'aborted' as const, ordinal: baseline.ordinal + 3 }) } };
   const service = new PromptService(discovery as never, tmux as never, [], undefined, queue, saved, () => view);
@@ -703,10 +725,12 @@ it('keeps a dispatching prompt durable when delivery fails while another prompt 
       pasted.push(prompt.trimEnd());
       pasteStarted?.();
       await blocked;
+      // expose the draft after tmux accepts the paste
+      if (deliveryResult) capture = `› ${prompt}`;
       return deliveryResult;
     },
     capture: async () => capture,
-    sendKeys: async () => true
+    sendKeys: async () => { capture = '› '; return true; }
   };
   const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
   try {

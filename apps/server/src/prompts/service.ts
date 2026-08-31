@@ -5,7 +5,7 @@ import type { DiscoveryService } from '../discovery/service.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { failedTurnFromCapture, lastPromptFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from '../adapters/codex-turns.js';
 import { adapterFor } from '../adapters/registry.js';
-import type { Adapter, AgentKind, CompletionBaseline, CompletionEvent, SubmissionMode, TmuxKey } from '../adapters/types.js';
+import type { Adapter, AgentKind, CompletionBaseline, CompletionEvent, SubmissionDraftState, SubmissionMode, TmuxKey } from '../adapters/types.js';
 import type { Agent, Worktree } from '../domain/models.js';
 import { run } from '../tmux/command.js';
 import type { PromptHistoryService } from '../prompt-history/service.js';
@@ -21,11 +21,12 @@ export { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentBytes, 
 const answerCaptureGraceMs = 10_000;
 // a reported-state prompt must report `working` within this window or the dispatch is failed
 const reportedWorkingGraceMs = 5_000;
-// an interactive submit key (Codex's Tab) is swallowed when it races a composer
-// that has not yet rendered the paste; wait (briefly, bounded) for the paste to
-// land before submitting. Best-effort: if it never renders, submit anyway.
+// a queued submit key can be swallowed when it races an unrendered composer
+// wait briefly for a stable draft and retain the queue item if rendering fails
 const composerRenderAttempts = 12;
 const composerRenderPollMs = 50;
+const composerRenderStableMs = 100;
+const submissionAcceptAttempts = 20;
 // the console never composes submission through an unknown kind
 type AdapterView = Pick<Adapter, 'stateSource' | 'submission' | 'turns' | 'questions' | 'completion'>;
 type CancelOutcome = 'ok' | 'unavailable' | 'not-working';
@@ -89,6 +90,15 @@ export class PromptService {
         // track work that started outside the managed prompt flow
         if (queued !== undefined && adopting) this.phases.set(scope, { state: 'working', changedAt: Date.now(), ...(baselineCompletion === undefined ? {} : { baselineCompletion }), ...(rolloutBaseline === undefined ? {} : { rolloutBaseline }) });
         return queued !== undefined;
+      }
+      // persist direct work before attempting interactive delivery
+      if (this.queued !== undefined) {
+        const queued = await this.queued.enqueue(scope, prompt, attachments);
+        // stop before paste when durable storage is unavailable
+        if (queued === undefined) return false;
+        // delivery may remain queued without rejecting the accepted request
+        await this.dispatch(agentId, scope);
+        return true;
       }
       return await this.send(agentId, prompt, attachments, first);
     } finally {
@@ -305,18 +315,20 @@ export class PromptService {
   }
 
   private async dispatch(agentId: string, scope: string): Promise<void> {
+    // reject overlapping or held dispatches
     if (this.dispatching.has(scope) || this.phases.has(scope) || this.restartLocks.has(scope)) return;
     this.dispatching.add(scope);
     try {
       const prompt = await this.queued?.next(scope);
-      if (prompt !== undefined && await this.send(agentId, prompt.text, prompt.attachments ?? [])) {
+      // consume only after the adapter confirms submission
+      if (prompt !== undefined && await this.send(agentId, prompt.text, prompt.attachments ?? [], undefined, 'queue', true)) {
         await this.queued?.remove(scope, prompt.id);
       }
     } finally { this.dispatching.delete(scope); }
   }
 
   // send one prompt to a stable pane
-  private async send(agentId: string, prompt: string, attachments: PromptAttachment[], discovered?: DiscoveredTarget, submission: 'queue' | 'enter' | 'confirmed-enter' = 'queue'): Promise<boolean> {
+  private async send(agentId: string, prompt: string, attachments: PromptAttachment[], discovered?: DiscoveredTarget, submission: 'queue' | 'enter' | 'confirmed-enter' = 'queue', durable = false): Promise<boolean> {
     const first = discovered ?? await this.discovery.target(agentId);
     if (!first) return false;
     // the Adapter describes the paste text and the submit keys; the console pastes and sends them
@@ -330,8 +342,6 @@ export class PromptService {
     const shellMode = attachments.length === 0 && prompt.startsWith('!');
     const mode: SubmissionMode = shellMode ? 'shell' : 'prompt';
     const composed = adapter.submission.prepare(attachmentPrompt, mode);
-    // the update advisor is submitted with Enter regardless of the Adapter's queue key
-    const keys: TmuxKey[] = submission === 'enter' || submission === 'confirmed-enter' ? ['Enter'] : composed.keys;
     const buffer = `rac-${randomBytes(18).toString('base64url')}`;
     // keep the server-owned prompt out of the startup shell
     if (submission === 'confirmed-enter' && !await this.waitForUpdateAdvisorReady(agentId, first)) {
@@ -342,7 +352,7 @@ export class PromptService {
       await this.removeStaged(workspace, staged);
       return false;
     }
-    const second = await this.discovery.target(agentId);
+    const second = await this.discovery.target(agentId, true);
     if (!second || second.socket.fingerprint !== first.socket.fingerprint || second.agent.paneId !== first.agent.paneId) {
       await this.removeStaged(workspace, staged);
       return false;
@@ -352,26 +362,41 @@ export class PromptService {
       await this.removeStaged(workspace, staged);
       return false;
     }
+    // hold the scope so a quick second submit queues behind this one, then let the
+    // Adapter-owned composer observation settle before the submit key
+    const observeDraft = adapter.submission.observeDraft;
+    // adapters without draft observation retain the existing best-effort tmux contract
+    const settle = durable && submission === 'queue' && observeDraft !== undefined && typeof this.tmux.capture === 'function' && this.queued !== undefined;
+    if (settle) {
+      this.phases.set(scope, { state: 'awaiting-start', changedAt: Date.now(), historyPrompt: attachmentPrompt });
+      // retain durable work instead of submitting an unrendered draft
+      if (!await this.waitForComposerRender(second, composed.text, observeDraft)) {
+        await this.holdFailedSubmission(scope);
+        return false;
+      }
+    }
     // snapshot the rollout baseline before the turn starts: completion is then a
     // `task_complete` recorded past it (the native-Codex TUI renders no boundary,
     // so scraping the pane never observes the finish)
     const rolloutBaseline = this.queued === undefined ? undefined : await this.captureRolloutBaseline(agentId, adapter);
-    // hold the scope so a quick second submit queues behind this one, then let the
-    // interactive paste settle in the composer before the submit key: a Tab that
-    // races an unrendered composer is swallowed, so the prompt never starts and the
-    // queued work behind it is later relocated to saved (the reported bug)
-    const settle = submission === 'queue' && mode === 'prompt' && adapter.turns !== undefined && this.queued !== undefined;
-    if (settle) {
-      this.phases.set(scope, { state: 'awaiting-start', changedAt: Date.now(), historyPrompt: attachmentPrompt, ...(rolloutBaseline === undefined ? {} : { rolloutBaseline }) });
-      await this.waitForComposerRender(second, attachmentPrompt);
+    // refresh after every settle/baseline delay so key selection reflects send-time state
+    const submitTarget = await this.discovery.target(agentId, true);
+    if (!submitTarget || submitTarget.socket.fingerprint !== second.socket.fingerprint || submitTarget.agent.paneId !== second.agent.paneId) {
+      await this.holdFailedSubmission(scope);
+      return false;
     }
-    let submitted = await this.tmux.sendKeys(second.socket, second.agent.paneId, keys);
+    // use direct submit only while the final target is idle
+    const adapterKeys = agentAttentionState(submitTarget.agent) === 'finished' ? composed.idleKeys ?? composed.keys : composed.keys;
+    // the update advisor is submitted with Enter regardless of the Adapter's keys
+    const keys: TmuxKey[] = submission === 'enter' || submission === 'confirmed-enter' ? ['Enter'] : adapterKeys;
+    let submitted = await this.tmux.sendKeys(submitTarget.socket, submitTarget.agent.paneId, keys);
+    // require adapter acknowledgement before consuming durable queue state
+    if (submitted && settle) submitted = await this.waitForSubmissionAccepted(submitTarget, composed.text, observeDraft);
     // confirm the server-owned prompt left the composer
-    if (submitted && submission === 'confirmed-enter') submitted = await this.waitForUpdateAdvisorStart(agentId, second, attachmentPrompt);
+    if (submitted && submission === 'confirmed-enter') submitted = await this.waitForUpdateAdvisorStart(agentId, submitTarget, attachmentPrompt);
     if (!submitted) {
-      // release the scope held for the unsettled paste
-      if (settle) this.phases.delete(scope);
-      await this.removeStaged(workspace, staged);
+      // halt only when a durable prompt is still waiting
+      await this.holdFailedSubmission(scope);
     } else {
       // track the successful prompt
       const entry = await this.history?.record(scope, attachmentPrompt).catch(() => undefined);
@@ -383,21 +408,39 @@ export class PromptService {
 
   // wait (briefly) for a pasted interactive prompt to render on the validated pane,
   // so the submit key is not swallowed by a composer that has not yet caught up
-  private async waitForComposerRender(target: DiscoveredTarget, prompt: string): Promise<void> {
-    // cannot observe the composer: submit best-effort
-    if (typeof this.tmux.capture !== 'function') return;
-    const normalized = normalizedPrompt(prompt);
-    // match the visible tail because Codex scrolls long composers to the cursor
-    const visibleSuffix = normalized.slice(-Math.min(64, normalized.length));
-    // match Codex's exact long-paste placeholder
-    const collapsedPaste = `[Pasted Content ${queueReadyPrompt(prompt).length} chars]`;
+  private async waitForComposerRender(target: DiscoveredTarget, prompt: string, observeDraft: (capture: string, prompt: string) => SubmissionDraftState): Promise<boolean> {
+    let renderedSince: number | undefined;
+    // poll within the bounded render window
     for (let attempt = 0; attempt < composerRenderAttempts; attempt += 1) {
       const captured = await this.tmux.capture(target.socket, target.agent.paneId).catch(() => undefined);
-      const composer = captured === undefined ? '' : normalizedTerminalText(captured);
-      // submit once the paste (or its collapsed placeholder) has begun rendering
-      if (composer.includes(visibleSuffix) || composer.includes(collapsedPaste)) return;
+      const rendered = captured !== undefined && observeDraft(captured, prompt) === 'visible';
+      // retain only uninterrupted live-composer rendering
+      if (!rendered) renderedSince = undefined;
+      else if (renderedSince === undefined) renderedSince = Date.now();
+      else if (Date.now() - renderedSince >= composerRenderStableMs) return true;
       await new Promise(resolve => setTimeout(resolve, composerRenderPollMs));
     }
+    return false;
+  }
+
+  // confirm that the Adapter no longer sees the server-owned draft
+  private async waitForSubmissionAccepted(target: DiscoveredTarget, prompt: string, observeDraft: (capture: string, prompt: string) => SubmissionDraftState): Promise<boolean> {
+    // poll through transient redraws without retrying the submit key
+    for (let attempt = 0; attempt < submissionAcceptAttempts; attempt += 1) {
+      const captured = await this.tmux.capture(target.socket, target.agent.paneId).catch(() => undefined);
+      // only a structurally cleared composer acknowledges acceptance
+      if (captured !== undefined && observeDraft(captured, prompt) === 'cleared') return true;
+      await new Promise(resolve => setTimeout(resolve, composerRenderPollMs));
+    }
+    return false;
+  }
+
+  // halt redispatch only while durable queue state remains
+  private async holdFailedSubmission(scope: string): Promise<void> {
+    const waiting = await this.queued?.list(scope);
+    // protect queued prompts from duplicate repaste
+    if ((waiting?.length ?? 0) > 0) this.phases.set(scope, { state: 'halted', changedAt: Date.now() });
+    else this.phases.delete(scope);
   }
 
   // wait for one stable empty Codex composer before pasting

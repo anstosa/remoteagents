@@ -1,9 +1,13 @@
 import argon2 from 'argon2';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { stated } from './helpers/agent.js';
 import { AuthService } from '../src/auth/service.js';
 import type { ValidatedConfig } from '../src/config/schema.js';
+import { QueuedPromptService } from '../src/prompts/queue.js';
 
 const baseConfig: ValidatedConfig = { name: 'Remote Agents', remoteServers: [], listen: { host: '127.0.0.1', port: 8787 }, publicOrigin: new URL('https://agents.example.com'), trustedProxyIps: new Set(['127.0.0.1']), pollIntervalMs: 500, newAgentCommand: 'codex', worktrees: [] };
 
@@ -105,6 +109,7 @@ describe('Codex account API', () => {
   }, 15_000);
 
   it('preserves a prompt that starts while an account switch selects restart targets', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-account-prompt-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const cora = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false, command: 'codex' };
     const idleCora = stated({ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.path, worktreeId: cora.id, worktreeLabel: cora.label, title: 'Ready' });
@@ -137,19 +142,25 @@ describe('Codex account API', () => {
       accounts: accounts as never,
       discovery: discovery as never,
       launch: { launch: async () => false, launchHome: async () => false, resume: async () => true } as never,
-      queuedPrompts: { list: async () => [] } as never,
+      queuedPrompts: new QueuedPromptService(join(directory, 'queue.json')),
       tmux: tmux as never
     });
     const headers = await login(app);
 
     const prompt = app.inject({ method: 'POST', url: `/api/agents/${idleCora.id}/prompt`, headers, payload: { prompt: 'Keep this running' } });
-    await pasteStarted;
-    const switched = await app.inject({ method: 'POST', url: '/api/codex/accounts/switch', headers, payload: { id: 'account-2' } });
+    try {
+      await pasteStarted;
+      const switched = await app.inject({ method: 'POST', url: '/api/codex/accounts/switch', headers, payload: { id: 'account-2' } });
 
-    expect(switched.statusCode).toBe(200);
-    expect(switched.json()).toEqual({ account: { id: 'account-2', label: 'Work', active: true }, restarts: [{ worktreeId: 'cora', status: 'skipped', error: 'The worktree is no longer idle.' }] });
-    expect(closed).toEqual([]);
-    releasePaste();
-    await expect(prompt).resolves.toMatchObject({ statusCode: 204 });
+      expect(switched.statusCode).toBe(200);
+      expect(switched.json()).toEqual({ account: { id: 'account-2', label: 'Work', active: true }, restarts: [{ worktreeId: 'cora', status: 'skipped', error: 'The worktree is not idle.' }] });
+      expect(closed).toEqual([]);
+      releasePaste();
+      await expect(prompt).resolves.toMatchObject({ statusCode: 204 });
+    } finally {
+      releasePaste();
+      await prompt.catch(() => undefined);
+      await rm(directory, { recursive: true, force: true });
+    }
   }, 15_000);
 });

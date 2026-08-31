@@ -16,7 +16,9 @@ export type AttentionState = 'working' | 'finished' | 'question';
 export type TmuxKey = 'Enter' | 'Tab' | 'Escape' | 'C-c' | 'Up' | 'Down' | 'M-Enter';
 
 export type SubmissionMode = 'prompt' | 'shell';
-export type Submission = { text: string; keys: TmuxKey[] };
+export type SubmissionDraftState = 'visible' | 'cleared' | 'unknown';
+// `keys` queues behind active work; `idleKeys` may use the Agent's direct submit path
+export type Submission = { text: string; keys: TmuxKey[]; idleKeys?: TmuxKey[] };
 export type Conversation = { id: string; title?: string };
 export type Turn = { prompt?: string; text: string; rows?: number };
 export type InlineQuestion = { id: string; text: string; choices: string[]; source: 'structured' | 'parsed'; targetPaneId?: string };
@@ -48,6 +50,8 @@ export interface Adapter {
   inferState(pane: { title: string; command?: string }): AttentionState | undefined;
   readonly submission: {
     prepare(prompt: string, mode: SubmissionMode): Submission;
+    /** Observe durable acceptance; absence keeps this adapter on best-effort tmux delivery. */
+    observeDraft?(capture: string, prompt: string): SubmissionDraftState;
     readonly interrupt: TmuxKey[];
     selectOption(index: number): TmuxKey[];
   };
