@@ -1,5 +1,6 @@
 node_modules/
 .codex/
+.omx/
 .pnpm-store/
 .data/
 dist/
