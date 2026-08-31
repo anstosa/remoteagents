@@ -183,12 +183,16 @@ async function selectTopLevelRollout(refs: RolloutRef[]): Promise<{ id: string; 
 /**
  * The pane's current top-level Codex conversation, resolved by the fd-walk plus
  * the `session_meta` read, failing closed when the pane holds no single
- * unambiguous top-level rollout. Reproduces the old
+ * unambiguous top-level rollout. The working-directory match (`cwd`, supplied
+ * only when unique among live panes) is the same privilege-free fallback
+ * `codexRolloutBaseline` uses when a confined service cannot readlink the
+ * pane's descriptors and the fd-walk finds nothing. Reproduces the old
  * `discovery.sessions` + `CodexBookmarkService.selectedSession` pair (now the
  * `BookmarkService` holds only persistence).
  */
-export async function discoverCodexConversation(pid: number): Promise<Conversation | undefined> {
-  const selected = await selectTopLevelRollout(await openRollouts(pid));
+export async function discoverCodexConversation(pane: { pid: number; cwd?: string }): Promise<Conversation | undefined> {
+  const selected = await selectTopLevelRollout(await openRollouts(pane.pid))
+    ?? (pane.cwd === undefined ? undefined : await rolloutByCwd(pane.cwd));
   // require one exact pane-to-conversation mapping
   if (selected === undefined) return undefined;
   const title = await rolloutTitle(selected.file).catch(() => undefined);

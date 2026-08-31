@@ -111,7 +111,13 @@ export interface Adapter {
   };
   readonly conversations?: {
     validId(id: string): boolean;
-    discover?(pid: number): Promise<Conversation | undefined>;
+    /**
+     * The pane's current Conversation. The pane's `pid` drives the `/proc`
+     * fd-walk; its `cwd` (supplied only when unique among live panes) is the
+     * privilege-free fallback a confined service uses when it cannot readlink
+     * the pane's descriptors — the same pair `completion.baseline` reads.
+     */
+    discover?(pane: { pid: number; cwd?: string }): Promise<Conversation | undefined>;
     /** The title of one already-known conversation (its id is unique), used when the pane reports it through `@rac_session`. */
     title?(id: string): Promise<string | undefined>;
   };

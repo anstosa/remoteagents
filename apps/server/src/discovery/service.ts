@@ -407,15 +407,17 @@ export class DiscoveryService {
     return path;
   }
 
-  // resolve the selected pane, its Adapter, and the pid its conversation lives under
-  private async conversationContext(id: string): Promise<{ agent: Agent; adapter: Adapter['conversations'] & {}; pid: number } | undefined> {
+  // resolve the selected pane, its Adapter, and the pane facts its conversation lives under
+  private async conversationContext(id: string): Promise<{ agent: Agent; adapter: Adapter['conversations'] & {}; pane: { pid: number; cwd?: string } } | undefined> {
     const target = await this.target(id);
     if (target === undefined) return undefined;
     const conversations = adapterFor(target.agent.kind)?.conversations;
     const pid = this.panePids.get(target.agent.id);
     // require exact pane identity and an Adapter that resolves conversations
     if (conversations === undefined || pid === undefined) return undefined;
-    return { agent: target.agent, adapter: conversations, pid };
+    // the unique working directory is the discover fallback for a confined service
+    const cwd = this.paneWorkingDirectory(target.agent.id);
+    return { agent: target.agent, adapter: conversations, pane: { pid, ...(cwd === undefined ? {} : { cwd }) } };
   }
 
   // the pane's own reported conversation id (`@rac_session`), when the Adapter accepts it
@@ -428,7 +430,7 @@ export class DiscoveryService {
   async conversationId(id: string): Promise<string | undefined> {
     const context = await this.conversationContext(id);
     if (context === undefined) return undefined;
-    return this.reportedConversationId(context) ?? (await context.adapter.discover?.(context.pid))?.id;
+    return this.reportedConversationId(context) ?? (await context.adapter.discover?.(context.pane))?.id;
   }
 
   // the pane's current conversation with a title, for bookmarking
@@ -441,7 +443,7 @@ export class DiscoveryService {
       const title = await context.adapter.title?.(reported);
       return { id: reported, ...(title === undefined ? {} : { title }) };
     }
-    return await context.adapter.discover?.(context.pid);
+    return await context.adapter.discover?.(context.pane);
   }
   // build or reuse one dashboard view
   async dashboard(worktrees: Worktree[], force = false): Promise<Dashboard> {

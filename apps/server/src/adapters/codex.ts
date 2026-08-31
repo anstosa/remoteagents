@@ -133,7 +133,7 @@ export const codexAdapter: Adapter = {
   },
   conversations: {
     validId: validCodexThreadId,
-    discover: (pid) => discoverCodexConversation(pid),
+    discover: (pane) => discoverCodexConversation(pane),
     title: (id) => codexConversationTitle(id),
   },
   completion: {

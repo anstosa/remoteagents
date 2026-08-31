@@ -249,6 +249,42 @@ describe('DiscoveryService dashboard', () => {
     }
   });
 
+  it('resolves the conversation by working directory when the fd-walk is blocked', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const finder = { find: async () => [socket] };
+    // one pane whose descriptors a confined service cannot readlink
+    const tmux = { listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/host/cora', title: 'Cora' }] };
+    const home = await mkdtemp(join(tmpdir(), 'rac-codex-home-'));
+    const proc = await mkdtemp(join(tmpdir(), 'rac-proc-'));
+    const previous = { proc: process.env.RAC_HOST_PROC, home: process.env.CODEX_HOME };
+    try {
+      // writeRollout records cwd '/host/cora' in session_meta, matching the pane path
+      await writeRollout(home, '0198c111-1111-7111-8111-111111111111', 'Confined conversation');
+      await buildProc(proc, { 123: [], 456: [] });
+      process.env.RAC_HOST_PROC = proc;
+      process.env.CODEX_HOME = home;
+      const service = new DiscoveryService(finder, tmux as never, processInspector());
+      const agents = await service.refresh();
+
+      await expect(service.conversationId(agents[0]!.id)).resolves.toBe('0198c111-1111-7111-8111-111111111111');
+      await expect(service.conversation(agents[0]!.id)).resolves.toEqual({ id: '0198c111-1111-7111-8111-111111111111', title: 'Confined conversation' });
+
+      // two blocked panes sharing the directory fail closed rather than share a conversation
+      const shared = { listPanes: async () => [
+        { paneId: '%1', sessionId: '$0', pid: 123, path: '/host/cora', title: 'Cora' },
+        { paneId: '%2', sessionId: '$1', pid: 456, path: '/host/cora', title: 'Cora copy' }
+      ] };
+      const crowded = new DiscoveryService(finder, shared as never, processInspector());
+      const both = await crowded.refresh();
+      await expect(crowded.conversation(both[0]!.id)).resolves.toBeUndefined();
+      await expect(crowded.conversation(both[1]!.id)).resolves.toBeUndefined();
+    } finally {
+      if (previous.proc === undefined) delete process.env.RAC_HOST_PROC; else process.env.RAC_HOST_PROC = previous.proc;
+      if (previous.home === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous.home;
+      await Promise.all([rm(home, { recursive: true, force: true }), rm(proc, { recursive: true, force: true })]);
+    }
+  });
+
   it('preserves a custom tmux display label for launched scratch agents', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const finder = { find: async () => [socket] };
