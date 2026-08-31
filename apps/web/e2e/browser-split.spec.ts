@@ -362,6 +362,7 @@ test.describe('phone browser split', () => {
     const preview = page.frameLocator('iframe[title="Project browser"]');
     await expect(browser).toBeVisible();
     await expect(browser.locator('.browser-toolbar strong')).toBeHidden();
+    await expect(browser.getByRole('button', { name: 'Enter browser fullscreen' })).toBeHidden();
     await expect(deviceToggle.locator('svg')).toHaveCount(1);
     await expect(deviceToggle.locator('svg')).toHaveAttribute('data-device', 'desktop');
     expect(requestedDevices.at(-1)).toBe('desktop');

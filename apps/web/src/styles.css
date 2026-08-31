@@ -447,6 +447,8 @@ html.software-keyboard-open .tabs { display: none; }
 }
 @media (max-width: 768px) {
   .browser-pane header strong { display: none; }
+  /* browser panel already fills phones */
+  .browser-pane header .browser-expand { display: none; }
   .browser-frame-shell.mobile iframe { width: 100%; }
   .browser-frame-shell.desktop { overflow: hidden; place-items: start; }
   .browser-frame-shell.desktop iframe { width: var(--browser-desktop-width, 980px); height: var(--browser-desktop-height, 100%); transform: scale(var(--browser-desktop-scale, 1)); transform-origin: top left; }
