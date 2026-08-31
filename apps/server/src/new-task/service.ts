@@ -4,6 +4,7 @@ import type { ValidatedConfig } from '../config/schema.js';
 import type { DiscoveryService } from '../discovery/service.js';
 import type { Worktree } from '../domain/models.js';
 import { cleanAndPushedOrDetached, type GitCommand } from '../git/worktree-state.js';
+import { worktreeHostRoot, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { run } from '../tmux/command.js';
 import { hostCommand, hostInteractiveShellPath, interactiveShellBootstrap, interactiveShellPath } from '../tmux/interactive-shell.js';
@@ -32,7 +33,7 @@ export class NewTaskService {
     const target = await this.discovery.target(agentId);
     const worktree = target === undefined ? undefined : this.worktree(target.agent.workspace);
     if (target === undefined || worktree?.newTask === undefined || !await this.cleanAndPushed(worktree)) return false;
-    const path = worktree.hostPath ?? worktree.identity;
+    const path = worktreeHostRoot(worktree);
     const home = dirname(path);
     const task = worktree.newTask.replaceAll('{taskId}', taskId());
     const script = hostCommand(`cd -- ${quote(path)} && eval ${quote(task)}`, home);
@@ -44,7 +45,7 @@ export class NewTaskService {
   }
 
   private worktree(workspace: string): Worktree | undefined {
-    return this.config.worktrees.find(worktree => workspace === worktree.identity || workspace === worktree.hostPath);
+    return this.config.worktrees.find(worktree => worktreeMatchesWorkspace(worktree, workspace));
   }
 
   private async cleanAndPushed(worktree: Worktree): Promise<boolean> {

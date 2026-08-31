@@ -12,7 +12,7 @@ import type { ReviewTourInput } from '../review-tour/contracts.js';
 import type { TmuxAdapter } from '../tmux/adapter.js';
 import type { NewTaskService } from '../new-task/service.js';
 import type { WorkspaceFileService, WorkspaceFilePreview } from '../workspace-files/service.js';
-import { configuredWorktreeForWorkspace } from '../workspaces/resolver.js';
+import { configuredWorktreeForWorkspace, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
 import type { WorktreeCommandService } from '../worktree-commands/service.js';
 import type {
   AgentStatusV1,
@@ -215,7 +215,7 @@ export class OrchestrationService {
   private worktreeStatuses(dashboard: DashboardPayload): WorktreeStatusV1[] {
     return this.dependencies.config.worktrees.map((worktree, order) => {
       const agents = dashboard.agents
-        .filter(agent => agent.worktreeId === worktree.id || agent.workspace === worktree.identity || agent.workspace === worktree.hostPath)
+        .filter(agent => agent.worktreeId === worktree.id || worktreeMatchesWorkspace(worktree, agent.workspace))
         .sort((left, right) => left.id.localeCompare(right.id));
       const inactive = dashboard.worktrees.find(candidate => candidate.id === worktree.id);
       const primary = agents[0] ?? inactive;

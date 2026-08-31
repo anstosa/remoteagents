@@ -6,7 +6,8 @@ import { run } from '../tmux/command.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { hostCommand, hostInteractiveShellPath, interactiveShellBootstrap, interactiveShellName, interactiveShellPath } from '../tmux/interactive-shell.js';
 import { startNamedReplacementSession, worktreeSessionName } from '../tmux/session-name.js';
-import { ProcSocketFinder, type SocketFinder } from '../discovery/service.js';
+import { ProcSocketFinder, workspaceRoot, type SocketFinder } from '../discovery/service.js';
+import { worktreeHostRoot, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
 import { adapterFor } from '../adapters/registry.js';
 import type { LaunchMode } from '../adapters/types.js';
 import type { Pane, SocketRef, Worktree } from '../domain/models.js';
@@ -59,24 +60,33 @@ export class LaunchService {
   private readonly localShell = interactiveShellPath();
   private readonly hostShell = hostInteractiveShellPath();
   private readonly hostShellName = interactiveShellName(this.hostShell);
-  constructor(private readonly config: ValidatedConfig, private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly panes: TmuxAdapter = new TmuxAdapter()) {}
+  constructor(private readonly config: ValidatedConfig, private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly panes: TmuxAdapter = new TmuxAdapter(), private readonly paneRoot: (path: string) => Promise<string> = workspaceRoot) {}
   // resolve the authenticated account home independently from the launch directory
   agentHome(): string {
     const hostPath = this.config.worktrees.find(worktree => worktree.hostPath !== undefined)?.hostPath;
     return hostPath === undefined ? process.env.HOME ?? '/' : dirname(hostPath);
   }
   private async existingPane(worktree: Worktree): Promise<{ socket: SocketRef; pane: Pane } | undefined> {
-    const roots = [worktree.hostPath, worktree.identity].filter((path): path is string => path !== undefined);
     const sockets = await this.finder.find();
     // list every socket concurrently; the first match in discovery order still wins
     const listed = await Promise.all(sockets.map(async socket => ({ socket, panes: await this.panes.listPanes(socket) })));
     for (const { socket, panes } of listed) for (const pane of panes) {
-      if (!roots.some(root => pane.path === root || pane.path.startsWith(`${root}/`))) continue;
       if (pane.sessionName?.startsWith('rac-stack-')) continue;
       if (pane.command !== this.hostShellName) continue;
+      // reuse a shell only when its git toplevel is exactly this worktree, never a
+      // parent whose subtree holds a nested checkout (a `.claude/worktrees/<n>` the
+      // agent's own tool created); a subdirectory of the worktree still resolves here.
+      if (!await this.paneBelongsTo(worktree, pane.path)) continue;
       return { socket, pane };
     }
     return undefined;
+  }
+
+  // does a shell's working directory belong to this worktree by exact git toplevel?
+  private async paneBelongsTo(worktree: Worktree, paneCwd: string): Promise<boolean> {
+    // a shell already at the worktree root needs no git resolution
+    if (worktreeMatchesWorkspace(worktree, paneCwd)) return true;
+    return worktreeMatchesWorkspace(worktree, await this.paneRoot(paneCwd));
   }
   private async labelScratchSession(session: string, label = scratchLabel): Promise<boolean> {
     const socket = this.hostSocket === undefined ? [] : ['-S', this.hostSocket];
@@ -167,10 +177,10 @@ export class LaunchService {
           && await this.panes.enter(existing.socket, existing.pane.paneId)
           && await this.markSandboxed(existing.socket.path, existing.pane.paneId, sandboxed);
       }
-      const session = worktreeSessionName(worktree.hostPath ?? worktree.identity);
+      const session = worktreeSessionName(worktreeHostRoot(worktree));
       // launch host-mounted worktrees on the host socket
       if (this.hostSocket !== undefined) {
-        const hostWorktree = { ...worktree, identity: worktree.hostPath ?? worktree.identity };
+        const hostWorktree = { ...worktree, identity: worktreeHostRoot(worktree) };
         const home = dirname(hostWorktree.identity);
         const tail = ['-c', hostWorktree.identity, this.hostShell, '-lc', interactiveShellBootstrap(hostCommand(expandCommand(command, hostWorktree), home), home, this.hostShell)];
         return await startNamedReplacementSession(this.tmux, this.hostSocket, session, session, tail)

@@ -1,5 +1,4 @@
 import { lstat, open, realpath, readFile, readdir } from 'node:fs/promises';
-import { statSync } from 'node:fs';
 import { getuid } from 'node:process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
@@ -9,6 +8,7 @@ import { ProcInspector, type ProcessInspector } from './processes.js';
 import { PullRequestService } from '../pull-requests/service.js';
 import { parseReportedAttention, resolveAttention } from '../adapters/attention.js';
 import { adapterCapabilities, adapterFor, paneExcluded } from '../adapters/registry.js';
+import { worktreeMatchesWorkspace } from '../workspaces/resolver.js';
 import type { Adapter, AttentionState, Conversation } from '../adapters/types.js';
 import type { Agent, Dashboard, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, SocketRef, Worktree } from '../domain/models.js';
 import { classifyReviewPath } from '../git/change-classification.js';
@@ -263,7 +263,7 @@ async function gitPrComparisonForBase(meta: GitMeta, branch: string | undefined,
   return await gitPrComparison(meta.workspace, branch, meta.gitStatus, baseBranch, true);
 }
 // resolve one pane path to its repository root
-async function workspaceRoot(path: string): Promise<string> {
+export async function workspaceRoot(path: string): Promise<string> {
   const canonical = await realpath(path).catch(() => path);
   const root = await run('/usr/bin/git', ['-C', canonical, 'rev-parse', '--show-toplevel']);
   return root.code === 0 ? root.stdout.trim() : canonical;
@@ -489,7 +489,7 @@ export class DiscoveryService {
     };
     const agents = await Promise.all(discovered.map(async (agent) => {
       // keep modal advisors outside configured worktree identity
-      const order = isUpdateAdvisorLabel(agent.displayLabel) ? -1 : worktrees.findIndex(candidate => agent.workspace === candidate.identity || agent.workspace === candidate.hostPath);
+      const order = isUpdateAdvisorLabel(agent.displayLabel) ? -1 : worktrees.findIndex(candidate => worktreeMatchesWorkspace(candidate, agent.workspace));
       const worktree = order < 0 ? undefined : worktrees[order];
       const workspace = worktree?.identity ?? agent.workspace;
       const [meta, question] = await Promise.all([
@@ -506,9 +506,10 @@ export class DiscoveryService {
       const attention = resolveAttention({ kind: agent.kind, title: agent.title, reported: this.paneReported.get(agent.id), hasQuestion: question !== undefined });
       return { ...details, attention, ...(pullRequest === undefined ? {} : { pullRequest }), ...(question === undefined ? {} : { question }) };
     }));
-    // do not let a modal advisor hide the configured repository placeholder
-    const active = new Set(agents.filter(agent => !isUpdateAdvisorLabel(agent.displayLabel)).map(agent => agent.workspace));
-    const inactive = await Promise.all(worktrees.filter(worktree => !active.has(worktree.identity)).map(async (worktree) => {
+    // a worktree is inactive when no live agent associates to it; a modal advisor never
+    // claims the configured repository placeholder
+    const activeAgents = agents.filter(agent => !isUpdateAdvisorLabel(agent.displayLabel));
+    const inactive = await Promise.all(worktrees.filter(worktree => !activeAgents.some(agent => worktreeMatchesWorkspace(worktree, agent.workspace))).map(async (worktree) => {
       const meta = await metadataFor(worktree.identity);
       const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, meta.branch);
       const gitPrStatus = await gitPrComparisonForBase(meta, meta.branch, pullRequest?.baseBranch);

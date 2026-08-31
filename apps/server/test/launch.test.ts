@@ -231,17 +231,36 @@ describe('LaunchService', () => {
     expect(run.mock.calls[4]?.[1]).toEqual(['-S', '/tmp/tmux', 'rename-session', '-t', '$42', 'owen']);
   });
 
-  it('uses an existing pane in the configured worktree before creating a session', async () => {
+  it('reuses an existing shell whose git toplevel is the worktree, even from a subdirectory', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const worktree: Worktree = { id: 'alex', label: 'Alex', path: '/worktrees/alex', identity: '/worktrees/alex', hostPath: '/home/ubuntu/alex', available: true, command: 'alex' };
     const calls: string[][] = [];
     const finder = { find: async () => [socket] };
     const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: '/home/ubuntu/alex/src', command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', pane, buffer, command]); return true; }, enter: async (_socket: SocketRef, pane: string) => { calls.push(['enter', pane]); return true; } };
-    const service = new LaunchService({ worktrees: [worktree] } as never, finder, panes as never);
+    // the subdirectory shares the worktree's toplevel, so it belongs to the worktree
+    const paneRoot = async (path: string) => path === '/home/ubuntu/alex/src' ? '/home/ubuntu/alex' : path;
+    const service = new LaunchService({ worktrees: [worktree] } as never, finder, panes as never, paneRoot);
 
     await expect(service.launch('alex')).resolves.toBe(true);
     expect(calls[0]).toMatchObject(['paste', '%4', expect.stringMatching(/^rac-launch-/), 'alex']);
     expect(calls[1]).toEqual(['enter', '%4']);
+  });
+
+  it('never hijacks a shell sitting in a nested checkout under the worktree', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const worktree: Worktree = { id: 'alex', label: 'Alex', path: '/worktrees/alex', identity: '/worktrees/alex', hostPath: '/home/ubuntu/alex', available: true, command: 'codex' };
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: '/home/ubuntu/alex/.claude/worktrees/3', command: 'zsh', title: '', socket }], pastePrompt: vi.fn(), enter: vi.fn() };
+    // the nested checkout is its own git worktree — its toplevel is itself, not alex
+    const paneRoot = async (path: string) => path;
+    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [socket] }, panes as never, paneRoot);
+
+    await expect(service.launch('alex')).resolves.toBe(true);
+
+    // the nested checkout is left alone; the console starts a fresh session instead
+    expect(panes.pastePrompt).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['new-session', '-d', '-s', 'alex', '-c', '/home/ubuntu/alex']));
   });
 
   it('lists panes on every socket concurrently and prefers the first socket', async () => {

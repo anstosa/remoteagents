@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { ValidatedConfig } from '../config/schema.js';
 import { stackActions, type StackAction, type Worktree } from '../domain/models.js';
+import { worktreeHostRoot } from '../workspaces/resolver.js';
 import { run } from '../tmux/command.js';
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -128,7 +129,7 @@ export class WorktreeCommandService {
       try {
         const hostFile = join(this.hostWorkspace!, '.data', 'stack-status', name);
         await mkdir(dirname(containerFile), { recursive: true, mode: 0o700 });
-        const script = `${hostPathExport()}cd -- ${quote(worktree.hostPath ?? worktree.identity)}; { ${command}; }; printf '%s' "$?" > ${quote(hostFile)}`;
+        const script = `${hostPathExport()}cd -- ${quote(worktreeHostRoot(worktree))}; { ${command}; }; printf '%s' "$?" > ${quote(hostFile)}`;
         if (!await this.detached(worktree, script)) return;
         for (let attempt = 0; attempt < 20; attempt += 1) {
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -211,7 +212,7 @@ export class WorktreeCommandService {
     // require the host tmux socket
     if (this.socket === undefined) return undefined;
     const session = action === undefined ? `rac-stack-${worktree.id}-${randomBytes(9).toString('hex')}` : this.operationSession(worktree);
-    const directory = worktree.hostPath ?? worktree.identity;
+    const directory = worktreeHostRoot(worktree);
     let logFile: string | undefined;
     let hostLogFile: string | undefined;
     // prepare durable output for user-triggered actions

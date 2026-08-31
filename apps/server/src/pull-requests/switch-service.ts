@@ -5,6 +5,7 @@ import type { DiscoveryService } from '../discovery/service.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { run } from '../tmux/command.js';
 import { cleanAndPushedOrDetached, type GitCommand } from '../git/worktree-state.js';
+import { worktreeMatchesWorkspace } from '../workspaces/resolver.js';
 import { PullRequestService, type PullRequestChoice } from './service.js';
 import type { Worktree } from '../domain/models.js';
 
@@ -132,7 +133,7 @@ export class PullRequestSwitchService {
   }
 
   private worktree(workspace: string): Worktree | undefined {
-    return this.config.worktrees.find(worktree => workspace === worktree.identity || workspace === worktree.hostPath);
+    return this.config.worktrees.find(worktree => worktreeMatchesWorkspace(worktree, workspace));
   }
 
   private async cleanAndPushed(worktree: Worktree): Promise<boolean> {
