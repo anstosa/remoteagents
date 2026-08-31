@@ -76,7 +76,7 @@ describe('GitHub pull request lookup', () => {
     await expect(service.url('/workspace', 'feature')).resolves.toBeUndefined();
   });
 
-  it('lists the current user’s open and draft pull requests', async () => {
+  it('groups the current user’s open pull requests ahead of pull requests by others', async () => {
     const sha = 'c'.repeat(40);
     const service = new PullRequestService(async () => ({ code: 0, stdout: 'git@github.com:octo/repo.git\n' }), async (url) => {
       if (url.endsWith('/user')) return { ok: true, json: async () => ({ login: 'me' }) };
@@ -85,12 +85,15 @@ describe('GitHub pull request lookup', () => {
       if (url.endsWith('/status')) return { ok: true, json: async () => ({ statuses: [] }) };
       if (url.endsWith('/graphql')) return { ok: true, json: async () => ({ data: { repository: { pullRequest: { reviewThreads: { nodes: [{ isResolved: false, isOutdated: false }] } } } } }) };
       return { ok: true, json: async () => [
-        { number: 7, title: 'Draft work', draft: true, html_url: 'https://github.com/octo/repo/pull/7', user: { login: 'me' }, head: { ref: 'feature/draft', sha } },
-        { number: 8, title: 'Other user', draft: false, html_url: 'https://github.com/octo/repo/pull/8', user: { login: 'someone-else' }, head: { ref: 'feature/other' } }
+        { number: 7, title: 'Draft work', draft: true, html_url: 'https://github.com/octo/repo/pull/7', user: { login: 'me' }, head: { ref: 'feature/draft', sha, repo: { full_name: 'octo/repo' } } },
+        { number: 8, title: 'Other user', draft: false, html_url: 'https://attacker@github.com/wrong/repo/pull/999', user: { login: 'someone-else' }, head: { ref: 'feature/other', sha: 'd'.repeat(40), repo: { full_name: 'contributor/repo' } } }
       ] };
     }, undefined, () => 'private-token');
 
-    await expect(service.ownOpen('/workspace')).resolves.toEqual([{ number: 7, title: 'Draft work', draft: true, url: 'https://github.com/octo/repo/pull/7', branch: 'feature/draft', checks: 'failed', issues: { mergeConflicts: true, failingChecks: true, unresolvedComments: true } }]);
+    await expect(service.open('/workspace')).resolves.toEqual({
+      own: [{ number: 7, title: 'Draft work', draft: true, url: 'https://github.com/octo/repo/pull/7', branch: 'feature/draft', headSha: sha, headOnOrigin: true, checks: 'failed', issues: { mergeConflicts: true, failingChecks: true, unresolvedComments: true } }],
+      others: [{ number: 8, title: 'Other user', draft: false, url: 'https://github.com/octo/repo/pull/8', branch: 'feature/other', headSha: 'd'.repeat(40), headOnOrigin: false }]
+    });
   });
 
   // preserve and recover from upstream failures
@@ -104,11 +107,11 @@ describe('GitHub pull request lookup', () => {
       return { ok: true, status: 200, json: async () => [] };
     }, undefined, () => 'private-token');
 
-    await expect(service.ownOpen('/workspace')).rejects.toMatchObject({
+    await expect(service.open('/workspace')).rejects.toMatchObject({
       statusCode: 502,
       message: 'GitHub could not identify the authenticated user (503): GitHub is temporarily unavailable.'
     });
-    await expect(service.ownOpen('/workspace')).resolves.toEqual([]);
+    await expect(service.open('/workspace')).resolves.toEqual({ own: [], others: [] });
     expect(viewerRequests).toBe(4);
   });
 
@@ -124,12 +127,12 @@ describe('GitHub pull request lookup', () => {
       return { ok: true, status: 200, json: async () => [] };
     }, undefined, async () => ++tokenRequests === 1 ? 'expired-token' : 'fresh-token');
 
-    await expect(service.ownOpen('/workspace')).rejects.toMatchObject({
+    await expect(service.open('/workspace')).rejects.toMatchObject({
       statusCode: 502,
       githubStatus: 401,
       message: 'GitHub could not identify the authenticated user (401): Bad credentials'
     });
-    await expect(service.ownOpen('/workspace')).resolves.toEqual([]);
+    await expect(service.open('/workspace')).resolves.toEqual({ own: [], others: [] });
     expect(tokenRequests).toBe(2);
   });
 

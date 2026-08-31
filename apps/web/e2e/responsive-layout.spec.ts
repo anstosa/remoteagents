@@ -22,7 +22,7 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (/^\/api\/agents\/agent-[1-5]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (/^\/api\/agents\/agent-[1-5]\/saved-prompts$/u.test(url.pathname) && request.method() === 'GET') return route.fulfill({ json: { prompts: [{ id: 'saved-1', text: 'Saved prompt' }] } });
-    if (url.pathname === '/api/agents/agent-5/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [] } });
+    if (url.pathname === '/api/agents/agent-5/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [], otherPullRequests: [] } });
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 

@@ -88,7 +88,7 @@ test('opens the configured project in desktop and mobile split views', async ({ 
 
   const browser = page.getByRole('dialog', { name: 'Browser' });
   await expect(browser).toBeVisible();
-  await expect(browser.getByRole('toolbar', { name: 'Browser actions' })).toContainText('Browser');
+  await expect(browser.getByRole('toolbar', { name: 'Browser actions' })).not.toContainText('Browser');
   const deviceToggle = browser.locator('.browser-device-toggle');
   await expect(deviceToggle).toHaveCount(1);
   await expect(deviceToggle).toHaveAttribute('aria-label', 'Use mobile viewport and user agent');
@@ -196,7 +196,6 @@ test('opens the configured project in desktop and mobile split views', async ({ 
   await expect(deviceToggle).toHaveAttribute('aria-label', 'Use desktop viewport and user agent');
   await expect(deviceToggle).toHaveAttribute('aria-pressed', 'true');
   await expect(deviceToggle.locator('svg')).toHaveAttribute('data-device', 'mobile');
-  await expect(browser.locator('.browser-toolbar strong')).toBeVisible();
   expect(requestedDevices.at(-1)).toBe('mobile');
   await expect(browser.getByRole('button', { name: 'Go to project home' })).toBeVisible();
   await expect(browserDivider).toBeHidden();
@@ -217,7 +216,6 @@ test('opens the configured project in desktop and mobile split views', async ({ 
 
   await deviceToggle.click();
   await expect(browser.locator('.browser-frame-shell')).toHaveClass(/desktop/u);
-  await expect(browser.locator('.browser-toolbar strong')).toBeVisible();
   await expect(deviceToggle).toHaveAttribute('aria-label', 'Use mobile viewport and user agent');
   await expect(deviceToggle).toHaveAttribute('aria-pressed', 'false');
   await expect(deviceToggle.locator('svg')).toHaveAttribute('data-device', 'desktop');
@@ -361,7 +359,6 @@ test.describe('phone browser split', () => {
     const deviceToggle = browser.locator('.browser-device-toggle');
     const preview = page.frameLocator('iframe[title="Project browser"]');
     await expect(browser).toBeVisible();
-    await expect(browser.locator('.browser-toolbar strong')).toBeHidden();
     await expect(browser.getByRole('button', { name: 'Enter browser fullscreen' })).toBeHidden();
     await expect(deviceToggle.locator('svg')).toHaveCount(1);
     await expect(deviceToggle.locator('svg')).toHaveAttribute('data-device', 'desktop');

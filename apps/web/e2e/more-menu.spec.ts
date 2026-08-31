@@ -65,7 +65,8 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
             draft: true,
             url: 'https://github.example.com/pull/2568',
             checkedOut: false
-          }]
+          }],
+          otherPullRequests: []
         }
       });
     }
@@ -206,7 +207,7 @@ test('queues the configured push prompt and falls back to the default action', a
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
-    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [] } });
+    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [], otherPullRequests: [] } });
     if (url.pathname === '/api/agents/agent-1/prompt' && request.method() === 'POST') {
       const body = request.postDataJSON() as { prompt: string; attachments: unknown[] };
       expect(body.attachments).toEqual([]);
@@ -255,6 +256,9 @@ test('shows every pull request target while keeping external and worktree action
         pullRequests: [
           { number: 300, title: 'Visible while dirty', branch: 'feature/dirty-target', draft: false, url: 'https://github.example.com/pull/300', checkedOut: false },
           { number: 301, title: 'Already in Delta', branch: 'feature/delta-target', draft: false, url: 'https://github.example.com/pull/301', checkedOut: true, openIn: { agentId: 'agent-2', worktreeId: 'delta', worktreeName: 'Delta' } }
+        ],
+        otherPullRequests: [
+          { number: 302, title: 'Authored by someone else', branch: 'feature/other-author', draft: false, url: 'https://github.example.com/pull/302', checkedOut: false }
         ]
       }
     });
@@ -266,10 +270,15 @@ test('shows every pull request target while keeping external and worktree action
   const menu = page.locator('.more-menu');
   const dirtyTarget = menu.getByRole('button', { name: '#300: Visible while dirty' });
   const openTarget = menu.getByRole('button', { name: '#301: Already in Delta' });
+  const otherTarget = menu.getByRole('button', { name: '#302: Authored by someone else' });
   await expect(dirtyTarget).toBeVisible();
   await expect(dirtyTarget).toBeDisabled();
   await expect(openTarget).toBeVisible();
   await expect(openTarget).toBeDisabled();
+  await expect(otherTarget).not.toBeVisible();
+  await menu.getByText(/^Pull requests by others/u).click();
+  await expect(otherTarget).toBeVisible();
+  await expect(otherTarget).toBeDisabled();
   await expect(menu.getByRole('link', { name: 'Open PR #300 in GitHub' })).toHaveAttribute('href', 'https://github.example.com/pull/300');
 
   const switchToDelta = menu.getByRole('button', { name: 'Switch to Delta' });
@@ -308,13 +317,13 @@ test('shows the workspace pull request cache while refreshing after a tab remoun
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (/^\/api\/agents\/agent-[12]\/saved-prompts$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });
-    if (url.pathname === '/api/agents/agent-2/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [] } });
+    if (url.pathname === '/api/agents/agent-2/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [], otherPullRequests: [] } });
     if (url.pathname === '/api/agents/agent-1/switch-prs') {
       pullRequestRequests += 1;
       // hold the remount refresh
       if (pullRequestRequests > 1) await refreshFinished;
       const refreshed = pullRequestRequests > 1;
-      return route.fulfill({ json: { enabled: true, pullRequests: [{ number: refreshed ? 402 : 401, title: refreshed ? 'Refreshed PR' : 'Cached PR', branch: refreshed ? 'feature/refreshed' : 'feature/cached', draft: false, url: `https://github.example.com/pull/${refreshed ? 402 : 401}`, checkedOut: false }] } });
+      return route.fulfill({ json: { enabled: true, pullRequests: [{ number: refreshed ? 402 : 401, title: refreshed ? 'Refreshed PR' : 'Cached PR', branch: refreshed ? 'feature/refreshed' : 'feature/cached', draft: false, url: `https://github.example.com/pull/${refreshed ? 402 : 401}`, checkedOut: false }], otherPullRequests: [] } });
     }
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
@@ -357,12 +366,12 @@ test('disables stale pull request switching when a refresh fails', async ({ page
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (/^\/api\/agents\/agent-[12]\/saved-prompts$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });
-    if (url.pathname === '/api/agents/agent-2/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [] } });
+    if (url.pathname === '/api/agents/agent-2/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [], otherPullRequests: [] } });
     if (url.pathname === '/api/agents/agent-1/switch-prs') {
       pullRequestRequests += 1;
       // fail the remounted refresh
       if (pullRequestRequests > 1) return route.fulfill({ status: 502, json: { error: 'GitHub could not load pull requests (503).' } });
-      return route.fulfill({ json: { enabled: true, pullRequests: [{ number: 401, title: 'Cached PR', branch: 'feature/cached', draft: false, url: 'https://github.example.com/pull/401', checkedOut: false }] } });
+      return route.fulfill({ json: { enabled: true, pullRequests: [{ number: 401, title: 'Cached PR', branch: 'feature/cached', draft: false, url: 'https://github.example.com/pull/401', checkedOut: false }], otherPullRequests: [] } });
     }
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
@@ -393,7 +402,7 @@ test('formats the empty pull request state like the New Task description', async
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
-    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [] } });
+    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [], otherPullRequests: [] } });
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 

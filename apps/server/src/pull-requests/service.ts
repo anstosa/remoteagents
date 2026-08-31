@@ -11,8 +11,9 @@ type Token = () => Promise<string | undefined>;
 
 type GithubRepository = { owner: string; name: string };
 type PullRequestCandidate = PullRequestSummary & { headSha?: string };
-type PullRequestChoiceCandidate = PullRequestChoice & { headSha?: string };
-export type PullRequestChoice = { number: number; title: string; branch: string; draft: boolean; url: string; checks?: PullRequestCheckStatus; issues?: PullRequestIssues };
+type PullRequestChoiceCandidate = PullRequestChoice & { ownedByViewer: boolean };
+export type PullRequestChoice = { number: number; title: string; branch: string; headSha: string; headOnOrigin: boolean; draft: boolean; url: string; checks?: PullRequestCheckStatus; issues?: PullRequestIssues };
+export type OpenPullRequestChoices = { own: PullRequestChoice[]; others: PullRequestChoice[] };
 const cacheTtlMs = 60_000;
 const githubRequestAttempts = 3;
 const failingCheckConclusions = new Set(['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
@@ -68,8 +69,8 @@ export class PullRequestService {
     return (cached?.pending === undefined ? cached?.value : await cached.pending)?.url;
   }
 
-  // list the authenticated user's open pull requests
-  async ownOpen(workspace: string): Promise<PullRequestChoice[]> {
+  // group open pull requests around the authenticated user
+  async open(workspace: string): Promise<OpenPullRequestChoices> {
     const repository = await this.repository(workspace);
     // require one GitHub repository
     if (repository === undefined) throw new PullRequestLookupError('The worktree does not have a supported GitHub origin.', 503);
@@ -107,18 +108,24 @@ export class PullRequestService {
     // reject malformed success responses
     if (!Array.isArray(pulls)) throw new PullRequestLookupError('GitHub returned invalid pull request data.');
     const choices = pulls.flatMap((pull): PullRequestChoiceCandidate[] => {
+      // ignore malformed pull requests
       if (pull === null || typeof pull !== 'object') return [];
-      const value = pull as { number?: unknown; title?: unknown; draft?: unknown; html_url?: unknown; user?: { login?: unknown }; head?: { ref?: unknown; sha?: unknown } };
-      if (!Number.isInteger(value.number) || (value.number as number) < 1 || typeof value.title !== 'string' || typeof value.head?.ref !== 'string' || typeof value.user?.login !== 'string' || value.user.login !== viewer || typeof value.html_url !== 'string') return [];
-      try {
-        const url = new URL(value.html_url);
-        return url.protocol === 'https:' && url.hostname === 'github.com' ? [{ number: value.number as number, title: value.title, branch: value.head.ref, draft: value.draft === true, url: url.href, ...(typeof value.head.sha === 'string' && /^[a-f0-9]{40}$/iu.test(value.head.sha) ? { headSha: value.head.sha } : {}) }] : [];
-      } catch { return []; }
+      const value = pull as { number?: unknown; title?: unknown; draft?: unknown; user?: { login?: unknown }; head?: { ref?: unknown; sha?: unknown; repo?: { full_name?: unknown } | null } };
+      // require one safe switch target
+      if (!Number.isInteger(value.number) || (value.number as number) < 1 || typeof value.title !== 'string' || typeof value.head?.ref !== 'string' || typeof value.head.sha !== 'string' || !/^[a-f0-9]{40}$/iu.test(value.head.sha) || typeof value.user?.login !== 'string') return [];
+      const number = value.number as number;
+      const url = `https://github.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/pull/${number}`;
+      const originRepository = `${repository.owner}/${repository.name}`;
+      const headOnOrigin = typeof value.head.repo?.full_name === 'string' && value.head.repo.full_name.toLowerCase() === originRepository.toLowerCase();
+      return [{ number, title: value.title, branch: value.head.ref, headSha: value.head.sha.toLowerCase(), headOnOrigin, draft: value.draft === true, url, ownedByViewer: value.user.login === viewer }];
     });
-    return await Promise.all(choices.map(async ({ headSha, ...choice }) => {
+    const own = choices.filter(choice => choice.ownedByViewer);
+    const others = choices.filter(choice => !choice.ownedByViewer).map(({ ownedByViewer: _ownedByViewer, ...choice }) => choice);
+    return { own: await Promise.all(own.map(async ({ ownedByViewer: _ownedByViewer, ...choice }) => {
+      const { headSha } = choice;
       const { checks, issues } = await this.issueStatus(repository, choice.number, headSha, token);
       return { ...choice, checks, ...(Object.keys(issues).length === 0 ? {} : { issues }) };
-    }));
+    })), others };
   }
 
   async supports(workspace: string): Promise<boolean> { return await this.repository(workspace) !== undefined; }

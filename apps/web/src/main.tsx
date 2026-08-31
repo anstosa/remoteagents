@@ -26,7 +26,7 @@ type Stack = { actions: StackAction[]; running?: boolean; transition?: 'starting
 type PullRequestChoice = { number: number; title: string; branch: string; draft: boolean; url: string } & Pick<PullRequestSummary, 'checks' | 'issues'>;
 type PullRequestWorktree = { worktreeId: string; worktreeName: string; agentId?: string };
 type SwitchablePullRequest = PullRequestChoice & { checkedOut: boolean; openIn?: PullRequestWorktree };
-type PullRequestSwitchAvailability = { enabled: boolean; pullRequests: SwitchablePullRequest[] };
+type PullRequestSwitchAvailability = { enabled: boolean; pullRequests: SwitchablePullRequest[]; otherPullRequests: SwitchablePullRequest[] };
 type DashboardTarget = { worktreeId: string; agentId?: string };
 type PromptAction = { label: string; prompt: string };
 type GitStatusChange = { code: string; path: string; originalPath?: string; additions?: number; deletions?: number; category?: 'implementation'|'test'|'doc' };
@@ -3103,6 +3103,7 @@ const isProjectBrowserDeviceErrorMessage = (value: unknown): value is ProjectBro
   && Array.isArray((value as ProjectBrowserDeviceErrorMessage).properties)
   && (value as ProjectBrowserDeviceErrorMessage).properties.every(property => typeof property === 'string');
 // render project navigation controls and content
+// render the embedded project browser
 function ProjectBrowserPane({ url, homeUrl, worktreeId, navigationRequest, onNavigate, onClose }: { url: string; homeUrl: string; worktreeId?: string; navigationRequest?: ProjectBrowserNavigationRequest; onNavigate: (url: string) => boolean; onClose: () => void }) {
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(false);
@@ -3268,7 +3269,7 @@ function ProjectBrowserPane({ url, homeUrl, worktreeId, navigationRequest, onNav
     setFrameAwayFromKnownUrl(false);
     loadFrame(loadedFrameSource.current, nextMobile);
   };
-  return <section className={`browser-pane ${mobile ? 'mobile' : 'desktop'}${expanded ? ' expanded' : ''}`} role="dialog" aria-label="Browser" onKeyDown={handleEscape}><header className="browser-toolbar" role="toolbar" aria-label="Browser actions"><strong>Browser</strong>{deviceError && <span className="browser-device-error" role="alert" title={deviceError}>Mode failed</span>}<form className="browser-address-form" onSubmit={submitAddress}><input type="text" inputMode="url" aria-label="Browser address" value={address} spellCheck={false} onChange={changeAddress} onBlur={navigate} /></form><button className="browser-home" type="button" aria-label="Go to project home" title="Home" disabled={atHome} onClick={goHome}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 9-8 9 8M5 10v11h14V10M9 21v-7h6v7" /></svg></button><button className="browser-device-toggle" type="button" aria-label={mobile ? 'Use desktop viewport and user agent' : 'Use mobile viewport and user agent'} aria-pressed={mobile} title={mobile ? 'Desktop viewport and user agent' : 'Mobile viewport and user agent'} onClick={toggleDevice}><svg data-device={mobile ? 'mobile' : 'desktop'} viewBox="0 0 24 24" aria-hidden="true">{mobile ? <><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M10 5h4M11 19h2" /></> : <><rect x="3" y="5" width="18" height="13" rx="1" /><path d="M8 21h8M12 18v3" /></>}</svg></button><button className={`browser-refresh${loading ? ' loading' : ''}`} type="button" aria-label={loading ? 'Stop loading browser' : 'Refresh browser'} aria-busy={loading} title={loading ? 'Stop' : 'Refresh'} onClick={toggleFrameLoad}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={loading ? 'm6 6 12 12M18 6 6 18' : 'M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6'} /></svg></button><button className="browser-expand" type="button" aria-label={expanded ? 'Exit browser fullscreen' : 'Enter browser fullscreen'} aria-pressed={expanded} title={expanded ? 'Exit fullscreen' : 'Fullscreen'} onClick={() => setExpanded(value => !value)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="browser-close" type="button" aria-label="Close browser" title="Close" onClick={onClose}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header><div ref={frameShellRef} className={`browser-frame-shell ${mobile ? 'mobile' : 'desktop'}`}><iframe ref={frameRef} src={frameSource} title="Project browser" referrerPolicy="no-referrer" onLoad={syncFrameLocation} /></div></section>;
+  return <section className={`browser-pane ${mobile ? 'mobile' : 'desktop'}${expanded ? ' expanded' : ''}`} role="dialog" aria-label="Browser" onKeyDown={handleEscape}><header className="browser-toolbar" role="toolbar" aria-label="Browser actions">{deviceError && <span className="browser-device-error" role="alert" title={deviceError}>Mode failed</span>}<form className="browser-address-form" onSubmit={submitAddress}><input type="text" inputMode="url" aria-label="Browser address" value={address} spellCheck={false} onChange={changeAddress} onBlur={navigate} /></form><button className="browser-home" type="button" aria-label="Go to project home" title="Home" disabled={atHome} onClick={goHome}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 9-8 9 8M5 10v11h14V10M9 21v-7h6v7" /></svg></button><button className="browser-device-toggle" type="button" aria-label={mobile ? 'Use desktop viewport and user agent' : 'Use mobile viewport and user agent'} aria-pressed={mobile} title={mobile ? 'Desktop viewport and user agent' : 'Mobile viewport and user agent'} onClick={toggleDevice}><svg data-device={mobile ? 'mobile' : 'desktop'} viewBox="0 0 24 24" aria-hidden="true">{mobile ? <><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M10 5h4M11 19h2" /></> : <><rect x="3" y="5" width="18" height="13" rx="1" /><path d="M8 21h8M12 18v3" /></>}</svg></button><button className={`browser-refresh${loading ? ' loading' : ''}`} type="button" aria-label={loading ? 'Stop loading browser' : 'Refresh browser'} aria-busy={loading} title={loading ? 'Stop' : 'Refresh'} onClick={toggleFrameLoad}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={loading ? 'm6 6 12 12M18 6 6 18' : 'M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6'} /></svg></button><button className="browser-expand" type="button" aria-label={expanded ? 'Exit browser fullscreen' : 'Enter browser fullscreen'} aria-pressed={expanded} title={expanded ? 'Exit fullscreen' : 'Fullscreen'} onClick={() => setExpanded(value => !value)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="browser-close" type="button" aria-label="Close browser" title="Close" onClick={onClose}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header><div ref={frameShellRef} className={`browser-frame-shell ${mobile ? 'mobile' : 'desktop'}`}><iframe ref={frameRef} src={frameSource} title="Project browser" referrerPolicy="no-referrer" onLoad={syncFrameLocation} /></div></section>;
 }
 
 type SplitPanel = 'agent'|'note'|'browser';
@@ -4245,6 +4246,55 @@ function MoreMenuIcon({ name }: { name: MoreMenuIconName }) {
   return <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d={paths[name]} /></svg>;
 }
 
+// retain only safe pull request actions
+function switchablePullRequests(values: unknown[]): SwitchablePullRequest[] {
+  return values.filter((value): value is SwitchablePullRequest => {
+    // require the core pull request fields
+    if (value === null || typeof value !== 'object' || !Number.isInteger((value as PullRequestChoice).number) || typeof (value as PullRequestChoice).title !== 'string' || typeof (value as PullRequestChoice).branch !== 'string' || typeof (value as PullRequestChoice).draft !== 'boolean' || typeof (value as PullRequestChoice).url !== 'string' || typeof (value as SwitchablePullRequest).checkedOut !== 'boolean') return false;
+    const checks = (value as PullRequestChoice).checks;
+    // constrain the optional CI status
+    if (checks !== undefined && checks !== 'passed' && checks !== 'pending' && checks !== 'failed') return false;
+    const issues = (value as PullRequestChoice).issues;
+    // constrain the optional issue flags
+    if (issues !== undefined && (issues === null || typeof issues !== 'object' || Object.entries(issues).some(([name, enabled]) => !['mergeConflicts', 'failingChecks', 'unresolvedComments'].includes(name) || typeof enabled !== 'boolean'))) return false;
+    const openIn = (value as SwitchablePullRequest).openIn;
+    return openIn === undefined || (openIn !== null && typeof openIn === 'object' && typeof openIn.worktreeId === 'string' && typeof openIn.worktreeName === 'string' && (openIn.agentId === undefined || typeof openIn.agentId === 'string'));
+  });
+}
+
+// explain one unavailable switch target
+function pullRequestUnavailableReason(pullRequest: SwitchablePullRequest, enabled: boolean, refreshFailed: boolean, label: string): string {
+  // prioritize stale remote data
+  if (refreshFailed) return 'Pull request list could not be refreshed';
+  // identify an occupied checkout branch
+  if (pullRequest.checkedOut) return `Already open in ${pullRequest.openIn?.worktreeName ?? 'another worktree'}`;
+  // protect a dirty working copy
+  if (!enabled) return 'Working copy must be clean and pushed';
+  return label;
+}
+
+// render one pull request switch target
+function SwitchPullRequestOption({ pullRequest, enabled, loading, refreshFailed, switchingPr, onSwitch, onSelectTarget }: { pullRequest: SwitchablePullRequest; enabled: boolean; loading: boolean; refreshFailed: boolean; switchingPr?: number; onSwitch: (number: number) => void | Promise<void>; onSelectTarget: (target: DashboardTarget) => void }) {
+  const status = pullRequest.draft ? 'draft' : 'open';
+  const label = `#${pullRequest.number}: ${pullRequest.title}`;
+  const unavailableReason = pullRequestUnavailableReason(pullRequest, enabled, refreshFailed, label);
+  const openIn = pullRequest.openIn;
+  return <div className="switch-pr-option"><button className="switch-pr" disabled={loading || refreshFailed || switchingPr !== undefined || pullRequest.checkedOut || !enabled} title={unavailableReason} aria-label={label} onClick={() => void onSwitch(pullRequest.number)}>{switchingPr === pullRequest.number ? <><span className="spinner" />Switching…</> : <span className="switch-pr-copy"><strong className={`status-${status}`}>#{pullRequest.number}</strong><span>: {pullRequest.title}</span></span>}</button><span className="switch-pr-actions"><PullRequestStatusIcon status={status} className="switch-pr-status-icon" /><PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} /><a className="switch-pr-action switch-pr-external outline-button" href={pullRequest.url} target="_blank" rel="noreferrer" aria-label={`Open PR #${pullRequest.number} in GitHub`} title={`Open PR #${pullRequest.number} in GitHub`}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5M19 5l-8 8M19 14v5H5V5h5" /></svg><span>Open in GitHub</span></a>{openIn !== undefined && <button className="switch-pr-action switch-pr-worktree outline-button" onClick={() => onSelectTarget(openIn)}>Switch to {openIn.worktreeName}</button>}</span></div>;
+}
+
+// explain pull request availability
+function pullRequestStatusReason(loading: boolean, error: string | undefined, loaded: boolean, availability: PullRequestSwitchAvailability | undefined): string | undefined {
+  // prioritize active loading
+  if (loading) return 'Loading pull requests…';
+  // preserve one actionable error
+  if (error !== undefined) return error;
+  // distinguish an unavailable endpoint
+  if (loaded && availability === undefined) return 'Pull requests unavailable.';
+  // explain an empty owned list
+  if (availability?.pullRequests.length === 0) return availability.otherPullRequests.length > 0 ? 'No open pull requests by you.' : 'No open pull requests.';
+  return undefined;
+}
+
 // render the agent action menu
 function More({ id, worktreeId, newTaskConfigured = false, pushAction = defaultPushAction, attachDisabled = false, onAttach, swapDisabled = false, onSwap, onPromptQueued, onSelectTarget, onOperationFeedback }: { id?: string; worktreeId?: string; newTaskConfigured?: boolean; pushAction?: PromptAction; attachDisabled?: boolean; onAttach?: () => void; swapDisabled?: boolean; onSwap?: () => void; onPromptQueued?: () => void | Promise<void>; onSelectTarget: (target: DashboardTarget) => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
   const [menuOpen, setMenuOpen] = useState(false); const { anchorRef, flyoutRef, style } = useViewportFlyout(menuOpen);
@@ -4284,18 +4334,14 @@ function More({ id, worktreeId, newTaskConfigured = false, pushAction = defaultP
         setLoadingPrSwitch(false);
         return;
       }
+      const availability = payload as { enabled?: unknown; pullRequests?: unknown; otherPullRequests?: unknown };
       // validate successful availability
-      if (payload !== null && typeof payload === 'object' && typeof (payload as { enabled?: unknown }).enabled === 'boolean' && Array.isArray((payload as { pullRequests?: unknown }).pullRequests)) {
-        const pullRequests = (payload as { pullRequests: unknown[] }).pullRequests.filter((value): value is SwitchablePullRequest => {
-          if (value === null || typeof value !== 'object' || !Number.isInteger((value as PullRequestChoice).number) || typeof (value as PullRequestChoice).title !== 'string' || typeof (value as PullRequestChoice).branch !== 'string' || typeof (value as PullRequestChoice).draft !== 'boolean' || typeof (value as PullRequestChoice).url !== 'string' || typeof (value as SwitchablePullRequest).checkedOut !== 'boolean') return false;
-          const checks = (value as PullRequestChoice).checks;
-          if (checks !== undefined && checks !== 'passed' && checks !== 'pending' && checks !== 'failed') return false;
-          const issues = (value as PullRequestChoice).issues;
-          if (issues !== undefined && (issues === null || typeof issues !== 'object' || Object.entries(issues).some(([name, enabled]) => !['mergeConflicts', 'failingChecks', 'unresolvedComments'].includes(name) || typeof enabled !== 'boolean'))) return false;
-          const openIn = (value as SwitchablePullRequest).openIn;
-          return openIn === undefined || (openIn !== null && typeof openIn === 'object' && typeof openIn.worktreeId === 'string' && typeof openIn.worktreeName === 'string' && (openIn.agentId === undefined || typeof openIn.agentId === 'string'));
-        });
-        const next = { enabled: (payload as { enabled: boolean }).enabled, pullRequests };
+      if (payload !== null && typeof payload === 'object' && typeof availability.enabled === 'boolean' && Array.isArray(availability.pullRequests) && Array.isArray(availability.otherPullRequests)) {
+        const next = {
+          enabled: availability.enabled,
+          pullRequests: switchablePullRequests(availability.pullRequests),
+          otherPullRequests: switchablePullRequests(availability.otherPullRequests)
+        };
         // cache one workspace list
         if (prSwitchCacheKey !== undefined) pullRequestSwitchCache.set(prSwitchCacheKey, next);
         setPrSwitch(next);
@@ -4366,14 +4412,10 @@ function More({ id, worktreeId, newTaskConfigured = false, pushAction = defaultP
   };
   const selectWorktree = (target: DashboardTarget) => { setMenuOpen(false); onSelectTarget(target); };
   if (id === undefined) return null;
-  const pullRequestReason = loadingPrSwitch ? 'Loading pull requests…' : prSwitchError ?? (prSwitchLoaded && prSwitch === undefined ? 'Pull requests unavailable.' : prSwitch?.pullRequests.length === 0 ? 'No open pull requests.' : undefined);
+  const otherPullRequestCount = prSwitch?.otherPullRequests.length ?? 0;
+  const pullRequestReason = pullRequestStatusReason(loadingPrSwitch, prSwitchError, prSwitchLoaded, prSwitch);
   const newTaskReason = !newTaskConfigured ? 'Not configured for this worktree.' : newTask === undefined ? 'Checking availability…' : newTask.enabled ? 'Start a fresh task for this worktree.' : newTask.reason ?? 'New Task is currently unavailable.';
-  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} onClick={toggleMenu}>⋮</button></span>{menuOpen && createPortal(<div className="more-menu flyout-menu pr-switch-menu" ref={flyoutRef} style={style} aria-busy={loadingPrSwitch || loadingGithubActions || loadingNewTask}><div className="pr-switch-summary"><button className="pr-switch-heading" type="button" aria-label="Pull requests" disabled>{loadingPrSwitch ? <span className="spinner" /> : <MoreMenuIcon name="pull-request" />}Pull requests</button>{pullRequestReason !== undefined && <span className={`more-menu-reason${prSwitchError === undefined ? '' : ' pr-switch-error'}`} role={prSwitchError === undefined ? 'status' : 'alert'} aria-label={pullRequestReason}>{pullRequestReason}</span>}</div>{prSwitch?.pullRequests.map(pullRequest => {
-    const status = pullRequest.draft ? 'draft' : 'open';
-    const label = `#${pullRequest.number}: ${pullRequest.title}`;
-    const unavailableReason = prSwitchError !== undefined ? 'Pull request list could not be refreshed' : pullRequest.checkedOut ? `Already open in ${pullRequest.openIn?.worktreeName ?? 'another worktree'}` : !prSwitch.enabled ? 'Working copy must be clean and pushed' : label;
-    return <div key={pullRequest.number} className="switch-pr-option"><button className="switch-pr" disabled={loadingPrSwitch || prSwitchError !== undefined || switchingPr !== undefined || pullRequest.checkedOut || !prSwitch.enabled} title={unavailableReason} aria-label={label} onClick={() => void switchPullRequest(pullRequest.number)}>{switchingPr === pullRequest.number ? <><span className="spinner" />Switching…</> : <span className="switch-pr-copy"><strong className={`status-${status}`}>#{pullRequest.number}</strong><span>: {pullRequest.title}</span></span>}</button><span className="switch-pr-actions"><PullRequestStatusIcon status={status} className="switch-pr-status-icon" /><PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} /><a className="switch-pr-action switch-pr-external outline-button" href={pullRequest.url} target="_blank" rel="noreferrer" aria-label={`Open PR #${pullRequest.number} in GitHub`} title={`Open PR #${pullRequest.number} in GitHub`}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5M19 5l-8 8M19 14v5H5V5h5" /></svg><span>Open in GitHub</span></a>{pullRequest.openIn && <button className="switch-pr-action switch-pr-worktree outline-button" onClick={() => selectWorktree(pullRequest.openIn!)}>Switch to {pullRequest.openIn.worktreeName}</button>}</span></div>;
-  })}<hr className="more-menu-divider" /><button disabled={onSwap === undefined || swapDisabled} onClick={swapToTerminal}><MoreMenuIcon name="swap" />Swap to terminal</button><button disabled={promptPending} onClick={() => void queuePush()}>{promptPending ? <span className="spinner" /> : <MoreMenuIcon name="push" />}{pushAction.label}</button><button disabled={onAttach === undefined || attachDisabled} onClick={attachFiles}><MoreMenuIcon name="attachment" />Attach files</button>{loadingGithubActions ? <button className="github-actions-loading" type="button" disabled><span className="spinner" />GitHub Actions</button> : githubActionsUrl === undefined ? <button type="button" disabled title="GitHub Actions unavailable"><MoreMenuIcon name="actions" />GitHub Actions</button> : <a className="more-menu-link" href={githubActionsUrl} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)}><MoreMenuIcon name="actions" />GitHub Actions</a>}<div className="new-task-option"><button disabled={!newTaskConfigured || loadingNewTask || !newTask?.enabled || startingNewTask} onClick={() => void startNewTask()}>{loadingNewTask || startingNewTask ? <><span className="spinner" />{startingNewTask ? 'Starting New Task' : 'New Task'}</> : <><MoreMenuIcon name="new-task" />New Task</>}</button><span className="more-menu-reason" role="status">{newTaskReason}</span></div></div>, document.body)}</>;
+  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} onClick={toggleMenu}>⋮</button></span>{menuOpen && createPortal(<div className="more-menu flyout-menu pr-switch-menu" ref={flyoutRef} style={style} aria-busy={loadingPrSwitch || loadingGithubActions || loadingNewTask}><div className="pr-switch-summary"><button className="pr-switch-heading" type="button" aria-label="Pull requests" disabled>{loadingPrSwitch ? <span className="spinner" /> : <MoreMenuIcon name="pull-request" />}Pull requests</button>{pullRequestReason !== undefined && <span className={`more-menu-reason${prSwitchError === undefined ? '' : ' pr-switch-error'}`} role={prSwitchError === undefined ? 'status' : 'alert'} aria-label={pullRequestReason}>{pullRequestReason}</span>}</div>{prSwitch?.pullRequests.map(pullRequest => <SwitchPullRequestOption key={pullRequest.number} pullRequest={pullRequest} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingPr={switchingPr} onSwitch={switchPullRequest} onSelectTarget={selectWorktree} />)}{prSwitch !== undefined && otherPullRequestCount > 0 && <details className="other-pull-requests"><summary>Pull requests by others <span>{otherPullRequestCount}</span></summary><div>{prSwitch.otherPullRequests.map(pullRequest => <SwitchPullRequestOption key={pullRequest.number} pullRequest={pullRequest} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingPr={switchingPr} onSwitch={switchPullRequest} onSelectTarget={selectWorktree} />)}</div></details>}<hr className="more-menu-divider" /><button disabled={onSwap === undefined || swapDisabled} onClick={swapToTerminal}><MoreMenuIcon name="swap" />Swap to terminal</button><button disabled={promptPending} onClick={() => void queuePush()}>{promptPending ? <span className="spinner" /> : <MoreMenuIcon name="push" />}{pushAction.label}</button><button disabled={onAttach === undefined || attachDisabled} onClick={attachFiles}><MoreMenuIcon name="attachment" />Attach files</button>{loadingGithubActions ? <button className="github-actions-loading" type="button" disabled><span className="spinner" />GitHub Actions</button> : githubActionsUrl === undefined ? <button type="button" disabled title="GitHub Actions unavailable"><MoreMenuIcon name="actions" />GitHub Actions</button> : <a className="more-menu-link" href={githubActionsUrl} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)}><MoreMenuIcon name="actions" />GitHub Actions</a>}<div className="new-task-option"><button disabled={!newTaskConfigured || loadingNewTask || !newTask?.enabled || startingNewTask} onClick={() => void startNewTask()}>{loadingNewTask || startingNewTask ? <><span className="spinner" />{startingNewTask ? 'Starting New Task' : 'New Task'}</> : <><MoreMenuIcon name="new-task" />New Task</>}</button><span className="more-menu-reason" role="status">{newTaskReason}</span></div></div>, document.body)}</>;
 }
 
 // render an active agent
