@@ -303,6 +303,9 @@ export const isOmxWorkerPane = (pane: Pane) => omxWorkerWorktree.test(pane.path)
 export class DiscoveryService {
   private generation = 0; private snapshot: Agent[] = [];
   private panePids = new Map<string, number>();
+  // raw `#{pane_current_path}` per agent id, so the Adapter can match a sandboxed
+  // pane's rollout by its working directory without readlink-ing its descriptors
+  private paneCwds = new Map<string, string>();
   // reported @rac_attention per agent id, so the dashboard re-resolves with the question
   private paneReported = new Map<string, AttentionState>();
   private readonly serverStartedAt = Date.now();
@@ -349,6 +352,7 @@ export class DiscoveryService {
     const sockets = await this.sockets(true);
     const panes = (await Promise.all(sockets.map(async (socket) => (await this.tmux.listPanes(socket)).map(pane => ({ ...pane, socket }))))).flat();
     const panePids = new Map<string, number>();
+    const paneCwds = new Map<string, string>();
     const paneReported = new Map<string, AttentionState>();
     const agents: Agent[] = (await Promise.all(panes.filter(pane => !isOmxWorkerPane(pane)).map(async (pane): Promise<Agent | undefined> => {
       const recognized = await this.processes.recognizeAgent(pane.pid);
@@ -360,6 +364,7 @@ export class DiscoveryService {
       const workspace = await workspaceRoot(pane.path);
       const id = `${pane.socket.fingerprint}:${pane.paneId}`;
       panePids.set(id, pane.pid);
+      paneCwds.set(id, pane.path);
       const reported = parseReportedAttention(pane.reportedAttention);
       if (reported !== undefined) paneReported.set(id, reported);
       const attention = resolveAttention({ kind: recognized.kind, title: pane.title, reported, hasQuestion: false });
@@ -368,6 +373,7 @@ export class DiscoveryService {
     }))).filter((agent): agent is Agent => agent !== undefined);
     this.snapshot = agents;
     this.panePids = panePids;
+    this.paneCwds = paneCwds;
     this.paneReported = paneReported;
     this.refreshedAt = Date.now();
     this.generation++;
@@ -386,6 +392,22 @@ export class DiscoveryService {
     if (agent === undefined) return undefined;
     const socket = (await this.sockets()).find(candidate => candidate.fingerprint === agent!.socketFingerprint);
     return socket === undefined ? undefined : { agent, socket };
+  }
+
+  // the OS pid backing one discovered pane, for the Adapter's rollout reads
+  paneProcessId(id: string): number | undefined {
+    return this.panePids.get(id);
+  }
+
+  // the pane's working directory, for the Adapter's privilege-free rollout match —
+  // but only when no other discovered pane shares it, so a directory running two
+  // agents fails closed to the TUI path rather than risk a sibling's rollout
+  paneWorkingDirectory(id: string): string | undefined {
+    const path = this.paneCwds.get(id);
+    if (path === undefined) return undefined;
+    let count = 0;
+    for (const value of this.paneCwds.values()) if (value === path && (count += 1) > 1) return undefined;
+    return path;
   }
 
   // resolve the selected pane, its Adapter, and the pid its conversation lives under

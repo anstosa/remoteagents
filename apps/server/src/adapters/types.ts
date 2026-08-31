@@ -21,6 +21,23 @@ export type Conversation = { id: string; title?: string };
 export type Turn = { prompt?: string; text: string; rows?: number };
 export type InlineQuestion = { id: string; text: string; choices: string[]; source: 'structured' | 'parsed'; targetPaneId?: string };
 export type PromptCommand = { name: string; description?: string };
+/**
+ * The outcome of a turn read from the agent's structured event log: `pending`
+ * while no terminal turn has been recorded past the baseline, `completed` (with
+ * its answer) for a normal finish, `aborted` for an interrupt or cancellation.
+ */
+export type CompletionEvent =
+  | { kind: 'pending' }
+  | { kind: 'completed'; ordinal: number; answer: string }
+  | { kind: 'aborted'; ordinal: number };
+/**
+ * A rollout completion baseline snapshotted before a turn starts: `rollout` pins
+ * the exact event-log file the turn will be read from, `ordinal` is that file's
+ * max ordinal at the snapshot. Pinning the file (rather than re-resolving it at
+ * completion) keeps `baseline` and `since` reading the same rollout even when a
+ * sibling pane's rollout later becomes the newest in a shared directory.
+ */
+export type CompletionBaseline = { rollout: string; ordinal: number };
 
 export interface Adapter {
   readonly kind: AgentKind;
@@ -54,6 +71,23 @@ export interface Adapter {
     discover?(pid: number): Promise<Conversation | undefined>;
     /** The title of one already-known conversation (its id is unique), used when the pane reports it through `@rac_session`. */
     title?(id: string): Promise<string | undefined>;
+  };
+  /**
+   * Turn completion read from the agent's own structured event log rather than the
+   * TUI (ADR 0002). Native Codex renders no `─ Worked for` footer, so `turns`
+   * (a pure TUI-string parse) never observes a completion; the rollout's
+   * `task_complete`/`turn_aborted` events are the authoritative signal instead.
+   * `baseline` resolves the pane's rollout and snapshots its state *before* a turn
+   * starts; `since` returns the newest terminal turn recorded in that same rollout
+   * past the baseline — its answer for a completion. The pane's `pid` drives the
+   * `/proc` fd-walk; its `cwd` (supplied only when unique among live panes) is the
+   * privilege-free fallback a confined service uses when it cannot readlink a
+   * sandboxed pane's descriptors. `baseline` returns `undefined` when no single
+   * rollout resolves, at which point the console falls back to `turns`.
+   */
+  readonly completion?: {
+    baseline(pane: { pid: number; cwd?: string }): Promise<CompletionBaseline | undefined>;
+    since(baseline: CompletionBaseline): Promise<CompletionEvent | undefined>;
   };
   readonly sandbox?: {
     needs: { domains: string[]; statePaths: string[]; protectedPaths: string[]; secrets: string[] };

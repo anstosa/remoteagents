@@ -4,6 +4,7 @@ import { readFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { maxPromptAttachmentBytes, PromptService } from '../src/prompts/service.js';
+import { codexAdapter } from '../src/adapters/codex.js';
 import { inlineQuestionId } from '../src/adapters/codex-questions.js';
 import { QueuedPromptService } from '../src/prompts/queue.js';
 import { SavedPromptService } from '../src/saved-prompts/service.js';
@@ -589,6 +590,99 @@ it('marks queued prompts for saving when cancellation succeeds', async () => {
     expect(interrupts).toEqual(['%1']);
     await expect(service.listQueued(agent.id)).resolves.toEqual([]);
     await expect(saved.list(agent.id)).resolves.toMatchObject([{ text: 'Do not run this' }]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+it('dispatches a prompt queued behind a Codex turn that completes only in the rollout', async () => {
+  // The reported bug: native Codex renders no `─ Worked for` boundary, so the TUI
+  // parse never observes the finish; the first prompt's phase never completes and,
+  // after the grace window, the queued second prompt is relocated to saved. The
+  // rollout's task_complete is the authoritative signal that fixes it.
+  const directory = await mkdtemp(join(tmpdir(), 'rac-rollout-complete-'));
+  const queue = new QueuedPromptService(join(directory, 'queue.json'));
+  const saved = new SavedPromptService(join(directory, 'saved.json'));
+  const mutableAgent = stated({ ...agent, title: 'Ready' });
+  const pasted: string[] = [];
+  const recorded: Array<[string, string]> = [];
+  let composer = '';
+  let turnDone = false;
+  const discovery = {
+    target: async () => ({ agent: mutableAgent, socket }),
+    paneProcessId: () => 4242
+  };
+  const tmux = {
+    // a native-Codex pane: a prompt and a working bullet, but never a completion boundary
+    pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt.trimEnd()); composer = `› ${prompt} • Working`; return true; },
+    capture: async () => composer || '› Ready',
+    sendKeys: async () => true
+  };
+  const history = {
+    record: async (_scope: string, text: string) => ({ id: `h-${pasted.length}`, text }),
+    recordAnswer: async (_scope: string, id: string, answer: string) => { recorded.push([id, answer]); return { id }; }
+  };
+  // the real Codex adapter with a scripted rollout: pending until the turn finishes
+  const view = {
+    ...codexAdapter,
+    completion: {
+      baseline: async () => ({ rollout: 'rollout.jsonl', ordinal: 0 }),
+      since: async (baseline: { ordinal: number }) => turnDone ? { kind: 'completed' as const, ordinal: baseline.ordinal + 4, answer: 'The answer.' } : { kind: 'pending' as const }
+    }
+  };
+  const service = new PromptService(discovery as never, tmux as never, [], history as never, queue, saved, () => view);
+  try {
+    await expect(service.submit(agent.id, 'First prompt')).resolves.toBe(true);
+    await expect(service.submit(agent.id, 'Second prompt')).resolves.toBe(true);
+    await expect(service.listQueued(agent.id)).resolves.toMatchObject([{ text: 'Second prompt' }]);
+
+    // the turn runs and returns; the rollout has not yet recorded task_complete
+    mutableAgent.title = '⠋ Working';
+    await service.observe(mutableAgent);
+    mutableAgent.title = 'Ready';
+    await service.observe(mutableAgent);
+    await service.observe(mutableAgent);
+    // still pending: the second prompt is neither dispatched nor saved
+    expect(pasted).toEqual(['First prompt']);
+    await expect(service.listQueued(agent.id)).resolves.toMatchObject([{ text: 'Second prompt' }]);
+    await expect(saved.list(agent.id)).resolves.toEqual([]);
+
+    // the rollout records task_complete: the answer is stored and the queue dispatches
+    turnDone = true;
+    await service.observe(mutableAgent);
+    expect(pasted).toEqual(['First prompt', 'Second prompt']);
+    expect(recorded).toEqual([['h-1', 'The answer.']]);
+    await expect(saved.list(agent.id)).resolves.toEqual([]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+it('fails a rollout-tracked turn that the log records as aborted', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'rac-rollout-abort-'));
+  const queue = new QueuedPromptService(join(directory, 'queue.json'));
+  const saved = new SavedPromptService(join(directory, 'saved.json'));
+  const mutableAgent = stated({ ...agent, title: 'Ready' });
+  const pasted: string[] = [];
+  let composer = '';
+  const discovery = { target: async () => ({ agent: mutableAgent, socket }), paneProcessId: () => 4242 };
+  const tmux = {
+    pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt.trimEnd()); composer = `› ${prompt} • Working`; return true; },
+    capture: async () => composer || '› Ready',
+    sendKeys: async () => true
+  };
+  const view = { ...codexAdapter, completion: { baseline: async () => ({ rollout: 'rollout.jsonl', ordinal: 0 }), since: async (baseline: { ordinal: number }) => ({ kind: 'aborted' as const, ordinal: baseline.ordinal + 3 }) } };
+  const service = new PromptService(discovery as never, tmux as never, [], undefined, queue, saved, () => view);
+  try {
+    await expect(service.submit(agent.id, 'First prompt')).resolves.toBe(true);
+    await expect(service.submit(agent.id, 'Second prompt')).resolves.toBe(true);
+
+    mutableAgent.title = '⠋ Working';
+    await service.observe(mutableAgent);
+    mutableAgent.title = 'Ready';
+    await service.observe(mutableAgent);
+    await service.observe(mutableAgent);
+
+    // an aborted turn holds the queue back and saves it rather than dispatching
+    expect(pasted).toEqual(['First prompt']);
+    await expect(service.listQueued(agent.id)).resolves.toEqual([]);
+    await expect(saved.list(agent.id)).resolves.toMatchObject([{ text: 'Second prompt' }]);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

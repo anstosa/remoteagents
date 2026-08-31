@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { isAgentCommand } from '../discovery/processes.js';
 import { failedTurnFromCapture, lastPromptFromHistory, latestAgentMessageFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from './codex-turns.js';
 import { parseChoiceQuestion, pendingOmxQuestion } from './codex-questions.js';
-import { codexConversationTitle, discoverCodexConversation, validCodexThreadId } from './codex-conversations.js';
+import { codexConversationTitle, codexRolloutBaseline, codexTurnSince, discoverCodexConversation, validCodexThreadId } from './codex-conversations.js';
 import type { Adapter, AttentionState, PromptCommand } from './types.js';
 
 // Codex's curated slash commands, shown in the prompt box beside its `$skills`.
@@ -79,5 +79,9 @@ export const codexAdapter: Adapter = {
     validId: validCodexThreadId,
     discover: (pid) => discoverCodexConversation(pid),
     title: (id) => codexConversationTitle(id),
+  },
+  completion: {
+    baseline: (pane) => codexRolloutBaseline(pane),
+    since: (baseline) => codexTurnSince(baseline),
   },
 };

@@ -5,7 +5,7 @@ import type { DiscoveryService } from '../discovery/service.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { failedTurnFromCapture, lastPromptFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from '../adapters/codex-turns.js';
 import { adapterFor } from '../adapters/registry.js';
-import type { Adapter, AgentKind, SubmissionMode, TmuxKey } from '../adapters/types.js';
+import type { Adapter, AgentKind, CompletionBaseline, CompletionEvent, SubmissionMode, TmuxKey } from '../adapters/types.js';
 import type { Agent, Worktree } from '../domain/models.js';
 import { run } from '../tmux/command.js';
 import type { PromptHistoryService } from '../prompt-history/service.js';
@@ -27,7 +27,7 @@ const reportedWorkingGraceMs = 5_000;
 const composerRenderAttempts = 12;
 const composerRenderPollMs = 50;
 // the console never composes submission through an unknown kind
-type AdapterView = Pick<Adapter, 'stateSource' | 'submission' | 'turns' | 'questions'>;
+type AdapterView = Pick<Adapter, 'stateSource' | 'submission' | 'turns' | 'questions' | 'completion'>;
 type CancelOutcome = 'ok' | 'unavailable' | 'not-working';
 // an Adapter that announces its own Attention state (rather than the console
 // inferring it from the title): it must report `working` before a prompt counts
@@ -45,7 +45,7 @@ const normalizedPrompt = (value: string) => value.replace(/\s+/gu, ' ').trim();
 const normalizedTerminalText = (value: string) => normalizedPrompt(value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, ''));
 type PromptCompletion = 'completed' | 'failed' | 'pending';
 type PromptReconciliation = 'pending' | 'settled' | 'recorded';
-type PromptPhase = { state: 'awaiting-start' | 'working' | 'awaiting-answer' | 'halted'; changedAt: number; historyEntryId?: string; historyPrompt?: string; baselineCompletion?: string };
+type PromptPhase = { state: 'awaiting-start' | 'working' | 'awaiting-answer' | 'halted'; changedAt: number; historyEntryId?: string; historyPrompt?: string; baselineCompletion?: string; rolloutBaseline?: CompletionBaseline };
 type DiscoveredTarget = NonNullable<Awaited<ReturnType<DiscoveryService['target']>>>;
 export class PromptService {
   private readonly phases = new Map<string, PromptPhase>();
@@ -82,11 +82,12 @@ export class PromptService {
       const waiting = await this.queued?.list(scope);
       // retain prompts behind active or halted work
       if (this.queued !== undefined && (agentAttentionState(first.agent) !== 'finished' || this.phases.has(scope) || (waiting?.length ?? 0) > 0)) {
-        const busy = agentAttentionState(first.agent) !== 'finished';
-        const baselineCompletion = busy && !this.phases.has(scope) ? await this.completionSignature(agentId) : undefined;
+        const adopting = agentAttentionState(first.agent) !== 'finished' && !this.phases.has(scope);
+        const baselineCompletion = adopting ? await this.completionSignature(agentId) : undefined;
+        const rolloutBaseline = adopting ? await this.captureRolloutBaseline(agentId, this.resolveAdapter(first.agent.kind)) : undefined;
         const queued = await this.queued.enqueue(scope, prompt, attachments);
         // track work that started outside the managed prompt flow
-        if (queued !== undefined && busy && !this.phases.has(scope)) this.phases.set(scope, { state: 'working', changedAt: Date.now(), ...(baselineCompletion === undefined ? {} : { baselineCompletion }) });
+        if (queued !== undefined && adopting) this.phases.set(scope, { state: 'working', changedAt: Date.now(), ...(baselineCompletion === undefined ? {} : { baselineCompletion }), ...(rolloutBaseline === undefined ? {} : { rolloutBaseline }) });
         return queued !== undefined;
       }
       return await this.send(agentId, prompt, attachments, first);
@@ -208,18 +209,22 @@ export class PromptService {
       // mark the prompt as started
       if (phase?.state === 'awaiting-start' || phase?.state === 'awaiting-answer') {
         const baselineCompletion = phase.baselineCompletion ?? await this.completionSignature(agent.id);
-        this.phases.set(scope, { ...phase, state: 'working', changedAt: Date.now(), ...(baselineCompletion === undefined ? {} : { baselineCompletion }) });
+        // keep the pre-submit baseline a sent prompt already carries; capturing it now
+        // would sit past this turn's own `task_started` and miss a fast completion
+        const rolloutBaseline = phase.rolloutBaseline ?? (adapter === undefined ? undefined : await this.captureRolloutBaseline(agent.id, adapter));
+        this.phases.set(scope, { ...phase, state: 'working', changedAt: Date.now(), ...(baselineCompletion === undefined ? {} : { baselineCompletion }), ...(rolloutBaseline === undefined ? {} : { rolloutBaseline }) });
       }
       // adopt externally started work once prompts are queued
       if (phase === undefined && (await this.queued?.list(scope))?.length) {
         const baselineCompletion = await this.completionSignature(agent.id);
-        this.phases.set(scope, { state: 'working', changedAt: Date.now(), ...(baselineCompletion === undefined ? {} : { baselineCompletion }) });
+        const rolloutBaseline = adapter === undefined ? undefined : await this.captureRolloutBaseline(agent.id, adapter);
+        this.phases.set(scope, { state: 'working', changedAt: Date.now(), ...(baselineCompletion === undefined ? {} : { baselineCompletion }), ...(rolloutBaseline === undefined ? {} : { rolloutBaseline }) });
       }
       return;
     }
     // finish tracked work before releasing its queue
     if (phase !== undefined) {
-      const completion = await this.recordAnswer(agent.id, scope, phase.historyEntryId, phase.historyPrompt, phase.baselineCompletion, phase.state !== 'awaiting-start');
+      const completion = await this.recordAnswer(agent.id, scope, phase.historyEntryId, phase.historyPrompt, phase.baselineCompletion, phase.state !== 'awaiting-start', phase.rolloutBaseline);
       // allow terminal output to finish rendering
       if (completion === 'pending' && phase.state === 'working') {
         this.phases.set(scope, { ...phase, state: 'awaiting-answer', changedAt: Date.now() });
@@ -347,13 +352,17 @@ export class PromptService {
       await this.removeStaged(workspace, staged);
       return false;
     }
+    // snapshot the rollout baseline before the turn starts: completion is then a
+    // `task_complete` recorded past it (the native-Codex TUI renders no boundary,
+    // so scraping the pane never observes the finish)
+    const rolloutBaseline = this.queued === undefined ? undefined : await this.captureRolloutBaseline(agentId, adapter);
     // hold the scope so a quick second submit queues behind this one, then let the
     // interactive paste settle in the composer before the submit key: a Tab that
     // races an unrendered composer is swallowed, so the prompt never starts and the
     // queued work behind it is later relocated to saved (the reported bug)
     const settle = submission === 'queue' && mode === 'prompt' && adapter.turns !== undefined && this.queued !== undefined;
     if (settle) {
-      this.phases.set(scope, { state: 'awaiting-start', changedAt: Date.now(), historyPrompt: attachmentPrompt });
+      this.phases.set(scope, { state: 'awaiting-start', changedAt: Date.now(), historyPrompt: attachmentPrompt, ...(rolloutBaseline === undefined ? {} : { rolloutBaseline }) });
       await this.waitForComposerRender(second, attachmentPrompt);
     }
     let submitted = await this.tmux.sendKeys(second.socket, second.agent.paneId, keys);
@@ -367,7 +376,7 @@ export class PromptService {
       // track the successful prompt
       const entry = await this.history?.record(scope, attachmentPrompt).catch(() => undefined);
       // monitor managed prompt completion
-      if (this.queued !== undefined) this.phases.set(scope, { state: 'awaiting-start', changedAt: Date.now(), historyPrompt: attachmentPrompt, ...(entry === undefined ? {} : { historyEntryId: entry.id }) });
+      if (this.queued !== undefined) this.phases.set(scope, { state: 'awaiting-start', changedAt: Date.now(), historyPrompt: attachmentPrompt, ...(entry === undefined ? {} : { historyEntryId: entry.id }), ...(rolloutBaseline === undefined ? {} : { rolloutBaseline }) });
     }
     return submitted;
   }
@@ -505,17 +514,28 @@ export class PromptService {
   }
 
   // capture and persist the final answer
-  private async recordAnswer(agentId: string, scope: string, entryId: string | undefined, prompt: string | undefined, baselineCompletion: string | undefined, allowPromptless = false): Promise<PromptCompletion> {
+  private async recordAnswer(agentId: string, scope: string, entryId: string | undefined, prompt: string | undefined, baselineCompletion: string | undefined, allowPromptless = false, rolloutBaseline?: CompletionBaseline): Promise<PromptCompletion> {
+    // rollout-based completion (native Codex; OMX when its rollout resolves): the
+    // structured `task_complete`/`turn_aborted` events are authoritative and, unlike
+    // the TUI parse, need no `─ Worked for` footer — which the native build never
+    // renders. When the rollout resolves it stays authoritative; only an unresolvable
+    // rollout falls through to the TUI parse below.
+    if (rolloutBaseline !== undefined) {
+      const event = await this.rolloutCompletion(agentId, rolloutBaseline);
+      if (event?.kind === 'aborted') return 'failed';
+      if (event?.kind === 'completed') return await this.persistAnswer(scope, entryId, event.answer);
+      if (event?.kind === 'pending') return 'pending';
+    }
     const target = await this.discovery.target(agentId);
     // require the original pane
     if (target === undefined) return 'pending';
     const capture = await this.tmux.capture(target.socket, target.agent.paneId).catch(() => undefined);
-    const turn = capture === undefined ? undefined : latestCompletedAssistantTurn(capture);
     // require a completed response
     if (capture === undefined) return 'pending';
     // fail explicit terminal errors without waiting through the grace window
     if (failedTurnFromCapture(capture)) return 'failed';
     // wait for the latest completed response
+    const turn = latestCompletedAssistantTurn(capture);
     if (turn === undefined) return 'pending';
     const completion = this.completionSignatureFromCapture(capture);
     const promptMatches = prompt === undefined
@@ -525,13 +545,47 @@ export class PromptService {
     if (!promptMatches) return 'pending';
     // reject completions that predate externally tracked work
     if (prompt === undefined && completion === baselineCompletion) return 'pending';
-    // persist tracked answers when history is available
-    if (this.history !== undefined && entryId !== undefined) {
-      const stored = await this.history.recordAnswer(scope, entryId, turn.text).catch(() => undefined);
-      // retry transient or missing-entry writes
-      if (stored === undefined) return 'pending';
-    }
-    return 'completed';
+    return await this.persistAnswer(scope, entryId, turn.text);
+  }
+
+  // persist one captured answer to history, retrying transient or missing-entry writes
+  private async persistAnswer(scope: string, entryId: string | undefined, answer: string): Promise<PromptCompletion> {
+    if (this.history === undefined || entryId === undefined) return 'completed';
+    const stored = await this.history.recordAnswer(scope, entryId, answer).catch(() => undefined);
+    return stored === undefined ? 'pending' : 'completed';
+  }
+
+  // the OS pid backing one discovered pane, when the discovery service exposes it
+  private paneProcessId(agentId: string): number | undefined {
+    return typeof this.discovery.paneProcessId === 'function' ? this.discovery.paneProcessId(agentId) : undefined;
+  }
+
+  // the pane's unique working directory, when the discovery service exposes it: the
+  // Adapter's privilege-free fallback for a sandboxed pane whose descriptors a
+  // confined service cannot readlink
+  private paneWorkingDirectory(agentId: string): string | undefined {
+    return typeof this.discovery.paneWorkingDirectory === 'function' ? this.discovery.paneWorkingDirectory(agentId) : undefined;
+  }
+
+  // snapshot the rollout completion baseline before a turn starts, when the Adapter
+  // reads completion from its event log and the pane's pid is known. The pid drives
+  // the exact fd-walk; the working directory is the fallback when it is blocked.
+  private async captureRolloutBaseline(agentId: string, adapter: AdapterView | undefined): Promise<CompletionBaseline | undefined> {
+    if (adapter?.completion === undefined) return undefined;
+    const pid = this.paneProcessId(agentId);
+    if (pid === undefined) return undefined;
+    const cwd = this.paneWorkingDirectory(agentId);
+    return await adapter.completion.baseline({ pid, ...(cwd === undefined ? {} : { cwd }) }).catch(() => undefined);
+  }
+
+  // the newest terminal turn past the snapshotted baseline from the Adapter's event
+  // log, or undefined when the Adapter has no such capability
+  private async rolloutCompletion(agentId: string, baseline: CompletionBaseline): Promise<CompletionEvent | undefined> {
+    const target = await this.discovery.target(agentId);
+    if (target === undefined) return undefined;
+    const adapter = this.resolveAdapter(target.agent.kind);
+    if (adapter?.completion === undefined) return undefined;
+    return await adapter.completion.since(baseline).catch(() => undefined);
   }
 
   // capture the latest completed turn identity
