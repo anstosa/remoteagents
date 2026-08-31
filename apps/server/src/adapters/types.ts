@@ -66,8 +66,10 @@ export interface Adapter {
     pending?(workspace: string, paneId: string): Promise<InlineQuestion | undefined>;
   };
   readonly commands?: {
-    skillDirectories(workspace: string, home: string): string[];
-    readonly slash: PromptCommand[];
+    /** prefer the runtime's effective command catalog when supported */
+    readonly runtimeCatalog?: 'codex-app-server';
+    skillDirectories(workspace: string, stateDirectory: string): string[];
+    slash(): PromptCommand[];
     skillInvocation(name: string): string;
   };
   readonly conversations?: {

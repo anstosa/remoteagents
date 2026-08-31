@@ -1,7 +1,7 @@
 // `/api/agents/:id/commands` endpoint tests. (Named `skills-api.test.ts` for
 // continuity — the deletion hook blocks a rename; the endpoint replaced the old
 // `/skills` route.)
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { ValidatedConfig } from '../src/config/schema.js';
 
@@ -18,24 +18,26 @@ const config: ValidatedConfig = {
 
 describe('agent command catalog API', () => {
   let app: Awaited<ReturnType<typeof buildApp>>;
-  afterEach(async () => { await app?.close(); });
+  afterEach(async () => { vi.unstubAllEnvs(); await app?.close(); });
 
-  it('serves the catalog for the agent kind, scanning the worktree path and account home', async () => {
-    const seen: Array<{ kind: string; workspace: string; home: string }> = [];
+  it('serves the catalog for the agent kind using service-visible runtime paths', async () => {
+    vi.stubEnv('HOME', '/service-home');
+    vi.stubEnv('CODEX_HOME', '/service-codex');
+    const seen: Array<{ kind: string; workspace: string; stateDirectory: string }> = [];
     const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/ferry.fyi', title: 'Ready', kind: 'codex' };
     app = await buildApp(config, {
       auth: { unsign: () => 'session', get: () => ({ id: 'session', csrf: 'csrf' }) } as never,
       control: { connect: () => true } as never,
       discovery: { target: async (id: string) => id === agent.id ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined } as never,
       launch: { agentHome: () => '/home/ubuntu' } as never,
-      commandCatalog: { catalog: async (adapter: { kind: string }, workspace: string, home: string) => { seen.push({ kind: adapter.kind, workspace, home }); return [{ value: '$push', description: 'Review and push.' }, { value: '/help', description: 'Show available commands' }]; } } as never
+      commandCatalog: { catalog: async (adapter: { kind: string }, workspace: string, stateDirectory: string) => { seen.push({ kind: adapter.kind, workspace, stateDirectory }); return [{ value: '$push', description: 'Review and push.' }, { value: '/help', description: 'Show available commands' }]; } } as never
     });
 
     const response = await app.inject({ method: 'GET', url: '/api/agents/agent-1/commands', headers: { host: 'agents.example.com' } });
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ commands: [{ value: '$push', description: 'Review and push.' }, { value: '/help', description: 'Show available commands' }] });
-    expect(seen).toEqual([{ kind: 'codex', workspace: '/worktrees/ferry.fyi', home: '/home/ubuntu' }]);
+    expect(seen).toEqual([{ kind: 'codex', workspace: '/worktrees/ferry.fyi', stateDirectory: '/service-codex' }]);
   });
 
   it('reports 404 for an unknown agent', async () => {

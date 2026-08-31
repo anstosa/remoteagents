@@ -1,11 +1,13 @@
 // Command catalog scanner tests. (Named `skills.test.ts` for continuity — the
 // deletion hook blocks a rename; the subject is now CommandCatalogService, which
 // superseded the old SkillService.)
-import { afterEach, describe, expect, it } from 'vitest';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CommandCatalogService } from '../src/commands/service.js';
+import { codexAppServerCatalog } from '../src/commands/codex-app-server.js';
+import { createCodexProtocolClient } from '../src/accounts/protocol.js';
 import { codexAdapter } from '../src/adapters/codex.js';
 
 const roots: string[] = [];
@@ -24,8 +26,13 @@ async function writeSkill(base: string, directory: string, contents: string) {
 }
 
 const skill = (name: string, description: string) => `---\nname: ${name}\ndescription: ${description}\n---\n`;
+// resolve one test codex state directory
+const codexHome = (home: string) => join(home, '.codex');
+// force filesystem compatibility discovery
+const fallbackCatalog = () => new CommandCatalogService(async () => undefined);
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
 });
 
@@ -41,7 +48,7 @@ describe('command catalog', () => {
     await writeFile(join(target, 'SKILL.md'), skill('linked', 'A symlinked skill.'));
     await symlink(target, join(workspace, '.codex', 'skills', 'linked'));
 
-    const catalog = await new CommandCatalogService().catalog(codexAdapter, workspace, home);
+    const catalog = await fallbackCatalog().catalog(codexAdapter, workspace, codexHome(home));
 
     expect(catalog.filter(command => command.value.startsWith('$'))).toEqual([
       { value: '$linked', description: 'A symlinked skill.' },
@@ -49,6 +56,10 @@ describe('command catalog', () => {
       { value: '$release-notes', description: 'Draft release notes for this repository.' }
     ]);
     expect(catalog.find(command => command.value === '/help')).toEqual({ value: '/help', description: 'Show available commands' });
+    expect(catalog.find(command => command.value === '/permissions')).toEqual({ value: '/permissions', description: 'Choose what Codex is allowed to do' });
+    expect(catalog.find(command => command.value === '/plugins')).toEqual({ value: '/plugins', description: 'Browse plugins' });
+    expect(catalog.some(command => command.value === '/agent')).toBe(true);
+    expect(catalog.some(command => command.value === '/agents')).toBe(true);
     // the slash list follows the skills
     expect(catalog.findIndex(command => command.value === '/help')).toBeGreaterThan(catalog.findIndex(command => command.value === '$push'));
   });
@@ -59,7 +70,7 @@ describe('command catalog', () => {
     await writeSkill(home, 'push', skill('push', 'Global push.'));
     await writeSkill(workspace, 'push', skill('push', 'Workspace push.'));
 
-    const catalog = await new CommandCatalogService().catalog(codexAdapter, workspace, home);
+    const catalog = await fallbackCatalog().catalog(codexAdapter, workspace, codexHome(home));
 
     expect(catalog.find(command => command.value === '$push')).toEqual({ value: '$push', description: 'Workspace push.' });
   });
@@ -72,7 +83,7 @@ describe('command catalog', () => {
     await mkdir(join(workspace, '.codex'), { recursive: true });
     await writeFile(join(workspace, '.codex', 'skills'), '');
 
-    const catalog = await new CommandCatalogService().catalog(codexAdapter, workspace, home);
+    const catalog = await fallbackCatalog().catalog(codexAdapter, workspace, codexHome(home));
 
     expect(catalog.filter(command => command.value.startsWith('$'))).toEqual([{ value: '$release-notes', description: 'Draft release notes.' }]);
   });
@@ -83,8 +94,138 @@ describe('command catalog', () => {
     await writeSkill(workspace, 'missing-description', `---\nname: missing-description\n---\n`);
     await writeSkill(workspace, 'invalid-name', skill('not a command', 'Invalid.'));
 
-    const catalog = await new CommandCatalogService().catalog(codexAdapter, workspace, home);
+    const catalog = await fallbackCatalog().catalog(codexAdapter, workspace, codexHome(home));
 
     expect(catalog.some(command => command.value.startsWith('$'))).toBe(false);
+  });
+
+  it('finds bundled system and plugin skills when runtime discovery is unavailable', async () => {
+    const home = await tempRoot('rac-home-');
+    const workspace = await tempRoot('rac-workspace-');
+    await writeSkill(home, '.system/imagegen', skill('imagegen', 'Generate images.'));
+    await writeFile(join(home, '.codex', 'config.toml'), '[plugins."notion@openai-curated-remote"]\nenabled = true\n\n[plugins."canva@openai-curated"]\nenabled = false\n');
+    const oldPluginSkill = join(home, '.codex', 'plugins', 'cache', 'openai-curated-remote', 'notion', '0.1.0', 'skills', 'meeting');
+    await mkdir(oldPluginSkill, { recursive: true });
+    await writeFile(join(oldPluginSkill, 'SKILL.md'), skill('meeting', 'Prepare old meetings.'));
+    const activePluginSkill = join(home, '.codex', 'plugins', 'cache', 'openai-curated-remote', 'notion', '0.2.0', 'skills', 'meeting');
+    await mkdir(activePluginSkill, { recursive: true });
+    await writeFile(join(activePluginSkill, 'SKILL.md'), skill('meeting', 'Prepare meetings.'));
+    const disabledPluginSkill = join(home, '.codex', 'plugins', 'cache', 'openai-curated', 'canva', '1.0.0', 'skills', 'design');
+    await mkdir(disabledPluginSkill, { recursive: true });
+    await writeFile(join(disabledPluginSkill, 'SKILL.md'), skill('design', 'Design with Canva.'));
+
+    const catalog = await fallbackCatalog().catalog(codexAdapter, workspace, codexHome(home));
+
+    expect(catalog).toContainEqual({ value: '$imagegen', description: 'Generate images.' });
+    expect(catalog).toContainEqual({ value: '$notion:meeting', description: 'Prepare meetings.' });
+    expect(catalog.some(command => command.value === '$canva:design')).toBe(false);
+  });
+
+  it('logs runtime failures and preserves the complete fallback catalog', async () => {
+    const home = await tempRoot('rac-home-');
+    const workspace = await tempRoot('rac-workspace-');
+    await writeSkill(home, '.system/imagegen', skill('imagegen', 'Generate images.'));
+    // capture one expected operational diagnostic
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    // fail one deterministic runtime lookup
+    const service = new CommandCatalogService(async () => { throw new Error('protocol unavailable'); });
+
+    const catalog = await service.catalog(codexAdapter, workspace, codexHome(home));
+
+    expect(catalog).toContainEqual({ value: '$imagegen', description: 'Generate images.' });
+    expect(error).toHaveBeenCalled();
+  });
+
+  it('coalesces concurrent runtime catalog loads for one workspace', async () => {
+    const home = await tempRoot('rac-home-');
+    const workspace = await tempRoot('rac-workspace-');
+    let loads = 0;
+    // delay one deterministic runtime response
+    const service = new CommandCatalogService(async () => {
+      loads += 1;
+      await new Promise(resolve => setTimeout(resolve, 10));
+      return { skills: [{ name: 'imagegen', description: 'Generate images.' }], slash: [] };
+    });
+
+    await Promise.all([
+      service.catalog(codexAdapter, workspace, codexHome(home)),
+      service.catalog(codexAdapter, workspace, codexHome(home)),
+    ]);
+    await service.catalog(codexAdapter, workspace, codexHome(home));
+
+    expect(loads).toBe(1);
+  });
+
+  it('uses Codex runtime skills and model-specific slash commands when available', async () => {
+    const home = await tempRoot('rac-home-');
+    const workspace = await tempRoot('rac-workspace-');
+    await writeSkill(workspace, 'filesystem-only', skill('filesystem-only', 'Fallback only.'));
+    // provide one deterministic runtime catalog
+    const service = new CommandCatalogService(async (seenWorkspace, seenStateDirectory) => {
+      expect(seenWorkspace).toBe(workspace);
+      expect(seenStateDirectory).toBe(codexHome(home));
+      return {
+        skills: [
+          { name: 'oh-my-codex:plan', description: 'Plan through the installed plugin.' },
+          { name: 'imagegen', description: 'Generate images with the bundled system skill.' },
+          { name: 'imagegen', description: 'Duplicate lower-precedence metadata.' },
+        ],
+        slash: [{ name: '/fast', description: '1.5x speed, increased usage' }],
+      };
+    });
+
+    const catalog = await service.catalog(codexAdapter, workspace, codexHome(home));
+
+    expect(catalog.filter(command => command.value.startsWith('$'))).toEqual([
+      { value: '$imagegen', description: 'Generate images with the bundled system skill.' },
+      { value: '$oh-my-codex:plan', description: 'Plan through the installed plugin.' },
+    ]);
+    expect(catalog).toContainEqual({ value: '/fast', description: '1.5x speed, increased usage' });
+    expect(catalog).toContainEqual({ value: '/agents', description: 'View and switch between all active agent sessions' });
+    expect(catalog).toContainEqual({ value: '/recap', description: 'Summarize the current conversation now' });
+    expect(catalog).toContainEqual({ value: '/agent', description: 'Switch the active agent thread' });
+    expect(catalog.some(command => command.value === '$filesystem-only')).toBe(false);
+  });
+
+  it('reads enabled skills and service-tier commands from the Codex app-server protocol', async () => {
+    const workspace = await tempRoot('rac-workspace-');
+    const executable = join(await tempRoot('rac-codex-'), 'fake-codex.mjs');
+    await writeFile(executable, `#!/usr/bin/env node
+import { createInterface } from 'node:readline';
+const input = createInterface({ input: process.stdin });
+// serve the protocol responses
+input.on('line', line => {
+  const message = JSON.parse(line);
+  // initialize the client
+  if (message.id === 1) return process.stdout.write(JSON.stringify({ id: 1, result: { userAgent: 'remote-agent-console/0.151.0' } }) + '\\n');
+  // return runtime skills
+  if (message.method === 'skills/list') return process.stdout.write(JSON.stringify({ id: message.id, result: { data: [{ cwd: message.params.cwds[0], errors: [], skills: [
+    { name: 'oh-my-codex:plan', description: '  Plugin   plan. ', enabled: true },
+    { name: 'imagegen', description: 'Bundled image generation.', enabled: true },
+    { name: 'disabled', description: 'Unavailable.', enabled: false }
+  ] }] } }) + '\\n');
+  // return dynamic commands
+  if (message.method === 'model/list') return process.stdout.write(JSON.stringify({ id: message.id, result: { data: [
+    { serviceTiers: [{ id: 'priority', name: 'Fast', description: '1.5x speed, increased usage' }] },
+    { serviceTiers: [{ id: 'priority', name: 'Fast', description: '1.5x speed, increased usage' }] }
+  ] } }) + '\\n');
+});
+`);
+    await chmod(executable, 0o755);
+
+    const home = await tempRoot('rac-home-');
+    // verify the isolated protocol home
+    const catalog = await codexAppServerCatalog(workspace, codexHome(home), async stateDirectory => {
+      expect(stateDirectory).toBe(codexHome(home));
+      return await createCodexProtocolClient(stateDirectory, { command: executable, args: ['app-server', '--stdio'] });
+    });
+
+    expect(catalog).toEqual({
+      skills: [
+        { name: 'oh-my-codex:plan', description: 'Plugin plan.' },
+        { name: 'imagegen', description: 'Bundled image generation.' },
+      ],
+      slash: [{ name: '/fast', description: '1.5x speed, increased usage' }],
+    });
   });
 });
