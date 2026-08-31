@@ -27,6 +27,8 @@ const composerRenderAttempts = 12;
 const composerRenderPollMs = 50;
 const composerRenderStableMs = 100;
 const submissionAcceptAttempts = 20;
+// retry after visible-draft grace periods without extending the acceptance window
+const submissionRetryAttempts: ReadonlySet<number> = new Set([6, 14]);
 // the console never composes submission through an unknown kind
 type AdapterView = Pick<Adapter, 'stateSource' | 'submission' | 'turns' | 'questions' | 'completion'>;
 type CancelOutcome = 'ok' | 'unavailable' | 'not-working';
@@ -391,7 +393,7 @@ export class PromptService {
     const keys: TmuxKey[] = submission === 'enter' || submission === 'confirmed-enter' ? ['Enter'] : adapterKeys;
     let submitted = await this.tmux.sendKeys(submitTarget.socket, submitTarget.agent.paneId, keys);
     // require adapter acknowledgement before consuming durable queue state
-    if (submitted && settle) submitted = await this.waitForSubmissionAccepted(submitTarget, composed.text, observeDraft);
+    if (submitted && settle) submitted = await this.waitForSubmissionAccepted(submitTarget, composed.text, observeDraft, keys);
     // confirm the server-owned prompt left the composer
     if (submitted && submission === 'confirmed-enter') submitted = await this.waitForUpdateAdvisorStart(agentId, submitTarget, attachmentPrompt);
     if (!submitted) {
@@ -424,12 +426,18 @@ export class PromptService {
   }
 
   // confirm that the Adapter no longer sees the server-owned draft
-  private async waitForSubmissionAccepted(target: DiscoveredTarget, prompt: string, observeDraft: (capture: string, prompt: string) => SubmissionDraftState): Promise<boolean> {
-    // poll through transient redraws without retrying the submit key
+  private async waitForSubmissionAccepted(target: DiscoveredTarget, prompt: string, observeDraft: (capture: string, prompt: string) => SubmissionDraftState, keys: readonly TmuxKey[]): Promise<boolean> {
+    // poll through transient redraws and retry only while the server-owned draft remains visible
     for (let attempt = 0; attempt < submissionAcceptAttempts; attempt += 1) {
       const captured = await this.tmux.capture(target.socket, target.agent.paneId).catch(() => undefined);
+      const draft = captured === undefined ? undefined : observeDraft(captured, prompt);
       // only a structurally cleared composer acknowledges acceptance
-      if (captured !== undefined && observeDraft(captured, prompt) === 'cleared') return true;
+      if (draft === 'cleared') return true;
+      // recover submit keys swallowed while the previous turn finishes
+      if (submissionRetryAttempts.has(attempt) && draft === 'visible') {
+        // stop when tmux itself rejects the retry
+        if (!await this.tmux.sendKeys(target.socket, target.agent.paneId, keys)) return false;
+      }
       await new Promise(resolve => setTimeout(resolve, composerRenderPollMs));
     }
     return false;

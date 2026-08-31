@@ -156,13 +156,13 @@ describe('interactive submit settle', () => {
     const tmux = {
       pastePrompt: async () => true,
       capture: async () => '› direct race ',
-      // model one swallowed Tab despite successful tmux delivery
+      // model every bounded Tab attempt being swallowed despite successful tmux delivery
       sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => { sent.push(keys); return true; }
     };
     const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
     try {
       await expect(service.submit(idle.id, 'direct race')).resolves.toBe(true);
-      expect(sent).toEqual([['Tab']]);
+      expect(sent).toEqual([['Tab'], ['Tab'], ['Tab']]);
       await expect(service.listQueued(idle.id)).resolves.toMatchObject([{ text: 'direct race' }]);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
@@ -187,6 +187,40 @@ describe('interactive submit settle', () => {
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
+  it('retries a queued prompt when Codex swallows the first submit key', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-submit-retry-'));
+    const queue = new QueuedPromptService(join(directory, 'queue.json'));
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/tmp', title: 'Ready' });
+    const sent: string[][] = [];
+    let submitted = false;
+    // keep one stable target
+    const discovery = { target: async () => ({ agent, socket }) };
+    const tmux = {
+      // accept the paste
+      pastePrompt: async () => true,
+      // keep the server-owned draft visible until the retry reaches Codex
+      capture: async () => submitted ? '› ' : '› retry me ',
+      // swallow the first key while the prior turn finishes
+      sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => {
+        sent.push(keys);
+        // accept the retry
+        if (sent.length === 2) submitted = true;
+        return true;
+      }
+    };
+    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    // verify retry delivery
+    try {
+      await queue.enqueue(`agent:${agent.id}`, 'retry me');
+      await service.observe(agent);
+      expect(sent).toEqual([['Enter'], ['Enter']]);
+      await expect(service.listQueued(agent.id)).resolves.toEqual([]);
+    } finally {
+      // remove test state
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('retains a durable shell command when Codex leaves it in the composer', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-submit-shell-unaccepted-'));
     const queue = new QueuedPromptService(join(directory, 'queue.json'));
@@ -197,14 +231,14 @@ describe('interactive submit settle', () => {
     const tmux = {
       pastePrompt: async () => true,
       capture: async () => '› !git status',
-      // model one swallowed Enter despite successful tmux delivery
+      // model every bounded Enter attempt being swallowed despite successful tmux delivery
       sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => { sent.push(keys); return true; }
     };
     const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
     try {
       await queue.enqueue(scope, '!git status');
       await service.observe(agent);
-      expect(sent).toEqual([['Enter']]);
+      expect(sent).toEqual([['Enter'], ['Enter'], ['Enter']]);
       await expect(service.listQueued(agent.id)).resolves.toMatchObject([{ text: '!git status' }]);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
