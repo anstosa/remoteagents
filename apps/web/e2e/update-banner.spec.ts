@@ -92,6 +92,7 @@ test('reloads a stale client instead of restarting the server', async ({ page })
 // review commits before explicitly starting a host update
 test('opens the commit review before starting and retains update failures in the modal', async ({ page }) => {
   let updateStarts = 0;
+  let advisorLaunches = 0;
   let releaseUpdate = () => {};
   const updateStarted = new Promise<void>(resolve => { releaseUpdate = resolve; });
   const targetSha = '2'.repeat(40);
@@ -106,6 +107,11 @@ test('opens the commit review before starting and retains update failures in the
     if (url.pathname === '/api/server/update-available') return route.fulfill({ json: { available: true } });
     // preview one exact fast-forward update
     if (url.pathname === '/api/server/update-preview') return route.fulfill({ json: { available: true, rebuildRetryAvailable: false, baseSha: '1'.repeat(40), targetSha, fastForwardable: true, commitCount: 1, commits: [{ sha: targetSha, subject: 'Add safer update review', author: 'Ansel', authoredAt: '2026-08-27T12:00:00-07:00' }], commitsTruncated: false, filesTruncated: false, advisory: { required: false, reasons: [] } } });
+    // reject unexpected advisor launches
+    if (url.pathname === '/api/server/update-advisor' && request.method() === 'POST') {
+      advisorLaunches += 1;
+      return route.fulfill({ status: 500, json: { error: 'unexpected advisor launch' } });
+    }
     // start one host update
     if (url.pathname === '/api/server/update' && request.method() === 'POST') {
       updateStarts += 1;
@@ -131,7 +137,7 @@ test('opens the commit review before starting and retains update failures in the
   const dialog = page.getByRole('dialog', { name: 'Review update' });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText('Add safer update review')).toBeVisible();
-  await expect(dialog.getByText('Host changes need review')).toHaveCount(0);
+  expect(advisorLaunches).toBe(0);
   expect(updateStarts).toBe(0);
   const update = dialog.getByRole('button', { name: 'Update', exact: true });
   await expect(update).toBeEnabled();
