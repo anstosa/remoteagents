@@ -1,17 +1,9 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { codexRolloutBaseline, codexTurnSince, completionFromRecords, maxOrdinalFromRecords } from '../../src/adapters/codex-conversations.js';
-
-const cleanups: string[] = [];
-const savedEnv = { proc: process.env.RAC_HOST_PROC, home: process.env.CODEX_HOME };
-
-afterEach(async () => {
-  process.env.RAC_HOST_PROC = savedEnv.proc;
-  process.env.CODEX_HOME = savedEnv.home;
-  await Promise.all(cleanups.splice(0).map(root => rm(root, { recursive: true, force: true })));
-});
+import { codexHome, fakeProc, tempDir } from '../helpers/codex-fixtures.js';
 
 type Record = { type: string; ordinal: number; payload: unknown };
 
@@ -32,23 +24,6 @@ async function writeRollout(home: string, id: string, records: Record[], cwd = '
   const file = join(directory, `rollout-2026-08-30T15-32-23-${id}.jsonl`);
   await writeFile(file, `${[meta, ...records].map(line => JSON.stringify(line)).join('\n')}\n`);
   return file;
-}
-
-async function fakeProc(pid: number, files: string[]): Promise<string> {
-  const proc = await mkdtemp(join(tmpdir(), 'rac-proc-'));
-  cleanups.push(proc);
-  await mkdir(join(proc, String(pid), 'task', String(pid)), { recursive: true });
-  await writeFile(join(proc, String(pid), 'task', String(pid), 'children'), '');
-  const fd = join(proc, String(pid), 'fd');
-  await mkdir(fd, { recursive: true });
-  await Promise.all(files.map((file, index) => symlink(file, join(fd, String(index + 3)))));
-  return proc;
-}
-
-async function codexHome(): Promise<string> {
-  const home = await mkdtemp(join(tmpdir(), 'rac-codex-home-'));
-  cleanups.push(home);
-  return home;
 }
 
 const lines = (records: Record[]): string[] => records.map(record => JSON.stringify(record));
@@ -127,10 +102,8 @@ describe('Codex rollout completion', () => {
     // the host worktree the pane reports (`#{pane_current_path}`) is, inside the
     // container, a symlink whose realpath differs — as a differently bind-mounted
     // worktree would be; Codex recorded that same host path string in session_meta
-    const realDir = await mkdtemp(join(tmpdir(), 'rac-real-'));
-    cleanups.push(realDir);
-    const linkParent = await mkdtemp(join(tmpdir(), 'rac-link-'));
-    cleanups.push(linkParent);
+    const realDir = await tempDir('rac-real-');
+    const linkParent = await tempDir('rac-link-');
     const hostCwd = join(linkParent, 'project');
     await symlink(realDir, hostCwd);
     const id = '0198d100-0000-7000-8000-000000000003';

@@ -1,17 +1,8 @@
-import { appendFile, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { codexConversationTitle, discoverCodexConversation, openRollouts, validCodexThreadId } from '../../src/adapters/codex-conversations.js';
-
-const cleanups: string[] = [];
-const savedEnv = { proc: process.env.RAC_HOST_PROC, home: process.env.CODEX_HOME };
-
-afterEach(async () => {
-  process.env.RAC_HOST_PROC = savedEnv.proc;
-  process.env.CODEX_HOME = savedEnv.home;
-  await Promise.all(cleanups.splice(0).map(root => rm(root, { recursive: true, force: true })));
-});
+import { codexHome, fakeProc } from '../helpers/codex-fixtures.js';
 
 // write one representative Codex rollout, returning its absolute path
 async function writeSession(home: string, name: string, session: { id: string; cwd: string; prompt: string; parentThreadId?: string }): Promise<string> {
@@ -24,24 +15,6 @@ async function writeSession(home: string, name: string, session: { id: string; c
   const file = join(directory, `${name}-${session.id}.jsonl`);
   await writeFile(file, `${lines.map(line => JSON.stringify(line)).join('\n')}\n`);
   return file;
-}
-
-// build a fake /proc tree whose one pid holds the given files open
-async function fakeProc(pid: number, files: string[]): Promise<string> {
-  const proc = await mkdtemp(join(tmpdir(), 'rac-proc-'));
-  cleanups.push(proc);
-  await mkdir(join(proc, String(pid), 'task', String(pid)), { recursive: true });
-  await writeFile(join(proc, String(pid), 'task', String(pid), 'children'), '');
-  const fd = join(proc, String(pid), 'fd');
-  await mkdir(fd, { recursive: true });
-  await Promise.all(files.map((file, index) => symlink(file, join(fd, String(index + 3)))));
-  return proc;
-}
-
-async function codexHome(): Promise<string> {
-  const home = await mkdtemp(join(tmpdir(), 'rac-codex-home-'));
-  cleanups.push(home);
-  return home;
 }
 
 describe('Codex conversation lookup', () => {

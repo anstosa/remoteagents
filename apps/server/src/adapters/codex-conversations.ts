@@ -133,31 +133,35 @@ function userMessage(payload: unknown): string | undefined {
   return messageTitle(text);
 }
 
-// find the latest useful user message in one rollout
-async function rolloutTitle(file: string): Promise<string | undefined> {
-  let title: string | undefined;
+// read the bounded tail of one rollout as raw JSONL lines, dropping a partial leader
+async function readRolloutTail(file: string, maxBytes: number): Promise<string[]> {
   const handle = await open(file, 'r');
   try {
     const info = await handle.stat();
-    const length = Math.min(info.size, maxTitleScanBytes);
+    const length = Math.min(info.size, maxBytes);
     const offset = Math.max(0, info.size - length);
     const buffer = Buffer.alloc(length);
     const { bytesRead } = await handle.read(buffer, 0, length, offset);
     const lines = buffer.subarray(0, bytesRead).toString('utf8').split('\n');
-    // discard a partial leading record
+    // discard a partial leading record when the read did not start at the file head
     if (offset > 0) lines.shift();
-    // scan the bounded tail in order
-    for (const line of lines) {
-      try {
-        const record = JSON.parse(line) as { type?: unknown; payload?: unknown };
-        // retain the newest visible user request
-        if (record.type === 'response_item') title = userMessage(record.payload) ?? title;
-      } catch {
-        // preserve earlier valid records
-      }
-    }
+    return lines;
   } finally {
     await handle.close();
+  }
+}
+
+// find the latest useful user message in one rollout's bounded tail
+async function rolloutTitle(file: string): Promise<string | undefined> {
+  let title: string | undefined;
+  for (const line of await readRolloutTail(file, maxTitleScanBytes)) {
+    try {
+      const record = JSON.parse(line) as { type?: unknown; payload?: unknown };
+      // retain the newest visible user request
+      if (record.type === 'response_item') title = userMessage(record.payload) ?? title;
+    } catch {
+      // preserve earlier valid records
+    }
   }
   return title;
 }
@@ -191,8 +195,7 @@ async function selectTopLevelRollout(refs: RolloutRef[]): Promise<{ id: string; 
  * `BookmarkService` holds only persistence).
  */
 export async function discoverCodexConversation(pane: { pid: number; cwd?: string }): Promise<Conversation | undefined> {
-  const selected = await selectTopLevelRollout(await openRollouts(pane.pid))
-    ?? (pane.cwd === undefined ? undefined : await rolloutByCwd(pane.cwd));
+  const selected = await paneRollout(pane);
   // require one exact pane-to-conversation mapping
   if (selected === undefined) return undefined;
   const title = await rolloutTitle(selected.file).catch(() => undefined);
@@ -263,6 +266,13 @@ async function rolloutByCwd(cwd: string): Promise<{ id: string; file: string } |
   return undefined;
 }
 
+// the pane's single top-level rollout: the exact fd-walk, else the privilege-free
+// working-directory match when a confined service cannot readlink the descriptors
+async function paneRollout(pane: { pid: number; cwd?: string }): Promise<{ id: string; file: string } | undefined> {
+  return await selectTopLevelRollout(await openRollouts(pane.pid))
+    ?? (pane.cwd === undefined ? undefined : await rolloutByCwd(pane.cwd));
+}
+
 /**
  * The title of one already-known Codex conversation, used when the pane reports
  * its thread through `@rac_session` so the console can skip the fd-walk. A thread
@@ -290,24 +300,6 @@ export async function codexConversationTitle(id: string): Promise<string | undef
  * `ordinal`; the baseline snapshotted before a turn starts scopes the read to
  * that one turn.
  */
-
-// read the bounded tail of one rollout as raw JSONL lines, dropping a partial leader
-async function readRolloutTail(file: string, maxBytes: number): Promise<string[] | undefined> {
-  const handle = await open(file, 'r');
-  try {
-    const info = await handle.stat();
-    const length = Math.min(info.size, maxBytes);
-    const offset = Math.max(0, info.size - length);
-    const buffer = Buffer.alloc(length);
-    const { bytesRead } = await handle.read(buffer, 0, length, offset);
-    const lines = buffer.subarray(0, bytesRead).toString('utf8').split('\n');
-    // discard a partial leading record when the read did not start at the file head
-    if (offset > 0) lines.shift();
-    return lines;
-  } finally {
-    await handle.close();
-  }
-}
 
 // the newest terminal turn among these rollout records past `sinceOrdinal`
 export function completionFromRecords(lines: Iterable<string>, sinceOrdinal: number): CompletionEvent {
@@ -357,8 +349,7 @@ export async function codexTurnSince(baseline: CompletionBaseline): Promise<Comp
 // privilege-free fallback when a confined service cannot readlink the pane's
 // descriptors. Returns undefined when no single rollout resolves or it cannot be read.
 export async function codexRolloutBaseline(pane: { pid: number; cwd?: string }): Promise<CompletionBaseline | undefined> {
-  const selected = await selectTopLevelRollout(await openRollouts(pane.pid))
-    ?? (pane.cwd === undefined ? undefined : await rolloutByCwd(pane.cwd));
+  const selected = await paneRollout(pane);
   if (selected === undefined) return undefined;
   const lines = await readRolloutTail(selected.file, maxCompletionScanBytes).catch(() => undefined);
   const ordinal = lines === undefined ? undefined : maxOrdinalFromRecords(lines);
