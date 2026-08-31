@@ -1,10 +1,36 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { addUntrackedLineStats, DiscoveryService, gitComparisonSummary, gitStatusSummary, gitUpstreamSummary, omxQuestion, ProcSocketFinder } from '../src/discovery/service.js';
+import { addUntrackedLineStats, DiscoveryService, gitComparisonSummary, gitStatusSummary, gitUpstreamSummary, ProcSocketFinder } from '../src/discovery/service.js';
+import { inlineQuestionId, pendingOmxQuestion } from '../src/adapters/codex-questions.js';
 import type { SocketRef, Worktree } from '../src/domain/models.js';
+import { paneLister, processInspector, socketFinder } from './helpers/discovery-stubs.js';
+
+// write one representative Codex rollout under a home, returning its absolute path
+async function writeRollout(home: string, id: string, prompt: string): Promise<string> {
+  const directory = join(home, 'sessions', '2026', '08', '20');
+  await mkdir(directory, { recursive: true });
+  const lines = [
+    { type: 'session_meta', payload: { id, cwd: '/host/cora', originator: 'codex-tui' } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: prompt }] } }
+  ];
+  const file = join(directory, `rollout-2026-08-20T12-00-00-${id}.jsonl`);
+  await writeFile(file, `${lines.map(line => JSON.stringify(line)).join('\n')}\n`);
+  return file;
+}
+
+// build a fake /proc where each pid holds the given rollout files open
+async function buildProc(proc: string, holdings: Record<number, string[]>): Promise<void> {
+  for (const [pid, files] of Object.entries(holdings)) {
+    await mkdir(join(proc, pid, 'task', pid), { recursive: true });
+    await writeFile(join(proc, pid, 'task', pid, 'children'), '');
+    await mkdir(join(proc, pid, 'fd'), { recursive: true });
+    await Promise.all(files.map((file, index) => symlink(file, join(proc, pid, 'fd', String(index + 3)))));
+  }
+}
 
 describe('DiscoveryService dashboard', () => {
   it('summarizes staged, unstaged, untracked, and conflicted worktree files', () => {
@@ -122,11 +148,35 @@ describe('DiscoveryService dashboard', () => {
     }
   });
 
+  it('ignores listening sockets outside the tmux socket directory', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-unix-'));
+    const tmuxDirectory = join(directory, 'tmux-1000');
+    await mkdir(tmuxDirectory);
+    const tmuxSocket = join(tmuxDirectory, 'default');
+    const otherSocket = join(directory, 'other.sock');
+    const table = join(directory, 'unix');
+    const servers = [createServer(), createServer()];
+    const previous = { dir: process.env.RAC_HOST_TMUX_DIR, source: process.env.RAC_HOST_TMUX_SOURCE, table: process.env.RAC_HOST_UNIX_SOCKETS };
+    delete process.env.RAC_HOST_TMUX_DIR;
+    process.env.RAC_HOST_TMUX_SOURCE = tmuxDirectory;
+    process.env.RAC_HOST_UNIX_SOCKETS = table;
+    try {
+      await Promise.all([tmuxSocket, otherSocket].map((path, index) => new Promise<void>((resolve, reject) => servers[index]!.once('error', reject).listen(path, resolve))));
+      await writeFile(table, `Num RefCount Protocol Flags Type St Inode Path\n0001: 00000002 00000000 00010000 0001 01 1 ${otherSocket}\n0002: 00000002 00000000 00010000 0001 01 2 ${tmuxSocket}\n`);
+      await expect(new ProcSocketFinder().find()).resolves.toEqual([expect.objectContaining({ path: tmuxSocket })]);
+    } finally {
+      await Promise.all(servers.map(server => new Promise<void>(resolve => server.close(() => resolve()))));
+      for (const [key, value] of [['RAC_HOST_TMUX_DIR', previous.dir], ['RAC_HOST_TMUX_SOURCE', previous.source], ['RAC_HOST_UNIX_SOCKETS', previous.table]] as const) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('associates host tmux paths with configured worktrees', async () => {
-    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const finder = { find: async () => [socket] };
-    const tmux = { listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/host/ferry', title: 'Ferry' }] };
-    const processes = { hasCodexDescendant: async () => true };
+    const finder = socketFinder();
+    const tmux = paneLister([{ paneId: '%1', sessionId: '$0', pid: 123, path: '/host/ferry', title: 'Ferry' }]);
+    const processes = processInspector({ codex: true });
     const service = new DiscoveryService(finder, tmux as never, processes);
     const worktrees: Worktree[] = [{ id: 'ferry', label: 'Ferry FYI', path: '/worktrees/ferry', identity: '/worktrees/ferry', hostPath: '/host/ferry', available: true, command: 'codex', newTask: 'new {taskId}', push: { label: 'Commit/Push', prompt: '$push' }, projectUrl: 'https://ferry.agents.example.com' }];
 
@@ -137,31 +187,73 @@ describe('DiscoveryService dashboard', () => {
     expect(dashboard.worktrees).toEqual([]);
   });
 
-  it('resolves open Codex sessions from the selected agent pane only', async () => {
+  it('prefers a valid reported @rac_session over the conversation the fd-walk finds, and reads its title', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const finder = { find: async () => [socket] };
+    const tmux = { listPanes: async () => [
+      // pane %1 reports a valid session; pane %2 reports garbage and must fall back to the fd-walk
+      { paneId: '%1', sessionId: '$0', pid: 123, path: '/host/cora', title: 'Cora', reportedSession: '0198c111-1111-7111-8111-111111111111' },
+      { paneId: '%2', sessionId: '$1', pid: 456, path: '/host/cora', title: 'Cora copy', reportedSession: 'not-a-session' }
+    ] };
+    const home = await mkdtemp(join(tmpdir(), 'rac-codex-home-'));
+    const proc = await mkdtemp(join(tmpdir(), 'rac-proc-'));
+    const previous = { proc: process.env.RAC_HOST_PROC, home: process.env.CODEX_HOME };
+    try {
+      await writeRollout(home, '0198c111-1111-7111-8111-111111111111', 'Reported conversation');
+      const walkedFirst = await writeRollout(home, '0198c333-3333-7333-8333-333333333333', 'Walked by pane one');
+      const walkedSecond = await writeRollout(home, '0198c777-7777-7777-8777-777777777777', 'Walked by pane two');
+      await buildProc(proc, { 123: [walkedFirst], 456: [walkedSecond] });
+      process.env.RAC_HOST_PROC = proc;
+      process.env.CODEX_HOME = home;
+      const service = new DiscoveryService(finder, tmux as never, processInspector());
+      const agents = await service.refresh();
+
+      // the valid reported id wins over the different conversation the fd-walk would return
+      await expect(service.conversationId(agents[0]!.id)).resolves.toBe('0198c111-1111-7111-8111-111111111111');
+      await expect(service.conversation(agents[0]!.id)).resolves.toEqual({ id: '0198c111-1111-7111-8111-111111111111', title: 'Reported conversation' });
+      // a malformed report is rejected and falls back to the fd-walk
+      await expect(service.conversationId(agents[1]!.id)).resolves.toBe('0198c777-7777-7777-8777-777777777777');
+    } finally {
+      if (previous.proc === undefined) delete process.env.RAC_HOST_PROC; else process.env.RAC_HOST_PROC = previous.proc;
+      if (previous.home === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous.home;
+      await Promise.all([rm(home, { recursive: true, force: true }), rm(proc, { recursive: true, force: true })]);
+    }
+  });
+
+  it('falls back to the fd-walk and isolates each pane to its own conversation', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const finder = { find: async () => [socket] };
     const tmux = { listPanes: async () => [
       { paneId: '%1', sessionId: '$0', pid: 123, path: '/host/cora', title: 'Cora' },
       { paneId: '%2', sessionId: '$1', pid: 456, path: '/host/cora', title: 'Cora copy' }
     ] };
-    const processes = {
-      hasCodexDescendant: async () => true,
-      sessionsForDescendants: async (pid: number) => pid === 123
-        ? [{ id: '0198c111-1111-7111-8111-111111111111', relativePath: 'sessions/2026/08/20/rollout-first-0198c111-1111-7111-8111-111111111111.jsonl' }]
-        : [{ id: '0198c333-3333-7333-8333-333333333333', relativePath: 'sessions/2026/08/20/rollout-second-0198c333-3333-7333-8333-333333333333.jsonl' }]
-    };
-    const service = new DiscoveryService(finder, tmux as never, processes);
-    const agents = await service.refresh();
+    const home = await mkdtemp(join(tmpdir(), 'rac-codex-home-'));
+    const proc = await mkdtemp(join(tmpdir(), 'rac-proc-'));
+    const previous = { proc: process.env.RAC_HOST_PROC, home: process.env.CODEX_HOME };
+    try {
+      const first = await writeRollout(home, '0198c111-1111-7111-8111-111111111111', 'First conversation');
+      const second = await writeRollout(home, '0198c333-3333-7333-8333-333333333333', 'Second conversation');
+      await buildProc(proc, { 123: [first], 456: [second] });
+      process.env.RAC_HOST_PROC = proc;
+      process.env.CODEX_HOME = home;
+      const service = new DiscoveryService(finder, tmux as never, processInspector());
+      const agents = await service.refresh();
 
-    await expect(service.sessions(agents[0]!.id)).resolves.toEqual([{ id: '0198c111-1111-7111-8111-111111111111', relativePath: 'sessions/2026/08/20/rollout-first-0198c111-1111-7111-8111-111111111111.jsonl' }]);
-    await expect(service.sessions(agents[1]!.id)).resolves.toEqual([{ id: '0198c333-3333-7333-8333-333333333333', relativePath: 'sessions/2026/08/20/rollout-second-0198c333-3333-7333-8333-333333333333.jsonl' }]);
+      await expect(service.conversationId(agents[0]!.id)).resolves.toBe('0198c111-1111-7111-8111-111111111111');
+      await expect(service.conversationId(agents[1]!.id)).resolves.toBe('0198c333-3333-7333-8333-333333333333');
+      await expect(service.conversation(agents[0]!.id)).resolves.toEqual({ id: '0198c111-1111-7111-8111-111111111111', title: 'First conversation' });
+    } finally {
+      if (previous.proc === undefined) delete process.env.RAC_HOST_PROC; else process.env.RAC_HOST_PROC = previous.proc;
+      if (previous.home === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous.home;
+      await Promise.all([rm(home, { recursive: true, force: true }), rm(proc, { recursive: true, force: true })]);
+    }
   });
 
   it('preserves a custom tmux display label for launched scratch agents', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const finder = { find: async () => [socket] };
     const tmux = { listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title: 'Codex', displayLabel: '~ Scratch' }] };
-    const processes = { hasCodexDescendant: async () => true };
+    const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
     const service = new DiscoveryService(finder, tmux as never, processes);
 
     await expect(service.dashboard([])).resolves.toMatchObject({ agents: [{ displayLabel: '~ Scratch' }] });
@@ -171,7 +263,7 @@ describe('DiscoveryService dashboard', () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const finder = { find: async () => [socket] };
     const tmux = { listPanes: async () => [{ paneId: '%2', sessionId: '$1', pid: 456, path: '/host/remoteagents', title: 'Ready', displayLabel: 'Update Advisor Starting v4 2222222' }] };
-    const processes = { hasCodexDescendant: async () => true };
+    const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
     const service = new DiscoveryService(finder, tmux as never, processes);
     const worktree: Worktree = { id: 'remoteagents', label: 'Remote Agents', path: '/workspace', identity: '/workspace', hostPath: '/host/remoteagents', available: true, pinned: true };
 
@@ -182,6 +274,54 @@ describe('DiscoveryService dashboard', () => {
     expect(dashboard.worktrees).toEqual([expect.objectContaining({ id: 'remoteagents' })]);
   });
 
+  it('resolves reported @rac_* pane options over the inferred title and publishes adapter capabilities', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const finder = { find: async () => [socket] };
+    const tmux = { listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title: 'Ready', reportedAttention: 'question', reportedSession: 'abc-123', reportedSandboxed: '1' }] };
+    const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
+    const service = new DiscoveryService(finder, tmux as never, processes);
+
+    const dashboard = await service.dashboard([]);
+
+    // reported 'question' wins over the title's inferred 'finished'
+    expect(dashboard.agents[0]).toMatchObject({ kind: 'codex', attention: 'question', sandboxed: true, conversationId: 'abc-123' });
+    expect(dashboard.adapters).toMatchObject({ codex: { launchable: true, stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: true, commands: true, sandbox: false } });
+  });
+
+  it('clears stale @rac_* only on a non-agent pane that still carries a report', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const finder = { find: async () => [socket] };
+    const unset: string[] = [];
+    const tmux = {
+      listPanes: async () => [
+        { paneId: '%9', sessionId: '$0', pid: 999, path: '/tmp', title: 'shell', reportedAttention: 'working' },
+        // a plain shell with no report must not be touched
+        { paneId: '%8', sessionId: '$0', pid: 998, path: '/tmp', title: 'shell' }
+      ],
+      unsetReportedState: async (_socket: SocketRef, pane: string) => { unset.push(pane); return true; }
+    };
+    const processes = { recognizeAgent: async () => undefined };
+    const service = new DiscoveryService(finder, tmux as never, processes);
+
+    const dashboard = await service.dashboard([]);
+
+    expect(dashboard.agents).toEqual([]);
+    expect(unset).toEqual(['%9']);
+  });
+
+  it('records a sandboxed agent only for the exact @rac_sandboxed sentinel and ignores an empty session', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const finder = { find: async () => [socket] };
+    const tmux = { listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title: 'Ready', reportedSandboxed: '0', reportedSession: '' }] };
+    const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
+    const service = new DiscoveryService(finder, tmux as never, processes);
+
+    const dashboard = await service.dashboard([]);
+
+    expect(dashboard.agents[0]).not.toHaveProperty('sandboxed');
+    expect(dashboard.agents[0]).not.toHaveProperty('conversationId');
+  });
+
   it('does not expose OMX team workers as dashboard agents', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const finder = { find: async () => [socket] };
@@ -190,7 +330,7 @@ describe('DiscoveryService dashboard', () => {
       { paneId: '%2', sessionId: '$0', pid: 124, path: '/host/cora/.omx/team/signup/worktrees/worker-1', title: 'worker-1' },
       { paneId: '%3', sessionId: '$0', pid: 125, path: '/host/cora', title: 'worker-2', startCommand: "exec /bin/sh '/tmp/run/.omx/state/team/signup/runtime/worker-2-startup.sh'" }
     ] };
-    const processes = { hasCodexDescendant: async () => true };
+    const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
     const service = new DiscoveryService(finder, tmux as never, processes);
 
     const dashboard = await service.dashboard([]);
@@ -204,7 +344,7 @@ describe('DiscoveryService dashboard', () => {
     let inspections = 0;
     const finder = { find: async () => { finds += 1; return [socket]; } };
     const tmux = { listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/host/ferry', title: 'Ferry' }] };
-    const processes = { hasCodexDescendant: async () => { inspections += 1; await new Promise(resolve => setTimeout(resolve, 5)); return true; } };
+    const processes = { recognizeAgent: async (pid: number) => { inspections += 1; await new Promise(resolve => setTimeout(resolve, 5)); return { kind: 'codex' as const, pid, wrapped: false }; } };
     const service = new DiscoveryService(finder, tmux as never, processes);
 
     const [first, second] = await Promise.all([service.refresh(), service.refresh()]);
@@ -223,7 +363,7 @@ describe('DiscoveryService dashboard', () => {
     let listings = 0;
     const finder = { find: async () => [socket] };
     const tmux = { listPanes: async () => { listings += 1; return [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title }]; } };
-    const processes = { hasCodexDescendant: async () => true };
+    const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
     const service = new DiscoveryService(finder, tmux as never, processes);
 
     const first = await service.dashboard([]);
@@ -256,7 +396,7 @@ describe('DiscoveryService dashboard', () => {
       }
       return [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title: capturedTitle }];
     } };
-    const processes = { hasCodexDescendant: async () => true };
+    const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
     const service = new DiscoveryService(finder, tmux as never, processes);
 
     const stale = service.dashboard([]);
@@ -278,7 +418,7 @@ describe('DiscoveryService dashboard', () => {
     let inspections = 0;
     const finder = { find: async () => { finds += 1; return [socket]; } };
     const tmux = { listPanes: async () => { listings += 1; return [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/host/ferry', title: 'Ferry' }]; } };
-    const processes = { hasCodexDescendant: async () => { inspections += 1; return true; } };
+    const processes = { recognizeAgent: async (pid: number) => { inspections += 1; return { kind: 'codex' as const, pid, wrapped: false }; } };
     const service = new DiscoveryService(finder, tmux as never, processes);
 
     try {
@@ -301,7 +441,7 @@ describe('DiscoveryService dashboard', () => {
     let listings = 0;
     const finder = { find: async () => [socket] };
     const tmux = { listPanes: async () => { listings += 1; return [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/host/ferry', title }]; } };
-    const processes = { hasCodexDescendant: async () => true };
+    const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
     const service = new DiscoveryService(finder, tmux as never, processes);
 
     const [agent] = await service.refresh();
@@ -322,7 +462,7 @@ describe('DiscoveryService dashboard', () => {
       }
     };
     const worktrees: Worktree[] = [{ id: 'slow', label: 'Slow', path: workspace, identity: workspace, available: true, command: 'codex' }];
-    const service = new DiscoveryService({ find: async () => [] }, { listPanes: async () => [] } as never, { hasCodexDescendant: async () => false }, pullRequests as never);
+    const service = new DiscoveryService({ find: async () => [] }, { listPanes: async () => [] } as never, { recognizeAgent: async () => undefined }, pullRequests as never);
 
     try {
       const [first, second] = await Promise.all([service.dashboard(worktrees), service.dashboard(worktrees)]);
@@ -340,7 +480,29 @@ describe('DiscoveryService dashboard', () => {
       const questions = join(workspace, '.omx', 'state', 'sessions', 'session', 'questions');
       await mkdir(questions, { recursive: true });
       await writeFile(join(questions, 'question-test.json'), JSON.stringify({ kind: 'omx.question/v1', question_id: 'question-test', status: 'prompting', question: 'Choose one?', options: [{ label: 'Yes' }, { label: 'No' }], renderer: { target: '%22', return_target: '%1' } }));
-      await expect(omxQuestion(workspace, '%1')).resolves.toEqual({ id: 'question-test', text: 'Choose one?', choices: ['Yes', 'No'], paneId: '%22' });
+      await expect(pendingOmxQuestion(workspace, '%1')).resolves.toEqual({ id: inlineQuestionId('Choose one?', ['Yes', 'No']), text: 'Choose one?', choices: ['Yes', 'No'], source: 'structured', targetPaneId: '%22' });
+    } finally { await rm(workspace, { recursive: true, force: true }); }
+  });
+
+  it('resolves a pending inline question to the question state through the dashboard', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'rac-question-dash-'));
+    try {
+      // git-init so workspaceRoot() resolves to a stable toplevel; build the question dir under it
+      execFileSync('/usr/bin/git', ['init', '--quiet', workspace]);
+      const root = execFileSync('/usr/bin/git', ['-C', workspace, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+      const questions = join(root, '.omx', 'state', 'sessions', 'session', 'questions');
+      await mkdir(questions, { recursive: true });
+      await writeFile(join(questions, 'q.json'), JSON.stringify({ kind: 'omx.question/v1', question_id: 'question-q1', status: 'prompting', question: 'Deploy?', options: [{ label: 'Yes' }, { label: 'No' }], renderer: { target: '%9', return_target: '%1' } }));
+      const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+      const finder = { find: async () => [socket] };
+      const tmux = { listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 123, path: workspace, title: 'Ready' }] };
+      const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
+      const service = new DiscoveryService(finder, tmux as never, processes);
+
+      const dashboard = await service.dashboard([]);
+
+      // the title infers 'finished', but the pending question outranks it
+      expect(dashboard.agents[0]).toMatchObject({ attention: 'question', question: { id: inlineQuestionId('Deploy?', ['Yes', 'No']), text: 'Deploy?', choices: ['Yes', 'No'], source: 'structured', targetPaneId: '%9' } });
     } finally { await rm(workspace, { recursive: true, force: true }); }
   });
 });

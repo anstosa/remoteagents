@@ -1,0 +1,8 @@
+{
+  "interrupt": ["C-c"],
+  "selectOption": [
+    { "index": 0, "keys": ["Enter"] },
+    { "index": 1, "keys": ["Down", "Enter"] },
+    { "index": 3, "keys": ["Down", "Down", "Down", "Enter"] }
+  ]
+}

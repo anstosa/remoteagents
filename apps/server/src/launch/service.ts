@@ -33,13 +33,16 @@ export class LaunchService {
   private readonly hostShellName = interactiveShellName(this.hostShell);
   constructor(private readonly config: ValidatedConfig, private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly panes: TmuxAdapter = new TmuxAdapter()) {}
   // resolve the authenticated account home independently from the launch directory
-  private agentHome(): string {
+  agentHome(): string {
     const hostPath = this.config.worktrees.find(worktree => worktree.hostPath !== undefined)?.hostPath;
     return hostPath === undefined ? process.env.HOME ?? '/' : dirname(hostPath);
   }
   private async existingPane(worktree: Worktree): Promise<{ socket: SocketRef; pane: Pane } | undefined> {
     const roots = [worktree.hostPath, worktree.identity].filter((path): path is string => path !== undefined);
-    for (const socket of await this.finder.find()) for (const pane of await this.panes.listPanes(socket)) {
+    const sockets = await this.finder.find();
+    // list every socket concurrently; the first match in discovery order still wins
+    const listed = await Promise.all(sockets.map(async socket => ({ socket, panes: await this.panes.listPanes(socket) })));
+    for (const { socket, panes } of listed) for (const pane of panes) {
       if (!roots.some(root => pane.path === root || pane.path.startsWith(`${root}/`))) continue;
       if (pane.sessionName?.startsWith('rac-stack-')) continue;
       if (pane.command !== this.hostShellName) continue;

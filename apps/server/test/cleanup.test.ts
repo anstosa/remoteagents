@@ -35,7 +35,7 @@ describe('runtime cleanup', () => {
       { refresh: async () => [{ id: 'socket-a:%1' } as never] },
       { find: async () => [socket] },
       { listPanes: async () => panes, close: async () => true, terminateHostProcess: async () => true },
-      { hasCodexDescendant: async pid => codex.has(pid), listProcesses: async () => processes }
+      { recognizeAgent: async pid => codex.has(pid) ? { kind: 'codex' as const, pid, wrapped: false } : undefined, listProcesses: async () => processes }
     );
 
     const targets = await service.scan();
@@ -59,7 +59,7 @@ describe('runtime cleanup', () => {
         close: async (_socket, paneId) => { closed.push(paneId); return paneId !== '%3'; },
         terminateHostProcess: async () => true
       },
-      { hasCodexDescendant: async pid => pid === 300 || pid === 500, listProcesses: async () => [] }
+      { recognizeAgent: async pid => (pid === 300 || pid === 500) ? { kind: 'codex' as const, pid, wrapped: false } : undefined, listProcesses: async () => [] }
     );
     const initial = await service.scan();
     const orphan = initial.find(target => target.kind === 'orphan-worker')!;
@@ -80,7 +80,7 @@ describe('runtime cleanup', () => {
       { refresh: async () => [] },
       { find: async () => [socket] },
       { listPanes: async () => [pane('%5', '$stale', 500)], close: async () => true, terminateHostProcess: async () => true },
-      { hasCodexDescendant: async () => true, listProcesses: async () => [] }
+      { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }), listProcesses: async () => [] }
     );
     const [target] = await service.scan();
     await expect(service.cleanup([target!.id, target!.id])).resolves.toBeUndefined();

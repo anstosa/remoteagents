@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ValidatedConfig } from '../src/config/schema.js';
 import type { DashboardPayload } from '../src/dashboard/updates.js';
 import type { Agent, Worktree } from '../src/domain/models.js';
+import { stated } from './helpers/agent.js';
 import { OrchestrationService, type OrchestrationDependencies } from '../src/orchestration/service.js';
 
 const cora: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: true, command: 'codex', commands: { build: 'docker compose build' } };
@@ -17,7 +18,7 @@ const config: ValidatedConfig = {
   worktrees: [cora, dave]
 };
 const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
-const activeAgent: Agent = { id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.identity, branch: 'feature/cora', title: 'Ready', worktreeId: cora.id, worktreeLabel: cora.label, worktreeOrder: 0, gitStatus: { files: 2, staged: 0, unstaged: 2, untracked: 0, conflicted: 0 } };
+const activeAgent: Agent = stated({ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.identity, branch: 'feature/cora', title: 'Ready', worktreeId: cora.id, worktreeLabel: cora.label, worktreeOrder: 0, gitStatus: { files: 2, staged: 0, unstaged: 2, untracked: 0, conflicted: 0 } });
 
 // build one fully structural dependency set
 function dependencies(overrides: Partial<OrchestrationDependencies> = {}): OrchestrationDependencies {
@@ -43,8 +44,8 @@ function dependencies(overrides: Partial<OrchestrationDependencies> = {}): Orche
       updateQueued: async (_agentId, promptId, text) => ({ id: promptId, text, createdAt: '2026-08-13T00:00:00.000Z' }),
       moveQueued: async () => [],
       removeQueued: async () => true,
-      answerOmxQuestion: async () => true,
-      cancel: async () => true,
+      answerQuestion: async () => true,
+      cancel: async () => 'ok',
       close: async () => true
     },
     promptHistory: { list: async () => [] },
@@ -65,6 +66,29 @@ function dependencies(overrides: Partial<OrchestrationDependencies> = {}): Orche
 }
 
 describe('OrchestrationService', () => {
+  it('maps each interrupt outcome to its result', async () => {
+    const cancelled = new OrchestrationService(dependencies({ prompts: { ...dependencies().prompts, cancel: async () => 'ok' } }));
+    await expect(cancelled.cancel(activeAgent.id)).resolves.toMatchObject({ ok: true, value: { cancelled: true } });
+    const finished = new OrchestrationService(dependencies({ prompts: { ...dependencies().prompts, cancel: async () => 'not-working' } }));
+    await expect(finished.cancel(activeAgent.id)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } });
+    const missing = new OrchestrationService(dependencies({ prompts: { ...dependencies().prompts, cancel: async () => 'unavailable' } }));
+    await expect(missing.cancel(activeAgent.id)).resolves.toMatchObject({ ok: false, error: { code: 'not_found' } });
+  });
+
+  it('answers an inline question only for a hashed id and an in-range index', async () => {
+    const calls: Array<[string, string, number]> = [];
+    const deps = dependencies({ prompts: { ...dependencies().prompts, answerQuestion: async (agentId, questionId, index) => { calls.push([agentId, questionId, index]); return questionId === 'i63eEMdg6bcC3vtLXiJd55'; } } });
+    const service = new OrchestrationService(deps);
+    // the legacy `question-…` id and an out-of-range index are rejected before the facade
+    await expect(service.answerQuestion({ agentId: activeAgent.id, questionId: 'question-legacy', index: 0 })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_request' } });
+    await expect(service.answerQuestion({ agentId: activeAgent.id, questionId: 'i63eEMdg6bcC3vtLXiJd55', index: 16 })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_request' } });
+    expect(calls).toHaveLength(0);
+    // a valid hashed id passes through; a facade miss becomes not_found
+    await expect(service.answerQuestion({ agentId: activeAgent.id, questionId: 'i63eEMdg6bcC3vtLXiJd55', index: 2 })).resolves.toMatchObject({ ok: true, value: { answered: true } });
+    await expect(service.answerQuestion({ agentId: activeAgent.id, questionId: 'AAAAAAAAAAAAAAAAAAAAAA', index: 2 })).resolves.toMatchObject({ ok: false, error: { code: 'not_found' } });
+    expect(calls).toEqual([[activeAgent.id, 'i63eEMdg6bcC3vtLXiJd55', 2], [activeAgent.id, 'AAAAAAAAAAAAAAAAAAAAAA', 2]]);
+  });
+
   it('merges active agents and inactive worktrees in configured order', async () => {
     const service = new OrchestrationService(dependencies());
 
@@ -133,8 +157,8 @@ describe('OrchestrationService', () => {
         updateQueued: async (_agentId, id, text) => { calls.push(`update:${id}:${text}`); return { id, text, createdAt: '2026-08-13T00:00:00.000Z' }; },
         moveQueued: async (_agentId, id, direction) => { calls.push(`move:${id}:${direction}`); return [{ id, text: 'Edited', createdAt: '2026-08-13T00:00:00.000Z' }]; },
         removeQueued: async (_agentId, id) => { calls.push(`remove:${id}`); return true; },
-        answerOmxQuestion: async () => true,
-        cancel: async () => true,
+        answerQuestion: async () => true,
+        cancel: async () => 'ok',
         close: async () => true
       },
       worktreeCommands: {
@@ -156,7 +180,7 @@ describe('OrchestrationService', () => {
   });
 
   it('deactivates only idle agents in configured worktrees', async () => {
-    let agent: Agent = { ...activeAgent, title: '⠋ Working' };
+    let agent: Agent = stated({ ...activeAgent, title: '⠋ Working' });
     let closed = 0;
     const service = new OrchestrationService(dependencies({
       discovery: { target: async () => ({ agent, socket }) },
@@ -166,15 +190,15 @@ describe('OrchestrationService', () => {
         updateQueued: async () => undefined,
         moveQueued: async () => undefined,
         removeQueued: async () => false,
-        answerOmxQuestion: async () => false,
-        cancel: async () => false,
+        answerQuestion: async () => false,
+        cancel: async () => 'unavailable',
         close: async () => { closed += 1; return true; }
       }
     }));
 
     await expect(service.deactivate(activeAgent.id)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } });
     expect(closed).toBe(0);
-    agent = { ...activeAgent, title: 'Ready' };
+    agent = stated({ ...activeAgent, title: 'Ready' });
     await expect(service.deactivate(activeAgent.id)).resolves.toMatchObject({ ok: true, value: { deactivated: true } });
     expect(closed).toBe(1);
     agent = { ...activeAgent, workspace: '/scratch/repo', title: 'Ready' };

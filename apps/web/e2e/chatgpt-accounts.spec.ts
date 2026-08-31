@@ -53,7 +53,7 @@ test('queries, repairs, switches, and adds ChatGPT accounts from global settings
     if (url.pathname === '/api/agents/agent-cora/saved-prompts') return route.fulfill({ json: { prompts: [] } });
     if (url.pathname === '/api/agents/agent-cora/queued-prompts') return route.fulfill({ json: { prompts: [] } });
     if (url.pathname === '/api/agents/agent-cora/prompt-history') return route.fulfill({ json: { prompts: [] } });
-    if (url.pathname === '/api/agents/agent-cora/skills') return route.fulfill({ json: { skills: [] } });
+    if (url.pathname === '/api/agents/agent-cora/commands') return route.fulfill({ json: { commands: [] } });
     if (url.pathname === '/api/worktrees/cora/notes') return route.fulfill({ json: { notes: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     // query every account on menu open
@@ -208,7 +208,7 @@ test('cancels a device login that starts after its dialog closes', async ({ page
     // return no prompt history
     if (url.pathname === '/api/agents/agent-cora/prompt-history') return route.fulfill({ json: { prompts: [] } });
     // return no skills
-    if (url.pathname === '/api/agents/agent-cora/skills') return route.fulfill({ json: { skills: [] } });
+    if (url.pathname === '/api/agents/agent-cora/commands') return route.fulfill({ json: { commands: [] } });
     // return no worktree notes
     if (url.pathname === '/api/worktrees/cora/notes') return route.fulfill({ json: { notes: [] } });
     // return no push key

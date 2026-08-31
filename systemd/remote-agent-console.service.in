@@ -1,0 +1,30 @@
+[Unit]
+Description=Remote Agent Console
+Documentation=https://github.com/anstosa/remoteagents
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@REPOSITORY@
+EnvironmentFile=@ENVIRONMENT_FILE@
+Environment=NODE_ENV=production
+Environment=PATH=@EXECUTABLE_PATH@
+ExecStart=@NODE@ apps/server/dist/index.js
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+
+# The console intentionally needs the operator's home, Git repositories,
+# process tree, and tmux sockets. Keep the remaining system access read-only.
+# /tmp must stay shared and writable: launch descriptors are written to
+# /tmp/remote-agent-console-<uid> and read back by the user's tmux server,
+# which runs outside this unit's mount namespace.
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=@REPOSITORY@ @CODEX_HOME@ /tmp
+
+[Install]
+WantedBy=default.target

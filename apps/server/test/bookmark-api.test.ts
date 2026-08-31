@@ -2,6 +2,7 @@ import argon2 from 'argon2';
 import { describe, expect, it } from 'vitest';
 import { AuthService } from '../src/auth/service.js';
 import { buildApp } from '../src/app.js';
+import { stated } from './helpers/agent.js';
 
 const bookmark = { id: 'bookmark-identifier-001', threadId: '0198c333-3333-7333-8333-333333333333', title: 'Shared Potato chat', createdAt: '2026-08-20T20:00:00.000Z' };
 
@@ -17,15 +18,13 @@ describe('chat bookmark API', () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', saveKey: 'potato', available: true, pinned: true, command: 'codex' };
     const otherWorktree = { ...worktree, id: 'owen', label: 'Owen', path: '/worktrees/owen', identity: '/worktrees/owen', hostPath: '/home/ubuntu/owen' };
-    const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', worktreeId: 'cora', title: 'Ready' };
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', worktreeId: 'cora', title: 'Ready' });
     const otherAgent = { ...agent, id: 'agent-2', paneId: '%2', sessionId: 'socket:$2', workspace: '/home/ubuntu/owen', worktreeId: 'owen' };
     const calls: string[] = [];
     const renamedBookmark = { ...bookmark, title: 'Release readiness chat' };
     const bookmarks = {
       list: async (key: string) => { calls.push(`list:${key}`); return [bookmark]; },
-      // resolve the selected fixture thread
-      currentThreadId: async (sessions: Array<{ id: string }>) => { calls.push(`current:${sessions.map(session => session.id).join(',')}`); return bookmark.threadId; },
-      bookmarkCurrent: async (key: string, sessions: Array<{ id: string }>) => { calls.push(`create:${key}:${sessions.map(session => session.id).join(',')}`); return bookmark; },
+      create: async (key: string, value: { threadId: string; kind?: string }) => { calls.push(`create:${key}:${value.threadId}:${value.kind}`); return bookmark; },
       rename: async (key: string, id: string, title: string) => { calls.push(`rename:${key}:${id}:${title}`); return renamedBookmark; },
       remove: async (key: string, id: string) => { calls.push(`remove:${key}:${id}`); return bookmark; },
       get: async () => bookmark
@@ -36,8 +35,9 @@ describe('chat bookmark API', () => {
         const selected = [agent, otherAgent].find(candidate => candidate.id === id);
         return selected === undefined ? undefined : { agent: selected, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } };
       },
-      // expose one selected Codex conversation
-      sessions: async () => [{ id: '0198c333-3333-7333-8333-333333333333', relativePath: 'sessions/2026/08/20/rollout-current-0198c333-3333-7333-8333-333333333333.jsonl' }],
+      // expose one selected conversation, reported and with a title
+      conversationId: async () => bookmark.threadId,
+      conversation: async () => ({ id: bookmark.threadId, title: bookmark.title }),
       // expose both dashboard agents
       dashboard: async () => ({ generation: 1, agents: [agent, otherAgent], worktrees: [] })
     };
@@ -60,8 +60,7 @@ describe('chat bookmark API', () => {
       // require both shared-group list operations
       expect(calls.filter(call => call === 'list:potato')).toHaveLength(2);
       expect(calls).toEqual(expect.arrayContaining([
-        'current:0198c333-3333-7333-8333-333333333333',
-        'create:potato:0198c333-3333-7333-8333-333333333333',
+        'create:potato:0198c333-3333-7333-8333-333333333333:codex',
         `rename:potato:${bookmark.id}:${renamedBookmark.title}`,
         `remove:potato:${bookmark.id}`
       ]));
@@ -73,15 +72,13 @@ describe('chat bookmark API', () => {
   it('keeps scratch bookmarks in one stable workspace group', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: true, command: 'codex' };
-    const firstAgent = { id: 'scratch-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu', title: 'Scratch' };
+    const firstAgent = stated({ id: 'scratch-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu', title: 'Scratch' });
     const secondAgent = { ...firstAgent, id: 'scratch-2', paneId: '%2', sessionId: 'socket:$2' };
     const renamedBookmark = { ...bookmark, title: 'Scratch release plan' };
     const calls: string[] = [];
     const bookmarks = {
       list: async (key: string) => { calls.push(`list:${key}`); return [bookmark]; },
-      // resolve the selected scratch conversation
-      currentThreadId: async () => bookmark.threadId,
-      bookmarkCurrent: async (key: string) => { calls.push(`create:${key}`); return bookmark; },
+      create: async (key: string) => { calls.push(`create:${key}`); return bookmark; },
       rename: async (key: string, id: string) => { calls.push(`rename:${key}:${id}`); return renamedBookmark; },
       remove: async (key: string, id: string) => { calls.push(`remove:${key}:${id}`); return bookmark; }
     };
@@ -91,8 +88,9 @@ describe('chat bookmark API', () => {
         const agent = [firstAgent, secondAgent].find(candidate => candidate.id === id);
         return agent === undefined ? undefined : { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } };
       },
-      // expose one selected Codex conversation
-      sessions: async () => [{ id: bookmark.threadId, relativePath: `sessions/2026/08/20/rollout-current-${bookmark.threadId}.jsonl` }],
+      // expose one selected conversation
+      conversationId: async () => bookmark.threadId,
+      conversation: async () => ({ id: bookmark.threadId, title: bookmark.title }),
       dashboard: async () => ({ generation: 1, agents: [firstAgent, secondAgent], worktrees: [] })
     };
     const app = await buildApp({ listen: { host: '127.0.0.1', port: 8787 }, name: 'Test', publicOrigin: new URL('https://agents.example.com'), remoteServers: [], trustedProxyIps: new Set(['127.0.0.1']), pollIntervalMs: 500, newAgentCommand: 'codex', worktrees: [worktree] } as never, { auth: new AuthService(hash, Buffer.alloc(32, 25).toString('base64url')), discovery: discovery as never, bookmarks: bookmarks as never });
@@ -121,7 +119,7 @@ describe('chat bookmark API', () => {
   it('launches an inactive worktree into the selected bookmarked chat', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', saveKey: 'potato', available: true, pinned: true, command: 'codex' };
-    const replacement = { id: 'agent-2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', worktreeId: 'cora', title: 'Ready' };
+    const replacement = stated({ id: 'agent-2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', worktreeId: 'cora', title: 'Ready' });
     let launched = false;
     const discovery = { target: async () => undefined, dashboard: async () => ({ generation: launched ? 2 : 1, agents: launched ? [replacement] : [], worktrees: [] }) };
     const launch = { canResumeConversation: () => true, resumeConversation: async (worktreeId: string, threadId: string) => { launched = worktreeId === 'cora' && threadId === bookmark.threadId; return launched; } };
@@ -143,7 +141,7 @@ describe('chat bookmark API', () => {
   it('closes an idle agent before resuming the selected bookmarked chat', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', saveKey: 'potato', available: true, pinned: true, command: 'codex' };
-    const firstAgent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', worktreeId: 'cora', title: 'Ready' };
+    const firstAgent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', worktreeId: 'cora', title: 'Ready' });
     const replacement = { ...firstAgent, id: 'agent-2', paneId: '%2', sessionId: 'socket:$2' };
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const events: string[] = [];
@@ -174,7 +172,7 @@ describe('chat bookmark API', () => {
   it('preserves an open agent when exact resume is not configured', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', saveKey: 'potato', available: true, pinned: true, command: 'codex' };
-    const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', worktreeId: 'cora', title: 'Ready' };
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', worktreeId: 'cora', title: 'Ready' });
     let closed = false;
     const discovery = { dashboard: async () => ({ generation: 1, agents: [agent], worktrees: [] }), target: async () => ({ agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } }) };
     const launch = { canResumeConversation: () => false, resumeConversation: async () => false };
@@ -187,6 +185,28 @@ describe('chat bookmark API', () => {
       expect(switched.statusCode).toBe(409);
       expect(switched.json()).toEqual({ error: 'Exact chat resume is not configured for this worktree.' });
       expect(closed).toBe(false);
+    } finally {
+      await app.close();
+    }
+  }, 15_000);
+
+  it('rejects a bookmark whose thread id its Adapter will not resume', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', saveKey: 'potato', available: true, pinned: true, command: 'codex' };
+    let resumed = false;
+    // a persisted bookmark whose thread id is not a valid Codex conversation id
+    const invalid = { ...bookmark, threadId: 'not-a-session' };
+    const launch = { canResumeConversation: () => true, resumeConversation: async () => { resumed = true; return true; } };
+    const app = await buildApp({ listen: { host: '127.0.0.1', port: 8787 }, name: 'Test', publicOrigin: new URL('https://agents.example.com'), remoteServers: [], trustedProxyIps: new Set(['127.0.0.1']), pollIntervalMs: 500, newAgentCommand: 'codex', worktrees: [worktree] } as never, { auth: new AuthService(hash, Buffer.alloc(32, 26).toString('base64url')), launch: launch as never, bookmarks: { get: async () => invalid } as never });
+    try {
+      const headers = await authenticatedHeaders(app);
+
+      const switched = await app.inject({ method: 'POST', url: `/api/worktrees/cora/bookmarks/${bookmark.id}/switch`, headers });
+
+      // the Adapter's validId gate fails closed before any resume
+      expect(switched.statusCode).toBe(409);
+      expect(switched.json()).toEqual({ error: 'This bookmark cannot be resumed.' });
+      expect(resumed).toBe(false);
     } finally {
       await app.close();
     }

@@ -4,6 +4,7 @@ import { createHmac } from 'node:crypto';
 import { buildApp } from '../src/app.js';
 import { AuthService } from '../src/auth/service.js';
 import { AgentNotificationCoordinator } from '../src/notifications.js';
+import { stated } from './helpers/agent.js';
 import type { ValidatedConfig } from '../src/config/schema.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -160,7 +161,7 @@ describe('server administration API', () => {
     const targetSha = '2'.repeat(40);
     const advisorId = 'update-advisor';
     const socket = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const pendingAgent = { id: advisorId, paneId: '%8', sessionId: 'socket:$8', socketFingerprint: 'socket', workspace: '/host/repo', displayLabel: 'Update Advisor Starting v4 2222222', title: 'Ready' };
+    const pendingAgent = stated({ id: advisorId, paneId: '%8', sessionId: 'socket:$8', socketFingerprint: 'socket', workspace: '/host/repo', displayLabel: 'Update Advisor Starting v4 2222222', title: 'Ready' });
     const readyAgent = { ...pendingAgent, displayLabel: 'Update Advisor v4 2222222' };
     const oldAgent = { ...pendingAgent, id: 'old-update-advisor', paneId: '%7', sessionId: 'socket:$7' };
     const preview = { available: true, rebuildRetryAvailable: false, baseSha: '1'.repeat(40), targetSha, fastForwardable: true, commitCount: 1, commits: [], commitsTruncated: false, filesTruncated: false, advisory: { required: true, reasons: [{ kind: 'config', paths: ['.env.example'] }] } };
@@ -174,11 +175,11 @@ describe('server administration API', () => {
     let signalAdvisorCloseStarted = () => {};
     let advisorCloseGate = Promise.resolve();
     const discovery = {
-      dashboard: async () => ({ generation: launched ? 2 : 1, agents: [...(oldAdvisorClosed ? [] : [oldAgent]), ...(launched && !advisorClosed ? [{ ...(advisorReady ? readyAgent : pendingAgent), title: advisorStarted ? '⠋ Reviewing' : 'Ready' }] : [])], worktrees: [] }),
-      target: async (id: string) => launched && !advisorClosed && id === advisorId ? { agent: { ...(advisorReady ? readyAgent : pendingAgent), title: advisorStarted ? '⠋ Reviewing' : 'Ready' }, socket } : !oldAdvisorClosed && id === oldAgent.id ? { agent: oldAgent, socket } : undefined
+      dashboard: async () => ({ generation: launched ? 2 : 1, agents: [...(oldAdvisorClosed ? [] : [oldAgent]), ...(launched && !advisorClosed ? [stated({ ...(advisorReady ? readyAgent : pendingAgent), title: advisorStarted ? '⠋ Reviewing' : 'Ready' })] : [])], worktrees: [] }),
+      target: async (id: string) => launched && !advisorClosed && id === advisorId ? { agent: stated({ ...(advisorReady ? readyAgent : pendingAgent), title: advisorStarted ? '⠋ Reviewing' : 'Ready' }), socket } : !oldAdvisorClosed && id === oldAgent.id ? { agent: oldAgent, socket } : undefined
     };
     const launch = { launchUpdateAdvisor: vi.fn(async () => { launched = true; advisorReady = false; advisorStarted = false; advisorClosed = false; return true; }) };
-    const tmux = { pastePrompt: vi.fn(async () => true), capture: vi.fn(async () => '› Inspect the fixed committed range without changing it. '), enter: vi.fn(async () => { advisorStarted = true; return true; }), queue: vi.fn(async () => true), label: vi.fn(async () => { advisorReady = true; return true; }), close: vi.fn(async (_socket: unknown, paneId: string) => {
+    const tmux = { pastePrompt: vi.fn(async () => true), capture: vi.fn(async () => '› Inspect the fixed committed range without changing it. '), sendKeys: vi.fn(async (_socket: unknown, _pane: string, keys: string[]) => { if (keys.includes('Enter')) advisorStarted = true; return true; }), label: vi.fn(async () => { advisorReady = true; return true; }), close: vi.fn(async (_socket: unknown, paneId: string) => {
       // close interrupted launches immediately
       if (paneId === oldAgent.paneId) oldAdvisorClosed = true;
       // optionally hold one modal-close race
@@ -240,9 +241,10 @@ describe('server administration API', () => {
       expect(launch.launchUpdateAdvisor).toHaveBeenCalledTimes(2);
       expect(launch.launchUpdateAdvisor).toHaveBeenCalledWith('/host/repo', targetSha);
       expect(tmux.pastePrompt).toHaveBeenCalledTimes(2);
-      expect(tmux.enter).toHaveBeenCalledTimes(2);
-      expect(tmux.enter).toHaveBeenCalledWith(socket, pendingAgent.paneId);
-      expect(tmux.queue).not.toHaveBeenCalled();
+      expect(tmux.sendKeys).toHaveBeenCalledTimes(2);
+      expect(tmux.sendKeys).toHaveBeenCalledWith(socket, pendingAgent.paneId, ['Enter']);
+      // the advisor is submitted with Enter, never Codex's Tab queue key
+      expect(tmux.sendKeys.mock.calls.every(call => !(call[2] as string[]).includes('Tab'))).toBe(true);
       expect(tmux.label).toHaveBeenCalledWith(socket, pendingAgent.paneId, readyAgent.displayLabel);
       expect(tmux.close).toHaveBeenCalledWith(socket, readyAgent.paneId);
     } finally { await adminApp.close(); await rm(directory, { recursive: true, force: true }); }
@@ -252,7 +254,7 @@ describe('server administration API', () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const targetSha = '2'.repeat(40);
     const socket = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const legacy = { id: 'legacy-advisor', paneId: '%7', sessionId: 'socket:$7', socketFingerprint: 'socket', workspace: '/host/repo', displayLabel: 'Update Advisor 2222222', title: 'Ready' };
+    const legacy = stated({ id: 'legacy-advisor', paneId: '%7', sessionId: 'socket:$7', socketFingerprint: 'socket', workspace: '/host/repo', displayLabel: 'Update Advisor 2222222', title: 'Ready' });
     let closed = false;
     let dashboardFails = false;
     const discovery = {
@@ -281,7 +283,7 @@ describe('server administration API', () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const targetSha = '2'.repeat(40);
     const socket = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const older = { id: 'older-advisor', paneId: '%8', sessionId: 'socket:$8', socketFingerprint: 'socket', workspace: '/host/repo', displayLabel: 'Update Advisor v4 2222222', title: 'Framework' };
+    const older = stated({ id: 'older-advisor', paneId: '%8', sessionId: 'socket:$8', socketFingerprint: 'socket', workspace: '/host/repo', displayLabel: 'Update Advisor v4 2222222', title: 'Framework' });
     const newer = { ...older, id: 'newer-advisor', paneId: '%9', sessionId: 'socket:$9', title: 'remoteagents' };
     let olderClosed = false;
     const discovery = {
@@ -380,11 +382,11 @@ describe('client control', () => {
     const subscribed: unknown[] = [];
     const messages: unknown[] = [];
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, command: 'codex' };
-    const agent = { id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready' };
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const push = { enabled: true, publicKey: 'public-key', subscribe: async (subscription: unknown) => { subscribed.push(subscription); return true; }, notify: async (message: unknown) => { messages.push(message); } };
     const notifications = new AgentNotificationCoordinator(() => {}, 0);
-    notifications.observe({ ...agent, title: '⠋ Working' });
+    notifications.observe(stated({ ...agent, title: '⠋ Working' }));
     notifications.observe(agent);
     await new Promise(resolve => setTimeout(resolve, 0));
     const discovery = { target: async (id: string) => id === agent.id ? { agent, socket } : undefined, dashboard: async () => ({ generation: 1, agents: [agent], worktrees: [] }) };
@@ -417,7 +419,7 @@ describe('client control', () => {
 describe('agent launches', () => {
   it('waits for a discovered Codex pane and returns its id to the client', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const agent = { id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu', title: '' };
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu', title: '' });
     let dashboards = 0;
     const discovery = { dashboard: async () => ({ generation: ++dashboards, agents: dashboards === 1 ? [] : [agent], worktrees: [] }) };
     const launch = { launch: async () => true, launchHome: async () => true };
@@ -435,7 +437,7 @@ describe('agent launches', () => {
   it('waits beyond twenty seconds for the requested worktree agent', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, command: 'codex' };
-    const agent = { id: 'socket:%2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '', worktreeId: 'cora' };
+    const agent = stated({ id: 'socket:%2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '', worktreeId: 'cora' });
     let dashboards = 0;
     // reveal after the old timeout
     const discovery = { dashboard: async () => ({ generation: ++dashboards, agents: dashboards < 83 ? [] : [agent], worktrees: [] }) };
@@ -476,7 +478,7 @@ describe('configured worktree deactivation', () => {
   it('closes an idle configured agent so its worktree becomes inactive', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, command: 'codex' };
-    const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' };
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
     let closed = false;
     const deactivateApp = await buildApp({ ...config, worktrees: [worktree] }, { auth: new AuthService(hash, Buffer.alloc(32, 7).toString('base64url')), discovery: { target: async (id: string) => id === agent.id ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined } as never, tmux: { close: async () => { closed = true; return true; } } as never });
     try {
@@ -491,7 +493,7 @@ describe('configured worktree deactivation', () => {
   it('sleeps, wakes, and turns off a retained worktree tab', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false, command: 'codex' };
-    const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' };
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     let active = true;
     let resumed = '';
@@ -543,7 +545,7 @@ describe('configured worktree deactivation', () => {
   it('closes an idle agent before restarting it through the resume alias', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false, command: 'codex' };
-    const firstAgent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' };
+    const firstAgent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
     const secondAgent = { ...firstAgent, id: 'agent-2', paneId: '%2', sessionId: 'socket:$2' };
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const events: string[] = [];
@@ -584,7 +586,7 @@ describe('configured worktree deactivation', () => {
 describe('agent terminal swap', () => {
   it('backgrounds the agent for terminal mode and foregrounds it when returning', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '⠋ Working' };
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '⠋ Working' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const suspended: Array<{ pane: string; path: string }> = [];
     const foregrounded: Array<{ pane: string; path: string }> = [];
@@ -624,14 +626,14 @@ describe('guided review API boundary', () => {
       prepare: async () => { prepares += 1; return { snapshot, resolved: {} }; },
       fingerprint: async () => ({ snapshot: { scope: 'working', base: 'HEAD', fingerprint: 'empty-fingerprint', includeTests: false, includeDocs: false }, empty: true })
     };
-    const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' };
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const pasted: string[] = [];
     const reviewApp = await buildApp(config, {
       auth: new AuthService(hash, Buffer.alloc(32, 19).toString('base64url')),
       reviewTours: reviewTours as never,
       discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined } as never,
-      tmux: { pastePrompt: async (_socket: typeof socket, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt); return true; }, queue: async () => true } as never
+      tmux: { pastePrompt: async (_socket: typeof socket, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt); return true; }, sendKeys: async () => true } as never
     });
     try {
       const boot = await reviewApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
@@ -702,7 +704,7 @@ describe('queued prompt API', () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-queued-prompt-api-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, command: 'codex' };
-    const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '⠋ Working' };
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '⠋ Working' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const queuedApp = await buildApp({ ...config, worktrees: [worktree] }, {
       auth: new AuthService(hash, Buffer.alloc(32, 11).toString('base64url')),
@@ -739,7 +741,7 @@ describe('queued prompt API', () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-save-queued-prompt-api-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, command: 'codex' };
-    const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '⠋ Working' };
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '⠋ Working' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const queuedApp = await buildApp({ ...config, worktrees: [worktree] }, {
       auth: new AuthService(hash, Buffer.alloc(32, 12).toString('base64url')),
@@ -775,8 +777,8 @@ describe('saved prompt API', () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, command: 'codex' };
     const agents = [
-      { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' },
-      { id: 'agent-2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' }
+      stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' }),
+      stated({ id: 'agent-2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' })
     ];
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const prompts = [{ id: 'saved-prompt-001', text: 'Review this change.' }];
@@ -792,7 +794,7 @@ describe('saved prompt API', () => {
     const savedApp = await buildApp({ ...config, worktrees: [worktree] }, {
       auth: new AuthService(hash, Buffer.alloc(32, 9).toString('base64url')),
       discovery: { target: async (id: string) => { const agent = agents.find(candidate => candidate.id === id); return agent === undefined ? undefined : { agent, socket }; } } as never,
-      tmux: { pastePrompt: async (_socket: unknown, _paneId: string, _buffer: string, prompt: string) => { queued.push(prompt); return true; }, queue: async () => true } as never,
+      tmux: { pastePrompt: async (_socket: unknown, _paneId: string, _buffer: string, prompt: string) => { queued.push(prompt); return true; }, sendKeys: async () => true } as never,
       savedPrompts: savedPrompts as never
     });
     try {
@@ -823,8 +825,8 @@ describe('prompt history API', () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, command: 'codex' };
     const agents = [
-      { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' },
-      { id: 'agent-2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' }
+      stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' }),
+      stated({ id: 'agent-2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' })
     ];
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const stored: Array<{ id: string; text: string; createdAt: string }> = [];
@@ -841,7 +843,7 @@ describe('prompt history API', () => {
     const historyApp = await buildApp({ ...config, worktrees: [worktree] }, {
       auth: new AuthService(hash, Buffer.alloc(32, 10).toString('base64url')),
       discovery: { target: async (id: string) => { const agent = agents.find(candidate => candidate.id === id); return agent === undefined ? undefined : { agent, socket }; } } as never,
-      tmux: { pastePrompt: async () => true, queue: async () => true } as never,
+      tmux: { pastePrompt: async () => true, sendKeys: async () => true } as never,
       promptHistory: promptHistory as never
     });
     try {
@@ -901,7 +903,7 @@ describe('worktree notes API', () => {
   it('keeps scratch notes available through the live agent', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, command: 'codex' };
-    const agent = { id: 'scratch-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu', title: 'Scratch' };
+    const agent = stated({ id: 'scratch-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu', title: 'Scratch' });
     const stored: Array<{ id: string; text: string; title?: string }> = [{ id: 'note-identifier-001', text: 'Scratch note' }];
     const keys: string[] = [];
     const notes = {
@@ -960,7 +962,7 @@ describe('workspace files API', () => {
   it('lists response files and previews active or inactive workspace files', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false, command: 'codex' };
-    const agent = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', title: 'Ready' };
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', title: 'Ready' });
     const discovery = { target: async (id: string) => id === agent.id ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined };
     const workspaceFiles = {
       list: async (workspace: string, message: string) => workspace === '/worktrees/cora' && message === 'Changed `src/main.ts`.' ? [{ path: 'src/main.ts', size: 12 }] : [],

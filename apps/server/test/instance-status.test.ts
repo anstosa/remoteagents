@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Agent } from '../src/domain/models.js';
+import { resolveAttention } from '../src/adapters/attention.js';
 import { instanceAttention, RemoteInstanceStatusPoller, validInstanceStatusRequest } from '../src/instance-status.js';
 
 const secret = 'status-secret-with-at-least-thirty-two-bytes';
@@ -11,6 +12,8 @@ const agent = (title: string, unread = false, overrides: Partial<Agent> = {}) =>
   socketFingerprint: 'socket',
   workspace: '/workspace',
   title,
+  kind: 'codex' as const,
+  attention: resolveAttention({ kind: 'codex', title, hasQuestion: overrides.question !== undefined }),
   unread,
   ...overrides
 });
@@ -26,7 +29,7 @@ describe('instance attention', () => {
   });
 
   it('prioritizes questions over active work', () => {
-    const question = { id: 'question-1', text: 'Deploy?', choices: ['Yes', 'No'], paneId: '%2' };
+    const question = { id: 'question-1', text: 'Deploy?', choices: ['Yes', 'No'], source: 'structured' as const, targetPaneId: '%2' };
 
     expect(instanceAttention({ agents: [agent('⠋ Working'), agent('Ready', false, { question })] })).toBe('question');
   });

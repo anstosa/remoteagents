@@ -177,6 +177,31 @@ describe('LaunchService', () => {
     expect(calls[1]).toEqual(['enter', '%4']);
   });
 
+  it('lists panes on every socket concurrently and prefers the first socket', async () => {
+    const first: SocketRef = { fingerprint: 'first', path: '/host-tmux/first', device: 1, inode: 1 };
+    const second: SocketRef = { fingerprint: 'second', path: '/host-tmux/second', device: 1, inode: 2 };
+    const worktree: Worktree = { id: 'alex', label: 'Alex', path: '/worktrees/alex', identity: '/worktrees/alex', hostPath: '/home/ubuntu/alex', available: true, command: 'alex' };
+    const calls: string[][] = [];
+    const started: string[] = [];
+    const finder = { find: async () => [first, second] };
+    const pane = (socket: SocketRef, id: string) => ({ paneId: id, sessionId: '$1', pid: 123, path: '/home/ubuntu/alex', command: 'zsh', title: '', socket });
+    const panes = {
+      // the first socket answers last; a sequential scan would still finish it first, a concurrent scan must not wait to start the second
+      listPanes: async (socket: SocketRef) => { started.push(socket.fingerprint); await new Promise(resolve => setTimeout(resolve, socket === first ? 20 : 0)); return [pane(socket, socket === first ? '%1' : '%2')]; },
+      pastePrompt: async (socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', socket.fingerprint, pane, buffer, command]); return true; },
+      enter: async (socket: SocketRef, pane: string) => { calls.push(['enter', socket.fingerprint, pane]); return true; }
+    };
+    const service = new LaunchService({ worktrees: [worktree] } as never, finder, panes as never);
+
+    const launch = service.launch('alex');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(started).toEqual(['first', 'second']);
+    await expect(launch).resolves.toBe(true);
+    expect(calls[0]).toMatchObject(['paste', 'first', '%1', expect.stringMatching(/^rac-launch-/), 'alex']);
+    expect(calls[1]).toEqual(['enter', 'first', '%1']);
+  });
+
   it('does not start an agent from an existing Bash pane', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });

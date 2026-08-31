@@ -1,6 +1,7 @@
 import argon2 from 'argon2';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
+import { stated } from './helpers/agent.js';
 import { AuthService } from '../src/auth/service.js';
 import type { ValidatedConfig } from '../src/config/schema.js';
 
@@ -22,10 +23,10 @@ describe('Codex account API', () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const cora = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false, command: 'codex' };
     const owen = { id: 'owen', label: 'Owen', path: '/worktrees/owen', identity: '/worktrees/owen', available: true, pinned: false, command: 'codex' };
-    const firstCora = { id: 'agent-cora-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.path, worktreeId: cora.id, worktreeLabel: cora.label, title: 'Ready' };
+    const firstCora = stated({ id: 'agent-cora-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.path, worktreeId: cora.id, worktreeLabel: cora.label, title: 'Ready' });
     const secondCora = { ...firstCora, id: 'agent-cora-2', paneId: '%2', sessionId: 'socket:$2' };
-    const workingOwen = { id: 'agent-owen', paneId: '%3', sessionId: 'socket:$3', socketFingerprint: 'socket', workspace: owen.path, worktreeId: owen.id, worktreeLabel: owen.label, title: '⠋ Working' };
-    const scratch = { id: 'agent-scratch', paneId: '%4', sessionId: 'socket:$4', socketFingerprint: 'socket', workspace: '/tmp', title: 'Ready' };
+    const workingOwen = stated({ id: 'agent-owen', paneId: '%3', sessionId: 'socket:$3', socketFingerprint: 'socket', workspace: owen.path, worktreeId: owen.id, worktreeLabel: owen.label, title: '⠋ Working' });
+    const scratch = stated({ id: 'agent-scratch', paneId: '%4', sessionId: 'socket:$4', socketFingerprint: 'socket', workspace: '/tmp', title: 'Ready' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const events: string[] = [];
     let coraClosed = false;
@@ -106,7 +107,7 @@ describe('Codex account API', () => {
   it('preserves a prompt that starts while an account switch selects restart targets', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const cora = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false, command: 'codex' };
-    const idleCora = { id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.path, worktreeId: cora.id, worktreeLabel: cora.label, title: 'Ready' };
+    const idleCora = stated({ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.path, worktreeId: cora.id, worktreeLabel: cora.label, title: 'Ready' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     let releasePaste!: () => void;
     let markPasteStarted!: () => void;
@@ -128,7 +129,7 @@ describe('Codex account API', () => {
     const tmux = {
       // hold a submitted prompt across the switch
       pastePrompt: async () => { markPasteStarted(); await pasteBlocked; return true; },
-      queue: async () => true,
+      sendKeys: async () => true,
       close: async () => { closed.push(idleCora.id); return true; }
     };
     app = await buildApp({ ...baseConfig, worktrees: [cora] }, {

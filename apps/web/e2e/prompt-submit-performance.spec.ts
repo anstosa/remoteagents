@@ -34,7 +34,7 @@ test('releases prompt submission as soon as the server accepts it', async ({ pag
     // issue live-output tickets
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     // return static composer resources
-    if (url.pathname === '/api/agents/agent-1/skills') return route.fulfill({ json: { skills: [] } });
+    if (url.pathname === '/api/agents/agent-1/commands') return route.fulfill({ json: { commands: [] } });
     // return static saved prompts
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
     // accept the prompt before slow refreshes finish

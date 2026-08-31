@@ -7,7 +7,10 @@ import { run } from '../tmux/command.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { ProcInspector, type ProcessInspector } from './processes.js';
 import { PullRequestService } from '../pull-requests/service.js';
-import type { Agent, CodexSessionRef, Dashboard, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, Pane, SocketRef, Worktree } from '../domain/models.js';
+import { parseReportedAttention, resolveAttention } from '../adapters/attention.js';
+import { adapterCapabilities, adapterFor } from '../adapters/registry.js';
+import type { Adapter, AttentionState, Conversation } from '../adapters/types.js';
+import type { Agent, Dashboard, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, Pane, SocketRef, Worktree } from '../domain/models.js';
 import { classifyReviewPath } from '../git/change-classification.js';
 import { isUpdateAdvisorLabel } from '../update-advisor.js';
 
@@ -42,7 +45,11 @@ export class ProcSocketFinder implements SocketFinder {
     const seen = new Set<string>();
     for (const row of text.split('\n').slice(1).map(line => line.trim().split(/\s+/)).filter(parts => parts.length >= 8 && parts[7]?.startsWith('/'))) {
       const hostPath = row[7]!;
-      const path = mountedSocketRoot !== undefined && hostPath.startsWith(`${hostSocketRoot}/`) ? join(mountedSocketRoot, hostPath.slice(hostSocketRoot.length)) : hostPath;
+      // Probe only tmux's own socket directory. Other services' sockets accept
+      // the connection but never answer the tmux handshake, so each one would
+      // block list-panes until the command timeout.
+      if (!hostPath.startsWith(`${hostSocketRoot}/`)) continue;
+      const path = mountedSocketRoot !== undefined ? join(mountedSocketRoot, hostPath.slice(hostSocketRoot.length)) : hostPath;
       const socket = await this.socket(path, uid);
       if (socket === undefined) continue;
       const key = `${socket.path}:${socket.device}:${socket.inode}`;
@@ -290,34 +297,17 @@ async function gitMeta(path: string, rootKnown = false): Promise<GitMeta> {
   const sha = await run('/usr/bin/git', ['-C', workspace, 'rev-parse', '--short', 'HEAD']);
   return { workspace, ...(sha.code === 0 ? { branch: sha.stdout.trim() } : {}), ...(gitStatus === undefined ? {} : { gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }) };
 }
-type OmxRecord = { kind?: unknown; question_id?: unknown; status?: unknown; question?: unknown; options?: unknown; questions?: unknown; renderer?: { target?: unknown; return_target?: unknown } };
-const questionId = /^question-[A-Za-z0-9_.-]+$/;
-const readQuestion = (raw: OmxRecord, paneId: string) => {
-  if (raw.kind !== 'omx.question/v1' || (raw.status !== 'pending' && raw.status !== 'prompting') || raw.renderer?.return_target !== paneId || typeof raw.renderer.target !== 'string' || !/^%\d+$/.test(raw.renderer.target) || typeof raw.question_id !== 'string' || !questionId.test(raw.question_id)) return undefined;
-  const first = Array.isArray(raw.questions) ? raw.questions[0] as { question?: unknown; options?: unknown } : undefined;
-  const text = typeof first?.question === 'string' ? first.question : typeof raw.question === 'string' ? raw.question : undefined;
-  const options = Array.isArray(first?.options) ? first.options : Array.isArray(raw.options) ? raw.options : [];
-  const choices = options.map(option => option && typeof option === 'object' && typeof (option as { label?: unknown }).label === 'string' ? (option as { label: string }).label : undefined).filter((value): value is string => value !== undefined);
-  return text && choices.length >= 2 && choices.length <= 16 ? { id: raw.question_id, text, choices, paneId: raw.renderer.target } : undefined;
-};
-export async function omxQuestion(workspace: string, paneId: string) {
-  const root = join(workspace, '.omx', 'state');
-  const directories = [join(root, 'questions')];
-  const sessions = await readdir(join(root, 'sessions'), { withFileTypes: true }).catch(() => []);
-  for (const session of sessions) if (session.isDirectory()) directories.push(join(root, 'sessions', session.name, 'questions'));
-  for (const directory of directories) for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
-    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
-    const parsed = await readFile(join(directory, entry.name), 'utf8').then(value => JSON.parse(value) as OmxRecord).catch(() => undefined);
-    const question = parsed && readQuestion(parsed, paneId); if (question) return question;
-  }
-  return undefined;
-}
 const omxWorkerWorktree = /(?:^|\/)\.omx\/team\/[^/]+\/worktrees\/worker-\d+(?:\/|$)/u;
 const omxWorkerStartup = /(?:^|\/)\.omx\/state\/team\/[^/]+\/runtime\/worker-\d+-startup\.sh(?:['"\s]|$)/u;
 export const isOmxWorkerPane = (pane: Pane) => omxWorkerWorktree.test(pane.path) || omxWorkerStartup.test(pane.startCommand ?? '');
 export class DiscoveryService {
   private generation = 0; private snapshot: Agent[] = [];
   private panePids = new Map<string, number>();
+  // raw `#{pane_current_path}` per agent id, so the Adapter can match a sandboxed
+  // pane's rollout by its working directory without readlink-ing its descriptors
+  private paneCwds = new Map<string, string>();
+  // reported @rac_attention per agent id, so the dashboard re-resolves with the question
+  private paneReported = new Map<string, AttentionState>();
   private readonly serverStartedAt = Date.now();
   private refreshedAt = 0;
   private refreshInFlight?: Promise<Agent[]>;
@@ -362,15 +352,29 @@ export class DiscoveryService {
     const sockets = await this.sockets(true);
     const panes = (await Promise.all(sockets.map(async (socket) => (await this.tmux.listPanes(socket)).map(pane => ({ ...pane, socket }))))).flat();
     const panePids = new Map<string, number>();
+    const paneCwds = new Map<string, string>();
+    const paneReported = new Map<string, AttentionState>();
     const agents: Agent[] = (await Promise.all(panes.filter(pane => !isOmxWorkerPane(pane)).map(async (pane): Promise<Agent | undefined> => {
-      if (!await this.processes.hasCodexDescendant(pane.pid)) return undefined;
+      const recognized = await this.processes.recognizeAgent(pane.pid);
+      if (recognized === undefined) {
+        // a pane whose agent is gone must not keep a stale report; nothing else clears it
+        if (pane.reportedAttention !== undefined || pane.reportedSession !== undefined || pane.reportedSandboxed !== undefined) void this.tmux.unsetReportedState(pane.socket, pane.paneId).catch(() => {});
+        return undefined;
+      }
       const workspace = await workspaceRoot(pane.path);
       const id = `${pane.socket.fingerprint}:${pane.paneId}`;
       panePids.set(id, pane.pid);
-      return { id, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, workspace, title: pane.title, ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }) };
+      paneCwds.set(id, pane.path);
+      const reported = parseReportedAttention(pane.reportedAttention);
+      if (reported !== undefined) paneReported.set(id, reported);
+      const attention = resolveAttention({ kind: recognized.kind, title: pane.title, reported, hasQuestion: false });
+      const conversationId = pane.reportedSession !== undefined && pane.reportedSession.length > 0 ? pane.reportedSession : undefined;
+      return { id, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, workspace, title: pane.title, kind: recognized.kind, attention, ...(pane.reportedSandboxed === '1' ? { sandboxed: true } : {}), ...(conversationId === undefined ? {} : { conversationId }), ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }) };
     }))).filter((agent): agent is Agent => agent !== undefined);
     this.snapshot = agents;
     this.panePids = panePids;
+    this.paneCwds = paneCwds;
+    this.paneReported = paneReported;
     this.refreshedAt = Date.now();
     this.generation++;
     return agents;
@@ -390,13 +394,57 @@ export class DiscoveryService {
     return socket === undefined ? undefined : { agent, socket };
   }
 
-  // resolve session files held by one selected agent pane
-  async sessions(id: string): Promise<CodexSessionRef[] | undefined> {
+  // the OS pid backing one discovered pane, for the Adapter's rollout reads
+  paneProcessId(id: string): number | undefined {
+    return this.panePids.get(id);
+  }
+
+  // the pane's working directory, for the Adapter's privilege-free rollout match —
+  // but only when no other discovered pane shares it, so a directory running two
+  // agents fails closed to the TUI path rather than risk a sibling's rollout
+  paneWorkingDirectory(id: string): string | undefined {
+    const path = this.paneCwds.get(id);
+    if (path === undefined) return undefined;
+    let count = 0;
+    for (const value of this.paneCwds.values()) if (value === path && (count += 1) > 1) return undefined;
+    return path;
+  }
+
+  // resolve the selected pane, its Adapter, and the pid its conversation lives under
+  private async conversationContext(id: string): Promise<{ agent: Agent; adapter: Adapter['conversations'] & {}; pid: number } | undefined> {
     const target = await this.target(id);
-    const pid = target === undefined ? undefined : this.panePids.get(target.agent.id);
-    // require exact pane and process inspection support
-    if (pid === undefined || this.processes.sessionsForDescendants === undefined) return undefined;
-    return await this.processes.sessionsForDescendants(pid);
+    if (target === undefined) return undefined;
+    const conversations = adapterFor(target.agent.kind)?.conversations;
+    const pid = this.panePids.get(target.agent.id);
+    // require exact pane identity and an Adapter that resolves conversations
+    if (conversations === undefined || pid === undefined) return undefined;
+    return { agent: target.agent, adapter: conversations, pid };
+  }
+
+  // the pane's own reported conversation id (`@rac_session`), when the Adapter accepts it
+  private reportedConversationId(context: { agent: Agent; adapter: Adapter['conversations'] & {} }): string | undefined {
+    const reported = context.agent.conversationId;
+    return reported !== undefined && context.adapter.validId(reported) ? reported : undefined;
+  }
+
+  // the pane's current top-level conversation id: the reported `@rac_session`, else the Adapter's discovery
+  async conversationId(id: string): Promise<string | undefined> {
+    const context = await this.conversationContext(id);
+    if (context === undefined) return undefined;
+    return this.reportedConversationId(context) ?? (await context.adapter.discover?.(context.pid))?.id;
+  }
+
+  // the pane's current conversation with a title, for bookmarking
+  async conversation(id: string): Promise<Conversation | undefined> {
+    const context = await this.conversationContext(id);
+    if (context === undefined) return undefined;
+    const reported = this.reportedConversationId(context);
+    // a reported id skips the fd-walk; its title is read from the rollout by id
+    if (reported !== undefined) {
+      const title = await context.adapter.title?.(reported);
+      return { id: reported, ...(title === undefined ? {} : { title }) };
+    }
+    return await context.adapter.discover?.(context.pid);
   }
   // build or reuse one dashboard view
   async dashboard(worktrees: Worktree[], force = false): Promise<Dashboard> {
@@ -447,7 +495,7 @@ export class DiscoveryService {
       const workspace = worktree?.identity ?? agent.workspace;
       const [meta, question] = await Promise.all([
         metadataFor(workspace),
-        omxQuestion(workspace, agent.paneId)
+        adapterFor(agent.kind)?.questions?.pending?.(workspace, agent.paneId) ?? Promise.resolve(undefined)
       ]);
       const branch = meta.branch ?? agent.branch;
       const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, branch);
@@ -455,7 +503,9 @@ export class DiscoveryService {
       const details = worktree === undefined
         ? { ...agent, branch, ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }) }
         : { ...agent, branch, ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }), workspace: worktree.identity, worktreeId: worktree.id, worktreeLabel: worktree.label, worktreeOrder: order, ...(worktree.newTask === undefined ? {} : { newTaskConfigured: true }), push: worktree.push, projectUrl: worktree.projectUrl };
-      return { ...details, ...(pullRequest === undefined ? {} : { pullRequest }), ...(question === undefined ? {} : { question }) };
+      // re-resolve now that a pending Inline question is known (precedence: reported → question → inferred → finished)
+      const attention = resolveAttention({ kind: agent.kind, title: agent.title, reported: this.paneReported.get(agent.id), hasQuestion: question !== undefined });
+      return { ...details, attention, ...(pullRequest === undefined ? {} : { pullRequest }), ...(question === undefined ? {} : { question }) };
     }));
     // do not let a modal advisor hide the configured repository placeholder
     const active = new Set(agents.filter(agent => !isUpdateAdvisorLabel(agent.displayLabel)).map(agent => agent.workspace));
@@ -465,6 +515,6 @@ export class DiscoveryService {
       const gitPrStatus = await gitPrComparisonForBase(meta, meta.branch, pullRequest?.baseBranch);
       return { id: worktree.id, label: worktree.label, path: worktree.path, available: worktree.available, pinned: worktree.pinned, projectUrl: worktree.projectUrl, order: worktrees.indexOf(worktree), ...(meta.branch === undefined ? {} : { branch: meta.branch }), ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }), ...(pullRequest === undefined ? {} : { pullRequest }) };
     }));
-    return { generation: this.generation, serverStartedAt: this.serverStartedAt, agents, worktrees: inactive };
+    return { generation: this.generation, serverStartedAt: this.serverStartedAt, adapters: adapterCapabilities(), agents, worktrees: inactive };
   }
 }

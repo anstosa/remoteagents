@@ -1,5 +1,6 @@
 node_modules/
 .codex/
+.omx/
 .pnpm-store/
 .data/
 dist/
@@ -9,6 +10,7 @@ config/cloudflared.yml
 config/cloudflared.credentials.json
 config/host-tmux
 config/remote-agent-console.docker.json
+config/remote-agent-console.systemd.json
 coverage/
 playwright-report/
 test-results/

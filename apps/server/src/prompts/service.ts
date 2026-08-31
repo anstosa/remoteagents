@@ -2,8 +2,10 @@ import { randomBytes } from 'node:crypto';
 import { appendFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { DiscoveryService } from '../discovery/service.js';
-import { lastPromptFromHistory, latestCompletedAssistantTurn, TmuxAdapter } from '../tmux/adapter.js';
-import { omxQuestion } from '../discovery/service.js';
+import { TmuxAdapter } from '../tmux/adapter.js';
+import { failedTurnFromCapture, lastPromptFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from '../adapters/codex-turns.js';
+import { adapterFor } from '../adapters/registry.js';
+import type { Adapter, AgentKind, CompletionBaseline, CompletionEvent, SubmissionMode, TmuxKey } from '../adapters/types.js';
 import type { Agent, Worktree } from '../domain/models.js';
 import { run } from '../tmux/command.js';
 import type { PromptHistoryService } from '../prompt-history/service.js';
@@ -16,13 +18,22 @@ import { isUpdateAdvisorLabel, updateAdvisorLabel, updateAdvisorPendingLabel } f
 import { isFullGitSha } from '../git/revision.js';
 export { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentBytes, validPromptAttachments, type PromptAttachment } from './validation.js';
 
-/**
- * Tab is Codex's queue key.  Its completion menu owns Tab while the composer
- * ends in a token, though, so the prompt never reaches the queue.  A trailing
- * space dismisses that menu without changing the submitted prompt's meaning.
- */
-const queueReadyPrompt = (prompt: string) => /\s$/u.test(prompt) ? prompt : `${prompt} `;
 const answerCaptureGraceMs = 10_000;
+// a reported-state prompt must report `working` within this window or the dispatch is failed
+const reportedWorkingGraceMs = 5_000;
+// an interactive submit key (Codex's Tab) is swallowed when it races a composer
+// that has not yet rendered the paste; wait (briefly, bounded) for the paste to
+// land before submitting. Best-effort: if it never renders, submit anyway.
+const composerRenderAttempts = 12;
+const composerRenderPollMs = 50;
+// the console never composes submission through an unknown kind
+type AdapterView = Pick<Adapter, 'stateSource' | 'submission' | 'turns' | 'questions' | 'completion'>;
+type CancelOutcome = 'ok' | 'unavailable' | 'not-working';
+// an Adapter that announces its own Attention state (rather than the console
+// inferring it from the title): it must report `working` before a prompt counts
+// as complete, and fires no Stop hook on an interrupt, so the console writes
+// `finished` itself.
+const reportsOwnState = (adapter: AdapterView) => adapter.stateSource !== 'title';
 const attachmentIgnoreRule = '/node_modules/.remote-agent-console/';
 const updateAdvisorComposerAttempts = 100;
 const updateAdvisorReadyStableMs = 500;
@@ -34,7 +45,7 @@ const normalizedPrompt = (value: string) => value.replace(/\s+/gu, ' ').trim();
 const normalizedTerminalText = (value: string) => normalizedPrompt(value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, ''));
 type PromptCompletion = 'completed' | 'failed' | 'pending';
 type PromptReconciliation = 'pending' | 'settled' | 'recorded';
-type PromptPhase = { state: 'awaiting-start' | 'working' | 'awaiting-answer' | 'halted'; changedAt: number; historyEntryId?: string; historyPrompt?: string; baselineCompletion?: string };
+type PromptPhase = { state: 'awaiting-start' | 'working' | 'awaiting-answer' | 'halted'; changedAt: number; historyEntryId?: string; historyPrompt?: string; baselineCompletion?: string; rolloutBaseline?: CompletionBaseline };
 type DiscoveredTarget = NonNullable<Awaited<ReturnType<DiscoveryService['target']>>>;
 export class PromptService {
   private readonly phases = new Map<string, PromptPhase>();
@@ -49,7 +60,7 @@ export class PromptService {
   private readonly mutationVersions = new Map<string, number>();
   private lifecycleMutationVersion = 0;
 
-  constructor(private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly worktrees: Worktree[] = [], private readonly history?: PromptHistoryService, private readonly queued?: QueuedPromptService, private readonly saved?: SavedPromptService) {}
+  constructor(private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly worktrees: Worktree[] = [], private readonly history?: PromptHistoryService, private readonly queued?: QueuedPromptService, private readonly saved?: SavedPromptService, private readonly resolveAdapter: (kind: AgentKind) => AdapterView | undefined = adapterFor) {}
 
   // submit or durably queue one prompt
   async submit(agentId: string, prompt: string, attachments: PromptAttachment[] = []): Promise<boolean> {
@@ -71,11 +82,12 @@ export class PromptService {
       const waiting = await this.queued?.list(scope);
       // retain prompts behind active or halted work
       if (this.queued !== undefined && (agentAttentionState(first.agent) !== 'finished' || this.phases.has(scope) || (waiting?.length ?? 0) > 0)) {
-        const busy = agentAttentionState(first.agent) !== 'finished';
-        const baselineCompletion = busy && !this.phases.has(scope) ? await this.completionSignature(agentId) : undefined;
+        const adopting = agentAttentionState(first.agent) !== 'finished' && !this.phases.has(scope);
+        const baselineCompletion = adopting ? await this.completionSignature(agentId) : undefined;
+        const rolloutBaseline = adopting ? await this.captureRolloutBaseline(agentId, this.resolveAdapter(first.agent.kind)) : undefined;
         const queued = await this.queued.enqueue(scope, prompt, attachments);
         // track work that started outside the managed prompt flow
-        if (queued !== undefined && busy && !this.phases.has(scope)) this.phases.set(scope, { state: 'working', changedAt: Date.now(), ...(baselineCompletion === undefined ? {} : { baselineCompletion }) });
+        if (queued !== undefined && adopting) this.phases.set(scope, { state: 'working', changedAt: Date.now(), ...(baselineCompletion === undefined ? {} : { baselineCompletion }), ...(rolloutBaseline === undefined ? {} : { rolloutBaseline }) });
         return queued !== undefined;
       }
       return await this.send(agentId, prompt, attachments, first);
@@ -174,10 +186,14 @@ export class PromptService {
   }
 
   // advance managed prompt completion
-  async observe(agent: Parameters<typeof agentAttentionState>[0]): Promise<void> {
+  async observe(agent: Pick<Agent, 'id' | 'displayLabel' | 'workspace' | 'attention' | 'kind'>): Promise<void> {
     const scope = this.historyScope(agent, agent.id);
     // pause queue dispatch during restart handoffs
     if (this.restartLocks.has(scope)) return;
+    // an Adapter without Turn capture cannot read an answer back: complete on
+    // working -> finished, store the prompt alone, and skip the grace/halt path
+    const adapter = this.resolveAdapter(agent.kind);
+    if (adapter !== undefined && adapter.turns === undefined) return this.observeTurnless(agent, scope, reportsOwnState(adapter));
     const busy = agentAttentionState(agent) !== 'finished';
     const phase = this.phases.get(scope);
     // retry failed queue transfers without dispatching
@@ -193,18 +209,22 @@ export class PromptService {
       // mark the prompt as started
       if (phase?.state === 'awaiting-start' || phase?.state === 'awaiting-answer') {
         const baselineCompletion = phase.baselineCompletion ?? await this.completionSignature(agent.id);
-        this.phases.set(scope, { ...phase, state: 'working', changedAt: Date.now(), ...(baselineCompletion === undefined ? {} : { baselineCompletion }) });
+        // keep the pre-submit baseline a sent prompt already carries; capturing it now
+        // would sit past this turn's own `task_started` and miss a fast completion
+        const rolloutBaseline = phase.rolloutBaseline ?? (adapter === undefined ? undefined : await this.captureRolloutBaseline(agent.id, adapter));
+        this.phases.set(scope, { ...phase, state: 'working', changedAt: Date.now(), ...(baselineCompletion === undefined ? {} : { baselineCompletion }), ...(rolloutBaseline === undefined ? {} : { rolloutBaseline }) });
       }
       // adopt externally started work once prompts are queued
       if (phase === undefined && (await this.queued?.list(scope))?.length) {
         const baselineCompletion = await this.completionSignature(agent.id);
-        this.phases.set(scope, { state: 'working', changedAt: Date.now(), ...(baselineCompletion === undefined ? {} : { baselineCompletion }) });
+        const rolloutBaseline = adapter === undefined ? undefined : await this.captureRolloutBaseline(agent.id, adapter);
+        this.phases.set(scope, { state: 'working', changedAt: Date.now(), ...(baselineCompletion === undefined ? {} : { baselineCompletion }), ...(rolloutBaseline === undefined ? {} : { rolloutBaseline }) });
       }
       return;
     }
     // finish tracked work before releasing its queue
     if (phase !== undefined) {
-      const completion = await this.recordAnswer(agent.id, scope, phase.historyEntryId, phase.historyPrompt, phase.baselineCompletion, phase.state !== 'awaiting-start');
+      const completion = await this.recordAnswer(agent.id, scope, phase.historyEntryId, phase.historyPrompt, phase.baselineCompletion, phase.state !== 'awaiting-start', phase.rolloutBaseline);
       // allow terminal output to finish rendering
       if (completion === 'pending' && phase.state === 'working') {
         this.phases.set(scope, { ...phase, state: 'awaiting-answer', changedAt: Date.now() });
@@ -229,6 +249,39 @@ export class PromptService {
     }
     // recover answer tracking lost across restarts
     if (phase === undefined && !this.reconciled.has(scope) && !await this.reconciliationComplete(agent.id, scope)) return;
+    await this.dispatch(agent.id, scope);
+  }
+
+  // advance a Turn-less prompt: no answer to capture, so completion is the
+  // working -> finished transition and the durable queue is released on finished
+  private async observeTurnless(agent: Pick<Agent, 'id' | 'attention'>, scope: string, reported: boolean): Promise<void> {
+    const busy = agentAttentionState(agent) !== 'finished';
+    const phase = this.phases.get(scope);
+    // retry a failed queue transfer without dispatching
+    if (phase?.state === 'halted') {
+      if (!busy && await this.saveQueued(scope)) this.phases.delete(scope);
+      return;
+    }
+    if (busy) {
+      // the working report the reported-state machine was waiting for
+      if (phase?.state === 'awaiting-start') this.phases.set(scope, { ...phase, state: 'working', changedAt: Date.now() });
+      // adopt externally started work once prompts are queued
+      else if (phase === undefined && (await this.queued?.list(scope))?.length) this.phases.set(scope, { state: 'working', changedAt: Date.now() });
+      return;
+    }
+    if (phase !== undefined) {
+      // a reported-state Agent must report `working` before `finished` counts as
+      // completion; a paste that landed in a trust or fork prompt never does, so
+      // fail the dispatch once the window elapses rather than release its queue
+      if (reported && phase.state === 'awaiting-start') {
+        if (Date.now() - phase.changedAt < reportedWorkingGraceMs) return;
+        this.phases.set(scope, { state: 'halted', changedAt: Date.now() });
+        if (await this.saveQueued(scope)) this.phases.delete(scope);
+        return;
+      }
+      // working -> finished: the prompt completed; its history entry stays answerless
+      this.phases.delete(scope);
+    }
     await this.dispatch(agent.id, scope);
   }
 
@@ -266,19 +319,26 @@ export class PromptService {
   private async send(agentId: string, prompt: string, attachments: PromptAttachment[], discovered?: DiscoveredTarget, submission: 'queue' | 'enter' | 'confirmed-enter' = 'queue'): Promise<boolean> {
     const first = discovered ?? await this.discovery.target(agentId);
     if (!first) return false;
+    // the Adapter describes the paste text and the submit keys; the console pastes and sends them
+    const adapter = this.resolveAdapter(first.agent.kind);
+    if (adapter === undefined) return false;
     const scope = this.historyScope(first.agent, agentId);
     const workspace = this.workspaceFor(first.agent.workspace);
     const staged = await this.stageAttachments(workspace, attachments);
     if (staged === undefined) return false;
     const attachmentPrompt = staged.length === 0 ? prompt : `${prompt}${prompt ? '\n\n' : ''}Attached files:\n${staged.map(path => `@${path}`).join('\n')}`;
     const shellMode = attachments.length === 0 && prompt.startsWith('!');
+    const mode: SubmissionMode = shellMode ? 'shell' : 'prompt';
+    const composed = adapter.submission.prepare(attachmentPrompt, mode);
+    // the update advisor is submitted with Enter regardless of the Adapter's queue key
+    const keys: TmuxKey[] = submission === 'enter' || submission === 'confirmed-enter' ? ['Enter'] : composed.keys;
     const buffer = `rac-${randomBytes(18).toString('base64url')}`;
     // keep the server-owned prompt out of the startup shell
     if (submission === 'confirmed-enter' && !await this.waitForUpdateAdvisorReady(agentId, first)) {
       await this.removeStaged(workspace, staged);
       return false;
     }
-    if (!await this.tmux.pastePrompt(first.socket, first.agent.paneId, buffer, shellMode ? attachmentPrompt : queueReadyPrompt(attachmentPrompt))) {
+    if (!await this.tmux.pastePrompt(first.socket, first.agent.paneId, buffer, composed.text)) {
       await this.removeStaged(workspace, staged);
       return false;
     }
@@ -292,19 +352,52 @@ export class PromptService {
       await this.removeStaged(workspace, staged);
       return false;
     }
-    // Codex queues regular prompts with Tab, while its `!` shell mode submits
-    // with Enter. Tab only completes shell input and leaves the command open.
-    let submitted = shellMode || submission === 'enter' || submission === 'confirmed-enter' ? await this.tmux.enter(second.socket, second.agent.paneId) : await this.tmux.queue(second.socket, second.agent.paneId);
+    // snapshot the rollout baseline before the turn starts: completion is then a
+    // `task_complete` recorded past it (the native-Codex TUI renders no boundary,
+    // so scraping the pane never observes the finish)
+    const rolloutBaseline = this.queued === undefined ? undefined : await this.captureRolloutBaseline(agentId, adapter);
+    // hold the scope so a quick second submit queues behind this one, then let the
+    // interactive paste settle in the composer before the submit key: a Tab that
+    // races an unrendered composer is swallowed, so the prompt never starts and the
+    // queued work behind it is later relocated to saved (the reported bug)
+    const settle = submission === 'queue' && mode === 'prompt' && adapter.turns !== undefined && this.queued !== undefined;
+    if (settle) {
+      this.phases.set(scope, { state: 'awaiting-start', changedAt: Date.now(), historyPrompt: attachmentPrompt, ...(rolloutBaseline === undefined ? {} : { rolloutBaseline }) });
+      await this.waitForComposerRender(second, attachmentPrompt);
+    }
+    let submitted = await this.tmux.sendKeys(second.socket, second.agent.paneId, keys);
     // confirm the server-owned prompt left the composer
     if (submitted && submission === 'confirmed-enter') submitted = await this.waitForUpdateAdvisorStart(agentId, second, attachmentPrompt);
-    if (!submitted) await this.removeStaged(workspace, staged);
-    else {
+    if (!submitted) {
+      // release the scope held for the unsettled paste
+      if (settle) this.phases.delete(scope);
+      await this.removeStaged(workspace, staged);
+    } else {
       // track the successful prompt
       const entry = await this.history?.record(scope, attachmentPrompt).catch(() => undefined);
       // monitor managed prompt completion
-      if (this.queued !== undefined) this.phases.set(scope, { state: 'awaiting-start', changedAt: Date.now(), historyPrompt: attachmentPrompt, ...(entry === undefined ? {} : { historyEntryId: entry.id }) });
+      if (this.queued !== undefined) this.phases.set(scope, { state: 'awaiting-start', changedAt: Date.now(), historyPrompt: attachmentPrompt, ...(entry === undefined ? {} : { historyEntryId: entry.id }), ...(rolloutBaseline === undefined ? {} : { rolloutBaseline }) });
     }
     return submitted;
+  }
+
+  // wait (briefly) for a pasted interactive prompt to render on the validated pane,
+  // so the submit key is not swallowed by a composer that has not yet caught up
+  private async waitForComposerRender(target: DiscoveredTarget, prompt: string): Promise<void> {
+    // cannot observe the composer: submit best-effort
+    if (typeof this.tmux.capture !== 'function') return;
+    const normalized = normalizedPrompt(prompt);
+    // match the visible tail because Codex scrolls long composers to the cursor
+    const visibleSuffix = normalized.slice(-Math.min(64, normalized.length));
+    // match Codex's exact long-paste placeholder
+    const collapsedPaste = `[Pasted Content ${queueReadyPrompt(prompt).length} chars]`;
+    for (let attempt = 0; attempt < composerRenderAttempts; attempt += 1) {
+      const captured = await this.tmux.capture(target.socket, target.agent.paneId).catch(() => undefined);
+      const composer = captured === undefined ? '' : normalizedTerminalText(captured);
+      // submit once the paste (or its collapsed placeholder) has begun rendering
+      if (composer.includes(visibleSuffix) || composer.includes(collapsedPaste)) return;
+      await new Promise(resolve => setTimeout(resolve, composerRenderPollMs));
+    }
   }
 
   // wait for one stable empty Codex composer before pasting
@@ -361,7 +454,7 @@ export class PromptService {
       const captured = await this.tmux.capture(target.socket, target.agent.paneId);
       if (normalizedPrompt(lastPromptFromHistory(captured ?? '') ?? '') === normalized) return true;
       // retry only after Codex had time to process the first key
-      if ((attempt === 9 || attempt === 24) && !await this.tmux.enter(target.socket, target.agent.paneId)) return false;
+      if ((attempt === 9 || attempt === 24) && !await this.tmux.sendKeys(target.socket, target.agent.paneId, ['Enter'])) return false;
       await new Promise(resolve => setTimeout(resolve, updateAdvisorPollMs));
     }
     return false;
@@ -421,17 +514,28 @@ export class PromptService {
   }
 
   // capture and persist the final answer
-  private async recordAnswer(agentId: string, scope: string, entryId: string | undefined, prompt: string | undefined, baselineCompletion: string | undefined, allowPromptless = false): Promise<PromptCompletion> {
+  private async recordAnswer(agentId: string, scope: string, entryId: string | undefined, prompt: string | undefined, baselineCompletion: string | undefined, allowPromptless = false, rolloutBaseline?: CompletionBaseline): Promise<PromptCompletion> {
+    // rollout-based completion (native Codex; OMX when its rollout resolves): the
+    // structured `task_complete`/`turn_aborted` events are authoritative and, unlike
+    // the TUI parse, need no `─ Worked for` footer — which the native build never
+    // renders. When the rollout resolves it stays authoritative; only an unresolvable
+    // rollout falls through to the TUI parse below.
+    if (rolloutBaseline !== undefined) {
+      const event = await this.rolloutCompletion(agentId, rolloutBaseline);
+      if (event?.kind === 'aborted') return 'failed';
+      if (event?.kind === 'completed') return await this.persistAnswer(scope, entryId, event.answer);
+      if (event?.kind === 'pending') return 'pending';
+    }
     const target = await this.discovery.target(agentId);
     // require the original pane
     if (target === undefined) return 'pending';
     const capture = await this.tmux.capture(target.socket, target.agent.paneId).catch(() => undefined);
-    const turn = capture === undefined ? undefined : latestCompletedAssistantTurn(capture);
     // require a completed response
     if (capture === undefined) return 'pending';
     // fail explicit terminal errors without waiting through the grace window
-    if (this.failedTurnFromCapture(capture)) return 'failed';
+    if (failedTurnFromCapture(capture)) return 'failed';
     // wait for the latest completed response
+    const turn = latestCompletedAssistantTurn(capture);
     if (turn === undefined) return 'pending';
     const completion = this.completionSignatureFromCapture(capture);
     const promptMatches = prompt === undefined
@@ -441,20 +545,47 @@ export class PromptService {
     if (!promptMatches) return 'pending';
     // reject completions that predate externally tracked work
     if (prompt === undefined && completion === baselineCompletion) return 'pending';
-    // persist tracked answers when history is available
-    if (this.history !== undefined && entryId !== undefined) {
-      const stored = await this.history.recordAnswer(scope, entryId, turn.text).catch(() => undefined);
-      // retry transient or missing-entry writes
-      if (stored === undefined) return 'pending';
-    }
-    return 'completed';
+    return await this.persistAnswer(scope, entryId, turn.text);
   }
 
-  // recognize explicit failure for the latest prompt turn
-  private failedTurnFromCapture(capture: string): boolean {
-    const latestPrompt = capture.lastIndexOf('\n› ');
-    const latestTurn = latestPrompt < 0 ? capture : capture.slice(latestPrompt + 1);
-    return /^\u25a0 (?:Request failed|Cancelled)\b/mu.test(latestTurn);
+  // persist one captured answer to history, retrying transient or missing-entry writes
+  private async persistAnswer(scope: string, entryId: string | undefined, answer: string): Promise<PromptCompletion> {
+    if (this.history === undefined || entryId === undefined) return 'completed';
+    const stored = await this.history.recordAnswer(scope, entryId, answer).catch(() => undefined);
+    return stored === undefined ? 'pending' : 'completed';
+  }
+
+  // the OS pid backing one discovered pane, when the discovery service exposes it
+  private paneProcessId(agentId: string): number | undefined {
+    return typeof this.discovery.paneProcessId === 'function' ? this.discovery.paneProcessId(agentId) : undefined;
+  }
+
+  // the pane's unique working directory, when the discovery service exposes it: the
+  // Adapter's privilege-free fallback for a sandboxed pane whose descriptors a
+  // confined service cannot readlink
+  private paneWorkingDirectory(agentId: string): string | undefined {
+    return typeof this.discovery.paneWorkingDirectory === 'function' ? this.discovery.paneWorkingDirectory(agentId) : undefined;
+  }
+
+  // snapshot the rollout completion baseline before a turn starts, when the Adapter
+  // reads completion from its event log and the pane's pid is known. The pid drives
+  // the exact fd-walk; the working directory is the fallback when it is blocked.
+  private async captureRolloutBaseline(agentId: string, adapter: AdapterView | undefined): Promise<CompletionBaseline | undefined> {
+    if (adapter?.completion === undefined) return undefined;
+    const pid = this.paneProcessId(agentId);
+    if (pid === undefined) return undefined;
+    const cwd = this.paneWorkingDirectory(agentId);
+    return await adapter.completion.baseline({ pid, ...(cwd === undefined ? {} : { cwd }) }).catch(() => undefined);
+  }
+
+  // the newest terminal turn past the snapshotted baseline from the Adapter's event
+  // log, or undefined when the Adapter has no such capability
+  private async rolloutCompletion(agentId: string, baseline: CompletionBaseline): Promise<CompletionEvent | undefined> {
+    const target = await this.discovery.target(agentId);
+    if (target === undefined) return undefined;
+    const adapter = this.resolveAdapter(target.agent.kind);
+    if (adapter?.completion === undefined) return undefined;
+    return await adapter.completion.since(baseline).catch(() => undefined);
   }
 
   // capture the latest completed turn identity
@@ -548,26 +679,44 @@ export class PromptService {
   }
 
 
-  async answerOption(agentId: string, index: number): Promise<boolean> {
-    if (!Number.isInteger(index) || index < 0 || index > 15) return false;
+  // answer one still-current Inline question through the Adapter's selectOption.
+  // The id (a hash of the question's text and choices) is re-derived from the
+  // live pane, so a stale click on a question the agent already moved past is
+  // refused. Structured OMX questions read authoritatively from their files;
+  // parsed numbered lists are re-parsed from the pane capture.
+  async answerQuestion(agentId: string, questionId: string, index: number): Promise<boolean> {
+    if (questionId.length === 0 || !Number.isInteger(index) || index < 0 || index > 15) return false;
     const first = await this.discovery.target(agentId); if (!first) return false;
+    const adapter = this.resolveAdapter(first.agent.kind); if (adapter?.questions === undefined) return false;
+    const workspace = this.workspaceFor(first.agent.workspace);
+    let question = await adapter.questions.pending?.(workspace, first.agent.paneId);
+    if (question === undefined && adapter.questions.parse !== undefined) {
+      const capture = await this.tmux.capture(first.socket, first.agent.paneId).catch(() => undefined);
+      question = capture === undefined ? undefined : adapter.questions.parse(capture);
+    }
+    if (question === undefined || question.id !== questionId || index >= question.choices.length) return false;
+    // an OMX question is answered on its renderer pane, a parsed list on the agent's own
+    const targetPane = question.targetPaneId ?? first.agent.paneId;
     const second = await this.discovery.target(agentId); if (!second || second.socket.fingerprint !== first.socket.fingerprint || second.agent.paneId !== first.agent.paneId) return false;
-    return await this.tmux.selectOption(second.socket, second.agent.paneId, index);
-  }
-  async answerOmxQuestion(agentId: string, questionId: string, index: number): Promise<boolean> {
-    if (!/^question-[A-Za-z0-9_.-]+$/.test(questionId) || !Number.isInteger(index) || index < 0 || index > 15) return false;
-    const target = await this.discovery.target(agentId); if (!target) return false;
-    const workspace = this.worktrees.find(worktree => target.agent.workspace === worktree.identity || target.agent.workspace === worktree.hostPath)?.identity ?? target.agent.workspace;
-    const question = await omxQuestion(workspace, target.agent.paneId); if (!question || question.id !== questionId || index >= question.choices.length) return false;
-    return await this.tmux.selectOption(target.socket, question.paneId, index);
+    return await this.tmux.sendKeys(second.socket, targetPane, adapter.submission.selectOption(index));
   }
 
-  async cancel(agentId: string): Promise<boolean> {
+  // interrupt a working Agent; a stray interrupt on a finished pane is refused so
+  // it can never send a chord that exits the agent or opens a Rewind dialog
+  async cancel(agentId: string): Promise<CancelOutcome> {
     const target = await this.discovery.target(agentId);
-    if (target === undefined || !await this.tmux.interrupt(target.socket, target.agent.paneId)) return false;
-    // prevent cancellation from releasing queued prompts
+    if (target === undefined) return 'unavailable';
+    const adapter = this.resolveAdapter(target.agent.kind);
+    if (adapter === undefined) return 'unavailable';
+    // the interrupt is sent only while the Agent is working or a question is pending
+    if (agentAttentionState(target.agent) === 'finished') return 'not-working';
+    if (!await this.tmux.sendKeys(target.socket, target.agent.paneId, adapter.submission.interrupt)) return 'unavailable';
+    // a reported-state Agent fires no Stop hook on an interrupt; write `finished`
+    // ourselves so the pane does not keep looking busy (Codex's title already stops)
+    if (reportsOwnState(adapter)) await this.tmux.setReportedAttention(target.socket, target.agent.paneId, 'finished').catch(() => false);
+    // record the in-flight prompt as interrupted: hold its queue rather than releasing it
     if (this.queued !== undefined) this.phases.set(this.historyScope(target.agent, agentId), { state: 'halted', changedAt: Date.now() });
-    return true;
+    return 'ok';
   }
   async close(agentId: string): Promise<boolean> { const target = await this.discovery.target(agentId); return target !== undefined && this.tmux.close(target.socket, target.agent.paneId); }
 }
