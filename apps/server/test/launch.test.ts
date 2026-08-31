@@ -1,10 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const { run, expandLaunch } = vi.hoisted(() => ({ run: vi.fn(), expandLaunch: vi.fn() }));
+const { run } = vi.hoisted(() => ({ run: vi.fn() }));
 vi.mock('../src/tmux/command.js', () => ({ run }));
-vi.mock('../src/config/schema.js', () => ({ expandLaunch }));
 
-import { LaunchService, expandCommand, expandHomeCommand, scratchLabel } from '../src/launch/service.js';
+import { LaunchService, composeCommand, expandCommand, expandHomeCommand, scratchLabel } from '../src/launch/service.js';
 import { hostCommand } from '../src/tmux/interactive-shell.js';
 import { startNamedReplacementSession, worktreeSessionName } from '../src/tmux/session-name.js';
 import type { SocketRef, Worktree } from '../src/domain/models.js';
@@ -35,7 +34,15 @@ describe('LaunchService', () => {
     expect(expandHomeCommand('codex', '/home/ubuntu')).toContain("cd -- '/home/ubuntu' && eval 'codex'");
   });
 
-  it('wakes a worktree through the resume alias', async () => {
+  it('appends adapter args to the program, shell-quoting only unsafe ones', () => {
+    // safe flags and validated ids stay legible; nothing appended for a fresh launch
+    expect(composeCommand('codex', [])).toBe('codex');
+    expect(composeCommand('codex', ['resume', '--last'])).toBe('codex resume --last');
+    // an arg with shell metacharacters is single-quoted, with embedded quotes escaped
+    expect(composeCommand('codex', ['a b', "x'y", '$(whoami)'])).toBe("codex 'a b' 'x'\\''y' '$(whoami)'");
+  });
+
+  it('continues a worktree with codex resume --last instead of a shell alias', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, command: 'codex' };
     const calls: string[][] = [];
@@ -44,7 +51,7 @@ describe('LaunchService', () => {
 
     await expect(service.resume(worktree.id)).resolves.toBe(true);
 
-    expect(calls[0]).toMatchObject(['paste', '%4', expect.stringMatching(/^rac-launch-/), 'resume']);
+    expect(calls[0]).toMatchObject(['paste', '%4', expect.stringMatching(/^rac-launch-/), 'codex resume --last']);
     expect(calls[1]).toEqual(['enter', '%4']);
   });
 
@@ -63,13 +70,22 @@ describe('LaunchService', () => {
     expect(calls).toHaveLength(2);
   });
 
-  it('rejects exact resume before launch when no resume template is configured', async () => {
-    const worktree: Worktree = { id: 'legacy', label: 'Legacy', path: '/worktrees/legacy', identity: '/worktrees/legacy', available: true, pinned: false, launch: { program: '/bin/echo', args: ['{worktreePath}'] } };
-    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [] });
+  it('resumes an exact conversation with codex resume <id> when no template is configured', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false, command: 'codex' };
+    const calls: string[][] = [];
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', pane, buffer, command]); return true; }, enter: async (_socket: SocketRef, pane: string) => { calls.push(['enter', pane]); return true; } };
+    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [socket] }, panes as never);
 
-    expect(service.canResumeConversation(worktree.id)).toBe(false);
-    await expect(service.resumeConversation(worktree.id, '0198c333-3333-7333-8333-333333333333')).resolves.toBe(false);
-    expect(run).not.toHaveBeenCalled();
+    // any launchable codex worktree can resume through its Adapter, no resumeCommand required
+    expect(service.canResumeConversation(worktree.id)).toBe(true);
+    expect(service.canResumeConversation('absent')).toBe(false);
+    await expect(service.resumeConversation(worktree.id, '0198c333-3333-7333-8333-333333333333')).resolves.toBe(true);
+    // a malformed id never reaches the shell
+    await expect(service.resumeConversation(worktree.id, 'bad; rm -rf /')).resolves.toBe(false);
+
+    expect(calls[0]).toMatchObject(['paste', '%4', expect.stringMatching(/^rac-launch-/), 'codex resume 0198c333-3333-7333-8333-333333333333']);
+    expect(calls).toHaveLength(2);
   });
 
   it('marks home-launched agents as Scratch without replacing their tmux title', async () => {
@@ -103,6 +119,57 @@ describe('LaunchService', () => {
   it('restores an explicitly configured host PATH before starting a host pane', () => {
     expect(hostCommand('exec codex', '/home/ubuntu', '/opt/node/bin:/usr/bin:/bin')).toContain("export PATH='/opt/node/bin:/usr/bin:/bin'");
     expect(hostCommand('exec codex', '/home/ubuntu')).not.toContain('export PATH=');
+  });
+
+  it('composes fresh and continue launches into the exact host new-session argv', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    delete process.env.RAC_HOST_INTERACTIVE_SHELL;
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false, command: 'codex' };
+    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [] });
+
+    await expect(service.launch('cora')).resolves.toBe(true);
+    const freshSession = run.mock.calls.find(call => (call[1] as string[]).includes('new-session'))?.[1] as string[];
+    expect(freshSession.slice(0, 9)).toEqual(['-S', '/host-tmux/default', 'new-session', '-d', '-s', 'cora', '-c', '/home/ubuntu/cora', '/usr/bin/zsh']);
+    expect(freshSession[9]).toBe('-lc');
+    // a fresh launch runs the configured command unchanged — no resume verb
+    expect(freshSession[10]).toContain('codex');
+    expect(freshSession[10]).not.toContain('resume');
+
+    run.mockClear();
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    await expect(service.resume('cora')).resolves.toBe(true);
+    const continueSession = run.mock.calls.find(call => (call[1] as string[]).includes('new-session'))?.[1] as string[];
+    // continue appends the Adapter's args to the same program
+    expect(continueSession[10]).toContain('codex resume --last');
+  });
+
+  it('records @rac_sandboxed on a Sandboxed launch and leaves an ordinary launch unmarked', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false, command: 'codex' };
+    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [] });
+    const launchWorktree = (input: { mode: 'fresh'; sandboxed?: boolean }) => (service as unknown as { launchWorktree(id: string, input: unknown): Promise<boolean> }).launchWorktree('cora', input);
+
+    await expect(launchWorktree({ mode: 'fresh', sandboxed: true })).resolves.toBe(true);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', 'cora', '@rac_sandboxed', '1']);
+
+    run.mockClear();
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    await expect(service.launch('cora')).resolves.toBe(true);
+    expect(run).not.toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['@rac_sandboxed']));
+  });
+
+  it('records @rac_sandboxed on the reused pane for a Sandboxed reuse-launch', async () => {
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false, command: 'codex' };
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async () => true, enter: async () => true };
+    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [socket] }, panes as never);
+
+    await expect((service as unknown as { launchWorktree(id: string, input: unknown): Promise<boolean> }).launchWorktree('cora', { mode: 'fresh', sandboxed: true })).resolves.toBe(true);
+    // the reused-pane branch marks the pane id on the pane's own socket
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%4', '@rac_sandboxed', '1']);
   });
 
   it('names a new tmux session after the worktree directory', async () => {

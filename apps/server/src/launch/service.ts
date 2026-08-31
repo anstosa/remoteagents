@@ -1,13 +1,14 @@
-import { mkdir, open, rename, unlink } from 'node:fs/promises';
+import { mkdir, open, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { ValidatedConfig } from '../config/schema.js';
-import { expandLaunch } from '../config/schema.js';
 import { run } from '../tmux/command.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { hostCommand, hostInteractiveShellPath, interactiveShellBootstrap, interactiveShellName, interactiveShellPath } from '../tmux/interactive-shell.js';
 import { startNamedReplacementSession, worktreeSessionName } from '../tmux/session-name.js';
 import { ProcSocketFinder, type SocketFinder } from '../discovery/service.js';
+import { adapterFor } from '../adapters/registry.js';
+import type { LaunchMode } from '../adapters/types.js';
 import type { Pane, SocketRef, Worktree } from '../domain/models.js';
 import { updateAdvisorPendingLabel } from '../update-advisor.js';
 import { isFullGitSha } from '../git/revision.js';
@@ -17,6 +18,33 @@ export function expandCommand(command: string, worktree: Pick<Worktree, 'identit
   const script = `'${command.replaceAll("'", "'\\''")}'`;
   return `cd -- ${directory} && eval ${script}`;
 }
+
+// shell-quote an argument only when it holds a character the shell would act on;
+// the Adapter's plain flags (`resume`, `--last`) and validated ids stay legible.
+const shellQuote = (value: string) => /^[A-Za-z0-9_@%+=:,./-]+$/u.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+
+// Compose the inner shell command the console runs: the configured program
+// string followed by the Adapter's mode arguments. Fresh launches append
+// nothing, so the operator's `command` runs exactly as before.
+export function composeCommand(program: string, args: string[]): string {
+  return args.length === 0 ? program : `${program} ${args.map(shellQuote).join(' ')}`;
+}
+
+// Resolve the shell command for a worktree launch through its Adapter: an
+// explicit `resumeCommand` template is honoured as an operator override for exact
+// resume, otherwise the console prepends the configured program to the Adapter's
+// args. Chunk 1 resolves every launch to Codex; later chunks resolve by kind.
+function worktreeLaunchCommand(worktree: Worktree, input: LaunchRequest): string | undefined {
+  if (input.mode === 'resume' && input.conversationId !== undefined && worktree.resumeCommand !== undefined) {
+    return worktree.resumeCommand.replace('{threadId}', input.conversationId);
+  }
+  if (worktree.command === undefined) return undefined;
+  const spec = adapterFor('codex')?.launch({ mode: input.mode, ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }), cwd: worktree.identity, sandboxed: input.sandboxed }) ?? { args: [] };
+  return composeCommand(worktree.command, spec.args);
+}
+
+// one worktree launch request: which conversation (if any) and whether to confine it
+type LaunchRequest = { mode: LaunchMode; conversationId?: string; sandboxed: boolean };
 
 export function expandHomeCommand(command: string, home: string): string {
   return expandCommand(command, { identity: home });
@@ -97,62 +125,60 @@ export class LaunchService {
 
   // launch the configured worktree command
   async launch(worktreeId: string): Promise<boolean> {
-    return await this.launchWorktree(worktreeId);
+    return await this.launchWorktree(worktreeId, { mode: 'fresh' });
   }
 
-  // resume the previous Codex conversation through the host alias
+  // resume the previous conversation (Codex: `codex resume --last`), no shell alias
   async resume(worktreeId: string): Promise<boolean> {
-    return await this.launchWorktree(worktreeId, 'resume');
+    return await this.launchWorktree(worktreeId, { mode: 'continue' });
   }
 
-  // resume one exact bookmarked Codex conversation
+  // resume one exact bookmarked conversation by its id
   async resumeConversation(worktreeId: string, threadId: string): Promise<boolean> {
-    // keep the host command free of shell input
+    // keep the host command free of shell input, whether the id is quoted or substituted
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(threadId)) return false;
-    const worktree = this.config.worktrees.find(candidate => candidate.id === worktreeId);
-    // require one explicit exact-resume capability
-    if (worktree?.resumeCommand === undefined) return false;
-    const command = worktree.resumeCommand.replace('{threadId}', threadId);
-    return await this.launchWorktree(worktreeId, command);
+    return await this.launchWorktree(worktreeId, { mode: 'resume', conversationId: threadId });
   }
 
-  // expose exact-resume support before destructive lifecycle work
+  // expose exact-resume support before destructive lifecycle work: any launchable
+  // worktree resumes through its Adapter; an explicit template only overrides how
   canResumeConversation(worktreeId: string): boolean {
-    return this.config.worktrees.some(worktree => worktree.id === worktreeId && worktree.resumeCommand !== undefined);
+    return this.config.worktrees.some(worktree => worktree.id === worktreeId && (worktree.command !== undefined || worktree.resumeCommand !== undefined));
   }
 
-  // start one worktree with its configured or requested command
-  private async launchWorktree(worktreeId: string, requestedCommand?: string): Promise<boolean> {
+  // start one worktree in the requested mode, composing its command from the Adapter
+  private async launchWorktree(worktreeId: string, input: { mode: LaunchMode; conversationId?: string; sandboxed?: boolean }): Promise<boolean> {
     const worktree = this.config.worktrees.find(candidate => candidate.id === worktreeId);
     // serialize each worktree launch
     if (!worktree || this.pending.has(worktreeId)) return false;
     this.pending.add(worktreeId);
     try {
       const id = randomBytes(18).toString('base64url');
-      const command = requestedCommand ?? worktree.command;
+      const sandboxed = input.sandboxed === true;
+      const command = worktreeLaunchCommand(worktree, { mode: input.mode, ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }), sandboxed });
+      // a worktree with no launch command (and no override) cannot start
+      if (command === undefined) return false;
       // reuse an existing interactive shell
-      if (command !== undefined) {
-        const existing = await this.existingPane(worktree);
-        // send through the shell alias context
-        if (existing !== undefined) {
-          const buffer = `rac-launch-${id}`;
-          return await this.panes.pastePrompt(existing.socket, existing.pane.paneId, buffer, command)
-            && await this.panes.enter(existing.socket, existing.pane.paneId);
-        }
+      const existing = await this.existingPane(worktree);
+      // send through the shell context
+      if (existing !== undefined) {
+        const buffer = `rac-launch-${id}`;
+        return await this.panes.pastePrompt(existing.socket, existing.pane.paneId, buffer, command)
+          && await this.panes.enter(existing.socket, existing.pane.paneId)
+          && await this.markSandboxed(existing.socket.path, existing.pane.paneId, sandboxed);
       }
       const session = worktreeSessionName(worktree.hostPath ?? worktree.identity);
       // launch host-mounted worktrees on the host socket
-      if (this.hostSocket !== undefined && command !== undefined) {
+      if (this.hostSocket !== undefined) {
         const hostWorktree = { ...worktree, identity: worktree.hostPath ?? worktree.identity };
         const home = dirname(hostWorktree.identity);
         const tail = ['-c', hostWorktree.identity, this.hostShell, '-lc', interactiveShellBootstrap(hostCommand(expandCommand(command, hostWorktree), home), home, this.hostShell)];
-        return await startNamedReplacementSession(this.tmux, this.hostSocket, session, session, tail);
+        return await startNamedReplacementSession(this.tmux, this.hostSocket, session, session, tail)
+          && await this.markSandboxed(this.hostSocket, session, sandboxed);
       }
       await mkdir(this.root, { recursive: true, mode: 0o700 });
       const descriptor = join(this.root, `${id}.json`);
-      const payload = command === undefined
-        ? { program: worktree.launch!.program, args: expandLaunch(worktree.launch!, worktree), cwd: worktree.identity }
-        : { program: this.localShell, args: ['-lc', interactiveShellBootstrap(expandCommand(command, worktree), '$HOME', this.localShell)], cwd: worktree.identity };
+      const payload = { program: this.localShell, args: ['-lc', interactiveShellBootstrap(expandCommand(command, worktree), '$HOME', this.localShell)], cwd: worktree.identity };
       const handle = await open(descriptor, 'wx', 0o600);
       await handle.writeFile(JSON.stringify(payload));
       await handle.close();
@@ -163,9 +189,18 @@ export class LaunchService {
         await unlink(descriptor).catch(() => {});
         return false;
       }
-      return true;
+      return await this.markSandboxed(undefined, session, sandboxed);
     } finally {
       this.pending.delete(worktreeId);
     }
+  }
+
+  // record a Sandboxed launch on the pane so `Agent.sandboxed` reflects it; a
+  // dead pane's option is cleared by discovery. Chunk 1 never launches sandboxed
+  // (chunk 4 realises the sandbox), so in practice this is a no-op until then.
+  private async markSandboxed(socketPath: string | undefined, target: string, sandboxed: boolean): Promise<boolean> {
+    if (!sandboxed) return true;
+    const socket = socketPath === undefined ? [] : ['-S', socketPath];
+    return (await run(this.tmux, [...socket, 'set-option', '-p', '-t', target, '@rac_sandboxed', '1'])).code === 0;
   }
 }

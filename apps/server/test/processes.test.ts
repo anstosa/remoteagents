@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isAgentCommand, isHudWatcherCommand, ProcInspector } from '../src/discovery/processes.js';
+import { isAgentCommand, ProcInspector } from '../src/discovery/processes.js';
 import { openRollouts } from '../src/adapters/codex-conversations.js';
 
 describe('isAgentCommand', () => {
@@ -16,15 +16,6 @@ describe('isAgentCommand', () => {
 
   it('does not treat an OMX HUD process as an agent', () => {
     expect(isAgentCommand('MainThread', 'node\0/home/ubuntu/n/bin/omx\0hud\0--watch\0')).toBe(false);
-  });
-});
-
-describe('isHudWatcherCommand', () => {
-  it('recognizes direct and Node-launched OMX HUD watchers only', () => {
-    expect(isHudWatcherCommand('/home/ubuntu/bin/omx\0hud\0--watch\0')).toBe(true);
-    expect(isHudWatcherCommand(['node', '/home/ubuntu/bin/omx', 'hud', '--interval', '1', '--watch', ''].join('\0'))).toBe(true);
-    expect(isHudWatcherCommand('/home/ubuntu/bin/omx\0hud\0')).toBe(false);
-    expect(isHudWatcherCommand('node\0/app/server.js\0--watch\0')).toBe(false);
   });
 });
 

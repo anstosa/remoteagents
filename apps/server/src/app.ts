@@ -629,7 +629,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         currentBookmarkId = stored.find(bookmark => bookmark.threadId === threadId)?.id;
       }
     }
-    return { bookmarks: stored, canResume: configuredWorktree(id)?.resumeCommand !== undefined, ...(currentBookmarkId === undefined ? {} : { currentBookmarkId }) };
+    return { bookmarks: stored, canResume: launch.canResumeConversation(id), ...(currentBookmarkId === undefined ? {} : { currentBookmarkId }) };
   });
   // list one live agent's chat bookmarks
   app.get('/api/agents/:id/bookmarks', async (request, reply) => {
@@ -643,7 +643,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (stored === undefined) return reply.code(400).send({ error: 'invalid bookmark group' });
     const threadId = await discovery.conversationId(id);
     const currentBookmarkId = stored.find(bookmark => bookmark.threadId === threadId)?.id;
-    return { bookmarks: stored, canResume: persistence.worktree?.resumeCommand !== undefined, ...(currentBookmarkId === undefined ? {} : { currentBookmarkId }) };
+    return { bookmarks: stored, canResume: persistence.worktree !== undefined && launch.canResumeConversation(persistence.worktree.id), ...(currentBookmarkId === undefined ? {} : { currentBookmarkId }) };
   });
   // bookmark the current top-level Codex chat
   app.post('/api/agents/:id/bookmarks', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
@@ -1049,16 +1049,16 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       if (!await prompts.close(id)) return { status: 'skipped', worktreeId, reason: 'unavailable', error: 'The worktree agent could not be closed.' };
       sleepingWorktrees.add(worktree.id);
       const resumed = threadId === undefined ? await launch.resume(worktree.id) : await launch.resumeConversation(worktree.id, threadId);
-      // require the resume alias to start
+      // require the resumed agent to start
       if (!resumed) {
         await dashboardUpdates.refresh().catch(() => undefined);
-        return { status: 'failed', worktreeId, reason: 'launch-failed', error: 'The agent closed, but the resume alias could not restart it.' };
+        return { status: 'failed', worktreeId, reason: 'launch-failed', error: 'The agent closed, but it could not be resumed.' };
       }
       const agent = await waitForAgent(before, worktree.id);
       // retain recovery controls after a timeout
       if (agent === undefined) {
         await dashboardUpdates.refresh().catch(() => undefined);
-        return { status: 'failed', worktreeId, reason: 'timed-out', error: `The agent closed and the resume alias ran, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` };
+        return { status: 'failed', worktreeId, reason: 'timed-out', error: `The agent closed and resumed, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` };
       }
       sleepingWorktrees.delete(worktree.id);
       await dashboardUpdates.refresh().catch(() => undefined);
@@ -1209,7 +1209,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(201).send({ agentId: agent.id });
   });
-  // restart one idle configured agent through the host resume alias
+  // restart one idle configured agent by resuming its last conversation
   app.post('/api/agents/:id/restart', async (request, reply) => {
     controlled(request, true);
     const id = (request.params as { id: string }).id;
@@ -1243,7 +1243,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(204).send();
   });
-  // wake one sleeping worktree through the host resume alias
+  // wake one sleeping worktree by resuming its last conversation
   app.post('/api/worktrees/:id/wake', async (request, reply) => {
     controlled(request, true);
     const worktreeId = (request.params as { id: string }).id;

@@ -8,9 +8,9 @@ import { TmuxAdapter } from '../tmux/adapter.js';
 import { ProcInspector, type ProcessInspector } from './processes.js';
 import { PullRequestService } from '../pull-requests/service.js';
 import { parseReportedAttention, resolveAttention } from '../adapters/attention.js';
-import { adapterCapabilities, adapterFor } from '../adapters/registry.js';
+import { adapterCapabilities, adapterFor, paneExcluded } from '../adapters/registry.js';
 import type { Adapter, AttentionState, Conversation } from '../adapters/types.js';
-import type { Agent, Dashboard, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, Pane, SocketRef, Worktree } from '../domain/models.js';
+import type { Agent, Dashboard, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, SocketRef, Worktree } from '../domain/models.js';
 import { classifyReviewPath } from '../git/change-classification.js';
 import { isUpdateAdvisorLabel } from '../update-advisor.js';
 
@@ -297,9 +297,6 @@ async function gitMeta(path: string, rootKnown = false): Promise<GitMeta> {
   const sha = await run('/usr/bin/git', ['-C', workspace, 'rev-parse', '--short', 'HEAD']);
   return { workspace, ...(sha.code === 0 ? { branch: sha.stdout.trim() } : {}), ...(gitStatus === undefined ? {} : { gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }) };
 }
-const omxWorkerWorktree = /(?:^|\/)\.omx\/team\/[^/]+\/worktrees\/worker-\d+(?:\/|$)/u;
-const omxWorkerStartup = /(?:^|\/)\.omx\/state\/team\/[^/]+\/runtime\/worker-\d+-startup\.sh(?:['"\s]|$)/u;
-export const isOmxWorkerPane = (pane: Pane) => omxWorkerWorktree.test(pane.path) || omxWorkerStartup.test(pane.startCommand ?? '');
 export class DiscoveryService {
   private generation = 0; private snapshot: Agent[] = [];
   private panePids = new Map<string, number>();
@@ -354,7 +351,7 @@ export class DiscoveryService {
     const panePids = new Map<string, number>();
     const paneCwds = new Map<string, string>();
     const paneReported = new Map<string, AttentionState>();
-    const agents: Agent[] = (await Promise.all(panes.filter(pane => !isOmxWorkerPane(pane)).map(async (pane): Promise<Agent | undefined> => {
+    const agents: Agent[] = (await Promise.all(panes.filter(pane => !paneExcluded(pane)).map(async (pane): Promise<Agent | undefined> => {
       const recognized = await this.processes.recognizeAgent(pane.pid);
       if (recognized === undefined) {
         // a pane whose agent is gone must not keep a stale report; nothing else clears it

@@ -1,19 +1,16 @@
-import { access, realpath, stat } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { constants } from 'node:fs';
 import { z } from 'zod';
-import type { LaunchTemplate, StackCommands, Worktree } from '../domain/models.js';
+import type { StackCommands, Worktree } from '../domain/models.js';
 import { instanceIconNames, type InstanceIcon } from '../instance-icon.js';
 import { isIP } from 'node:net';
 
 const loopback = new Set(['127.0.0.1', '::1']);
 // wildcard binds expose every interface; require an explicit address instead
 const wildcard = new Set(['0.0.0.0', '::']);
-const arg = z.string().max(4096).refine((v) => !v.includes('\0'), 'NUL is forbidden');
 const command = z.string().min(1).max(32_000).refine((v) => !v.includes('\0'), 'NUL is forbidden');
 const stackCommands = z.object({ start: command.optional(), stop: command.optional(), build: command.optional(), restart: command.optional(), migrate: command.optional(), status: command.optional() }).strict();
 const pushAction = z.object({ label: z.string().trim().min(1).max(80), prompt: command }).strict().default({ label: 'Commit/Push', prompt: 'review, commit, and push' });
-const launchSchema = z.object({ program: z.string().max(4096), args: z.array(arg).max(64) }).strict();
 const serverName = z.string().trim().min(1).max(80).refine(value => !value.includes('\0'), 'NUL is forbidden');
 // constrain icons to bundled artwork
 const instanceIcon = z.enum(instanceIconNames);
@@ -35,9 +32,8 @@ const sourceSchema = z.object({
   tmux: z.object({ pollIntervalMs: z.number().int().min(250).max(10000).default(500) }).strict().default({}),
   newAgentCommand: command.default('codex'),
   integrations: integrationFeatures,
-  launch: launchSchema.optional(),
   // allow a scratch-only first run
-  worktrees: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), label: z.string().max(120).optional(), path: z.string().min(1), hostPath: z.string().startsWith('/').optional(), saveKey: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/).optional(), pinned: z.boolean().default(false), port: z.number().int().min(1).max(65535).optional(), hostname: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/).optional(), command: command.optional(), resumeCommand: command.optional(), launch: launchSchema.optional(), commands: stackCommands.optional(), newTask: command.optional(), push: pushAction }).strict()).max(100).default([])
+  worktrees: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), label: z.string().max(120).optional(), path: z.string().min(1), hostPath: z.string().startsWith('/').optional(), saveKey: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/).optional(), pinned: z.boolean().default(false), port: z.number().int().min(1).max(65535).optional(), hostname: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/).optional(), command: command.optional(), resumeCommand: command.optional(), commands: stackCommands.optional(), newTask: command.optional(), push: pushAction }).strict()).max(100).default([])
 }).strict();
 export type ConfigInput = z.input<typeof sourceSchema>;
 export type RemoteServer = { url: URL };
@@ -66,10 +62,6 @@ function validateNewTask(template: string): void {
 function validateResumeCommand(template: string): void {
   const placeholders = template.match(/\{threadId\}/gu) ?? [];
   if (placeholders.length !== 1 || /\{(?!threadId\})/u.test(template)) throw new Error('resume command must contain exactly one {threadId} placeholder');
-}
-function validateTemplate(template: LaunchTemplate): void {
-  if (!template.program.startsWith('/')) throw new Error('launch program must be absolute');
-  for (const value of template.args) if (/\{(?!worktreePath\}|worktreeId\})/.test(value)) throw new Error('unknown launch placeholder');
 }
 async function gitRoot(path: string): Promise<string> {
   const { spawn } = await import('node:child_process');
@@ -111,16 +103,14 @@ export async function validateConfig(input: unknown): Promise<ValidatedConfig> {
   for (const raw of parsed.worktrees) {
     if (ids.has(raw.id)) throw new Error('duplicate worktree id'); ids.add(raw.id);
     const path = await realpath(raw.path); const info = await stat(path); if (!info.isDirectory()) throw new Error(`worktree ${raw.id} is not a directory`);
-    if (raw.command !== undefined && raw.launch !== undefined) throw new Error(`worktree ${raw.id} cannot define both command and launch`);
     if (raw.newTask !== undefined) validateNewTask(raw.newTask);
     if (raw.resumeCommand !== undefined) validateResumeCommand(raw.resumeCommand);
-    const launch = raw.command === undefined ? raw.launch ?? parsed.launch : undefined;
-    if (raw.command === undefined) { if (!launch) throw new Error(`worktree ${raw.id} must define command or launch`); validateTemplate(launch); await access(launch.program, constants.X_OK); }
+    // every worktree launches through its shell command; the console composes the rest
+    if (raw.command === undefined) throw new Error(`worktree ${raw.id} must define a command`);
     const identity = await gitRoot(path); if (identities.has(identity)) throw new Error('duplicate worktree identity'); identities.add(identity);
     if ((raw.port === undefined) !== (raw.hostname === undefined)) throw new Error(`worktree ${raw.id} must define both port and hostname`);
     const projectUrl = raw.hostname === undefined ? undefined : `https://${raw.hostname}`;
-    worktrees.push({ id: raw.id, label: raw.label ?? raw.id, path, identity, hostPath: raw.hostPath === undefined ? undefined : resolve(raw.hostPath), saveKey: raw.saveKey ?? raw.id, available: true, pinned: raw.pinned, command: raw.command, ...(raw.resumeCommand === undefined ? {} : { resumeCommand: raw.resumeCommand }), launch, projectUrl, projectPort: raw.port, push: raw.push, ...(raw.commands === undefined ? {} : { commands: raw.commands as StackCommands }), ...(raw.newTask === undefined ? {} : { newTask: raw.newTask }) });
+    worktrees.push({ id: raw.id, label: raw.label ?? raw.id, path, identity, hostPath: raw.hostPath === undefined ? undefined : resolve(raw.hostPath), saveKey: raw.saveKey ?? raw.id, available: true, pinned: raw.pinned, command: raw.command, ...(raw.resumeCommand === undefined ? {} : { resumeCommand: raw.resumeCommand }), projectUrl, projectPort: raw.port, push: raw.push, ...(raw.commands === undefined ? {} : { commands: raw.commands as StackCommands }), ...(raw.newTask === undefined ? {} : { newTask: raw.newTask }) });
   }
   return { listen: { host: parsed.listen.host, port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, newAgentCommand: parsed.newAgentCommand, integrations: parsed.integrations, worktrees };
 }
-export function expandLaunch(template: LaunchTemplate, worktree: Worktree): string[] { return template.args.map((arg) => arg.replaceAll('{worktreePath}', worktree.identity).replaceAll('{worktreeId}', worktree.id)); }

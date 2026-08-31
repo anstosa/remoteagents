@@ -1,4 +1,5 @@
 import { codexAdapter } from './codex.js';
+import type { Pane } from '../domain/models.js';
 import type { Adapter, AdapterCapability, AgentKind } from './types.js';
 
 /**
@@ -21,6 +22,11 @@ export function adapterFor(kind: AgentKind): Adapter | undefined {
 /** The first registered Adapter that recognises the process, by registry order. */
 export function recognizeProcess(process: { comm: string; argv: string[] }): Adapter | undefined {
   return adapters.find((adapter) => adapter.recognizes(process));
+}
+
+/** Whether any Adapter excludes this pane from the dashboard (e.g. OMX worker panes). */
+export function paneExcluded(pane: Pane): boolean {
+  return adapters.some((adapter) => adapter.panes?.exclude(pane) ?? false);
 }
 
 /**

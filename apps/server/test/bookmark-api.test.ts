@@ -51,8 +51,9 @@ describe('chat bookmark API', () => {
       const renamed = await app.inject({ method: 'PATCH', url: `/api/worktrees/cora/bookmarks/${bookmark.id}`, headers, payload: { title: renamedBookmark.title } });
       const removed = await app.inject({ method: 'DELETE', url: `/api/worktrees/cora/bookmarks/${bookmark.id}`, headers });
 
-      expect(listed.json()).toEqual({ bookmarks: [bookmark], canResume: false, currentBookmarkId: bookmark.id });
-      expect(mismatched.json()).toEqual({ bookmarks: [bookmark], canResume: false });
+      // any launchable codex worktree can resume through its Adapter, without a resumeCommand template
+      expect(listed.json()).toEqual({ bookmarks: [bookmark], canResume: true, currentBookmarkId: bookmark.id });
+      expect(mismatched.json()).toEqual({ bookmarks: [bookmark], canResume: true });
       expect(created.statusCode).toBe(201);
       expect(created.json()).toEqual(bookmark);
       expect(renamed.json()).toEqual(renamedBookmark);

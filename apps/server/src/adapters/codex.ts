@@ -3,6 +3,7 @@ import { isAgentCommand } from '../discovery/processes.js';
 import { codexDraftState, failedTurnFromCapture, lastPromptFromHistory, latestAgentMessageFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from './codex-turns.js';
 import { parseChoiceQuestion, pendingOmxQuestion } from './codex-questions.js';
 import { codexConversationTitle, codexRolloutBaseline, codexTurnSince, discoverCodexConversation, validCodexThreadId } from './codex-conversations.js';
+import { classifyCodexPane, classifyCodexProcess, isOmxWorkerPane } from './codex-panes.js';
 import type { Adapter, AttentionState, PromptCommand } from './types.js';
 
 // build the supported-version codex compatibility catalog
@@ -89,6 +90,14 @@ export const codexAdapter: Adapter = {
   stateSource: 'title',
   recognizes: ({ comm, argv }) => isAgentCommand(comm, argv.join('\0')),
   inferState,
+  // Continue resumes the last conversation without a shell alias; a bookmark
+  // resumes an exact conversation by id. Fresh launches append nothing, so the
+  // configured command runs unchanged.
+  launch: ({ mode, conversationId }) => {
+    if (mode === 'continue') return { args: ['resume', '--last'] };
+    if (mode === 'resume' && conversationId !== undefined) return { args: ['resume', conversationId] };
+    return { args: [] };
+  },
   submission: {
     // codex submits idle prompts with Enter and queues active prompts with Tab
     // a trailing space dismisses the completion menu before either key
@@ -130,5 +139,10 @@ export const codexAdapter: Adapter = {
   completion: {
     baseline: (pane) => codexRolloutBaseline(pane),
     since: (baseline) => codexTurnSince(baseline),
+  },
+  panes: {
+    exclude: (pane) => isOmxWorkerPane(pane),
+    classify: (pane, scan) => classifyCodexPane(pane, scan),
+    classifyProcess: (process, scan) => classifyCodexProcess(process, scan),
   },
 };

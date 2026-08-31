@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
 import type { Agent, CleanupTarget, CleanupTargetKind, Pane, SocketRef } from '../domain/models.js';
-import { ProcSocketFinder, isOmxWorkerPane, type SocketFinder } from '../discovery/service.js';
-import { isHudWatcherCommand, ProcInspector, type HostProcess, type HostProcessInspector, type ProcessInspector } from '../discovery/processes.js';
+import { ProcSocketFinder, type SocketFinder } from '../discovery/service.js';
+import { ProcInspector, type HostProcess, type HostProcessInspector, type ProcessInspector } from '../discovery/processes.js';
+import { adapters } from '../adapters/registry.js';
+import type { AgentKind, PaneScan } from '../adapters/types.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 
 type DiscoverySnapshot = { refresh(force?: boolean): Promise<Agent[]> };
@@ -9,7 +11,6 @@ type CleanupAction = { target: CleanupTarget; socket?: SocketRef; paneId?: strin
 
 const opaqueId = (kind: CleanupTargetKind, identity: string) => `cleanup-${createHash('sha256').update(`${kind}\0${identity}`).digest('base64url').slice(0, 24)}`;
 const paneIdentity = (pane: Pane) => `${pane.socket.fingerprint}:${pane.paneId}`;
-const paneLabel = (pane: Pane) => pane.displayLabel || pane.title || pane.sessionName || pane.paneId;
 
 export class CleanupService {
   private readonly dismissed = new Set<string>();
@@ -60,12 +61,10 @@ export class CleanupService {
       this.processInspector.listProcesses()
     ]);
     const panes = (await Promise.all(sockets.map(socket => this.tmux.listPanes(socket)))).flat();
-    const [codexFlags] = await Promise.all([
-      Promise.all(panes.map(pane => this.processInspector.recognizeAgent(pane.pid)))
-    ]);
-    const codexPanes = new Set(panes.filter((_pane, index) => codexFlags[index] !== undefined).map(paneIdentity));
+    const recognized = await Promise.all(panes.map(pane => this.processInspector.recognizeAgent(pane.pid)));
+    const recognizedKind = new Map<string, AgentKind>();
+    panes.forEach((pane, index) => { const agent = recognized[index]; if (agent !== undefined) recognizedKind.set(paneIdentity(pane), agent.kind); });
     const activeAgents = new Set(agents.map(agent => agent.id));
-    const hudProcesses = processes.filter(process => isHudWatcherCommand(process.cmdline));
     const paneByPid = new Map(panes.map(pane => [pane.pid, pane]));
     const processByPid = new Map(processes.map(process => [process.pid, process]));
     const paneAncestor = (pid: number): Pane | undefined => {
@@ -79,36 +78,39 @@ export class CleanupService {
       }
       return undefined;
     };
-    const hudPaneIds = new Set(hudProcesses.map(process => paneAncestor(process.pid)).filter((pane): pane is Pane => pane !== undefined).map(paneIdentity));
-    for (const pane of panes) if (/(?:^|[/\s])omx\s+hud(?:\s+[^\s]+)*\s+--watch(?:\s|$)/u.test(pane.startCommand ?? '')) hudPaneIds.add(paneIdentity(pane));
-    const sessionHasLeader = new Set<string>();
-    for (const pane of panes) {
-      const identity = paneIdentity(pane);
-      if (!isOmxWorkerPane(pane) && codexPanes.has(identity) && !hudPaneIds.has(identity)) sessionHasLeader.add(`${pane.socket.fingerprint}:${pane.sessionId}`);
-    }
+    // the agent-agnostic facts every Adapter classifies its panes against
+    const scan: PaneScan = {
+      panes,
+      processes,
+      identity: paneIdentity,
+      sessionIdentity: pane => `${pane.socket.fingerprint}:${pane.sessionId}`,
+      active: pane => activeAgents.has(paneIdentity(pane)),
+      recognizedKind: pane => recognizedKind.get(paneIdentity(pane)),
+      paneAncestor
+    };
 
     const candidates: CleanupAction[] = [];
     for (const pane of panes) {
-      const identity = paneIdentity(pane);
-      const common = { socket: pane.socket, paneId: pane.paneId };
-      if (hudPaneIds.has(identity)) {
-        candidates.push({ ...common, target: this.target('hud-pane', `${identity}:${pane.pid}`, 'HUD watcher', `${paneLabel(pane)} in tmux session ${pane.sessionName ?? pane.sessionId}`) });
-      } else if (isOmxWorkerPane(pane) && !sessionHasLeader.has(`${pane.socket.fingerprint}:${pane.sessionId}`)) {
-        candidates.push({ ...common, target: this.target('orphan-worker', `${identity}:${pane.pid}`, 'Orphan OMX worker', `${paneLabel(pane)} in tmux session ${pane.sessionName ?? pane.sessionId}`) });
-      } else if (codexPanes.has(identity) && !isOmxWorkerPane(pane) && !activeAgents.has(identity)) {
-        candidates.push({ ...common, target: this.target('stale-agent', `${identity}:${pane.pid}`, 'Stale Codex agent', `${paneLabel(pane)} at ${pane.path}`) });
+      for (const adapter of adapters) {
+        const classification = adapter.panes?.classify(pane, scan);
+        if (classification === undefined) continue;
+        candidates.push({ socket: pane.socket, paneId: pane.paneId, target: this.target(classification.kind, `${paneIdentity(pane)}:${pane.pid}`, classification.label, classification.detail) });
+        break;
       }
     }
 
     const executorSocket = sockets[0];
-    for (const process of hudProcesses) {
-      if (paneAncestor(process.pid) !== undefined) continue;
-      const identity = `${process.pid}:${process.startTime}`;
-      candidates.push({
-        target: this.target('hud-process', identity, 'Detached HUD watcher', `Host process ${process.pid}: ${process.cmdline.split('\0').filter(Boolean).join(' ')}`),
-        ...(executorSocket === undefined ? {} : { socket: executorSocket }),
-        pid: process.pid
-      });
+    for (const process of processes) {
+      for (const adapter of adapters) {
+        const classification = adapter.panes?.classifyProcess(process, scan);
+        if (classification === undefined) continue;
+        candidates.push({
+          target: this.target(classification.kind, `${process.pid}:${process.startTime}`, classification.label, classification.detail),
+          ...(executorSocket === undefined ? {} : { socket: executorSocket }),
+          pid: process.pid
+        });
+        break;
+      }
     }
 
     const next = new Map(candidates.map(candidate => [candidate.target.id, candidate]));

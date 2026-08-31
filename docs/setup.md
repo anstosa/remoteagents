@@ -61,10 +61,10 @@ before starting the configured command. Set `RAC_HOST_PATH` to a complete PATH
 when host commands require executables outside the host shell's normal startup
 environment.
 
-Set `resumeCommand` to enable exact saved-chat switching. It must contain one
-`{threadId}` placeholder. The console validates this capability before closing
-an open agent, so generic commands and legacy launch templates are never
-guessed to support Codex resume syntax.
+Any configured Codex worktree resumes an exact saved chat through its adapter
+(`codex resume <id>`); no extra configuration is required. Set `resumeCommand`
+only to override that composition — for example to pass extra flags. When set it
+must contain one `{threadId}` placeholder.
 
 An optional `newTask` command adds a **New Task** action for a worktree. It
 uses `{taskId}` for an 8-character URL-safe random ID and is enabled only when
@@ -82,9 +82,9 @@ prompt per worktree with `push`:
 { "push": { "label": "Finish and PR", "prompt": "$finish" } }
 ```
 
-The legacy `launch` template remains supported for existing configurations. A
-worktree must define either `command` or `launch` (or inherit the top-level
-`launch`); it cannot define both.
+Every worktree must define a `command`: the console composes each launch as the
+configured program followed by the adapter's arguments and runs it through the
+operator's interactive shell.
 
 ## Shared bookmarks and notes
 
@@ -107,8 +107,8 @@ characters.
 
 Scratch agents also expose bookmarks and notes. The console derives their
 persistence group from the scratch workspace, so scratch agents opened in the
-same directory share entries across restarts. Exact bookmark resume still
-requires a configured worktree with `resumeCommand`.
+same directory share entries across restarts. Exact bookmark resume requires a
+configured worktree (scratch agents have none).
 
 The default server listener is `127.0.0.1:8787`; `/healthz` is loopback-only and reveals only `{ "ok": true }`. Do not put passwords, prompts, session cookies, CSRF tokens, or WebSocket tickets in configuration or logs.
 

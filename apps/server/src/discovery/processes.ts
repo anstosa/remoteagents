@@ -15,15 +15,6 @@ export function isAgentCommand(comm: string, cmdline: string): boolean {
   return node.test(program) && args.slice(1).some(arg => codex.test(arg.split('/').pop() ?? ''));
 }
 
-export function isHudWatcherCommand(cmdline: string): boolean {
-  const args = cmdline.split('\0').filter(Boolean);
-  const executable = args[0]?.split('/').pop() ?? '';
-  const omxIndex = /^(?:omx|omx\.js)$/iu.test(executable)
-    ? 0
-    : node.test(executable) ? args.findIndex((arg, index) => index > 0 && /^(?:omx|omx\.js)$/iu.test(arg.split('/').pop() ?? '')) : -1;
-  return omxIndex >= 0 && args[omxIndex + 1] === 'hud' && args.slice(omxIndex + 2).includes('--watch');
-}
-
 export type HostProcess = { pid: number; parentPid: number; startTime: string; comm: string; cmdline: string };
 export interface HostProcessInspector { listProcesses(): Promise<HostProcess[]>; }
 

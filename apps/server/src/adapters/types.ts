@@ -1,14 +1,18 @@
 /**
  * The Adapter interface: every agent CLI the console knows is described by one
  * Adapter (ADR 0002). An Adapter *describes* its agent — how to recognise its
- * processes, what its title says, how a prompt is submitted — while the console
- * performs every side effect through its single tmux and `/proc` layer.
+ * processes, what its title says, how a prompt is submitted, how a launch is
+ * composed — while the console performs every side effect through its single
+ * tmux and `/proc` layer.
  *
- * Chunk 1 populates only `kind`, `stateSource`, `recognizes`, `inferState` and
- * `submission` (plus Codex's existing `turns`/`conversations`, carried as
- * facades). The remaining optional capabilities are declared here so the derived
- * capability record can read their presence; later chunks fill them in.
+ * Chunk 1 populates `kind`, `stateSource`, `recognizes`, `inferState`,
+ * `submission`, `launch` and `panes` (plus Codex's existing `turns`/
+ * `conversations`, carried as facades). The remaining optional capabilities are
+ * declared here so the derived capability record can read their presence; later
+ * chunks fill them in.
  */
+import type { HostProcess } from '../discovery/processes.js';
+import type { CleanupTarget, Pane } from '../domain/models.js';
 
 export const agentKinds = ['codex', 'claude', 'pi', 'opencode'] as const;   // closed union; the registry is code, not plugins
 export type AgentKind = typeof agentKinds[number];
@@ -23,6 +27,37 @@ export type Conversation = { id: string; title?: string };
 export type Turn = { prompt?: string; text: string; rows?: number };
 export type InlineQuestion = { id: string; text: string; choices: string[]; source: 'structured' | 'parsed'; targetPaneId?: string };
 export type PromptCommand = { name: string; description?: string };
+
+export type LaunchMode = 'fresh' | 'continue' | 'resume';
+/**
+ * What the console hands an Adapter to compose a launch. Chunk 1 supplies
+ * `mode`, the `conversationId` for a `resume`, the `cwd`, and the `sandboxed`
+ * flag; the Claude and Pi chunks extend this with the rendered `files` map and
+ * the host `repoRoot`. The Adapter reads these and returns only arguments — the
+ * console prepends the program and performs the launch.
+ */
+export type LaunchInput = { mode: LaunchMode; conversationId?: string; cwd: string; sandboxed: boolean };
+/** The CLI arguments (and optional environment) for a launch; the console prepends the program. */
+export type LaunchSpec = { args: string[]; env?: Record<string, string> };
+
+/**
+ * The agent-agnostic facts the console feeds `panes.classify`/`classifyProcess`
+ * so an Adapter can reproduce its runtime-cleanup rules without embedding any
+ * tmux or `/proc` knowledge (ADR 0002). The OMX/HUD rules themselves live in the
+ * Adapter; the console only supplies the pane set, the process tree, and the
+ * generic derivations (`identity`, `active`, `recognizedKind`, `paneAncestor`).
+ */
+export type PaneScan = {
+  panes: readonly Pane[];
+  processes: readonly HostProcess[];
+  identity(pane: Pane): string;
+  sessionIdentity(pane: Pane): string;
+  active(pane: Pane): boolean;
+  recognizedKind(pane: Pane): AgentKind | undefined;
+  paneAncestor(pid: number): Pane | undefined;
+};
+/** One runtime-cleanup classification an Adapter emits; the console wraps it with a stable id. */
+export type CleanupClassification = Pick<CleanupTarget, 'kind' | 'label' | 'detail'>;
 /**
  * The outcome of a turn read from the agent's structured event log: `pending`
  * while no terminal turn has been recorded past the baseline, `completed` (with
@@ -48,6 +83,8 @@ export interface Adapter {
   recognizes(process: { comm: string; argv: string[] }): boolean;
   /** The title-derived Attention state, or `undefined` when the title carries no signal. */
   inferState(pane: { title: string; command?: string }): AttentionState | undefined;
+  /** The CLI arguments for a fresh/continue/resume launch; the console prepends the program and acts. */
+  launch(input: LaunchInput): LaunchSpec;
   readonly submission: {
     prepare(prompt: string, mode: SubmissionMode): Submission;
     /** Observe durable acceptance; absence keeps this adapter on best-effort tmux delivery. */
@@ -98,6 +135,20 @@ export interface Adapter {
   readonly sandbox?: {
     needs: { domains: string[]; statePaths: string[]; protectedPaths: string[]; secrets: string[] };
     policyRequired: boolean;
+  };
+  /**
+   * Runtime-cleanup rules for this agent's panes and processes. `exclude` names
+   * the panes the console never shows on the dashboard (OMX worker panes);
+   * `classify`/`classifyProcess` recognise the stale runtime targets the Cleanup
+   * screen offers. Every OMX/HUD-specific rule lives here rather than in
+   * discovery or cleanup (ADR 0002). The console builds one immutable `PaneScan`
+   * per cleanup pass and calls `classify`/`classifyProcess` once per pane/process
+   * against it, so an Adapter may memoise derived sets keyed on the scan.
+   */
+  readonly panes?: {
+    exclude(pane: Pane): boolean;
+    classify(pane: Pane, scan: PaneScan): CleanupClassification | undefined;
+    classifyProcess(process: HostProcess, scan: PaneScan): CleanupClassification | undefined;
   };
 }
 
