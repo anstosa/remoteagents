@@ -72,6 +72,8 @@ export type AccountServiceOptions = {
   codexHome?: string;
   queryTimeoutMs?: number;
   loginTimeoutMs?: number;
+  // the absolute Codex binary the account queries spawn; without it accounts report unavailable
+  codexProgram?: string;
   createClient?: CodexProtocolClientFactory;
   queryAccount?: AccountQuery;
 };
@@ -379,6 +381,7 @@ export class CodexAccountService {
   private readonly queryTimeoutMs: number;
   private readonly loginTimeoutMs: number;
   private readonly createClient: CodexProtocolClientFactory;
+  private readonly codexProgram?: string;
   private readonly injectedQuery?: AccountQuery;
   private readonly logins = new Map<string, LoginSession>();
   private mutationTail: Promise<void> = Promise.resolve();
@@ -391,6 +394,7 @@ export class CodexAccountService {
     this.queryTimeoutMs = boundedTimeout(options.queryTimeoutMs, defaultQueryTimeoutMs, 60_000);
     this.loginTimeoutMs = boundedTimeout(options.loginTimeoutMs, defaultLoginTimeoutMs, 24 * 60 * 60_000);
     this.createClient = options.createClient ?? createCodexProtocolClient;
+    this.codexProgram = options.codexProgram;
     this.injectedQuery = options.queryAccount;
   }
 
@@ -453,7 +457,7 @@ export class CodexAccountService {
       let client: CodexProtocolClient | undefined;
       try {
         await writeFile(tempAuthFile, queryAuth.contents, { mode: 0o600 });
-        client = await withDeadline(this.createClient(tempHome), this.queryTimeoutMs);
+        client = await withDeadline(this.createClient(tempHome, { command: this.codexProgram }), this.queryTimeoutMs);
         await withDeadline(initializeCodexProtocol(client), this.queryTimeoutMs, () => void client?.close());
         const response = record(await withDeadline(
           client.request('account/rateLimitResetCredit/consume', { idempotencyKey: randomUUID() }),
@@ -506,7 +510,7 @@ export class CodexAccountService {
     await mkdir(tempHome, { recursive: true, mode: 0o700 });
     let client: CodexProtocolClient | undefined;
     try {
-      client = await withDeadline(this.createClient(tempHome), this.queryTimeoutMs);
+      client = await withDeadline(this.createClient(tempHome, { command: this.codexProgram }), this.queryTimeoutMs);
       await withDeadline(initializeCodexProtocol(client), this.queryTimeoutMs, () => void client?.close());
       let session: LoginSession | undefined;
       let earlyCompletion: CodexProtocolNotification | undefined;
@@ -729,7 +733,7 @@ export class CodexAccountService {
   private async runQuery(context: AccountQueryContext): Promise<AccountQueryResult> {
     // use deterministic injected queries
     if (this.injectedQuery) return await this.injectedQuery(context);
-    const client = await this.createClient(context.codexHome);
+    const client = await this.createClient(context.codexHome, { command: this.codexProgram });
     // terminate the child when the overall query aborts
     const abort = () => void client.close();
     context.signal.addEventListener('abort', abort, { once: true });

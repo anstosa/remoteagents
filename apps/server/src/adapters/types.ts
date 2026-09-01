@@ -79,6 +79,12 @@ export type CompletionBaseline = { rollout: string; ordinal: number };
 export interface Adapter {
   readonly kind: AgentKind;
   readonly stateSource: 'reported' | 'title' | 'both';
+  /**
+   * Operator arguments this Adapter must own, so the console warns (and ignores
+   * them) when an `adapters.<kind>.args` entry supplies one — a mode flag or a
+   * setting the console composes itself. Codex declares none.
+   */
+  readonly conflictingArgs?: readonly string[];
   /** Classify one process by its own identity; the wrapper ancestor is the walker's concern. */
   recognizes(process: { comm: string; argv: string[] }): boolean;
   /** The title-derived Attention state, or `undefined` when the title carries no signal. */
@@ -159,12 +165,27 @@ export interface Adapter {
 }
 
 /**
+ * One configured adapter program (config `adapters.<kind>`). The console launches
+ * a kind by prepending `program` to the Adapter's own arguments and appending the
+ * operator's `args`, merging the operator's `env` over the Adapter's. `launchable`
+ * and `unavailableReason` come from the boot executable check (skipped under the
+ * host bridge, where `program` is a host path the container cannot stat).
+ */
+export type AdapterLaunchConfig = { program: string; args: string[]; env: Record<string, string>; launchable: boolean; unavailableReason?: string };
+/** The configured adapters, keyed by kind; absent entirely in the legacy (pre-`adapters`) configuration. */
+export type AdapterConfigs = Partial<Record<AgentKind, AdapterLaunchConfig>>;
+
+/**
  * The capability record the console derives per registered kind and publishes on
  * the Dashboard (ADR 0002). Presence of an optional capability object becomes a
  * boolean the web reads; the resolution logic itself never leaves the server.
+ * `launchable` is config-gated (a configured, executable program), and `program`
+ * / `unavailableReason` carry the configured path and the reason it cannot launch.
  */
 export type AdapterCapability = {
   launchable: boolean;
+  unavailableReason?: string;
+  program?: string;
   stateSource: Adapter['stateSource'];
   turnCapture: boolean;
   bookmarks: boolean;

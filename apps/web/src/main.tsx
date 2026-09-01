@@ -39,13 +39,18 @@ type NewTaskAvailability = { enabled: boolean; reason?: string };
 type OperationFeedback = { id: number; tone: 'pending'|'success'|'error'; message: string; detail: string; worktreeId?: string };
 type CleanupTarget = { id: string; kind: 'orphan-worker'|'stale-agent'|'hud-pane'|'hud-process'; label: string; detail: string };
 type AgentKind = 'codex' | 'claude' | 'pi' | 'opencode';
+// per-kind badge glyph and display label, shared by the tab badge and the settings AGENTS card
+const agentKindGlyph: Record<AgentKind, string> = { codex: '◆', claude: '✳', pi: 'π', opencode: '◇' };
+const agentKindLabel: Record<AgentKind, string> = { codex: 'Codex', claude: 'Claude', pi: 'Pi', opencode: 'OpenCode' };
+type AdapterCapability = { launchable: boolean; unavailableReason?: string; program?: string; stateSource: 'reported' | 'title' | 'both'; turnCapture: boolean; bookmarks: boolean; inlineQuestions: boolean; commands: boolean; sandbox: boolean };
+type AdapterCapabilities = Partial<Record<AgentKind, AdapterCapability>>;
 type AttentionState = 'working' | 'finished' | 'question';
 type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: InlineQuestion; stack?: Stack; unread?: boolean; queuedPromptCount: number };
 type Worktree = { id: string; label: string; path: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; sleeping?: boolean; order: number; projectUrl?: string; pullRequest?: PullRequestSummary; stack?: Stack };
 type ReviewTourCapability = { available: true } | { available: false; reason: 'generator_unavailable'|'unsupported_cli'|'configuration_invalid'|'authentication_required' };
 type StoredReviewSummary = { worktreeId: string; branch: string; savedAt: string; title: string; scope: ReviewScope; includeTests: boolean; includeDocs: boolean; fingerprint: string };
 type ReviewButtonState = ReviewTourIndicator & { onOpen: () => void };
-type Dashboard = { generation?: number; serverStartedAt?: number; agents: Agent[]; worktrees: Worktree[]; cleanupPending?: number; reviewTour?: ReviewTourCapability; reviews?: StoredReviewSummary[] };
+type Dashboard = { generation?: number; serverStartedAt?: number; adapters?: AdapterCapabilities; agents: Agent[]; worktrees: Worktree[]; cleanupPending?: number; reviewTour?: ReviewTourCapability; reviews?: StoredReviewSummary[] };
 // validate durable review dashboard summaries
 const isStoredReviewSummary = (value: unknown): value is StoredReviewSummary => value !== null && typeof value === 'object'
   && typeof (value as StoredReviewSummary).worktreeId === 'string'
@@ -579,6 +584,8 @@ type ClientSettings = {
   cancelCodexAccountLogin: (id: string) => Promise<void>;
 };
 const ClientSettingsContext = createContext<ClientSettings | undefined>(undefined);
+// the dashboard's per-kind adapter capabilities, provided by the active dashboard for the settings menu
+const AdaptersContext = createContext<AdapterCapabilities | undefined>(undefined);
 // format one server host
 const serverHostLabel = (url: string): string => {
   try {
@@ -1045,6 +1052,11 @@ function ServerUpdateDialog({ open, minimized, onMinimize, onClose }: { open: bo
 
 // render the client settings flyout
 function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
+  const adapters = useContext(AdaptersContext);
+  // one row per configured kind (a configured kind carries a program), in registry order
+  const configuredAdapters = (Object.keys(agentKindGlyph) as AgentKind[]).flatMap(kind => { const capability = adapters?.[kind]; return capability?.program === undefined ? [] : [[kind, capability] as const]; });
+  // Codex account management is available only when adapters.codex is configured
+  const codexConfigured = adapters?.codex?.program !== undefined;
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<'client' | 'server' | 'account-login'>();
   const [name, setName] = useState(settings.deviceName);
@@ -1062,10 +1074,10 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const [deviceCodeCopied, setDeviceCodeCopied] = useState(false);
   const accountLoginRequest = useRef(0);
   const { anchorRef, flyoutRef, style } = useViewportFlyout(open);
-  // query every configured account when opened
+  // query every configured account when opened, only when Codex is configured
   useEffect(() => {
-    // skip hidden menus
-    if (!open) return;
+    // skip hidden menus and consoles without a configured Codex adapter
+    if (!open || !codexConfigured) return;
     let active = true;
     setAccountsLoading(true);
     void settings.codexAccounts().then(result => {
@@ -1080,7 +1092,7 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
       setAccounts(result.accounts);
     });
     return () => { active = false; };
-  }, [open, settings]);
+  }, [open, codexConfigured, settings]);
   // update visible reset countdowns every second
   useEffect(() => {
     // stop the clock while the menu is hidden
@@ -1264,8 +1276,12 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     return <div key={account.id} className="chatgpt-account-option"><button className="chatgpt-account-select" type="button" role="menuitemradio" aria-checked={account.active} disabled={account.active || busy} onClick={() => void switchAccount(account)}><span className="chatgpt-account-check" aria-hidden="true">{switchingAccountId === account.id ? <span className="spinner" /> : account.active ? '✓' : ''}</span><span className="chatgpt-account-copy"><strong>{email}{inlinePlan}</strong>{details.map((window, index) => <CodexLimitUsage key={`${account.id}:${index}`} window={window} now={accountClock} />)}{account.resetCount !== undefined && account.resetCount > 0 && <small>{account.resetCount} {account.resetCount === 1 ? 'reset' : 'resets'} available</small>}{account.error !== undefined && <small className="chatgpt-account-error">{account.error}</small>}</span></button>{atLimit && account.resetCount !== undefined && account.resetCount > 0 && <button className="chatgpt-account-reset" type="button" role="menuitem" aria-label={`Use reset for ${email}`} disabled={busy} onClick={() => void useAccountReset(account)}>{resettingAccountId === account.id ? <><span className="spinner" />Using reset…</> : 'Use reset'}</button>}{account.error !== undefined && <button className="chatgpt-account-relogin" type="button" role="menuitem" aria-label={`Re-login to ${email}`} disabled={busy} onClick={() => void beginAccountLogin(account)}>Re-login</button>}</div>;
   });
   // render current client and server identities
-  const settingsCards = <div className="client-settings-overview" role="presentation"><div className="client-settings-card" role="group" aria-label="Client"><header><small>CLIENT</small><span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Rename Client" onClick={() => beginRename('client')}>Rename</button></span></header><strong>{settings.deviceName}</strong></div><div className="client-settings-card" role="group" aria-label="Server"><header><small>SERVER</small><span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Rename Server" onClick={() => beginRename('server')}>Rename</button></span></header><strong>{settings.serverName}</strong><span>{serverHostLabel(settings.serverUrl)}</span></div></div>;
-  const flyout = !open ? null : <FlyoutPortal onDismiss={() => setOpen(false)}><div ref={flyoutRef} className="client-settings-menu more-menu flyout-menu" style={style} role="menu" aria-label="Global settings" aria-busy={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined}>{settingsCards}<hr className="more-menu-divider" />{accountsLoading && accounts.length === 0 ? <button className="chatgpt-account-loading" type="button" role="menuitem" disabled><span className="spinner" />Loading ChatGPT accounts…</button> : accountRows}{accountMessage && <span className="chatgpt-account-message" role="status">{accountMessage}</span>}<button className="chatgpt-account-add" type="button" role="menuitem" disabled={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined} onClick={() => void beginAccountLogin()}>+ Add account</button></div></FlyoutPortal>;
+  // one AGENTS row per configured kind: glyph, label, availability line, program path (dimmed when unavailable)
+  const agentsCard = configuredAdapters.length === 0 ? null : <div className="client-settings-card client-settings-agents" role="group" aria-label="Agents"><header><small>AGENTS</small></header>{configuredAdapters.map(([kind, capability]) => <div key={kind} className={`client-settings-agent${capability.launchable ? '' : ' unavailable'}`} role="group" aria-label={agentKindLabel[kind]}><span className="client-settings-agent-glyph" aria-hidden="true">{agentKindGlyph[kind]}</span><span className="client-settings-agent-copy"><strong>{agentKindLabel[kind]}</strong><span className="client-settings-agent-availability">{capability.launchable ? 'Available' : capability.unavailableReason ?? 'Unavailable'}</span><span className="client-settings-agent-program">{capability.program}</span></span></div>)}</div>;
+  const settingsCards = <div className="client-settings-overview" role="presentation"><div className="client-settings-card" role="group" aria-label="Client"><header><small>CLIENT</small><span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Rename Client" onClick={() => beginRename('client')}>Rename</button></span></header><strong>{settings.deviceName}</strong></div><div className="client-settings-card" role="group" aria-label="Server"><header><small>SERVER</small><span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Rename Server" onClick={() => beginRename('server')}>Rename</button></span></header><strong>{settings.serverName}</strong><span>{serverHostLabel(settings.serverUrl)}</span></div>{agentsCard}</div>;
+  // the Codex accounts section renders only when adapters.codex is configured
+  const accountsSection = !codexConfigured ? null : <><hr className="more-menu-divider" />{accountsLoading && accounts.length === 0 ? <button className="chatgpt-account-loading" type="button" role="menuitem" disabled><span className="spinner" />Loading ChatGPT accounts…</button> : accountRows}{accountMessage && <span className="chatgpt-account-message" role="status">{accountMessage}</span>}<button className="chatgpt-account-add" type="button" role="menuitem" disabled={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined} onClick={() => void beginAccountLogin()}>+ Add account</button></>;
+  const flyout = !open ? null : <FlyoutPortal onDismiss={() => setOpen(false)}><div ref={flyoutRef} className="client-settings-menu more-menu flyout-menu" style={style} role="menu" aria-label="Global settings" aria-busy={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined}>{settingsCards}{accountsSection}</div></FlyoutPortal>;
   const renameTarget = dialog === 'client' || dialog === 'server' ? dialog : undefined;
   const renameDialog = renameTarget === undefined ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-rename-title" onKeyDown={event => { /* close on escape */ if (event.key === 'Escape') closeDialog(); }}><div><header><div><small>GLOBAL SETTINGS</small><h2 id="settings-rename-title">Rename {renameTarget === 'client' ? 'Client' : 'Server'}</h2></div><button type="button" aria-label={`Close rename ${renameTarget}`} disabled={pending} onClick={closeDialog}>×</button></header><form onSubmit={event => void submitRename(event)}><label>{renameTarget === 'client' ? 'Client' : 'Server'} name<input autoFocus type="text" value={name} maxLength={renameTarget === 'client' ? 64 : 80} autoComplete="nickname" onChange={event => setName(event.target.value)} /></label>{error && <span className="auth-error" role="alert">{error}</span>}<footer><button type="button" disabled={pending} onClick={closeDialog}>Cancel</button><button type="submit" disabled={pending || !name.trim()}>{pending ? <><span className="spinner" />Renaming…</> : 'Save'}</button></footer></form></div></div>, document.body);
   let accountLoginContent: ReactNode;
@@ -5365,7 +5381,7 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
   })}<NotificationControl />{updateControl !== undefined && <button className="update-ready" type="button" onClick={updateControl.onClick}>{updateControl.label} <span>{updateControl.action}</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><button disabled={creatingAgent} onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
   const consoleClass = `console${voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{reviewDialog}</article></main></VoiceTriggerContext.Provider>;
-  return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{reviewDialog}</main></VoiceTriggerContext.Provider>;
+  return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{reviewDialog}</main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
 }
 
 // coordinate console session and update lifecycle

@@ -14,7 +14,8 @@ const envFile = new URL('../../../.env', import.meta.url);
 if (existsSync(envFile)) process.loadEnvFile(envFile);
 
 const file = process.env.RAC_CONFIG; if (!file) throw new Error('RAC_CONFIG must point to a server-local configuration file');
-const config = await validateConfig(applyListenOverrides(JSON.parse(await readFile(file, 'utf8')), process.env)); const tmux = new TmuxAdapter(); const discovery = new DiscoveryService(undefined, tmux); const push = new PushService(); const cleanup = new CleanupService(discovery, undefined, tmux);
+// surface ignored legacy keys and non-executable adapter programs in the boot log
+const config = await validateConfig(applyListenOverrides(JSON.parse(await readFile(file, 'utf8')), process.env), { warn: message => process.stderr.write(`Configuration warning: ${message}\n`) }); const tmux = new TmuxAdapter(); const discovery = new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters); const push = new PushService(); const cleanup = new CleanupService(discovery, undefined, tmux);
 const notificationPollMs = Math.max(1_000, config.pollIntervalMs);
 const notifications = new AgentNotificationCoordinator(notification => push.notify(notification), Math.max(2_000, notificationPollMs * 2));
 const dashboardUpdates = new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.worktrees, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews]));

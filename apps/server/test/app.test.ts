@@ -455,6 +455,27 @@ describe('agent launches', () => {
       expect(dashboards).toBe(83);
     } finally { await launchApp.close(); }
   }, 15_000);
+
+  it('forwards a requested launch kind and rejects an unknown one', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu', title: '' });
+    let dashboards = 0;
+    const discovery = { dashboard: async () => ({ generation: ++dashboards, agents: dashboards === 1 ? [] : [agent], worktrees: [] }) };
+    const kinds: Array<string | undefined> = [];
+    const launch = { launch: async () => true, launchHome: async (kind?: string) => { kinds.push(kind); return true; } };
+    const launchApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 9).toString('base64url')), discovery: discovery as never, launch: launch as never });
+    try {
+      const boot = await launchApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await launchApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const cookie = String(login.headers['set-cookie']).split(';')[0];
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie, 'x-csrf-token': login.json().csrfToken };
+      const bad = await launchApp.inject({ method: 'POST', url: '/api/agents/launch', headers, payload: { kind: 'nope' } });
+      expect(bad.statusCode).toBe(400);
+      const ok = await launchApp.inject({ method: 'POST', url: '/api/agents/launch', headers, payload: { kind: 'codex' } });
+      expect(ok.statusCode).toBe(201);
+      expect(kinds).toEqual(['codex']);
+    } finally { await launchApp.close(); }
+  }, 15_000);
 });
 
 describe('pull request switch API', () => {

@@ -62,7 +62,9 @@ function generationPrompt(snapshot: ReviewSnapshot): string {
 export class CodexExecReviewTourGenerator implements ReviewTourGenerator {
   private capabilityResult?: Promise<ReviewTourCapability>;
 
-  constructor(private readonly binary = process.env.RAC_CODEX_BIN ?? '/usr/local/bin/codex') {}
+  // the Codex binary: an explicit override, else the configured adapters.codex program;
+  // an empty string (nothing configured) reports unavailable rather than spawning a bare name
+  constructor(private readonly binary = process.env.RAC_CODEX_BIN ?? '') {}
 
   // verify the configured CLI surface once
   capability(): Promise<ReviewTourCapability> {
@@ -72,7 +74,7 @@ export class CodexExecReviewTourGenerator implements ReviewTourGenerator {
 
   // inspect required CLI flags
   private async detectCapability(): Promise<ReviewTourCapability> {
-    // require an absolute executable
+    // require a configured, absolute executable
     if (!this.binary.startsWith('/')) return { available: false, reason: 'configuration_invalid' };
     const executable = await access(this.binary, constants.X_OK).then(() => true).catch(() => false);
     // report missing generators cleanly

@@ -59,9 +59,15 @@ async function main(): Promise<void> {
   const path = resolve(invocationDirectory, configuredPath);
   const rawInput = JSON.parse(await readFile(path, 'utf8')) as unknown;
   const input = composeMode ? hostValidationInput(rawInput, await composeMounts(invocationDirectory)) : rawInput;
-  const config = await validateConfig(input);
+  // a compose config names container program paths the host cannot stat, so skip the probe there
+  const warnings: string[] = [];
+  const config = await validateConfig(input, { warn: message => warnings.push(message), checkExecutables: !composeMode });
   const mode = config.worktrees.length === 0 ? 'scratch-only' : `${config.worktrees.length} worktree${config.worktrees.length === 1 ? '' : 's'}`;
-  process.stdout.write(`Configuration valid: ${path}\nOrigin: ${config.publicOrigin.origin}\nMode: ${mode}${composeMode ? ' (Compose mounts verified)' : ''}\n`);
+  const configured = config.adapters === undefined ? undefined : Object.keys(config.adapters);
+  const adapters = configured === undefined ? 'legacy (no adapters block)' : configured.length === 0 ? 'observe-only (no adapters configured)' : configured.join(', ');
+  process.stdout.write(`Configuration valid: ${path}\nOrigin: ${config.publicOrigin.origin}\nMode: ${mode}\nAdapters: ${adapters}${composeMode ? ' (Compose mounts verified)' : ''}\n`);
+  // non-executable programs and ignored legacy keys warn without failing the check
+  for (const warning of warnings) process.stderr.write(`Warning: ${warning}\n`);
 }
 
 // return one actionable validation failure

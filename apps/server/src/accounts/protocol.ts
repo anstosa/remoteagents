@@ -11,7 +11,7 @@ export interface CodexProtocolClient {
   close(): Promise<void>;
 }
 
-export type CodexProtocolClientFactory = (codexHome: string) => Promise<CodexProtocolClient>;
+export type CodexProtocolClientFactory = (codexHome: string, options?: { command?: string }) => Promise<CodexProtocolClient>;
 
 type PendingRequest = {
   resolve(value: unknown): void;
@@ -183,7 +183,9 @@ export class JsonlCodexProtocolClient implements CodexProtocolClient {
 
 // spawn the installed codex app-server
 export async function createCodexProtocolClient(codexHome: string, options: JsonlClientOptions = {}): Promise<CodexProtocolClient> {
-  const child = spawn(options.command ?? 'codex', options.args ?? ['app-server', '--listen', 'stdio://'], {
+  // never spawn a bare `codex` from PATH; the console configures an absolute program
+  if (options.command === undefined) throw new Error('Codex binary is not configured');
+  const child = spawn(options.command, options.args ?? ['app-server', '--listen', 'stdio://'], {
     env: { ...process.env, ...options.env, CODEX_HOME: codexHome },
     stdio: ['pipe', 'pipe', 'pipe']
   });

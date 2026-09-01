@@ -52,10 +52,12 @@ exits immediately and the API reports that Codex did not become ready.
 RAC_INTERACTIVE_SHELL=/usr/bin/bash
 ```
 
-The agent command itself comes from the config file (`newAgentCommand` and
-each worktree's `command` and `resumeCommand`), not from `RAC_CODEX_BIN`, which
-only selects the Codex executable used for review tours. Use absolute paths in
-the config, and update them when Codex is reinstalled elsewhere.
+The agent programs come from the config file's `adapters` block (see
+[Adapters](setup.md#adapters)); use absolute paths and update them when a CLI is
+reinstalled elsewhere. `RAC_CODEX_BIN` selects the Codex executable the review
+tour, ChatGPT account management, and the update advisor spawn; when it is unset
+those default to `adapters.codex.program`. With neither set, those Codex-only
+features report unavailable rather than spawning a bare `codex`.
 
 Container-only variables (`RAC_HOST_PROC`, `RAC_HOST_TMUX_DIR`,
 `RAC_HOST_TMUX_SOURCE`, and `RAC_HOST_UID`) must be omitted. The native server

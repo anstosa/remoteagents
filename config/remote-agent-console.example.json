@@ -5,6 +5,8 @@
   },
   "name": "My server",
   "publicOrigin": "http://127.0.0.1:8787",
-  "newAgentCommand": "codex",
+  "adapters": {
+    "codex": { "program": "/usr/local/bin/codex" }
+  },
   "worktrees": []
 }

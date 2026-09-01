@@ -6,7 +6,7 @@ This is a **single trusted operator** console: terminal and prompt access execut
 
 ## Prerequisites
 
-Linux with `/proc`, tmux, Node 22+ (Node 24 is supported), pnpm, a C/C++ build toolchain for `node-pty`, and an existing Codex executable. The server intentionally manages only Codex/OMX descendants of tmux panes.
+Linux with `/proc`, tmux, Node 22+ (Node 24 is supported), pnpm, a C/C++ build toolchain for `node-pty`, and an existing agent CLI (Codex by default). Configure each CLI the console launches under [`adapters`](#adapters).
 
 ```bash
 pnpm install
@@ -38,33 +38,70 @@ unavailable attention. It rejects unsigned or stale peer requests.
 To run the console and its managed tmux/Codex sessions in Docker instead, see
 [the Docker Compose guide](docker.md).
 
-## Worktree commands
+## Adapters
 
-Each worktree can define its own trusted shell command. The console changes to
-the worktree's canonical path before running it, so commands can use relative
-paths and project-local tooling:
+Each agent CLI the console launches is configured once under `adapters`, keyed
+by kind (`codex`, `claude`, `pi`, `opencode`). The console launches a kind by
+prepending its `program` to the adapter's own arguments and appending the
+operator's, so a checkout never chooses a program — adapter configuration is
+global:
 
 ```json
 {
-  "id": "my-project",
-  "path": "/absolute/path/to/project",
-  "command": "codex",
-  "resumeCommand": "codex resume {threadId} -C ."
+  "adapters": {
+    "codex": { "program": "/usr/local/bin/codex" },
+    "claude": { "program": "/usr/local/bin/claude", "args": ["--model", "opus"], "env": { "SOME_VAR": "1" } }
+  }
 }
 ```
 
-The `codex` command is resolved from an interactive zsh shell by default.
-Set `RAC_INTERACTIVE_SHELL` for container or direct sessions and
+Each entry is `{ program, args?, env? }`. `program` must be an **absolute path
+to a real executable** (not a version-manager shim that needs a shell); `args`
+(≤64) and `env` (names `^[A-Za-z_][A-Za-z0-9_]*$`) are the operator's additions.
+Values are never shell-expanded — the console shell-quotes them — so there are no
+placeholders, and `env` is not a place for secrets. Configuring zero adapters is
+valid: the console then only observes hand-started agents. Adding a kind whose
+program is missing or not executable does not stop the server; that kind shows as
+unavailable in **Global settings → Agents** with the reason, and every other kind
+still launches. `pnpm config:check` reports the same non-fatal warning.
+
+The program is launched from an interactive zsh shell by default. Set
+`RAC_INTERACTIVE_SHELL` for container or direct sessions and
 `RAC_HOST_INTERACTIVE_SHELL` for host-tmux sessions. Absolute zsh and bash paths
 are supported; each loads the operator's normal `.zshenv`/`.zshrc` or `.bashrc`
-before starting the configured command. Set `RAC_HOST_PATH` to a complete PATH
-when host commands require executables outside the host shell's normal startup
+before starting the agent. Set `RAC_HOST_PATH` to a complete PATH when host
+commands require executables outside the host shell's normal startup
 environment.
 
-Any configured Codex worktree resumes an exact saved chat through its adapter
-(`codex resume <id>`); no extra configuration is required. Set `resumeCommand`
-only to override that composition — for example to pass extra flags. When set it
-must contain one `{threadId}` placeholder.
+When `adapters.codex` is configured it also becomes the Codex binary the review
+tour, ChatGPT account management, and the update advisor use; `RAC_CODEX_BIN`
+overrides it. With neither set, those Codex-only features report unavailable
+rather than spawning a bare `codex` from `PATH`. The **Global settings** flyout
+shows the ChatGPT accounts section only when `adapters.codex` is configured.
+
+The console remembers the last kind launched in each worktree (and in Scratch)
+and offers it first next time; with a single configured kind that is simply that
+kind.
+
+### Legacy worktree launch commands
+
+Before `adapters`, each worktree defined its own `command` (and optional
+`resumeCommand`). When `adapters.codex` is present it wins and these keys are
+ignored with a one-time boot warning; the automatic migration folds them into
+`adapters.codex`. Until a worktree's console is migrated, and only when no
+`adapters` block is present, a worktree still launches through its own
+`command`:
+
+```json
+{ "id": "my-project", "path": "/absolute/path/to/project", "command": "codex", "resumeCommand": "codex resume {threadId} -C ." }
+```
+
+A configured Codex worktree resumes an exact saved chat through its adapter
+(`codex resume <id>`); no extra configuration is required. On the legacy path,
+set `resumeCommand` only to override that composition — for example to pass extra
+flags — and it must contain one `{threadId}` placeholder.
+
+## Worktree options
 
 An optional `newTask` command adds a **New Task** action for a worktree. It
 uses `{taskId}` for an 8-character URL-safe random ID and is enabled only when
@@ -82,9 +119,10 @@ prompt per worktree with `push`:
 { "push": { "label": "Finish and PR", "prompt": "$finish" } }
 ```
 
-Every worktree must define a `command`: the console composes each launch as the
-configured program followed by the adapter's arguments and runs it through the
-operator's interactive shell.
+With `adapters.codex` configured, worktrees launch by kind and need no
+`command`. On the legacy path (no `adapters` block) every worktree must define a
+`command`, which the console runs through the operator's interactive shell after
+appending the adapter's arguments.
 
 ## Shared bookmarks and notes
 

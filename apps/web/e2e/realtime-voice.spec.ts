@@ -58,7 +58,7 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
     // retain the progress state
     if (url.pathname === '/api/server/update/server_update_operation_1234') return route.fulfill({ json: { id: 'server_update_operation_1234', kind: 'update', state: 'running' } });
     // provide one selected worktree and other open worktrees
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, adapters: { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: false, commands: true, sandbox: false } }, agents: [
       { id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready', unread: false },
       { id: 'agent-skills', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/worktrees/skills', worktreeId: 'skills', worktreeLabel: 'Skills', title: 'Ready', unread: false },
       { id: 'agent-ferry', paneId: '%3', sessionId: 'socket:$3', socketFingerprint: 'socket', workspace: '/worktrees/ferry', worktreeId: 'ferry-fyi', worktreeLabel: 'Ferry FYI', title: 'Ready', unread: false },

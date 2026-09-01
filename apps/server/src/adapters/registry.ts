@@ -1,6 +1,6 @@
 import { codexAdapter } from './codex.js';
 import type { Pane } from '../domain/models.js';
-import type { Adapter, AdapterCapability, AgentKind } from './types.js';
+import type { Adapter, AdapterCapability, AdapterConfigs, AgentKind } from './types.js';
 
 /**
  * The closed registry. It is code, not plugins: adding a kind means adding an
@@ -31,18 +31,26 @@ export function paneExcluded(pane: Pane): boolean {
 
 /**
  * The capability record the Dashboard publishes per registered kind (ADR 0002).
- * Every capability but `launchable` is intrinsic to the Adapter; `launchable`
- * becomes config-gated in chunk 2, so for now a registered adapter is launchable
- * (Codex always is).
+ * Every capability but launchability is intrinsic to the Adapter. Launchability is
+ * config-gated: with an `adapters` block a kind is launchable only when its program
+ * is configured and executable (`unavailableReason`/`program` carry the details).
+ * The legacy configuration (no `adapters` block at all) keeps Codex launchable
+ * through its per-worktree `command`, exactly as chunk 1 did.
  */
-export function adapterCapabilities(): Partial<Record<AgentKind, AdapterCapability>> {
-  return Object.fromEntries(adapters.map((adapter) => [adapter.kind, {
-    launchable: true,
-    stateSource: adapter.stateSource,
-    turnCapture: adapter.turns !== undefined,
-    bookmarks: adapter.conversations !== undefined,
-    inlineQuestions: adapter.questions !== undefined,
-    commands: adapter.commands !== undefined,
-    sandbox: adapter.sandbox !== undefined,
-  }]));
+export function adapterCapabilities(configs?: AdapterConfigs): Partial<Record<AgentKind, AdapterCapability>> {
+  const legacy = configs === undefined;
+  return Object.fromEntries(adapters.map((adapter) => {
+    const configured = configs?.[adapter.kind];
+    return [adapter.kind, {
+      launchable: legacy ? true : (configured?.launchable ?? false),
+      ...(configured?.unavailableReason === undefined ? {} : { unavailableReason: configured.unavailableReason }),
+      ...(configured?.program === undefined ? {} : { program: configured.program }),
+      stateSource: adapter.stateSource,
+      turnCapture: adapter.turns !== undefined,
+      bookmarks: adapter.conversations !== undefined,
+      inlineQuestions: adapter.questions !== undefined,
+      commands: adapter.commands !== undefined,
+      sandbox: adapter.sandbox !== undefined,
+    }];
+  }));
 }

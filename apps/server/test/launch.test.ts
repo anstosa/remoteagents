@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const { run } = vi.hoisted(() => ({ run: vi.fn() }));
 vi.mock('../src/tmux/command.js', () => ({ run }));
 
-import { LaunchService, composeCommand, expandCommand, expandHomeCommand, scratchLabel } from '../src/launch/service.js';
+import { LaunchService, composeCommand, composeLaunch, expandCommand, expandHomeCommand, scratchLabel } from '../src/launch/service.js';
 import { hostCommand } from '../src/tmux/interactive-shell.js';
 import { startNamedReplacementSession, worktreeSessionName } from '../src/tmux/session-name.js';
 import type { SocketRef, Worktree } from '../src/domain/models.js';
@@ -102,18 +102,31 @@ describe('LaunchService', () => {
   it('launches a dedicated update advisor in the fixed repository', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
-    const service = new LaunchService({ newAgentCommand: 'codex --dangerously-bypass-approvals-and-sandbox', worktrees: [{ hostPath: '/home/ubuntu/remoteagents' }] } as never);
+    const service = new LaunchService({ adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true } }, worktrees: [{ hostPath: '/home/ubuntu/remoteagents' }] } as never);
 
     await expect(service.launchUpdateAdvisor('/home/ubuntu/remoteagents', '2'.repeat(40))).resolves.toBe(true);
 
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['new-session', '-c', '/home/ubuntu/remoteagents']));
     const command = (run.mock.calls[0]?.[1] as string[]).join(' ');
-    expect(command).toContain('command codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen');
+    expect(command).toContain('/usr/local/bin/codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen');
     expect(command).toContain("export HOME='/home/ubuntu'");
     expect(command).not.toContain("export HOME='/home/ubuntu/remoteagents'");
     expect(command).not.toContain('--sandbox read-only');
     expect(command).not.toContain('--ask-for-approval never');
     expect(run).toHaveBeenLastCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', expect.stringMatching(/^rac-[\w-]+$/u), '@rac_display_label', 'Update Advisor Starting v4 2222222']);
+  });
+
+  it('refuses to launch the update advisor when no Codex binary is configured', async () => {
+    const savedBin = process.env.RAC_CODEX_BIN;
+    delete process.env.RAC_CODEX_BIN;
+    try {
+      // no adapters.codex and no RAC_CODEX_BIN means the advisor's Codex binary is unresolved
+      const service = new LaunchService({ worktrees: [{ hostPath: '/home/ubuntu/remoteagents' }] } as never);
+      await expect(service.launchUpdateAdvisor('/home/ubuntu/remoteagents', '2'.repeat(40))).resolves.toBe(false);
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      if (savedBin !== undefined) process.env.RAC_CODEX_BIN = savedBin;
+    }
   });
 
   it('restores an explicitly configured host PATH before starting a host pane', () => {
@@ -280,8 +293,8 @@ describe('LaunchService', () => {
     const service = new LaunchService({ worktrees: [worktree] } as never, finder, panes as never);
 
     const launch = service.launch('alex');
-    await Promise.resolve();
-    await Promise.resolve();
+    // both scans must start before the slow first socket resolves (20ms); a sequential scan would leave 'second' unstarted
+    await new Promise(resolve => setTimeout(resolve, 5));
     expect(started).toEqual(['first', 'second']);
     await expect(launch).resolves.toBe(true);
     expect(calls[0]).toMatchObject(['paste', 'first', '%1', expect.stringMatching(/^rac-launch-/), 'alex']);
@@ -335,5 +348,54 @@ describe('LaunchService', () => {
 
     expect(panes.pastePrompt).not.toHaveBeenCalled();
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['new-session', '-d', '-s', 'owen', '-c', '/home/ubuntu/owen']));
+  });
+
+  it('composes [program, …adapter args, …operator args] with the merged env as a shell-quoted prefix', () => {
+    // program and args quoted only when unsafe; adapter args precede operator args
+    expect(composeLaunch('/usr/local/bin/codex', ['resume', '--last'], ['--model', 'o3'])).toBe('/usr/local/bin/codex resume --last --model o3');
+    // operator env overlays adapter env; values are single-quoted, embedded quotes escaped
+    expect(composeLaunch('/opt/my agent/bin', [], ['--x'], { A: '1', B: '2' }, { B: 'two', C: "x'y" })).toBe("A=1 B=two C='x'\\''y' '/opt/my agent/bin' --x");
+  });
+
+  it('launches a configured kind through its program, appending operator args and env', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false };
+    const calls: string[][] = [];
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, _buffer: string, command: string) => { calls.push(['paste', pane, command]); return true; }, enter: async () => true };
+    const remembered: Array<[string, string]> = [];
+    const store = { launchProfile: async () => undefined, rememberLaunchProfile: async (key: string, kind: string) => { remembered.push([key, kind]); } };
+    const config = { adapters: { codex: { program: '/usr/local/bin/codex', args: ['--search'], env: { RAC_X: '1' }, launchable: true } }, worktrees: [worktree] };
+    const service = new LaunchService(config as never, { find: async () => [socket] }, panes as never, undefined, store as never);
+
+    await expect(service.launch('cora')).resolves.toBe(true);
+
+    // fresh launch: no adapter mode args, operator's --search appended, env prefixed; the worktree has no `command`
+    expect(calls[0]).toEqual(['paste', '%4', 'RAC_X=1 /usr/local/bin/codex --search']);
+    // the resolved kind is recorded for next time
+    expect(remembered).toEqual([['cora', 'codex']]);
+  });
+
+  it('refuses a requested kind that is not configured or launchable', async () => {
+    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false };
+    const config = { adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true } }, worktrees: [worktree] };
+    const service = new LaunchService(config as never, { find: async () => [] });
+
+    // claude is a known kind but has no configured, registered adapter
+    await expect(service.launch('cora', 'claude')).resolves.toBe(false);
+    // an unlaunchable codex (non-executable program) is refused too
+    const unlaunchable = new LaunchService({ adapters: { codex: { program: '/nope', args: [], env: {}, launchable: false } }, worktrees: [worktree] } as never, { find: async () => [] });
+    await expect(unlaunchable.launch('cora')).resolves.toBe(false);
+  });
+
+  it('prefers the remembered launch profile when more than one kind can launch', async () => {
+    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false };
+    // two configured kinds, but only codex is registered today, so resolution still lands on codex
+    const config = { adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true } }, worktrees: [worktree] };
+    const lookups: string[] = [];
+    const store = { launchProfile: async (key: string) => { lookups.push(key); return undefined; }, rememberLaunchProfile: async () => {} };
+    const service = new LaunchService(config as never, { find: async () => [] }, undefined, undefined, store as never);
+    // with a single launchable kind the store is not even consulted
+    await service.resolveLaunchKind('cora');
+    expect(lookups).toEqual([]);
   });
 });
