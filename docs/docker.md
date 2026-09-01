@@ -36,6 +36,17 @@ Open `http://127.0.0.1:8787`. The starter configuration intentionally has no
 worktrees. Use **New Agent** to launch a scratch agent inside the container.
 Loopback HTTP is local-only; configure canonical HTTPS before remote access.
 
+Upgrading a legacy `worktrees[]` config: the container mounts the repository
+read-write and points `RAC_CONFIG` and `RAC_CONFIG_WRITE_PATH` at the same file,
+so the one-time migration (see [setup.md](./setup.md#migrating-from-worktrees))
+runs and rewrites the config and `.data` stores in place on the first
+`docker compose up`, leaving `*.pre-projects.bak` siblings. Preview it first with
+`pnpm config:check --compose config/remote-agent-console.docker.json`, which maps
+the Compose paths and reports bare program names as resolved at boot inside the
+container. Under the host bridge, set `adapters.codex.program` to an absolute host
+path: a bare name cannot be resolved from inside the container and the migration
+refuses it.
+
 ## Add container-managed Projects
 
 The repository checkout is already mounted at `/workspace`. Declare it, or any

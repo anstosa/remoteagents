@@ -1,6 +1,5 @@
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { applyListenOverrides, validateConfig } from './config/schema.js';
+import { acquireConfig, migrationErrorLines } from './migrations/boot.js';
 import { buildApp } from './app.js';
 import { DiscoveryService } from './discovery/service.js';
 import { TmuxAdapter } from './tmux/adapter.js';
@@ -13,9 +12,12 @@ import { CleanupMonitor } from './cleanup/monitor.js';
 const envFile = new URL('../../../.env', import.meta.url);
 if (existsSync(envFile)) process.loadEnvFile(envFile);
 
-const file = process.env.RAC_CONFIG; if (!file) throw new Error('RAC_CONFIG must point to a server-local configuration file');
-// surface ignored legacy keys and non-executable adapter programs in the boot log
-const config = await validateConfig(applyListenOverrides(JSON.parse(await readFile(file, 'utf8')), process.env), { warn: message => process.stderr.write(`Configuration warning: ${message}\n`) }); const tmux = new TmuxAdapter(); const discovery = new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters); const push = new PushService(); const cleanup = new CleanupService(discovery, undefined, tmux);
+// migrate a legacy config in place, then validate; surface every content or writability
+// problem as `Configuration invalid:` lines and exit, never an unhandled-rejection trace
+const config = await acquireConfig().catch((error: unknown) => {
+  for (const message of migrationErrorLines(error)) process.stderr.write(`Configuration invalid: ${message}\n`);
+  process.exit(1);
+}); const tmux = new TmuxAdapter(); const discovery = new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters); const push = new PushService(); const cleanup = new CleanupService(discovery, undefined, tmux);
 const notificationPollMs = Math.max(1_000, config.pollIntervalMs);
 const notifications = new AgentNotificationCoordinator(notification => push.notify(notification), Math.max(2_000, notificationPollMs * 2));
 const dashboardUpdates = new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews]));

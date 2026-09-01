@@ -209,10 +209,42 @@ Project (scratch agents have none).
 
 ### Migrating from `worktrees[]`
 
-The retired `worktrees[]` key is refused at boot. The automatic config-and-data
-migration converts a legacy configuration and every `.data` store to the
-Projects model on first boot, keeping a one-time backup so the change can be
-reverted.
+Upgrading from a `worktrees[]` configuration is automatic: **start the console
+once.** On the first boot it detects the legacy shape (a `worktrees` array, or a
+`command`/`newAgentCommand`/`launch`/`resumeCommand` key) and, in one eager pass
+driven by the config, rewrites the config to `projects[]` + `adapters.codex` and
+re-keys every `.data` store to the Projects model (notes and bookmarks by
+Project; saved prompts, queued prompts, history, review tours and pins by
+Worktree).
+Each rewritten file — the config included — gets a sibling `*.pre-projects.bak`
+holding the original, so the change is revertable; an existing backup is never
+overwritten. The boot log prints one report of what changed. A config already in
+the new shape runs nothing and reads no data file, so the migration is a
+one-time event.
+
+Preview the plan before you restart with the dry run, which writes nothing:
+
+```sh
+pnpm config:check "$RAC_CONFIG"        # prints the migration plan for a legacy file
+```
+
+If the config lives somewhere the server cannot write at boot — a read-only
+systemd or Docker deployment — run the migration once yourself, as a user who can
+write it, then restart:
+
+```sh
+pnpm config:migrate "$RAC_CONFIG"      # migrates in place without booting
+```
+
+The migration **refuses to boot** with every problem listed and nothing written
+when anything is ambiguous or unwritable — a bare program name that resolves to a
+shell alias or is not on `PATH`, worktree entries that disagree on the launch
+binary, a `launch` template placeholder, both `worktrees` and `projects` present,
+a corrupt `.data` file, or a target the server cannot write. Fix an unwritable
+target by adding its path to the systemd unit's `ReadWritePaths` or mounting it
+read-write under Docker, by moving the config somewhere writable and pointing
+`RAC_CONFIG` at it, or by running `pnpm config:migrate` as above. To undo a
+migration, restore each `*.pre-projects.bak` over its file and restart.
 
 The default server listener is `127.0.0.1:8787`; `/healthz` is loopback-only and reveals only `{ "ok": true }`. Do not put passwords, prompts, session cookies, CSRF tokens, or WebSocket tickets in configuration or logs.
 

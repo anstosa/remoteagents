@@ -229,6 +229,13 @@ their canonical URL; each server publishes its own name and icon through the
 authenticated peer-status API. The login, control, and output screens show one
 direct navigation button for each server.
 
+Upgrading from an older `worktrees[]` configuration is automatic: start the
+console once and it migrates the config and its `.data` stores to Projects,
+leaving `*.pre-projects.bak` backups. Preview the plan with
+`pnpm config:check "$RAC_CONFIG"`, or migrate a read-only config in place with
+`pnpm config:migrate "$RAC_CONFIG"`. See
+[Migrating from `worktrees[]`](docs/setup.md#migrating-from-worktrees).
+
 See [the setup reference](docs/setup.md) for the full security boundary,
 Projects and Worktrees, browser capabilities, and operational checks.
 

@@ -70,6 +70,14 @@ launch descriptors to tmux through `/tmp/remote-agent-console-<uid>`, and
 customize the unit, keep both settings; otherwise starting an agent fails with
 `ENOENT: no such file or directory, mkdir '/tmp/remote-agent-console-<uid>'`.
 
+The one-time `worktrees[]` → Projects migration (see
+[setup.md](./setup.md#migrating-from-worktrees)) rewrites the config file and
+the `.data` stores in place on first boot, so both must be inside
+`ReadWritePaths`. If the config lives outside the repo (a path you point
+`RAC_CONFIG` at), either add its directory to `ReadWritePaths` for that one boot
+or run `pnpm config:migrate "$RAC_CONFIG"` as your user before starting the
+service; the migration refuses to boot rather than start unmigrated.
+
 ## Install the user service
 
 The installer renders absolute paths into the untracked user unit, leaving the
