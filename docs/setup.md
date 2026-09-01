@@ -197,6 +197,38 @@ the tab stands. Refusals (an existing branch name, an unresolvable base, a branc
 already checked out elsewhere, or a target path that exists) are reported before
 git runs.
 
+### Removing Worktrees
+
+**Remove** appears on an idle Worktree's power menu and beside its launcher row.
+It is hidden on the Main worktree and disabled on a git-locked one. It is refused
+(a clear message, never a forced removal) while an Agent or a stack command runs
+in that Worktree. The dialog shows fresh facts read at that moment — the number
+of uncommitted changes, whether the branch is pushed and merged, and how far it
+is ahead of or behind its upstream:
+
+- A tree with uncommitted changes can only be removed after you tick **Discard
+  uncommitted changes**; git is then run with `--force` (never `-f -f`). An
+  unpushed branch is only a warning, never a block.
+- **Also delete branch `<name>`** is off by default, absent on a detached HEAD,
+  and enabled only when the branch is pushed or merged (so nothing is lost). It
+  runs `git branch -D` after the checkout is removed; if that delete fails, the
+  removal still stands and the failure is reported.
+
+Removing a Worktree kills its idle shell, removes the checkout, and deletes its
+console records (pin, last-used kind, queued prompts, prompt history, sleeping
+tab). It never touches the Project-scoped bookmarks and notes its siblings share.
+
+### Pruning stale Worktrees
+
+A checkout whose directory is gone (git calls it *prunable*) is hidden rather
+than shown, and a console record left behind by a checkout git no longer lists is
+kept, never deleted on its own. When either exists, the Project header shows
+**N stale · Prune**. Prune is explicit and per Project: it runs `git worktree
+prune` and deletes the orphaned console records, listing every stale path in the
+confirm first. Under the Docker bridge a host checkout the container does not
+mount can *look* stale from inside the container — the confirm warns you, so
+prune only what you know is truly gone.
+
 ### Shared bookmarks and notes
 
 Chat bookmarks, sticky notes and saved prompts belong to the **Project** and are

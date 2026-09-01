@@ -118,6 +118,12 @@ export class QueuedPromptService {
     return (await this.read())[scope]?.[0];
   }
 
+  // drop every queued prompt for one scope — Remove deletes the Worktree's queue outright
+  async clearScope(scope: string): Promise<void> {
+    if (!validScope(scope)) return;
+    await this.mutate(stored => { delete stored[scope]; });
+  }
+
   private async mutate<T>(change: (stored: StoredQueues) => T | Promise<T>, shouldWrite: (result: T) => boolean = () => true): Promise<T> {
     const operation = this.mutation.then(async () => {
       const stored = structuredClone(await this.read());

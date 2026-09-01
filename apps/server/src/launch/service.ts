@@ -176,6 +176,22 @@ export class LaunchService {
     return undefined;
   }
 
+  // Kill every idle interactive shell sitting exactly in this Worktree — Remove's first
+  // step, so a removed checkout leaves no dangling shell pane behind. Matches the same
+  // panes `existingPane` would reuse (the login shell, cwd exactly the Worktree, never a
+  // `rac-stack-*` session), but every one rather than the first. An agent that adopted the
+  // shell no longer reports the shell command, so a running Agent's pane is never touched.
+  async killWorktreeShells(worktree: Worktree): Promise<void> {
+    const sockets = await this.finder.find();
+    const listed = await Promise.all(sockets.map(async socket => ({ socket, panes: await this.panes.listPanes(socket) })));
+    for (const { socket, panes } of listed) for (const pane of panes) {
+      if (pane.sessionName?.startsWith('rac-stack-')) continue;
+      if (pane.command !== this.hostShellName) continue;
+      if (!await this.paneBelongsTo(worktree, pane.path)) continue;
+      await this.panes.close(socket, pane.paneId).catch(() => false);
+    }
+  }
+
   // does a shell's working directory belong to this worktree by exact git toplevel?
   private async paneBelongsTo(worktree: Worktree, paneCwd: string): Promise<boolean> {
     // a shell already at the worktree root needs no git resolution

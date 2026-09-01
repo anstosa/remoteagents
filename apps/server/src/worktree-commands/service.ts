@@ -65,6 +65,19 @@ export class WorktreeCommandService {
 
   actions(worktree: Worktree): StackAction[] { return stackActions.filter(action => worktree.commands?.[action] !== undefined); }
 
+  // whether an operator-triggered stack operation is running for this Worktree — a Remove
+  // blocker, so nothing is pulled out from under a build/migrate/etc. Only the exclusive
+  // operation session counts; the transient `rac-stack-<token>-<hex>` status probes that fire
+  // on every dashboard build are not operations, so they never spuriously block Remove.
+  // Without the host tmux socket no stack session can exist, so there is nothing to block.
+  async sessionRunning(worktree: Worktree): Promise<boolean> {
+    if (this.socket === undefined) return false;
+    const listed = await this.command(this.tmuxBinary, ['-S', this.socket, 'list-sessions', '-F', '#{session_name}']);
+    if (listed.code !== 0) return false;
+    const prefix = `rac-stack-${worktreeToken(worktree)}-`;
+    return listed.stdout.split('\n').some(name => { const trimmed = name.trim(); return trimmed.startsWith(prefix) && trimmed.endsWith('-exclusive'); });
+  }
+
   async run(worktreeId: string, action: StackAction): Promise<boolean> {
     return await this.start(worktreeId, action) === 'started';
   }

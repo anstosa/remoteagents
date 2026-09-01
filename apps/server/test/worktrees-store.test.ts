@@ -59,6 +59,20 @@ describe('WorktreeLaunchStore', () => {
     await expect(readFile(file, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('lists every stored key and deletes one record outright', async () => {
+    const { store: worktrees } = await store();
+    await worktrees.rememberLaunchProfile(cora, 'codex');
+    await worktrees.setPinned('proj:/worktrees/dana', true);
+    expect((await worktrees.keys()).sort()).toEqual([cora, 'proj:/worktrees/dana']);
+    // Remove deletes the whole record — both the pin and the last-used kind go
+    await worktrees.delete(cora);
+    expect(await worktrees.keys()).toEqual(['proj:/worktrees/dana']);
+    expect(await worktrees.launchProfile(cora)).toBeUndefined();
+    // an unsafe key is a no-op, never a throw
+    await worktrees.delete('has\nnewline');
+    expect(await worktrees.keys()).toEqual(['proj:/worktrees/dana']);
+  });
+
   it('rejects a structurally invalid storage file', async () => {
     const { file, store: worktrees } = await store();
     await writeFile(file, JSON.stringify({ [cora]: { launchProfile: 'nope' } }));

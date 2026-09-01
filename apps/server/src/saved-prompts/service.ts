@@ -91,6 +91,12 @@ export class SavedPromptService {
     }, result => result === 'consumed');
   }
 
+  // drop every saved prompt for one scope — Remove deletes the Worktree's saved prompts
+  async clearScope(agentId: string): Promise<void> {
+    if (!validAgentId(agentId)) return;
+    await this.mutate(stored => { delete stored[agentId]; });
+  }
+
   private async mutate<T>(change: (stored: StoredPrompts) => T | Promise<T>, shouldWrite: (result: T) => boolean = () => true): Promise<T> {
     const operation = this.mutation.then(async () => {
       const stored = await this.read();

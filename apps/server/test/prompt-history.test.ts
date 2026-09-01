@@ -43,6 +43,19 @@ describe('PromptHistoryService', () => {
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
+  it('clears a whole scope when its Worktree is removed', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-clear-prompt-history-'));
+    const file = join(directory, 'history.json');
+    try {
+      const service = new PromptHistoryService(file);
+      await service.record('worktree:cora', 'keep me');
+      await service.record('worktree:dana', 'drop me');
+      await service.clearScope('worktree:dana');
+      expect(await service.list('worktree:dana')).toEqual([]);
+      await expect(new PromptHistoryService(file).list('worktree:cora')).resolves.toHaveLength(1);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
   it('rejects invalid records and invalid persisted history', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-invalid-prompt-history-'));
     const file = join(directory, 'history.json');

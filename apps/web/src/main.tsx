@@ -45,15 +45,24 @@ type AttentionState = 'working' | 'finished' | 'question';
 // Worktree is not present in the payload, absent from the real server.
 type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; projectId?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: InlineQuestion; stack?: Stack; unread?: boolean; queuedPromptCount: number; launch?: LaunchResolution };
 type Worktree = { id: string; projectId: string; label: string; path: string; main: boolean; detached: boolean; locked: boolean; branch?: string; sha?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; sleeping?: boolean; order: number; projectUrl?: string; pullRequest?: PullRequestSummary; stack?: Stack; launch?: LaunchResolution };
-type Project = { id: string; label: string; available: boolean; unavailableReason?: string; manageWorktrees?: boolean; manageWorktreesReason?: string; worktrees: Worktree[] };
+type Project = { id: string; label: string; available: boolean; unavailableReason?: string; manageWorktrees?: boolean; manageWorktreesReason?: string; stalePaths?: string[]; worktrees: Worktree[] };
 // one branch the Add dialog can check out; `remote` marks a remote-only ref git will track
 type BranchOption = { name: string; remote: boolean };
+// the fresh facts the Remove dialog decides with (GET /api/worktrees/:id/removal)
+type RemovalFacts = { main: boolean; detached: boolean; locked: boolean; lockedReason?: string; branch?: string; dirtyCount: number; pushed: boolean; merged: boolean; ahead?: number; behind?: number; blockers: string[] };
 type ReviewTourCapability = { available: true } | { available: false; reason: 'generator_unavailable'|'unsupported_cli'|'configuration_invalid'|'authentication_required' };
 type StoredReviewSummary = { worktreeId: string; branch: string; savedAt: string; title: string; scope: ReviewScope; includeTests: boolean; includeDocs: boolean; fingerprint: string };
 type ReviewButtonState = ReviewTourIndicator & { onOpen: () => void };
 type Dashboard = { generation?: number; serverStartedAt?: number; adapters?: AdapterCapabilities; agents: Agent[]; projects: Project[]; cleanupPending?: number; scratchLaunch?: LaunchResolution; reviewTour?: ReviewTourCapability; reviews?: StoredReviewSummary[] };
 // every Worktree across the dashboard's Projects, flattened for tab and launcher rendering
 const allWorktrees = (dashboard: Pick<Dashboard, 'projects'>): Worktree[] => dashboard.projects.flatMap(project => project.worktrees);
+// why a Worktree's Remove is disabled (git holds a lock, or the container does not mount the
+// Project at its host path), or undefined when it can be removed — shared by the launcher row
+// and the idle tab's power menu so both surface the same reason
+const worktreeRemoveDisabledReason = (worktree: Pick<Worktree, 'locked'>, project: Pick<Project, 'manageWorktrees' | 'manageWorktreesReason'> | undefined): string | undefined =>
+  worktree.locked ? 'Locked worktrees cannot be removed'
+    : project?.manageWorktrees === false ? project.manageWorktreesReason ?? 'This project cannot be managed here.'
+    : undefined;
 // fold pending-handoff placeholder Worktrees back into their Project (a minimal Project is
 // created when the server no longer reports one), so tabs survive a launch/new-task handoff
 const mergeRetainedWorktrees = (projects: Project[], retained: Worktree[]): Project[] => {
@@ -1414,10 +1423,15 @@ class ConsoleBoundary extends Component<{ children: ReactNode }, { failed: boole
 // `restartAs` (active mode only) adds a "Restart as…" item that opens the Launch menu as
 // a second page within the same flyout, restarting the agent under the chosen kind.
 type RestartAs = { label: string; resolution?: LaunchResolution; onLaunch: (choice: LaunchChoice) => void };
-type AgentPowerMenuProps = { pending: boolean; onTurnOff: () => void } & ({ mode: 'active'; onRestart: () => void; onClear: () => void; onSleep: () => void; restartAs?: RestartAs } | { mode: 'sleeping'; onWake: () => void });
+type AgentPowerMenuProps = { pending: boolean } & (
+  { mode: 'active'; onTurnOff: () => void; onRestart: () => void; onClear: () => void; onSleep: () => void; restartAs?: RestartAs }
+  | { mode: 'sleeping'; onTurnOff: () => void; onWake: () => void }
+  // an idle Worktree tab's menu offers only Remove (hidden on Main, disabled with its reason)
+  | { mode: 'idle'; onRemove: () => void; removeDisabledReason?: string }
+);
 // render configured-agent power choices
 function AgentPowerMenu(props: AgentPowerMenuProps) {
-  const { pending, onTurnOff } = props;
+  const { pending } = props;
   const adapters = useContext(AdaptersContext);
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<'root' | 'restart-as'>('root');
@@ -1432,12 +1446,20 @@ function AgentPowerMenu(props: AgentPowerMenuProps) {
   // "Restart as…" only when there is a configured kind to choose (a legacy config with no
   // `adapters` block has none — its Codex still restarts via plain Restart)
   const restartAs = props.mode === 'active' && configuredKinds(adapters).length > 0 ? props.restartAs : undefined;
-  // limit sleeping tabs to wake and shutdown; Restart as… sits between Restart and Clear
+  // limit sleeping tabs to wake and shutdown; Restart as… sits between Restart and Clear; an
+  // idle Worktree tab offers no lifecycle actions, only the Remove at the foot of the menu
   const stateActions = props.mode === 'sleeping'
     ? <button type="button" role="menuitem" onClick={() => choose(props.onWake)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>
-    : <><button type="button" role="menuitem" onClick={() => choose(props.onRestart)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart</button>{restartAs !== undefined && <button type="button" role="menuitem" aria-haspopup="menu" onClick={() => setView('restart-as')}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart as…</button>}<button type="button" role="menuitem" onClick={() => choose(props.onClear)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 15 8-8 5 5-8 8H4v-5Zm7-7 5 5M10 20h10" /></svg>Clear</button><button type="button" role="menuitem" onClick={() => choose(props.onSleep)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg>Sleep</button></>;
+    : props.mode === 'idle'
+      ? null
+      : <><button type="button" role="menuitem" onClick={() => choose(props.onRestart)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart</button>{restartAs !== undefined && <button type="button" role="menuitem" aria-haspopup="menu" onClick={() => setView('restart-as')}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart as…</button>}<button type="button" role="menuitem" onClick={() => choose(props.onClear)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 15 8-8 5 5-8 8H4v-5Zm7-7 5 5M10 20h10" /></svg>Clear</button><button type="button" role="menuitem" onClick={() => choose(props.onSleep)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg>Sleep</button></>;
   const restartAsPage = restartAs === undefined ? null : <LaunchMenu verb="Restart" label={restartAs.label} resolution={restartAs.resolution} onLaunch={choice => choose(() => restartAs.onLaunch(choice))} />;
-  return <><span className="power-menu-wrap" ref={anchorRef}><button className="danger icon-button deactivate-agent" disabled={pending} aria-label="Agent power options" aria-expanded={open} aria-haspopup="menu" title="Agent power options" onClick={() => setOpen(current => !current)}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button></span>{open && <FlyoutPortal onDismiss={() => setOpen(false)}><div className="more-menu flyout-menu agent-power-menu" ref={flyoutRef} style={style} role="menu" aria-label="Agent power options">{view === 'restart-as' && restartAs !== undefined ? restartAsPage : <>{stateActions}<button className="agent-power-off" type="button" role="menuitem" onClick={() => choose(onTurnOff)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>Turn off</button></>}</div></FlyoutPortal>}</>;
+  // the foot of the menu: Remove for an idle Worktree tab, Turn off for a live or sleeping one
+  const footAction = props.mode === 'idle'
+    ? <button className="agent-power-off" type="button" role="menuitem" disabled={props.removeDisabledReason !== undefined} title={props.removeDisabledReason} onClick={() => choose(props.onRemove)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m-7 0v13h8V7" /></svg>Remove worktree</button>
+    : <button className="agent-power-off" type="button" role="menuitem" onClick={() => choose(props.onTurnOff)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>Turn off</button>;
+  const menuLabel = props.mode === 'idle' ? 'Worktree power options' : 'Agent power options';
+  return <><span className="power-menu-wrap" ref={anchorRef}><button className="danger icon-button deactivate-agent" disabled={pending} aria-label={menuLabel} aria-expanded={open} aria-haspopup="menu" title={menuLabel} onClick={() => setOpen(current => !current)}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button></span>{open && <FlyoutPortal onDismiss={() => setOpen(false)}><div className="more-menu flyout-menu agent-power-menu" ref={flyoutRef} style={style} role="menu" aria-label={menuLabel}>{view === 'restart-as' && restartAs !== undefined ? restartAsPage : <>{stateActions}{footAction}</>}</div></FlyoutPortal>}</>;
 }
 
 // render reusable mobile terminal controls
@@ -4615,7 +4637,7 @@ const inactiveWorktreePresentation = (label: string, state: { startingNewTask: b
 };
 
 // render an inactive worktree
-function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOff, onOperationFeedback }: { worktree: Worktree; tabBar: ReactNode; cleanupControl?: ReactNode; onLaunched: (agentId: string, worktree: Worktree, operationKey: string) => void; onTurnedOff: () => Promise<void>; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
+function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOff, onOperationFeedback, onRemove, removeDisabledReason }: { worktree: Worktree; tabBar: ReactNode; cleanupControl?: ReactNode; onLaunched: (agentId: string, worktree: Worktree, operationKey: string) => void; onTurnedOff: () => Promise<void>; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; onRemove?: () => void; removeDisabledReason?: string }) {
   const launchKey = launchOperationKey(worktree.id);
   const restartKey = restartOperationKey(worktree.id);
   const deactivateKey = deactivateOperationKey(worktree.id);
@@ -4709,11 +4731,16 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
       setPendingOperation(deactivateKey, false);
     }
   };
-  // retain the normal left-side power placement
-  const sleepingPowerMenu = sleeping ? <AgentPowerMenu mode="sleeping" pending={!worktree.available || processing} onWake={() => void start()} onTurnOff={() => void turnOff()} /> : null;
+  // retain the normal left-side power placement: a sleeping tab wakes or turns off, an idle
+  // one (never Main) offers Remove, disabled with its reason when git holds a lock
+  const powerMenu = sleeping
+    ? <AgentPowerMenu mode="sleeping" pending={!worktree.available || processing} onWake={() => void start()} onTurnOff={() => void turnOff()} />
+    : onRemove !== undefined
+      ? <AgentPowerMenu mode="idle" pending={processing} onRemove={onRemove} {...(removeDisabledReason === undefined ? {} : { removeDisabledReason })} />
+      : null;
   const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className={`log-loading inactive${sleeping ? ' sleeping' : ''}`} role={processing || sleeping ? 'status' : undefined} aria-label={presentation.ariaLabel}>{processing ? <span className="spinner" /> : sleeping ? <svg className="sleeping-agent-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg> : null}<strong>{presentation.heading}</strong><span>{presentation.detail}</span>{sleeping && !processing && <button className="wake-agent" type="button" disabled={!worktree.available} onClick={() => void start()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>}</div><span className={`status log-status ${processing ? 'connecting' : sleeping ? 'sleeping' : 'inactive'}`}>{presentation.status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeBookmarks.control}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div>;
   const browserPane = projectBrowser.url === undefined || projectBrowser.homeUrl === undefined ? null : <ProjectBrowserPane url={projectBrowser.url} homeUrl={projectBrowser.homeUrl} worktreeId={worktree.id} onNavigate={projectBrowser.navigate} onClose={projectBrowser.close} />;
-  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit worktreeId={worktree.id} output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{filePreview.dialog}<div className={`log-topbar${gitExpanded ? ' expanded' : ''}`}><GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} expanded={gitExpanded} onToggle={() => setGitExpanded(value => !value)} onOpenFile={openGitFile} reviewUnavailable="Launch agent to review" /></div></section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} /><PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions">{sleepingPowerMenu}<span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} />{!sleeping && <LaunchSplitButton label={worktree.label} resolution={worktree.launch} disabled={!worktree.available} pending={processing} onLaunch={choice => void start(choice)} />}</div></section></article>;
+  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit worktreeId={worktree.id} output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{filePreview.dialog}<div className={`log-topbar${gitExpanded ? ' expanded' : ''}`}><GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} expanded={gitExpanded} onToggle={() => setGitExpanded(value => !value)} onOpenFile={openGitFile} reviewUnavailable="Launch agent to review" /></div></section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} /><PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions">{powerMenu}<span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} />{!sleeping && <LaunchSplitButton label={worktree.label} resolution={worktree.launch} disabled={!worktree.available} pending={processing} onLaunch={choice => void start(choice)} />}</div></section></article>;
 }
 
 // render browser notification enrollment
@@ -4814,6 +4841,91 @@ function NewWorktreeDialog({ project, request, onClose, onCreated }: { project: 
   </div></div>, document.body);
 }
 
+// The Remove dialog: fetch the worktree's fresh facts, then let the operator remove it —
+// a dirty tree only behind "Discard uncommitted changes", the branch only when nothing is
+// lost (pushed or merged). A running Agent or stack session is a blocker that refuses it.
+function RemoveWorktreeDialog({ worktree, request, onClose, onRemoved }: { worktree: Worktree; request: (url: string, init?: RequestInit) => Promise<Response>; onClose: () => void; onRemoved: (message: string) => void }) {
+  const [facts, setFacts] = useState<RemovalFacts | undefined>(undefined);
+  const [factsError, setFactsError] = useState<string | undefined>(undefined);
+  const [discard, setDiscard] = useState(false);
+  const [deleteBranch, setDeleteBranch] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/removal`).catch(() => undefined);
+      if (cancelled) return;
+      const payload = response === undefined || !response.ok ? undefined : await response.json().catch(() => undefined) as RemovalFacts | undefined;
+      if (cancelled) return;
+      if (payload === undefined) return setFactsError('Could not load the worktree details.');
+      setFacts(payload);
+    })();
+    return () => { cancelled = true; };
+  }, [worktree.id]);
+  const dirty = (facts?.dirtyCount ?? 0) > 0;
+  const blocked = (facts?.blockers.length ?? 0) > 0;
+  const branchDeletable = facts?.branch !== undefined && (facts.pushed || facts.merged);
+  // the branch checkbox is only meaningful when it would lose nothing
+  const branchDisabledReason = facts?.branch === undefined ? undefined : branchDeletable ? undefined : 'The branch is neither pushed nor merged, so it is kept.';
+  const submit = async () => {
+    setError(undefined);
+    setPending(true);
+    try {
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ discardChanges: discard, deleteBranch: deleteBranch && branchDeletable }) }).catch(() => undefined);
+      if (response === undefined) return setError('Unable to reach the console.');
+      if (!response.ok) return setError(await launchError(response));
+      const payload = await response.json().catch(() => ({})) as { branchDeleted?: boolean; branchDeleteError?: string };
+      onRemoved(payload.branchDeleteError !== undefined ? `${worktree.label} removed, but its branch was not deleted: ${payload.branchDeleteError}` : payload.branchDeleted ? `${worktree.label} and its branch were removed.` : `${worktree.label} was removed.`);
+    } finally { setPending(false); }
+  };
+  const disabled = pending || facts === undefined || blocked || (dirty && !discard);
+  return createPortal(<div className="dialog remove-worktree-dialog" role="dialog" aria-modal="true" aria-labelledby="remove-worktree-title"><div>
+    <header className="remove-worktree-header"><div><h2 id="remove-worktree-title">Remove worktree</h2><p>{worktree.label}</p></div><button className="remove-worktree-close" type="button" aria-label="Close remove worktree" disabled={pending} onClick={onClose}>×</button></header>
+    {factsError !== undefined ? <p className="remove-worktree-error" role="alert">{factsError}</p>
+      : facts === undefined ? <p className="remove-worktree-loading" role="status"><span className="spinner" />Loading worktree details…</p>
+      : <>
+        <ul className="remove-worktree-facts">
+          <li>{dirty ? <strong>{facts.dirtyCount} uncommitted {facts.dirtyCount === 1 ? 'change' : 'changes'}</strong> : 'No uncommitted changes'}</li>
+          <li>{facts.pushed ? 'Pushed to a remote' : 'Not pushed'}{facts.branch === undefined ? '' : facts.merged ? ' · merged' : ' · not merged'}</li>
+          {(facts.ahead !== undefined || facts.behind !== undefined) && <li>{facts.ahead ?? 0} ahead · {facts.behind ?? 0} behind upstream</li>}
+        </ul>
+        {blocked && <p className="remove-worktree-blocked" role="alert">Cannot remove while {facts.blockers.join(' and ')} {facts.blockers.length === 1 ? 'is' : 'are'} running.</p>}
+        {dirty && <label className="remove-worktree-option"><input type="checkbox" checked={discard} disabled={blocked} onChange={event => setDiscard(event.target.checked)} />Discard uncommitted changes</label>}
+        {facts.branch !== undefined && <label className="remove-worktree-option"><input type="checkbox" checked={deleteBranch && branchDeletable} disabled={blocked || !branchDeletable} onChange={event => setDeleteBranch(event.target.checked)} />Also delete branch <code>{facts.branch}</code>{branchDisabledReason !== undefined && <small>{branchDisabledReason}</small>}</label>}
+      </>}
+    {error !== undefined && <p className="remove-worktree-error" role="alert">{error}</p>}
+    <footer className="remove-worktree-actions"><button type="button" className="outline-button" disabled={pending} onClick={onClose}>Cancel</button><button type="button" className="danger" disabled={disabled} onClick={() => void submit()}>{pending ? <><span className="spinner" />Removing…</> : 'Remove worktree'}</button></footer>
+  </div></div>, document.body);
+}
+
+// The Prune confirm: list the stale checkouts (git's prunable entries and the console's
+// orphaned records) by path, warn under the Docker bridge that an unmounted host checkout
+// only looks stale, then clear them all on confirm. Explicit and never automatic (ADR 0003).
+function PruneWorktreesDialog({ project, request, onClose, onPruned }: { project: Project; request: (url: string, init?: RequestInit) => Promise<Response>; onClose: () => void; onPruned: () => void }) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const stale = project.stalePaths ?? [];
+  const prune = async () => {
+    setError(undefined);
+    setPending(true);
+    try {
+      const response = await request(`/api/projects/${encodeURIComponent(project.id)}/worktrees/prune`, { method: 'POST', headers: { 'content-type': 'application/json' } }).catch(() => undefined);
+      if (response === undefined) return setError('Unable to reach the console.');
+      if (!response.ok) return setError(await launchError(response));
+      onPruned();
+    } finally { setPending(false); }
+  };
+  return createPortal(<div className="dialog prune-dialog" role="dialog" aria-modal="true" aria-labelledby="prune-title"><div>
+    <header className="prune-header"><div><h2 id="prune-title">Prune worktrees</h2><p>{project.label}</p></div><button className="prune-close" type="button" aria-label="Close prune" disabled={pending} onClick={onClose}>×</button></header>
+    <p>Clear {stale.length} stale {stale.length === 1 ? 'checkout' : 'checkouts'} — git's prunable entries and the console's orphaned records.</p>
+    <ul className="prune-paths">{stale.map(path => <li key={path}><code>{path}</code></li>)}</ul>
+    <p className="prune-warning" role="note">A host checkout the container does not mount can look stale from inside the container — prune only what you know is gone.</p>
+    {error !== undefined && <p className="prune-error" role="alert">{error}</p>}
+    <footer className="prune-actions"><button type="button" className="outline-button" disabled={pending} onClick={onClose}>Cancel</button><button type="button" className="danger" disabled={pending || stale.length === 0} onClick={() => void prune()}>{pending ? <><span className="spinner" />Pruning…</> : 'Prune'}</button></footer>
+  </div></div>, document.body);
+}
+
 // render the active console dashboard
 function DashboardView({ onUnauthorized, onInactive, updateControl, updateError }: { onUnauthorized: () => void; onInactive: () => void; updateControl?: UpdateControl; updateError?: string }) {
   const serverInfo = useContext(ServerContext) ?? fallbackServerInfo();
@@ -4856,6 +4968,9 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
   const [activateWorktreeId, setActivateWorktreeId] = useState<string>();
   // the Project whose "New worktree…" dialog is open, if any
   const [newWorktreeProjectId, setNewWorktreeProjectId] = useState<string>();
+  // the Worktree whose Remove dialog is open, and the Project whose Prune confirm is open
+  const [removeWorktreeId, setRemoveWorktreeId] = useState<string>();
+  const [pruneProjectId, setPruneProjectId] = useState<string>();
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [cleanupTargets, setCleanupTargets] = useState<CleanupTarget[]>([]);
   const [cleanupChecked, setCleanupChecked] = useState<Set<string>>(() => new Set());
@@ -5421,6 +5536,20 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
     if (result.launchError !== undefined) showOperationFeedback({ tone: 'error', message: 'Worktree created, agent did not start', detail: result.launchError });
     else showOperationFeedback({ tone: 'success', message: 'Worktree created', detail: result.agentId === undefined ? 'The new worktree is ready.' : 'The new agent session is ready and its output is connecting.' });
   };
+  // a worktree just removed from a tab or the launcher: close everything and refresh
+  const worktreeRemoved = async (message: string) => {
+    setRemoveWorktreeId(undefined);
+    setLauncherOpen(false);
+    await refresh();
+    showOperationFeedback({ tone: 'success', message: 'Worktree removed', detail: message });
+  };
+  // stale checkouts and records just pruned for one Project
+  const worktreesPruned = async () => {
+    setPruneProjectId(undefined);
+    setLauncherOpen(false);
+    await refresh();
+    showOperationFeedback({ tone: 'success', message: 'Worktrees pruned', detail: 'Stale checkouts and orphaned records were cleared.' });
+  };
   // open a cached review or replace it with a new scope
   const launchReview = (launch: ReviewLaunch) => {
     const cached = reviewLaunch?.worktreeId === launch.worktreeId && reviewLaunch.scope === launch.scope;
@@ -5481,6 +5610,8 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
   const activeWorktreeId = item?.agent?.worktreeId ?? item?.worktree?.id;
   // the discovered Worktree behind the active agent tab, for its pin toggle
   const activeWorktree = item?.agent?.worktreeId === undefined ? undefined : worktrees.find(worktree => worktree.id === item.agent!.worktreeId);
+  // the Project owning the active tab's Worktree, so an idle tab gates Remove on manageability
+  const activeProject = data.projects.find(project => project.id === (item?.worktree?.projectId ?? item?.agent?.projectId));
   const voiceContext = { server: serverInfo.name, serverUrl: serverInfo.url, openWorktrees: otherOpenWorktrees(data.agents, activeWorktreeId, worktreeLabelById), ...(activeWorktreeId === undefined ? {} : { worktreeId: activeWorktreeId, worktree: worktrees.find(worktree => worktree.id === activeWorktreeId)?.label ?? item?.agent?.worktreeLabel ?? (item?.agent === undefined ? activeWorktreeId : agentLabel(item.agent)) }), ...(item?.agent === undefined ? {} : { agentId: item.agent.id, agent: activeWorktree?.label ?? item.agent.worktreeLabel ?? agentLabel(item.agent) }) };
   const voiceDialog = <VoiceDialog open={voiceOpen} callRequest={voiceCallRequest} context={voiceContext} request={request} onClose={closeVoice} onSelectWorktree={selectVoiceWorktree} onActiveChange={setVoiceActive} />;
   const visibleOperationFeedback = operationFeedback?.worktreeId === undefined || operationFeedback.worktreeId === activeWorktreeId ? operationFeedback : undefined;
@@ -5507,6 +5638,11 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
   };
   const newWorktreeProject = newWorktreeProjectId === undefined ? undefined : data.projects.find(project => project.id === newWorktreeProjectId);
   const newWorktreeDialog = newWorktreeProject === undefined ? null : <NewWorktreeDialog project={newWorktreeProject} request={request} onClose={() => setNewWorktreeProjectId(undefined)} onCreated={result => void worktreeCreated(result)} />;
+  const removeWorktreeTarget = removeWorktreeId === undefined ? undefined : allWorktrees(data).find(worktree => worktree.id === removeWorktreeId);
+  const removeWorktreeDialog = removeWorktreeTarget === undefined ? null : <RemoveWorktreeDialog worktree={removeWorktreeTarget} request={request} onClose={() => setRemoveWorktreeId(undefined)} onRemoved={message => void worktreeRemoved(message)} />;
+  const pruneProject = pruneProjectId === undefined ? undefined : data.projects.find(project => project.id === pruneProjectId);
+  const pruneDialog = pruneProject === undefined ? null : <PruneWorktreesDialog project={pruneProject} request={request} onClose={() => setPruneProjectId(undefined)} onPruned={() => void worktreesPruned()} />;
+  const worktreeManagementDialogs = <>{newWorktreeDialog}{removeWorktreeDialog}{pruneDialog}</>;
   const reviewDialog = reviewLaunch === undefined ? null : <ReviewTourDialog key={`${reviewLaunch.worktreeId}:${reviewLaunch.scope}:${reviewInitialTour?.fingerprint ?? 'generated'}`} launch={reviewLaunch} request={request} minimized={reviewMinimized} initialTour={reviewInitialTour} onMinimize={minimizeReview} onDismiss={dismissReview} onIndicatorChange={setReviewIndicator} onReady={notifyReviewReady} />;
   const storedReview = item?.agent?.worktreeId === undefined ? undefined : data.reviews?.find(review => review.worktreeId === item.agent!.worktreeId);
   const localReview = item?.agent?.worktreeId !== undefined && item.agent.worktreeId === reviewLaunch?.worktreeId;
@@ -5515,12 +5651,12 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
     const transition = dashboardOperationLabel(entry.operation);
     const label = transition ?? stateLabel[entry.state];
     return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{entry.agent?.kind !== undefined && <LaunchTabBadge kind={entry.agent.kind} sandboxed={entry.agent.sandboxed} />}{entry.worktree?.locked === true && <span className="tab-git-lock" aria-hidden="true" title="Git has locked this worktree">🔒</span>}{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
-  })}<NotificationControl />{updateControl !== undefined && <button className="update-ready" type="button" onClick={updateControl.onClick}>{updateControl.label} <span>{updateControl.action}</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label">~ Scratch</span><LaunchSplitButton label="~ Scratch" resolution={data.scratchLaunch} compact inline disabled={creatingAgent} onLaunch={choice => void createAgent(choice)} /></div>{data.projects.map(project => { const idle = project.worktrees.filter(worktree => !data.agents.some(agent => agent.worktreeId === worktree.id)); return <div key={project.id} className="launcher-project" role="group" aria-label={project.label}><div className="launcher-project-header"><span>{project.label}</span><button type="button" className="launcher-new-worktree" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setNewWorktreeProjectId(project.id)}>+ New worktree…</button></div>{idle.map(worktree => <div key={worktree.id} className="launcher-row"><span className="launcher-row-label">{worktree.label}</span><button type="button" className={`launcher-pin${worktree.pinned ? ' pinned' : ''}`} aria-pressed={worktree.pinned} aria-label={`${worktree.pinned ? 'Unpin' : 'Pin'} ${worktree.label}`} onClick={() => void togglePin(worktree)}>{worktree.pinned ? 'Pinned' : 'Pin'}</button>{worktree.sleeping === true
+  })}<NotificationControl />{updateControl !== undefined && <button className="update-ready" type="button" onClick={updateControl.onClick}>{updateControl.label} <span>{updateControl.action}</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label">~ Scratch</span><LaunchSplitButton label="~ Scratch" resolution={data.scratchLaunch} compact inline disabled={creatingAgent} onLaunch={choice => void createAgent(choice)} /></div>{data.projects.map(project => { const idle = project.worktrees.filter(worktree => !data.agents.some(agent => agent.worktreeId === worktree.id)); return <div key={project.id} className="launcher-project" role="group" aria-label={project.label}><div className="launcher-project-header"><span>{project.label}</span>{(project.stalePaths?.length ?? 0) > 0 && <button type="button" className="launcher-prune" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setPruneProjectId(project.id)}>{project.stalePaths!.length} stale · Prune</button>}<button type="button" className="launcher-new-worktree" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setNewWorktreeProjectId(project.id)}>+ New worktree…</button></div>{idle.map(worktree => <div key={worktree.id} className="launcher-row"><span className="launcher-row-label">{worktree.label}</span><button type="button" className={`launcher-pin${worktree.pinned ? ' pinned' : ''}`} aria-pressed={worktree.pinned} aria-label={`${worktree.pinned ? 'Unpin' : 'Pin'} ${worktree.label}`} onClick={() => void togglePin(worktree)}>{worktree.pinned ? 'Pinned' : 'Pin'}</button>{!worktree.main && <button type="button" className="launcher-remove" disabled={creatingAgent || worktreeRemoveDisabledReason(worktree, project) !== undefined} aria-label={`Remove ${worktree.label}`} title={worktreeRemoveDisabledReason(worktree, project)} onClick={() => setRemoveWorktreeId(worktree.id)}>Remove</button>}{worktree.sleeping === true
         ? <button type="button" className="launch-compact" disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onClick={() => void launchWorktree(worktree)}>Wake up</button>
         : <LaunchSplitButton label={worktree.label} resolution={worktree.launch} compact inline disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onLaunch={choice => void launchWorktree(worktree, choice)} />}</div>)}</div>; })}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
   const consoleClass = `console${voiceOpen ? ' voice-visible' : ''}`;
-  if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{newWorktreeDialog}{reviewDialog}</article></main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
-  return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} {...(activeWorktree === undefined ? {} : { pinned: activeWorktree.pinned, onTogglePin: () => void togglePin(activeWorktree), worktreeLabel: activeWorktree.label })} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{newWorktreeDialog}{reviewDialog}</main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
+  if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
+  return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} {...(activeWorktree === undefined ? {} : { pinned: activeWorktree.pinned, onTogglePin: () => void togglePin(activeWorktree), worktreeLabel: activeWorktree.label })} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
 }
 
 // coordinate console session and update lifecycle

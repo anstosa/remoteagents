@@ -8,7 +8,7 @@ import { ProcInspector, type ProcessInspector } from './processes.js';
 import { PullRequestService } from '../pull-requests/service.js';
 import { parseReportedAttention, resolveAttention } from '../adapters/attention.js';
 import { adapterCapabilities, adapterFor, paneExcluded } from '../adapters/registry.js';
-import { worktreeMatchesWorkspace, worktreeWireId } from '../workspaces/resolver.js';
+import { projectIdOf, worktreeMatchesWorkspace, worktreePathOf, worktreeWireId } from '../workspaces/resolver.js';
 import { gitCommonDir, listWorktrees, type WorktreeEntry } from '../git/worktrees.js';
 import { worktreeManagementAvailability } from '../worktrees/management.js';
 import type { WorktreeLaunchStore } from '../worktrees/store.js';
@@ -317,6 +317,9 @@ export class DiscoveryService {
   private dashboardSnapshot?: { refreshedAt: number; value: Dashboard };
   private dashboardRefreshInFlight?: Promise<Dashboard>;
   private worktreeSnapshot: Worktree[] = [];
+  // the Prune-eligible checkout paths per Project (git's prunable entries plus console
+  // records git lists nowhere), published atomically with the worktree snapshot (ADR 0003)
+  private staleSnapshot = new Map<string, string[]>();
   private worktreesRefreshedAt = 0;
   private worktreesRefreshInFlight?: Promise<Worktree[]>;
   // bumped by invalidateWorktrees(); a scan that began under an older epoch read stale pins
@@ -330,7 +333,7 @@ export class DiscoveryService {
   private readonly commonDirCache = new Map<string, string | null>();
   private static readonly refreshCacheMs = 2_000;
   private static readonly gitMetadataCacheMs = 30_000;
-  constructor(private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly tmux = new TmuxAdapter(), private readonly processes: ProcessInspector = new ProcInspector(), private readonly pullRequests = new PullRequestService(), private readonly adapters?: AdapterConfigs, private readonly projects: Project[] = [], private readonly pinStore?: Pick<WorktreeLaunchStore, 'pins'>, private readonly listWorktreesImpl: (path: string) => Promise<WorktreeEntry[] | undefined> = listWorktrees) {}
+  constructor(private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly tmux = new TmuxAdapter(), private readonly processes: ProcessInspector = new ProcInspector(), private readonly pullRequests = new PullRequestService(), private readonly adapters?: AdapterConfigs, private readonly projects: Project[] = [], private readonly pinStore?: Pick<WorktreeLaunchStore, 'pins'> & Partial<Pick<WorktreeLaunchStore, 'keys'>>, private readonly listWorktreesImpl: (path: string) => Promise<WorktreeEntry[] | undefined> = listWorktrees) {}
   // reuse socket discovery across adjacent requests
   private async sockets(force = false): Promise<SocketRef[]> {
     // serve the recent socket snapshot
@@ -469,11 +472,12 @@ export class DiscoveryService {
     // so a scan that started under the old pins can never satisfy it
     if (!force && this.worktreesRefreshInFlight !== undefined && this.worktreesInFlightEpoch === this.worktreesEpoch) return this.worktreesRefreshInFlight;
     const epoch = this.worktreesEpoch;
-    const refresh = this.discoverWorktrees().then(worktrees => {
+    const refresh = this.discoverWorktrees().then(({ worktrees, stale }) => {
       // publish only when this is still the newest scan and no invalidation raced it, so a
       // stale scan's completion never re-stamps the cache over a fresher pin/worktree set
       if (this.worktreesRefreshInFlight === refresh && this.worktreesEpoch === epoch) {
         this.worktreeSnapshot = worktrees;
+        this.staleSnapshot = stale;
         this.worktreesRefreshedAt = Date.now();
       }
       return worktrees;
@@ -492,15 +496,28 @@ export class DiscoveryService {
   // any scan already in flight (which read the old pins) stale, so it cannot re-stamp the cache.
   invalidateWorktrees(): void { this.worktreesRefreshedAt = 0; this.worktreesEpoch += 1; this.dashboardSnapshot = undefined; }
 
-  private async discoverWorktrees(): Promise<Worktree[]> {
+  private async discoverWorktrees(): Promise<{ worktrees: Worktree[]; stale: Map<string, string[]> }> {
     const pins = (await this.pinStore?.pins()) ?? {};
+    // every stored key, so a worktree key git lists nowhere counts as an orphaned record
+    const storeKeys = (await this.pinStore?.keys?.()) ?? [];
     const worktrees: Worktree[] = [];
+    const stale = new Map<string, string[]>();
     for (const project of this.projects) {
       if (!project.available) continue;
       const entries = await this.listWorktreesImpl(project.path);
       if (entries === undefined) continue;
       // git lists the Main worktree first; a bare repository lists its bare entry first
       const mainPath = entries[0] !== undefined && !entries[0].bare ? await realpath(entries[0].path).catch(() => entries[0]!.path) : undefined;
+      // every path git lists (prunable included), so a record matching a prunable checkout
+      // is counted once (as a prunable entry) rather than again as an orphaned record
+      const listedPaths = new Set(await Promise.all(entries.filter(entry => !entry.bare).map(entry => realpath(entry.path).catch(() => entry.path))));
+      const stalePaths = [...await Promise.all(entries.filter(entry => !entry.bare && entry.prunable).map(entry => realpath(entry.path).catch(() => entry.path)))];
+      for (const key of storeKeys) {
+        if (projectIdOf(key) !== project.id) continue;
+        const recordPath = worktreePathOf(key);
+        if (recordPath !== undefined && !listedPaths.has(recordPath)) stalePaths.push(recordPath);
+      }
+      if (stalePaths.length > 0) stale.set(project.id, stalePaths);
       const usable: Worktree[] = [];
       for (const entry of entries) {
         // a bare entry is never a Worktree; a stale (prunable) one is hidden and kept
@@ -514,6 +531,7 @@ export class DiscoveryService {
           id, projectId: project.id, label, path, identity: path,
           ...(main && project.hostPath !== undefined ? { hostPath: project.hostPath } : {}),
           available: true, pinned: pins[id] ?? main, main, detached: entry.detached, locked: entry.locked,
+          ...(entry.locked && entry.lockedReason !== undefined ? { lockedReason: entry.lockedReason } : {}),
           ...(entry.branch === undefined ? {} : { branch: entry.branch }),
           ...(entry.detached && sha !== undefined ? { sha } : {}),
           ...(project.commands === undefined ? {} : { commands: project.commands }),
@@ -530,7 +548,7 @@ export class DiscoveryService {
       });
       worktrees.push(...usable);
     }
-    return worktrees;
+    return { worktrees, stale };
   }
 
   // build or reuse one dashboard view
@@ -615,7 +633,7 @@ export class DiscoveryService {
     for (const view of worktreeViews) { const list = byProject.get(view.projectId) ?? []; list.push(view); byProject.set(view.projectId, list); }
     const projects: DashboardProject[] = this.projects.map(project => {
       const management = worktreeManagementAvailability(project);
-      return { id: project.id, label: project.label, available: project.available, ...(project.unavailableReason === undefined ? {} : { unavailableReason: project.unavailableReason }), manageWorktrees: management.available, ...(management.reason === undefined ? {} : { manageWorktreesReason: management.reason }), worktrees: byProject.get(project.id) ?? [] };
+      return { id: project.id, label: project.label, available: project.available, ...(project.unavailableReason === undefined ? {} : { unavailableReason: project.unavailableReason }), manageWorktrees: management.available, ...(management.reason === undefined ? {} : { manageWorktreesReason: management.reason }), stalePaths: this.staleSnapshot.get(project.id) ?? [], worktrees: byProject.get(project.id) ?? [] };
     });
     return { generation: this.generation, serverStartedAt: this.serverStartedAt, adapters: adapterCapabilities(this.adapters), agents, projects };
   }

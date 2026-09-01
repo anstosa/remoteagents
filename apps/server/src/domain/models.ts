@@ -34,7 +34,7 @@ export type Project = { id: string; label: string; path: string; identity: strin
  * Project-wide `commands`/`newTask`/`push`/`projectUrl`/`projectPort` are copied on
  * so the worktree-scoped services keep reading them from the Worktree.
  */
-export type Worktree = { id: string; projectId: string; label: string; path: string; identity: string; hostPath?: string; available: boolean; pinned: boolean; main: boolean; detached: boolean; locked: boolean; branch?: string; sha?: string; commands?: StackCommands; newTask?: string; push?: PromptAction; projectUrl?: string; projectPort?: number };
+export type Worktree = { id: string; projectId: string; label: string; path: string; identity: string; hostPath?: string; available: boolean; pinned: boolean; main: boolean; detached: boolean; locked: boolean; lockedReason?: string; branch?: string; sha?: string; commands?: StackCommands; newTask?: string; push?: PromptAction; projectUrl?: string; projectPort?: number };
 export type CleanupTargetKind = 'orphan-worker' | 'stale-agent' | 'hud-pane' | 'hud-process';
 export type CleanupTarget = { id: string; kind: CleanupTargetKind; label: string; detail: string };
 /**
@@ -47,5 +47,8 @@ export type DashboardWorktree = { id: string; projectId: string; label: string; 
 // `manageWorktrees` (with a reason when false) gates the Add/Remove/Prune controls: a
 // Project whose checkout is missing, or which the Docker bridge does not mount at its
 // host path, cannot have Worktrees created or removed even when its Worktrees still show.
-export type DashboardProject = { id: string; label: string; available: boolean; unavailableReason?: string; manageWorktrees: boolean; manageWorktreesReason?: string; worktrees: DashboardWorktree[] };
+// `stalePaths` are the checkouts an explicit Prune would clear (git's prunable entries plus
+// console records whose path git lists nowhere, ADR 0003); the Project header shows their
+// count as `N stale · Prune` and the confirm lists them by path. Empty when nothing is stale.
+export type DashboardProject = { id: string; label: string; available: boolean; unavailableReason?: string; manageWorktrees: boolean; manageWorktreesReason?: string; stalePaths: string[]; worktrees: DashboardWorktree[] };
 export type Dashboard = { generation: number; serverStartedAt?: number; adapters: Partial<Record<AgentKind, AdapterCapability>>; agents: Agent[]; projects: DashboardProject[] };

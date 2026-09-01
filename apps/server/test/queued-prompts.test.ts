@@ -34,6 +34,20 @@ describe('QueuedPromptService', () => {
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
+  it('clears a whole scope when its Worktree is removed', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-clear-queued-prompts-'));
+    const file = join(directory, 'queue.json');
+    try {
+      const service = new QueuedPromptService(file);
+      await service.enqueue('proj:/wts/cora', 'keep me');
+      await service.enqueue('proj:/wts/dana', 'drop me');
+      await service.clearScope('proj:/wts/dana');
+      expect(await service.list('proj:/wts/dana')).toEqual([]);
+      // a sibling scope is untouched, and the change is durable
+      await expect(new QueuedPromptService(file).list('proj:/wts/cora')).resolves.toHaveLength(1);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
   it('only removes a queued prompt after its consumer succeeds', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-consume-queued-prompts-'));
     const file = join(directory, 'queue.json');

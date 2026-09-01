@@ -1,6 +1,6 @@
 import { access, mkdir, realpath } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
-import type { Project } from '../domain/models.js';
+import type { Project, Worktree } from '../domain/models.js';
 import { run } from '../tmux/command.js';
 
 /**
@@ -20,6 +20,30 @@ export type BranchOption = { name: string; remote: boolean };
 export type BranchesResult = { ok: true; branches: BranchOption[]; defaultBranch?: string } | { ok: false; status: number; error: string };
 export type AddInput = { mode: 'new' | 'existing'; branch: string; base?: string };
 export type AddResult = { ok: true; path: string } | { ok: false; status: number; error: string };
+
+/**
+ * The fresh facts the Remove dialog decides with (ADR 0003): the structural flags from
+ * the discovered Worktree (`main`, `detached`, `locked`, `branch`) plus git state read
+ * live at request time — `dirtyCount` counts untracked files, `pushed` is true when HEAD
+ * is contained in an `origin/*` ref or its upstream is gone, `merged` when HEAD is an
+ * ancestor of the Project's default branch, and `ahead`/`behind` come from the upstream.
+ */
+export type RemovalFacts = {
+  main: boolean;
+  detached: boolean;
+  locked: boolean;
+  lockedReason?: string;
+  branch?: string;
+  dirtyCount: number;
+  pushed: boolean;
+  merged: boolean;
+  ahead?: number;
+  behind?: number;
+};
+export type RemovalResult = { ok: true; facts: RemovalFacts } | { ok: false; status: number; error: string };
+export type RemoveOutcome = { ok: true } | { ok: false; status: number; error: string };
+export type BranchDeleteOutcome = { ok: true } | { ok: false; error: string };
+export type PruneOutcome = { ok: true } | { ok: false; status: number; error: string };
 
 /**
  * Whether the console may create or remove Worktrees in this Project. A missing or
@@ -151,6 +175,118 @@ export class WorktreeManagementService {
     const created = await this.git(args, addTimeoutMs);
     if (created.code !== 0) return { ok: false, status: 409, error: (created.stderr.trim() || 'git worktree add failed') };
     return { ok: true, path: await realpath(path).catch(() => path) };
+  }
+
+  // the fresh Remove-dialog facts for one discovered Worktree: its structural flags plus
+  // git state read live (never the discovery cache). A 404/409 mirrors add's guards.
+  async removal(worktree: Worktree): Promise<RemovalResult> {
+    const project = this.project(worktree.projectId);
+    if (project === undefined) return { ok: false, status: 404, error: 'project unavailable' };
+    const availability = worktreeManagementAvailability(project);
+    if (!availability.available) return { ok: false, status: 409, error: availability.reason! };
+    const [dirtyCount, pushed, merged, tracking] = await Promise.all([
+      this.dirtyCount(worktree.path),
+      this.pushed(worktree.path, worktree.branch),
+      this.merged(worktree.path, project.path),
+      this.aheadBehind(worktree.path)
+    ]);
+    const facts: RemovalFacts = {
+      main: worktree.main, detached: worktree.detached, locked: worktree.locked,
+      // the lock reason comes from the discovered record (git already parsed it); it is
+      // structural and changes rarely, so it is sourced consistently with `locked` itself
+      ...(worktree.lockedReason === undefined ? {} : { lockedReason: worktree.lockedReason }),
+      ...(worktree.branch === undefined ? {} : { branch: worktree.branch }),
+      dirtyCount, pushed, merged,
+      ...(tracking === undefined ? {} : tracking)
+    };
+    return { ok: true, facts };
+  }
+
+  // run `git worktree remove [--force] <path>` from the Project's checkout. Refused on the
+  // Main worktree and on a locked one (never `-f -f`); `--force` is the caller's decision,
+  // set only when the operator ticked "Discard uncommitted changes". Serialized per Project
+  // so it never races a concurrent add. git's trimmed stderr is the backstop error text.
+  async removeCheckout(worktree: Worktree, options: { force: boolean }): Promise<RemoveOutcome> {
+    const project = this.project(worktree.projectId);
+    if (project === undefined) return { ok: false, status: 404, error: 'project unavailable' };
+    const availability = worktreeManagementAvailability(project);
+    if (!availability.available) return { ok: false, status: 409, error: availability.reason! };
+    if (worktree.main) return { ok: false, status: 409, error: 'the main worktree cannot be removed' };
+    if (worktree.locked) return { ok: false, status: 409, error: 'Locked worktrees cannot be removed' };
+    return await this.serialize(project.id, async () => {
+      const args = ['-C', project.path, 'worktree', 'remove', ...(options.force ? ['--force'] : []), worktree.path];
+      const removed = await this.git(args);
+      return removed.code !== 0 ? { ok: false as const, status: 409, error: (removed.stderr.trim() || 'git worktree remove failed') } : { ok: true as const };
+    });
+  }
+
+  // force-delete the Worktree's branch (`git branch -D`) after a successful removal. The
+  // caller only reaches here when the branch is pushed or merged (nothing is lost); its
+  // failure is reported and never undoes the removal, so it returns a plain error string.
+  async deleteBranch(worktree: Worktree, branch: string): Promise<BranchDeleteOutcome> {
+    const project = this.project(worktree.projectId);
+    if (project === undefined) return { ok: false, error: 'project unavailable' };
+    // a name beginning with `-` would be read as a flag; a real branch name never does
+    if (branch.startsWith('-')) return { ok: false, error: `\`${branch}\` is not a valid branch name` };
+    return await this.serialize(project.id, async () => {
+      const deleted = await this.git(['-C', project.path, 'branch', '-D', branch]);
+      return deleted.code !== 0 ? { ok: false as const, error: (deleted.stderr.trim() || 'git branch delete failed') } : { ok: true as const };
+    });
+  }
+
+  // run `git worktree prune`, clearing git's prunable entries. The console's own orphaned
+  // records are deleted by the caller (they are outside git). Serialized per Project.
+  async prune(projectId: string): Promise<PruneOutcome> {
+    const project = this.project(projectId);
+    if (project === undefined) return { ok: false, status: 404, error: 'project unavailable' };
+    const availability = worktreeManagementAvailability(project);
+    if (!availability.available) return { ok: false, status: 409, error: availability.reason! };
+    return await this.serialize(project.id, async () => {
+      const pruned = await this.git(['-C', project.path, 'worktree', 'prune']);
+      return pruned.code !== 0 ? { ok: false as const, status: 409, error: (pruned.stderr.trim() || 'git worktree prune failed') } : { ok: true as const };
+    });
+  }
+
+  // the number of changed paths in the worktree, untracked included
+  private async dirtyCount(path: string): Promise<number> {
+    const status = await this.git(['-C', path, 'status', '--porcelain', '--untracked-files=all']);
+    return status.code !== 0 ? 0 : status.stdout.split('\n').filter(line => line.trim() !== '').length;
+  }
+
+  // whether HEAD is safely on the remote: contained in an `origin/*` ref, or the branch's
+  // upstream is gone (deleted on the remote, as after a squash-merge)
+  private async pushed(path: string, branch?: string): Promise<boolean> {
+    const contained = await this.git(['-C', path, 'branch', '-r', '--contains', 'HEAD', '--list', 'origin/*']);
+    if (contained.code === 0 && contained.stdout.split('\n').some(line => line.trim() !== '' && !line.includes('->'))) return true;
+    // a branch whose upstream was deleted on the remote (e.g. after a squash-merge) was still
+    // pushed; git marks it `[gone]` in the upstream track field. `@{upstream}` itself no longer
+    // resolves in that state, so read the branch's track field rather than rev-parse it.
+    if (branch === undefined) return false;
+    const track = await this.git(['-C', path, 'for-each-ref', '--format=%(upstream:track)', `refs/heads/${branch}`]);
+    return track.code === 0 && track.stdout.includes('[gone]');
+  }
+
+  // whether HEAD is an ancestor of the Project's default branch, i.e. the worktree's work is
+  // already merged — true if it is contained in either the remote default (`origin/<default>`)
+  // or the local one (merged locally but not yet pushed still means nothing is lost)
+  private async merged(path: string, mainPath: string): Promise<boolean> {
+    const branch = await this.defaultBranch(mainPath);
+    if (branch === undefined) return false;
+    for (const ref of [`origin/${branch}`, branch]) {
+      // code 0 = contained; code 1 = ref resolved but HEAD not merged there; other = missing
+      // ref. A missing-or-unmerged remote default still checks the local one before giving up.
+      if ((await this.git(['-C', path, 'merge-base', '--is-ancestor', 'HEAD', ref])).code === 0) return true;
+    }
+    return false;
+  }
+
+  // HEAD's divergence from its configured upstream, or undefined when there is none
+  private async aheadBehind(path: string): Promise<{ ahead: number; behind: number } | undefined> {
+    const counts = await this.git(['-C', path, 'rev-list', '--left-right', '--count', 'HEAD...@{upstream}']);
+    const match = counts.code === 0 ? /^(\d+)\s+(\d+)$/u.exec(counts.stdout.trim()) : null;
+    if (match === null) return undefined;
+    const ahead = Number(match[1]); const behind = Number(match[2]);
+    return Number.isSafeInteger(ahead) && Number.isSafeInteger(behind) ? { ahead, behind } : undefined;
   }
 
   private async refFormatValid(branch: string): Promise<boolean> {

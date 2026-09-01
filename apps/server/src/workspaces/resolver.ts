@@ -23,6 +23,14 @@ export function projectIdOf(worktreeKey: string): string {
   return colon === -1 ? worktreeKey : worktreeKey.slice(0, colon);
 }
 
+// the realpath embedded in a Worktree wire id `<projectId>:<realpath>` (ADR 0003), or
+// undefined for a key with no `:` (a bare `<projectId>` scope or the `scratch` group). The
+// counterpart to `projectIdOf`, so the wire-id format stays owned by this module.
+export function worktreePathOf(worktreeKey: string): string | undefined {
+  const colon = worktreeKey.indexOf(':');
+  return colon === -1 ? undefined : worktreeKey.slice(colon + 1);
+}
+
 // one discovered Worktree by its wire id `<projectId>:<realpath>` — the single by-id
 // resolver every service shares over the current `discovery.worktreesNow()` snapshot
 export function worktreeById(worktrees: readonly Worktree[], id: string): Worktree | undefined {

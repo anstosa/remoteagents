@@ -29,7 +29,7 @@ import { NewTaskService } from './new-task/service.js';
 import { WorktreeManagementService } from './worktrees/management.js';
 import { SavedPromptService } from './saved-prompts/service.js';
 import { agentAttentionState, AgentNotificationCoordinator } from './notifications.js';
-import { stackActions, type Agent, type StackAction } from './domain/models.js';
+import { stackActions, type Agent, type StackAction, type Worktree } from './domain/models.js';
 import { CommandCatalogService } from './commands/service.js';
 import { LatestViewportScheduler, PaneViewportCoordinator } from './logs/viewport-scheduler.js';
 import { DashboardUpdates, type DashboardPayload } from './dashboard/updates.js';
@@ -42,7 +42,7 @@ import { ReviewTourService } from './review-tour/service.js';
 import { ReviewTourJobs } from './review-tour/jobs.js';
 import { ReviewTourStore } from './review-tour/store.js';
 import { parseReviewRequestId, parseReviewTourInput, REVIEW_REQUEST_BODY_BYTES, ReviewTourError, type ReviewErrorCode, type ReviewTourInput } from './review-tour/contracts.js';
-import { configuredWorktreeForWorkspace, worktreeById, worktreeMatchesWorkspace, worktreeWireId } from './workspaces/resolver.js';
+import { configuredWorktreeForWorkspace, projectIdOf, worktreeById, worktreeMatchesWorkspace, worktreePathOf, worktreeWireId } from './workspaces/resolver.js';
 import { WorkspaceFileService } from './workspace-files/service.js';
 import { instanceIconSvg, isInstanceIcon } from './instance-icon.js';
 import { instanceAttention, RemoteInstanceStatusPoller, validInstanceStatusRequest, type InstanceStatus } from './instance-status.js';
@@ -62,7 +62,7 @@ import { BookmarkService } from './bookmarks/service.js';
 import { isUpdateAdvisorForTarget, isUpdateAdvisorLabel, updateAdvisorLabel, updateAdvisorPendingLabel } from './update-advisor.js';
 import { isFullGitSha } from './git/revision.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; bookmarks?: BookmarkService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; bookmarks?: BookmarkService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService };
 // derive one stable opaque scratch persistence group
 const scratchSaveKey = (workspace: string) => `scratch_${createHash('sha256').update(workspace).digest('base64url').slice(0, 40)}`;
 // bound full history scans
@@ -91,7 +91,7 @@ export function logFrame(last: string, value: string, refreshMetadata = false): 
 }
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, promptHistory, queuedPrompts, savedPrompts); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new BookmarkService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, promptHistory, queuedPrompts, savedPrompts); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new BookmarkService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
   const accounts = deps.accounts ?? new CodexAccountService({ ...(codexProgram === undefined ? {} : { codexProgram }) });
   const paneViewports = new PaneViewportCoordinator();
   const updateAdvisors = new Map<string, string>();
@@ -1314,6 +1314,96 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     discovery.invalidateWorktrees();
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(201).send({ worktreeId, ...(agentId === undefined ? {} : { agentId }), ...(launchError === undefined ? {} : { launchError }) });
+  });
+  // the runtime blockers that refuse a Remove, named for the 409: a live Agent in the
+  // Worktree, or a running stack operation there. `fresh` forces a live pane scan before a
+  // destructive removal so an Agent that started within the discovery cache window is never
+  // missed (CONTRIBUTING: validate immediately before a destructive operation).
+  const worktreeRemovalBlockers = async (worktree: Worktree, fresh = false): Promise<string[]> => {
+    const blockers: string[] = [];
+    if ((await discovery.dashboard(fresh)).agents.some(agent => agent.worktreeId === worktree.id)) blockers.push('a running agent');
+    if (await stackCommands.sessionRunning(worktree)) blockers.push('a running stack command');
+    return blockers;
+  };
+  // delete every record a Worktree leaves behind, keyed by its wire id: the pin and last-used
+  // kind, the queued prompts, prompt history, saved prompts and the saved review tour, and the
+  // sleeping tab — so a removed (then possibly recreated-at-the-same-path) Worktree leaves no
+  // stale trace. Project-scoped notes and bookmarks are shared and deliberately retained.
+  // Shared by Remove (one Worktree) and Prune (each orphaned record).
+  const deleteWorktreeRecords = async (worktreeId: string): Promise<void> => {
+    sleepingWorktrees.delete(worktreeId);
+    await Promise.all([
+      worktreeStore.delete(worktreeId).catch(() => {}),
+      queuedPrompts.clearScope(worktreeId).catch(() => {}),
+      promptHistory.clearScope(worktreeId).catch(() => {}),
+      savedPrompts.clearScope(worktreeId).catch(() => {}),
+      reviewStore.invalidate(worktreeId).catch(() => {})
+    ]);
+  };
+  // after a Prune, delete the console records whose path git now lists nowhere for this
+  // Project — the orphaned-record half of the stale set discovery counts (ADR 0003)
+  const pruneOrphanRecords = async (projectId: string): Promise<void> => {
+    const listed = new Set((await discovery.worktrees(true)).filter(worktree => worktree.projectId === projectId).map(worktree => worktree.path));
+    const orphans = (await worktreeStore.keys().catch(() => [] as string[])).filter(key => { if (projectIdOf(key) !== projectId) return false; const path = worktreePathOf(key); return path !== undefined && !listed.has(path); });
+    await Promise.all(orphans.map(key => deleteWorktreeRecords(key)));
+  };
+  // the fresh facts the Remove dialog decides with, plus the runtime blockers (a GET is a
+  // read, so it never mutates and stays off the 10/min mutation budget)
+  app.get('/api/worktrees/:id/removal', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
+    controlled(request);
+    const worktree = configuredWorktree((request.params as { id: string }).id);
+    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const result = await worktreeManagement.removal(worktree);
+    if (!result.ok) return reply.code(result.status).send({ error: result.error });
+    return { ...result.facts, blockers: await worktreeRemovalBlockers(worktree) };
+  });
+  // remove one linked Worktree: refused on Main, on a locked checkout, while an Agent or a
+  // stack session runs there, and on a dirty tree unless discardChanges was ticked. Order:
+  // kill the idle shells → git worktree remove → delete records → optional branch delete →
+  // invalidate → refresh (ADR 0003). A branch-delete failure is reported, never undone.
+  app.delete('/api/worktrees/:id', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+    controlled(request, true);
+    const requestBody = body(request);
+    const { discardChanges, deleteBranch } = requestBody;
+    if (discardChanges !== undefined && typeof discardChanges !== 'boolean') return reply.code(400).send({ error: 'invalid discardChanges flag' });
+    if (deleteBranch !== undefined && typeof deleteBranch !== 'boolean') return reply.code(400).send({ error: 'invalid deleteBranch flag' });
+    const worktree = configuredWorktree((request.params as { id: string }).id);
+    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    if (worktree.main) return reply.code(409).send({ error: 'the main worktree cannot be removed' });
+    if (worktree.locked) return reply.code(409).send({ error: 'Locked worktrees cannot be removed' });
+    const blockers = await worktreeRemovalBlockers(worktree, true);
+    if (blockers.length > 0) return reply.code(409).send({ error: `cannot remove the worktree while ${blockers.join(' and ')} ${blockers.length === 1 ? 'is' : 'are'} running` });
+    const facts = await worktreeManagement.removal(worktree);
+    if (!facts.ok) return reply.code(facts.status).send({ error: facts.error });
+    // a dirty tree needs the explicit discard; an unpushed one only warns, never blocks
+    if (facts.facts.dirtyCount > 0 && discardChanges !== true) return reply.code(409).send({ error: 'the worktree has uncommitted changes; tick "Discard uncommitted changes" to remove it' });
+    await launch.killWorktreeShells(worktree);
+    const removed = await worktreeManagement.removeCheckout(worktree, { force: discardChanges === true });
+    if (!removed.ok) return reply.code(removed.status).send({ error: removed.error });
+    await deleteWorktreeRecords(worktree.id);
+    let branchDeleted: boolean | undefined;
+    let branchDeleteError: string | undefined;
+    // the branch is deletable only when nothing is lost (pushed or merged); the web enforces
+    // this too, but the server never force-deletes an unmerged, unpushed branch on request
+    if (deleteBranch === true && facts.facts.branch !== undefined && (facts.facts.pushed || facts.facts.merged)) {
+      const outcome = await worktreeManagement.deleteBranch(worktree, facts.facts.branch);
+      if (outcome.ok) branchDeleted = true; else branchDeleteError = outcome.error;
+    }
+    discovery.invalidateWorktrees();
+    await dashboardUpdates.refresh().catch(() => undefined);
+    return { removed: true, ...(branchDeleted === undefined ? {} : { branchDeleted }), ...(branchDeleteError === undefined ? {} : { branchDeleteError }) };
+  });
+  // clear git's prunable entries and the console's orphaned records for one Project, both
+  // explicit and never automatic (ADR 0003)
+  app.post('/api/projects/:id/worktrees/prune', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+    controlled(request, true);
+    const projectId = (request.params as { id: string }).id;
+    const outcome = await worktreeManagement.prune(projectId);
+    if (!outcome.ok) return reply.code(outcome.status).send({ error: outcome.error });
+    await pruneOrphanRecords(projectId);
+    discovery.invalidateWorktrees();
+    await dashboardUpdates.refresh().catch(() => undefined);
+    return reply.code(204).send();
   });
   // forget one retained sleeping worktree tab
   app.post('/api/worktrees/:id/deactivate', async (request, reply) => {

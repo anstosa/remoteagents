@@ -84,6 +84,19 @@ export class WorktreeLaunchStore {
     });
   }
 
+  // every stored key, so discovery can spot a worktree key git lists nowhere (Prune's
+  // orphaned-record group). Read once per worktree scan, like `pins()`.
+  async keys(): Promise<string[]> {
+    await this.mutation;
+    return Object.keys(await this.read());
+  }
+
+  // forget one Worktree's pin and last-used kind — Remove deletes the record outright
+  async delete(key: string): Promise<void> {
+    if (!validKey(key)) return;
+    await this.mutate(stored => { delete stored[key]; });
+  }
+
   // serialize record mutations
   private async mutate(change: (stored: StoredRecords) => void): Promise<void> {
     const operation = this.mutation.then(async () => {

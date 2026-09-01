@@ -547,6 +547,26 @@ describe('DiscoveryService dashboard', () => {
     ]);
   });
 
+  it('reports Prune-eligible stale paths: git prunable entries plus records git lists nowhere', async () => {
+    const finder = socketFinder();
+    const tmux = paneLister([]);
+    const processes = processInspector({ codex: false });
+    const project = testProject({ id: 'app', label: 'App', path: '/repo' });
+    // records: two git still lists (kept), one whose path git lists only as prunable (must be
+    // counted once, not again as an orphan), one git lists nowhere (orphan), one for another Project
+    const pinStore = { pins: async () => ({}), keys: async () => ['app:/repo', 'app:/repo/wt-feature', 'app:/repo/gone', 'app:/repo/orphan', 'other:/elsewhere'] };
+    const service = new DiscoveryService(finder, tmux as never, processes, undefined, undefined, [project], pinStore, listImpl({ '/repo': [
+      entry('/repo', 'main'),
+      entry('/repo/wt-feature', 'feature'),
+      entry('/repo/gone', 'ghost', { prunable: true })
+    ] }));
+
+    const stalePaths = (await service.dashboard()).projects[0]!.stalePaths;
+
+    // the prunable checkout (once, though a record also points at it) and the orphaned record
+    expect([...stalePaths].sort()).toEqual(['/repo/gone', '/repo/orphan']);
+  });
+
   it('re-reads pins after invalidation and never lets a stale in-flight scan clobber the fresh set', async () => {
     const finder = socketFinder();
     const tmux = paneLister([]);
