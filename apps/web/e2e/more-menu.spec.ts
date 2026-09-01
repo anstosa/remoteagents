@@ -282,9 +282,12 @@ test('shows every pull request target while keeping external and worktree action
   await expect(menu.getByRole('link', { name: 'Open PR #300 in GitHub' })).toHaveAttribute('href', 'https://github.example.com/pull/300');
 
   const switchToDelta = menu.getByRole('button', { name: 'Switch to Delta' });
+  const moveHere = menu.getByRole('button', { name: 'Move it here' });
   const openDeltaInGitHub = menu.getByRole('link', { name: 'Open PR #301 in GitHub' });
   const actionOrder = await openTarget.locator('xpath=..').locator('.switch-pr-actions').locator('.switch-pr-action').evaluateAll(elements => elements.map(element => element.textContent?.trim()));
-  expect(actionOrder).toEqual(['Open in GitHub', 'Switch to Delta']);
+  expect(actionOrder).toEqual(['Open in GitHub', 'Switch to Delta', 'Move it here']);
+  await expect(moveHere).toBeDisabled();
+  await expect(moveHere).toHaveAttribute('title', 'Working copy must be clean and pushed');
   const [externalBox, switchBox] = await Promise.all([openDeltaInGitHub.boundingBox(), switchToDelta.boundingBox()]);
   expect(externalBox).not.toBeNull();
   expect(switchBox).not.toBeNull();
@@ -295,6 +298,48 @@ test('shows every pull request target while keeping external and worktree action
 
   await expect(page.getByRole('tab', { name: /^Delta/u })).toHaveAttribute('aria-selected', 'true');
   await expect(menu).toBeHidden();
+});
+
+test('moves an occupied pull request into the current worktree', async ({ page }) => {
+  let finishMove!: () => void;
+  let moved: unknown;
+  // hold the move request through pending-state assertions
+  const moveFinished = new Promise<void>(resolve => { finishMove = resolve; });
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [
+      { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' },
+      { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/delta', worktreeId: 'delta', worktreeLabel: 'Delta', worktreeOrder: 1, title: 'Ready' }
+    ], worktrees: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (/^\/api\/agents\/agent-[12]\/saved-prompts$/u.test(url.pathname) && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
+    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [
+      { number: 301, title: 'Already in Delta', branch: 'feature/delta-target', draft: false, url: 'https://github.example.com/pull/301', checkedOut: true, openIn: { agentId: 'agent-2', worktreeId: 'delta', worktreeName: 'Delta' } }
+    ], otherPullRequests: [] } });
+    if (url.pathname === '/api/agents/agent-1/move-pr' && request.method() === 'POST') {
+      moved = request.postDataJSON();
+      await moveFinished;
+      return route.fulfill({ status: 202 });
+    }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'More options' }).click();
+  const option = page.getByRole('button', { name: '#301: Already in Delta' }).locator('xpath=..');
+  const moveHere = option.getByRole('button', { name: 'Move it here' });
+  await expect(moveHere).toBeEnabled();
+  await moveHere.click();
+  await expect.poll(() => moved).toEqual({ number: 301 });
+  await expect(option.getByRole('button', { name: 'Moving…' })).toBeDisabled();
+  await expect(option.getByRole('button', { name: 'Switch to Delta' })).toBeDisabled();
+  finishMove();
+
+  await expect(page.locator('.more-menu')).toBeHidden();
+  await expect(page.getByText('Pull request moved here', { exact: true })).toBeVisible();
 });
 
 test('shows the workspace pull request cache while refreshing after a tab remount', async ({ page }) => {

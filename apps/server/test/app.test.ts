@@ -472,6 +472,26 @@ describe('pull request switch API', () => {
       expect(response.json()).toEqual({ error: 'GitHub could not load pull requests (503).' });
     } finally { await pullRequestApp.close(); }
   }, 15_000);
+
+  it('moves an occupied pull request through the controlled HTTP boundary', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const move = vi.fn<() => Promise<'moved' | 'recovery-required'>>().mockResolvedValueOnce('moved').mockResolvedValueOnce('recovery-required');
+    const prSwitch = { move };
+    const pullRequestApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 18).toString('base64url')), prSwitch: prSwitch as never });
+    try {
+      const boot = await pullRequestApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await pullRequestApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const response = await pullRequestApp.inject({ method: 'POST', url: '/api/agents/agent-1/move-pr', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken }, payload: { number: 301 } });
+      const recovery = await pullRequestApp.inject({ method: 'POST', url: '/api/agents/agent-1/move-pr', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken }, payload: { number: 302 } });
+
+      expect(response.statusCode).toBe(202);
+      expect(move).toHaveBeenCalledWith('agent-1', 301);
+      expect(recovery.statusCode).toBe(409);
+      expect(recovery.json()).toMatchObject({ recoveryRequired: true, error: expect.any(String) });
+    } finally {
+      await pullRequestApp.close();
+    }
+  }, 15_000);
 });
 
 describe('configured worktree deactivation', () => {

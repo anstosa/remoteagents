@@ -957,7 +957,9 @@ html.software-keyboard-open .tabs { display: none; }
 .switch-pr-actions > .pull-request-issues { gap: .2rem; padding: 0; }
 .more-menu .switch-pr-actions > .switch-pr-action { display: inline-flex; width: auto; min-height: 1.85rem; align-items: center; justify-content: center; gap: .35rem; padding: .3rem .55rem; border: 1px solid var(--surface-2); border-radius: calc(var(--control-radius) - .05rem); background: transparent; box-shadow: none; color: var(--subtext-0); font-size: .68rem; font-weight: 700; line-height: 1; text-decoration: none; white-space: nowrap; }
 .more-menu .switch-pr-actions > .switch-pr-worktree { color: var(--blue); }
+.more-menu .switch-pr-actions > .switch-pr-move { color: var(--green); }
 .more-menu .switch-pr-actions > .switch-pr-action:hover { border-color: var(--blue); background: var(--surface-1); color: var(--blue); }
+.more-menu .switch-pr-actions > .switch-pr-move:not(:disabled):hover { border-color: var(--green); color: var(--green); }
 .switch-pr-external svg { width: .9rem; height: .9rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 
 .more-menu-divider { height: 1px; margin: .25rem .35rem; border: 0; background: color-mix(in srgb, var(--surface-2) 72%, transparent); }
