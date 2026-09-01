@@ -45,7 +45,9 @@ type AttentionState = 'working' | 'finished' | 'question';
 // Worktree is not present in the payload, absent from the real server.
 type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; projectId?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: InlineQuestion; stack?: Stack; unread?: boolean; queuedPromptCount: number; launch?: LaunchResolution };
 type Worktree = { id: string; projectId: string; label: string; path: string; main: boolean; detached: boolean; locked: boolean; branch?: string; sha?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; sleeping?: boolean; order: number; projectUrl?: string; pullRequest?: PullRequestSummary; stack?: Stack; launch?: LaunchResolution };
-type Project = { id: string; label: string; available: boolean; unavailableReason?: string; worktrees: Worktree[] };
+type Project = { id: string; label: string; available: boolean; unavailableReason?: string; manageWorktrees?: boolean; manageWorktreesReason?: string; worktrees: Worktree[] };
+// one branch the Add dialog can check out; `remote` marks a remote-only ref git will track
+type BranchOption = { name: string; remote: boolean };
 type ReviewTourCapability = { available: true } | { available: false; reason: 'generator_unavailable'|'unsupported_cli'|'configuration_invalid'|'authentication_required' };
 type StoredReviewSummary = { worktreeId: string; branch: string; savedAt: string; title: string; scope: ReviewScope; includeTests: boolean; includeDocs: boolean; fingerprint: string };
 type ReviewButtonState = ReviewTourIndicator & { onOpen: () => void };
@@ -4748,6 +4750,70 @@ function OperationFeedbackBanner({ feedback, onDismiss }: { feedback: OperationF
   </div>;
 }
 
+// what a successful worktree creation hands back to the launcher
+type WorktreeCreated = { worktreeId: string; agentId?: string; launchError?: string };
+
+// The "New worktree…" dialog: create a checkout for a new branch (name + editable base,
+// pre-filled with the Project's default branch) or an existing local / remote-only branch,
+// launching the Project's last-used kind by default. One dialog from branch to prompting.
+function NewWorktreeDialog({ project, request, onClose, onCreated }: { project: Project; request: (url: string, init?: RequestInit) => Promise<Response>; onClose: () => void; onCreated: (result: WorktreeCreated) => void }) {
+  const [mode, setMode] = useState<'new' | 'existing'>('new');
+  const [branches, setBranches] = useState<BranchOption[] | undefined>(undefined);
+  const [branchesFailed, setBranchesFailed] = useState(false);
+  const [newBranch, setNewBranch] = useState('');
+  const [base, setBase] = useState('');
+  const [existingBranch, setExistingBranch] = useState('');
+  const [launchAgent, setLaunchAgent] = useState(true);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  // fetch the offerable branches and default base once the dialog opens
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const response = await request(`/api/projects/${encodeURIComponent(project.id)}/branches`).catch(() => undefined);
+      if (cancelled) return;
+      if (response === undefined || !response.ok) return setBranchesFailed(true);
+      const payload = await response.json().catch(() => undefined) as { branches?: BranchOption[]; defaultBranch?: string } | undefined;
+      const offered = payload?.branches ?? [];
+      setBranches(offered);
+      if (typeof payload?.defaultBranch === 'string') setBase(current => current === '' ? payload.defaultBranch! : current);
+      if (offered[0] !== undefined) setExistingBranch(current => current === '' ? offered[0]!.name : current);
+    })();
+    return () => { cancelled = true; };
+  }, [project.id]);
+  const submit = async () => {
+    setError(undefined);
+    const branch = mode === 'new' ? newBranch.trim() : existingBranch;
+    if (branch === '') return setError(mode === 'new' ? 'Enter a branch name.' : 'Choose a branch to check out.');
+    setPending(true);
+    try {
+      // an empty base falls to the Project's default branch on the server
+      const response = await request(`/api/projects/${encodeURIComponent(project.id)}/worktrees`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode, branch, ...(mode === 'new' && base.trim() !== '' ? { base: base.trim() } : {}), launch: launchAgent }) }).catch(() => undefined);
+      if (response === undefined) return setError('Unable to reach the console.');
+      if (!response.ok) {
+        const payload = await response.json().catch(() => undefined) as { error?: string } | undefined;
+        return setError(payload?.error ?? 'The worktree could not be created.');
+      }
+      const payload = await response.json() as WorktreeCreated;
+      onCreated(payload);
+    } finally { setPending(false); }
+  };
+  const noExisting = branches !== undefined && branches.length === 0;
+  return createPortal(<div className="dialog new-worktree-dialog" role="dialog" aria-modal="true" aria-labelledby="new-worktree-title"><div>
+    <header className="new-worktree-header"><div><h2 id="new-worktree-title">New worktree</h2><p>{project.label}</p></div><button className="new-worktree-close" type="button" aria-label="Close new worktree" disabled={pending} onClick={onClose}>×</button></header>
+    <div className="new-worktree-modes" role="tablist" aria-label="Branch source">
+      <button type="button" role="tab" aria-selected={mode === 'new'} className={mode === 'new' ? 'active' : ''} onClick={() => setMode('new')}>New branch</button>
+      <button type="button" role="tab" aria-selected={mode === 'existing'} className={mode === 'existing' ? 'active' : ''} onClick={() => setMode('existing')}>Existing branch</button>
+    </div>
+    {mode === 'new'
+      ? <div className="new-worktree-fields"><label>Branch name<input aria-label="Branch name" value={newBranch} onChange={event => setNewBranch(event.target.value)} placeholder="feature/login" autoFocus /></label><label>Base<input aria-label="Base" value={base} onChange={event => setBase(event.target.value)} placeholder="main" /></label></div>
+      : <div className="new-worktree-fields">{branchesFailed ? <p className="new-worktree-error" role="alert">Could not load branches.</p> : branches === undefined ? <p className="new-worktree-loading" role="status"><span className="spinner" />Loading branches…</p> : noExisting ? <p className="new-worktree-empty">No branches are available to check out.</p> : <label>Branch<select aria-label="Branch" value={existingBranch} onChange={event => setExistingBranch(event.target.value)}>{branches.map(option => <option key={option.name} value={option.name}>{option.name}{option.remote ? ' (remote)' : ''}</option>)}</select></label>}</div>}
+    <label className="new-worktree-launch"><input type="checkbox" checked={launchAgent} onChange={event => setLaunchAgent(event.target.checked)} />Launch agent in the new worktree</label>
+    {error && <p className="new-worktree-error" role="alert">{error}</p>}
+    <footer className="new-worktree-actions"><button type="button" className="outline-button" disabled={pending} onClick={onClose}>Cancel</button><button type="button" disabled={pending || (mode === 'existing' && (branches === undefined || noExisting))} onClick={() => void submit()}>{pending ? <><span className="spinner" />Creating…</> : 'Create worktree'}</button></footer>
+  </div></div>, document.body);
+}
+
 // render the active console dashboard
 function DashboardView({ onUnauthorized, onInactive, updateControl, updateError }: { onUnauthorized: () => void; onInactive: () => void; updateControl?: UpdateControl; updateError?: string }) {
   const serverInfo = useContext(ServerContext) ?? fallbackServerInfo();
@@ -4788,6 +4854,8 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
   const operationFeedbackId = useRef(0);
   const [activateAgentId, setActivateAgentId] = useState<string>();
   const [activateWorktreeId, setActivateWorktreeId] = useState<string>();
+  // the Project whose "New worktree…" dialog is open, if any
+  const [newWorktreeProjectId, setNewWorktreeProjectId] = useState<string>();
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [cleanupTargets, setCleanupTargets] = useState<CleanupTarget[]>([]);
   const [cleanupChecked, setCleanupChecked] = useState<Set<string>>(() => new Set());
@@ -5342,6 +5410,17 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
     const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/pin`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pinned: !worktree.pinned }) }).catch(() => undefined);
     if (response?.ok) await refresh();
   };
+  // a worktree just created from the launcher: close everything, refresh, and select its
+  // new tab (its agent when one launched, else the idle worktree)
+  const worktreeCreated = async (result: WorktreeCreated) => {
+    setNewWorktreeProjectId(undefined);
+    setLauncherOpen(false);
+    await refresh();
+    if (result.agentId !== undefined) setActivateAgentId(result.agentId);
+    else setActivateWorktreeId(result.worktreeId);
+    if (result.launchError !== undefined) showOperationFeedback({ tone: 'error', message: 'Worktree created, agent did not start', detail: result.launchError });
+    else showOperationFeedback({ tone: 'success', message: 'Worktree created', detail: result.agentId === undefined ? 'The new worktree is ready.' : 'The new agent session is ready and its output is connecting.' });
+  };
   // open a cached review or replace it with a new scope
   const launchReview = (launch: ReviewLaunch) => {
     const cached = reviewLaunch?.worktreeId === launch.worktreeId && reviewLaunch.scope === launch.scope;
@@ -5426,6 +5505,8 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
     void dismissNotification(reviewNotificationTag(reviewLaunch.worktreeId));
     setReviewMinimized(false);
   };
+  const newWorktreeProject = newWorktreeProjectId === undefined ? undefined : data.projects.find(project => project.id === newWorktreeProjectId);
+  const newWorktreeDialog = newWorktreeProject === undefined ? null : <NewWorktreeDialog project={newWorktreeProject} request={request} onClose={() => setNewWorktreeProjectId(undefined)} onCreated={result => void worktreeCreated(result)} />;
   const reviewDialog = reviewLaunch === undefined ? null : <ReviewTourDialog key={`${reviewLaunch.worktreeId}:${reviewLaunch.scope}:${reviewInitialTour?.fingerprint ?? 'generated'}`} launch={reviewLaunch} request={request} minimized={reviewMinimized} initialTour={reviewInitialTour} onMinimize={minimizeReview} onDismiss={dismissReview} onIndicatorChange={setReviewIndicator} onReady={notifyReviewReady} />;
   const storedReview = item?.agent?.worktreeId === undefined ? undefined : data.reviews?.find(review => review.worktreeId === item.agent!.worktreeId);
   const localReview = item?.agent?.worktreeId !== undefined && item.agent.worktreeId === reviewLaunch?.worktreeId;
@@ -5434,12 +5515,12 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
     const transition = dashboardOperationLabel(entry.operation);
     const label = transition ?? stateLabel[entry.state];
     return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{entry.agent?.kind !== undefined && <LaunchTabBadge kind={entry.agent.kind} sandboxed={entry.agent.sandboxed} />}{entry.worktree?.locked === true && <span className="tab-git-lock" aria-hidden="true" title="Git has locked this worktree">🔒</span>}{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
-  })}<NotificationControl />{updateControl !== undefined && <button className="update-ready" type="button" onClick={updateControl.onClick}>{updateControl.label} <span>{updateControl.action}</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label">~ Scratch</span><LaunchSplitButton label="~ Scratch" resolution={data.scratchLaunch} compact inline disabled={creatingAgent} onLaunch={choice => void createAgent(choice)} /></div>{data.projects.map(project => { const idle = project.worktrees.filter(worktree => !data.agents.some(agent => agent.worktreeId === worktree.id)); return idle.length === 0 ? null : <div key={project.id} className="launcher-project" role="group" aria-label={project.label}><div className="launcher-project-header">{project.label}</div>{idle.map(worktree => <div key={worktree.id} className="launcher-row"><span className="launcher-row-label">{worktree.label}</span><button type="button" className={`launcher-pin${worktree.pinned ? ' pinned' : ''}`} aria-pressed={worktree.pinned} aria-label={`${worktree.pinned ? 'Unpin' : 'Pin'} ${worktree.label}`} onClick={() => void togglePin(worktree)}>{worktree.pinned ? 'Pinned' : 'Pin'}</button>{worktree.sleeping === true
+  })}<NotificationControl />{updateControl !== undefined && <button className="update-ready" type="button" onClick={updateControl.onClick}>{updateControl.label} <span>{updateControl.action}</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label">~ Scratch</span><LaunchSplitButton label="~ Scratch" resolution={data.scratchLaunch} compact inline disabled={creatingAgent} onLaunch={choice => void createAgent(choice)} /></div>{data.projects.map(project => { const idle = project.worktrees.filter(worktree => !data.agents.some(agent => agent.worktreeId === worktree.id)); return <div key={project.id} className="launcher-project" role="group" aria-label={project.label}><div className="launcher-project-header"><span>{project.label}</span><button type="button" className="launcher-new-worktree" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setNewWorktreeProjectId(project.id)}>+ New worktree…</button></div>{idle.map(worktree => <div key={worktree.id} className="launcher-row"><span className="launcher-row-label">{worktree.label}</span><button type="button" className={`launcher-pin${worktree.pinned ? ' pinned' : ''}`} aria-pressed={worktree.pinned} aria-label={`${worktree.pinned ? 'Unpin' : 'Pin'} ${worktree.label}`} onClick={() => void togglePin(worktree)}>{worktree.pinned ? 'Pinned' : 'Pin'}</button>{worktree.sleeping === true
         ? <button type="button" className="launch-compact" disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onClick={() => void launchWorktree(worktree)}>Wake up</button>
         : <LaunchSplitButton label={worktree.label} resolution={worktree.launch} compact inline disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onLaunch={choice => void launchWorktree(worktree, choice)} />}</div>)}</div>; })}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
   const consoleClass = `console${voiceOpen ? ' voice-visible' : ''}`;
-  if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{reviewDialog}</article></main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
-  return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} {...(activeWorktree === undefined ? {} : { pinned: activeWorktree.pinned, onTogglePin: () => void togglePin(activeWorktree), worktreeLabel: activeWorktree.label })} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{reviewDialog}</main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
+  if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{newWorktreeDialog}{reviewDialog}</article></main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
+  return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} {...(activeWorktree === undefined ? {} : { pinned: activeWorktree.pinned, onTogglePin: () => void togglePin(activeWorktree), worktreeLabel: activeWorktree.label })} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{newWorktreeDialog}{reviewDialog}</main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
 }
 
 // coordinate console session and update lifecycle

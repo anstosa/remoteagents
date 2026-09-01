@@ -234,6 +234,57 @@ describe('LaunchService', () => {
     expect(run.mock.calls[3]?.[1]).toEqual(expect.arrayContaining(['-S', '/host-tmux/default', 'new-session', '-d', '-s', 'owen', '-c', worktree.hostPath]));
   });
 
+  it('starts a Worktree idle shell named after the checkout when the name is free', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    run.mockImplementation(async (_binary: string, args: string[]) => args.includes('list-sessions') ? { code: 0, stdout: '', stderr: '' } : { code: 0, stdout: '', stderr: '' });
+    const worktree = cora({ id: 'owen', label: 'Owen', path: '/worktrees/owen', hostPath: '/home/ubuntu/owen' });
+    const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
+
+    await expect(service.startWorktreeShell(worktree)).resolves.toBe(true);
+
+    // the idle shell is a plain host new-session (no displacement), in the worktree dir
+    const created = run.mock.calls.find(call => (call[1] as string[]).includes('new-session'))?.[1] as string[];
+    expect(created.slice(0, 8)).toEqual(['-S', '/host-tmux/default', 'new-session', '-d', '-s', 'owen', '-c', '/home/ubuntu/owen']);
+    expect(run.mock.calls.some(call => (call[1] as string[]).includes('rename-session'))).toBe(false);
+  });
+
+  it('suffixes the idle shell session name when a different worktree already holds it', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    run.mockImplementation(async (_binary: string, args: string[]) => args.includes('list-sessions') ? { code: 0, stdout: 'owen\nother\n', stderr: '' } : { code: 0, stdout: '', stderr: '' });
+    const worktree = cora({ id: 'owen2', label: 'Owen', path: '/worktrees/owen', hostPath: '/home/ubuntu/owen' });
+    const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
+
+    await expect(service.startWorktreeShell(worktree)).resolves.toBe(true);
+
+    const created = run.mock.calls.find(call => (call[1] as string[]).includes('new-session'))?.[1] as string[];
+    expect(created.slice(2, 6)).toEqual(['new-session', '-d', '-s', 'owen-2']);
+  });
+
+  it('keeps incrementing the idle shell suffix past a run of taken names', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    run.mockImplementation(async (_binary: string, args: string[]) => args.includes('list-sessions') ? { code: 0, stdout: 'owen\nowen-2\n', stderr: '' } : { code: 0, stdout: '', stderr: '' });
+    const worktree = cora({ id: 'owen3', label: 'Owen', path: '/worktrees/owen', hostPath: '/home/ubuntu/owen' });
+    const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
+
+    await expect(service.startWorktreeShell(worktree)).resolves.toBe(true);
+
+    const created = run.mock.calls.find(call => (call[1] as string[]).includes('new-session'))?.[1] as string[];
+    expect(created.slice(2, 6)).toEqual(['new-session', '-d', '-s', 'owen-3']);
+  });
+
+  it('starts a local idle shell as a plain login shell so its pane is reusable at once', async () => {
+    delete process.env.RAC_HOST_TMUX_DIR;
+    run.mockImplementation(async (_binary: string, args: string[]) => args.includes('list-sessions') ? { code: 0, stdout: '', stderr: '' } : { code: 0, stdout: '', stderr: '' });
+    const worktree = testWorktree({ id: 'owen', projectId: 'proj', path: '/worktrees/owen', identity: '/worktrees/owen', main: false });
+    const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
+
+    await expect(service.startWorktreeShell(worktree)).resolves.toBe(true);
+
+    // a direct login shell in the checkout — no node runner, no descriptor, no fs
+    const created = run.mock.calls.find(call => (call[1] as string[]).includes('new-session'))?.[1] as string[];
+    expect(created).toEqual(['new-session', '-d', '-s', 'owen', '-c', '/worktrees/owen', '/usr/bin/zsh', '-l']);
+  });
+
   it('preserves ordinary worktree names and removes tmux target separators', () => {
     expect(worktreeSessionName('/home/ubuntu/owen')).toBe('owen');
     expect(worktreeSessionName('/home/ubuntu/feature:demo')).toBe('feature-demo');

@@ -331,6 +331,38 @@ export class LaunchService {
     return await this.markSandboxed(undefined, session, sandboxed);
   }
 
+  // Start the Worktree's own idle interactive shell — a login shell in the checkout, no
+  // agent command — so a freshly added Worktree gets a tab (and a shell the ordinary
+  // launch path then reuses) even when the operator declines to launch an agent. Its
+  // session name is `basename(worktree dir)` like a launch, but gains `-2`/`-3` suffixes
+  // when a different Worktree already holds that name (two Projects can share a checkout
+  // basename), so it never displaces another. Because there is no command to keep out of
+  // the process table, it skips the runner indirection and execs the login shell directly,
+  // so the pane reports the shell immediately and the launch path can adopt it at once.
+  async startWorktreeShell(worktree: Worktree): Promise<boolean> {
+    const name = await this.availableSessionName(worktreeSessionName(worktreeHostRoot(worktree)));
+    if (this.hostSocket !== undefined) {
+      const hostRoot = worktreeHostRoot(worktree);
+      const home = dirname(hostRoot);
+      // the bridge shell still needs the host HOME/PATH the launch bootstrap sets
+      const tail = ['-c', hostRoot, this.hostShell, '-lc', interactiveShellBootstrap(hostCommand('', home), home, this.hostShell)];
+      return (await run(this.tmux, ['-S', this.hostSocket, 'new-session', '-d', '-s', name, ...tail])).code === 0;
+    }
+    return (await run(this.tmux, ['new-session', '-d', '-s', name, '-c', worktree.identity, this.localShell, '-l'])).code === 0;
+  }
+
+  // a session name free on the relevant socket: the base name, else `-2`/`-3`/… — so a
+  // new Worktree's idle shell never collides with a same-basename Worktree of another
+  // Project. Falls back to a random suffix after a run of taken names.
+  private async availableSessionName(base: string): Promise<string> {
+    const socket = this.hostSocket === undefined ? [] : ['-S', this.hostSocket];
+    const listed = await run(this.tmux, [...socket, 'list-sessions', '-F', '#{session_name}']);
+    const taken = new Set(listed.code === 0 ? listed.stdout.split('\n').map(line => line.trim()).filter(line => line !== '') : []);
+    if (!taken.has(base)) return base;
+    for (let suffix = 2; suffix <= 99; suffix += 1) { const candidate = `${base}-${suffix}`; if (!taken.has(candidate)) return candidate; }
+    return `${base}-${randomBytes(4).toString('hex')}`;
+  }
+
   // record a Sandboxed launch on the pane so `Agent.sandboxed` reflects it; a
   // dead pane's option is cleared by discovery. Chunk 1 never launches sandboxed
   // (chunk 4 realises the sandbox), so in practice this is a no-op until then.

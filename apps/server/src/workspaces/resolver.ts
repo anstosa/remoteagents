@@ -10,6 +10,12 @@ export function worktreeMatchesWorkspace(worktree: Pick<Worktree, 'identity' | '
   return workspace === worktree.identity || workspace === worktree.hostPath;
 }
 
+// the Worktree wire id `<projectId>:<realpath>` (ADR 0003) — the single derivation
+// discovery and the Add flow share, so a hand-built id can never drift from discovery's
+export function worktreeWireId(projectId: string, realpath: string): string {
+  return `${projectId}:${realpath}`;
+}
+
 // the Project id embedded in a Worktree wire id `<projectId>:<realpath>` (ADR 0003); a
 // key with no `:` (a bare `<projectId>` or the `scratch` group) is returned unchanged
 export function projectIdOf(worktreeKey: string): string {

@@ -8,8 +8,9 @@ import { ProcInspector, type ProcessInspector } from './processes.js';
 import { PullRequestService } from '../pull-requests/service.js';
 import { parseReportedAttention, resolveAttention } from '../adapters/attention.js';
 import { adapterCapabilities, adapterFor, paneExcluded } from '../adapters/registry.js';
-import { worktreeMatchesWorkspace } from '../workspaces/resolver.js';
+import { worktreeMatchesWorkspace, worktreeWireId } from '../workspaces/resolver.js';
 import { gitCommonDir, listWorktrees, type WorktreeEntry } from '../git/worktrees.js';
+import { worktreeManagementAvailability } from '../worktrees/management.js';
 import type { WorktreeLaunchStore } from '../worktrees/store.js';
 import type { Adapter, AdapterConfigs, AttentionState, Conversation } from '../adapters/types.js';
 import type { Agent, Dashboard, DashboardProject, DashboardWorktree, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, Project, SocketRef, Worktree } from '../domain/models.js';
@@ -506,7 +507,7 @@ export class DiscoveryService {
         if (entry.bare || entry.prunable) continue;
         const path = await realpath(entry.path).catch(() => entry.path);
         const main = path === mainPath;
-        const id = `${project.id}:${path}`;
+        const id = worktreeWireId(project.id, path);
         const sha = entry.head === undefined ? undefined : entry.head.slice(0, 7);
         const label = main ? project.label : entry.branch !== undefined ? `${project.label} · ${entry.branch}` : `${project.label} · ${sha ?? path.split('/').pop() ?? path}`;
         usable.push({
@@ -612,7 +613,10 @@ export class DiscoveryService {
     }));
     const byProject = new Map<string, DashboardWorktree[]>();
     for (const view of worktreeViews) { const list = byProject.get(view.projectId) ?? []; list.push(view); byProject.set(view.projectId, list); }
-    const projects: DashboardProject[] = this.projects.map(project => ({ id: project.id, label: project.label, available: project.available, ...(project.unavailableReason === undefined ? {} : { unavailableReason: project.unavailableReason }), worktrees: byProject.get(project.id) ?? [] }));
+    const projects: DashboardProject[] = this.projects.map(project => {
+      const management = worktreeManagementAvailability(project);
+      return { id: project.id, label: project.label, available: project.available, ...(project.unavailableReason === undefined ? {} : { unavailableReason: project.unavailableReason }), manageWorktrees: management.available, ...(management.reason === undefined ? {} : { manageWorktreesReason: management.reason }), worktrees: byProject.get(project.id) ?? [] };
+    });
     return { generation: this.generation, serverStartedAt: this.serverStartedAt, adapters: adapterCapabilities(this.adapters), agents, projects };
   }
 

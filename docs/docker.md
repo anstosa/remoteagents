@@ -71,6 +71,15 @@ worktree mounts. For every host-backed Project:
   the path referenced by each worktree's `.git` file.
 - Keep research-only checkouts read-only.
 
+Creating and removing Worktrees (the launcher's **New worktree…** control) is
+available only for a Project the container mounts at its host path — that is,
+when `hostPath` is absent or equal to `path`. When they differ, git inside the
+container would write the container's paths into the repository's worktree
+metadata, which the host could not follow, so the console disables the Add
+control and reports the reason. To manage such a repository's Worktrees, run
+`git worktree add` on the host instead; the console discovers the result on its
+next tick.
+
 The host bridge is controlled by environment variables rather than image
 assumptions:
 

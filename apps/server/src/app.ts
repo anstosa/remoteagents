@@ -26,6 +26,7 @@ import { PushService } from './push-service.js';
 import { WorktreeCommandService } from './worktree-commands/service.js';
 import { PullRequestSwitchService } from './pull-requests/switch-service.js';
 import { NewTaskService } from './new-task/service.js';
+import { WorktreeManagementService } from './worktrees/management.js';
 import { SavedPromptService } from './saved-prompts/service.js';
 import { agentAttentionState, AgentNotificationCoordinator } from './notifications.js';
 import { stackActions, type Agent, type StackAction } from './domain/models.js';
@@ -41,7 +42,7 @@ import { ReviewTourService } from './review-tour/service.js';
 import { ReviewTourJobs } from './review-tour/jobs.js';
 import { ReviewTourStore } from './review-tour/store.js';
 import { parseReviewRequestId, parseReviewTourInput, REVIEW_REQUEST_BODY_BYTES, ReviewTourError, type ReviewErrorCode, type ReviewTourInput } from './review-tour/contracts.js';
-import { configuredWorktreeForWorkspace, worktreeById, worktreeMatchesWorkspace } from './workspaces/resolver.js';
+import { configuredWorktreeForWorkspace, worktreeById, worktreeMatchesWorkspace, worktreeWireId } from './workspaces/resolver.js';
 import { WorkspaceFileService } from './workspace-files/service.js';
 import { instanceIconSvg, isInstanceIcon } from './instance-icon.js';
 import { instanceAttention, RemoteInstanceStatusPoller, validInstanceStatusRequest, type InstanceStatus } from './instance-status.js';
@@ -61,7 +62,7 @@ import { BookmarkService } from './bookmarks/service.js';
 import { isUpdateAdvisorForTarget, isUpdateAdvisorLabel, updateAdvisorLabel, updateAdvisorPendingLabel } from './update-advisor.js';
 import { isFullGitSha } from './git/revision.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; bookmarks?: BookmarkService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; bookmarks?: BookmarkService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService };
 // derive one stable opaque scratch persistence group
 const scratchSaveKey = (workspace: string) => `scratch_${createHash('sha256').update(workspace).digest('base64url').slice(0, 40)}`;
 // bound full history scans
@@ -90,7 +91,7 @@ export function logFrame(last: string, value: string, refreshMetadata = false): 
 }
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, promptHistory, queuedPrompts, savedPrompts); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new BookmarkService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, promptHistory, queuedPrompts, savedPrompts); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new BookmarkService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
   const accounts = deps.accounts ?? new CodexAccountService({ ...(codexProgram === undefined ? {} : { codexProgram }) });
   const paneViewports = new PaneViewportCoordinator();
   const updateAdvisors = new Map<string, string>();
@@ -1261,6 +1262,58 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // report a true timeout
     if (!agent) return reply.code(504).send({ error: `The worktree session started, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
     return reply.code(201).send({ agentId: agent.id });
+  });
+  // the branches the Add dialog offers: local branches checked out nowhere plus
+  // remote-only branches, and the resolved default branch to pre-fill the base field
+  app.get('/api/projects/:id/branches', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
+    controlled(request);
+    const result = await worktreeManagement.branches((request.params as { id: string }).id);
+    if (!result.ok) return reply.code(result.status).send({ error: result.error });
+    return { branches: result.branches, ...(result.defaultBranch === undefined ? {} : { defaultBranch: result.defaultBranch }) };
+  });
+  // create a Worktree for a new or existing branch, pin it, give it an idle shell, and —
+  // unless the operator opted out — launch the Project's last-used kind in it. The created
+  // Worktree stands even when the agent launch fails, so the response is a 201 carrying the
+  // new Worktree id plus either the started agent or the launch error, never a 504.
+  app.post('/api/projects/:id/worktrees', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+    controlled(request, true);
+    const projectId = (request.params as { id: string }).id;
+    const requestBody = body(request);
+    const { mode, branch, base, launch: launchAgent } = requestBody;
+    // hand-validate the body before any git runs
+    // structural validation only; the service owns branch-name legality (a 409)
+    if (mode !== 'new' && mode !== 'existing') return reply.code(400).send({ error: 'invalid worktree mode' });
+    if (typeof branch !== 'string' || branch.length === 0) return reply.code(400).send({ error: 'invalid branch name' });
+    if (base !== undefined && (typeof base !== 'string' || base.length > 255)) return reply.code(400).send({ error: 'invalid base' });
+    if (launchAgent !== undefined && typeof launchAgent !== 'boolean') return reply.code(400).send({ error: 'invalid launch flag' });
+    const outcome = await worktreeManagement.add(projectId, { mode, branch, ...(typeof base === 'string' ? { base } : {}) });
+    if (!outcome.ok) return reply.code(outcome.status).send({ error: outcome.error });
+    // republish discovery so the new checkout is keyed and resolvable before pin and launch
+    discovery.invalidateWorktrees();
+    const worktree = (await discovery.worktrees(true)).find(candidate => candidate.identity === outcome.path);
+    const worktreeId = worktree?.id ?? worktreeWireId(projectId, outcome.path);
+    // a created checkout keeps its tab from the start
+    await worktreeStore.setPinned(worktreeId, true).catch(() => {});
+    // Give the Worktree its idle shell so it has a tab even without an agent; then, unless
+    // the operator opted out, launch the Project's last-used kind — the launch path adopts
+    // that idle shell once it is up, else starts the agent's own session. The creation
+    // stands regardless: any failure past this point is a launchError, never a non-201.
+    let agentId: string | undefined;
+    let launchError: string | undefined;
+    if (worktree === undefined) {
+      launchError = 'The worktree was created, but it could not be resolved to launch an agent.';
+    } else if (launchAgent === false) {
+      if (!await launch.startWorktreeShell(worktree)) launchError = 'The worktree was created, but its shell could not be started.';
+    } else {
+      await launch.startWorktreeShell(worktree);
+      const before = new Set((await discovery.dashboard()).agents.map(agent => agent.id));
+      // report the agent when it appears, but never fail the creation on a slow launch
+      if (await launch.launch(worktreeId)) agentId = (await waitForAgent(before, worktreeId))?.id;
+      else launchError = 'The worktree was created, but the agent could not be started.';
+    }
+    discovery.invalidateWorktrees();
+    await dashboardUpdates.refresh().catch(() => undefined);
+    return reply.code(201).send({ worktreeId, ...(agentId === undefined ? {} : { agentId }), ...(launchError === undefined ? {} : { launchError }) });
   });
   // forget one retained sleeping worktree tab
   app.post('/api/worktrees/:id/deactivate', async (request, reply) => {

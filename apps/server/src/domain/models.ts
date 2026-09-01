@@ -44,5 +44,8 @@ export type CleanupTarget = { id: string; kind: CleanupTargetKind; label: string
  * Worktrees omit the metadata (their Agent carries it).
  */
 export type DashboardWorktree = { id: string; projectId: string; label: string; path: string; available: boolean; pinned: boolean; main: boolean; detached: boolean; locked: boolean; order: number; branch?: string; sha?: string; projectUrl?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; pullRequest?: PullRequestSummary };
-export type DashboardProject = { id: string; label: string; available: boolean; unavailableReason?: string; worktrees: DashboardWorktree[] };
+// `manageWorktrees` (with a reason when false) gates the Add/Remove/Prune controls: a
+// Project whose checkout is missing, or which the Docker bridge does not mount at its
+// host path, cannot have Worktrees created or removed even when its Worktrees still show.
+export type DashboardProject = { id: string; label: string; available: boolean; unavailableReason?: string; manageWorktrees: boolean; manageWorktreesReason?: string; worktrees: DashboardWorktree[] };
 export type Dashboard = { generation: number; serverStartedAt?: number; adapters: Partial<Record<AgentKind, AdapterCapability>>; agents: Agent[]; projects: DashboardProject[] };

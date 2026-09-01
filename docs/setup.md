@@ -176,6 +176,27 @@ list` checkout appears automatically: the Main worktree is git's first entry, a
 bare entry is never a Worktree, a Stale (git-prunable) checkout is hidden, a
 git-locked one is flagged, and a detached HEAD is labelled by its short SHA.
 
+### Creating Worktrees
+
+The `+` launcher lists one section per Project. Each header carries a **New
+worktree…** control that opens a dialog with two modes:
+
+- **New branch** — a branch name plus an editable base (pre-filled with the
+  Project's default branch, `origin/HEAD` when the remote publishes one, else the
+  checkout's current branch). The console creates the branch with
+  `git worktree add --no-track -b <name> <path> <base>`.
+- **Existing branch** — a picker of local branches checked out nowhere plus
+  remote-only branches (marked); git creates the tracking branch for the latter.
+
+The checkout is created under the Project's `worktreesDirectory` at a leaf named
+for the branch (`/` flattened to `-`); you never type a path. The console pins
+the new Worktree so it keeps its tab, gives it an idle shell, and — unless you
+clear **Launch agent** — launches the Project's last-used kind in it. The
+Worktree is created even if that launch fails; the launch error is reported and
+the tab stands. Refusals (an existing branch name, an unresolvable base, a branch
+already checked out elsewhere, or a target path that exists) are reported before
+git runs.
+
 ### Shared bookmarks and notes
 
 Chat bookmarks, sticky notes and saved prompts belong to the **Project** and are

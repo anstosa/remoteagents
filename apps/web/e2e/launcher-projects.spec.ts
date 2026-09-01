@@ -29,7 +29,7 @@ test('launcher lists per-project sections and pins a worktree', async ({ page })
   // open the launcher and confirm the per-project section lists both idle Worktrees
   await page.locator('.new-agent-tab').click();
   const launcher = page.getByRole('group', { name: 'Agent launcher' });
-  await expect(launcher.locator('.launcher-project-header')).toHaveText('Repo');
+  await expect(launcher.locator('.launcher-project-header > span')).toHaveText('Repo');
   // the pinned Main worktree offers an Unpin toggle; the idle feature offers a Pin toggle
   await expect(launcher.getByRole('button', { name: 'Unpin Repo', exact: true })).toBeVisible();
   await launcher.getByRole('button', { name: 'Pin Repo · feature' }).click();
