@@ -43,6 +43,14 @@ export class WorktreeLaunchStore {
     return (await this.read())[key]?.launchProfile;
   }
 
+  // the last Adapter kind launched under every key, read once (the dashboard resolves
+  // many scopes per poll and reads the file once rather than once per scope)
+  async launchProfiles(): Promise<Record<string, AgentKind | undefined>> {
+    await this.mutation;
+    const stored = await this.read();
+    return Object.fromEntries(Object.entries(stored).map(([key, record]) => [key, record.launchProfile]));
+  }
+
   // record the kind a launch or restart used so it resolves first next time
   async rememberLaunchProfile(key: string, kind: AgentKind): Promise<void> {
     // reject unsafe keys and unknown kinds rather than persisting them

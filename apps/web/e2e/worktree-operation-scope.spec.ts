@@ -1,4 +1,9 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
+
+// the "+" launcher toggle in the tab bar
+const launcherToggle = (page: Page): Locator => page.locator('.new-agent-tab');
+// the launch button in a launcher row identified by its worktree label (the split-button primary)
+const launcherRowButton = (page: Page, name: string): Locator => page.getByRole('group', { name: 'Agent launcher' }).locator('.launcher-row').filter({ hasText: name }).getByRole('button', { name: 'Launch agent' });
 
 test('keeps a queued prompt pending only on its originating agent tab', async ({ page }) => {
   let finishQueue!: () => void;
@@ -83,13 +88,13 @@ test('keeps launch state on its worktree tab and does not pull focus back after 
   await page.goto('/');
   const launchButton = page.locator('.prompt-actions .queue');
   await launchButton.click();
-  await expect(page.getByRole('button', { name: 'Launching' })).toBeDisabled();
+  await expect(launchButton).toBeDisabled();
 
   await page.getByRole('tab', { name: /^Bravo/u }).click();
   await expect(launchButton).toBeEnabled();
 
   await page.getByRole('tab', { name: /^Alpha/u }).click();
-  await expect(page.getByRole('button', { name: 'Launching' })).toBeDisabled();
+  await expect(launchButton).toBeDisabled();
 
   await page.getByRole('tab', { name: /^Bravo/u }).click();
   finishLaunch();
@@ -159,18 +164,17 @@ test('creates loading tabs immediately and keeps the worktree launcher available
   });
 
   await page.goto('/');
-  const launcher = page.getByRole('button', { name: 'Launch agent' });
-  const launcherMenu = page.getByRole('group', { name: 'Agent launcher' });
+  const launcher = launcherToggle(page);
   await launcher.click();
-  await launcherMenu.getByRole('button', { name: 'Alpha' }).click();
+  await launcherRowButton(page, 'Alpha').click();
 
   const alphaTab = page.getByRole('tab', { name: 'Alpha — Starting agent' });
   await expect(alphaTab).toHaveAttribute('aria-busy', 'true');
   await expect(launcher).toBeEnabled();
 
   await launcher.click();
-  await expect(launcherMenu.getByRole('button', { name: 'Alpha' })).toBeDisabled();
-  await launcherMenu.getByRole('button', { name: 'Bravo' }).click();
+  await expect(launcherRowButton(page, 'Alpha')).toBeDisabled();
+  await launcherRowButton(page, 'Bravo').click();
 
   const bravoTab = page.getByRole('tab', { name: 'Bravo — Starting agent' });
   await expect(bravoTab).toHaveAttribute('aria-busy', 'true');
@@ -206,16 +210,16 @@ test('expires a successful launch that never reaches the dashboard', async ({ pa
   });
 
   await page.goto('/');
-  const launcher = page.getByRole('button', { name: 'Launch agent' });
+  const launcher = launcherToggle(page);
   await launcher.click();
-  await page.getByRole('group', { name: 'Agent launcher' }).getByRole('button', { name: 'Alpha' }).click();
+  await launcherRowButton(page, 'Alpha').click();
   await expect(page.getByRole('tab', { name: 'Alpha — Starting agent' })).toHaveAttribute('aria-busy', 'true');
 
   await page.clock.fastForward(30_001);
   await expect(page.getByRole('alert')).toContainText('Alpha started, but its agent did not remain discoverable. Try again.');
   await expect(page.getByRole('tab', { name: /^Alpha/u })).toHaveCount(0);
   await launcher.click();
-  await expect(page.getByRole('group', { name: 'Agent launcher' }).getByRole('button', { name: 'Alpha' })).toBeEnabled();
+  await expect(launcherRowButton(page, 'Alpha')).toBeEnabled();
 });
 
 // preserve launch failures after temporary tabs close
@@ -234,8 +238,8 @@ test('shows a failed unpinned worktree launch globally', async ({ page }) => {
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'Launch agent' }).click();
-  await page.getByRole('group', { name: 'Agent launcher' }).getByRole('button', { name: 'Alpha' }).click();
+  await launcherToggle(page).click();
+  await launcherRowButton(page, 'Alpha').click();
 
   await expect(page.getByRole('alert')).toHaveText('Alpha launch failed upstream.');
   await expect(page.getByRole('tab', { name: /^Alpha/u })).toHaveCount(0);
@@ -276,11 +280,12 @@ test('disables a sleeping worktree launcher while wake is pending', async ({ pag
   });
 
   await page.goto('/');
-  const launcher = page.getByRole('button', { name: 'Launch agent' });
+  const launcher = launcherToggle(page);
+  const wakeAlpha = page.getByRole('group', { name: 'Agent launcher' }).locator('.launcher-row').filter({ hasText: 'Alpha' }).getByRole('button', { name: 'Wake up' });
   await launcher.click();
-  await page.getByRole('group', { name: 'Agent launcher' }).getByRole('button', { name: 'Alpha' }).click();
+  await wakeAlpha.click();
   await launcher.click();
-  await expect(page.getByRole('group', { name: 'Agent launcher' }).getByRole('button', { name: 'Alpha' })).toBeDisabled();
+  await expect(wakeAlpha).toBeDisabled();
   await expect.poll(() => interimDashboards, { timeout: 10_000 }).toBeGreaterThan(0);
   await expect(page.getByRole('tab', { name: 'Alpha — Waking up' })).toHaveAttribute('aria-busy', 'true');
 

@@ -40,7 +40,7 @@ test('backgrounds an idle agent and swaps the output area to its interactive ter
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready' }, { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/delta', title: 'Second' }], worktrees: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready', kind: 'codex', attention: 'finished' }, { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/delta', title: 'Second', kind: 'claude', attention: 'finished' }], worktrees: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/agents/agent-1/background') {
       backgroundRequests += 1;

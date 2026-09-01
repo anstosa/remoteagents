@@ -19,6 +19,7 @@ import { maxPromptAttachments, maxPromptAttachmentBytes, PromptService, type Pro
 import { validPrompt } from './prompts/validation.js';
 import { QueuedPromptService } from './prompts/queue.js';
 import { LaunchService } from './launch/service.js';
+import { scratchLaunchKey } from './worktrees/store.js';
 import * as pty from 'node-pty';
 import { safeEnv } from './tmux/command.js';
 import { PushService } from './push-service.js';
@@ -247,7 +248,11 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const controlFor = (worktreeId: string | undefined) => worktreeId === undefined ? undefined : controls.get(worktreeId);
     const reviewBranches = config.worktrees.map(worktree => ({ worktreeId: worktree.id, branch: discovered.agents.find(agent => agent.worktreeId === worktree.id)?.branch ?? discovered.worktrees.find(candidate => candidate.id === worktree.id)?.branch }));
     const reviews = await reviewStore.summaries(reviewBranches);
-    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }) })), worktrees: discovered.worktrees.map(worktree => ({ ...worktree, ...(sleepingWorktrees.has(worktree.id) ? { sleeping: true } : {}), ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }) })), cleanupPending: cleanup.pending().length, reviewTour: reviewTourCapability, reviews };
+    // resolve the Launch profile for every scope the web can launch into: each idle
+    // worktree, each running agent's worktree (for Restart as…), and the Scratch group
+    const launchResolutions = await launch.launchResolutions([scratchLaunchKey, ...discovered.worktrees.map(worktree => worktree.id), ...discovered.agents.flatMap(agent => agent.worktreeId === undefined ? [] : [agent.worktreeId])]);
+    const launchFor = (worktreeId: string | undefined) => launchResolutions.get(worktreeId ?? scratchLaunchKey);
+    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }), ...(launchFor(agent.worktreeId) === undefined ? {} : { launch: launchFor(agent.worktreeId) }) })), worktrees: discovered.worktrees.map(worktree => ({ ...worktree, ...(sleepingWorktrees.has(worktree.id) ? { sleeping: true } : {}), ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }), ...(launchFor(worktree.id) === undefined ? {} : { launch: launchFor(worktree.id) }) })), cleanupPending: cleanup.pending().length, scratchLaunch: launchResolutions.get(scratchLaunchKey), reviewTour: reviewTourCapability, reviews };
   };
   // observe only agent state needed by cross-instance attention
   const localInstanceAttention = async () => {

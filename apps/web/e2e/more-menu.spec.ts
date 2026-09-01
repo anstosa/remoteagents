@@ -26,6 +26,8 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
           sessionId: 'socket:$1',
           workspace: '/worktrees/cora',
           title: 'Ready',
+          kind: 'codex',
+          attention: 'finished',
           push: { label: 'Finish and PR', prompt: '$finish' },
           newTaskConfigured: true
         }],

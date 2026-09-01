@@ -20,6 +20,7 @@ import { UpstreamRebaseBanner, type GitUpstreamSummary } from './upstream-rebase
 import { useViewportFlyout } from './viewport-flyout.js';
 import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
 import { VoiceDialog, type VoiceWorktree } from './voice/voice-dialog.js';
+import { AdaptersContext, agentKindGlyph, agentKindLabel, agentKinds, configuredKinds, LaunchMenu, LaunchSplitButton, LaunchTabBadge, launchRequestInit, type AdapterCapabilities, type AgentKind, type LaunchChoice, type LaunchResolution } from './launch-profile.js';
 import './styles.css';
 
 // the fields the web reads off the server's inline-question payload; the server
@@ -38,19 +39,13 @@ type GitComparisonSummary = { base: string; files: number; changes?: GitStatusCh
 type NewTaskAvailability = { enabled: boolean; reason?: string };
 type OperationFeedback = { id: number; tone: 'pending'|'success'|'error'; message: string; detail: string; worktreeId?: string };
 type CleanupTarget = { id: string; kind: 'orphan-worker'|'stale-agent'|'hud-pane'|'hud-process'; label: string; detail: string };
-type AgentKind = 'codex' | 'claude' | 'pi' | 'opencode';
-// per-kind badge glyph and display label, shared by the tab badge and the settings AGENTS card
-const agentKindGlyph: Record<AgentKind, string> = { codex: '◆', claude: '✳', pi: 'π', opencode: '◇' };
-const agentKindLabel: Record<AgentKind, string> = { codex: 'Codex', claude: 'Claude', pi: 'Pi', opencode: 'OpenCode' };
-type AdapterCapability = { launchable: boolean; unavailableReason?: string; program?: string; stateSource: 'reported' | 'title' | 'both'; turnCapture: boolean; bookmarks: boolean; inlineQuestions: boolean; commands: boolean; sandbox: boolean };
-type AdapterCapabilities = Partial<Record<AgentKind, AdapterCapability>>;
 type AttentionState = 'working' | 'finished' | 'question';
-type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: InlineQuestion; stack?: Stack; unread?: boolean; queuedPromptCount: number };
-type Worktree = { id: string; label: string; path: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; sleeping?: boolean; order: number; projectUrl?: string; pullRequest?: PullRequestSummary; stack?: Stack };
+type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: InlineQuestion; stack?: Stack; unread?: boolean; queuedPromptCount: number; launch?: LaunchResolution };
+type Worktree = { id: string; label: string; path: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; sleeping?: boolean; order: number; projectUrl?: string; pullRequest?: PullRequestSummary; stack?: Stack; launch?: LaunchResolution };
 type ReviewTourCapability = { available: true } | { available: false; reason: 'generator_unavailable'|'unsupported_cli'|'configuration_invalid'|'authentication_required' };
 type StoredReviewSummary = { worktreeId: string; branch: string; savedAt: string; title: string; scope: ReviewScope; includeTests: boolean; includeDocs: boolean; fingerprint: string };
 type ReviewButtonState = ReviewTourIndicator & { onOpen: () => void };
-type Dashboard = { generation?: number; serverStartedAt?: number; adapters?: AdapterCapabilities; agents: Agent[]; worktrees: Worktree[]; cleanupPending?: number; reviewTour?: ReviewTourCapability; reviews?: StoredReviewSummary[] };
+type Dashboard = { generation?: number; serverStartedAt?: number; adapters?: AdapterCapabilities; agents: Agent[]; worktrees: Worktree[]; cleanupPending?: number; scratchLaunch?: LaunchResolution; reviewTour?: ReviewTourCapability; reviews?: StoredReviewSummary[] };
 // validate durable review dashboard summaries
 const isStoredReviewSummary = (value: unknown): value is StoredReviewSummary => value !== null && typeof value === 'object'
   && typeof (value as StoredReviewSummary).worktreeId === 'string'
@@ -584,8 +579,6 @@ type ClientSettings = {
   cancelCodexAccountLogin: (id: string) => Promise<void>;
 };
 const ClientSettingsContext = createContext<ClientSettings | undefined>(undefined);
-// the dashboard's per-kind adapter capabilities, provided by the active dashboard for the settings menu
-const AdaptersContext = createContext<AdapterCapabilities | undefined>(undefined);
 // format one server host
 const serverHostLabel = (url: string): string => {
   try {
@@ -1054,7 +1047,7 @@ function ServerUpdateDialog({ open, minimized, onMinimize, onClose }: { open: bo
 function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const adapters = useContext(AdaptersContext);
   // one row per configured kind (a configured kind carries a program), in registry order
-  const configuredAdapters = (Object.keys(agentKindGlyph) as AgentKind[]).flatMap(kind => { const capability = adapters?.[kind]; return capability?.program === undefined ? [] : [[kind, capability] as const]; });
+  const configuredAdapters = agentKinds.flatMap(kind => { const capability = adapters?.[kind]; return capability?.program === undefined ? [] : [[kind, capability] as const]; });
   // Codex account management is available only when adapters.codex is configured
   const codexConfigured = adapters?.codex?.program !== undefined;
   const [open, setOpen] = useState(false);
@@ -1386,22 +1379,33 @@ class ConsoleBoundary extends Component<{ children: ReactNode }, { failed: boole
 }
 
 // define state-specific power actions
-type AgentPowerMenuProps = { pending: boolean; onTurnOff: () => void } & ({ mode: 'active'; onRestart: () => void; onClear: () => void; onSleep: () => void } | { mode: 'sleeping'; onWake: () => void });
+// `restartAs` (active mode only) adds a "Restart as…" item that opens the Launch menu as
+// a second page within the same flyout, restarting the agent under the chosen kind.
+type RestartAs = { label: string; resolution?: LaunchResolution; onLaunch: (choice: LaunchChoice) => void };
+type AgentPowerMenuProps = { pending: boolean; onTurnOff: () => void } & ({ mode: 'active'; onRestart: () => void; onClear: () => void; onSleep: () => void; restartAs?: RestartAs } | { mode: 'sleeping'; onWake: () => void });
 // render configured-agent power choices
 function AgentPowerMenu(props: AgentPowerMenuProps) {
   const { pending, onTurnOff } = props;
+  const adapters = useContext(AdaptersContext);
   const [open, setOpen] = useState(false);
+  const [view, setView] = useState<'root' | 'restart-as'>('root');
   const { anchorRef, flyoutRef, style } = useViewportFlyout(open);
+  // reopen every menu on its root page
+  useEffect(() => { if (!open) setView('root'); }, [open]);
   // choose one power action
   const choose = (action: () => void) => {
     setOpen(false);
     action();
   };
-  // limit sleeping tabs to wake and shutdown
+  // "Restart as…" only when there is a configured kind to choose (a legacy config with no
+  // `adapters` block has none — its Codex still restarts via plain Restart)
+  const restartAs = props.mode === 'active' && configuredKinds(adapters).length > 0 ? props.restartAs : undefined;
+  // limit sleeping tabs to wake and shutdown; Restart as… sits between Restart and Clear
   const stateActions = props.mode === 'sleeping'
     ? <button type="button" role="menuitem" onClick={() => choose(props.onWake)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>
-    : <><button type="button" role="menuitem" onClick={() => choose(props.onRestart)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart</button><button type="button" role="menuitem" onClick={() => choose(props.onClear)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 15 8-8 5 5-8 8H4v-5Zm7-7 5 5M10 20h10" /></svg>Clear</button><button type="button" role="menuitem" onClick={() => choose(props.onSleep)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg>Sleep</button></>;
-  return <><span className="power-menu-wrap" ref={anchorRef}><button className="danger icon-button deactivate-agent" disabled={pending} aria-label="Agent power options" aria-expanded={open} aria-haspopup="menu" title="Agent power options" onClick={() => setOpen(current => !current)}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button></span>{open && <FlyoutPortal onDismiss={() => setOpen(false)}><div className="more-menu flyout-menu agent-power-menu" ref={flyoutRef} style={style} role="menu" aria-label="Agent power options">{stateActions}<button className="agent-power-off" type="button" role="menuitem" onClick={() => choose(onTurnOff)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>Turn off</button></div></FlyoutPortal>}</>;
+    : <><button type="button" role="menuitem" onClick={() => choose(props.onRestart)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart</button>{restartAs !== undefined && <button type="button" role="menuitem" aria-haspopup="menu" onClick={() => setView('restart-as')}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart as…</button>}<button type="button" role="menuitem" onClick={() => choose(props.onClear)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 15 8-8 5 5-8 8H4v-5Zm7-7 5 5M10 20h10" /></svg>Clear</button><button type="button" role="menuitem" onClick={() => choose(props.onSleep)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg>Sleep</button></>;
+  const restartAsPage = restartAs === undefined ? null : <LaunchMenu verb="Restart" label={restartAs.label} resolution={restartAs.resolution} onLaunch={choice => choose(() => restartAs.onLaunch(choice))} />;
+  return <><span className="power-menu-wrap" ref={anchorRef}><button className="danger icon-button deactivate-agent" disabled={pending} aria-label="Agent power options" aria-expanded={open} aria-haspopup="menu" title="Agent power options" onClick={() => setOpen(current => !current)}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button></span>{open && <FlyoutPortal onDismiss={() => setOpen(false)}><div className="more-menu flyout-menu agent-power-menu" ref={flyoutRef} style={style} role="menu" aria-label="Agent power options">{view === 'restart-as' && restartAs !== undefined ? restartAsPage : <>{stateActions}<button className="agent-power-off" type="button" role="menuitem" onClick={() => choose(onTurnOff)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>Turn off</button></>}</div></FlyoutPortal>}</>;
 }
 
 // render reusable mobile terminal controls
@@ -1435,7 +1439,7 @@ function MobileTerminalKeys({ id }: { id: string }) {
 }
 
 // render the agent prompt controls
-function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting, restarting, clearing, deactivating, sleeping, swapping, swapped, onCancel, onDelete, onRestart, onClear, onDeactivate, onSleep, onSwap, onSelectTarget, onPromptFocus, onOperationFeedback, projectUrl, browserOpen, onBrowserToggle, question, worktreeId, newTaskConfigured, pushAction, stack, review }: { id: string; history: PromptHistoryEntry[]; onHistoryChanged: () => Promise<void>; canCancel: boolean; cancelling: boolean; deleting: boolean; restarting: boolean; clearing: boolean; deactivating: boolean; sleeping: boolean; swapping: boolean; swapped: boolean; onCancel: () => void; onDelete?: () => void; onRestart?: () => void; onClear?: () => void; onDeactivate?: () => void; onSleep?: () => void; onSwap: () => void; onSelectTarget: (target: DashboardTarget) => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; projectUrl?: string; browserOpen?: boolean; onBrowserToggle?: () => void; question?: ChoiceQuestion; worktreeId?: string; newTaskConfigured?: boolean; pushAction?: PromptAction; stack?: Stack; review?: ReviewButtonState }) {
+function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting, restarting, clearing, deactivating, sleeping, swapping, swapped, onCancel, onDelete, onRestart, onRestartAs, onClear, onDeactivate, onSleep, onSwap, onSelectTarget, onPromptFocus, onOperationFeedback, projectUrl, browserOpen, onBrowserToggle, question, worktreeId, newTaskConfigured, pushAction, stack, review }: { id: string; history: PromptHistoryEntry[]; onHistoryChanged: () => Promise<void>; canCancel: boolean; cancelling: boolean; deleting: boolean; restarting: boolean; clearing: boolean; deactivating: boolean; sleeping: boolean; swapping: boolean; swapped: boolean; onCancel: () => void; onDelete?: () => void; onRestart?: () => void; onRestartAs?: RestartAs; onClear?: () => void; onDeactivate?: () => void; onSleep?: () => void; onSwap: () => void; onSelectTarget: (target: DashboardTarget) => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; projectUrl?: string; browserOpen?: boolean; onBrowserToggle?: () => void; question?: ChoiceQuestion; worktreeId?: string; newTaskConfigured?: boolean; pushAction?: PromptAction; stack?: Stack; review?: ReviewButtonState }) {
   const [value, setValue] = usePromptDraft(id);
   const [commandToken, setCommandToken] = useState<CommandToken>();
   const [activeCommand, setActiveCommand] = useState(0);
@@ -1887,7 +1891,7 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
   };
   const cancelButton = <button className="danger icon-button cancel-agent" disabled={!canCancel || cancelling} aria-label="Cancel agent" title="Cancel agent" onClick={onCancel}>{cancelling ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>}</button>;
   const deleteButton = <button className="danger icon-button delete-agent" disabled={deleting} aria-label="Delete agent" title="Delete agent" onClick={onDelete}>{deleting ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button>;
-  const powerMenu = onRestart === undefined || onClear === undefined || onDeactivate === undefined || onSleep === undefined ? null : <AgentPowerMenu mode="active" pending={restarting || clearing || deactivating || sleeping} onRestart={onRestart} onClear={onClear} onSleep={onSleep} onTurnOff={onDeactivate} />;
+  const powerMenu = onRestart === undefined || onClear === undefined || onDeactivate === undefined || onSleep === undefined ? null : <AgentPowerMenu mode="active" pending={restarting || clearing || deactivating || sleeping} onRestart={onRestart} onClear={onClear} onSleep={onSleep} onTurnOff={onDeactivate} {...(onRestartAs === undefined ? {} : { restartAs: onRestartAs })} />;
   const stop = powerMenu ?? (onDelete === undefined ? cancelButton : deleteButton);
   const swapLabel = swapped ? 'Return to agent output' : 'Swap to terminal';
   const swap = <button className={`swap-agent icon-button${swapped ? ' active' : ''}`} disabled={swapping} aria-label={swapLabel} title={swapped ? 'Return to agent output' : 'Background agent and show terminal'} onClick={onSwap}>{swapping ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h13m0 0-4-4m4 4-4 4M19 17H6m0 0 4 4m-4-4 4-4" /></svg>}</button>;
@@ -4407,8 +4411,8 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
       setDeactivating(false);
     }
   };
-  // restart one configured agent
-  const restart = async () => {
+  // restart one configured agent, optionally under a different kind ("Restart as…")
+  const restart = async (choice?: LaunchChoice) => {
     // require an idle configured target
     if (restarting || agent.worktreeId === undefined || !beginPendingOperation(restartOperationKey(agent.worktreeId))) return;
     const operationKey = restartOperationKey(agent.worktreeId);
@@ -4417,7 +4421,7 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
     const label = agent.worktreeLabel ?? agentLabel(agent);
     onOperationFeedback({ tone: 'pending', message: `Restarting ${label}…`, detail: 'Closing the agent, running the resume alias, and waiting for the conversation to reconnect.', worktreeId: agent.worktreeId });
     try {
-      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/restart`, { method: 'POST' });
+      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/restart`, choice === undefined ? { method: 'POST' } : launchRequestInit(choice));
       // surface failed restarts after refreshing the closed agent
       if (!response.ok) {
         const message = await launchError(response);
@@ -4550,29 +4554,29 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
   };
   // reserve Remote Agents repository updates for the reviewed host update flow
   const upstreamRebase = agent.worktreeId === 'remoteagents' ? null : <UpstreamRebaseBanner summary={agent.gitUpstream} onRebase={queueRebase} />;
-  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} browserNavigationRequest={projectBrowser.navigationRequest} onBrowserNavigate={projectBrowser.navigate} onBrowserOpen={projectBrowser.openUrl} onBrowserClose={projectBrowser.close} terminalMode={swapped} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />{tabBar}{upstreamRebase}<PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) }); if (response.ok) await promptHistory.refresh(); return response.ok; }} /><Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} sleeping={sleeping} swapping={swapping} swapped={swapped} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSleep={!active && agent.worktreeId !== undefined ? () => void sleep() : undefined} onSwap={() => void changePaneMode()} onSelectTarget={onSelectTarget} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} pushAction={agent.push} stack={agent.stack} review={review} /></article>;
+  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} browserNavigationRequest={projectBrowser.navigationRequest} onBrowserNavigate={projectBrowser.navigate} onBrowserOpen={projectBrowser.openUrl} onBrowserClose={projectBrowser.close} terminalMode={swapped} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />{tabBar}{upstreamRebase}<PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) }); if (response.ok) await promptHistory.refresh(); return response.ok; }} /><Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} sleeping={sleeping} swapping={swapping} swapped={swapped} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onRestartAs={!active && agent.worktreeId !== undefined ? { label: agent.worktreeLabel ?? agentLabel(agent), resolution: agent.launch, onLaunch: choice => void restart(choice) } : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSleep={!active && agent.worktreeId !== undefined ? () => void sleep() : undefined} onSwap={() => void changePaneMode()} onSelectTarget={onSelectTarget} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} pushAction={agent.push} stack={agent.stack} review={review} /></article>;
 }
 
 function launchError(response: Response): Promise<string> {
   return response.json().then((body: { error?: unknown }) => typeof body.error === 'string' ? body.error : `Launch failed (${response.status}).`).catch(() => `Launch failed (${response.status}).`);
 }
 
-type InactiveWorktreePresentation = { ariaLabel?: string; heading: string; detail: string; status: string; buttonLabel: string };
-// describe one inactive worktree state
+type InactiveWorktreePresentation = { ariaLabel?: string; heading: string; detail: string; status: string };
+// describe one inactive worktree state (the Launch button now shows its own kind label)
 const inactiveWorktreePresentation = (label: string, state: { startingNewTask: boolean; restarting: boolean; turningOff: boolean; waking: boolean; launching: boolean; sleeping: boolean }): InactiveWorktreePresentation => {
   // describe a fresh conversation
-  if (state.startingNewTask) return { ariaLabel: 'Starting new task', heading: 'Starting new task…', detail: 'Waiting for the fresh agent session to become ready.', status: 'Starting', buttonLabel: 'Starting new task' };
+  if (state.startingNewTask) return { ariaLabel: 'Starting new task', heading: 'Starting new task…', detail: 'Waiting for the fresh agent session to become ready.', status: 'Starting' };
   // describe a restarted conversation
-  if (state.restarting) return { ariaLabel: `Restarting ${label}`, heading: 'Restarting agent…', detail: 'Running the resume alias and reconnecting the previous conversation.', status: 'Restarting', buttonLabel: 'Restarting' };
+  if (state.restarting) return { ariaLabel: `Restarting ${label}`, heading: 'Restarting agent…', detail: 'Running the resume alias and reconnecting the previous conversation.', status: 'Restarting' };
   // describe sleeping-tab shutdown
-  if (state.turningOff) return { ariaLabel: `Turning off ${label}`, heading: 'Turning off…', detail: 'Removing the retained sleeping tab.', status: 'Turning off', buttonLabel: 'Turning off' };
+  if (state.turningOff) return { ariaLabel: `Turning off ${label}`, heading: 'Turning off…', detail: 'Removing the retained sleeping tab.', status: 'Turning off' };
   // describe a waking conversation
-  if (state.waking) return { ariaLabel: `Waking ${label}`, heading: 'Waking up…', detail: 'Running the resume alias and reconnecting the previous conversation.', status: 'Waking', buttonLabel: 'Wake up' };
+  if (state.waking) return { ariaLabel: `Waking ${label}`, heading: 'Waking up…', detail: 'Running the resume alias and reconnecting the previous conversation.', status: 'Waking' };
   // describe a fresh launch
-  if (state.launching) return { ariaLabel: `Starting ${label}`, heading: 'Starting Codex…', detail: 'Creating the agent session and connecting its output.', status: 'Starting', buttonLabel: 'Launching' };
+  if (state.launching) return { ariaLabel: `Starting ${label}`, heading: 'Starting Codex…', detail: 'Creating the agent session and connecting its output.', status: 'Starting' };
   // describe retained sleep
-  if (state.sleeping) return { ariaLabel: `${label} sleeping`, heading: 'Agent is sleeping', detail: 'The agent process is closed, but this tab is waiting for you.', status: 'Sleep', buttonLabel: 'Wake up' };
-  return { heading: 'Agent is off', detail: 'This worktree is available. Launch an agent when you are ready to continue.', status: 'Off', buttonLabel: 'Launch agent' };
+  if (state.sleeping) return { ariaLabel: `${label} sleeping`, heading: 'Agent is sleeping', detail: 'The agent process is closed, but this tab is waiting for you.', status: 'Sleep' };
+  return { heading: 'Agent is off', detail: 'This worktree is available. Launch an agent when you are ready to continue.', status: 'Off' };
 };
 
 // render an inactive worktree
@@ -4606,7 +4610,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
     return () => window.clearTimeout(timer);
   }, [error]);
   // start or resume one inactive worktree
-  const start = async () => {
+  const start = async (choice?: LaunchChoice) => {
     const operationKey = worktreeLaunchOperationKey(worktree);
     const action = sleeping ? 'wake' : 'launch';
     // serialize inactive worktree actions
@@ -4616,7 +4620,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
     setError('');
     onOperationFeedback({ tone: 'pending', message: `${sleeping ? 'Waking' : 'Starting'} ${worktree.label}…`, detail: sleeping ? 'Running the resume alias and waiting for the previous conversation.' : 'Launching Codex and waiting for the agent session to become ready.', worktreeId: worktree.id });
     try {
-      const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/${action}`, { method: 'POST' });
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/${action}`, sleeping || choice === undefined ? { method: 'POST' } : launchRequestInit(choice));
       // surface failed starts
       if (!response.ok) {
         const message = await launchError(response);
@@ -4674,7 +4678,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
   const sleepingPowerMenu = sleeping ? <AgentPowerMenu mode="sleeping" pending={!worktree.available || processing} onWake={() => void start()} onTurnOff={() => void turnOff()} /> : null;
   const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className={`log-loading inactive${sleeping ? ' sleeping' : ''}`} role={processing || sleeping ? 'status' : undefined} aria-label={presentation.ariaLabel}>{processing ? <span className="spinner" /> : sleeping ? <svg className="sleeping-agent-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg> : null}<strong>{presentation.heading}</strong><span>{presentation.detail}</span>{sleeping && !processing && <button className="wake-agent" type="button" disabled={!worktree.available} onClick={() => void start()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>}</div><span className={`status log-status ${processing ? 'connecting' : sleeping ? 'sleeping' : 'inactive'}`}>{presentation.status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeBookmarks.control}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div>;
   const browserPane = projectBrowser.url === undefined || projectBrowser.homeUrl === undefined ? null : <ProjectBrowserPane url={projectBrowser.url} homeUrl={projectBrowser.homeUrl} worktreeId={worktree.id} onNavigate={projectBrowser.navigate} onClose={projectBrowser.close} />;
-  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit worktreeId={worktree.id} output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{filePreview.dialog}<div className={`log-topbar${gitExpanded ? ' expanded' : ''}`}><GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} expanded={gitExpanded} onToggle={() => setGitExpanded(value => !value)} onOpenFile={openGitFile} reviewUnavailable="Launch agent to review" /></div></section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} /><PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions">{sleepingPowerMenu}<span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} />{!sleeping && <button className="queue" disabled={!worktree.available || processing} onClick={() => void start()}>{processing && <span className="spinner" />}{presentation.buttonLabel}</button>}</div></section></article>;
+  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit worktreeId={worktree.id} output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{filePreview.dialog}<div className={`log-topbar${gitExpanded ? ' expanded' : ''}`}><GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} expanded={gitExpanded} onToggle={() => setGitExpanded(value => !value)} onOpenFile={openGitFile} reviewUnavailable="Launch agent to review" /></div></section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} /><PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions">{sleepingPowerMenu}<span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} />{!sleeping && <LaunchSplitButton label={worktree.label} resolution={worktree.launch} disabled={!worktree.available} pending={processing} onLaunch={choice => void start(choice)} />}</div></section></article>;
 }
 
 // render browser notification enrollment
@@ -5200,14 +5204,14 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
     }
     void refresh();
   };
-  const createAgent = async () => {
+  const createAgent = async (choice?: LaunchChoice) => {
     if (creatingAgent) return;
     setLaunchErrorMessage('');
     setLauncherOpen(false);
     setCreatingAgent(true);
     showOperationFeedback({ tone: 'pending', message: 'Starting scratch agent…', detail: 'Creating a new temporary session and waiting for it to become ready.' });
     try {
-      const response = await request('/api/agents/launch', { method: 'POST' });
+      const response = await request('/api/agents/launch', choice === undefined ? { method: 'POST' } : launchRequestInit(choice));
       if (!response.ok) {
         const message = await launchError(response);
         setLaunchErrorMessage(message);
@@ -5241,7 +5245,7 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
     return () => observer.disconnect();
   }, [items.length, launcherOpen, activeItemKey]);
   // start or resume from the launcher
-  const launchWorktree = async (worktree: Worktree) => {
+  const launchWorktree = async (worktree: Worktree, choice?: LaunchChoice) => {
     const waking = worktree.sleeping === true;
     const key = worktreeLaunchOperationKey(worktree);
     // prevent duplicate worktree launches
@@ -5253,7 +5257,7 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
     setLaunchErrorMessage('');
     showOperationFeedback({ tone: 'pending', message: `${waking ? 'Waking' : 'Starting'} ${worktree.label}…`, detail: waking ? 'Running the resume alias and waiting for the previous conversation.' : 'Launching Codex and waiting for the agent session to become ready.', worktreeId: worktree.id });
     try {
-      const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/${waking ? 'wake' : 'launch'}`, { method: 'POST' });
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/${waking ? 'wake' : 'launch'}`, waking || choice === undefined ? { method: 'POST' } : launchRequestInit(choice));
       // surface failed starts
       if (!response.ok) {
         const message = await launchError(response);
@@ -5377,10 +5381,12 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
   const tabBar = <><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => {
     const transition = dashboardOperationLabel(entry.operation);
     const label = transition ?? stateLabel[entry.state];
-    return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
-  })}<NotificationControl />{updateControl !== undefined && <button className="update-ready" type="button" onClick={updateControl.onClick}>{updateControl.label} <span>{updateControl.action}</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><button disabled={creatingAgent} onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
+    return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{entry.agent?.kind !== undefined && <LaunchTabBadge kind={entry.agent.kind} sandboxed={entry.agent.sandboxed} />}{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
+  })}<NotificationControl />{updateControl !== undefined && <button className="update-ready" type="button" onClick={updateControl.onClick}>{updateControl.label} <span>{updateControl.action}</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label">~ Scratch</span><LaunchSplitButton label="~ Scratch" resolution={data.scratchLaunch} compact inline disabled={creatingAgent} onLaunch={choice => void createAgent(choice)} /></div>{data.worktrees.map(worktree => <div key={worktree.id} className="launcher-row"><span className="launcher-row-label">{worktree.label}</span>{worktree.sleeping === true
+        ? <button type="button" className="launch-compact" disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onClick={() => void launchWorktree(worktree)}>Wake up</button>
+        : <LaunchSplitButton label={worktree.label} resolution={worktree.launch} compact inline disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onLaunch={choice => void launchWorktree(worktree, choice)} />}</div>)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
   const consoleClass = `console${voiceOpen ? ' voice-visible' : ''}`;
-  if (items.length === 0) return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{reviewDialog}</article></main></VoiceTriggerContext.Provider>;
+  if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{reviewDialog}</article></main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
   return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{reviewDialog}</main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
 }
 

@@ -515,6 +515,43 @@ describe('pull request switch API', () => {
   }, 15_000);
 });
 
+describe('dashboard launch resolution', () => {
+  it('publishes each scope\'s launch profile: worktree, running agent, and scratch', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const discovery = {
+      dashboard: async () => ({
+        generation: 1,
+        agents: [{ id: 'agent-cora', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', title: 'Ready', kind: 'codex', attention: 'finished' }],
+        worktrees: [{ id: 'delta', label: 'Delta', path: '/worktrees/delta', available: true, pinned: true, order: 1 }]
+      }),
+      target: async () => undefined
+    };
+    // record the scope keys the loader asks for; map each to a resolution tagged with its key
+    const requestedScopes: string[][] = [];
+    const launch = {
+      launch: async () => false,
+      launchHome: async () => false,
+      resume: async () => false,
+      launchResolutions: async (keys: Iterable<string>) => { const scopes = [...keys]; requestedScopes.push(scopes); return new Map(scopes.map(key => [key, { kind: 'claude', origin: key }])); }
+    };
+    const app = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 27).toString('base64url')), discovery: discovery as never, launch: launch as never, launchPollDelay: async () => {} });
+    try {
+      const boot = await app.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await app.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const cookie = String(login.headers['set-cookie']).split(';')[0];
+      const dashboard = await app.inject({ method: 'GET', url: '/api/dashboard', headers: { host: 'agents.example.com', cookie } });
+      const body = dashboard.json();
+      // the worktree carries its own scope's resolution, the agent carries its worktree's, scratch its group's
+      expect(body.worktrees[0].launch).toEqual({ kind: 'claude', origin: 'delta' });
+      expect(body.agents[0].launch).toEqual({ kind: 'claude', origin: 'cora' });
+      expect(body.scratchLaunch).toEqual({ kind: 'claude', origin: 'scratch' });
+      expect(requestedScopes.some(scopes => scopes.includes('scratch') && scopes.includes('delta') && scopes.includes('cora'))).toBe(true);
+    } finally {
+      await app.close();
+    }
+  }, 15_000);
+});
+
 describe('configured worktree deactivation', () => {
   it('closes an idle configured agent so its worktree becomes inactive', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
@@ -550,7 +587,9 @@ describe('configured worktree deactivation', () => {
       // wake through the requested alias
       resume: async (id: string) => { resumed = id; active = true; return true; },
       launch: async () => false,
-      launchHome: async () => false
+      launchHome: async () => false,
+      // the dashboard loader resolves each scope's Launch profile
+      launchResolutions: async () => new Map()
     };
     const sleepApp = await buildApp({ ...config, worktrees: [worktree] }, { auth: new AuthService(hash, Buffer.alloc(32, 21).toString('base64url')), discovery: discovery as never, launch: launch as never, tmux: { close: async () => { active = false; return true; } } as never, launchPollDelay: async () => {} });
     try {

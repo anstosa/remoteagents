@@ -1,11 +1,16 @@
 import type { Agent, Dashboard, StackAction } from '../domain/models.js';
+import type { LaunchResolution } from '../launch/resolution.js';
 import type { ReviewTourCapability, StoredReviewTourSummary } from '../review-tour/contracts.js';
 
 type StackState = { running?: boolean; transition?: 'starting' | 'migrating'; operation?: StackAction; tunnel?: boolean };
 export type DashboardPayload = Omit<Dashboard, 'agents' | 'worktrees'> & {
-  agents: Array<Agent & { unread: boolean; queuedPromptCount: number; stack?: StackState }>;
-  worktrees: Array<Dashboard['worktrees'][number] & { sleeping?: boolean; stack?: StackState }>;
+  // `launch` carries each scope's resolved Launch profile so the web renders the Launch
+  // menu without re-deriving it (a running agent's is its worktree's; a scratch agent's
+  // is `scratchLaunch`); `scratchLaunch` is the Scratch group's resolution.
+  agents: Array<Agent & { unread: boolean; queuedPromptCount: number; stack?: StackState; launch?: LaunchResolution }>;
+  worktrees: Array<Dashboard['worktrees'][number] & { sleeping?: boolean; stack?: StackState; launch?: LaunchResolution }>;
   cleanupPending: number;
+  scratchLaunch?: LaunchResolution;
   reviewTour: ReviewTourCapability;
   reviews: StoredReviewTourSummary[];
 };

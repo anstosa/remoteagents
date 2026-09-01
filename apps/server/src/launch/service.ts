@@ -8,9 +8,10 @@ import { hostCommand, hostInteractiveShellPath, interactiveShellBootstrap, inter
 import { startNamedReplacementSession, worktreeSessionName } from '../tmux/session-name.js';
 import { ProcSocketFinder, workspaceRoot, type SocketFinder } from '../discovery/service.js';
 import { worktreeHostRoot, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
-import { adapterFor } from '../adapters/registry.js';
+import { adapterCapabilities, adapterFor } from '../adapters/registry.js';
 import { renderAdapterFiles, type RenderedAdapterFiles } from '../adapters/files.js';
 import { agentKinds, type AgentKind, type LaunchInput, type LaunchMode } from '../adapters/types.js';
+import { resolveLaunchProfile, type LaunchResolution } from './resolution.js';
 import { WorktreeLaunchStore, scratchLaunchKey } from '../worktrees/store.js';
 import type { Pane, SocketRef, Worktree } from '../domain/models.js';
 import { updateAdvisorPendingLabel } from '../update-advisor.js';
@@ -90,16 +91,33 @@ export class LaunchService {
   }
 
   // resolve which kind a launch uses: an explicit request must be launchable; otherwise
-  // the last-used kind for this scope, else the first launchable kind in registry order
+  // the same precedence the dashboard displays, so the launched kind never diverges from
+  // the one the Launch button named (an unreadable store falls back to the first launchable)
   async resolveLaunchKind(scopeKey: string, requested?: AgentKind): Promise<AgentKind | undefined> {
     const kinds = this.launchableKinds();
     if (kinds.length === 0) return undefined;
     if (requested !== undefined) return kinds.includes(requested) ? requested : undefined;
-    // the remembered profile only matters when more than one kind can launch;
-    // an unreadable store falls back to the first launchable kind rather than failing
+    // a single launchable kind is always the answer; skip the store read on the hot path
     if (kinds.length === 1) return kinds[0];
     const remembered = await this.worktreeStore.launchProfile(scopeKey).catch(() => undefined);
-    return remembered !== undefined && kinds.includes(remembered) ? remembered : kinds[0];
+    const scope = scopeKey === scratchLaunchKey ? 'scratch' as const : 'worktree' as const;
+    return resolveLaunchProfile(kinds, [{ origin: scope, kind: remembered }], adapterCapabilities(this.config.adapters)).kind;
+  }
+
+  // The Launch profile resolution the dashboard publishes for each scope so the web
+  // renders the Launch menu without re-deriving it. Reads the whole launch-profile
+  // store once; `scratchLaunchKey` resolves in the scratch scope, every other key in
+  // the worktree scope (chunk 3 adds the project scope). Missing scopes are omitted.
+  async launchResolutions(scopeKeys: Iterable<string>): Promise<Map<string, LaunchResolution>> {
+    const launchable = this.launchableKinds();
+    const capabilities = adapterCapabilities(this.config.adapters);
+    const remembered = await this.worktreeStore.launchProfiles().catch(() => ({} as Record<string, AgentKind | undefined>));
+    const resolutions = new Map<string, LaunchResolution>();
+    for (const key of new Set(scopeKeys)) {
+      const scope = key === scratchLaunchKey ? 'scratch' as const : 'worktree' as const;
+      resolutions.set(key, resolveLaunchProfile(launchable, [{ origin: scope, kind: remembered[key] }], capabilities));
+    }
+    return resolutions;
   }
 
   // Compose the inner shell command for a launch of `kind`: with a configured adapter

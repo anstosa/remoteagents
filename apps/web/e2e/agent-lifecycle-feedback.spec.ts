@@ -87,7 +87,7 @@ test('clears and restarts an idle agent from the power menu', async ({ page }) =
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: agentId === 'agent-1' ? 1 : 2, agents: [{ id: agentId, sessionId: agentId === 'agent-1' ? 'socket:$1' : 'socket:$2', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' }], worktrees: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: agentId === 'agent-1' ? 1 : 2, adapters: { codex: { launchable: true, program: '/bin/codex', stateSource: 'both', turnCapture: true, bookmarks: true, inlineQuestions: false, commands: true, sandbox: false }, claude: { launchable: true, program: '/bin/claude', stateSource: 'reported', turnCapture: false, bookmarks: true, inlineQuestions: false, commands: true, sandbox: false } }, agents: [{ id: agentId, sessionId: agentId === 'agent-1' ? 'socket:$1' : 'socket:$2', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready', kind: 'codex', attention: 'finished', launch: { kind: 'codex', origin: 'worktree' } }], worktrees: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (/^\/api\/agents\/agent-[12]\/saved-prompts$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });
@@ -111,7 +111,8 @@ test('clears and restarts an idle agent from the power menu', async ({ page }) =
   await page.goto('/');
   await page.getByRole('button', { name: 'Agent power options' }).click();
   const powerMenu = page.getByRole('menu', { name: 'Agent power options' });
-  await expect(powerMenu.getByRole('menuitem', { name: 'Restart' })).toBeVisible();
+  await expect(powerMenu.getByRole('menuitem', { name: 'Restart', exact: true })).toBeVisible();
+  await expect(powerMenu.getByRole('menuitem', { name: 'Restart as…' })).toBeVisible();
   await expect(powerMenu.getByRole('menuitem', { name: 'Clear' })).toBeVisible();
   await powerMenu.getByRole('menuitem', { name: 'Clear' }).click();
 
@@ -125,7 +126,7 @@ test('clears and restarts an idle agent from the power menu', async ({ page }) =
   await expect(page.getByRole('tab', { name: 'Cora — Prompt done' })).toBeVisible();
 
   await page.getByRole('button', { name: 'Agent power options' }).click();
-  await powerMenu.getByRole('menuitem', { name: 'Restart' }).click();
+  await powerMenu.getByRole('menuitem', { name: 'Restart', exact: true }).click();
 
   await expect.poll(() => restartRequests).toBe(1);
   await expect(page.getByRole('status').filter({ hasText: 'Restarting Cora' })).toContainText('running the resume alias');

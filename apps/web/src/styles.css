@@ -1084,3 +1084,60 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
   .review-tour-actions { flex-wrap: wrap; padding: .55rem .75rem; }
   .review-tour-actions > span { order: -1; flex: 1 0 100%; margin-left: 0; text-align: right; }
 }
+
+/* Launch profile: split button, actions menu, tab badge (chunk 2) */
+.launch-kind-codex { --launch-kind: var(--green); }
+.launch-kind-claude { --launch-kind: var(--peach); }
+.launch-kind-pi { --launch-kind: var(--sky); }
+.launch-kind-opencode { --launch-kind: var(--mauve); }
+.launch-kind-mark { display: inline-grid; flex: none; width: 1.15rem; height: 1.15rem; place-items: center; border-radius: .25rem; background: color-mix(in srgb, var(--launch-kind, var(--lavender)) 22%, transparent); color: var(--launch-kind, var(--lavender)); font: 800 .72rem/1 var(--font-mono); }
+.launch-lock { flex: none; width: .85rem; height: .85rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.launch-lock.open { opacity: .7; color: var(--yellow); }
+
+/* the actions menu (flyout or inline) */
+.launch-menu { width: min(23rem, calc(100vw - 1rem)); padding: .4rem; }
+.launch-menu-heading { margin: .2rem .5rem .35rem; color: var(--overlay-1); font: 800 .6rem var(--font-mono); letter-spacing: .12em; text-transform: uppercase; }
+.launch-menu-subheading { margin-top: .1rem; }
+.launch-menu-note { margin: .4rem .5rem .2rem; color: var(--yellow); font: 600 .64rem var(--font-mono); white-space: normal; }
+.launch-menu-empty { margin: .4rem .5rem; color: var(--overlay-1); font: 600 .7rem var(--font-mono); white-space: normal; }
+.launch-menu-empty code { color: var(--mauve); }
+.launch-row { display: flex !important; width: 100%; align-items: center; gap: .6rem; padding: .5rem .55rem !important; border: 0 !important; border-radius: calc(var(--control-radius) - .1rem); background: transparent; color: var(--text); box-shadow: none; text-align: left; white-space: normal; }
+.launch-row:not(:disabled):hover { background: var(--surface-0); filter: none; }
+.launch-row:disabled { opacity: .5; }
+.launch-row-copy { display: grid; min-width: 0; flex: 1; gap: .12rem; }
+.launch-row-copy strong { color: var(--text); font-size: .76rem; }
+.launch-row-copy strong em { color: var(--overlay-1); font-size: .62rem; font-style: normal; font-weight: 600; }
+.launch-row-copy small { color: var(--overlay-1); font: 600 .62rem var(--font-mono); white-space: normal; }
+.launch-row-unsandboxed .launch-lock { color: var(--yellow); }
+
+/* the split button on the worktree card */
+.launch-hint { max-width: 18rem; color: var(--yellow); font: 600 .62rem var(--font-mono); text-align: right; }
+.launch-split { display: inline-flex; flex: none; align-items: stretch; }
+.launch-split .launch-primary { gap: .4rem; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+/* the chevron carries its own gradient so it never matches the plain `.queue` launch button */
+.launch-split .launch-chevron { display: inline-flex; flex: 0 0 2.1rem; align-items: center; justify-content: center; height: var(--standard-control-size); padding: 0; border: 1px solid color-mix(in srgb, var(--lavender) 54%, transparent); border-left: 1px solid color-mix(in srgb, var(--crust) 30%, transparent); border-radius: 0 var(--control-radius) var(--control-radius) 0; background: linear-gradient(135deg, var(--mauve), var(--blue)); color: var(--crust); }
+.launch-split .launch-chevron:not(:disabled):hover { filter: brightness(1.08); }
+.launch-split .launch-chevron:disabled { opacity: .5; }
+.launch-chevron-icon { width: .9rem; height: .9rem; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.queue.launch-primary .launch-kind-mark { background: color-mix(in srgb, var(--crust) 22%, transparent); color: var(--crust); }
+.queue.launch-primary .launch-lock { stroke: var(--crust); }
+
+/* the kind badge on agent tabs */
+.tabs .launch-tab-badge { display: inline-flex; align-items: center; gap: .25rem; margin-right: .45rem; color: var(--launch-kind); }
+.tabs .launch-tab-badge .launch-kind-mark { width: 1.25rem; height: 1.25rem; font-size: .78rem; }
+.tabs .launch-tab-badge .launch-lock { width: 1rem; height: 1rem; }
+
+/* the + launcher rows */
+.launcher-menu.more-menu:has(.launcher-row) { width: min(30rem, calc(100vw - 1rem)); padding: .35rem; }
+.launcher-row { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; padding: .3rem .45rem; border-radius: calc(var(--control-radius) - .1rem); }
+.launcher-row:hover { background: color-mix(in srgb, var(--surface-0) 70%, transparent); }
+.launcher-row-label { flex: 1; min-width: 0; overflow: hidden; color: var(--text); font-size: .74rem; text-overflow: ellipsis; white-space: nowrap; }
+.launcher-menu .launch-compact { width: auto !important; min-height: 1.8rem; justify-content: center !important; gap: .35rem; padding: .25rem .6rem !important; border: 1px solid color-mix(in srgb, var(--lavender) 54%, transparent) !important; border-radius: var(--control-radius); background: linear-gradient(135deg, var(--mauve), var(--blue)); color: var(--crust); font-size: .64rem; box-shadow: none; }
+.launcher-menu .launch-compact:disabled { opacity: .45; }
+.launcher-menu .launch-compact:not(:disabled):hover { filter: brightness(1.08); }
+.launcher-menu .launch-split.compact .launch-primary { border-top-right-radius: 0 !important; border-bottom-right-radius: 0 !important; }
+.launcher-menu .launch-split.compact .launch-chevron { flex: 0 0 1.7rem; min-height: 1.8rem; height: auto; border-radius: 0 var(--control-radius) var(--control-radius) 0; }
+.launcher-menu .launch-compact .launch-kind-mark { width: 1rem; height: 1rem; background: color-mix(in srgb, var(--crust) 22%, transparent); color: var(--crust); font-size: .6rem; }
+.launcher-menu .launch-compact .launch-lock { stroke: var(--crust); }
+.launch-inline-menu { flex-basis: 100%; margin: .2rem 0 .1rem; padding: .3rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 82%, var(--surface-0)); }
+.launch-inline-menu .launch-row { width: 100% !important; }

@@ -25,6 +25,15 @@ describe('WorktreeLaunchStore', () => {
     expect(JSON.parse(await readFile(file, 'utf8'))).toEqual({ cora: { launchProfile: 'codex' }, scratch: { launchProfile: 'codex' } });
   });
 
+  it('reads every remembered profile in one snapshot for the dashboard', async () => {
+    const { store: worktrees } = await store();
+    expect(await worktrees.launchProfiles()).toEqual({});
+    await worktrees.rememberLaunchProfile('cora', 'codex');
+    await worktrees.rememberLaunchProfile(scratchLaunchKey, 'claude');
+    // the snapshot maps each key to its kind, not to the stored record
+    expect(await worktrees.launchProfiles()).toEqual({ cora: 'codex', scratch: 'claude' });
+  });
+
   it('ignores unsafe keys and unknown kinds instead of persisting them', async () => {
     const { file, store: worktrees } = await store();
     await worktrees.rememberLaunchProfile('bad key', 'codex');
