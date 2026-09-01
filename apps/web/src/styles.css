@@ -856,7 +856,9 @@ html.software-keyboard-open .tabs { display: none; }
 .server-update-dialog > div > header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .85rem 1rem; border-bottom: 1px solid var(--surface-1); }
 .server-update-dialog > div > header small { color: var(--blue); font: 750 .6rem var(--font-mono); letter-spacing: .14em; }
 .server-update-dialog > div > header h2 { margin: .15rem 0 0; font-size: 1.08rem; }
-.server-update-dialog > div > header > button { display: grid; width: 2rem; height: 2rem; padding: 0; place-items: center; border-color: transparent; background: transparent; color: var(--subtext-0); box-shadow: none; font-size: 1.3rem; }
+.server-update-controls { display: flex; align-items: center; gap: .2rem; }
+.server-update-controls > button { display: grid; width: 2rem; height: 2rem; padding: 0; place-items: center; border-color: transparent; background: transparent; color: var(--subtext-0); box-shadow: none; font-size: 1.3rem; }
+.server-update-controls > button > svg { width: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 2; }
 .update-review-body { min-height: 0; overflow-y: auto; padding: .85rem 1rem 1rem; }
 .update-review-loading { display: flex; min-height: 18rem; flex-direction: column; align-items: center; justify-content: center; gap: .55rem; color: var(--subtext-0); }
 .update-review-loading.error, .update-review-error { color: var(--red); }

@@ -92,9 +92,9 @@ test('reloads a stale client instead of restarting the server', async ({ page })
 // review commits before explicitly starting a host update
 test('opens the commit review before starting and retains update failures in the modal', async ({ page }) => {
   let updateStarts = 0;
+  let updateStatusChecks = 0;
+  let updateState: 'running'|'failed' = 'running';
   let advisorLaunches = 0;
-  let releaseUpdate = () => {};
-  const updateStarted = new Promise<void>(resolve => { releaseUpdate = resolve; });
   const targetSha = '2'.repeat(40);
   await page.route('**/api/**', async route => {
     const request = route.request();
@@ -115,11 +115,13 @@ test('opens the commit review before starting and retains update failures in the
     // start one host update
     if (url.pathname === '/api/server/update' && request.method() === 'POST') {
       updateStarts += 1;
-      await updateStarted;
       return route.fulfill({ status: 202, json: { id: 'server_update_operation_1234', kind: 'update', state: 'queued' } });
     }
-    // finish one failed host update
-    if (url.pathname === '/api/server/update/server_update_operation_1234') return route.fulfill({ json: { id: 'server_update_operation_1234', kind: 'update', state: 'failed' } });
+    // follow one host update while hidden
+    if (url.pathname === '/api/server/update/server_update_operation_1234') {
+      updateStatusChecks += 1;
+      return route.fulfill({ json: { id: 'server_update_operation_1234', kind: 'update', state: updateState } });
+    }
     // disable push enrollment
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     // connect the visible agent output
@@ -143,8 +145,20 @@ test('opens the commit review before starting and retains update failures in the
   await expect(update).toBeEnabled();
   await update.click();
   await expect.poll(() => updateStarts).toBe(1);
+  await expect(dialog.getByText('Pulling the reviewed revision, rebuilding, and restarting…')).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Close server update' })).toBeDisabled();
-  releaseUpdate();
+  await dialog.getByRole('button', { name: 'Minimize server update' }).click();
+  await expect(dialog).toBeHidden();
+  const visibleStatusChecks = updateStatusChecks;
+  await expect.poll(() => updateStatusChecks).toBeGreaterThan(visibleStatusChecks);
+  const reopen = page.getByRole('button', { name: 'Server update Reopen' });
+  await expect(reopen).toBeFocused();
+  await reopen.click();
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toBeFocused();
+  await expect(dialog.getByRole('button', { name: 'Close server update' })).toBeDisabled();
+  expect(updateStarts).toBe(1);
+  updateState = 'failed';
   await expect(dialog.getByRole('status').filter({ hasText: 'Update failed. Check the server update log.' })).toBeVisible();
 });
 

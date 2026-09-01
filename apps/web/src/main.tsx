@@ -73,6 +73,8 @@ const isCleanupTarget = (value: unknown): value is CleanupTarget => value !== nu
 type AgentState = 'working' | 'prompt-done' | 'action-required' | 'closed' | 'sleeping';
 type DashboardOperation = 'launching'|'restarting'|'clearing'|'deactivating'|'sleeping'|'waking'|'new-task';
 type DashboardItem = { key: string; label: string; state: AgentState; order: number; unread: boolean; operation?: DashboardOperation; agent?: Agent; worktree?: Worktree };
+// describe one tab-bar update action
+type UpdateControl = { label: string; action: string; onClick: () => void };
 type CompleteLogMetadata = { state: 'complete'; latestAgentMessage: string | null; latestAssistantMessage: string | null; latestAssistantMessageOverflows: boolean };
 type LogFrame = { type: 'append' | 'reset'; text?: string; older?: boolean; newer?: boolean; metadata?: CompleteLogMetadata; question?: InlineQuestion; lastPrompt?: string; latestAgentMessage?: string; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean };
 type ChoiceOption = { label: string; number: number; answerIndex: number };
@@ -773,7 +775,8 @@ function EmbeddedAgentOutput({ id, onMetadata }: { id: string; onMetadata: (resp
 }
 
 // review and launch one exact server update
-function ServerUpdateDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+function ServerUpdateDialog({ open, minimized, onMinimize, onClose }: { open: boolean; minimized: boolean; onMinimize: () => void; onClose: () => void }) {
+  const dialog = useRef<HTMLDivElement | null>(null);
   const [preview, setPreview] = useState<ServerUpdatePreview>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -794,6 +797,8 @@ function ServerUpdateDialog({ open, onClose }: { open: boolean; onClose: () => v
   const [feedbackMessage, setFeedbackMessage] = useState('');
   const visibleQuestion = advisorQuestion ?? inferredQuestion;
   const updating = updateSubmitting || updateState === 'queued' || updateState === 'running';
+  // focus the update surface when restored
+  useEffect(() => { if (open && !minimized) dialog.current?.focus(); }, [minimized, open]);
   // load one fresh preview and advisor
   useEffect(() => {
     // stop hidden preview work
@@ -991,8 +996,27 @@ function ServerUpdateDialog({ open, onClose }: { open: boolean; onClose: () => v
     // serialize server cleanup behind any in-flight advisor launch
     if (targetSha !== undefined) void request('/api/server/update-advisor', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ targetSha }) });
   };
-  // omit the portal while closed
-  if (!open) return null;
+  // contain keyboard focus inside the modal
+  const dialogKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    // minimize active updates on escape
+    if (event.key === 'Escape') { updating ? onMinimize() : closeDialog(); return; }
+    // retain ordinary keys
+    if (event.key !== 'Tab' || dialog.current === null) return;
+    const controls = Array.from(dialog.current.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])')).filter(control => control.offsetParent !== null);
+    // retain focus when no controls exist
+    if (controls.length === 0) { event.preventDefault(); dialog.current.focus(); return; }
+    const active = document.activeElement;
+    const index = active instanceof HTMLElement ? controls.indexOf(active) : -1;
+    let next = index + 1;
+    // wrap backward focus
+    if (event.shiftKey) next = index <= 0 ? controls.length - 1 : index - 1;
+    // wrap forward focus
+    else if (index < 0 || index === controls.length - 1) next = 0;
+    event.preventDefault();
+    controls.at(next)?.focus();
+  };
+  // keep update polling alive while hidden
+  if (!open || minimized) return null;
   const adviceReady = advisorResponse !== undefined && !advisorResponsePending && advisorState === 'prompt-done' && visibleQuestion === undefined;
   const updateBlocked = preview === undefined || !preview.available && !preview.rebuildRetryAvailable || !preview.fastForwardable || updating || updateState === 'complete' || preview.advisory.required && (!adviceReady || !advisorAcknowledged);
   let body: ReactNode;
@@ -1013,7 +1037,7 @@ function ServerUpdateDialog({ open, onClose }: { open: boolean; onClose: () => v
     body = <div className="update-review-body"><section className="update-review-summary"><div><small>{preview.baseSha.slice(0, 7)}</small><span aria-hidden="true">→</span><strong>{preview.targetSha.slice(0, 7)}</strong></div><span>{preview.commitCount} new {preview.commitCount === 1 ? 'commit' : 'commits'}{preview.commitsTruncated ? ` · showing ${preview.commits.length}` : ''}</span></section>{!preview.fastForwardable && <p className="update-review-warning" role="alert">Local main cannot be fast-forwarded to this update. Resolve the checkout manually before updating.</p>}<ol className="update-commit-list" aria-label="Pending commits">{preview.commits.map(commit => <li key={commit.sha}><code>{commit.sha.slice(0, 7)}</code><span><strong>{commit.subject}</strong><small>{commit.author} · {updateCommitDate(commit.authoredAt)}</small></span></li>)}</ol>{preview.advisory.required && <section className="update-advisor"><header><div><small>UPDATE ADVISOR</small><h3>Host changes need review</h3></div><span className={`update-advisor-state ${advisorState ?? 'starting'}`}>{advisorState === 'working' ? 'Reviewing' : advisorState === 'action-required' ? 'Needs input' : advisorState === 'prompt-done' ? 'Ready' : 'Starting'}</span></header><p>The changed paths below may require host-local actions. The advisor inspects the exact commit range without modifying it.</p><div className="update-advisory-reasons">{preview.advisory.reasons.map(reason => <div key={reason.kind}><strong>{updateAdvisoryLabels[reason.kind]}</strong>{reason.paths.length === 0 ? <span>Manual Git reconciliation required</span> : reason.paths.map(path => <code key={path}>{path}</code>)}</div>)}</div>{preview.filesTruncated && <small className="update-review-warning">Changed-path review was truncated; the advisor will inspect the complete Git range.</small>}{advisorError ? <div className="update-advisor-error" role="alert">{advisorError}</div> : advisorId === undefined ? <div className="update-advisor-launching" role="status"><span className="spinner" />Starting a dedicated advisor…</div> : <><EmbeddedAgentOutput id={advisorId} onMetadata={(response, question) => { /* ignore metadata from the turn before current feedback */ setAdvisorResponse(response); if (advisorResponsePending && (response === undefined || response === advisorResponseBaseline.current)) return; if (advisorResponsePending) setAdvisorResponsePending(false); setInferredQuestion(question); }} />{visibleQuestion !== undefined && <div className="update-advisor-question"><strong>{visibleQuestion.text}</strong><div>{visibleQuestion.choices.map(choice => <button type="button" key={`${choice.answerIndex}-${choice.label}`} disabled={feedbackPending} onClick={() => void answerAdvisor(choice.answerIndex)}><b>{choice.number}</b><span>{choice.label}</span></button>)}</div></div>}<form className="update-advisor-feedback" onSubmit={event => void submitFeedback(event)}><label>Approval or feedback<textarea value={feedback} maxLength={32_000} disabled={advisorResponsePending || advisorResponse === undefined} placeholder={advisorResponsePending ? 'Waiting for the advisor response…' : advisorState === 'action-required' && visibleQuestion === undefined ? 'Reply to the advisor…' : 'Queue a follow-up for the advisor…'} onFocus={() => { /* leave terminal input */ if (advisorId !== undefined) exitTerminalInput.get(advisorId)?.(); }} onChange={event => setFeedback(event.target.value)} /></label><button type="submit" disabled={feedbackPending || advisorResponsePending || advisorResponse === undefined || !feedback.trim()}>{feedbackPending ? <><span className="spinner" />Sending…</> : 'Send'}</button></form>{feedbackMessage && <small className="update-advisor-feedback-status" role="status">{feedbackMessage}</small>}{adviceReady && <label className="update-advisor-acknowledgement"><input type="checkbox" checked={advisorAcknowledged} onChange={event => setAdvisorAcknowledged(event.target.checked)} /><span>I reviewed the advisor guidance for this exact update.</span></label>}</>}</section>}</div>;
   }
   const progress = updateState === undefined ? null : <div className={`update-review-progress ${updateState}`} role="status">{updateState === 'failed' ? <span>Update failed. Check the server update log.</span> : updateState === 'complete' ? <><strong>Update complete.</strong><button type="button" onClick={() => location.reload()}>Reload</button></> : <><span className="spinner" /><span>{updateState === 'queued' ? 'Waiting for the host…' : 'Pulling the reviewed revision, rebuilding, and restarting…'}</span></>}</div>;
-  return createPortal(<div className="dialog server-update-dialog" role="dialog" aria-modal="true" aria-labelledby="server-update-review-title" onKeyDown={event => { /* close idle dialogs on escape */ if (event.key === 'Escape' && !updating) closeDialog(); }}><div><header><div><small>SERVER UPDATE</small><h2 id="server-update-review-title">Review update</h2></div><button type="button" aria-label="Close server update" disabled={updating} onClick={closeDialog}>×</button></header>{body}{error && preview !== undefined && <p className="update-review-error" role="alert">{error}</p>}{progress}<footer><span>{preview?.advisory.required && !advisorAcknowledged ? 'Advisor acknowledgement required' : preview?.fastForwardable === false ? 'Manual Git reconciliation required' : preview?.rebuildRetryAvailable ? 'Retry the failed host rebuild.' : 'The update will rebuild this host only.'}</span><button type="button" disabled={updateBlocked} onClick={() => void startUpdate()}>{updating ? <><span className="spinner" />Updating…</> : preview?.rebuildRetryAvailable ? 'Retry rebuild' : 'Update'}</button></footer></div></div>, document.body);
+  return createPortal(<div ref={dialog} className="dialog server-update-dialog" role="dialog" aria-modal="true" aria-labelledby="server-update-review-title" tabIndex={-1} onKeyDown={dialogKey}><div><header><div><small>SERVER UPDATE</small><h2 id="server-update-review-title">Review update</h2></div><span className="server-update-controls"><button type="button" aria-label="Minimize server update" title="Minimize" onClick={onMinimize}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg></button><button type="button" aria-label="Close server update" title="Close" disabled={updating} onClick={closeDialog}>×</button></span></header>{body}{error && preview !== undefined && <p className="update-review-error" role="alert">{error}</p>}{progress}<footer><span>{preview?.advisory.required && !advisorAcknowledged ? 'Advisor acknowledgement required' : preview?.fastForwardable === false ? 'Manual Git reconciliation required' : preview?.rebuildRetryAvailable ? 'Retry the failed host rebuild.' : 'The update will rebuild this host only.'}</span><button type="button" disabled={updateBlocked} onClick={() => void startUpdate()}>{updating ? <><span className="spinner" />Updating…</> : preview?.rebuildRetryAvailable ? 'Retry rebuild' : 'Update'}</button></footer></div></div>, document.body);
 }
 
 // render the client settings flyout
@@ -4662,7 +4686,7 @@ function OperationFeedbackBanner({ feedback, onDismiss }: { feedback: OperationF
 }
 
 // render the active console dashboard
-function DashboardView({ onUnauthorized, onInactive, clientUpdateAvailable, serverUpdateAvailable, updateError, onUpdate }: { onUnauthorized: () => void; onInactive: () => void; clientUpdateAvailable: boolean; serverUpdateAvailable: boolean; updateError?: string; onUpdate: () => void }) {
+function DashboardView({ onUnauthorized, onInactive, updateControl, updateError }: { onUnauthorized: () => void; onInactive: () => void; updateControl?: UpdateControl; updateError?: string }) {
   const serverInfo = useContext(ServerContext) ?? fallbackServerInfo();
   const [data, setData] = useState<Dashboard>();
   const [voiceOpen, setVoiceOpen] = useState(false);
@@ -5330,13 +5354,11 @@ function DashboardView({ onUnauthorized, onInactive, clientUpdateAvailable, serv
   const storedReview = item?.agent?.worktreeId === undefined ? undefined : data.reviews?.find(review => review.worktreeId === item.agent!.worktreeId);
   const localReview = item?.agent?.worktreeId !== undefined && item.agent.worktreeId === reviewLaunch?.worktreeId;
   const activeReview = localReview ? { ...reviewIndicator, onOpen: openLocalReview } : item?.agent !== undefined && storedReview !== undefined ? { generating: reviewRestoringWorktreeId === storedReview.worktreeId, stale: false, onOpen: () => void openStoredReview(item.agent!, storedReview) } : undefined;
-  // distinguish local bundles from reviewed upstream repository updates
-  const updateLabel = clientUpdateAvailable ? 'Local update' : 'Upstream update';
   const tabBar = <><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => {
     const transition = dashboardOperationLabel(entry.operation);
     const label = transition ?? stateLabel[entry.state];
     return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
-  })}<NotificationControl />{(clientUpdateAvailable || serverUpdateAvailable) && <button className="update-ready" type="button" onClick={onUpdate}>{updateLabel} <span>{clientUpdateAvailable ? 'Reload' : 'View'}</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><button disabled={creatingAgent} onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
+  })}<NotificationControl />{updateControl !== undefined && <button className="update-ready" type="button" onClick={updateControl.onClick}>{updateControl.label} <span>{updateControl.action}</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><button disabled={creatingAgent} onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
   const consoleClass = `console${voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{reviewDialog}</article></main></VoiceTriggerContext.Provider>;
   return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{reviewDialog}</main></VoiceTriggerContext.Provider>;
@@ -5352,6 +5374,7 @@ function App() {
   const [clientUpdateAvailable, setClientUpdateAvailable] = useState(false);
   const [serverUpdateAvailable, setServerUpdateAvailable] = useState(false);
   const [serverUpdateOpen, setServerUpdateOpen] = useState(false);
+  const [serverUpdateMinimized, setServerUpdateMinimized] = useState(false);
   const [reconnecting, setReconnecting] = useState(!consoleReachable);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const applySession = useCallback((current: SessionInfo) => {
@@ -5385,8 +5408,21 @@ function App() {
     if (isServerInfo(payload.server)) setServerInfo(payload.server);
     return undefined;
   }, []);
-  // open one shared update review
-  const openServerUpdate = useCallback(() => setServerUpdateOpen(true), []);
+  // open or restore one shared update review
+  const openServerUpdate = useCallback(() => {
+    setServerUpdateOpen(true);
+    setServerUpdateMinimized(false);
+  }, []);
+  // hide one update review without stopping it
+  const minimizeServerUpdate = useCallback(() => {
+    setServerUpdateMinimized(true);
+    window.requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('.update-ready')?.focus());
+  }, []);
+  // discard one inactive update review
+  const closeServerUpdate = useCallback(() => {
+    setServerUpdateOpen(false);
+    setServerUpdateMinimized(false);
+  }, []);
   // load every configured Codex account and its limits
   const codexAccounts = useCallback(async (): Promise<{ accounts?: CodexAccount[]; error?: string }> => {
     const response = await request('/api/codex/accounts');
@@ -5634,16 +5670,23 @@ function App() {
     window.addEventListener('focus', checkControl);
     return () => window.removeEventListener('focus', checkControl);
   }, [refreshSession, state]);
+  let updateControl: UpdateControl | undefined;
+  // prioritize restoring one minimized server update
+  if (serverUpdateMinimized) updateControl = { label: 'Server update', action: 'Reopen', onClick: openServerUpdate };
+  // reload a stale browser bundle next
+  else if (clientUpdateAvailable) updateControl = { label: 'Local update', action: 'Reload', onClick: () => location.reload() };
+  // expose one reviewed upstream update
+  else if (serverUpdateAvailable) updateControl = { label: 'Upstream update', action: 'View', onClick: openServerUpdate };
   const screen = state === 'checking'
       ? <LoadingScreen />
       : state === 'ready'
-        ? <DashboardView onUnauthorized={handleUnauthorized} onInactive={handleInactive} clientUpdateAvailable={clientUpdateAvailable} serverUpdateAvailable={serverUpdateAvailable} onUpdate={clientUpdateAvailable ? () => location.reload() : openServerUpdate} />
+        ? <DashboardView onUnauthorized={handleUnauthorized} onInactive={handleInactive} updateControl={updateControl} />
         : (state === 'inactive' || state === 'naming') && sessionInfo !== undefined
           ? <ControlScreen session={sessionInfo} claimed={applySession} />
           : <Login initialError={error} done={applySession} />;
   // expose settings without a manual server update bypass
   const clientSettings = useMemo<ClientSettings | undefined>(() => state === 'ready' && sessionInfo?.deviceName !== undefined ? { deviceName: sessionInfo.deviceName, serverName: serverInfo.name, serverUrl: serverInfo.url, renameClient, renameServer, codexAccounts, switchCodexAccount, resetCodexAccount, startCodexAccountLogin, codexAccountLoginStatus, cancelCodexAccountLogin } : undefined, [cancelCodexAccountLogin, codexAccountLoginStatus, codexAccounts, renameClient, renameServer, resetCodexAccount, serverInfo.name, serverInfo.url, sessionInfo?.deviceName, startCodexAccountLogin, state, switchCodexAccount]);
-  return <ServerContext.Provider value={serverInfo}><ServerStatusContext.Provider value={serverStatuses}><ClientSettingsContext.Provider value={clientSettings}>{screen}<ServerUpdateDialog open={serverUpdateOpen} onClose={() => setServerUpdateOpen(false)} />{reconnecting && <ReconnectingOverlay />}</ClientSettingsContext.Provider></ServerStatusContext.Provider></ServerContext.Provider>;
+  return <ServerContext.Provider value={serverInfo}><ServerStatusContext.Provider value={serverStatuses}><ClientSettingsContext.Provider value={clientSettings}>{screen}<ServerUpdateDialog open={serverUpdateOpen} minimized={serverUpdateMinimized} onMinimize={minimizeServerUpdate} onClose={closeServerUpdate} />{reconnecting && <ReconnectingOverlay />}</ClientSettingsContext.Provider></ServerStatusContext.Provider></ServerContext.Provider>;
 }
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');
 createRoot(document.getElementById('root')!).render(<ConsoleBoundary><App /></ConsoleBoundary>);
