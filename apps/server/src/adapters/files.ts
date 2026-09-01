@@ -33,7 +33,9 @@ export function consoleRepositoryRoot(): string {
  * against. Under the host bridge the agent runs on the host, so it must be a host
  * path (`RAC_HOST_REPOSITORY`); without one, `undefined` — which leaves every
  * file-rendering kind unlaunchable. Off the bridge it defaults to the console's own
- * checkout.
+ * checkout. `workspaces/server-checkout.ts` answers the sibling question for stack
+ * files and server updates with a Project fallback this resolver deliberately
+ * lacks: this one gates launchability while the config is still being loaded.
  */
 export function hostVisibleRepoRoot(env: NodeJS.ProcessEnv = process.env): string | undefined {
   const hostRepo = env.RAC_HOST_REPOSITORY?.trim();

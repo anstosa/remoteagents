@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createServer, request as sendRequest, type IncomingHttpHeaders, type Server } from 'node:http';
 import { runInNewContext } from 'node:vm';
 import { ProjectProxy } from '../src/project-proxy.js';
-import type { Worktree } from '../src/domain/models.js';
+import { testWorktree } from './helpers/config.js';
 
 const servers: Server[] = [];
 
@@ -65,7 +65,7 @@ afterEach(async () => {
 describe('project browser proxy', () => {
   // reject arbitrary upstream destinations
   it('allows only local project gateways', () => {
-    expect(() => new ProjectProxy([], 'https://agents.example.com', 'example.com')).toThrow('invalid project proxy host');
+    expect(() => new ProjectProxy(() => [], 'https://agents.example.com', 'example.com')).toThrow('invalid project proxy host');
   });
 
   // verify HTML injection and transparent forwarding
@@ -78,8 +78,8 @@ describe('project browser proxy', () => {
     });
     servers.push(upstream);
     const upstreamPort = await listen(upstream);
-    const worktree: Worktree = { id: 'project', label: 'Project', path: '/tmp/project', identity: '/tmp/project', available: true, pinned: true, command: 'codex', projectUrl: 'https://project.example.com', projectPort: upstreamPort };
-    const projectProxy = new ProjectProxy([worktree], 'https://agents.example.com');
+    const worktree = testWorktree({ projectUrl: 'https://project.example.com', projectPort: upstreamPort });
+    const projectProxy = new ProjectProxy(() => [worktree], 'https://agents.example.com');
     const proxy = createServer((incoming, response) => {
       // reject unmatched virtual hosts
       if (!projectProxy.handle(incoming, response)) { response.writeHead(404); response.end(); }
@@ -113,8 +113,8 @@ describe('project browser proxy', () => {
     });
     servers.push(upstream);
     const upstreamPort = await listen(upstream);
-    const worktree: Worktree = { id: 'project', label: 'Project', path: '/tmp/project', identity: '/tmp/project', available: true, pinned: true, command: 'codex', projectUrl: 'https://project.example.com', projectPort: upstreamPort };
-    const projectProxy = new ProjectProxy([worktree], 'https://agents.example.com');
+    const worktree = testWorktree({ projectUrl: 'https://project.example.com', projectPort: upstreamPort });
+    const projectProxy = new ProjectProxy(() => [worktree], 'https://agents.example.com');
     const proxy = createServer((incoming, response) => {
       // reject unmatched virtual hosts
       if (!projectProxy.handle(incoming, response)) { response.writeHead(404); response.end(); }
@@ -180,5 +180,46 @@ describe('project browser proxy', () => {
 
     const failed = executeBridge(desktopBridge.body, true);
     expect(failed.messages).toContainEqual({ type: 'rac-browser-device-error', properties: ['userAgent'] });
+  });
+
+  // the map is built from live Worktree records, each carrying its Project's URL/port —
+  // two branches running stacks concurrently share the one preview, and a later
+  // per-Worktree port is an additive key on the same records
+  it('serves one Project preview from the Worktree records of concurrently running branches', async () => {
+    const upstream = createServer((_request, response) => {
+      response.setHeader('content-type', 'text/plain');
+      response.end('whichever stack bound the port');
+    });
+    servers.push(upstream);
+    const upstreamPort = await listen(upstream);
+    const main = testWorktree({ projectId: 'proj', path: '/worktrees/main', projectUrl: 'https://project.example.com', projectPort: upstreamPort });
+    const branch = testWorktree({ projectId: 'proj', path: '/worktrees/branch', main: false, branch: 'feature', projectUrl: 'https://project.example.com', projectPort: upstreamPort });
+    // a record without a loopback port claims no hostname
+    const incomplete = testWorktree({ projectId: 'other', path: '/worktrees/other', projectUrl: 'https://other.example.com' });
+    let records = [main, branch, incomplete];
+    const projectProxy = new ProjectProxy(() => records, 'https://agents.example.com');
+    const proxy = createServer((incoming, response) => {
+      // reject unmatched virtual hosts
+      if (!projectProxy.handle(incoming, response)) { response.writeHead(404); response.end(); }
+    });
+    servers.push(proxy);
+    const proxyPort = await listen(proxy);
+
+    // both Worktrees resolve the Project's one preview target
+    expect((await request(proxyPort, '/')).body).toBe('whichever stack bound the port');
+    expect((await request(proxyPort, '/', { headers: { host: 'other.example.com' } })).status).toBe(404);
+
+    // a same-length snapshot replacement that only moves the port is picked up —
+    // the memoization keys on snapshot identity, never on shape
+    const moved = createServer((_request, response) => { response.setHeader('content-type', 'text/plain'); response.end('the moved stack'); });
+    servers.push(moved);
+    const movedPort = await listen(moved);
+    records = records.map(record => ({ ...record, projectPort: record.projectPort === undefined ? undefined : movedPort }));
+    expect((await request(proxyPort, '/')).body).toBe('the moved stack');
+
+    // discovery replacing its snapshot (Worktrees removed, Project unavailable) is
+    // picked up without rebuilding the proxy
+    records = [];
+    expect((await request(proxyPort, '/')).status).toBe(404);
   });
 });

@@ -5,6 +5,7 @@ import type { ValidatedConfig } from '../config/schema.js';
 import type { DiscoveryService } from '../discovery/service.js';
 import { stackActions, type StackAction, type Worktree } from '../domain/models.js';
 import { worktreeById, worktreeHostRoot } from '../workspaces/resolver.js';
+import { serverCheckout, serverCheckoutOnHost } from '../workspaces/server-checkout.js';
 import { run } from '../tmux/command.js';
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -57,10 +58,9 @@ export class WorktreeCommandService {
   private readonly tunnelCache = new Map<string, { value: boolean; expiresAt: number }>();
   private readonly tunnelRefreshes = new Map<string, Promise<void>>();
 
-  constructor(config: ValidatedConfig, private readonly discovery: DiscoveryService, private readonly command: Command = run) {
-    // the server's own checkout under Docker maps `/workspace` to the host; the hardcoded
-    // `remoteagents` id is retired in favour of the Project mounted there (ADR 0003)
-    this.hostWorkspace = process.env.RAC_HOST_WORKSPACE ?? config.projects.find(project => project.path === '/workspace')?.hostPath;
+  constructor(config: ValidatedConfig, private readonly discovery: DiscoveryService, private readonly command: Command = run, private readonly checkout: string = serverCheckout()) {
+    // status and log files live under the server's own checkout (see server-checkout.ts)
+    this.hostWorkspace = serverCheckoutOnHost(config.projects, process.env.RAC_HOST_WORKSPACE, checkout);
   }
 
   actions(worktree: Worktree): StackAction[] { return stackActions.filter(action => worktree.commands?.[action] !== undefined); }
@@ -145,7 +145,7 @@ export class WorktreeCommandService {
     if (active !== undefined) return active;
     const refresh = (async () => {
       const name = `stack-${worktreeToken(worktree)}-${randomBytes(6).toString('hex')}`;
-      const containerFile = join('/workspace', '.data', 'stack-status', name);
+      const containerFile = join(this.checkout, '.data', 'stack-status', name);
       try {
         const hostFile = join(this.hostWorkspace!, '.data', 'stack-status', name);
         await mkdir(dirname(containerFile), { recursive: true, mode: 0o700 });
@@ -238,7 +238,7 @@ export class WorktreeCommandService {
     // prepare durable output for user-triggered actions
     if (action !== undefined && this.hostWorkspace !== undefined) {
       const name = `${worktreeToken(worktree)}-${randomBytes(9).toString('hex')}.log`;
-      logFile = join('/workspace', '.data', 'stack-logs', name);
+      logFile = join(this.checkout, '.data', 'stack-logs', name);
       hostLogFile = join(this.hostWorkspace, '.data', 'stack-logs', name);
       await mkdir(dirname(logFile), { recursive: true, mode: 0o700 });
     }

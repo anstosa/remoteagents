@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { ValidatedConfig } from '../config/schema.js';
+import { serverCheckout, serverCheckoutOnHost } from '../workspaces/server-checkout.js';
 import { run } from '../tmux/command.js';
 import { isFullGitSha } from '../git/revision.js';
 
@@ -16,6 +17,7 @@ type ServerUpdateAvailabilityState = 'available' | 'current' | 'failed';
 type ServerUpdateAvailability = { kind: 'update-availability'; state: ServerUpdateAvailabilityState; baseSha: string; targetSha: string; fastForwardable: boolean; commitCount: number; commitsTruncated: boolean; filesTruncated: boolean };
 
 export type ServerAdminOptions = {
+  checkoutRoot?: string;
   configWritePath?: string;
   hostRepository?: string;
   statusDirectory?: string;
@@ -71,9 +73,11 @@ export class ServerAdminService {
 
   // resolve deployment paths once
   constructor(config: ValidatedConfig, options: ServerAdminOptions = {}) {
+    // updates run in the server's own checkout (see server-checkout.ts)
+    const checkout = options.checkoutRoot ?? serverCheckout();
     this.configWritePath = options.configWritePath ?? process.env.RAC_CONFIG_WRITE_PATH ?? process.env.RAC_CONFIG ?? '';
-    this.hostRepository = options.hostRepository ?? process.env.RAC_HOST_REPOSITORY ?? config.projects.find(project => project.path === '/workspace')?.hostPath;
-    this.statusDirectory = options.statusDirectory ?? process.env.RAC_SERVER_ADMIN_STATUS_DIR ?? '/workspace/.data';
+    this.hostRepository = options.hostRepository ?? serverCheckoutOnHost(config.projects, process.env.RAC_HOST_REPOSITORY, checkout);
+    this.statusDirectory = options.statusDirectory ?? process.env.RAC_SERVER_ADMIN_STATUS_DIR ?? join(checkout, '.data');
     this.tmuxBinary = options.tmuxBinary ?? process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux';
     this.tmuxSocket = options.tmuxSocket ?? (process.env.RAC_HOST_TMUX_DIR === undefined ? undefined : join(process.env.RAC_HOST_TMUX_DIR, 'default'));
     this.runCommand = options.runCommand ?? run;

@@ -1,7 +1,7 @@
 import { request as sendHttpRequest, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from 'node:http';
 import { connect } from 'node:net';
 import type { Duplex } from 'node:stream';
-import type { Project } from './domain/models.js';
+import type { Worktree } from './domain/models.js';
 
 const browserBridgePath = '/__rac/browser-bridge.js';
 const browserDevicePath = '/__rac/browser-device';
@@ -118,6 +118,7 @@ const maxActiveUpgradesPerTarget = 32;
 const maxUpgradeHeaderBytes = 16 * 1024;
 
 type ProjectTarget = { port: number };
+type PreviewRecord = Pick<Worktree, 'projectUrl' | 'projectPort'>;
 const allowedUpstreamHosts = new Set(['127.0.0.1', '::1', 'host.docker.internal']);
 
 // normalize an incoming host header
@@ -206,34 +207,47 @@ export const injectProjectBrowserBridge = (html: string) => {
   return `${html.slice(0, insertion)}${browserBridgeTag}${html.slice(insertion)}`;
 };
 
-// proxy configured project hosts and inject navigation reporting
+// proxy discovered project hosts and inject navigation reporting
 export class ProjectProxy {
-  private readonly targets = new Map<string, ProjectTarget>();
+  private targetSource?: ReadonlyArray<PreviewRecord>;
+  private targetMap = new Map<string, ProjectTarget>();
   private readonly activeUpgrades = new Map<number, number>();
   private activeUpgradeCount = 0;
   private readonly parentOrigin: string;
   private readonly upstreamHost: string;
 
-  // index fixed loopback targets. One preview per Project today (all its Worktrees share
-  // the URL), so the map is built from Projects; a per-Worktree port stays an additive key
-  constructor(projects: ReadonlyArray<Pick<Project, 'projectUrl' | 'projectPort'>>, parentOrigin: string, upstreamHost = '127.0.0.1') {
+  // resolve loopback targets from the live Worktree records. Each carries its Project's
+  // URL/port today (one preview per Project, served by whichever Worktree's stack is
+  // up); a later per-Worktree port is an additive key on the same records
+  constructor(private readonly worktrees: () => ReadonlyArray<PreviewRecord>, parentOrigin: string, upstreamHost = '127.0.0.1') {
     // restrict proxy destinations to local host gateways
     if (!allowedUpstreamHosts.has(upstreamHost)) throw new Error('invalid project proxy host');
     this.parentOrigin = parentOrigin;
     this.upstreamHost = upstreamHost;
-    // retain only complete project proxy configurations
-    for (const project of projects) {
-      // skip projects without public and loopback locations
-      if (project.projectUrl === undefined || project.projectPort === undefined) continue;
-      const hostname = new URL(project.projectUrl).hostname;
-      this.targets.set(hostname, { port: project.projectPort });
+  }
+
+  // the hostname index for the current Worktree snapshot, rebuilt only when
+  // discovery publishes a new one (the snapshot array is replaced, never mutated)
+  private targets(): Map<string, ProjectTarget> {
+    const records = this.worktrees();
+    if (records === this.targetSource) return this.targetMap;
+    const targets = new Map<string, ProjectTarget>();
+    // retain only complete preview locations
+    for (const record of records) {
+      // skip worktrees without public and loopback locations
+      if (record.projectUrl === undefined || record.projectPort === undefined) continue;
+      try { targets.set(new URL(record.projectUrl).hostname, { port: record.projectPort }); }
+      catch { /* a malformed preview URL claims no hostname */ }
     }
+    this.targetSource = records;
+    this.targetMap = targets;
+    return targets;
   }
 
   // find an allowed project target
   private target(host: string | undefined) {
     const hostname = requestHostname(host);
-    return hostname === undefined ? undefined : this.targets.get(hostname);
+    return hostname === undefined ? undefined : this.targets().get(hostname);
   }
 
   // proxy an ordinary HTTP request

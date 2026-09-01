@@ -62,6 +62,17 @@ inside the container:
 }
 ```
 
+The console also resolves its *own* checkout through this declaration — server
+updates and stack status/log files run against the Project whose `path` is the
+server's own checkout, using its `hostPath` under the host bridge.
+`RAC_SERVER_CHECKOUT` names that checkout as the container sees it (the tracked
+Compose file sets it to `/workspace`, since the packaged image runs from `/app`);
+`RAC_HOST_REPOSITORY` (updates) and `RAC_HOST_WORKSPACE` (stack files) override
+the host-side path explicitly. Nothing assumes the `/workspace` mount or a
+`remoteagents` id any more. Preview hostnames are likewise served from the
+discovered Worktrees, so a Project that fails to load — or the first moments
+after boot, before discovery's first scan — answers 404 rather than proxying.
+
 For additional Projects, copy `compose.override.example.yaml` to the ignored
 `compose.override.yaml`, remove the host-tmux settings if they are not needed,
 and add each repository bind under `/worktrees`. A Project's `path` must match

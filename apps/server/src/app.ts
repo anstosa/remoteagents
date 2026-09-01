@@ -119,7 +119,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // prefer a dedicated federation secret while retaining existing deployments
   const instanceStatusSecret = process.env.RAC_INSTANCE_STATUS_SECRET ?? process.env.RAC_SESSION_SECRET ?? '';
   const instanceStatusPoller = deps.instanceStatusPoller ?? new RemoteInstanceStatusPoller(instanceStatusSecret);
-  const projectProxy = new ProjectProxy(config.projects, config.publicOrigin.origin, process.env.RAC_PROJECT_PROXY_HOST);
+  const projectProxy = new ProjectProxy(() => discovery.worktreesNow(), config.publicOrigin.origin, process.env.RAC_PROJECT_PROXY_HOST);
   const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 65_536 }); const webRoot = fileURLToPath(new URL('../../web/dist', import.meta.url)); const uiVersion = async () => await readFile(join(webRoot, 'index.html'), 'utf8').then(html => /<script[^>]+src="([^"]+)"/u.exec(html)?.[1]).catch(() => undefined); await app.register(cookie); await app.register(staticPlugin, { root: webRoot, index: false }); await app.register(rateLimit, { global: false }); await app.register(websocket, { options: { maxPayload: 65_536 } });
   app.setErrorHandler((error, request, reply) => {
     const failure = error as { code?: unknown; statusCode?: number; message?: string };

@@ -14,6 +14,8 @@ services:
     environment:
       RAC_CONFIG: /workspace/config/remote-agent-console.docker.json
       RAC_CONFIG_WRITE_PATH: /workspace/config/remote-agent-console.docker.json
+      # the packaged image runs from /app, so the server's own checkout is the mount
+      RAC_SERVER_CHECKOUT: /workspace
       # linux host networking reaches project ports through loopback
       RAC_PROJECT_PROXY_HOST: ${RAC_PROJECT_PROXY_HOST:-127.0.0.1}
       RAC_DEVICE_NAMES_FILE: /workspace/.data/device-names.json

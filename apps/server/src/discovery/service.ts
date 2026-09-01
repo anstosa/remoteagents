@@ -489,6 +489,8 @@ export class DiscoveryService {
 
   // the last discovered Worktree set, for the synchronous scope resolution the prompt
   // queue and its siblings run while handling a request
+  // the current snapshot, replaced wholesale on refresh and never mutated — consumers
+  // (the ProjectProxy target map) memoize by array identity, so keep it that way
   worktreesNow(): Worktree[] { return this.worktreeSnapshot; }
 
   // drop the Worktree and dashboard caches so the next read re-runs `git worktree list` and

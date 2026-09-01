@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ValidatedConfig } from '../src/config/schema.js';
 import { ServerAdminService } from '../src/server-admin/service.js';
+import { testProject } from './helpers/config.js';
 
 const config: ValidatedConfig = { name: 'Framework', remoteServers: [], listen: { host: '127.0.0.1', port: 8787 }, publicOrigin: new URL('https://framework.example.com'), trustedProxyIps: new Set(['127.0.0.1']), pollIntervalMs: 500, newAgentCommand: 'codex', projects: [] };
 const baseSha = '1'.repeat(40);
@@ -40,6 +41,52 @@ describe('server administration', () => {
     expect(runCommand).toHaveBeenCalledWith('/usr/local/bin/host-tmux', ['-S', '/host-tmux/default', 'new-session', '-d', '-s', expect.stringMatching(/^rac-update-/u), '-c', '/home/ubuntu/remoteagents', '/bin/bash', '/home/ubuntu/remoteagents/scripts/update-server.sh', update?.id, targetSha], undefined, 5_000);
     expect(await service.updateStatus(update!.id)).toEqual(update);
     expect(await service.updateStatus('../../config')).toBeUndefined();
+  });
+
+  // the retired `/workspace` fallback: updates run in the server's own checkout, resolved
+  // through the Project declared at it — however many Worktrees (and running stacks) that
+  // Project has, the update path is keyed to the checkout, never to a Worktree
+  it("resolves the host repository through the Project declared at the server's own checkout", async () => {
+    root = await mkdtemp(join(tmpdir(), 'rac-server-admin-'));
+    const previousHostRepository = process.env.RAC_HOST_REPOSITORY;
+    delete process.env.RAC_HOST_REPOSITORY;
+    try {
+      const runCommand = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+      const declared = { ...config, projects: [testProject({ id: 'console', path: '/srv/console', hostPath: '/home/ubuntu/console' })] };
+      const service = new ServerAdminService(declared, { checkoutRoot: '/srv/console', statusDirectory: root, tmuxBinary: '/usr/bin/tmux', tmuxSocket: '/host-tmux/default', runCommand });
+
+      const update = await service.startUpdate(targetSha);
+
+      expect(update).toMatchObject({ kind: 'update', state: 'queued' });
+      expect(runCommand).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'new-session', '-d', '-s', expect.stringMatching(/^rac-update-/u), '-c', '/home/ubuntu/console', '/bin/bash', '/home/ubuntu/console/scripts/update-server.sh', update?.id, targetSha], undefined, 5_000);
+
+      // without a Project declared at the server's own checkout, updates stay unavailable
+      const bare = new ServerAdminService(config, { checkoutRoot: '/srv/console', statusDirectory: root, tmuxBinary: '/usr/bin/tmux', tmuxSocket: '/host-tmux/default', runCommand });
+      await expect(bare.startUpdate(targetSha)).resolves.toBeUndefined();
+      expect(runCommand).toHaveBeenCalledTimes(1);
+    } finally {
+      // restore the host repository override
+      if (previousHostRepository === undefined) delete process.env.RAC_HOST_REPOSITORY;
+      else process.env.RAC_HOST_REPOSITORY = previousHostRepository;
+    }
+  });
+
+  // the retired `/workspace/.data` default: durable update state lives under the
+  // server checkout's `.data`
+  it('reads durable update state under the server checkout by default', async () => {
+    root = await mkdtemp(join(tmpdir(), 'rac-server-admin-'));
+    const previousStatusDirectory = process.env.RAC_SERVER_ADMIN_STATUS_DIR;
+    delete process.env.RAC_SERVER_ADMIN_STATUS_DIR;
+    try {
+      await mkdir(join(root, '.data'), { recursive: true });
+      await writeFile(join(root, '.data', 'server-update-last.json'), `${JSON.stringify({ id: 'A'.repeat(24), kind: 'update', state: 'running', targetSha })}\n`);
+      const service = new ServerAdminService(config, { checkoutRoot: root });
+      await expect(service.activeUpdateTarget()).resolves.toBe(targetSha);
+    } finally {
+      // restore the status directory override
+      if (previousStatusDirectory === undefined) delete process.env.RAC_SERVER_ADMIN_STATUS_DIR;
+      else process.env.RAC_SERVER_ADMIN_STATUS_DIR = previousStatusDirectory;
+    }
   });
 
   it('reuses one queued update across concurrent update requests', async () => {

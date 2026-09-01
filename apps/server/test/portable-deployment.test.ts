@@ -12,6 +12,7 @@ describe('portable deployment', () => {
     const compose = await repositoryFile('compose.yaml');
 
     expect(compose).toContain('RAC_PROJECT_PROXY_HOST: ${RAC_PROJECT_PROXY_HOST:-127.0.0.1}');
+    expect(compose).toContain('RAC_SERVER_CHECKOUT: /workspace');
     expect(compose).toContain('RAC_BOOKMARKS_FILE: /workspace/.data/bookmarks.json');
     expect(compose).toContain('profiles: ["tunnel"]');
     expect(compose).not.toMatch(/:\/worktrees\//);
