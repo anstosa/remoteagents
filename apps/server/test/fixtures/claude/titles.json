@@ -1,0 +1,6 @@
+[
+  { "_note": "Claude's title is '✳ <title>' in every state; it carries no Attention signal, so inferState is always undefined (state omitted).", "title": "✳ Wire the Claude adapter" },
+  { "title": "✳ Reviewing the diff" },
+  { "title": "" },
+  { "title": "action required" }
+]

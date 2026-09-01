@@ -254,6 +254,10 @@ export class CommandCatalogService {
       // keep one command per trigger
       if (!slash.has(command.name)) slash.set(command.name, { value: command.name, description: command.description });
     }
-    return [...skills, ...slash.values()];
+    // one deduped list: a skill wins over a built-in that shares its trigger. This
+    // only bites where the two namespaces collide (Claude invokes skills as `/name`,
+    // the same `/` the built-ins use); Codex's `$name` skills never overlap.
+    const skillTriggers = new Set(skills.map(skill => skill.value));
+    return [...skills, ...[...slash.values()].filter(command => !skillTriggers.has(command.value))];
   }
 }

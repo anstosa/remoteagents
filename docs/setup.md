@@ -83,6 +83,50 @@ The console remembers the last kind launched in each worktree (and in Scratch)
 and offers it first next time; with a single configured kind that is simply that
 kind.
 
+### Claude Code
+
+```json
+{ "adapters": { "claude": { "program": "/usr/local/bin/claude" } } }
+```
+
+With `adapters.claude` configured, launching Claude Code from the console gives
+accurate Attention state, Enter-submitted prompts, safe interrupts, and Bookmarks
+with titles. The console never touches anything under `~/.claude`: on every launch
+and resume it passes `--settings` pointing at a console-owned file it renders at
+boot into `<RAC_ADAPTER_FILES_DIR ?? .data/adapters>/claude/hooks.json`. That file
+**only adds hooks** — Claude merges hook entries across settings levels, so your
+own settings are unchanged. The hooks map Claude's lifecycle events to the
+console's Attention states by running `scripts/hooks/rac-attention`, which writes
+the tmux pane options the console polls. Do not put `--settings`, `--continue`,
+`--resume`, `--session-id`, `-p`/`--print`, `--bare`, or `--safe-mode` in
+`adapters.claude.args`; the console composes those itself and drops them with a
+boot warning.
+
+To get the same state and Bookmarks for Claude sessions you start **by hand**
+(the console reads a hookless session as permanently *finished* and offers it no
+Bookmarks), add the same script as an optional dotfile hook in your own
+`~/.claude/settings.json`, for example on `UserPromptSubmit`:
+
+```json
+{ "hooks": { "UserPromptSubmit": [ { "hooks": [ { "type": "command", "timeout": 5, "command": "/absolute/path/to/remoteagents/scripts/hooks/rac-attention working" } ] } ] } }
+```
+
+`rac-attention` exits 0 doing nothing unless it is inside a tmux pane and a tmux
+binary resolves (`$RAC_TMUX_BIN`, else `tmux` on `PATH`), so it stays harmless in
+shared dotfiles on hosts without the console.
+
+**Known limitations.** A directory Claude has never opened shows its trust dialog
+on first launch — the console never pre-accepts it, so UI-created worktrees hit it
+once. A hookless session (see above) reads as *finished* and has no Bookmarks. Any
+text already in the input box concatenates with a console paste. Under the
+[host bridge](docker.md), set `RAC_HOST_REPOSITORY` to the host checkout path;
+without it `claude` (and `pi`) show as unavailable, because the injected file paths
+must be the ones the host-side agent sees. The console writes the rendered files
+under `<RAC_HOST_REPOSITORY>/.data/adapters` (or `RAC_ADAPTER_FILES_DIR`); that
+directory must resolve to the same bytes inside the container and on the host — a
+bind mount at the same path, or an explicit shared `RAC_ADAPTER_FILES_DIR` — so the
+host-side agent reads the file the container wrote.
+
 ### Legacy worktree launch commands
 
 Before `adapters`, each worktree defined its own `command` (and optional

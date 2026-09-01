@@ -1,0 +1,13 @@
+{
+  "_note": "Claude Conversation ids are session UUIDs.",
+  "valid": [
+    "11111111-2222-4333-8444-555555555555",
+    "0199a4e1-c0b7-4a90-bf22-abcdef012345"
+  ],
+  "invalid": [
+    "",
+    "not-a-uuid",
+    "ZZZZZZZZ-2222-4333-8444-555555555555",
+    "11111111-2222-4333-8444-55555555555"
+  ]
+}

@@ -5,7 +5,6 @@ import websocket from '@fastify/websocket';
 import staticPlugin from '@fastify/static';
 import { fileURLToPath } from 'node:url';
 import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ValidatedConfig } from './config/schema.js';
 import { AuthService, type Session } from './auth/service.js';
@@ -773,8 +772,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // an Adapter without a command catalog serves an empty one
     if (adapter === undefined) return { commands: [] };
     const worktree = configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
-    // resolve the service-visible codex state directory
-    const stateDirectory = process.env.CODEX_HOME ?? join(process.env.HOME ?? homedir(), '.codex');
+    // the Adapter resolves its own state directory (its skills root) from the environment
+    const stateDirectory = adapter.commands?.stateDirectory() ?? '';
     return { commands: await commandCatalog.catalog(adapter, worktree?.path ?? target.agent.workspace, stateDirectory) };
   });
   // list workspace files referenced by one completed response

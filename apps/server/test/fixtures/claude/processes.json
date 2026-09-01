@@ -1,0 +1,18 @@
+{
+  "_note": "Fed to claudeAdapter.recognizes. It classifies one process; wrappers (srt) are ancestors and tool children (bash -c) are descendants — both noMatch.",
+  "match": [
+    { "name": "native claude", "comm": "claude", "argv": ["claude"] },
+    { "name": "claude via absolute path", "comm": "claude", "argv": ["/home/tony/.local/bin/claude", "--continue"] },
+    { "name": "launcher script whose comm is node", "comm": "node", "argv": ["/home/tony/.local/bin/claude", "--continue"] },
+    { "name": "node running the packaged cli", "comm": "node", "argv": ["/usr/bin/node", "/home/tony/.nvm/versions/node/v24.19.0/lib/node_modules/@anthropic-ai/claude-code/cli.js"] },
+    { "name": "node cli with flags", "comm": "node", "argv": ["node", "--enable-source-maps", "/opt/claude/node_modules/@anthropic-ai/claude-code/cli.js", "--resume", "abc"] }
+  ],
+  "noMatch": [
+    { "name": "codex", "comm": "codex", "argv": ["codex"] },
+    { "name": "omx wrapper", "comm": "omx", "argv": ["omx", "--direct"] },
+    { "name": "bash -c tool child that mentions claude", "comm": "bash", "argv": ["bash", "-c", "claude --version"] },
+    { "name": "srt wrapper ancestor", "comm": "srt", "argv": ["srt", "claude"] },
+    { "name": "node running a different tool", "comm": "node", "argv": ["/usr/bin/node", "/opt/other/dist/cli.js"] },
+    { "name": "a plain login shell", "comm": "zsh", "argv": ["-zsh"] }
+  ]
+}

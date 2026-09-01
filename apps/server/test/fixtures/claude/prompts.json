@@ -1,0 +1,5 @@
+[
+  { "name": "prompt mode pastes and presses Enter", "prompt": "implement the next task", "mode": "prompt", "text": "implement the next task", "keys": ["Enter"] },
+  { "name": "shell mode also pastes and presses Enter", "prompt": "ls -la", "mode": "shell", "text": "ls -la", "keys": ["Enter"] },
+  { "name": "multiline prompt is preserved verbatim, no trailing space", "prompt": "line one\nline two", "mode": "prompt", "text": "line one\nline two", "keys": ["Enter"] }
+]

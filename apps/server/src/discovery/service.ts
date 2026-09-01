@@ -438,9 +438,10 @@ export class DiscoveryService {
     const context = await this.conversationContext(id);
     if (context === undefined) return undefined;
     const reported = this.reportedConversationId(context);
-    // a reported id skips the fd-walk; its title is read from the rollout by id
+    // a reported id skips the fd-walk; its title is read by id (Codex) or by id and
+    // the pane's working directory (Claude, whose transcript is keyed by cwd)
     if (reported !== undefined) {
-      const title = await context.adapter.title?.(reported);
+      const title = await context.adapter.title?.(reported, context.pane.cwd);
       return { id: reported, ...(title === undefined ? {} : { title }) };
     }
     return await context.adapter.discover?.(context.pane);

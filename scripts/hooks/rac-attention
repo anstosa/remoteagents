@@ -1,0 +1,55 @@
+#!/bin/sh
+# rac-attention — an Agent reports its Attention state to the Remote Agent Console
+# by writing tmux pane options on its own pane (ADR 0001):
+#
+#   @rac_attention  working | finished | question
+#   @rac_session    the agent's current session id (when known)
+#
+# The console injects this script into Claude Code through per-launch hooks, and
+# it is documented as an optional dotfile hook for sessions the console did not
+# start. It never blocks the agent: it exits 0 in every case, doing nothing unless
+# it is running inside a tmux pane and a tmux binary resolves.
+#
+# Usage: rac-attention <working|finished|question> [--session <id>] [ignored...]
+#
+# The session defaults to $CLAUDE_CODE_SESSION_ID. Extra arguments are ignored, so
+# a hook that appends its own JSON argv (as Codex does) is harmless. tmux is
+# resolved from $RAC_TMUX_BIN, else the first `tmux` on PATH.
+
+state=$1
+[ -n "$state" ] || exit 0
+case $state in
+  working|finished|question) ;;
+  *) exit 0 ;;
+esac
+shift 2>/dev/null || true
+
+session=${CLAUDE_CODE_SESSION_ID:-}
+# read an explicit --session <id>; ignore every other extra argument
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --session) session=${2:-}; shift 2 2>/dev/null || shift ;;
+    --session=*) session=${1#--session=}; shift ;;
+    *) shift ;;
+  esac
+done
+
+# nothing to report outside a tmux pane
+[ -n "${TMUX_PANE:-}" ] || exit 0
+
+# resolve tmux: an explicit RAC_TMUX_BIN wins, else the first on PATH
+if [ -n "${RAC_TMUX_BIN:-}" ]; then
+  tmux_bin=$RAC_TMUX_BIN
+else
+  tmux_bin=$(command -v tmux 2>/dev/null) || exit 0
+fi
+[ -n "$tmux_bin" ] || exit 0
+
+# one tmux invocation sets @rac_attention, plus @rac_session when an id is known
+if [ -n "$session" ]; then
+  "$tmux_bin" set-option -p -t "$TMUX_PANE" @rac_attention "$state" \; \
+              set-option -p -t "$TMUX_PANE" @rac_session "$session"
+else
+  "$tmux_bin" set-option -p -t "$TMUX_PANE" @rac_attention "$state"
+fi
+exit 0

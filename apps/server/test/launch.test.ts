@@ -3,6 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const { run } = vi.hoisted(() => ({ run: vi.fn() }));
 vi.mock('../src/tmux/command.js', () => ({ run }));
 
+import { existsSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { LaunchService, composeCommand, composeLaunch, expandCommand, expandHomeCommand, scratchLabel } from '../src/launch/service.js';
 import { hostCommand } from '../src/tmux/interactive-shell.js';
 import { startNamedReplacementSession, worktreeSessionName } from '../src/tmux/session-name.js';
@@ -11,7 +15,9 @@ import type { SocketRef, Worktree } from '../src/domain/models.js';
 const hostTmuxDirectory = process.env.RAC_HOST_TMUX_DIR;
 const hostInteractiveShell = process.env.RAC_HOST_INTERACTIVE_SHELL;
 const hostPath = process.env.RAC_HOST_PATH;
-afterEach(() => {
+const adapterFilesDir = process.env.RAC_ADAPTER_FILES_DIR;
+const tempDirs: string[] = [];
+afterEach(async () => {
   run.mockReset();
   if (hostTmuxDirectory === undefined) delete process.env.RAC_HOST_TMUX_DIR;
   else process.env.RAC_HOST_TMUX_DIR = hostTmuxDirectory;
@@ -19,6 +25,9 @@ afterEach(() => {
   else process.env.RAC_HOST_INTERACTIVE_SHELL = hostInteractiveShell;
   if (hostPath === undefined) delete process.env.RAC_HOST_PATH;
   else process.env.RAC_HOST_PATH = hostPath;
+  if (adapterFilesDir === undefined) delete process.env.RAC_ADAPTER_FILES_DIR;
+  else process.env.RAC_ADAPTER_FILES_DIR = adapterFilesDir;
+  await Promise.all(tempDirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
 });
 
 describe('LaunchService', () => {
@@ -86,6 +95,25 @@ describe('LaunchService', () => {
 
     expect(calls[0]).toMatchObject(['paste', '%4', expect.stringMatching(/^rac-launch-/), 'codex resume 0198c333-3333-7333-8333-333333333333']);
     expect(calls).toHaveLength(2);
+  });
+
+  it('injects the rendered hooks settings into a Claude worktree launch', async () => {
+    const filesDir = await mkdtemp(join(tmpdir(), 'rac-launch-files-'));
+    tempDirs.push(filesDir);
+    process.env.RAC_ADAPTER_FILES_DIR = filesDir;
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false, command: 'codex' };
+    const calls: string[][] = [];
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', pane, buffer, command]); return true; }, enter: async (_socket: SocketRef, pane: string) => { calls.push(['enter', pane]); return true; } };
+    const config = { adapters: { claude: { program: '/usr/local/bin/claude', args: [], env: {}, launchable: true } }, worktrees: [worktree] };
+    const store = { launchProfile: async () => 'claude', rememberLaunchProfile: async () => {} };
+    const service = new LaunchService(config as never, { find: async () => [socket] }, panes as never, undefined, store as never);
+
+    await expect(service.resume(worktree.id, 'claude')).resolves.toBe(true);
+
+    // continue → --continue --settings <rendered hooks.json>, program prepended
+    expect(calls[0]?.[3]).toBe(`/usr/local/bin/claude --continue --settings ${join(filesDir, 'claude', 'hooks.json')}`);
+    expect(existsSync(join(filesDir, 'claude', 'hooks.json'))).toBe(true);
   });
 
   it('marks home-launched agents as Scratch without replacing their tmux title', async () => {

@@ -32,13 +32,23 @@ export type LaunchMode = 'fresh' | 'continue' | 'resume';
 /**
  * What the console hands an Adapter to compose a launch. Chunk 1 supplies
  * `mode`, the `conversationId` for a `resume`, the `cwd`, and the `sandboxed`
- * flag; the Claude and Pi chunks extend this with the rendered `files` map and
- * the host `repoRoot`. The Adapter reads these and returns only arguments — the
- * console prepends the program and performs the launch.
+ * flag; the Claude chunk adds `files` — the absolute paths of the console-owned
+ * files this kind's `files` capability rendered at boot, keyed by name, as the
+ * launching host sees them. The Adapter reads these and returns only arguments —
+ * the console prepends the program and performs the launch.
  */
-export type LaunchInput = { mode: LaunchMode; conversationId?: string; cwd: string; sandboxed: boolean };
+export type LaunchInput = { mode: LaunchMode; conversationId?: string; cwd: string; sandboxed: boolean; files?: Record<string, string> };
 /** The CLI arguments (and optional environment) for a launch; the console prepends the program. */
 export type LaunchSpec = { args: string[]; env?: Record<string, string> };
+
+/**
+ * What the console hands an Adapter's `files` renderer at boot: the host-visible
+ * checkout root the rendered content and file paths are named against (under the
+ * host bridge this is `RAC_HOST_REPOSITORY`), and the tmux binary to bake into a
+ * hook command — omitted under the bridge, where the agent runs on the host and
+ * the reporter resolves tmux from PATH instead.
+ */
+export type AdapterFileContext = { repoRoot: string; tmuxBin?: string };
 
 /**
  * The agent-agnostic facts the console feeds `panes.classify`/`classifyProcess`
@@ -111,6 +121,8 @@ export interface Adapter {
   readonly commands?: {
     /** prefer the runtime's effective command catalog when supported */
     readonly runtimeCatalog?: 'codex-app-server';
+    /** the agent's own config/state directory (its skills root), resolved from injectable env roots */
+    stateDirectory(env?: NodeJS.ProcessEnv): string;
     skillDirectories(workspace: string, stateDirectory: string): string[];
     slash(): PromptCommand[];
     skillInvocation(name: string): string;
@@ -124,8 +136,13 @@ export interface Adapter {
      * the pane's descriptors — the same pair `completion.baseline` reads.
      */
     discover?(pane: { pid: number; cwd?: string }): Promise<Conversation | undefined>;
-    /** The title of one already-known conversation (its id is unique), used when the pane reports it through `@rac_session`. */
-    title?(id: string): Promise<string | undefined>;
+    /**
+     * The title of one already-known conversation (its id is unique), used when the
+     * pane reports it through `@rac_session`. The pane's `cwd` is supplied for
+     * Adapters (Claude) whose transcript is keyed by working directory; an Adapter
+     * that finds its transcript by id alone (Codex) ignores it.
+     */
+    title?(id: string, cwd?: string): Promise<string | undefined>;
   };
   /**
    * Turn completion read from the agent's own structured event log rather than the
@@ -144,6 +161,15 @@ export interface Adapter {
     baseline(pane: { pid: number; cwd?: string }): Promise<CompletionBaseline | undefined>;
     since(baseline: CompletionBaseline): Promise<CompletionEvent | undefined>;
   };
+  /**
+   * Console-owned files this Adapter needs on disk (hook settings, sandbox policy).
+   * At boot the console renders each into `<RAC_ADAPTER_FILES_DIR ?? .data/adapters>/
+   * <kind>/<name>` (0644, rewritten every boot) and hands the absolute paths back
+   * through `LaunchInput.files`. Both the paths inside the content and the file
+   * paths themselves are named against `context.repoRoot` (host paths under the
+   * bridge), so a bridge without a host repository leaves the kind unlaunchable.
+   */
+  readonly files?: (context: AdapterFileContext) => Record<string, string>;
   readonly sandbox?: {
     needs: { domains: string[]; statePaths: string[]; protectedPaths: string[]; secrets: string[] };
     policyRequired: boolean;

@@ -1,10 +1,11 @@
 import { codexAdapter } from './codex.js';
+import { claudeAdapter } from './claude.js';
 import type { Pane } from '../domain/models.js';
 import type { Adapter, AdapterCapability, AdapterConfigs, AgentKind } from './types.js';
 
 /**
  * The closed registry. It is code, not plugins: adding a kind means adding an
- * Adapter here. Chunk 1 registers only Codex; Claude, Pi and OpenCode arrive in
+ * Adapter here. Chunk 2 registers Codex and Claude; Pi and OpenCode arrive in
  * later chunks. Order is the resolution/priority order (`codex`, `claude`, `pi`,
  * `opencode`).
  *
@@ -13,7 +14,7 @@ import type { Adapter, AdapterCapability, AdapterConfigs, AgentKind } from './ty
  * at load time. Keep it that way: do not invoke `recognizeProcess`,
  * `adapterCapabilities`, or an adapter method at module scope.
  */
-export const adapters: readonly Adapter[] = [codexAdapter];
+export const adapters: readonly Adapter[] = [codexAdapter, claudeAdapter];
 
 export function adapterFor(kind: AgentKind): Adapter | undefined {
   return adapters.find((adapter) => adapter.kind === kind);

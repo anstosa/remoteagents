@@ -9,6 +9,7 @@ import { CommandCatalogService } from '../src/commands/service.js';
 import { codexAppServerCatalog } from '../src/commands/codex-app-server.js';
 import { createCodexProtocolClient } from '../src/accounts/protocol.js';
 import { codexAdapter } from '../src/adapters/codex.js';
+import { claudeAdapter } from '../src/adapters/claude.js';
 
 const roots: string[] = [];
 
@@ -73,6 +74,23 @@ describe('command catalog', () => {
     const catalog = await fallbackCatalog().catalog(codexAdapter, workspace, codexHome(home));
 
     expect(catalog.find(command => command.value === '$push')).toEqual({ value: '$push', description: 'Workspace push.' });
+  });
+
+  it('gives Claude one deduped / list where a skill wins over a same-named built-in', async () => {
+    const home = await tempRoot('rac-home-');
+    const workspace = await tempRoot('rac-workspace-');
+    // a workspace skill named `review` collides with Claude's built-in `/review`
+    const reviewSkill = join(workspace, '.claude', 'skills', 'review');
+    await mkdir(reviewSkill, { recursive: true });
+    await writeFile(join(reviewSkill, 'SKILL.md'), skill('review', 'Custom project review workflow.'));
+
+    const catalog = await fallbackCatalog().catalog(claudeAdapter, workspace, join(home, '.claude'));
+
+    // Claude invokes skills as `/name`, so the skill and built-in share the `/review` trigger;
+    // the list carries it once, and the skill wins
+    expect(catalog.filter(command => command.value === '/review')).toEqual([{ value: '/review', description: 'Custom project review workflow.' }]);
+    // a built-in with no colliding skill is untouched
+    expect(catalog.find(command => command.value === '/help')).toEqual({ value: '/help', description: 'Show available commands' });
   });
 
   it('tolerates a zero-byte file where a skills root should be', async () => {

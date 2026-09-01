@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { isAgentCommand } from '../discovery/processes.js';
 import { codexDraftState, failedTurnFromCapture, lastPromptFromHistory, latestAgentMessageFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from './codex-turns.js';
 import { parseChoiceQuestion, pendingOmxQuestion } from './codex-questions.js';
-import { codexConversationTitle, codexRolloutBaseline, codexTurnSince, discoverCodexConversation, validCodexThreadId } from './codex-conversations.js';
+import { codexConversationTitle, codexHome, codexRolloutBaseline, codexTurnSince, discoverCodexConversation, validCodexThreadId } from './codex-conversations.js';
 import { classifyCodexPane, classifyCodexProcess, isOmxWorkerPane } from './codex-panes.js';
 import type { Adapter, AttentionState, PromptCommand } from './types.js';
 
@@ -127,6 +127,7 @@ export const codexAdapter: Adapter = {
     // The account-global skills override nothing; the workspace's `.codex/skills`
     // shadow same-named entries. Codex invokes a skill as `$name`.
     runtimeCatalog: 'codex-app-server',
+    stateDirectory: (env) => codexHome(env),
     skillDirectories: (workspace, stateDirectory) => [join(stateDirectory, 'skills'), join(workspace, '.codex', 'skills')],
     slash: codexSlash,
     skillInvocation: (name) => `$${name}`,

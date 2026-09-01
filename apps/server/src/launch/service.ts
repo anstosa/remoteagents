@@ -9,6 +9,7 @@ import { startNamedReplacementSession, worktreeSessionName } from '../tmux/sessi
 import { ProcSocketFinder, workspaceRoot, type SocketFinder } from '../discovery/service.js';
 import { worktreeHostRoot, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
 import { adapterFor } from '../adapters/registry.js';
+import { renderAdapterFiles, type RenderedAdapterFiles } from '../adapters/files.js';
 import { agentKinds, type AgentKind, type LaunchInput, type LaunchMode } from '../adapters/types.js';
 import { WorktreeLaunchStore, scratchLaunchKey } from '../worktrees/store.js';
 import type { Pane, SocketRef, Worktree } from '../domain/models.js';
@@ -65,6 +66,22 @@ export class LaunchService {
     return resolveCodexProgram(this.config);
   }
 
+  private adapterFilesPromise: Promise<RenderedAdapterFiles> | undefined;
+  // This kind's rendered console-owned files for `LaunchInput.files`, or `undefined`
+  // when the kind declares none (Codex, and every legacy launch) — which keeps the
+  // launch hot path off the filesystem. Only a *successful* render is memoized; a
+  // transient failure is logged, degrades this launch to no files (it omits
+  // `--settings`) rather than failing, and clears the memo so the next launch retries.
+  private async adapterFiles(kind: AgentKind): Promise<Record<string, string> | undefined> {
+    if (adapterFor(kind)?.files === undefined) return undefined;
+    this.adapterFilesPromise ??= renderAdapterFiles().catch(error => {
+      this.adapterFilesPromise = undefined;
+      console.error('[launch] adapter files not rendered:', error instanceof Error ? error.message : 'unknown error');
+      return {} as RenderedAdapterFiles;
+    });
+    return (await this.adapterFilesPromise)[kind];
+  }
+
   // the launchable kinds in registry (resolution) order for the current configuration
   private launchableKinds(): AgentKind[] {
     // the legacy configuration launches only Codex, through the per-worktree command
@@ -98,16 +115,18 @@ export class LaunchService {
 
   // the inner command for a worktree launch: legacy honours an explicit resumeCommand
   // override for exact resume, otherwise prepends the worktree's own command
-  private worktreeCommand(worktree: Worktree, kind: AgentKind, input: LaunchRequest): string | undefined {
-    return this.composeKindLaunch(kind, { mode: input.mode, ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }), cwd: worktree.identity, sandboxed: input.sandboxed }, adapterArgs => {
+  private async worktreeCommand(worktree: Worktree, kind: AgentKind, input: LaunchRequest): Promise<string | undefined> {
+    const files = await this.adapterFiles(kind);
+    return this.composeKindLaunch(kind, { mode: input.mode, ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }), cwd: worktree.identity, sandboxed: input.sandboxed, ...(files === undefined ? {} : { files }) }, adapterArgs => {
       if (input.mode === 'resume' && input.conversationId !== undefined && worktree.resumeCommand !== undefined) return worktree.resumeCommand.replace('{threadId}', input.conversationId);
       return worktree.command === undefined ? undefined : composeCommand(worktree.command, adapterArgs);
     });
   }
 
   // the inner command for a scratch launch; the legacy path launches newAgentCommand
-  private scratchCommand(kind: AgentKind, cwd: string): string | undefined {
-    return this.composeKindLaunch(kind, { mode: 'fresh', cwd, sandboxed: false }, adapterArgs => composeCommand(this.config.newAgentCommand, adapterArgs));
+  private async scratchCommand(kind: AgentKind, cwd: string): Promise<string | undefined> {
+    const files = await this.adapterFiles(kind);
+    return this.composeKindLaunch(kind, { mode: 'fresh', cwd, sandboxed: false, ...(files === undefined ? {} : { files }) }, adapterArgs => composeCommand(this.config.newAgentCommand, adapterArgs));
   }
 
   // resolve the authenticated account home independently from the launch directory
@@ -147,7 +166,7 @@ export class LaunchService {
     // refuse an unconfigured or unlaunchable kind
     if (resolved === undefined) return false;
     const home = this.agentHome();
-    const command = this.scratchCommand(resolved, home);
+    const command = await this.scratchCommand(resolved, home);
     if (command === undefined) return false;
     const launched = await this.launchScratch(home, scratchLabel, command, home);
     // remember the Scratch group's last-used kind
@@ -233,7 +252,7 @@ export class LaunchService {
       if (kind === undefined) return false;
       const id = randomBytes(18).toString('base64url');
       const sandboxed = input.sandboxed === true;
-      const command = this.worktreeCommand(worktree, kind, { mode: input.mode, ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }), sandboxed });
+      const command = await this.worktreeCommand(worktree, kind, { mode: input.mode, ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }), sandboxed });
       // a worktree with no launch command (and no override) cannot start
       if (command === undefined) return false;
       const launched = await this.dispatchWorktreeLaunch(worktree, command, id, sandboxed);

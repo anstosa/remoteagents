@@ -1,0 +1,9 @@
+{
+  "_note": "interrupt is Escape then C-c as separate writes; the contract suite also asserts neither Escape Escape nor C-c C-c is ever produced.",
+  "interrupt": ["Escape", "C-c"],
+  "selectOption": [
+    { "index": 0, "keys": ["Enter"] },
+    { "index": 1, "keys": ["Down", "Enter"] },
+    { "index": 2, "keys": ["Down", "Down", "Enter"] }
+  ]
+}

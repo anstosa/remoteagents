@@ -37,8 +37,8 @@ function procRoot(): string {
   return process.env.RAC_HOST_PROC ?? '/proc';
 }
 
-function codexHome(): string {
-  return process.env.CODEX_HOME ?? join(process.env.HOME ?? homedir(), '.codex');
+export function codexHome(env: NodeJS.ProcessEnv = process.env): string {
+  return env.CODEX_HOME ?? join(env.HOME ?? homedir(), '.codex');
 }
 
 // validate one session-relative rollout path before it reaches the filesystem

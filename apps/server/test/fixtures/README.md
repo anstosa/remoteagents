@@ -20,8 +20,13 @@ Each `<kind>/` directory holds:
   `capture-pane -e -p` snapshots (`lines` joined with `\n`) and the expected
   `latestCompletedTurn` (`null` ⇒ none), `lastPrompt`, `latestMessage`, and
   `failed`.
+- **`submission.json`** *(optional)* — `{ interrupt, selectOption }` key sequences
+  pinned exactly (in addition to the generic key rules the suite always asserts).
 - **`conversations.json`** *(optional; only for kinds with `conversations`)* —
   `{ valid, invalid }` conversation ids fed to `validId()`.
+- **`hooks.json`** *(optional; only for kinds with a `files` capability)* — the
+  golden render of that kind's console-owned settings file, pinned by the kind's
+  own hooks test (not the shared contract suite).
 
 ## Codex
 
@@ -36,3 +41,15 @@ Codex has no golden `files` (hooks/sandbox settings) to pin; those arrive with
 the Claude and Pi kinds. The numbered-choice → Inline question parser still
 lives in the web bundle today, so it is not yet exercised here; it moves
 server-side (and gains capture fixtures) later in chunk 1.
+
+## Claude
+
+`recognizes` the `claude` process (native comm, an argv[0] basename of `claude`,
+or `node` running `@anthropic-ai/claude-code/cli.js`) but never a `bash -c` tool
+child or an `srt` wrapper ancestor. Every title maps to `undefined` — Claude
+reports its state through hooks (`stateSource: 'reported'`), so its title carries
+no Attention signal. Prompts submit with paste + Enter in both modes (never Tab),
+and `submission.json` pins the `Escape`/`C-c` interrupt and the option-select
+sequences. `conversations.json` covers the session-UUID `validId`. `hooks.json` is
+the golden render of the injected `--settings` file, pinned by
+`../adapters/claude-hooks.test.ts`.

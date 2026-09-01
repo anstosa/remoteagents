@@ -13,3 +13,37 @@ describe('configuration safety',()=>{it('canonicalizes an allowed worktree and d
   it('requires an absolute adapter program and bounds args, env names and unknown keys',async()=>{const {input}=await fixture();await expect(validateConfig({...input,worktrees:[],adapters:{codex:{program:'codex'}}})).rejects.toThrow('absolute');await expect(validateConfig({...input,worktrees:[],adapters:{codex:{program:process.execPath,args:Array(65).fill('x')}}})).rejects.toThrow();await expect(validateConfig({...input,worktrees:[],adapters:{codex:{program:process.execPath,env:{'1BAD':'x'}}}})).rejects.toThrow();await expect(validateConfig({...input,worktrees:[],adapters:{codex:{program:process.execPath,extra:true}}})).rejects.toThrow(/[Uu]nrecognized/)});
   it('lets adapters.codex retire the legacy agent keys and makes worktree command optional',async()=>{const {work,input}=await fixture();const warnings:string[]=[];const config=await validateConfig({...input,newAgentCommand:'codex',worktrees:[{id:'a',path:work,command:'codex',resumeCommand:'codex resume {threadId} -C .'}],adapters:{codex:{program:process.execPath}}},{warn:m=>warnings.push(m)});expect(config.adapters?.codex?.launchable).toBe(true);expect(warnings.some(w=>w.includes('newAgentCommand'))).toBe(true);expect(warnings.some(w=>w.includes('`command`'))).toBe(true);expect(warnings.some(w=>w.includes('resumeCommand'))).toBe(true);const noCommand=await validateConfig({...input,worktrees:[{id:'a',path:work}],adapters:{codex:{program:process.execPath}}});expect(noCommand.worktrees[0]?.id).toBe('a')});
   it('treats an empty adapters block as an observe-only console and keeps the legacy default absent',async()=>{const {input}=await fixture();const empty=await validateConfig({...input,worktrees:[],adapters:{}});expect(empty.adapters).toEqual({});const legacy=await validateConfig({...input});expect(legacy.adapters).toBeUndefined()});});
+
+describe('claude adapter configuration', () => {
+  const saved: Record<string, string | undefined> = {};
+  const setEnv = (key: string, value: string | undefined) => { if (!(key in saved)) saved[key] = process.env[key]; if (value === undefined) delete process.env[key]; else process.env[key] = value; };
+  afterEach(() => { for (const key of Object.keys(saved)) { const value = saved[key]; if (value === undefined) delete process.env[key]; else process.env[key] = value; delete saved[key]; } });
+
+  it('warns about and drops reserved Claude arguments the console composes itself', async () => {
+    const { input } = await fixture();
+    const warnings: string[] = [];
+    const config = await validateConfig({ ...input, worktrees: [], adapters: { claude: { program: process.execPath, args: ['--model', 'opus', '--settings', '/tmp/x', '--continue', '-p'] } } }, { warn: m => warnings.push(m) });
+    // a reserved flag is dropped together with its attached value, so `/tmp/x` never
+    // survives as a stray launch positional; a value-less flag drops alone
+    expect(config.adapters?.claude?.args).toEqual(['--model', 'opus']);
+    expect(warnings.some(w => w.includes('adapters.claude') && w.includes('--settings') && w.includes('--continue') && w.includes('-p'))).toBe(true);
+  });
+
+  it('leaves Claude unlaunchable under a bridge without RAC_HOST_REPOSITORY', async () => {
+    const { input } = await fixture();
+    setEnv('RAC_HOST_TMUX_DIR', '/host/tmux'); setEnv('RAC_HOST_REPOSITORY', undefined);
+    const warnings: string[] = [];
+    const config = await validateConfig({ ...input, worktrees: [], adapters: { claude: { program: '/abs/claude' } } }, { warn: m => warnings.push(m) });
+    expect(config.adapters?.claude).toMatchObject({ launchable: false });
+    expect(config.adapters?.claude?.unavailableReason).toContain('RAC_HOST_REPOSITORY');
+    expect(warnings.some(w => w.includes('adapters.claude') && w.includes('RAC_HOST_REPOSITORY'))).toBe(true);
+  });
+
+  it('launches Claude under a bridge once RAC_HOST_REPOSITORY names the host checkout', async () => {
+    const { input } = await fixture();
+    setEnv('RAC_HOST_TMUX_DIR', '/host/tmux'); setEnv('RAC_HOST_REPOSITORY', '/host/checkout');
+    const config = await validateConfig({ ...input, worktrees: [], adapters: { claude: { program: '/abs/claude' } } });
+    expect(config.adapters?.claude).toMatchObject({ launchable: true });
+    expect(config.adapters?.claude?.unavailableReason).toBeUndefined();
+  });
+});

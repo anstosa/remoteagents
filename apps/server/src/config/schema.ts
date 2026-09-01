@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { z } from 'zod';
 import type { StackCommands, Worktree } from '../domain/models.js';
 import { adapterFor } from '../adapters/registry.js';
+import { hostVisibleRepoRoot } from '../adapters/files.js';
 import { agentKinds, type AdapterConfigs, type AdapterLaunchConfig } from '../adapters/types.js';
 import { instanceIconNames, type InstanceIcon } from '../instance-icon.js';
 import { isIP } from 'node:net';
@@ -131,12 +132,34 @@ async function resolveAdapters(parsed: ParsedAdapters, checkExecutables: boolean
     }
     // an Adapter reserves the arguments it composes itself; a reserved operator
     // argument is dropped with a warning so it never doubles the composed launch.
-    // Codex reserves none.
+    // A reserved flag takes its attached value with it (the following token, unless
+    // that token is itself a flag), so a stray value never lands as a launch
+    // positional. Codex reserves none.
     const reserved = adapterFor(kind)?.conflictingArgs;
-    const conflicts = reserved === undefined ? [] : config.args.filter(argument => reserved.includes(argument));
-    if (conflicts.length > 0) {
-      config.args = config.args.filter(argument => !conflicts.includes(argument));
-      warn(`adapters.${kind}: ignoring reserved argument${conflicts.length === 1 ? '' : 's'} ${conflicts.join(', ')}`);
+    if (reserved !== undefined && reserved.length > 0) {
+      const kept: string[] = [];
+      const dropped: string[] = [];
+      for (let index = 0; index < config.args.length; index += 1) {
+        const argument = config.args[index]!;
+        if (!reserved.includes(argument)) { kept.push(argument); continue; }
+        dropped.push(argument);
+        // consume the flag's attached value; a following flag is a separate argument
+        const value = config.args[index + 1];
+        if (value !== undefined && !value.startsWith('-')) index += 1;
+      }
+      if (dropped.length > 0) {
+        config.args = kept;
+        warn(`adapters.${kind}: ignoring reserved argument${dropped.length === 1 ? '' : 's'} ${dropped.join(', ')}`);
+      }
+    }
+    // an Adapter that renders host-path files (Claude's hooks) needs a host-visible
+    // checkout root; under the bridge without RAC_HOST_REPOSITORY the injected paths
+    // would be wrong, so the kind cannot launch. Off the bridge the console's own
+    // checkout always resolves, so this only ever fires under the bridge.
+    if (config.launchable && adapterFor(kind)?.files !== undefined && hostVisibleRepoRoot() === undefined) {
+      config.launchable = false;
+      config.unavailableReason = 'the host bridge needs RAC_HOST_REPOSITORY set to the host checkout path';
+      warn(`adapters.${kind}: ${config.unavailableReason}`);
     }
     configs[kind] = config;
   }
