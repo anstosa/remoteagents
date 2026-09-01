@@ -39,6 +39,62 @@ describe('interactive submit settle', () => {
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
+  // preserve paragraph breaks while waiting for submission
+  it('submits a multi-paragraph queued prompt after its complete draft renders', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-submit-multiline-'));
+    const queue = new QueuedPromptService(join(directory, 'queue.json'));
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/tmp', title: 'Ready' });
+    const prompt = 'First paragraph.\n\nalpha · beta\n\nReply exactly MULTI_DONE.';
+    const sent: string[][] = [];
+    let submitted = false;
+    // keep one stable target
+    const discovery = { target: async () => ({ agent, socket }) };
+    const tmux = {
+      // retain the composed prompt for the live snapshot
+      pastePrompt: async () => true,
+      // render blank composer rows exactly like Codex
+      capture: async () => submitted
+        ? ['› First paragraph.', '', '  alpha · beta', '', '  Reply exactly MULTI_DONE.', '', '• Working', '', '› Ask Codex to do anything'].join('\n')
+        : ['› First paragraph.', '', '  alpha · beta', '', '  Reply exactly MULTI_DONE.', '', '  gpt-5.6-sol · ~/remoteagents · main'].join('\n'),
+      // accept the queued prompt
+      sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => { sent.push(keys); submitted = true; return true; }
+    };
+    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    try {
+      await queue.enqueue(`agent:${agent.id}`, prompt);
+      await service.observe(agent);
+
+      expect(sent).toEqual([['Enter']]);
+      await expect(service.listQueued(agent.id)).resolves.toEqual([]);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  // exclude footer text from durable acknowledgement
+  it('does not mistake Codex status text for a live queued draft', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-submit-status-'));
+    const queue = new QueuedPromptService(join(directory, 'queue.json'));
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/tmp', title: 'Ready' });
+    let submissions = 0;
+    // keep one stable target
+    const discovery = { target: async () => ({ agent, socket }) };
+    const tmux = {
+      // model a paste that never reaches the composer
+      pastePrompt: async () => true,
+      // expose the prompt text only at the start of the footer
+      capture: async () => ['› ', '', '  gpt-5.6-sol · ~/remoteagents · main'].join('\n'),
+      // count accidental submissions
+      sendKeys: async () => { submissions += 1; return true; }
+    };
+    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    try {
+      await queue.enqueue(`agent:${agent.id}`, 'gpt-5.6-sol');
+      await service.observe(agent);
+
+      expect(submissions).toBe(0);
+      await expect(service.listQueued(agent.id)).resolves.toMatchObject([{ text: 'gpt-5.6-sol' }]);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
   it('queues a quick second submit behind the first while its paste settles', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-submit-settle-race-'));
     const queue = new QueuedPromptService(join(directory, 'queue.json'));

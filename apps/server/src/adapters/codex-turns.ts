@@ -13,6 +13,8 @@
 import type { SubmissionDraftState } from './types.js';
 
 const selectedChoice = /^›\s+(?:\[[ xX]\]\s*)?\d+[.)]\s/u;
+// identify Codex's bottom status row
+const composerStatusLine = /^ {2}\S.*(?: · \S.*)+$/u;
 
 /**
  * Tab is Codex's queue key.  Its completion menu owns Tab while the composer
@@ -30,20 +32,30 @@ const plainTerminalText = (value: string) => value
 // read only the bottom-most live Codex composer, excluding matching scrollback
 function activeComposerFromCapture(value: string): string | undefined {
   const lines = plainTerminalText(value).split('\n');
+  let finalVisibleRow = lines.length - 1;
+  // locate the terminal footer row above trailing space
+  while (finalVisibleRow >= 0 && !lines[finalVisibleRow]!.trim()) finalVisibleRow -= 1;
   // inspect composer markers newest first
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const match = /^›(?:\s(.*))?$/u.exec(lines[index]!);
     // skip non-composer rows
     if (match === null) continue;
     const draft = [match[1] ?? ''];
-    let continuation = index + 1;
-    // collect wrapped composer rows
-    while (continuation < lines.length && /^ {2}\S/u.test(lines[continuation]!)) draft.push(lines[continuation++]!.trim());
-    let following = continuation;
-    // skip spacing below the candidate composer
-    while (following < lines.length && !lines[following]!.trim()) following += 1;
-    // reject submitted prompt history followed by agent activity
-    if (/^[•■─]/u.test(lines[following]?.trim() ?? '')) continue;
+    let submitted = false;
+    // collect wrapped paragraphs and blank composer rows
+    for (let following = index + 1; following < lines.length; following += 1) {
+      const line = lines[following]!;
+      // exclude terminal chrome from the draft
+      if (following === finalVisibleRow && composerStatusLine.test(line)) break;
+      // reject submitted prompt history followed by agent activity
+      if (/^[•■─]/u.test(line)) {
+        submitted = true;
+        break;
+      }
+      draft.push(line.trim());
+    }
+    // inspect only a live composer
+    if (submitted) continue;
     return draft.join(' ');
   }
   return undefined;
@@ -58,7 +70,12 @@ export function codexDraftState(capture: string, prompt: string): SubmissionDraf
   const normalizedPrompt = prompt.replace(/\s+/gu, ' ').trim();
   const visibleSuffix = normalizedPrompt.slice(-Math.min(64, normalizedPrompt.length));
   const collapsedPaste = `[Pasted Content ${prompt.length} chars]`;
-  return normalizedComposer.includes(visibleSuffix) || normalizedComposer.includes(collapsedPaste) ? 'visible' : 'cleared';
+  // accept Codex's exact long-paste placeholder
+  if (normalizedComposer.includes(collapsedPaste)) return 'visible';
+  // anchor short prompts at the composer start so footer text cannot match
+  if (normalizedPrompt.length <= 64) return normalizedComposer.startsWith(normalizedPrompt) ? 'visible' : 'cleared';
+  // match the visible tail when a long composer scrolls its prefix away
+  return normalizedComposer.includes(visibleSuffix) ? 'visible' : 'cleared';
 }
 
 // a request failure or cancellation banner on the active (latest) turn
