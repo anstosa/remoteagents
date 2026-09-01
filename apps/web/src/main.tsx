@@ -3205,10 +3205,10 @@ function ResizableLogSplit({ output, note, browser }: { output: ReactNode; note?
   const hasBrowser = browser !== undefined && browser !== null;
   const signature = `${hasNote ? 'note' : ''}:${hasBrowser ? 'browser' : ''}`;
   const [sizes, setSizes] = useState<SplitSizes>({ agent: 1, note: 1, browser: 1 });
-  const [mobilePanel, setMobilePanel] = useState<'agent'|'browser'>(() => hasBrowser ? 'browser' : 'agent');
+  const [mobilePanel, setMobilePanel] = useState<'agent'|'browser'>('agent');
   useEffect(() => setSizes({ agent: 1, note: 1, browser: 1 }), [signature]);
-  // show a newly opened browser immediately on mobile
-  useEffect(() => setMobilePanel(hasBrowser ? 'browser' : 'agent'), [hasBrowser]);
+  // start every mobile split on the agent
+  useEffect(() => setMobilePanel('agent'), [hasBrowser]);
   // collect current panel widths
   const measuredSizes = () => {
     const container = containerRef.current;

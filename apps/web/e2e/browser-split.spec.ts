@@ -356,9 +356,19 @@ test.describe('phone browser split', () => {
     await page.getByRole('button', { name: 'Open project in split view' }).click();
 
     const browser = page.getByRole('dialog', { name: 'Browser' });
+    const output = page.locator('.log-output');
+    const browserSwitch = page.getByRole('button', { name: 'Show project browser' });
+    await expect(output).toBeVisible();
+    await expect(browser).toBeHidden();
+    await expect(browserSwitch).toBeVisible();
+    await browserSwitch.click();
+
+    const mobileSwitch = page.getByRole('button', { name: 'Show agent output' });
     const deviceToggle = browser.locator('.browser-device-toggle');
     const preview = page.frameLocator('iframe[title="Project browser"]');
     await expect(browser).toBeVisible();
+    await expect(output).toBeHidden();
+    await expect(mobileSwitch).toBeVisible();
     await expect(browser.getByRole('button', { name: 'Enter browser fullscreen' })).toBeHidden();
     await expect(deviceToggle.locator('svg')).toHaveCount(1);
     await expect(deviceToggle.locator('svg')).toHaveAttribute('data-device', 'desktop');
@@ -383,11 +393,8 @@ test.describe('phone browser split', () => {
     expect(requestedDevices.at(-1)).toBe('desktop');
     expect(await preview.locator('main').evaluate(() => window.innerWidth)).toBe(980);
 
-    const mobileSwitch = page.getByRole('button', { name: 'Show agent output' });
-    await expect(mobileSwitch).toBeVisible();
     await mobileSwitch.click();
-    const browserSwitch = page.getByRole('button', { name: 'Show project browser' });
-    await expect(page.locator('.log-output')).toBeVisible();
+    await expect(output).toBeVisible();
     await expect(browser).toBeHidden();
     await expect(browserSwitch).toBeVisible();
     const [browserSwitchBottom, mobileOutputBottom] = await Promise.all([
@@ -399,6 +406,11 @@ test.describe('phone browser split', () => {
 
     await browserSwitch.click();
     await expect(browser).toBeVisible();
-    await expect(page.locator('.log-output')).toBeHidden();
+    await expect(output).toBeHidden();
+
+    await page.reload();
+    await expect(output).toBeVisible();
+    await expect(browser).toBeHidden();
+    await expect(browserSwitch).toBeVisible();
   });
 });
