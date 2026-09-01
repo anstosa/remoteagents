@@ -679,6 +679,8 @@ export class PromptService {
     const ignored = await run('/usr/bin/git', ['-C', workspace, 'check-ignore', '--quiet', '--', relativeRoot]);
     // retain repository ignore rules
     if (ignored.code === 0) return true;
+    // allow workspaces without Git metadata
+    if (/not a git repository/u.test(ignored.stderr)) return true;
     const resolved = await run('/usr/bin/git', ['-C', workspace, 'rev-parse', '--git-path', 'info/exclude']);
     // require a repository-local exclude file
     if (resolved.code !== 0 || resolved.stdout.trim() === '') return false;

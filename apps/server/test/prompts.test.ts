@@ -49,6 +49,38 @@ it('stages attached files in a Git-ignored location and references each one in t
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
+// reproduce image-only delivery outside repositories
+it('submits attachment-only prompts from a non-Git workspace', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'rac-non-git-attachments-'));
+  const queue = new QueuedPromptService(join(directory, 'queue.json'));
+  const attachedAgent = { ...agent, workspace: directory };
+  const attachment = { name: 'photo.jpg', data: Buffer.from('image data').toString('base64') };
+  let pasted = '';
+  let submitted = false;
+  const discovery = { target: async () => ({ agent: attachedAgent, socket }) };
+  const tmux = {
+    // retain the staged reference
+    pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { pasted = prompt; return true; },
+    // expose the collapsed live draft until submission
+    capture: async () => submitted ? '› ' : `› [Pasted Content ${pasted.length} chars]`,
+    // accept the idle prompt
+    sendKeys: async () => { submitted = true; return true; }
+  };
+  try {
+    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    await expect(service.submit(attachedAgent.id, '', [attachment])).resolves.toBe(true);
+    expect(pasted).toMatch(/Attached files:\n@node_modules\/\.remote-agent-console\/attachments\/.+\/photo\.jpg /);
+    const path = /@(node_modules\/[^\s]+)/u.exec(pasted)?.[1];
+    // require the staged reference
+    if (path === undefined) throw new Error('staged attachment path missing');
+    await expect(readFile(join(directory, path), 'utf8')).resolves.toBe('image data');
+    await expect(service.listQueued(attachedAgent.id)).resolves.toEqual([]);
+  } finally {
+    // remove staged test state
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it('maps a discovered host worktree path to its mounted workspace before staging attachments', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'rac-mounted-'));
   await writeFile(join(workspace, '.gitignore'), 'node_modules/\n');
