@@ -10,6 +10,19 @@ export function worktreeMatchesWorkspace(worktree: Pick<Worktree, 'identity' | '
   return workspace === worktree.identity || workspace === worktree.hostPath;
 }
 
+// the Project id embedded in a Worktree wire id `<projectId>:<realpath>` (ADR 0003); a
+// key with no `:` (a bare `<projectId>` or the `scratch` group) is returned unchanged
+export function projectIdOf(worktreeKey: string): string {
+  const colon = worktreeKey.indexOf(':');
+  return colon === -1 ? worktreeKey : worktreeKey.slice(0, colon);
+}
+
+// one discovered Worktree by its wire id `<projectId>:<realpath>` — the single by-id
+// resolver every service shares over the current `discovery.worktreesNow()` snapshot
+export function worktreeById(worktrees: readonly Worktree[], id: string): Worktree | undefined {
+  return worktrees.find(worktree => worktree.id === id);
+}
+
 // the worktree root as the launching/command host sees it: the bridge host path when
 // the worktree is mounted from the host, else the console's own git toplevel
 export function worktreeHostRoot(worktree: Pick<Worktree, 'identity' | 'hostPath'>): string {
@@ -22,23 +35,24 @@ export function configuredWorktreeForWorkspace(worktrees: Worktree[], workspace:
   return matches.length === 1 ? matches[0] : undefined;
 }
 
-// resolve configured worktree authority
-export async function resolveConfiguredWorkspace(discovery: DiscoveryService, worktrees: Worktree[], agentId: string): Promise<ResolvedWorkspace | undefined> {
+// resolve the discovered Worktree an Agent belongs to, enriched with dashboard comparison
+// metadata. Worktrees come from discovery, which owns `git worktree list` (ADR 0003).
+export async function resolveConfiguredWorkspace(discovery: DiscoveryService, agentId: string): Promise<ResolvedWorkspace | undefined> {
   const target = await discovery.target(agentId);
   // require a current agent target
   if (target === undefined) return undefined;
-  const worktree = configuredWorktreeForWorkspace(worktrees, target.agent.workspace);
+  const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
   // exclude scratch agents
   if (worktree === undefined) return undefined;
-  const dashboard = await discovery.dashboard(worktrees);
+  const dashboard = await discovery.dashboard();
   const enriched = dashboard.agents.find(candidate => candidate.id === target.agent.id && candidate.worktreeId === worktree.id);
   // retain comparison metadata from dashboard enrichment
   return { agent: enriched ?? target.agent, worktree, workspace: worktree.identity };
 }
 
 // revalidate agent identity before publishing
-export async function sameConfiguredWorkspace(discovery: DiscoveryService, worktrees: Worktree[], agentId: string, expected: ResolvedWorkspace): Promise<boolean> {
-  const current = await resolveConfiguredWorkspace(discovery, worktrees, agentId);
+export async function sameConfiguredWorkspace(discovery: DiscoveryService, agentId: string, expected: ResolvedWorkspace): Promise<boolean> {
+  const current = await resolveConfiguredWorkspace(discovery, agentId);
   // reject replacement agents and path drift
   return current !== undefined && current.agent.id === expected.agent.id && current.worktree.id === expected.worktree.id && current.workspace === expected.workspace;
 }

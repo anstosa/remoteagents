@@ -72,7 +72,7 @@ export class ServerAdminService {
   // resolve deployment paths once
   constructor(config: ValidatedConfig, options: ServerAdminOptions = {}) {
     this.configWritePath = options.configWritePath ?? process.env.RAC_CONFIG_WRITE_PATH ?? process.env.RAC_CONFIG ?? '';
-    this.hostRepository = options.hostRepository ?? process.env.RAC_HOST_REPOSITORY ?? config.worktrees.find(worktree => worktree.path === '/workspace' || worktree.identity === '/workspace')?.hostPath;
+    this.hostRepository = options.hostRepository ?? process.env.RAC_HOST_REPOSITORY ?? config.projects.find(project => project.path === '/workspace')?.hostPath;
     this.statusDirectory = options.statusDirectory ?? process.env.RAC_SERVER_ADMIN_STATUS_DIR ?? '/workspace/.data';
     this.tmuxBinary = options.tmuxBinary ?? process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux';
     this.tmuxSocket = options.tmuxSocket ?? (process.env.RAC_HOST_TMUX_DIR === undefined ? undefined : join(process.env.RAC_HOST_TMUX_DIR, 'default'));

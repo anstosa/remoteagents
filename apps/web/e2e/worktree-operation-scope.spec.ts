@@ -20,7 +20,7 @@ test('keeps a queued prompt pending only on its originating agent tab', async ({
             { id: 'agent-alpha', sessionId: 'socket:$1', workspace: '/worktrees/alpha', worktreeLabel: 'Alpha', worktreeOrder: 1, title: 'Ready' },
             { id: 'agent-bravo', sessionId: 'socket:$2', workspace: '/worktrees/bravo', worktreeLabel: 'Bravo', worktreeOrder: 2, title: 'Ready' }
           ],
-          worktrees: []
+          projects: []
         }
       });
     }
@@ -66,13 +66,13 @@ test('keeps launch state on its worktree tab and does not pull focus back after 
       return route.fulfill({
         json: launched ? {
           agents: [{ id: 'agent-alpha', sessionId: 'socket:$1', workspace: '/worktrees/alpha', worktreeId: 'alpha', worktreeLabel: 'Alpha', worktreeOrder: 1, title: 'Ready' }],
-          worktrees: [{ id: 'bravo', label: 'Bravo', path: '/worktrees/bravo', available: true, pinned: true, order: 2 }]
+          projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'bravo', label: 'Bravo', path: '/worktrees/bravo', available: true, pinned: true, order: 2 }] }]
         } : {
           agents: [],
-          worktrees: [
+          projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [
             { id: 'alpha', label: 'Alpha', path: '/worktrees/alpha', available: true, pinned: true, order: 1 },
             { id: 'bravo', label: 'Bravo', path: '/worktrees/bravo', available: true, pinned: true, order: 2 }
-          ]
+          ] }]
         }
       });
     }
@@ -133,10 +133,11 @@ test('creates loading tabs immediately and keeps the worktree launcher available
         ...(bravoRunning ? [{ id: 'agent-bravo', sessionId: 'socket:$2', workspace: '/worktrees/bravo', worktreeId: 'bravo', worktreeLabel: 'Bravo', worktreeOrder: 2, title: 'Ready' }] : [])
       ];
       const worktrees = [
-        ...(!alphaRunning ? [{ id: 'alpha', label: 'Alpha', path: '/worktrees/alpha', available: true, pinned: false, order: 1 }] : []),
-        ...(!bravoRunning ? [{ id: 'bravo', label: 'Bravo', path: '/worktrees/bravo', available: true, pinned: false, order: 2 }] : [])
+        ...(!alphaRunning ? [{ id: 'alpha', projectId: 'proj', label: 'Alpha', path: '/worktrees/alpha', main: false, detached: false, locked: false, available: true, pinned: false, order: 1 }] : []),
+        ...(!bravoRunning ? [{ id: 'bravo', projectId: 'proj', label: 'Bravo', path: '/worktrees/bravo', main: false, detached: false, locked: false, available: true, pinned: false, order: 2 }] : [])
       ];
-      return route.fulfill({ json: { generation: 1, agents, worktrees } });
+      const projects = worktrees.length === 0 ? [] : [{ id: 'proj', label: 'Proj', available: true, worktrees }];
+      return route.fulfill({ json: { generation: 1, agents, projects } });
     }
     // disable push enrollment
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
@@ -201,7 +202,7 @@ test('expires a successful launch that never reaches the dashboard', async ({ pa
     // serve one authenticated console
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     // keep the launched agent absent
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [], worktrees: [{ id: 'alpha', label: 'Alpha', path: '/worktrees/alpha', available: true, pinned: false, order: 1 }] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'alpha', label: 'Alpha', path: '/worktrees/alpha', available: true, pinned: false, order: 1 }] }] } });
     // disable push enrollment
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     // report server-side launch success
@@ -229,7 +230,7 @@ test('shows a failed unpinned worktree launch globally', async ({ page }) => {
     // serve one authenticated console
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     // expose one launcher-only worktree
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [], worktrees: [{ id: 'alpha', label: 'Alpha', path: '/worktrees/alpha', available: true, pinned: false, order: 1 }] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'alpha', label: 'Alpha', path: '/worktrees/alpha', available: true, pinned: false, order: 1 }] }] } });
     // disable push enrollment
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     // reject the worktree launch
@@ -258,12 +259,12 @@ test('disables a sleeping worktree launcher while wake is pending', async ({ pag
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     // switch from sleeping through an unpinned transition to an active agent
     if (url.pathname === '/api/dashboard') {
-      if (running) return route.fulfill({ json: { generation: 3, agents: [{ id: 'agent-alpha', sessionId: 'socket:$1', workspace: '/worktrees/alpha', worktreeId: 'alpha', worktreeLabel: 'Alpha', worktreeOrder: 1, title: 'Ready' }], worktrees: [] } });
+      if (running) return route.fulfill({ json: { generation: 3, agents: [{ id: 'agent-alpha', sessionId: 'socket:$1', workspace: '/worktrees/alpha', worktreeId: 'alpha', worktreeLabel: 'Alpha', worktreeOrder: 1, title: 'Ready' }], projects: [] } });
       if (waking) {
         interimDashboards += 1;
-        return route.fulfill({ json: { generation: 2, agents: [], worktrees: [{ id: 'alpha', label: 'Alpha', path: '/worktrees/alpha', available: false, pinned: false, sleeping: false, order: 1 }] } });
+        return route.fulfill({ json: { generation: 2, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'alpha', label: 'Alpha', path: '/worktrees/alpha', available: false, pinned: false, sleeping: false, order: 1 }] }] } });
       }
-      return route.fulfill({ json: { generation: 1, agents: [], worktrees: [{ id: 'alpha', label: 'Alpha', path: '/worktrees/alpha', available: true, pinned: false, sleeping: true, order: 1 }] } });
+      return route.fulfill({ json: { generation: 1, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'alpha', label: 'Alpha', path: '/worktrees/alpha', available: true, pinned: false, sleeping: true, order: 1 }] }] } });
     }
     // disable push enrollment
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });

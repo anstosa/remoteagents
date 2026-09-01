@@ -24,7 +24,7 @@ test('queues the tracked upstream rebase workflow from the active branch banner'
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', branch: 'feature/console', gitUpstream: { upstream: 'origin/feature/console', ahead: 1, behind: 2 }, title: 'Ready' }], worktrees: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', branch: 'feature/console', gitUpstream: { upstream: 'origin/feature/console', ahead: 1, behind: 2 }, title: 'Ready' }], projects: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
@@ -48,7 +48,7 @@ test('hides the branch rebase banner for the Remote Agents host repository', asy
     // restore one controlling session
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     // expose a behind host repository agent
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-remoteagents', sessionId: 'socket:$1', workspace: '/workspace', worktreeId: 'remoteagents', worktreeLabel: 'Remote Agents', branch: 'main', gitUpstream: { upstream: 'origin/main', ahead: 0, behind: 2 }, title: 'Ready' }], worktrees: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-remoteagents', sessionId: 'socket:$1', workspace: '/workspace', worktreeId: 'remoteagents', worktreeLabel: 'Remote Agents', branch: 'main', gitUpstream: { upstream: 'origin/main', ahead: 0, behind: 2 }, title: 'Ready' }], projects: [] } });
     // keep the reviewed host updater current for this banner check
     if (url.pathname === '/api/server/update-available') return route.fulfill({ json: { available: false } });
     // authorize the visible agent output

@@ -40,7 +40,7 @@ test('shows cached agent output immediately while a selected tab reconnects', as
     if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [
       { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/one', worktreeLabel: 'One', worktreeOrder: 1, title: 'Ready' },
       { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/two', worktreeLabel: 'Two', worktreeOrder: 2, title: 'Ready' }
-    ], worktrees: [] } });
+    ], projects: [] } });
     // disable push setup
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     // issue live-output tickets

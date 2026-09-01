@@ -65,7 +65,7 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
       { id: 'agent-ferry-review', paneId: '%4', sessionId: 'socket:$4', socketFingerprint: 'socket', workspace: '/worktrees/ferry-review', worktreeId: 'ferry-fyi', worktreeLabel: 'Ferry FYI', title: 'Review', unread: false },
       { id: 'agent-skills-copy', paneId: '%5', sessionId: 'socket:$5', socketFingerprint: 'socket', workspace: '/worktrees/skills-copy', worktreeId: 'skills-copy', worktreeLabel: 'Skills', title: 'Ready', unread: false },
       { id: 'agent-long-label', paneId: '%6', sessionId: 'socket:$6', socketFingerprint: 'socket', workspace: '/worktrees/long-label', worktreeId: 'long-label', worktreeLabel: longWorktreeLabel, title: 'Ready', unread: false }
-    ], worktrees: [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
+    ], projects: [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
     if (url.pathname === '/api/dashboard/ticket') return route.fulfill({ json: { ticket: 'dashboard-ticket' } });
     if (url.pathname === '/api/agents/agent-cora/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/agent-cora/saved-prompts') return route.fulfill({ json: { prompts: [] } });
@@ -184,7 +184,7 @@ test('shows graceful Davo context fallbacks without worktree or instance data', 
     // restore a session without instance metadata
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'voice-csrf', active: true, deviceName: 'Test device', server: { name: '   ', url: '', remotes: [] } } });
     // provide one scratch agent without a worktree
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-scratch', sessionId: 'socket:$1', workspace: '/tmp', title: 'Scratch', unread: false }], worktrees: [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-scratch', sessionId: 'socket:$1', workspace: '/tmp', title: 'Scratch', unread: false }], projects: [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
     if (url.pathname === '/api/dashboard/ticket') return route.fulfill({ json: { ticket: 'dashboard-ticket' } });
     if (url.pathname === '/api/agents/agent-scratch/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     // return empty agent resources
@@ -257,7 +257,7 @@ test('mobile swaps between an ongoing Davo call and the main UI', async ({ page 
     // restore one authenticated browser session
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'voice-csrf', active: true, deviceName: 'Test device', server: { name: 'Framework', url: 'https://framework.santosa.dev', remotes: [] } } });
     // provide one selected agent and worktree
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready', unread: false }], worktrees: [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready', unread: false }], projects: [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
     if (url.pathname === '/api/dashboard/ticket') return route.fulfill({ json: { ticket: 'dashboard-ticket' } });
     if (url.pathname === '/api/agents/agent-cora/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/agent-cora/saved-prompts' || url.pathname === '/api/agents/agent-cora/queued-prompts' || url.pathname === '/api/agents/agent-cora/prompt-history' || url.pathname === '/api/agents/agent-cora/skills' || url.pathname === '/api/worktrees/cora/notes') return route.fulfill({ json: { prompts: [], skills: [], notes: [] } });
@@ -381,7 +381,7 @@ test('waits for MCP tools and requests a spoken follow-up after tool completion'
     // restore one authenticated browser session
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'voice-csrf', active: true, deviceName: 'Test device', server: { name: 'Framework', url: 'https://framework.santosa.dev', remotes: [] } } });
     // provide two selectable active worktrees
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 1, title: 'Ready', unread: false }, { id: 'agent-ferry', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/worktrees/ferry-fyi', worktreeId: 'ferry-fyi', worktreeLabel: 'Ferry FYI', worktreeOrder: 2, title: 'Ready', unread: false }], worktrees: [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 1, title: 'Ready', unread: false }, { id: 'agent-ferry', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/worktrees/ferry-fyi', worktreeId: 'ferry-fyi', worktreeLabel: 'Ferry FYI', worktreeOrder: 2, title: 'Ready', unread: false }], projects: [], cleanupPending: 0, reviews: [], reviewTour: { available: false, reason: 'generator_unavailable' } } });
     if (url.pathname === '/api/dashboard/ticket') return route.fulfill({ json: { ticket: 'dashboard-ticket' } });
     if (url.pathname === '/api/agents/agent-cora/tickets' || url.pathname === '/api/agents/agent-ferry/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (/^\/api\/agents\/(?:agent-cora|agent-ferry)\/(?:saved-prompts|queued-prompts|prompt-history|skills)$/u.test(url.pathname) || /^\/api\/worktrees\/(?:cora|ferry-fyi)\/notes$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [], skills: [], notes: [] } });

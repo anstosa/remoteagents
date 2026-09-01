@@ -9,8 +9,10 @@ import { PullRequestService } from '../pull-requests/service.js';
 import { parseReportedAttention, resolveAttention } from '../adapters/attention.js';
 import { adapterCapabilities, adapterFor, paneExcluded } from '../adapters/registry.js';
 import { worktreeMatchesWorkspace } from '../workspaces/resolver.js';
+import { gitCommonDir, listWorktrees, type WorktreeEntry } from '../git/worktrees.js';
+import type { WorktreeLaunchStore } from '../worktrees/store.js';
 import type { Adapter, AdapterConfigs, AttentionState, Conversation } from '../adapters/types.js';
-import type { Agent, Dashboard, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, SocketRef, Worktree } from '../domain/models.js';
+import type { Agent, Dashboard, DashboardProject, DashboardWorktree, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, Project, SocketRef, Worktree } from '../domain/models.js';
 import { classifyReviewPath } from '../git/change-classification.js';
 import { isUpdateAdvisorLabel } from '../update-advisor.js';
 
@@ -311,13 +313,23 @@ export class DiscoveryService {
   private socketSnapshot: SocketRef[] = [];
   private socketsRefreshedAt = 0;
   private socketRefreshInFlight?: Promise<SocketRef[]>;
-  private dashboardSnapshot?: { worktrees: Worktree[]; refreshedAt: number; value: Dashboard };
-  private dashboardRefreshInFlight?: { worktrees: Worktree[]; value: Promise<Dashboard> };
+  private dashboardSnapshot?: { refreshedAt: number; value: Dashboard };
+  private dashboardRefreshInFlight?: Promise<Dashboard>;
+  private worktreeSnapshot: Worktree[] = [];
+  private worktreesRefreshedAt = 0;
+  private worktreesRefreshInFlight?: Promise<Worktree[]>;
+  // bumped by invalidateWorktrees(); a scan that began under an older epoch read stale pins
+  private worktreesEpoch = 0;
+  private worktreesInFlightEpoch = -1;
   private readonly gitMetadata = new Map<string, { refreshedAt: number; value: GitMeta }>();
   private readonly gitMetadataInFlight = new Map<string, Promise<GitMeta>>();
+  // a workspace's common git dir (null = none); Projects are static, so repository
+  // membership never changes in a session — cache it so a persistent Scratch pane does
+  // not re-spawn `git rev-parse` on every poll
+  private readonly commonDirCache = new Map<string, string | null>();
   private static readonly refreshCacheMs = 2_000;
   private static readonly gitMetadataCacheMs = 30_000;
-  constructor(private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly tmux = new TmuxAdapter(), private readonly processes: ProcessInspector = new ProcInspector(), private readonly pullRequests = new PullRequestService(), private readonly adapters?: AdapterConfigs) {}
+  constructor(private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly tmux = new TmuxAdapter(), private readonly processes: ProcessInspector = new ProcInspector(), private readonly pullRequests = new PullRequestService(), private readonly adapters?: AdapterConfigs, private readonly projects: Project[] = [], private readonly pinStore?: Pick<WorktreeLaunchStore, 'pins'>, private readonly listWorktreesImpl: (path: string) => Promise<WorktreeEntry[] | undefined> = listWorktrees) {}
   // reuse socket discovery across adjacent requests
   private async sockets(force = false): Promise<SocketRef[]> {
     // serve the recent socket snapshot
@@ -446,29 +458,106 @@ export class DiscoveryService {
     }
     return await context.adapter.discover?.(context.pane);
   }
+  // the Worktrees discovered from every available Project (bare and stale entries
+  // excluded), pins folded in, cached with the 30s git-metadata window until a console
+  // mutation invalidates it. Ordered config → Main first → Linked by branch (detached last).
+  async worktrees(force = false): Promise<Worktree[]> {
+    if (!force && Date.now() - this.worktreesRefreshedAt < DiscoveryService.gitMetadataCacheMs) return this.worktreeSnapshot;
+    // coalesce only onto an in-flight scan begun since the last invalidation; a forced read
+    // (a just-added worktree) or a post-invalidation read (a pin toggle) always scans fresh,
+    // so a scan that started under the old pins can never satisfy it
+    if (!force && this.worktreesRefreshInFlight !== undefined && this.worktreesInFlightEpoch === this.worktreesEpoch) return this.worktreesRefreshInFlight;
+    const epoch = this.worktreesEpoch;
+    const refresh = this.discoverWorktrees().then(worktrees => {
+      // publish only when this is still the newest scan and no invalidation raced it, so a
+      // stale scan's completion never re-stamps the cache over a fresher pin/worktree set
+      if (this.worktreesRefreshInFlight === refresh && this.worktreesEpoch === epoch) {
+        this.worktreeSnapshot = worktrees;
+        this.worktreesRefreshedAt = Date.now();
+      }
+      return worktrees;
+    }).finally(() => { if (this.worktreesRefreshInFlight === refresh) this.worktreesRefreshInFlight = undefined; });
+    this.worktreesRefreshInFlight = refresh;
+    this.worktreesInFlightEpoch = epoch;
+    return refresh;
+  }
+
+  // the last discovered Worktree set, for the synchronous scope resolution the prompt
+  // queue and its siblings run while handling a request
+  worktreesNow(): Worktree[] { return this.worktreeSnapshot; }
+
+  // drop the Worktree and dashboard caches so the next read re-runs `git worktree list` and
+  // rebuilds — called after a console add/remove and after a pin toggle. The epoch bump makes
+  // any scan already in flight (which read the old pins) stale, so it cannot re-stamp the cache.
+  invalidateWorktrees(): void { this.worktreesRefreshedAt = 0; this.worktreesEpoch += 1; this.dashboardSnapshot = undefined; }
+
+  private async discoverWorktrees(): Promise<Worktree[]> {
+    const pins = (await this.pinStore?.pins()) ?? {};
+    const worktrees: Worktree[] = [];
+    for (const project of this.projects) {
+      if (!project.available) continue;
+      const entries = await this.listWorktreesImpl(project.path);
+      if (entries === undefined) continue;
+      // git lists the Main worktree first; a bare repository lists its bare entry first
+      const mainPath = entries[0] !== undefined && !entries[0].bare ? await realpath(entries[0].path).catch(() => entries[0]!.path) : undefined;
+      const usable: Worktree[] = [];
+      for (const entry of entries) {
+        // a bare entry is never a Worktree; a stale (prunable) one is hidden and kept
+        if (entry.bare || entry.prunable) continue;
+        const path = await realpath(entry.path).catch(() => entry.path);
+        const main = path === mainPath;
+        const id = `${project.id}:${path}`;
+        const sha = entry.head === undefined ? undefined : entry.head.slice(0, 7);
+        const label = main ? project.label : entry.branch !== undefined ? `${project.label} · ${entry.branch}` : `${project.label} · ${sha ?? path.split('/').pop() ?? path}`;
+        usable.push({
+          id, projectId: project.id, label, path, identity: path,
+          ...(main && project.hostPath !== undefined ? { hostPath: project.hostPath } : {}),
+          available: true, pinned: pins[id] ?? main, main, detached: entry.detached, locked: entry.locked,
+          ...(entry.branch === undefined ? {} : { branch: entry.branch }),
+          ...(entry.detached && sha !== undefined ? { sha } : {}),
+          ...(project.commands === undefined ? {} : { commands: project.commands }),
+          ...(project.newTask === undefined ? {} : { newTask: project.newTask }),
+          push: project.push,
+          ...(project.projectUrl === undefined ? {} : { projectUrl: project.projectUrl, ...(project.projectPort === undefined ? {} : { projectPort: project.projectPort }) })
+        });
+      }
+      // Main first, then Linked ordered by branch with detached checkouts last
+      usable.sort((left, right) => {
+        if (left.main !== right.main) return left.main ? -1 : 1;
+        if (left.detached !== right.detached) return left.detached ? 1 : -1;
+        return (left.branch ?? left.sha ?? '').localeCompare(right.branch ?? right.sha ?? '');
+      });
+      worktrees.push(...usable);
+    }
+    return worktrees;
+  }
+
   // build or reuse one dashboard view
-  async dashboard(worktrees: Worktree[], force = false): Promise<Dashboard> {
+  async dashboard(force = false): Promise<Dashboard> {
     const cached = this.dashboardSnapshot;
     // bypass cached state for lifecycle checks
-    if (!force && cached?.worktrees === worktrees && Date.now() - cached.refreshedAt < DiscoveryService.refreshCacheMs) return cached.value;
-    const active = this.dashboardRefreshInFlight;
+    if (!force && cached !== undefined && Date.now() - cached.refreshedAt < DiscoveryService.refreshCacheMs) return cached.value;
     // reuse only ordinary dashboard refreshes
-    if (!force && active?.worktrees === worktrees) return active.value;
-    const value = this.buildDashboard(worktrees, force)
+    if (!force && this.dashboardRefreshInFlight !== undefined) return this.dashboardRefreshInFlight;
+    const value = this.buildDashboard(force)
       .then(dashboard => {
-        this.dashboardSnapshot = { worktrees, refreshedAt: Date.now(), value: dashboard };
+        this.dashboardSnapshot = { refreshedAt: Date.now(), value: dashboard };
         return dashboard;
       })
       .finally(() => {
-        if (this.dashboardRefreshInFlight?.value === value) this.dashboardRefreshInFlight = undefined;
+        if (this.dashboardRefreshInFlight === value) this.dashboardRefreshInFlight = undefined;
       });
-    this.dashboardRefreshInFlight = { worktrees, value };
+    this.dashboardRefreshInFlight = value;
     return value;
   }
 
   // enrich one discovered dashboard
-  private async buildDashboard(worktrees: Worktree[], force = false): Promise<Dashboard> {
+  private async buildDashboard(force = false): Promise<Dashboard> {
     const discovered = await this.refresh(force);
+    let worktrees = await this.worktrees(force);
+    // a `git worktree add` from a terminal appears within one tick: if a live agent sits
+    // in a checkout we do not know yet whose repository is a configured Project, re-scan once
+    if (!force && await this.hasUnknownProjectWorktree(discovered, worktrees)) worktrees = await this.worktrees(true);
     const metadataFor = (workspace: string) => {
       const cached = this.gitMetadata.get(workspace);
       // reuse recent Git state across frequent dashboard polls
@@ -488,10 +577,12 @@ export class DiscoveryService {
       if (cached !== undefined) return Promise.resolve(cached.value);
       return value;
     };
+    const worktreeFor = (workspace: string) => worktrees.find(candidate => worktreeMatchesWorkspace(candidate, workspace));
+    // the stable tab order: config → Main first → Linked by branch, as discovery sorted them
+    const orderOf = new Map(worktrees.map((worktree, index) => [worktree.id, index] as const));
     const agents = await Promise.all(discovered.map(async (agent) => {
       // keep modal advisors outside configured worktree identity
-      const order = isUpdateAdvisorLabel(agent.displayLabel) ? -1 : worktrees.findIndex(candidate => worktreeMatchesWorkspace(candidate, agent.workspace));
-      const worktree = order < 0 ? undefined : worktrees[order];
+      const worktree = isUpdateAdvisorLabel(agent.displayLabel) ? undefined : worktreeFor(agent.workspace);
       const workspace = worktree?.identity ?? agent.workspace;
       const [meta, question] = await Promise.all([
         metadataFor(workspace),
@@ -502,20 +593,49 @@ export class DiscoveryService {
       const gitPrStatus = await gitPrComparisonForBase(meta, branch, pullRequest?.baseBranch);
       const details = worktree === undefined
         ? { ...agent, branch, ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }) }
-        : { ...agent, branch, ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }), workspace: worktree.identity, worktreeId: worktree.id, worktreeLabel: worktree.label, worktreeOrder: order, ...(worktree.newTask === undefined ? {} : { newTaskConfigured: true }), push: worktree.push, projectUrl: worktree.projectUrl };
+        : { ...agent, branch, ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }), workspace: worktree.identity, projectId: worktree.projectId, worktreeId: worktree.id, ...(worktree.newTask === undefined ? {} : { newTaskConfigured: true }), push: worktree.push, ...(worktree.projectUrl === undefined ? {} : { projectUrl: worktree.projectUrl }) };
       // re-resolve now that a pending Inline question is known (precedence: reported → question → inferred → finished)
       const attention = resolveAttention({ kind: agent.kind, title: agent.title, reported: this.paneReported.get(agent.id), hasQuestion: question !== undefined });
       return { ...details, attention, ...(pullRequest === undefined ? {} : { pullRequest }), ...(question === undefined ? {} : { question }) };
     }));
-    // a worktree is inactive when no live agent associates to it; a modal advisor never
-    // claims the configured repository placeholder
+    // a Worktree with a live agent carries its git metadata on the Agent; an idle one carries
+    // it on the Worktree record, as the flat list used to. A modal advisor never claims one.
     const activeAgents = agents.filter(agent => !isUpdateAdvisorLabel(agent.displayLabel));
-    const inactive = await Promise.all(worktrees.filter(worktree => !activeAgents.some(agent => worktreeMatchesWorkspace(worktree, agent.workspace))).map(async (worktree) => {
+    const activeWorktreeIds = new Set(activeAgents.flatMap(agent => agent.worktreeId === undefined ? [] : [agent.worktreeId]));
+    const worktreeViews = await Promise.all(worktrees.map(async (worktree): Promise<DashboardWorktree> => {
+      const base: DashboardWorktree = { id: worktree.id, projectId: worktree.projectId, label: worktree.label, path: worktree.path, available: worktree.available, pinned: worktree.pinned, main: worktree.main, detached: worktree.detached, locked: worktree.locked, order: orderOf.get(worktree.id) ?? 0, ...(worktree.branch === undefined ? {} : { branch: worktree.branch }), ...(worktree.sha === undefined ? {} : { sha: worktree.sha }), ...(worktree.projectUrl === undefined ? {} : { projectUrl: worktree.projectUrl }) };
+      if (activeWorktreeIds.has(worktree.id)) return base;
       const meta = await metadataFor(worktree.identity);
       const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, meta.branch);
       const gitPrStatus = await gitPrComparisonForBase(meta, meta.branch, pullRequest?.baseBranch);
-      return { id: worktree.id, label: worktree.label, path: worktree.path, available: worktree.available, pinned: worktree.pinned, projectUrl: worktree.projectUrl, order: worktrees.indexOf(worktree), ...(meta.branch === undefined ? {} : { branch: meta.branch }), ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }), ...(pullRequest === undefined ? {} : { pullRequest }) };
+      return { ...base, ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }), ...(pullRequest === undefined ? {} : { pullRequest }) };
     }));
-    return { generation: this.generation, serverStartedAt: this.serverStartedAt, adapters: adapterCapabilities(this.adapters), agents, worktrees: inactive };
+    const byProject = new Map<string, DashboardWorktree[]>();
+    for (const view of worktreeViews) { const list = byProject.get(view.projectId) ?? []; list.push(view); byProject.set(view.projectId, list); }
+    const projects: DashboardProject[] = this.projects.map(project => ({ id: project.id, label: project.label, available: project.available, ...(project.unavailableReason === undefined ? {} : { unavailableReason: project.unavailableReason }), worktrees: byProject.get(project.id) ?? [] }));
+    return { generation: this.generation, serverStartedAt: this.serverStartedAt, adapters: adapterCapabilities(this.adapters), agents, projects };
+  }
+
+  // whether a live agent sits in a checkout that is not a known Worktree but whose
+  // repository is a configured Project — the signal to re-run discovery on demand
+  private async hasUnknownProjectWorktree(agents: Agent[], worktrees: Worktree[]): Promise<boolean> {
+    const seen = new Set<string>();
+    for (const agent of agents) {
+      if (isUpdateAdvisorLabel(agent.displayLabel) || seen.has(agent.workspace)) continue;
+      seen.add(agent.workspace);
+      if (worktrees.some(worktree => worktreeMatchesWorkspace(worktree, agent.workspace))) continue;
+      const common = await this.cachedCommonDir(agent.workspace);
+      if (common !== undefined && this.projects.some(project => project.available && project.identity === common)) return true;
+    }
+    return false;
+  }
+
+  // the workspace's common git dir, memoised (Projects are static, so the answer is stable)
+  private async cachedCommonDir(workspace: string): Promise<string | undefined> {
+    const cached = this.commonDirCache.get(workspace);
+    if (cached !== undefined) return cached ?? undefined;
+    const common = await gitCommonDir(workspace).catch(() => undefined);
+    if (this.commonDirCache.size < 500) this.commonDirCache.set(workspace, common ?? null);
+    return common;
   }
 }

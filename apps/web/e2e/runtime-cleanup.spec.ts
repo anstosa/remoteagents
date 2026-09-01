@@ -28,7 +28,7 @@ test('reviews hourly runtime cleanup targets from the alert and glowing cleanup 
     const url = new URL(request.url());
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, cleanupPending, agents: [{ id: 'current-agent', sessionId: 'socket:$1', workspace: '/worktrees/current', title: 'Ready' }], worktrees: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, cleanupPending, agents: [{ id: 'current-agent', sessionId: 'socket:$1', workspace: '/worktrees/current', title: 'Ready' }], projects: [] } });
     if (url.pathname === '/api/agents/current-agent/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/current-agent/saved-prompts') return route.fulfill({ json: { prompts: [] } });
     if (url.pathname === '/api/cleanup' && request.method() === 'GET') return route.fulfill({ json: { targets } });

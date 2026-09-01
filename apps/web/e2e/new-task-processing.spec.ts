@@ -18,9 +18,9 @@ test('keeps a new-task processing indicator visible until the replacement agent 
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     if (url.pathname === '/api/dashboard') {
       dashboardRequests += 1;
-      if (replacementReady) return route.fulfill({ json: { generation: dashboardRequests, agents: [{ id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, newTaskConfigured: true, title: 'Ready' }], worktrees: [] } });
-      if (oldAgentGone) return route.fulfill({ json: { generation: dashboardRequests, agents: [], worktrees: [] } });
-      return route.fulfill({ json: { generation: dashboardRequests, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, newTaskConfigured: true, title: 'Ready' }], worktrees: [] } });
+      if (replacementReady) return route.fulfill({ json: { generation: dashboardRequests, agents: [{ id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, newTaskConfigured: true, title: 'Ready' }], projects: [] } });
+      if (oldAgentGone) return route.fulfill({ json: { generation: dashboardRequests, agents: [], projects: [] } });
+      return route.fulfill({ json: { generation: dashboardRequests, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, newTaskConfigured: true, title: 'Ready' }], projects: [] } });
     }
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
@@ -69,7 +69,7 @@ test('shows the new-task banner only on its worktree', async ({ page }) => {
     if (url.pathname === '/api/dashboard') return route.fulfill({ json: {
       generation: 1,
       agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, newTaskConfigured: true, title: 'Ready' }],
-      worktrees: [{ id: 'delta', label: 'Delta', path: '/worktrees/delta', available: true, pinned: true, order: 1 }]
+      projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'delta', label: 'Delta', path: '/worktrees/delta', available: true, pinned: true, order: 1 }] }]
     } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });

@@ -1,5 +1,4 @@
 import type { DiscoveryService } from '../discovery/service.js';
-import type { Worktree } from '../domain/models.js';
 import { resolveConfiguredWorkspace, sameConfiguredWorkspace, type ResolvedWorkspace } from '../workspaces/resolver.js';
 import { captureReviewSnapshot } from './diff.js';
 import type { ReviewTourGenerator } from './generator.js';
@@ -8,7 +7,7 @@ import { publicReviewSnapshot, ReviewTourError, type PublicReviewSnapshot, type 
 export type PreparedReviewTour = { resolved: ResolvedWorkspace; snapshot: ReviewSnapshot };
 
 export class ReviewTourService {
-  constructor(private readonly discovery: DiscoveryService, private readonly worktrees: Worktree[], private readonly generator: ReviewTourGenerator) {}
+  constructor(private readonly discovery: DiscoveryService, private readonly generator: ReviewTourGenerator) {}
 
   // expose the bounded generator capability
   capability(): Promise<ReviewTourCapability> { return this.generator.capability(); }
@@ -21,12 +20,12 @@ export class ReviewTourService {
     const target = await this.discovery.target(agentId);
     // distinguish missing and unconfigured targets
     if (target === undefined) throw new ReviewTourError('target_unavailable', true);
-    const resolved = await resolveConfiguredWorkspace(this.discovery, this.worktrees, agentId);
+    const resolved = await resolveConfiguredWorkspace(this.discovery, agentId);
     // require a configured active agent
     if (resolved === undefined) throw new ReviewTourError('configured_worktree_required', false);
     const snapshot = await captureReviewSnapshot(resolved, input);
     // reject identity changes during capture
-    if (!await sameConfiguredWorkspace(this.discovery, this.worktrees, agentId, resolved)) throw new ReviewTourError('target_unavailable', true);
+    if (!await sameConfiguredWorkspace(this.discovery, agentId, resolved)) throw new ReviewTourError('target_unavailable', true);
     return { resolved, snapshot };
   }
 
@@ -39,7 +38,7 @@ export class ReviewTourService {
     // reject stale narration before publication
     if (current.fingerprint !== prepared.snapshot.fingerprint || current.branch !== prepared.snapshot.branch) throw new ReviewTourError('stale_during_generation', true);
     // reject agent replacement before publication
-    if (!await sameConfiguredWorkspace(this.discovery, this.worktrees, prepared.snapshot.agentId, prepared.resolved)) throw new ReviewTourError('target_unavailable', true);
+    if (!await sameConfiguredWorkspace(this.discovery, prepared.snapshot.agentId, prepared.resolved)) throw new ReviewTourError('target_unavailable', true);
     return { ...generated, scope: prepared.snapshot.scope, base: prepared.snapshot.base, includeTests: prepared.snapshot.includeTests, includeDocs: prepared.snapshot.includeDocs, fingerprint: prepared.snapshot.fingerprint, changes: prepared.snapshot.changes };
   }
 
@@ -48,7 +47,7 @@ export class ReviewTourService {
     const target = await this.discovery.target(agentId);
     // distinguish missing and unconfigured targets
     if (target === undefined) throw new ReviewTourError('target_unavailable', true);
-    const resolved = await resolveConfiguredWorkspace(this.discovery, this.worktrees, agentId);
+    const resolved = await resolveConfiguredWorkspace(this.discovery, agentId);
     // require a configured active agent
     if (resolved === undefined) throw new ReviewTourError('configured_worktree_required', false);
     const snapshot = await captureReviewSnapshot(resolved, input);

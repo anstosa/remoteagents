@@ -62,7 +62,7 @@ test('opens the configured project in desktop and mobile split views', async ({ 
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready', projectUrl: 'https://project.example.com', stack: { actions: ['start', 'build'], running: true, tunnel: true } }], worktrees: [{ id: 'delta', label: 'Delta', path: '/worktrees/delta', available: true, pinned: true, order: 1, projectUrl: 'https://project.example.com', stack: { actions: [], running: true, tunnel: true } }] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready', projectUrl: 'https://project.example.com', stack: { actions: ['start', 'build'], running: true, tunnel: true } }], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'delta', label: 'Delta', path: '/worktrees/delta', available: true, pinned: true, order: 1, projectUrl: 'https://project.example.com', stack: { actions: [], running: true, tunnel: true } }] }] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
@@ -362,7 +362,7 @@ test.describe('phone browser split', () => {
       // serve the active phone session
       if (path === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
       // serve one project-enabled agent
-      if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready', projectUrl: 'https://project.example.com', stack: { running: true, tunnel: true } }], worktrees: [] } });
+      if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready', projectUrl: 'https://project.example.com', stack: { running: true, tunnel: true } }], projects: [] } });
       // serve the required log ticket
       if (path === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
       // serve empty agent collections

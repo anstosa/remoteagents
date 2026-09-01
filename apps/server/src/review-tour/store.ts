@@ -8,7 +8,9 @@ type BranchBinding = { worktreeId: string; branch?: string };
 const maxWorktrees = 100;
 const maxBranchLength = 1_024;
 const maxStoredBytes = 100 * 1024 * 1024;
-const validWorktreeId = (value: string) => /^[A-Za-z0-9_-]{1,80}$/u.test(value);
+// keyed by the Worktree wire id `<projectId>:<realpath>` (ADR 0003), so accept the `:`
+// and `/` the path carries — bounded, single-line, no NUL — not just the old bare id
+const validWorktreeId = (value: string) => value.length >= 1 && value.length <= 4096 && !/[\0\n\r]/u.test(value);
 const validBranch = (value: string) => value.length > 0 && value.length <= maxBranchLength && !value.includes('\0');
 
 // validate one durable review record

@@ -1,12 +1,17 @@
 import { mkdir, open, readFile, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { ValidatedConfig } from '../config/schema.js';
+import type { DiscoveryService } from '../discovery/service.js';
 import { stackActions, type StackAction, type Worktree } from '../domain/models.js';
-import { worktreeHostRoot } from '../workspaces/resolver.js';
+import { worktreeById, worktreeHostRoot } from '../workspaces/resolver.js';
 import { run } from '../tmux/command.js';
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+// a tmux- and filesystem-safe token for one Worktree: its wire id `<projectId>:<realpath>`
+// carries `/` and `:` that a session name or filename cannot, so name them by project id
+// plus a short stable hash of the checkout path instead
+const worktreeToken = (worktree: Pick<Worktree, 'projectId' | 'path'>) => `${worktree.projectId}-${createHash('sha256').update(worktree.path).digest('hex').slice(0, 12)}`;
 type Command = (binary: string, args: string[]) => Promise<{ code: number; stdout: string; stderr?: string }>;
 type StackOperation = { action: StackAction; session: string; startedAt: string; completedAt?: string; logFile?: string };
 export type StackOperationLog = { action: StackAction; active: boolean; startedAt: string; completedAt?: string; output: string };
@@ -52,8 +57,10 @@ export class WorktreeCommandService {
   private readonly tunnelCache = new Map<string, { value: boolean; expiresAt: number }>();
   private readonly tunnelRefreshes = new Map<string, Promise<void>>();
 
-  constructor(private readonly config: ValidatedConfig, private readonly command: Command = run) {
-    this.hostWorkspace = process.env.RAC_HOST_WORKSPACE ?? config.worktrees.find(worktree => worktree.id === 'remoteagents')?.hostPath;
+  constructor(config: ValidatedConfig, private readonly discovery: DiscoveryService, private readonly command: Command = run) {
+    // the server's own checkout under Docker maps `/workspace` to the host; the hardcoded
+    // `remoteagents` id is retired in favour of the Project mounted there (ADR 0003)
+    this.hostWorkspace = process.env.RAC_HOST_WORKSPACE ?? config.projects.find(project => project.path === '/workspace')?.hostPath;
   }
 
   actions(worktree: Worktree): StackAction[] { return stackActions.filter(action => worktree.commands?.[action] !== undefined); }
@@ -64,7 +71,7 @@ export class WorktreeCommandService {
 
   // start one exclusive stack operation
   async start(worktreeId: string, action: StackAction): Promise<'started'|'busy'|false> {
-    const worktree = this.config.worktrees.find(candidate => candidate.id === worktreeId);
+    const worktree = worktreeById(this.discovery.worktreesNow(), worktreeId);
     const command = worktree?.commands?.[action];
     // require a configured action
     if (worktree === undefined || command === undefined) return false;
@@ -95,7 +102,7 @@ export class WorktreeCommandService {
 
   // return the latest operation output
   async log(worktreeId: string): Promise<StackOperationLog | undefined> {
-    const worktree = this.config.worktrees.find(candidate => candidate.id === worktreeId);
+    const worktree = worktreeById(this.discovery.worktreesNow(), worktreeId);
     const operation = worktree === undefined ? undefined : this.operations.get(worktree.id);
     // hide unknown worktrees and untouched stacks
     if (worktree === undefined || operation === undefined) return undefined;
@@ -124,7 +131,7 @@ export class WorktreeCommandService {
     const active = this.statusRefreshes.get(worktree.id);
     if (active !== undefined) return active;
     const refresh = (async () => {
-      const name = `stack-${worktree.id}-${randomBytes(6).toString('hex')}`;
+      const name = `stack-${worktreeToken(worktree)}-${randomBytes(6).toString('hex')}`;
       const containerFile = join('/workspace', '.data', 'stack-status', name);
       try {
         const hostFile = join(this.hostWorkspace!, '.data', 'stack-status', name);
@@ -186,7 +193,7 @@ export class WorktreeCommandService {
   // derive one atomic cross-process operation session
   private operationSession(worktree: Worktree): string {
     const actionLabel = this.actions(worktree)[0] ?? 'operation';
-    return `rac-stack-${worktree.id}-${actionLabel}-exclusive`;
+    return `rac-stack-${worktreeToken(worktree)}-${actionLabel}-exclusive`;
   }
 
   // distinguish a missing session from a broken tmux probe
@@ -211,13 +218,13 @@ export class WorktreeCommandService {
   private async detachedSession(worktree: Worktree, command: string, action?: StackAction): Promise<string | StackOperation | undefined> {
     // require the host tmux socket
     if (this.socket === undefined) return undefined;
-    const session = action === undefined ? `rac-stack-${worktree.id}-${randomBytes(9).toString('hex')}` : this.operationSession(worktree);
+    const session = action === undefined ? `rac-stack-${worktreeToken(worktree)}-${randomBytes(9).toString('hex')}` : this.operationSession(worktree);
     const directory = worktreeHostRoot(worktree);
     let logFile: string | undefined;
     let hostLogFile: string | undefined;
     // prepare durable output for user-triggered actions
     if (action !== undefined && this.hostWorkspace !== undefined) {
-      const name = `${worktree.id}-${randomBytes(9).toString('hex')}.log`;
+      const name = `${worktreeToken(worktree)}-${randomBytes(9).toString('hex')}.log`;
       logFile = join('/workspace', '.data', 'stack-logs', name);
       hostLogFile = join(this.hostWorkspace, '.data', 'stack-logs', name);
       await mkdir(dirname(logFile), { recursive: true, mode: 0o700 });

@@ -47,7 +47,7 @@ test('refits each worktree output after moving from mobile to desktop', async ({
     if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [
       { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeLabel: 'Cora', title: 'Ready' },
       { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/owen', worktreeLabel: 'Owen', title: 'Ready' }
-    ], worktrees: [] } });
+    ], projects: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (/^\/api\/agents\/agent-[12]\/tickets$/.test(url.pathname)) return route.fulfill({ json: { ticket: `${String((request.postDataJSON() as { kind?: unknown }).kind)}-ticket` } });
     if (/^\/api\/agents\/agent-[12]\/saved-prompts$/.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });

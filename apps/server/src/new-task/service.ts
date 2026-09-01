@@ -45,7 +45,7 @@ export class NewTaskService {
   }
 
   private worktree(workspace: string): Worktree | undefined {
-    return this.config.worktrees.find(worktree => worktreeMatchesWorkspace(worktree, workspace));
+    return this.discovery.worktreesNow().find(worktree => worktreeMatchesWorkspace(worktree, workspace));
   }
 
   private async cleanAndPushed(worktree: Worktree): Promise<boolean> {

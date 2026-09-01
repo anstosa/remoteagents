@@ -11,7 +11,7 @@ const maxScopes = 500;
 const maxPromptsPerScope = 50;
 const maxStoredTextLength = 10_000_000;
 const maxStoredAttachmentBytes = 100 * 1024 * 1024;
-const validScope = (value: string) => value.length > 0 && value.length <= 240 && !value.includes('\0');
+const validScope = (value: string) => value.length > 0 && value.length <= 4096 && !value.includes('\0');
 const validId = (value: string) => /^[A-Za-z0-9_-]{12,64}$/u.test(value);
 const parsePrompt = (value: unknown): QueuedPrompt | undefined => {
   if (value === null || typeof value !== 'object') return undefined;

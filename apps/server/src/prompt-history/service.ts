@@ -9,7 +9,7 @@ const maxScopes = 500;
 const maxEntriesPerScope = 2_000;
 const listedEntriesPerScope = 50;
 const maxTotalTextLength = 10_000_000;
-const validScope = (value: string) => value.length > 0 && value.length <= 240 && !value.includes('\0');
+const validScope = (value: string) => value.length > 0 && value.length <= 4096 && !value.includes("\0");
 const validText = (value: string) => value.trim().length > 0 && value.length <= 64_000 && !value.includes('\0');
 // validate persisted history entries
 const validEntry = (value: unknown): value is PromptHistoryEntry => {

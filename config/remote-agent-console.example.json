@@ -8,5 +8,11 @@
   "adapters": {
     "codex": { "program": "/usr/local/bin/codex" }
   },
-  "worktrees": []
+  "projects": [
+    {
+      "id": "example",
+      "label": "Example",
+      "path": "/home/me/code/example"
+    }
+  ]
 }

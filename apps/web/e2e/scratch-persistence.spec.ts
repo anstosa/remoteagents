@@ -14,7 +14,7 @@ test('creates notes and bookmarks from a scratch agent', async ({ page }) => {
     // serve one controlled browser
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     // serve one scratch agent
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'scratch-1', sessionId: 'socket:$1', workspace: '/home/ubuntu', displayLabel: '~ Scratch', title: 'Ready' }], worktrees: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'scratch-1', sessionId: 'socket:$1', workspace: '/home/ubuntu', displayLabel: '~ Scratch', title: 'Ready' }], projects: [] } });
     // disable optional browser services
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     // authorize the scratch log stream

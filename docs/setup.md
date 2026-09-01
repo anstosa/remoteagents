@@ -24,7 +24,7 @@ pnpm build
 pnpm start
 ```
 
-Open `http://127.0.0.1:8787`. Leave `worktrees` empty or omit it entirely to
+Open `http://127.0.0.1:8787`. Leave `projects` empty or omit it entirely to
 launch scratch agents without configuring a repository. Before publishing the
 console, replace `publicOrigin` with its canonical HTTPS origin.
 
@@ -127,70 +127,71 @@ directory must resolve to the same bytes inside the container and on the host �
 bind mount at the same path, or an explicit shared `RAC_ADAPTER_FILES_DIR` — so the
 host-side agent reads the file the container wrote.
 
-### Legacy worktree launch commands
+## Projects
 
-Before `adapters`, each worktree defined its own `command` (and optional
-`resumeCommand`). When `adapters.codex` is present it wins and these keys are
-ignored with a one-time boot warning; the automatic migration folds them into
-`adapters.codex`. Until a worktree's console is migrated, and only when no
-`adapters` block is present, a worktree still launches through its own
-`command`:
+A **Project** is a git repository the console manages. Configure each one once
+under `projects`; its **Worktrees** are discovered from `git worktree list` and
+are never declared, so a checkout created in a terminal appears on the dashboard
+within a tick — no config edit or restart.
 
 ```json
-{ "id": "my-project", "path": "/absolute/path/to/project", "command": "codex", "resumeCommand": "codex resume {threadId} -C ." }
+{
+  "projects": [
+    {
+      "id": "example",
+      "label": "Example",
+      "path": "/home/me/code/example",
+      "worktreesDirectory": "../example-worktrees",
+      "commands": { "start": "docker compose up -d", "status": "test -n running" },
+      "newTask": "detach && new {taskId}",
+      "push": { "label": "Finish and PR", "prompt": "$finish" },
+      "port": 3000,
+      "hostname": "app.example.com"
+    }
+  ]
+}
 ```
 
-A configured Codex worktree resumes an exact saved chat through its adapter
-(`codex resume <id>`); no extra configuration is required. On the legacy path,
-set `resumeCommand` only to override that composition — for example to pass extra
-flags — and it must contain one `{threadId}` placeholder.
+- `id` — `[A-Za-z0-9_-]{1,80}`, the key for Project-wide state (`agent` and
+  `scratch` are reserved). `label` defaults to `id`.
+- `path` — **any checkout of the repository** (a Linked worktree or a bare
+  repository included). Its identity is the realpath of the common git
+  directory, so two Projects pointing at the same repository are refused as
+  duplicates. A `path` that is missing or not a git checkout at boot loads the
+  Project as unavailable with a boot warning rather than stopping the server.
+- `worktreesDirectory` — where the console will create new Worktrees; the
+  default is a `../<basename>-worktrees` sibling of the Main worktree, and a
+  relative path resolves against it. Absolute paths are allowed.
+- `commands` (`start`/`stop`/`build`/`restart`/`migrate`/`status`), `newTask`
+  and `push` are Project-wide. `newTask` adds a **New Task** action, uses
+  `{taskId}` for an 8-character URL-safe random ID, and is enabled only when the
+  Worktree is clean and fully pushed. `push` overrides the default
+  **Commit/Push** action (which queues `review, commit, and push`).
+- `port` + `hostname` (both or neither) publish one preview URL per Project,
+  `https://<hostname>` proxied to `127.0.0.1:<port>`.
 
-## Worktree options
+The console launches an agent in a Worktree by Adapter kind (see
+[Adapters](#adapters)); a Project never names a program. Every `git worktree
+list` checkout appears automatically: the Main worktree is git's first entry, a
+bare entry is never a Worktree, a Stale (git-prunable) checkout is hidden, a
+git-locked one is flagged, and a detached HEAD is labelled by its short SHA.
 
-An optional `newTask` command adds a **New Task** action for a worktree. It
-uses `{taskId}` for an 8-character URL-safe random ID and is enabled only when
-the working copy is clean and fully pushed. For example:
+### Shared bookmarks and notes
 
-```json
-{ "newTask": "detach && new {taskId}" }
-```
+Chat bookmarks, sticky notes and saved prompts belong to the **Project** and are
+shared automatically across all of its Worktrees, so related checkouts resume
+the same chats and use the same notes with no configuration. Queued prompts and
+prompt history stay per-Worktree. Scratch agents derive their own persistence
+group from the scratch workspace, so scratch agents opened in the same directory
+share entries across restarts; exact bookmark resume requires a configured
+Project (scratch agents have none).
 
-Every agent flyout includes a prompt action that defaults to **Commit/Push**
-and queues `review, commit, and push`. Override its button label and queued
-prompt per worktree with `push`:
+### Migrating from `worktrees[]`
 
-```json
-{ "push": { "label": "Finish and PR", "prompt": "$finish" } }
-```
-
-With `adapters.codex` configured, worktrees launch by kind and need no
-`command`. On the legacy path (no `adapters` block) every worktree must define a
-`command`, which the console runs through the operator's interactive shell after
-appending the adapter's arguments.
-
-## Shared bookmarks and notes
-
-Chat bookmarks and sticky notes use the worktree `id` as their persistence
-group by default. Set the same optional `saveKey` on multiple worktrees to
-share both lists. This is useful for related Git worktrees that should resume
-the same Codex chats and use the same project notes:
-
-```json
-{ "id": "cora", "path": "/worktrees/cora", "command": "codex", "saveKey": "potato" }
-{ "id": "owen", "path": "/worktrees/owen", "command": "codex", "saveKey": "potato" }
-{ "id": "dave", "path": "/worktrees/dave", "command": "codex", "saveKey": "potato" }
-```
-
-Keep `saveKey` omitted for ordinary worktrees that should retain independent
-bookmark and note groups. Changing a deployed worktree's key selects another
-group; it does not move entries from the previous group automatically. Save keys
-may contain letters, numbers, underscores, and hyphens and are limited to 80
-characters.
-
-Scratch agents also expose bookmarks and notes. The console derives their
-persistence group from the scratch workspace, so scratch agents opened in the
-same directory share entries across restarts. Exact bookmark resume requires a
-configured worktree (scratch agents have none).
+The retired `worktrees[]` key is refused at boot. The automatic config-and-data
+migration converts a legacy configuration and every `.data` store to the
+Projects model on first boot, keeping a one-time backup so the change can be
+reverted.
 
 The default server listener is `127.0.0.1:8787`; `/healthz` is loopback-only and reveals only `{ "ok": true }`. Do not put passwords, prompts, session cookies, CSRF tokens, or WebSocket tickets in configuration or logs.
 

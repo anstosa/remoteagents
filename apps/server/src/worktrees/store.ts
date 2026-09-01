@@ -3,28 +3,32 @@ import { dirname } from 'node:path';
 import { agentKinds, type AgentKind } from '../adapters/types.js';
 
 /**
- * Per-Worktree launch state persisted outside the config file. Chunk 2 records
- * only the last-used `launchProfile` (the Adapter kind), keyed by the config
- * worktree id today and by `<projectId>:<realpath>` after chunk 3's migration;
- * a reserved `scratch` key holds the Scratch group's last-used kind. Later chunks
- * add per-Worktree pins beside it. Sandboxed is never stored.
+ * Per-scope launch and pin state persisted outside the config file (ADR 0003).
+ * Keyed by the Worktree wire id `<projectId>:<realpath>` for a Worktree's pin and
+ * last-used `launchProfile`, by `<projectId>` for a Project's last-used profile, and
+ * by the reserved `scratch` key for the Scratch group. `pinned` is an explicit
+ * operator override; its absence means the default (a Main worktree pinned, a Linked
+ * worktree not), which discovery applies. Sandboxed is never stored.
  */
-export type WorktreeRecord = { launchProfile?: AgentKind };
+export type WorktreeRecord = { pinned?: boolean; launchProfile?: AgentKind };
 type StoredRecords = Record<string, WorktreeRecord>;
 
 // the reserved key for the single Scratch launch group
 export const scratchLaunchKey = 'scratch';
-const maxKeys = 500;
-// chunk 2 keys are config worktree ids and the reserved `scratch` group; chunk 3's
-// migration re-keys worktrees by `<projectId>:<realpath>` and widens this then
-const validKey = (value: string) => /^[A-Za-z0-9_-]{1,80}$/u.test(value);
+// the Project-scoped last-used profile is keyed by `<projectId>`; the worktree key by
+// `<projectId>:<realpath>`. Both flow through this store.
+export const projectLaunchKey = (projectId: string): string => projectId;
+const maxKeys = 2_000;
+// keys are `scratch`, a `<projectId>`, or a `<projectId>:<realpath>` worktree key —
+// bounded, single-line, no NUL, so a stray value never corrupts the on-disk map
+const validKey = (value: string) => value.length >= 1 && value.length <= 4096 && !/[\0\n\r]/u.test(value);
 const isKind = (value: unknown): value is AgentKind => (agentKinds as readonly string[]).includes(value as string);
 
 // validate one persisted record
 function isRecord(value: unknown): value is WorktreeRecord {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  const record = value as { launchProfile?: unknown };
-  return record.launchProfile === undefined || isKind(record.launchProfile);
+  const record = value as { pinned?: unknown; launchProfile?: unknown };
+  return (record.pinned === undefined || typeof record.pinned === 'boolean') && (record.launchProfile === undefined || isKind(record.launchProfile));
 }
 
 export class WorktreeLaunchStore {
@@ -51,6 +55,15 @@ export class WorktreeLaunchStore {
     return Object.fromEntries(Object.entries(stored).map(([key, record]) => [key, record.launchProfile]));
   }
 
+  // every explicit pin override, read once so discovery folds them into one worktree scan
+  async pins(): Promise<Record<string, boolean>> {
+    await this.mutation;
+    const stored = await this.read();
+    const pins: Record<string, boolean> = {};
+    for (const [key, record] of Object.entries(stored)) if (record.pinned !== undefined) pins[key] = record.pinned;
+    return pins;
+  }
+
   // record the kind a launch or restart used so it resolves first next time
   async rememberLaunchProfile(key: string, kind: AgentKind): Promise<void> {
     // reject unsafe keys and unknown kinds rather than persisting them
@@ -59,6 +72,15 @@ export class WorktreeLaunchStore {
       // bound the file; a new key beyond the limit is dropped rather than growing unbounded
       if (stored[key] === undefined && Object.keys(stored).length >= maxKeys) return;
       stored[key] = { ...stored[key], launchProfile: kind };
+    });
+  }
+
+  // record an explicit pin override for one Worktree, the tab-menu / launcher toggle
+  async setPinned(key: string, pinned: boolean): Promise<void> {
+    if (!validKey(key)) return;
+    await this.mutate(stored => {
+      if (stored[key] === undefined && Object.keys(stored).length >= maxKeys) return;
+      stored[key] = { ...stored[key], pinned };
     });
   }
 

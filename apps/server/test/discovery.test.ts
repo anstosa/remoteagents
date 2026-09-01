@@ -6,8 +6,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { addUntrackedLineStats, DiscoveryService, gitComparisonSummary, gitStatusSummary, gitUpstreamSummary, ProcSocketFinder } from '../src/discovery/service.js';
 import { inlineQuestionId, pendingOmxQuestion } from '../src/adapters/codex-questions.js';
-import type { SocketRef, Worktree } from '../src/domain/models.js';
+import type { SocketRef } from '../src/domain/models.js';
+import type { WorktreeEntry } from '../src/git/worktrees.js';
 import { paneLister, processInspector, socketFinder } from './helpers/discovery-stubs.js';
+import { testProject } from './helpers/config.js';
+
+// one `git worktree list --porcelain` entry; omit `branch` for a detached checkout
+const entry = (path: string, branch?: string, extra: Partial<WorktreeEntry> = {}): WorktreeEntry => ({ path, head: 'abcdef1234567', detached: branch === undefined, bare: false, locked: false, prunable: false, ...(branch === undefined ? {} : { branch }), ...extra });
+// an injectable `listWorktrees` keyed by Project path; an unknown path means git failed
+const listImpl = (byPath: Record<string, WorktreeEntry[]>) => async (path: string): Promise<WorktreeEntry[] | undefined> => byPath[path];
 
 // write one representative Codex rollout under a home, returning its absolute path
 async function writeRollout(home: string, id: string, prompt: string): Promise<string> {
@@ -173,18 +180,20 @@ describe('DiscoveryService dashboard', () => {
     }
   });
 
-  it('associates host tmux paths with configured worktrees', async () => {
+  it('associates a host tmux path with the discovered Main worktree by its host path', async () => {
     const finder = socketFinder();
     const tmux = paneLister([{ paneId: '%1', sessionId: '$0', pid: 123, path: '/host/ferry', title: 'Ferry' }]);
     const processes = processInspector({ codex: true });
-    const service = new DiscoveryService(finder, tmux as never, processes);
-    const worktrees: Worktree[] = [{ id: 'ferry', label: 'Ferry FYI', path: '/worktrees/ferry', identity: '/worktrees/ferry', hostPath: '/host/ferry', available: true, command: 'codex', newTask: 'new {taskId}', push: { label: 'Commit/Push', prompt: '$push' }, projectUrl: 'https://ferry.agents.example.com' }];
+    const project = testProject({ id: 'ferry', label: 'Ferry FYI', path: '/worktrees/ferry', hostPath: '/host/ferry', newTask: 'new {taskId}', push: { label: 'Commit/Push', prompt: '$push' }, projectUrl: 'https://ferry.agents.example.com', projectPort: 4000 });
+    const service = new DiscoveryService(finder, tmux as never, processes, undefined, undefined, [project], undefined, listImpl({ '/worktrees/ferry': [entry('/worktrees/ferry', 'main')] }));
 
-    const dashboard = await service.dashboard(worktrees);
+    const dashboard = await service.dashboard();
 
     expect(dashboard.agents).toHaveLength(1);
-    expect(dashboard.agents[0]).toMatchObject({ workspace: '/worktrees/ferry', worktreeId: 'ferry', worktreeLabel: 'Ferry FYI', worktreeOrder: 0, newTaskConfigured: true, push: { label: 'Commit/Push', prompt: '$push' }, projectUrl: 'https://ferry.agents.example.com' });
-    expect(dashboard.worktrees).toEqual([]);
+    // the pane's host path matches the Main worktree's hostPath, not its console path
+    expect(dashboard.agents[0]).toMatchObject({ workspace: '/worktrees/ferry', projectId: 'ferry', worktreeId: 'ferry:/worktrees/ferry', newTaskConfigured: true, push: { label: 'Commit/Push', prompt: '$push' }, projectUrl: 'https://ferry.agents.example.com' });
+    // the Worktree is carried under its Project; an active Worktree omits idle git metadata
+    expect(dashboard.projects[0]?.worktrees).toMatchObject([{ id: 'ferry:/worktrees/ferry', main: true, pinned: true }]);
   });
 
   it('prefers a valid reported @rac_session over the conversation the fd-walk finds, and reads its title', async () => {
@@ -292,7 +301,7 @@ describe('DiscoveryService dashboard', () => {
     const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
     const service = new DiscoveryService(finder, tmux as never, processes);
 
-    await expect(service.dashboard([])).resolves.toMatchObject({ agents: [{ displayLabel: '~ Scratch' }] });
+    await expect(service.dashboard()).resolves.toMatchObject({ agents: [{ displayLabel: '~ Scratch' }] });
   });
 
   it('keeps an update advisor separate from its configured repository worktree', async () => {
@@ -300,14 +309,15 @@ describe('DiscoveryService dashboard', () => {
     const finder = { find: async () => [socket] };
     const tmux = { listPanes: async () => [{ paneId: '%2', sessionId: '$1', pid: 456, path: '/host/remoteagents', title: 'Ready', displayLabel: 'Update Advisor Starting v4 2222222' }] };
     const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
-    const service = new DiscoveryService(finder, tmux as never, processes);
-    const worktree: Worktree = { id: 'remoteagents', label: 'Remote Agents', path: '/workspace', identity: '/workspace', hostPath: '/host/remoteagents', available: true, pinned: true };
+    const project = testProject({ id: 'remoteagents', label: 'Remote Agents', path: '/workspace', hostPath: '/host/remoteagents' });
+    const service = new DiscoveryService(finder, tmux as never, processes, undefined, undefined, [project], undefined, listImpl({ '/workspace': [entry('/workspace', 'main')] }));
 
-    const dashboard = await service.dashboard([worktree]);
+    const dashboard = await service.dashboard();
 
     expect(dashboard.agents).toEqual([expect.objectContaining({ paneId: '%2', workspace: '/host/remoteagents', displayLabel: 'Update Advisor Starting v4 2222222' })]);
+    // a modal advisor never claims the Project's Main worktree, which stays idle in projects[]
     expect(dashboard.agents[0]).not.toHaveProperty('worktreeId');
-    expect(dashboard.worktrees).toEqual([expect.objectContaining({ id: 'remoteagents' })]);
+    expect(dashboard.projects[0]?.worktrees).toEqual([expect.objectContaining({ id: 'remoteagents:/workspace' })]);
   });
 
   it('resolves reported @rac_* pane options over the inferred title and publishes adapter capabilities', async () => {
@@ -317,7 +327,7 @@ describe('DiscoveryService dashboard', () => {
     const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
     const service = new DiscoveryService(finder, tmux as never, processes);
 
-    const dashboard = await service.dashboard([]);
+    const dashboard = await service.dashboard();
 
     // reported 'question' wins over the title's inferred 'finished'
     expect(dashboard.agents[0]).toMatchObject({ kind: 'codex', attention: 'question', sandboxed: true, conversationId: 'abc-123' });
@@ -339,7 +349,7 @@ describe('DiscoveryService dashboard', () => {
     const processes = { recognizeAgent: async () => undefined };
     const service = new DiscoveryService(finder, tmux as never, processes);
 
-    const dashboard = await service.dashboard([]);
+    const dashboard = await service.dashboard();
 
     expect(dashboard.agents).toEqual([]);
     expect(unset).toEqual(['%9']);
@@ -352,7 +362,7 @@ describe('DiscoveryService dashboard', () => {
     const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
     const service = new DiscoveryService(finder, tmux as never, processes);
 
-    const dashboard = await service.dashboard([]);
+    const dashboard = await service.dashboard();
 
     expect(dashboard.agents[0]).not.toHaveProperty('sandboxed');
     expect(dashboard.agents[0]).not.toHaveProperty('conversationId');
@@ -369,7 +379,7 @@ describe('DiscoveryService dashboard', () => {
     const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
     const service = new DiscoveryService(finder, tmux as never, processes);
 
-    const dashboard = await service.dashboard([]);
+    const dashboard = await service.dashboard();
 
     expect(dashboard.agents).toEqual([expect.objectContaining({ paneId: '%1', title: 'Cora' })]);
   });
@@ -402,10 +412,10 @@ describe('DiscoveryService dashboard', () => {
     const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
     const service = new DiscoveryService(finder, tmux as never, processes);
 
-    const first = await service.dashboard([]);
+    const first = await service.dashboard();
     title = '⠋ Working';
-    const cached = await service.dashboard([]);
-    const fresh = await service.dashboard([], true);
+    const cached = await service.dashboard();
+    const fresh = await service.dashboard(true);
 
     expect(first.agents[0]?.title).toBe('Ready');
     expect(cached.agents[0]?.title).toBe('Ready');
@@ -435,10 +445,10 @@ describe('DiscoveryService dashboard', () => {
     const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
     const service = new DiscoveryService(finder, tmux as never, processes);
 
-    const stale = service.dashboard([]);
+    const stale = service.dashboard();
     await listingStarted;
     title = '⠋ Working';
-    const fresh = service.dashboard([], true);
+    const fresh = service.dashboard(true);
     releaseListing();
 
     await expect(stale).resolves.toMatchObject({ agents: [{ title: 'Ready' }] });
@@ -497,17 +507,72 @@ describe('DiscoveryService dashboard', () => {
         return undefined;
       }
     };
-    const worktrees: Worktree[] = [{ id: 'slow', label: 'Slow', path: workspace, identity: workspace, available: true, command: 'codex' }];
-    const service = new DiscoveryService({ find: async () => [] }, { listPanes: async () => [] } as never, { recognizeAgent: async () => undefined }, pullRequests as never);
+    const project = testProject({ id: 'slow', label: 'Slow', path: workspace });
+    const service = new DiscoveryService({ find: async () => [] }, { listPanes: async () => [] } as never, { recognizeAgent: async () => undefined }, pullRequests as never, undefined, [project], undefined, listImpl({ [workspace]: [entry(workspace, 'main')] }));
 
     try {
-      const [first, second] = await Promise.all([service.dashboard(worktrees), service.dashboard(worktrees)]);
-      const third = await service.dashboard(worktrees);
+      const [first, second] = await Promise.all([service.dashboard(), service.dashboard()]);
+      const third = await service.dashboard();
 
       expect(first).toBe(second);
       expect(third).toBe(first);
       expect(lookups).toBe(1);
     } finally { await rm(workspace, { recursive: true, force: true }); }
+  });
+
+  it('discovers worktrees from git porcelain, excludes bare and stale entries, and shapes them by Project', async () => {
+    const finder = socketFinder();
+    const tmux = paneLister([]);
+    const processes = processInspector({ codex: false });
+    const project = testProject({ id: 'app', label: 'App', path: '/repo' });
+    // an explicit pin override on the detached checkout; the Main worktree pins by default
+    const pins = { pins: async () => ({ 'app:/repo/wt-detached': true }) };
+    const service = new DiscoveryService(finder, tmux as never, processes, undefined, undefined, [project], pins, listImpl({ '/repo': [
+      entry('/repo', 'main'),
+      entry('/repo/wt-feature', 'feature'),
+      entry('/repo/wt-detached'),
+      { path: '/repo.git', detached: false, bare: true, locked: false, prunable: false },
+      entry('/repo/gone', 'ghost', { prunable: true }),
+      entry('/repo/held', 'held', { locked: true, lockedReason: 'in use' })
+    ] }));
+
+    const worktrees = (await service.dashboard()).projects[0]!.worktrees;
+
+    // bare and stale (prunable) entries drop out; Main first, then Linked by branch, detached last
+    expect(worktrees.map(view => ({ id: view.id, label: view.label, main: view.main, detached: view.detached, locked: view.locked, pinned: view.pinned, order: view.order }))).toEqual([
+      { id: 'app:/repo', label: 'App', main: true, detached: false, locked: false, pinned: true, order: 0 },
+      { id: 'app:/repo/wt-feature', label: 'App · feature', main: false, detached: false, locked: false, pinned: false, order: 1 },
+      { id: 'app:/repo/held', label: 'App · held', main: false, detached: false, locked: true, pinned: false, order: 2 },
+      { id: 'app:/repo/wt-detached', label: 'App · abcdef1', main: false, detached: true, locked: false, pinned: true, order: 3 }
+    ]);
+  });
+
+  it('re-reads pins after invalidation and never lets a stale in-flight scan clobber the fresh set', async () => {
+    const finder = socketFinder();
+    const tmux = paneLister([]);
+    const processes = processInspector({ codex: false });
+    const project = testProject({ id: 'app', path: '/repo' });
+    // a pins() that returns the pin state as of when the scan reads it, gated so a scan can be
+    // held in flight across an invalidation
+    let pinsValue: Record<string, boolean> = { 'app:/repo': false };
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>(resolve => { releaseFirst = resolve; });
+    let reads = 0;
+    const pinStore = { pins: async () => { reads += 1; if (reads === 1) await firstBlocked; return pinsValue; } };
+    const service = new DiscoveryService(finder, tmux as never, processes, undefined, undefined, [project], pinStore, listImpl({ '/repo': [entry('/repo', 'main')] }));
+
+    // scan P1 begins and blocks inside pins() with the old (unpinned) state
+    const first = service.worktrees();
+    // an operator toggles the pin: invalidate, then flip the store to pinned
+    service.invalidateWorktrees();
+    pinsValue = { 'app:/repo': true };
+    // a fresh read must not coalesce onto the stale P1; it starts P2 reading the new pins
+    const second = await service.worktrees();
+    expect(second[0]?.pinned).toBe(true);
+    // when the stale P1 finally resolves it must not re-stamp the snapshot back to unpinned
+    releaseFirst();
+    await first;
+    expect(service.worktreesNow()[0]?.pinned).toBe(true);
   });
 
   it('finds a pending OMX question pane associated with its return pane', async () => {
@@ -535,7 +600,7 @@ describe('DiscoveryService dashboard', () => {
       const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
       const service = new DiscoveryService(finder, tmux as never, processes);
 
-      const dashboard = await service.dashboard([]);
+      const dashboard = await service.dashboard();
 
       // the title infers 'finished', but the pending question outranks it
       expect(dashboard.agents[0]).toMatchObject({ attention: 'question', question: { id: inlineQuestionId('Deploy?', ['Yes', 'No']), text: 'Deploy?', choices: ['Yes', 'No'], source: 'structured', targetPaneId: '%9' } });

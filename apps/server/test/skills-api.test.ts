@@ -3,18 +3,11 @@
 // `/skills` route.)
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
-import type { ValidatedConfig } from '../src/config/schema.js';
+import { testConfig, testWorktree } from './helpers/config.js';
 
-const config: ValidatedConfig = {
-  name: 'Remote Agents',
-  remoteServers: [],
-  listen: { host: '127.0.0.1', port: 8787 },
-  publicOrigin: new URL('https://agents.example.com'),
-  trustedProxyIps: new Set(['127.0.0.1']),
-  pollIntervalMs: 500,
-  newAgentCommand: 'codex',
-  worktrees: [{ id: 'ferry-fyi', label: 'Ferry FYI', path: '/worktrees/ferry.fyi', identity: '/home/ubuntu/ferry.fyi', hostPath: '/home/ubuntu/ferry.fyi', available: true, pinned: true, command: 'codex' }]
-};
+const config = testConfig({ publicOrigin: new URL('https://agents.example.com') });
+// a discovered Worktree whose console path differs from the host path an Agent reports
+const ferry = testWorktree({ id: 'ferry-fyi', projectId: 'ferry', label: 'Ferry FYI', path: '/worktrees/ferry.fyi', hostPath: '/home/ubuntu/ferry.fyi', pinned: true });
 
 describe('agent command catalog API', () => {
   let app: Awaited<ReturnType<typeof buildApp>>;
@@ -28,7 +21,7 @@ describe('agent command catalog API', () => {
     app = await buildApp(config, {
       auth: { unsign: () => 'session', get: () => ({ id: 'session', csrf: 'csrf' }) } as never,
       control: { connect: () => true } as never,
-      discovery: { target: async (id: string) => id === agent.id ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined } as never,
+      discovery: { target: async (id: string) => id === agent.id ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined, worktreesNow: () => [ferry] } as never,
       launch: { agentHome: () => '/home/ubuntu' } as never,
       commandCatalog: { catalog: async (adapter: { kind: string }, workspace: string, stateDirectory: string) => { seen.push({ kind: adapter.kind, workspace, stateDirectory }); return [{ value: '$push', description: 'Review and push.' }, { value: '/help', description: 'Show available commands' }]; } } as never
     });
@@ -44,7 +37,7 @@ describe('agent command catalog API', () => {
     app = await buildApp(config, {
       auth: { unsign: () => 'session', get: () => ({ id: 'session', csrf: 'csrf' }) } as never,
       control: { connect: () => true } as never,
-      discovery: { target: async () => undefined } as never
+      discovery: { target: async () => undefined, worktreesNow: () => [ferry] } as never
     });
 
     const response = await app.inject({ method: 'GET', url: '/api/agents/missing/commands', headers: { host: 'agents.example.com' } });

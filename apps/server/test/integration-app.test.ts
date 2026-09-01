@@ -38,7 +38,7 @@ describe('application integration surfaces', () => {
       pollIntervalMs: 500,
       newAgentCommand: 'codex',
       integrations: { enabled: true, mcp: { readEnabled: true, writeEnabled: true, dangerousEnabled: false }, realtime: { enabled: true, writeToolsEnabled: true }, multiInstance: { enabled: false } },
-      worktrees: [{ id: 'repo', label: 'Repo', path: root, identity: root, available: true, pinned: true, command: 'codex' }]
+      projects: []
     };
     const auth = new AuthService('$argon2id$unused', secret);
     const app = await buildApp(config, { auth, reviewTours: { capability: async () => ({ available: false, reason: 'generator_unavailable' }) } as never });

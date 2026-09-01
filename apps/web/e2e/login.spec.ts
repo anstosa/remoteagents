@@ -10,7 +10,7 @@ test('shows the controlling device and prompts an unnamed device before takeover
       takeover = route.request().postDataJSON();
       return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Kitchen iPad', controllingDeviceName: 'Kitchen iPad' } });
     }
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { agents: [], worktrees: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { agents: [], projects: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });

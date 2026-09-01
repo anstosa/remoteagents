@@ -5,7 +5,7 @@ import type { DiscoveryService } from '../discovery/service.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { run } from '../tmux/command.js';
 import { cleanAndPushedOrDetached, type GitCommand } from '../git/worktree-state.js';
-import { worktreeMatchesWorkspace } from '../workspaces/resolver.js';
+import { worktreeById, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
 import { PullRequestService, type PullRequestChoice } from './service.js';
 import type { Worktree } from '../domain/models.js';
 
@@ -35,7 +35,7 @@ export class PullRequestSwitchService {
     // load slow remote metadata before taking the readiness snapshot
     const [pullRequests, dashboard] = await Promise.all([
       this.pullRequests.open(worktree.identity),
-      this.discovery.dashboard(this.config.worktrees).catch(() => undefined)
+      this.discovery.dashboard().catch(() => undefined)
     ]);
     const repository = await this.repositoryIdentity(worktree.identity);
     // require one canonical repository identity
@@ -53,13 +53,13 @@ export class PullRequestSwitchService {
     // prioritize active agents in this repository
     for (const agent of agents) {
       if (agent === undefined || agent.branch === undefined || checkedOut.has(agent.branch)) continue;
-      checkedOut.set(agent.branch, agent.worktreeId === undefined || agent.worktreeLabel === undefined ? undefined : { agentId: agent.id, worktreeId: agent.worktreeId, worktreeName: agent.worktreeLabel });
+      const worktreeName = agent.worktreeId === undefined ? undefined : worktreeById(this.discovery.worktreesNow(), agent.worktreeId)?.label;
+      checkedOut.set(agent.branch, agent.worktreeId === undefined || worktreeName === undefined ? undefined : { agentId: agent.id, worktreeId: agent.worktreeId, worktreeName });
     }
-    const worktrees = await Promise.all((dashboard?.worktrees ?? []).map(async candidate => {
-      const configured = this.config.worktrees.find(worktree => worktree.id === candidate.id);
-      // ignore unknown or branchless worktrees
-      if (configured === undefined || candidate.branch === undefined) return undefined;
-      return await this.repositoryIdentity(configured.identity) === repository ? candidate : undefined;
+    const worktrees = await Promise.all((dashboard?.projects.flatMap(project => project.worktrees) ?? []).map(async candidate => {
+      // ignore branchless worktrees; every dashboard Worktree is a real discovered checkout
+      if (candidate.branch === undefined) return undefined;
+      return await this.repositoryIdentity(candidate.path) === repository ? candidate : undefined;
     }));
     // fill inactive worktrees after active agents
     for (const candidate of worktrees) {
@@ -133,7 +133,7 @@ export class PullRequestSwitchService {
   }
 
   private worktree(workspace: string): Worktree | undefined {
-    return this.config.worktrees.find(worktree => worktreeMatchesWorkspace(worktree, workspace));
+    return this.discovery.worktreesNow().find(worktree => worktreeMatchesWorkspace(worktree, workspace));
   }
 
   private async cleanAndPushed(worktree: Worktree): Promise<boolean> {
@@ -178,7 +178,7 @@ export class PullRequestSwitchService {
     const target = await this.discovery.target(agentId);
     const targetWorktree = target === undefined ? undefined : this.worktree(target.agent.workspace);
     const sourceReference = pullRequest?.openIn;
-    const sourceWorktree = sourceReference === undefined ? undefined : this.config.worktrees.find(candidate => candidate.id === sourceReference.worktreeId);
+    const sourceWorktree = sourceReference === undefined ? undefined : worktreeById(this.discovery.worktreesNow(), sourceReference.worktreeId);
     // require one ready destination and one resolvable source
     if (!available?.enabled || pullRequest === undefined || !pullRequest.checkedOut || target === undefined || targetWorktree === undefined || sourceReference === undefined || sourceWorktree === undefined || sourceWorktree.id === targetWorktree.id) return 'unavailable';
     const sourceTarget = sourceReference.agentId === undefined ? undefined : await this.discovery.target(sourceReference.agentId);

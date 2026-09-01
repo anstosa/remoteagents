@@ -12,7 +12,7 @@ test('restores each workspace open note and fullscreen state after switching tab
     if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [
       { id: 'agent-cora', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' },
       { id: 'agent-owen', sessionId: 'socket:$2', workspace: '/worktrees/owen', worktreeId: 'owen', worktreeLabel: 'Owen', worktreeOrder: 1, title: 'Ready' }
-    ], worktrees: [] } });
+    ], projects: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (/^\/api\/agents\/agent-(?:cora|owen)\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (/^\/api\/agents\/agent-(?:cora|owen)\/saved-prompts$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });

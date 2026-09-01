@@ -13,8 +13,36 @@ export type GitStatusChange = { code: string; path: string; originalPath?: strin
 export type GitStatusSummary = { files: number; staged: number; unstaged: number; untracked: number; conflicted: number; changes?: GitStatusChange[] };
 export type GitComparisonSummary = { base: string; files: number; changes?: GitStatusChange[] };
 export type GitUpstreamSummary = { upstream: string; ahead: number; behind: number };
-export type Agent = { id: string; paneId: string; sessionId: string; socketFingerprint: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind: AgentKind; attention: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: InlineQuestion };
-export type Worktree = { id: string; label: string; path: string; identity: string; hostPath?: string; saveKey?: string; available: boolean; pinned: boolean; command?: string; resumeCommand?: string; projectUrl?: string; projectPort?: number; commands?: StackCommands; newTask?: string; push?: PromptAction };
+export type Agent = { id: string; paneId: string; sessionId: string; socketFingerprint: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind: AgentKind; attention: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; projectId?: string; worktreeId?: string; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: InlineQuestion };
+/**
+ * A configured git repository (config `projects[]`). Its identity is the realpath
+ * of the common git directory, so two entries pointing at the same repository are
+ * refused as duplicates and a Project may be configured through any of its checkouts
+ * (ADR 0003). `path` is unavailable when it is missing or not a git checkout at boot,
+ * which loads the Project as `available: false` rather than failing to boot. Stack
+ * commands, the new-task and push actions, the Worktrees directory and the preview
+ * URL are all Project-wide; discovered Worktrees denormalise them for convenience.
+ */
+export type Project = { id: string; label: string; path: string; identity: string; hostPath?: string; worktreesDirectory: string; available: boolean; unavailableReason?: string; commands?: StackCommands; newTask?: string; push: PromptAction; projectUrl?: string; projectPort?: number };
+/**
+ * One checkout of a Project as `git worktree list` reports it, keyed by the wire id
+ * `<projectId>:<realpath>` (ADR 0003). `identity` equals the checkout's realpath
+ * (this Worktree's own git toplevel) and is what an Agent's workspace matches; a
+ * Docker main Worktree also matches its `hostPath`. `main`/`detached`/`locked` come
+ * from git; a Stale worktree (git's `prunable`) is excluded by discovery, never carried
+ * here. `pinned` is the operator's per-Worktree choice from `.data`. The
+ * Project-wide `commands`/`newTask`/`push`/`projectUrl`/`projectPort` are copied on
+ * so the worktree-scoped services keep reading them from the Worktree.
+ */
+export type Worktree = { id: string; projectId: string; label: string; path: string; identity: string; hostPath?: string; available: boolean; pinned: boolean; main: boolean; detached: boolean; locked: boolean; branch?: string; sha?: string; commands?: StackCommands; newTask?: string; push?: PromptAction; projectUrl?: string; projectPort?: number };
 export type CleanupTargetKind = 'orphan-worker' | 'stale-agent' | 'hud-pane' | 'hud-process';
 export type CleanupTarget = { id: string; kind: CleanupTargetKind; label: string; detail: string };
-export type Dashboard = { generation: number; serverStartedAt?: number; adapters: Partial<Record<AgentKind, AdapterCapability>>; agents: Agent[]; worktrees: Array<Pick<Worktree, 'id'|'label'|'path'|'available'|'pinned'|'projectUrl'> & { order: number; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; pullRequest?: PullRequestSummary }> };
+/**
+ * One Worktree on the wire. Carries the git identity fields the web renders (label,
+ * branch/sha, main/detached/locked, pin), a stable tab `order`, and — for a Worktree
+ * with no live Agent — the same idle git metadata the flat list used to carry. Active
+ * Worktrees omit the metadata (their Agent carries it).
+ */
+export type DashboardWorktree = { id: string; projectId: string; label: string; path: string; available: boolean; pinned: boolean; main: boolean; detached: boolean; locked: boolean; order: number; branch?: string; sha?: string; projectUrl?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; pullRequest?: PullRequestSummary };
+export type DashboardProject = { id: string; label: string; available: boolean; unavailableReason?: string; worktrees: DashboardWorktree[] };
+export type Dashboard = { generation: number; serverStartedAt?: number; adapters: Partial<Record<AgentKind, AdapterCapability>>; agents: Agent[]; projects: DashboardProject[] };

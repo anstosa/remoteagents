@@ -5,11 +5,12 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { stated } from './helpers/agent.js';
+import { testWorktree } from './helpers/config.js';
 import { AuthService } from '../src/auth/service.js';
 import type { ValidatedConfig } from '../src/config/schema.js';
 import { QueuedPromptService } from '../src/prompts/queue.js';
 
-const baseConfig: ValidatedConfig = { name: 'Remote Agents', remoteServers: [], listen: { host: '127.0.0.1', port: 8787 }, publicOrigin: new URL('https://agents.example.com'), trustedProxyIps: new Set(['127.0.0.1']), pollIntervalMs: 500, newAgentCommand: 'codex', worktrees: [] };
+const baseConfig: ValidatedConfig = { name: 'Remote Agents', remoteServers: [], listen: { host: '127.0.0.1', port: 8787 }, publicOrigin: new URL('https://agents.example.com'), trustedProxyIps: new Set(['127.0.0.1']), pollIntervalMs: 500, newAgentCommand: 'codex', projects: [] };
 
 // authenticate one controlling browser
 const login = async (app: Awaited<ReturnType<typeof buildApp>>) => {
@@ -25,11 +26,11 @@ describe('Codex account API', () => {
 
   it('queries safe limits and restarts only open idle worktrees after switching', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const cora = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false, command: 'codex' };
-    const owen = { id: 'owen', label: 'Owen', path: '/worktrees/owen', identity: '/worktrees/owen', available: true, pinned: false, command: 'codex' };
-    const firstCora = stated({ id: 'agent-cora-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.path, worktreeId: cora.id, worktreeLabel: cora.label, title: 'Ready' });
+    const cora = testWorktree({ id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', pinned: false });
+    const owen = testWorktree({ id: 'owen', projectId: 'owen', label: 'Owen', path: '/worktrees/owen', pinned: false });
+    const firstCora = stated({ id: 'agent-cora-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.path, worktreeId: cora.id, title: 'Ready' });
     const secondCora = { ...firstCora, id: 'agent-cora-2', paneId: '%2', sessionId: 'socket:$2' };
-    const workingOwen = stated({ id: 'agent-owen', paneId: '%3', sessionId: 'socket:$3', socketFingerprint: 'socket', workspace: owen.path, worktreeId: owen.id, worktreeLabel: owen.label, title: '⠋ Working' });
+    const workingOwen = stated({ id: 'agent-owen', paneId: '%3', sessionId: 'socket:$3', socketFingerprint: 'socket', workspace: owen.path, worktreeId: owen.id, title: '⠋ Working' });
     const scratch = stated({ id: 'agent-scratch', paneId: '%4', sessionId: 'socket:$4', socketFingerprint: 'socket', workspace: '/tmp', title: 'Ready' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const events: string[] = [];
@@ -37,7 +38,8 @@ describe('Codex account API', () => {
     let coraResumed = false;
     const discovery = {
       // expose the replacement only after the resume handoff
-      dashboard: async () => ({ generation: coraResumed ? 2 : 1, agents: [coraResumed ? secondCora : firstCora, workingOwen, scratch], worktrees: [] }),
+      dashboard: async () => ({ generation: coraResumed ? 2 : 1, adapters: {}, agents: [coraResumed ? secondCora : firstCora, workingOwen, scratch], projects: [] }),
+      worktreesNow: () => [cora, owen],
       // resolve the original target until it closes
       target: async (id: string) => !coraClosed && id === firstCora.id ? { agent: firstCora, socket } : undefined
     };
@@ -59,7 +61,7 @@ describe('Codex account API', () => {
       // expose a new agent after the selected account is active
       resume: async (id: string) => { events.push(`resume:${id}`); coraResumed = true; return true; }
     };
-    app = await buildApp({ ...baseConfig, worktrees: [cora, owen] }, {
+    app = await buildApp({ ...baseConfig }, {
       auth: new AuthService(hash, Buffer.alloc(32, 31).toString('base64url')),
       accounts: accounts as never,
       discovery: discovery as never,
@@ -111,8 +113,8 @@ describe('Codex account API', () => {
   it('preserves a prompt that starts while an account switch selects restart targets', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-account-prompt-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const cora = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false, command: 'codex' };
-    const idleCora = stated({ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.path, worktreeId: cora.id, worktreeLabel: cora.label, title: 'Ready' });
+    const cora = testWorktree({ id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', pinned: false });
+    const idleCora = stated({ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.path, worktreeId: cora.id, title: 'Ready' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     let releasePaste!: () => void;
     let markPasteStarted!: () => void;
@@ -120,7 +122,8 @@ describe('Codex account API', () => {
     const pasteBlocked = new Promise<void>(resolve => { releasePaste = resolve; });
     const closed: string[] = [];
     const discovery = {
-      dashboard: async () => ({ generation: 1, agents: [idleCora], worktrees: [] }),
+      dashboard: async () => ({ generation: 1, adapters: {}, agents: [idleCora], projects: [] }),
+      worktreesNow: () => [cora],
       target: async (id: string) => id === idleCora.id ? { agent: idleCora, socket } : undefined
     };
     const accounts = {
@@ -137,7 +140,7 @@ describe('Codex account API', () => {
       sendKeys: async () => true,
       close: async () => { closed.push(idleCora.id); return true; }
     };
-    app = await buildApp({ ...baseConfig, worktrees: [cora] }, {
+    app = await buildApp({ ...baseConfig }, {
       auth: new AuthService(hash, Buffer.alloc(32, 33).toString('base64url')),
       accounts: accounts as never,
       discovery: discovery as never,

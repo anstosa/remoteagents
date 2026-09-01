@@ -51,7 +51,7 @@ test('falls back until the first push, then applies snapshots without frequent H
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     if (url.pathname === '/api/dashboard') {
       dashboardRequests += 1;
-      return route.fulfill({ json: { generation: 100, serverStartedAt: 1_000, agents: [], worktrees: [worktree('Old label')] } });
+      return route.fulfill({ json: { generation: 100, serverStartedAt: 1_000, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [worktree('Old label')] }] } });
     }
     if (url.pathname === '/api/dashboard/ticket') {
       ticketRequests += 1;
@@ -72,7 +72,7 @@ test('falls back until the first push, then applies snapshots without frequent H
     generation: 101,
     serverStartedAt: 1_000,
     agents: [],
-    worktrees: [worktree('Synchronized label')]
+    projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [worktree('Synchronized label')] }]
   });
   await expect(page.getByRole('tab', { name: /Synchronized label/u })).toBeVisible();
   const synchronizedRequests = dashboardRequests;
@@ -84,7 +84,7 @@ test('falls back until the first push, then applies snapshots without frequent H
     generation: 102,
     serverStartedAt: 1_000,
     agents: [],
-    worktrees: [worktree('Pushed label')]
+    projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [worktree('Pushed label')] }]
   });
   await expect(page.getByRole('tab', { name: /Pushed label/u })).toBeVisible();
   expect(dashboardRequests).toBe(synchronizedRequests);
@@ -93,7 +93,7 @@ test('falls back until the first push, then applies snapshots without frequent H
     generation: 1,
     serverStartedAt: 2_000,
     agents: [],
-    worktrees: [worktree('Restarted server label')]
+    projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [worktree('Restarted server label')] }]
   });
   await expect(page.getByRole('tab', { name: /Restarted server label/u })).toBeVisible();
 

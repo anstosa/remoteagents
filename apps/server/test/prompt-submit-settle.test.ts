@@ -22,14 +22,14 @@ describe('interactive submit settle', () => {
     let captures = 0;
     let capturesAtSubmit = -1;
     let submitted = false;
-    const discovery = { target: async () => ({ agent, socket }) };
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
     const tmux = {
       pastePrompt: async () => true,
       // the composer is empty for the first polls, then renders the pasted prompt
       capture: async () => { captures += 1; return submitted || captures < 3 ? '› ' : '› render me '; },
       sendKeys: async () => { capturesAtSubmit = captures; submitted = true; return true; },
     };
-    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue);
     try {
       await queue.enqueue(`agent:${agent.id}`, 'render me');
       await service.observe(agent);
@@ -48,7 +48,7 @@ describe('interactive submit settle', () => {
     const sent: string[][] = [];
     let submitted = false;
     // keep one stable target
-    const discovery = { target: async () => ({ agent, socket }) };
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
     const tmux = {
       // retain the composed prompt for the live snapshot
       pastePrompt: async () => true,
@@ -59,7 +59,7 @@ describe('interactive submit settle', () => {
       // accept the queued prompt
       sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => { sent.push(keys); submitted = true; return true; }
     };
-    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue);
     try {
       await queue.enqueue(`agent:${agent.id}`, prompt);
       await service.observe(agent);
@@ -76,7 +76,7 @@ describe('interactive submit settle', () => {
     const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/tmp', title: 'Ready' });
     let submissions = 0;
     // keep one stable target
-    const discovery = { target: async () => ({ agent, socket }) };
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
     const tmux = {
       // model a paste that never reaches the composer
       pastePrompt: async () => true,
@@ -85,7 +85,7 @@ describe('interactive submit settle', () => {
       // count accidental submissions
       sendKeys: async () => { submissions += 1; return true; }
     };
-    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue);
     try {
       await queue.enqueue(`agent:${agent.id}`, 'gpt-5.6-sol');
       await service.observe(agent);
@@ -105,14 +105,14 @@ describe('interactive submit settle', () => {
     const rendered = new Promise<void>(resolve => { releaseRender = resolve; });
     const reached = new Promise<void>(resolve => { markReached = resolve; });
     let submitted = false;
-    const discovery = { target: async () => ({ agent, socket }) };
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
     const tmux = {
       pastePrompt: async (_s: unknown, _p: string, _b: string, prompt: string) => { pasted.push(prompt.trimEnd()); return true; },
       // block the first render check so the second submit arrives mid-settle
       capture: async () => { markReached(); await rendered; return submitted ? '› ' : '› msg1 '; },
       sendKeys: async () => { submitted = true; return true; },
     };
-    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue);
     try {
       await queue.enqueue(`agent:${agent.id}`, 'msg1');
       const first = service.observe(agent);
@@ -135,7 +135,7 @@ describe('interactive submit settle', () => {
     let captures = 0;
     let capturesAtSubmit = -1;
     let submitted = false;
-    const discovery = { target: async () => ({ agent, socket }) };
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
     const tmux = {
       pastePrompt: async () => true,
       // keep matching text in history while the live composer is still empty
@@ -146,7 +146,7 @@ describe('interactive submit settle', () => {
       },
       sendKeys: async () => { capturesAtSubmit = captures; submitted = true; return true; }
     };
-    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue);
     try {
       await queue.enqueue(`agent:${agent.id}`, 'repeated prompt');
       await service.observe(agent);
@@ -161,13 +161,13 @@ describe('interactive submit settle', () => {
     const queue = new QueuedPromptService(join(directory, 'queue.json'));
     const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/tmp', title: 'Ready' });
     let submissions = 0;
-    const discovery = { target: async () => ({ agent, socket }) };
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
     const tmux = {
       pastePrompt: async () => true,
       capture: async () => ['› repeated prompt', '', '• Previous answer', '', '─ Worked for 1s'].join('\n'),
       sendKeys: async () => { submissions += 1; return true; }
     };
-    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue);
     try {
       await queue.enqueue(`agent:${agent.id}`, 'repeated prompt');
       await service.observe(agent);
@@ -184,14 +184,14 @@ describe('interactive submit settle', () => {
     let becameWorking = false;
     let submitted = false;
     const sent: string[][] = [];
-    const discovery = { target: async () => ({ agent: becameWorking ? working : idle, socket }) };
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent: becameWorking ? working : idle, socket }) };
     const tmux = {
       pastePrompt: async () => true,
       // start external work during the settle window
       capture: async () => { becameWorking = true; return submitted ? '› ' : '› follow active work '; },
       sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => { sent.push(keys); submitted = true; return true; }
     };
-    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue);
     try {
       await queue.enqueue(`agent:${idle.id}`, 'follow active work');
       await service.observe(idle);
@@ -208,14 +208,14 @@ describe('interactive submit settle', () => {
     let targets = 0;
     const sent: string[][] = [];
     // reclassify the target after the initial submit decision
-    const discovery = { target: async () => ({ agent: targets++ === 0 ? idle : working, socket }) };
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent: targets++ === 0 ? idle : working, socket }) };
     const tmux = {
       pastePrompt: async () => true,
       capture: async () => '› direct race ',
       // model every bounded Tab attempt being swallowed despite successful tmux delivery
       sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => { sent.push(keys); return true; }
     };
-    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue);
     try {
       await expect(service.submit(idle.id, 'direct race')).resolves.toBe(true);
       expect(sent).toEqual([['Tab'], ['Tab'], ['Tab']]);
@@ -228,14 +228,14 @@ describe('interactive submit settle', () => {
     const queue = new QueuedPromptService(join(directory, 'queue.json'));
     const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/tmp', title: 'Ready' });
     const scope = `agent:${agent.id}`;
-    const discovery = { target: async () => ({ agent, socket }) };
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
     const tmux = {
       pastePrompt: async () => true,
       capture: async () => '› durable prompt ',
       // model one swallowed key despite successful tmux delivery
       sendKeys: async () => true
     };
-    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue);
     try {
       await queue.enqueue(scope, 'durable prompt');
       await service.observe(agent);
@@ -250,7 +250,7 @@ describe('interactive submit settle', () => {
     const sent: string[][] = [];
     let submitted = false;
     // keep one stable target
-    const discovery = { target: async () => ({ agent, socket }) };
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
     const tmux = {
       // accept the paste
       pastePrompt: async () => true,
@@ -264,7 +264,7 @@ describe('interactive submit settle', () => {
         return true;
       }
     };
-    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue);
     // verify retry delivery
     try {
       await queue.enqueue(`agent:${agent.id}`, 'retry me');
@@ -285,7 +285,7 @@ describe('interactive submit settle', () => {
     const sent: string[][] = [];
     let submitted = false;
     // keep one stable target
-    const discovery = { target: async () => ({ agent, socket }) };
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
     const tmux = {
       // accept the shell paste
       pastePrompt: async () => true,
@@ -296,7 +296,7 @@ describe('interactive submit settle', () => {
       // accept the rendered shell command
       sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => { sent.push(keys); submitted = true; return true; }
     };
-    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue);
     try {
       await queue.enqueue(`agent:${agent.id}`, '!git status');
       await service.observe(agent);
@@ -315,7 +315,7 @@ describe('interactive submit settle', () => {
     const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/tmp', title: 'Ready' });
     const scope = `agent:${agent.id}`;
     const sent: string[][] = [];
-    const discovery = { target: async () => ({ agent, socket }) };
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
     const tmux = {
       pastePrompt: async () => true,
       // keep the actual shell composer visible through every retry
@@ -323,7 +323,7 @@ describe('interactive submit settle', () => {
       // model every bounded Enter attempt being swallowed despite successful tmux delivery
       sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => { sent.push(keys); return true; }
     };
-    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue);
     try {
       await queue.enqueue(scope, '!git status');
       await service.observe(agent);
@@ -339,13 +339,13 @@ describe('interactive submit settle', () => {
     const command = `!${'x'.repeat(33)}`;
     let submitted = false;
     const sent: string[][] = [];
-    const discovery = { target: async () => ({ agent, socket }) };
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
     const tmux = {
       pastePrompt: async () => true,
       capture: async () => submitted ? '› ' : `› [Pasted Content ${command.length} chars]`,
       sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => { sent.push(keys); submitted = true; return true; }
     };
-    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue);
     try {
       await queue.enqueue(`agent:${agent.id}`, command);
       await service.observe(agent);
@@ -359,7 +359,7 @@ describe('interactive submit settle', () => {
     const queue = new QueuedPromptService(join(directory, 'queue.json'));
     const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/tmp', title: 'Ready' });
     let captures = 0;
-    const discovery = { target: async () => ({ agent, socket }) };
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
     const tmux = {
       pastePrompt: async () => true,
       capture: async () => { captures += 1; return 'another agent'; },
@@ -370,7 +370,7 @@ describe('interactive submit settle', () => {
       submission: { prepare: (prompt: string) => ({ text: prompt, keys: ['Enter'] }), interrupt: ['C-c'], selectOption: () => ['Enter'] },
       turns: { latestCompleted: () => undefined, lastPrompt: () => undefined, latestMessage: () => undefined, failed: () => false }
     };
-    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue, undefined, () => adapter as never);
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue, undefined, () => adapter as never);
     try {
       await queue.enqueue(`agent:${agent.id}`, 'generic prompt');
       await service.observe(agent);

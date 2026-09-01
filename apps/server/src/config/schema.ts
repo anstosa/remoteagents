@@ -1,8 +1,9 @@
 import { access, realpath, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { resolve } from 'node:path';
+import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
-import type { StackCommands, Worktree } from '../domain/models.js';
+import type { Project, StackCommands } from '../domain/models.js';
+import { gitCommonDir, listWorktrees } from '../git/worktrees.js';
 import { adapterFor } from '../adapters/registry.js';
 import { hostVisibleRepoRoot } from '../adapters/files.js';
 import { agentKinds, type AdapterConfigs, type AdapterLaunchConfig } from '../adapters/types.js';
@@ -47,13 +48,17 @@ const sourceSchema = z.object({
   newAgentCommand: command.default('codex'),
   adapters: adaptersSchema.optional(),
   integrations: integrationFeatures,
-  // allow a scratch-only first run
-  worktrees: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), label: z.string().max(120).optional(), path: z.string().min(1), hostPath: z.string().startsWith('/').optional(), saveKey: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/).optional(), pinned: z.boolean().default(false), port: z.number().int().min(1).max(65535).optional(), hostname: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/).optional(), command: command.optional(), resumeCommand: command.optional(), commands: stackCommands.optional(), newTask: command.optional(), push: pushAction }).strict()).max(100).default([])
+  // a repository the console manages; its checkouts are discovered from git, never
+  // declared. `path` is any checkout (a bare repository included); `hostPath` maps the
+  // Main worktree's container path to the host under Docker; `worktreesDirectory` is
+  // where Add creates new checkouts (default `../<basename>-worktrees`, resolved
+  // against the Main worktree). Scratch-only first runs omit `projects`.
+  projects: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/).refine(value => value !== 'agent' && value !== 'scratch', 'project id `agent` and `scratch` are reserved'), label: z.string().max(120).optional(), path: z.string().min(1), hostPath: z.string().startsWith('/').optional(), worktreesDirectory: z.string().min(1).max(4096).refine(value => !value.includes('\0'), 'NUL is forbidden').optional(), port: z.number().int().min(1).max(65535).optional(), hostname: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/).optional(), commands: stackCommands.optional(), newTask: command.optional(), push: pushAction }).strict()).max(100).default([])
 }).strict();
 export type ConfigInput = z.input<typeof sourceSchema>;
 export type RemoteServer = { url: URL };
 export type IntegrationConfig = z.output<typeof integrationFeatures>;
-export type ValidatedConfig = { listen: { host: string; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; newAgentCommand: string; adapters?: AdapterConfigs; integrations?: IntegrationConfig; worktrees: Worktree[] };
+export type ValidatedConfig = { listen: { host: string; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; newAgentCommand: string; adapters?: AdapterConfigs; integrations?: IntegrationConfig; projects: Project[] };
 // how validation surfaces non-fatal facts: `warn` collects boot warnings (ignored
 // legacy keys, non-executable programs); `checkExecutables` runs the boot X_OK probe
 // and is skipped under the host bridge, where `program` is a host path the container
@@ -84,19 +89,50 @@ function canonicalOrigin(value: string, label = 'publicOrigin', allowLoopbackHtt
 function validateNewTask(template: string): void {
   if (/\{(?!taskId\})/.test(template)) throw new Error('unknown new task placeholder');
 }
-// require one exact thread substitution
-function validateResumeCommand(template: string): void {
-  const placeholders = template.match(/\{threadId\}/gu) ?? [];
-  if (placeholders.length !== 1 || /\{(?!threadId\})/u.test(template)) throw new Error('resume command must contain exactly one {threadId} placeholder');
+type ParsedProject = z.output<typeof sourceSchema>['projects'][number];
+// where Add creates new Worktrees: an absolute `worktreesDirectory` as given, a relative
+// one against the Main worktree (the bare repository's parent when there is none), and
+// the default a `<basename>-worktrees` sibling of the Main worktree (ADR 0003).
+function resolveWorktreesDirectory(configured: string | undefined, mainWorktree: string | undefined, identity: string): string {
+  const relativeBase = mainWorktree ?? dirname(identity);
+  if (configured !== undefined) return isAbsolute(configured) ? resolve(configured) : resolve(relativeBase, configured);
+  const anchor = mainWorktree ?? identity;
+  return resolve(dirname(anchor), `${basename(anchor)}-worktrees`);
 }
-async function gitRoot(path: string): Promise<string> {
-  const { spawn } = await import('node:child_process');
-  return await new Promise((resolve) => {
-    const child = spawn('/usr/bin/git', ['-C', path, 'rev-parse', '--show-toplevel'], { shell: false, stdio: ['ignore', 'pipe', 'ignore'], env: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' } });
-    let output = ''; child.stdout.on('data', (d) => { output += String(d); });
-    child.on('close', async (code) => { if (code !== 0) return resolve(path); try { resolve(await realpath(output.trim())); } catch { resolve(path); } });
-    child.on('error', () => resolve(path));
-  });
+// resolve one configured Project: canonicalise the checkout, derive its identity from
+// the common git directory, resolve the Worktrees directory, and — when the path is
+// missing or not a git checkout — load it unavailable with a reason rather than failing
+// the whole boot (ADR 0003).
+async function resolveProject(raw: ParsedProject): Promise<Project> {
+  if (raw.newTask !== undefined) validateNewTask(raw.newTask);
+  if ((raw.port === undefined) !== (raw.hostname === undefined)) throw new Error(`project ${raw.id} must define both port and hostname`);
+  const label = raw.label ?? raw.id;
+  const optional = {
+    ...(raw.commands === undefined ? {} : { commands: raw.commands as StackCommands }),
+    ...(raw.newTask === undefined ? {} : { newTask: raw.newTask }),
+    ...(raw.hostPath === undefined ? {} : { hostPath: resolve(raw.hostPath) }),
+    ...(raw.hostname === undefined ? {} : { projectUrl: `https://${raw.hostname}`, projectPort: raw.port })
+  };
+  const canonical = await realpath(raw.path).catch(() => undefined);
+  const identity = canonical === undefined ? undefined : await gitCommonDir(canonical);
+  if (canonical === undefined || identity === undefined) {
+    const base = canonical ?? resolve(raw.path);
+    const reason = canonical === undefined ? `path ${raw.path} was not found` : `path ${raw.path} is not a git repository`;
+    return { id: raw.id, label, path: base, identity: base, available: false, unavailableReason: reason, worktreesDirectory: resolveWorktreesDirectory(raw.worktreesDirectory, undefined, base), push: raw.push, ...optional };
+  }
+  // git lists the Main worktree first; a bare repository has none
+  const entries = await listWorktrees(canonical);
+  const mainEntry = entries?.find(entry => !entry.bare);
+  const mainWorktree = mainEntry === undefined ? undefined : await realpath(mainEntry.path).catch(() => mainEntry.path);
+  return { id: raw.id, label, path: canonical, identity, available: true, worktreesDirectory: resolveWorktreesDirectory(raw.worktreesDirectory, mainWorktree, identity), push: raw.push, ...optional };
+}
+// the console now declares repositories as `projects[]`; a config that still carries the
+// retired `worktrees[]` key is refused with a pointer to the migration rather than a bare
+// "unrecognized key" from the strict schema.
+function refuseLegacyWorktrees(input: unknown): void {
+  if (input !== null && typeof input === 'object' && !Array.isArray(input) && 'worktrees' in (input as Record<string, unknown>)) {
+    throw new Error('configuration declares the retired `worktrees[]` key; the console now declares `projects[]` (a repository whose Worktrees are discovered from git). The automatic config-and-data migration converts it — see the Projects migration in docs/setup.md');
+  }
 }
 // let RAC_LISTEN_HOST / RAC_LISTEN_PORT in the environment override the file's listen block
 export function applyListenOverrides(input: unknown, env: Record<string, string | undefined>): unknown {
@@ -169,13 +205,10 @@ async function resolveAdapters(parsed: ParsedAdapters, checkExecutables: boolean
 function warnLegacyAgentKeys(input: unknown, warn: (message: string) => void): void {
   const raw = input !== null && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {};
   if (raw.newAgentCommand !== undefined) warn('adapters.codex is configured; ignoring legacy `newAgentCommand`');
-  const worktrees = Array.isArray(raw.worktrees) ? raw.worktrees : [];
-  const has = (key: string) => worktrees.some(entry => entry !== null && typeof entry === 'object' && (entry as Record<string, unknown>)[key] !== undefined);
-  if (has('command')) warn('adapters.codex is configured; ignoring legacy worktree `command`');
-  if (has('resumeCommand')) warn('adapters.codex is configured; ignoring legacy worktree `resumeCommand`');
 }
 // validate and canonicalize console configuration
 export async function validateConfig(input: unknown, options: ValidateConfigOptions = {}): Promise<ValidatedConfig> {
+  refuseLegacyWorktrees(input);
   const parsed = sourceSchema.parse(input);
   const warn = options.warn ?? (() => {});
   // the host bridge cannot stat host program paths from inside the container
@@ -196,19 +229,16 @@ export async function validateConfig(input: unknown, options: ValidateConfigOpti
     if (serverUrls.has(server.url.origin)) throw new Error('remote server URLs must be unique');
     serverUrls.add(server.url.origin);
   }
-  const worktrees: Worktree[] = []; const ids = new Set<string>(); const identities = new Set<string>();
-  for (const raw of parsed.worktrees) {
-    if (ids.has(raw.id)) throw new Error('duplicate worktree id'); ids.add(raw.id);
-    const path = await realpath(raw.path); const info = await stat(path); if (!info.isDirectory()) throw new Error(`worktree ${raw.id} is not a directory`);
-    if (raw.newTask !== undefined) validateNewTask(raw.newTask);
-    if (raw.resumeCommand !== undefined) validateResumeCommand(raw.resumeCommand);
-    // legacy worktrees launch through their own shell command; when `adapters.codex`
-    // wins the console launches by kind and the per-worktree `command` is ignored
-    if (!adaptersLaunchCodex && raw.command === undefined) throw new Error(`worktree ${raw.id} must define a command`);
-    const identity = await gitRoot(path); if (identities.has(identity)) throw new Error('duplicate worktree identity'); identities.add(identity);
-    if ((raw.port === undefined) !== (raw.hostname === undefined)) throw new Error(`worktree ${raw.id} must define both port and hostname`);
-    const projectUrl = raw.hostname === undefined ? undefined : `https://${raw.hostname}`;
-    worktrees.push({ id: raw.id, label: raw.label ?? raw.id, path, identity, hostPath: raw.hostPath === undefined ? undefined : resolve(raw.hostPath), saveKey: raw.saveKey ?? raw.id, available: true, pinned: raw.pinned, command: raw.command, ...(raw.resumeCommand === undefined ? {} : { resumeCommand: raw.resumeCommand }), projectUrl, projectPort: raw.port, push: raw.push, ...(raw.commands === undefined ? {} : { commands: raw.commands as StackCommands }), ...(raw.newTask === undefined ? {} : { newTask: raw.newTask }) });
+  const projects: Project[] = []; const ids = new Set<string>(); const identities = new Set<string>();
+  for (const raw of parsed.projects) {
+    if (ids.has(raw.id)) throw new Error('duplicate project id'); ids.add(raw.id);
+    const project = await resolveProject(raw);
+    // a missing or non-git checkout loads unavailable with a boot warning, never a crash
+    if (!project.available) warn(`projects.${project.id}: ${project.unavailableReason}`);
+    // two Projects that resolve to the same repository split state between them; refuse it.
+    // Only available Projects have a real identity — an unmounted one never collides
+    else { if (identities.has(project.identity)) throw new Error('duplicate project identity'); identities.add(project.identity); }
+    projects.push(project);
   }
-  return { listen: { host: parsed.listen.host, port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, newAgentCommand: parsed.newAgentCommand, ...(adapters === undefined ? {} : { adapters }), integrations: parsed.integrations, worktrees };
+  return { listen: { host: parsed.listen.host, port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, newAgentCommand: parsed.newAgentCommand, ...(adapters === undefined ? {} : { adapters }), integrations: parsed.integrations, projects };
 }

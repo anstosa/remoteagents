@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import type { ValidatedConfig } from '../src/config/schema.js';
 import { WorktreeCommandService } from '../src/worktree-commands/service.js';
+import { testConfig, testWorktree } from './helpers/config.js';
 
 const previousTmuxDirectory = process.env.RAC_HOST_TMUX_DIR;
 const previousTmuxBinary = process.env.RAC_TMUX_BIN;
 const previousHostPath = process.env.RAC_HOST_PATH;
-const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false, command: 'codex', commands: { build: 'docker compose build' } };
-const config: ValidatedConfig = { name: 'Remote Agents', remoteServers: [], listen: { host: '127.0.0.1', port: 8787 }, publicOrigin: new URL('https://agents.example.com'), trustedProxyIps: new Set(), pollIntervalMs: 500, newAgentCommand: 'codex', worktrees: [worktree] };
+const worktree = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', label: 'Cora', path: '/worktrees/cora', hostPath: '/home/ubuntu/cora', pinned: false, commands: { build: 'docker compose build' } });
+const config = testConfig();
+const discovery = { worktreesNow: () => [worktree] };
 
 afterEach(() => {
   // restore the host socket setting
@@ -40,10 +41,11 @@ describe('worktree stack commands', () => {
       if (args.includes('has-session')) return { code: active ? 0 : 1, stdout: '' };
       return { code: 1, stdout: '' };
     };
-    const service = new WorktreeCommandService(config, command);
+    const service = new WorktreeCommandService(config, discovery as never, command);
 
     await expect(service.run(worktree.id, 'build')).resolves.toBe(true);
-    expect(session).toMatch(/^rac-stack-cora-build-/);
+    // session/file names use a tmux-safe `<projectId>-<hash>` token, not the path-bearing wire id
+    expect(session).toMatch(/^rac-stack-proj-[0-9a-f]{12}-build-exclusive$/);
     await expect(service.state(worktree)).resolves.toEqual({ operation: 'build' });
     active = false;
     await expect(service.state(worktree)).resolves.toEqual({});

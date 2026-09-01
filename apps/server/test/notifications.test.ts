@@ -17,7 +17,7 @@ const agent = (overrides: Partial<Agent> = {}): Agent => {
     kind: 'codex',
     attention: resolveAttention({ kind: 'codex', title, hasQuestion: overrides.question !== undefined }),
     worktreeId: 'eric',
-    worktreeLabel: 'Eric',
+    displayLabel: 'Eric',
     ...overrides
   };
 };

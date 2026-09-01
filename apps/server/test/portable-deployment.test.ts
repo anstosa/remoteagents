@@ -42,12 +42,14 @@ describe('portable deployment', () => {
   // prevent architecture-specific host runtime assumptions
   it('keeps the image and starter configuration portable', async () => {
     const dockerfile = await repositoryFile('Dockerfile');
-    const config = JSON.parse(await repositoryFile('config/remote-agent-console.example.json')) as { publicOrigin?: string; worktrees?: unknown[] };
+    const config = JSON.parse(await repositoryFile('config/remote-agent-console.example.json')) as { publicOrigin?: string; projects?: Array<{ path?: string }> };
 
     expect(dockerfile).not.toContain('x86_64-linux-gnu');
     expect(dockerfile).not.toContain('/home/linuxbrew');
     expect(config.publicOrigin).toBe('http://127.0.0.1:8787');
-    expect(config.worktrees).toEqual([]);
+    // the starter declares Projects, not the retired worktrees[]; its example path is a placeholder
+    expect(Array.isArray(config.projects)).toBe(true);
+    expect(config.projects?.every(project => typeof project.path === 'string')).toBe(true);
   });
 
   // require target-host source builds

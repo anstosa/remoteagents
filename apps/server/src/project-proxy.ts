@@ -1,7 +1,7 @@
 import { request as sendHttpRequest, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from 'node:http';
 import { connect } from 'node:net';
 import type { Duplex } from 'node:stream';
-import type { Worktree } from './domain/models.js';
+import type { Project } from './domain/models.js';
 
 const browserBridgePath = '/__rac/browser-bridge.js';
 const browserDevicePath = '/__rac/browser-device';
@@ -214,18 +214,19 @@ export class ProjectProxy {
   private readonly parentOrigin: string;
   private readonly upstreamHost: string;
 
-  // index fixed loopback targets
-  constructor(worktrees: Worktree[], parentOrigin: string, upstreamHost = '127.0.0.1') {
+  // index fixed loopback targets. One preview per Project today (all its Worktrees share
+  // the URL), so the map is built from Projects; a per-Worktree port stays an additive key
+  constructor(projects: ReadonlyArray<Pick<Project, 'projectUrl' | 'projectPort'>>, parentOrigin: string, upstreamHost = '127.0.0.1') {
     // restrict proxy destinations to local host gateways
     if (!allowedUpstreamHosts.has(upstreamHost)) throw new Error('invalid project proxy host');
     this.parentOrigin = parentOrigin;
     this.upstreamHost = upstreamHost;
     // retain only complete project proxy configurations
-    for (const worktree of worktrees) {
+    for (const project of projects) {
       // skip projects without public and loopback locations
-      if (worktree.projectUrl === undefined || worktree.projectPort === undefined) continue;
-      const hostname = new URL(worktree.projectUrl).hostname;
-      this.targets.set(hostname, { port: worktree.projectPort });
+      if (project.projectUrl === undefined || project.projectPort === undefined) continue;
+      const hostname = new URL(project.projectUrl).hostname;
+      this.targets.set(hostname, { port: project.projectPort });
     }
   }
 

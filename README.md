@@ -32,7 +32,7 @@ pull-request state without losing the terminal-native workflow underneath.
 | **Live output** | Stream the active pane, page through history, open detected links, copy selected output, answer guided questions, and temporarily switch to an interactive terminal. |
 | **Prompt workflow** | Use per-worktree prompt history, arrow-key recall, saved drafts, attachments, skill/slash-command autocomplete, press-and-hold voice dictation, and persistent queued prompt management. |
 | **Worktree context** | Show branch and full Git status, changed filenames, pull-request checks and review issues, GitHub Actions, project links, and trusted stack commands. |
-| **Bookmarks and notes** | Bookmark Codex chats for exact resume, and keep autosaved Markdown notes beside output. Both can be isolated or shared across configured worktrees. |
+| **Bookmarks and notes** | Bookmark Codex chats for exact resume, and keep autosaved Markdown notes beside output. Both are shared automatically across a Project's worktrees. |
 | **Guided review** | Generate an AI-narrated tour of active Working or All PR implementation changes, visit or skip each logical step, and send consolidated feedback to the agent. |
 | **Operations** | Install as a browser app, enable notifications, review stale runtime cleanup targets, and deploy with Docker Compose plus an optional Cloudflare Tunnel. |
 | **Conversational control** | Connect ChatGPT through scoped remote MCP or use the built-in OpenAI Realtime voice dialog to inspect and direct the same agents. |
@@ -195,10 +195,11 @@ user's tmux socket and Codex configuration without Docker bind mounts.
 
 ## Configuration
 
-The `worktrees` array may be empty or omitted for scratch-only use. Each added
-worktree has a stable ID, canonical path, label, and trusted launch command.
-Optional fields expose project links, stack actions, new-task flows, and
-customized prompt actions.
+The `projects` array may be empty or omitted for scratch-only use. Each Project
+is a git repository with a stable ID, canonical path, and label; its Worktrees
+are discovered from `git worktree list`. Optional fields expose project links,
+stack actions, new-task flows, and customized prompt actions. Agents launch by
+Adapter kind (configure each CLI once under `adapters`).
 
 ```json
 {
@@ -208,16 +209,14 @@ customized prompt actions.
   "remoteServers": [
     { "url": "https://other-agents.example.com" }
   ],
-  "newAgentCommand": "codex",
-  "worktrees": [
+  "adapters": {
+    "codex": { "program": "/usr/local/bin/codex" }
+  },
+  "projects": [
     {
       "id": "my-project",
       "label": "My project",
       "path": "/absolute/path/to/project",
-      "command": "codex",
-      "resumeCommand": "codex resume {threadId} -C .",
-      "saveKey": "my-project",
-      "pinned": true,
       "newTask": "detach && new {taskId}",
       "push": { "label": "Finish and PR", "prompt": "$finish" }
     }
@@ -231,7 +230,7 @@ authenticated peer-status API. The login, control, and output screens show one
 direct navigation button for each server.
 
 See [the setup reference](docs/setup.md) for the full security boundary,
-worktree command behavior, browser capabilities, and operational checks.
+Projects and Worktrees, browser capabilities, and operational checks.
 
 ## Everyday controls
 

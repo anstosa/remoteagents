@@ -22,30 +22,32 @@ const twoKinds = (claudeLaunchable = true) => ({
     codex: { program: '/bin/codex', args: [], env: {}, launchable: true },
     claude: { program: '/bin/claude', args: [], env: {}, launchable: claudeLaunchable, ...(claudeLaunchable ? {} : { unavailableReason: '/bin/claude is not executable' }) }
   },
-  worktrees: []
+  projects: []
 }) as never;
-const store = (profile?: string) => ({ launchProfile: async () => profile, rememberLaunchProfile: async () => {} }) as never;
+// keys are worktree wire ids `<projectId>:<realpath>`; the store is read in bulk
+const cora = 'proj:/repo/cora';
+const store = (profile?: string) => ({ launchProfiles: async () => (profile === undefined ? {} : { [cora]: profile }), rememberLaunchProfile: async () => {} }) as never;
 
 describe('resolveLaunchKind with more than one launchable kind', () => {
   it('honors the remembered launch profile when it is still launchable', async () => {
     const service = new LaunchService(twoKinds(), undefined, undefined, undefined, store('claude'));
-    expect(await service.resolveLaunchKind('cora')).toBe('claude');
+    expect(await service.resolveLaunchKind(cora)).toBe('claude');
   });
 
   it('skips a remembered kind that is no longer launchable and takes the first launchable in registry order', async () => {
     const service = new LaunchService(twoKinds(false), undefined, undefined, undefined, store('claude'));
-    expect(await service.resolveLaunchKind('cora')).toBe('codex');
+    expect(await service.resolveLaunchKind(cora)).toBe('codex');
   });
 
   it('takes the first launchable kind when nothing is remembered', async () => {
     const service = new LaunchService(twoKinds(), undefined, undefined, undefined, store(undefined));
-    expect(await service.resolveLaunchKind('cora')).toBe('codex');
+    expect(await service.resolveLaunchKind(cora)).toBe('codex');
   });
 
   it('refuses a requested kind that is not launchable', async () => {
     const service = new LaunchService(twoKinds(false), undefined, undefined, undefined, store());
-    expect(await service.resolveLaunchKind('cora', 'claude')).toBeUndefined();
-    expect(await service.resolveLaunchKind('cora', 'pi' as never)).toBeUndefined();
+    expect(await service.resolveLaunchKind(cora, 'claude')).toBeUndefined();
+    expect(await service.resolveLaunchKind(cora, 'pi' as never)).toBeUndefined();
   });
 });
 
@@ -84,17 +86,23 @@ describe('resolveLaunchProfile (pure)', () => {
 
 describe('launchResolutions', () => {
   it('resolves worktree scopes and the scratch scope from one store read', async () => {
-    const profiles: Record<string, string> = { cora: 'claude', scratch: 'codex' };
+    const profiles: Record<string, string> = { [cora]: 'claude', scratch: 'codex' };
     const service = new LaunchService(twoKinds(), undefined, undefined, undefined, { launchProfiles: async () => profiles } as never);
-    const resolutions = await service.launchResolutions(['cora', 'dana', 'scratch']);
-    expect(resolutions.get('cora')).toEqual({ kind: 'claude', origin: 'worktree' });
-    expect(resolutions.get('dana')).toEqual({ kind: 'codex', origin: 'default' });
+    const resolutions = await service.launchResolutions([cora, 'proj:/repo/dana', 'scratch']);
+    expect(resolutions.get(cora)).toEqual({ kind: 'claude', origin: 'worktree' });
+    expect(resolutions.get('proj:/repo/dana')).toEqual({ kind: 'codex', origin: 'default' });
     expect(resolutions.get('scratch')).toEqual({ kind: 'codex', origin: 'scratch' });
   });
 
+  it('falls back to the Project last-used kind when the Worktree has none', async () => {
+    const service = new LaunchService(twoKinds(), undefined, undefined, undefined, { launchProfiles: async () => ({ proj: 'claude' }) } as never);
+    const resolution = await service.launchResolutions([cora]);
+    expect(resolution.get(cora)).toEqual({ kind: 'claude', origin: 'project' });
+  });
+
   it('surfaces a skipped remembered kind that is no longer launchable', async () => {
-    const service = new LaunchService(twoKinds(false), undefined, undefined, undefined, { launchProfiles: async () => ({ cora: 'claude' }) } as never);
-    const resolution = await service.launchResolutions(['cora']);
-    expect(resolution.get('cora')).toEqual({ kind: 'codex', origin: 'default', skipped: { kind: 'claude', origin: 'worktree', reason: expect.stringContaining('not executable') } });
+    const service = new LaunchService(twoKinds(false), undefined, undefined, undefined, { launchProfiles: async () => ({ [cora]: 'claude' }) } as never);
+    const resolution = await service.launchResolutions([cora]);
+    expect(resolution.get(cora)).toEqual({ kind: 'codex', origin: 'default', skipped: { kind: 'claude', origin: 'worktree', reason: expect.stringContaining('not executable') } });
   });
 });

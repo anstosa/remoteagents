@@ -1,17 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { NewTaskService } from '../src/new-task/service.js';
-import type { ValidatedConfig } from '../src/config/schema.js';
+import { testConfig, testWorktree } from './helpers/config.js';
 
-const worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false, command: 'codex', newTask: 'detach && new {taskId}' };
-const config: ValidatedConfig = { name: 'Remote Agents', remoteServers: [], listen: { host: '127.0.0.1', port: 8787 }, publicOrigin: new URL('https://agents.example.com'), trustedProxyIps: new Set(), pollIntervalMs: 500, newAgentCommand: 'codex', worktrees: [worktree] };
+const worktree = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', label: 'Cora', path: '/worktrees/cora', hostPath: '/home/ubuntu/cora', pinned: false, newTask: 'detach && new {taskId}' });
+const config = testConfig();
 const agent = { id: 'agent-1', paneId: '%1', sessionId: '$1', socketFingerprint: 'socket', workspace: worktree.identity, title: 'Ready' };
 const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+const discoveryStub = () => ({ target: async () => ({ agent, socket }), worktreesNow: () => [worktree] });
 
 const cleanCommand = async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('status') ? '' : args.includes('rev-list') ? '0\t0\n' : 'origin/main\n' });
 
 describe('new task', () => {
   it('closes the agent and starts the configured task in a new tmux session', async () => {
-    const discovery = { target: async () => ({ agent, socket }) };
+    const discovery = discoveryStub();
     const calls: string[] = [];
     const tmux = { closeSession: async () => { calls.push('close-session'); return true; } };
     const command = async (binary: string, args: string[]) => {
@@ -34,7 +35,7 @@ describe('new task', () => {
   });
 
   it('does not suspend an agent while the worktree has uncommitted work', async () => {
-    const discovery = { target: async () => ({ agent, socket }) };
+    const discovery = discoveryStub();
     const tmux = { closeSession: async () => true };
     const dirtyCommand = async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('status') ? ' M README.md\n' : 'origin/main\n' });
     const service = new NewTaskService(config, discovery as never, tmux as never, dirtyCommand);
@@ -44,7 +45,7 @@ describe('new task', () => {
   });
 
   it('allows a clean detached checkout to start a new task', async () => {
-    const discovery = { target: async () => ({ agent, socket }) };
+    const discovery = discoveryStub();
     const tmux = { closeSession: async () => true };
     const detachedCommand = async (_binary: string, args: string[]) => ({ code: args.includes('rev-parse') || args.includes('symbolic-ref') ? 1 : 0, stdout: '' });
     const service = new NewTaskService(config, discovery as never, tmux as never, detachedCommand);
@@ -54,7 +55,7 @@ describe('new task', () => {
   });
 
   it('allows a clean branch whose configured upstream is gone to start a new task', async () => {
-    const discovery = { target: async () => ({ agent, socket }) };
+    const discovery = discoveryStub();
     const tmux = { closeSession: async () => true };
     const goneUpstreamCommand = async (_binary: string, args: string[]) => {
       if (args.includes('status')) return { code: 0, stdout: '' };

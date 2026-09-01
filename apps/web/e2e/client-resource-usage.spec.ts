@@ -82,7 +82,7 @@ test('reduces hidden client polling and refreshes when visible', async ({ page }
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     if (url.pathname === '/api/dashboard') {
       dashboardRequests += 1;
-      return route.fulfill({ json: { generation: dashboardRequests, agents: [], worktrees: [] } });
+      return route.fulfill({ json: { generation: dashboardRequests, agents: [], projects: [] } });
     }
     if (url.pathname === '/api/ui-version') {
       versionRequests += 1;

@@ -11,6 +11,15 @@ import { LaunchService, composeCommand, composeLaunch, expandCommand, expandHome
 import { hostCommand } from '../src/tmux/interactive-shell.js';
 import { startNamedReplacementSession, worktreeSessionName } from '../src/tmux/session-name.js';
 import type { SocketRef, Worktree } from '../src/domain/models.js';
+import { testWorktree } from './helpers/config.js';
+
+// worktrees are discovered and launched through a configured Adapter now; the legacy
+// per-worktree `command`/`resumeCommand` launch path is retired, so a worktree launch
+// needs `adapters.codex`. The discovered worktree reaches the service through the
+// `discoveredWorktrees` provider (its 6th constructor argument), not config.
+const codexProgram = '/usr/local/bin/codex';
+const codex = { adapters: { codex: { program: codexProgram, args: [] as string[], env: {}, launchable: true } }, projects: [] } as never;
+const cora = (over: Partial<Worktree> = {}) => testWorktree({ id: 'cora', projectId: 'proj', label: 'Cora', path: '/worktrees/cora', hostPath: '/home/ubuntu/cora', pinned: false, ...over });
 
 const hostTmuxDirectory = process.env.RAC_HOST_TMUX_DIR;
 const hostInteractiveShell = process.env.RAC_HOST_INTERACTIVE_SHELL;
@@ -53,47 +62,32 @@ describe('LaunchService', () => {
 
   it('continues a worktree with codex resume --last instead of a shell alias', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, command: 'codex' };
+    const worktree = cora();
     const calls: string[][] = [];
     const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', pane, buffer, command]); return true; }, enter: async (_socket: SocketRef, pane: string) => { calls.push(['enter', pane]); return true; } };
-    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [socket] }, panes as never);
+    const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree]);
 
     await expect(service.resume(worktree.id)).resolves.toBe(true);
 
-    expect(calls[0]).toMatchObject(['paste', '%4', expect.stringMatching(/^rac-launch-/), 'codex resume --last']);
+    expect(calls[0]).toMatchObject(['paste', '%4', expect.stringMatching(/^rac-launch-/), `${codexProgram} resume --last`]);
     expect(calls[1]).toEqual(['enter', '%4']);
   });
 
-  it('resumes a bookmarked Codex conversation through its explicit template', async () => {
+  it('resumes an exact conversation with codex resume <id> through its Adapter', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false, command: 'codex', resumeCommand: 'codex resume {threadId} -C .' };
+    const worktree = cora();
     const calls: string[][] = [];
     const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', pane, buffer, command]); return true; }, enter: async (_socket: SocketRef, pane: string) => { calls.push(['enter', pane]); return true; } };
-    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [socket] }, panes as never);
+    const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree]);
 
-    await expect(service.resumeConversation(worktree.id, '0198c333-3333-7333-8333-333333333333')).resolves.toBe(true);
-    await expect(service.resumeConversation(worktree.id, 'bad; rm -rf /')).resolves.toBe(false);
-
-    expect(calls[0]).toMatchObject(['paste', '%4', expect.stringMatching(/^rac-launch-/), 'codex resume 0198c333-3333-7333-8333-333333333333 -C .']);
-    expect(calls[1]).toEqual(['enter', '%4']);
-    expect(calls).toHaveLength(2);
-  });
-
-  it('resumes an exact conversation with codex resume <id> when no template is configured', async () => {
-    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false, command: 'codex' };
-    const calls: string[][] = [];
-    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', pane, buffer, command]); return true; }, enter: async (_socket: SocketRef, pane: string) => { calls.push(['enter', pane]); return true; } };
-    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [socket] }, panes as never);
-
-    // any launchable codex worktree can resume through its Adapter, no resumeCommand required
+    // any launchable codex worktree can resume through its Adapter; a template is no longer configured
     expect(service.canResumeConversation(worktree.id)).toBe(true);
     expect(service.canResumeConversation('absent')).toBe(false);
     await expect(service.resumeConversation(worktree.id, '0198c333-3333-7333-8333-333333333333')).resolves.toBe(true);
     // a malformed id never reaches the shell
     await expect(service.resumeConversation(worktree.id, 'bad; rm -rf /')).resolves.toBe(false);
 
-    expect(calls[0]).toMatchObject(['paste', '%4', expect.stringMatching(/^rac-launch-/), 'codex resume 0198c333-3333-7333-8333-333333333333']);
+    expect(calls[0]).toMatchObject(['paste', '%4', expect.stringMatching(/^rac-launch-/), `${codexProgram} resume 0198c333-3333-7333-8333-333333333333`]);
     expect(calls).toHaveLength(2);
   });
 
@@ -102,12 +96,12 @@ describe('LaunchService', () => {
     tempDirs.push(filesDir);
     process.env.RAC_ADAPTER_FILES_DIR = filesDir;
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false, command: 'codex' };
+    const worktree = cora();
     const calls: string[][] = [];
     const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', pane, buffer, command]); return true; }, enter: async (_socket: SocketRef, pane: string) => { calls.push(['enter', pane]); return true; } };
-    const config = { adapters: { claude: { program: '/usr/local/bin/claude', args: [], env: {}, launchable: true } }, worktrees: [worktree] };
-    const store = { launchProfile: async () => 'claude', rememberLaunchProfile: async () => {} };
-    const service = new LaunchService(config as never, { find: async () => [socket] }, panes as never, undefined, store as never);
+    const config = { adapters: { claude: { program: '/usr/local/bin/claude', args: [], env: {}, launchable: true } }, projects: [] };
+    const store = { launchProfiles: async () => ({}), rememberLaunchProfile: async () => {} };
+    const service = new LaunchService(config as never, { find: async () => [socket] }, panes as never, undefined, store as never, () => [worktree]);
 
     await expect(service.resume(worktree.id, 'claude')).resolves.toBe(true);
 
@@ -119,7 +113,7 @@ describe('LaunchService', () => {
   it('marks home-launched agents as Scratch without replacing their tmux title', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
-    const service = new LaunchService({ newAgentCommand: 'codex', worktrees: [{ id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, command: 'codex' }] } as never);
+    const service = new LaunchService({ newAgentCommand: 'codex', projects: [] } as never);
 
     await expect(service.launchHome()).resolves.toBe(true);
 
@@ -130,7 +124,7 @@ describe('LaunchService', () => {
   it('launches a dedicated update advisor in the fixed repository', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
-    const service = new LaunchService({ adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true } }, worktrees: [{ hostPath: '/home/ubuntu/remoteagents' }] } as never);
+    const service = new LaunchService({ adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true } }, projects: [{ hostPath: '/home/ubuntu/remoteagents' }] } as never);
 
     await expect(service.launchUpdateAdvisor('/home/ubuntu/remoteagents', '2'.repeat(40))).resolves.toBe(true);
 
@@ -149,7 +143,7 @@ describe('LaunchService', () => {
     delete process.env.RAC_CODEX_BIN;
     try {
       // no adapters.codex and no RAC_CODEX_BIN means the advisor's Codex binary is unresolved
-      const service = new LaunchService({ worktrees: [{ hostPath: '/home/ubuntu/remoteagents' }] } as never);
+      const service = new LaunchService({ projects: [] } as never);
       await expect(service.launchUpdateAdvisor('/home/ubuntu/remoteagents', '2'.repeat(40))).resolves.toBe(false);
       expect(run).not.toHaveBeenCalled();
     } finally {
@@ -166,14 +160,14 @@ describe('LaunchService', () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     delete process.env.RAC_HOST_INTERACTIVE_SHELL;
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
-    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false, command: 'codex' };
-    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [] });
+    const worktree = cora();
+    const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
 
     await expect(service.launch('cora')).resolves.toBe(true);
     const freshSession = run.mock.calls.find(call => (call[1] as string[]).includes('new-session'))?.[1] as string[];
     expect(freshSession.slice(0, 9)).toEqual(['-S', '/host-tmux/default', 'new-session', '-d', '-s', 'cora', '-c', '/home/ubuntu/cora', '/usr/bin/zsh']);
     expect(freshSession[9]).toBe('-lc');
-    // a fresh launch runs the configured command unchanged — no resume verb
+    // a fresh launch runs the configured program unchanged — no resume verb
     expect(freshSession[10]).toContain('codex');
     expect(freshSession[10]).not.toContain('resume');
 
@@ -188,8 +182,8 @@ describe('LaunchService', () => {
   it('records @rac_sandboxed on a Sandboxed launch and leaves an ordinary launch unmarked', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
-    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false, command: 'codex' };
-    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [] });
+    const worktree = cora();
+    const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
     const launchWorktree = (input: { mode: 'fresh'; sandboxed?: boolean }) => (service as unknown as { launchWorktree(id: string, input: unknown): Promise<boolean> }).launchWorktree('cora', input);
 
     await expect(launchWorktree({ mode: 'fresh', sandboxed: true })).resolves.toBe(true);
@@ -204,9 +198,9 @@ describe('LaunchService', () => {
   it('records @rac_sandboxed on the reused pane for a Sandboxed reuse-launch', async () => {
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false, command: 'codex' };
+    const worktree = cora();
     const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async () => true, enter: async () => true };
-    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [socket] }, panes as never);
+    const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree]);
 
     await expect((service as unknown as { launchWorktree(id: string, input: unknown): Promise<boolean> }).launchWorktree('cora', { mode: 'fresh', sandboxed: true })).resolves.toBe(true);
     // the reused-pane branch marks the pane id on the pane's own socket
@@ -216,8 +210,8 @@ describe('LaunchService', () => {
   it('names a new tmux session after the worktree directory', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
-    const worktree: Worktree = { id: 'ferry-fyi', label: 'Ferry FYI', path: '/worktrees/ferry.fyi', identity: '/worktrees/ferry.fyi', hostPath: '/home/ubuntu/ferry.fyi', available: true, pinned: false, command: 'codex' };
-    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [] });
+    const worktree = cora({ id: 'ferry-fyi', label: 'Ferry FYI', path: '/worktrees/ferry.fyi', hostPath: '/home/ubuntu/ferry.fyi' });
+    const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
 
     await expect(service.launch(worktree.id)).resolves.toBe(true);
 
@@ -230,8 +224,8 @@ describe('LaunchService', () => {
       .mockResolvedValueOnce({ code: 0, stdout: '$42\n', stderr: '' })
       .mockResolvedValueOnce({ code: 0, stdout: 'owen\n', stderr: '' })
       .mockResolvedValue({ code: 0, stdout: '', stderr: '' });
-    const worktree: Worktree = { id: 'owen', label: 'Owen', path: '/worktrees/owen', identity: '/worktrees/owen', hostPath: '/home/ubuntu/owen', available: true, pinned: true, command: 'codex' };
-    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [] });
+    const worktree = cora({ id: 'owen', label: 'Owen', path: '/worktrees/owen', hostPath: '/home/ubuntu/owen', pinned: true });
+    const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
 
     await expect(service.launch(worktree.id)).resolves.toBe(true);
 
@@ -274,16 +268,16 @@ describe('LaunchService', () => {
 
   it('reuses an existing shell whose git toplevel is the worktree, even from a subdirectory', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const worktree: Worktree = { id: 'alex', label: 'Alex', path: '/worktrees/alex', identity: '/worktrees/alex', hostPath: '/home/ubuntu/alex', available: true, command: 'alex' };
+    const worktree = cora({ id: 'alex', label: 'Alex', path: '/worktrees/alex', hostPath: '/home/ubuntu/alex' });
     const calls: string[][] = [];
     const finder = { find: async () => [socket] };
     const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: '/home/ubuntu/alex/src', command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', pane, buffer, command]); return true; }, enter: async (_socket: SocketRef, pane: string) => { calls.push(['enter', pane]); return true; } };
     // the subdirectory shares the worktree's toplevel, so it belongs to the worktree
     const paneRoot = async (path: string) => path === '/home/ubuntu/alex/src' ? '/home/ubuntu/alex' : path;
-    const service = new LaunchService({ worktrees: [worktree] } as never, finder, panes as never, paneRoot);
+    const service = new LaunchService(codex, finder, panes as never, paneRoot, undefined, () => [worktree]);
 
     await expect(service.launch('alex')).resolves.toBe(true);
-    expect(calls[0]).toMatchObject(['paste', '%4', expect.stringMatching(/^rac-launch-/), 'alex']);
+    expect(calls[0]).toMatchObject(['paste', '%4', expect.stringMatching(/^rac-launch-/), codexProgram]);
     expect(calls[1]).toEqual(['enter', '%4']);
   });
 
@@ -291,11 +285,11 @@ describe('LaunchService', () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const worktree: Worktree = { id: 'alex', label: 'Alex', path: '/worktrees/alex', identity: '/worktrees/alex', hostPath: '/home/ubuntu/alex', available: true, command: 'codex' };
+    const worktree = cora({ id: 'alex', label: 'Alex', path: '/worktrees/alex', hostPath: '/home/ubuntu/alex' });
     const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: '/home/ubuntu/alex/.claude/worktrees/3', command: 'zsh', title: '', socket }], pastePrompt: vi.fn(), enter: vi.fn() };
     // the nested checkout is its own git worktree — its toplevel is itself, not alex
     const paneRoot = async (path: string) => path;
-    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [socket] }, panes as never, paneRoot);
+    const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, paneRoot, undefined, () => [worktree]);
 
     await expect(service.launch('alex')).resolves.toBe(true);
 
@@ -307,7 +301,7 @@ describe('LaunchService', () => {
   it('lists panes on every socket concurrently and prefers the first socket', async () => {
     const first: SocketRef = { fingerprint: 'first', path: '/host-tmux/first', device: 1, inode: 1 };
     const second: SocketRef = { fingerprint: 'second', path: '/host-tmux/second', device: 1, inode: 2 };
-    const worktree: Worktree = { id: 'alex', label: 'Alex', path: '/worktrees/alex', identity: '/worktrees/alex', hostPath: '/home/ubuntu/alex', available: true, command: 'alex' };
+    const worktree = cora({ id: 'alex', label: 'Alex', path: '/worktrees/alex', hostPath: '/home/ubuntu/alex' });
     const calls: string[][] = [];
     const started: string[] = [];
     const finder = { find: async () => [first, second] };
@@ -318,14 +312,14 @@ describe('LaunchService', () => {
       pastePrompt: async (socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', socket.fingerprint, pane, buffer, command]); return true; },
       enter: async (socket: SocketRef, pane: string) => { calls.push(['enter', socket.fingerprint, pane]); return true; }
     };
-    const service = new LaunchService({ worktrees: [worktree] } as never, finder, panes as never);
+    const service = new LaunchService(codex, finder, panes as never, undefined, undefined, () => [worktree]);
 
     const launch = service.launch('alex');
     // both scans must start before the slow first socket resolves (20ms); a sequential scan would leave 'second' unstarted
     await new Promise(resolve => setTimeout(resolve, 5));
     expect(started).toEqual(['first', 'second']);
     await expect(launch).resolves.toBe(true);
-    expect(calls[0]).toMatchObject(['paste', 'first', '%1', expect.stringMatching(/^rac-launch-/), 'alex']);
+    expect(calls[0]).toMatchObject(['paste', 'first', '%1', expect.stringMatching(/^rac-launch-/), codexProgram]);
     expect(calls[1]).toEqual(['enter', 'first', '%1']);
   });
 
@@ -333,13 +327,13 @@ describe('LaunchService', () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const worktree: Worktree = { id: 'owen', label: 'Owen', path: '/worktrees/owen', identity: '/worktrees/owen', hostPath: '/home/ubuntu/owen', available: true, command: 'codex' };
+    const worktree = cora({ id: 'owen', label: 'Owen', path: '/worktrees/owen', hostPath: '/home/ubuntu/owen' });
     const panes = {
       listPanes: async () => [{ paneId: '%4', sessionId: '$1', sessionName: 'operator-bash', pid: 123, path: '/home/ubuntu/owen', command: 'bash', title: '', socket }],
       pastePrompt: vi.fn(),
       enter: vi.fn()
     };
-    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [socket] }, panes as never);
+    const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree]);
 
     await expect(service.launch('owen')).resolves.toBe(true);
 
@@ -350,9 +344,9 @@ describe('LaunchService', () => {
   it('reuses an existing pane for the configured host shell', async () => {
     process.env.RAC_HOST_INTERACTIVE_SHELL = '/bin/bash';
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const worktree: Worktree = { id: 'bash-project', label: 'Bash project', path: '/worktrees/bash-project', identity: '/worktrees/bash-project', hostPath: '/home/operator/bash-project', available: true, command: 'codex' };
+    const worktree = cora({ id: 'bash-project', label: 'Bash project', path: '/worktrees/bash-project', hostPath: '/home/operator/bash-project' });
     const panes = { listPanes: async () => [{ paneId: '%7', sessionId: '$7', pid: 456, path: worktree.hostPath!, command: 'bash', title: '', socket }], pastePrompt: vi.fn(async () => true), enter: vi.fn(async () => true) };
-    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [socket] }, panes as never);
+    const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree]);
 
     await expect(service.launch(worktree.id)).resolves.toBe(true);
 
@@ -364,13 +358,13 @@ describe('LaunchService', () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const worktree: Worktree = { id: 'owen', label: 'Owen', path: '/worktrees/owen', identity: '/worktrees/owen', hostPath: '/home/ubuntu/owen', available: true, command: 'codex' };
+    const worktree = cora({ id: 'owen', label: 'Owen', path: '/worktrees/owen', hostPath: '/home/ubuntu/owen' });
     const panes = {
       listPanes: async () => [{ paneId: '%4', sessionId: '$1', sessionName: 'rac-stack-owen-a1b2c3', pid: 123, path: '/home/ubuntu/owen', command: 'bash', title: '', socket }],
       pastePrompt: vi.fn(),
       enter: vi.fn()
     };
-    const service = new LaunchService({ worktrees: [worktree] } as never, { find: async () => [socket] }, panes as never);
+    const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree]);
 
     await expect(service.launch('owen')).resolves.toBe(true);
 
@@ -387,40 +381,38 @@ describe('LaunchService', () => {
 
   it('launches a configured kind through its program, appending operator args and env', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false };
+    const worktree = cora();
     const calls: string[][] = [];
     const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, _buffer: string, command: string) => { calls.push(['paste', pane, command]); return true; }, enter: async () => true };
     const remembered: Array<[string, string]> = [];
-    const store = { launchProfile: async () => undefined, rememberLaunchProfile: async (key: string, kind: string) => { remembered.push([key, kind]); } };
-    const config = { adapters: { codex: { program: '/usr/local/bin/codex', args: ['--search'], env: { RAC_X: '1' }, launchable: true } }, worktrees: [worktree] };
-    const service = new LaunchService(config as never, { find: async () => [socket] }, panes as never, undefined, store as never);
+    const store = { launchProfiles: async () => ({}), rememberLaunchProfile: async (key: string, kind: string) => { remembered.push([key, kind]); } };
+    const config = { adapters: { codex: { program: '/usr/local/bin/codex', args: ['--search'], env: { RAC_X: '1' }, launchable: true } }, projects: [] };
+    const service = new LaunchService(config as never, { find: async () => [socket] }, panes as never, undefined, store as never, () => [worktree]);
 
     await expect(service.launch('cora')).resolves.toBe(true);
 
-    // fresh launch: no adapter mode args, operator's --search appended, env prefixed; the worktree has no `command`
+    // fresh launch: no adapter mode args, operator's --search appended, env prefixed
     expect(calls[0]).toEqual(['paste', '%4', 'RAC_X=1 /usr/local/bin/codex --search']);
-    // the resolved kind is recorded for next time
-    expect(remembered).toEqual([['cora', 'codex']]);
+    // the resolved kind is recorded for this Worktree and its Project
+    expect(remembered).toEqual([['cora', 'codex'], ['proj', 'codex']]);
   });
 
   it('refuses a requested kind that is not configured or launchable', async () => {
-    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false };
-    const config = { adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true } }, worktrees: [worktree] };
-    const service = new LaunchService(config as never, { find: async () => [] });
+    const worktree = cora();
+    const config = { adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true } }, projects: [] };
+    const service = new LaunchService(config as never, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
 
     // claude is a known kind but has no configured, registered adapter
     await expect(service.launch('cora', 'claude')).resolves.toBe(false);
     // an unlaunchable codex (non-executable program) is refused too
-    const unlaunchable = new LaunchService({ adapters: { codex: { program: '/nope', args: [], env: {}, launchable: false } }, worktrees: [worktree] } as never, { find: async () => [] });
+    const unlaunchable = new LaunchService({ adapters: { codex: { program: '/nope', args: [], env: {}, launchable: false } }, projects: [] } as never, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
     await expect(unlaunchable.launch('cora')).resolves.toBe(false);
   });
 
-  it('prefers the remembered launch profile when more than one kind can launch', async () => {
-    const worktree: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false };
-    // two configured kinds, but only codex is registered today, so resolution still lands on codex
-    const config = { adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true } }, worktrees: [worktree] };
+  it('does not consult the store when a single kind can launch', async () => {
+    const config = { adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true } }, projects: [] };
     const lookups: string[] = [];
-    const store = { launchProfile: async (key: string) => { lookups.push(key); return undefined; }, rememberLaunchProfile: async () => {} };
+    const store = { launchProfiles: async () => { lookups.push('read'); return {}; }, rememberLaunchProfile: async () => {} };
     const service = new LaunchService(config as never, { find: async () => [] }, undefined, undefined, store as never);
     // with a single launchable kind the store is not even consulted
     await service.resolveLaunchKind('cora');

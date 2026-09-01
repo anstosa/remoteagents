@@ -34,14 +34,14 @@ function hostValidationInput(input: unknown, mounts: ComposeMount[]): unknown {
   // preserve malformed top-level values for schema validation
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return input;
   const record = input as Record<string, unknown>;
-  // preserve omitted or malformed worktree lists for schema validation
-  if (!Array.isArray(record.worktrees)) return input;
+  // preserve omitted or malformed project lists for schema validation
+  if (!Array.isArray(record.projects)) return input;
   return {
     ...record,
-    worktrees: record.worktrees.map(worktree => {
+    projects: record.projects.map(project => {
       // preserve malformed entries for schema validation
-      if (worktree === null || typeof worktree !== 'object' || Array.isArray(worktree)) return worktree;
-      const entry = worktree as Record<string, unknown>;
+      if (project === null || typeof project !== 'object' || Array.isArray(project)) return project;
+      const entry = project as Record<string, unknown>;
       return typeof entry.path === 'string' ? { ...entry, path: mountedPath(entry.path, mounts) } : entry;
     })
   };
@@ -62,7 +62,7 @@ async function main(): Promise<void> {
   // a compose config names container program paths the host cannot stat, so skip the probe there
   const warnings: string[] = [];
   const config = await validateConfig(input, { warn: message => warnings.push(message), checkExecutables: !composeMode });
-  const mode = config.worktrees.length === 0 ? 'scratch-only' : `${config.worktrees.length} worktree${config.worktrees.length === 1 ? '' : 's'}`;
+  const mode = config.projects.length === 0 ? 'scratch-only' : `${config.projects.length} project${config.projects.length === 1 ? '' : 's'}`;
   const configured = config.adapters === undefined ? undefined : Object.keys(config.adapters);
   const adapters = configured === undefined ? 'legacy (no adapters block)' : configured.length === 0 ? 'observe-only (no adapters configured)' : configured.join(', ');
   process.stdout.write(`Configuration valid: ${path}\nOrigin: ${config.publicOrigin.origin}\nMode: ${mode}\nAdapters: ${adapters}${composeMode ? ' (Compose mounts verified)' : ''}\n`);

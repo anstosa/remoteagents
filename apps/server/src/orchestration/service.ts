@@ -12,7 +12,7 @@ import type { ReviewTourInput } from '../review-tour/contracts.js';
 import type { TmuxAdapter } from '../tmux/adapter.js';
 import type { NewTaskService } from '../new-task/service.js';
 import type { WorkspaceFileService, WorkspaceFilePreview } from '../workspace-files/service.js';
-import { configuredWorktreeForWorkspace, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
+import { configuredWorktreeForWorkspace, worktreeById } from '../workspaces/resolver.js';
 import type { WorktreeCommandService } from '../worktree-commands/service.js';
 import type {
   AgentStatusV1,
@@ -54,7 +54,7 @@ const promptIdPattern = /^[A-Za-z0-9_-]{12,64}$/u;
 // a unified Inline-question id: the 22-char base64url hash the Adapter derives
 const questionIdPattern = /^[A-Za-z0-9_-]{22}$/u;
 
-type DiscoveryFacade = Pick<DiscoveryService, 'target'>;
+type DiscoveryFacade = Pick<DiscoveryService, 'target' | 'worktreesNow'>;
 type TmuxFacade = Pick<TmuxAdapter, 'captureWindow' | 'captureRecentWindow'>;
 type PromptFacade = Pick<PromptService, 'submit' | 'listQueued' | 'updateQueued' | 'moveQueued' | 'removeQueued' | 'answerQuestion' | 'cancel' | 'close'>;
 type HistoryFacade = Pick<PromptHistoryService, 'list'>;
@@ -156,7 +156,7 @@ function limitPreview(preview: WorkspaceFilePreview, maxBytes: number): FilePrev
 
 // derive one stable agent label
 function agentLabel(agent: Agent): string {
-  return agent.worktreeLabel ?? agent.displayLabel ?? agent.title ?? agent.id;
+  return agent.displayLabel ?? agent.title ?? agent.id;
 }
 
 // project one agent into the stable integration contract
@@ -165,9 +165,8 @@ function agentStatus(agent: DashboardPayload['agents'][number]): AgentStatusV1 {
     id: agent.id,
     title: agent.title,
     label: agentLabel(agent),
+    ...(agent.projectId === undefined ? {} : { projectId: agent.projectId }),
     ...(agent.worktreeId === undefined ? {} : { worktreeId: agent.worktreeId }),
-    ...(agent.worktreeLabel === undefined ? {} : { worktreeLabel: agent.worktreeLabel }),
-    ...(agent.worktreeOrder === undefined ? {} : { worktreeOrder: agent.worktreeOrder }),
     ...(agent.branch === undefined ? {} : { branch: agent.branch }),
     ...(agent.gitStatus === undefined ? {} : { gitStatus: agent.gitStatus }),
     ...(agent.gitPrStatus === undefined ? {} : { gitPrStatus: agent.gitPrStatus }),
@@ -193,41 +192,43 @@ export class OrchestrationService {
     }
   }
 
-  // resolve one configured worktree
+  // resolve one discovered worktree by its wire id
   private worktree(id: string): Worktree | undefined {
-    return this.dependencies.config.worktrees.find(candidate => candidate.id === id);
+    return worktreeById(this.dependencies.discovery.worktreesNow(), id);
   }
 
-  // resolve one configured prompt-history scope
+  // resolve one configured prompt-history scope: the Worktree wire id, or an agent scope
+  // for a Scratch pane (ADR 0003)
   private async promptScope(agentId: string): Promise<{ scope: string; agent: Agent; workspace: string } | undefined> {
     const target = await this.dependencies.discovery.target(agentId);
     // require a current target
     if (target === undefined) return undefined;
-    const worktree = configuredWorktreeForWorkspace(this.dependencies.config.worktrees, target.agent.workspace);
+    const worktree = configuredWorktreeForWorkspace(this.dependencies.discovery.worktreesNow(), target.agent.workspace);
     return {
-      scope: worktree === undefined ? `agent:${agentId}` : `worktree:${worktree.id}`,
+      scope: worktree === undefined ? `agent:${agentId}` : worktree.id,
       agent: target.agent,
       workspace: worktree?.identity ?? target.agent.workspace
     };
   }
 
-  // merge active agents and inactive dashboard rows in configured order
+  // merge active agents and idle dashboard rows for every discovered Worktree, in tab order
   private worktreeStatuses(dashboard: DashboardPayload): WorktreeStatusV1[] {
-    return this.dependencies.config.worktrees.map((worktree, order) => {
+    const views = new Map(dashboard.projects.flatMap(project => project.worktrees).map(view => [view.id, view] as const));
+    return this.dependencies.discovery.worktreesNow().map((worktree) => {
       const agents = dashboard.agents
-        .filter(agent => agent.worktreeId === worktree.id || worktreeMatchesWorkspace(worktree, agent.workspace))
+        .filter(agent => agent.worktreeId === worktree.id)
         .sort((left, right) => left.id.localeCompare(right.id));
-      const inactive = dashboard.worktrees.find(candidate => candidate.id === worktree.id);
-      const primary = agents[0] ?? inactive;
+      const view = views.get(worktree.id);
+      const primary = agents[0] ?? view;
       const review = dashboard.reviews.find(candidate => candidate.worktreeId === worktree.id && (primary?.branch === undefined || candidate.branch === primary.branch));
-      const stack = agents[0]?.stack ?? inactive?.stack;
+      const stack = agents[0]?.stack ?? view?.stack;
       return {
         id: worktree.id,
         label: worktree.label,
-        available: inactive?.available ?? worktree.available,
-        pinned: inactive?.pinned ?? worktree.pinned,
+        available: view?.available ?? worktree.available,
+        pinned: view?.pinned ?? worktree.pinned,
         active: agents.length > 0,
-        order,
+        order: view?.order ?? 0,
         agentIds: agents.map(agent => agent.id),
         ...(worktree.projectUrl === undefined ? {} : { projectUrl: worktree.projectUrl }),
         ...(primary?.branch === undefined ? {} : { branch: primary.branch }),
@@ -271,9 +272,12 @@ export class OrchestrationService {
   async listAgents(): Promise<OrchestrationResult<AgentStatusV1[]>> {
     return await this.operation(async () => {
       const dashboard = await this.dependencies.loadDashboard();
+      // order agents by their Worktree's tab order, Scratch agents last
+      const order = new Map(dashboard.projects.flatMap(project => project.worktrees).map(view => [view.id, view.order] as const));
+      const orderOf = (agent: AgentStatusV1) => agent.worktreeId === undefined ? Number.MAX_SAFE_INTEGER : order.get(agent.worktreeId) ?? Number.MAX_SAFE_INTEGER;
       const agents = dashboard.agents
         .map(agentStatus)
-        .sort((left, right) => (left.worktreeOrder ?? Number.MAX_SAFE_INTEGER) - (right.worktreeOrder ?? Number.MAX_SAFE_INTEGER) || left.id.localeCompare(right.id));
+        .sort((left, right) => orderOf(left) - orderOf(right) || left.id.localeCompare(right.id));
       return success(agents);
     });
   }
@@ -574,7 +578,7 @@ export class OrchestrationService {
       const target = await this.dependencies.discovery.target(agentId);
       // require a current target
       if (target === undefined) return failure('not_found', 'Agent not found.');
-      const configured = configuredWorktreeForWorkspace(this.dependencies.config.worktrees, target.agent.workspace);
+      const configured = configuredWorktreeForWorkspace(this.dependencies.discovery.worktreesNow(), target.agent.workspace);
       const enriched = (await this.dependencies.loadDashboard()).agents.find(candidate => candidate.id === agentId);
       // protect scratch, working, and questioning agents
       if (configured === undefined || agentAttentionState(target.agent) !== 'finished' || (enriched !== undefined && agentAttentionState(enriched) !== 'finished')) return failure('conflict', 'Only idle configured agents can be deactivated.');

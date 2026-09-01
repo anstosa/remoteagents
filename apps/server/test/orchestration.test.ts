@@ -5,8 +5,8 @@ import type { Agent, Worktree } from '../src/domain/models.js';
 import { stated } from './helpers/agent.js';
 import { OrchestrationService, type OrchestrationDependencies } from '../src/orchestration/service.js';
 
-const cora: Worktree = { id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: true, command: 'codex', commands: { build: 'docker compose build' } };
-const dave: Worktree = { id: 'dave', label: 'Dave', path: '/worktrees/dave', identity: '/worktrees/dave', available: true, pinned: false, command: 'codex' };
+const cora: Worktree = { id: 'cora', projectId: 'proj', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: true, main: true, detached: false, locked: false, commands: { build: 'docker compose build' } };
+const dave: Worktree = { id: 'dave', projectId: 'proj', label: 'Dave', path: '/worktrees/dave', identity: '/worktrees/dave', available: true, pinned: false, main: false, detached: false, locked: false };
 const config: ValidatedConfig = {
   name: 'Remote Agents',
   remoteServers: [{ url: new URL('https://remote.example.com') }],
@@ -15,17 +15,21 @@ const config: ValidatedConfig = {
   trustedProxyIps: new Set(),
   pollIntervalMs: 500,
   newAgentCommand: 'codex',
-  worktrees: [cora, dave]
+  projects: []
 };
 const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
-const activeAgent: Agent = stated({ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.identity, branch: 'feature/cora', title: 'Ready', worktreeId: cora.id, worktreeLabel: cora.label, worktreeOrder: 0, gitStatus: { files: 2, staged: 0, unstaged: 2, untracked: 0, conflicted: 0 } });
+const activeAgent: Agent = stated({ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.identity, branch: 'feature/cora', title: 'Ready', projectId: cora.projectId, worktreeId: cora.id, gitStatus: { files: 2, staged: 0, unstaged: 2, untracked: 0, conflicted: 0 } });
 
 // build one fully structural dependency set
 function dependencies(overrides: Partial<OrchestrationDependencies> = {}): OrchestrationDependencies {
   const dashboard: DashboardPayload = {
     generation: 1,
+    adapters: {},
     agents: [{ ...activeAgent, unread: false }],
-    worktrees: [{ id: dave.id, label: dave.label, path: dave.path, available: true, pinned: false, order: 1, branch: 'main' }],
+    projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [
+      { id: cora.id, projectId: 'proj', label: cora.label, path: cora.path, available: true, pinned: true, main: true, detached: false, locked: false, order: 0, branch: 'feature/cora' },
+      { id: dave.id, projectId: 'proj', label: dave.label, path: dave.path, available: true, pinned: false, main: false, detached: false, locked: false, order: 1, branch: 'main' }
+    ] }],
     cleanupPending: 0,
     reviewTour: { available: false, reason: 'generator_unavailable' },
     reviews: []
@@ -33,7 +37,7 @@ function dependencies(overrides: Partial<OrchestrationDependencies> = {}): Orche
   return {
     config,
     loadDashboard: async () => dashboard,
-    discovery: { target: async agentId => agentId === activeAgent.id ? { agent: activeAgent, socket } : undefined },
+    discovery: { target: async agentId => agentId === activeAgent.id ? { agent: activeAgent, socket } : undefined, worktreesNow: () => [cora, dave] },
     tmux: {
       captureWindow: async () => ({ text: 'terminal', older: false }),
       captureRecentWindow: async () => ({ text: 'terminal', older: false })
@@ -183,7 +187,7 @@ describe('OrchestrationService', () => {
     let agent: Agent = stated({ ...activeAgent, title: '⠋ Working' });
     let closed = 0;
     const service = new OrchestrationService(dependencies({
-      discovery: { target: async () => ({ agent, socket }) },
+      discovery: { target: async () => ({ agent, socket }), worktreesNow: () => [cora, dave] },
       prompts: {
         submit: async () => true,
         listQueued: async () => [],

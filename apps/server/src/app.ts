@@ -19,7 +19,7 @@ import { maxPromptAttachments, maxPromptAttachmentBytes, PromptService, type Pro
 import { validPrompt } from './prompts/validation.js';
 import { QueuedPromptService } from './prompts/queue.js';
 import { LaunchService } from './launch/service.js';
-import { scratchLaunchKey } from './worktrees/store.js';
+import { scratchLaunchKey, WorktreeLaunchStore } from './worktrees/store.js';
 import * as pty from 'node-pty';
 import { safeEnv } from './tmux/command.js';
 import { PushService } from './push-service.js';
@@ -41,7 +41,7 @@ import { ReviewTourService } from './review-tour/service.js';
 import { ReviewTourJobs } from './review-tour/jobs.js';
 import { ReviewTourStore } from './review-tour/store.js';
 import { parseReviewRequestId, parseReviewTourInput, REVIEW_REQUEST_BODY_BYTES, ReviewTourError, type ReviewErrorCode, type ReviewTourInput } from './review-tour/contracts.js';
-import { configuredWorktreeForWorkspace, worktreeMatchesWorkspace } from './workspaces/resolver.js';
+import { configuredWorktreeForWorkspace, worktreeById, worktreeMatchesWorkspace } from './workspaces/resolver.js';
 import { WorkspaceFileService } from './workspace-files/service.js';
 import { instanceIconSvg, isInstanceIcon } from './instance-icon.js';
 import { instanceAttention, RemoteInstanceStatusPoller, validInstanceStatusRequest, type InstanceStatus } from './instance-status.js';
@@ -61,7 +61,7 @@ import { BookmarkService } from './bookmarks/service.js';
 import { isUpdateAdvisorForTarget, isUpdateAdvisorLabel, updateAdvisorLabel, updateAdvisorPendingLabel } from './update-advisor.js';
 import { isFullGitSha } from './git/revision.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; bookmarks?: BookmarkService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'> };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; bookmarks?: BookmarkService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore };
 // derive one stable opaque scratch persistence group
 const scratchSaveKey = (workspace: string) => `scratch_${createHash('sha256').update(workspace).digest('base64url').slice(0, 40)}`;
 // bound full history scans
@@ -90,7 +90,7 @@ export function logFrame(last: string, value: string, refreshMetadata = false): 
 }
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, config.worktrees, promptHistory, queuedPrompts, savedPrompts); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new BookmarkService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = new WorktreeCommandService(config); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.worktrees, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, config.worktrees, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, promptHistory, queuedPrompts, savedPrompts); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new BookmarkService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
   const accounts = deps.accounts ?? new CodexAccountService({ ...(codexProgram === undefined ? {} : { codexProgram }) });
   const paneViewports = new PaneViewportCoordinator();
   const updateAdvisors = new Map<string, string>();
@@ -118,7 +118,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // prefer a dedicated federation secret while retaining existing deployments
   const instanceStatusSecret = process.env.RAC_INSTANCE_STATUS_SECRET ?? process.env.RAC_SESSION_SECRET ?? '';
   const instanceStatusPoller = deps.instanceStatusPoller ?? new RemoteInstanceStatusPoller(instanceStatusSecret);
-  const projectProxy = new ProjectProxy(config.worktrees, config.publicOrigin.origin, process.env.RAC_PROJECT_PROXY_HOST);
+  const projectProxy = new ProjectProxy(config.projects, config.publicOrigin.origin, process.env.RAC_PROJECT_PROXY_HOST);
   const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 65_536 }); const webRoot = fileURLToPath(new URL('../../web/dist', import.meta.url)); const uiVersion = async () => await readFile(join(webRoot, 'index.html'), 'utf8').then(html => /<script[^>]+src="([^"]+)"/u.exec(html)?.[1]).catch(() => undefined); await app.register(cookie); await app.register(staticPlugin, { root: webRoot, index: false }); await app.register(rateLimit, { global: false }); await app.register(websocket, { options: { maxPayload: 65_536 } });
   app.setErrorHandler((error, request, reply) => {
     const failure = error as { code?: unknown; statusCode?: number; message?: string };
@@ -145,7 +145,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const secureOrigin = config.publicOrigin.protocol === 'https:';
   const cookieName = secureOrigin ? '__Host-rac' : 'rac-local';
   const websocketScheme = secureOrigin ? 'wss' : 'ws';
-  const projectFrameSources = [...new Set(config.worktrees.flatMap(worktree => worktree.projectUrl === undefined ? [] : [new URL(worktree.projectUrl).origin]))];
+  const projectFrameSources = [...new Set(config.projects.flatMap(project => project.projectUrl === undefined ? [] : [new URL(project.projectUrl).origin]))];
   const frameSourcePolicy = `frame-src 'self'${projectFrameSources.length === 0 ? '' : ` ${projectFrameSources.join(' ')}`}`;
   const forbidden = () => Object.assign(new Error('forbidden'), { statusCode: 403 });
   const unauthorized = () => Object.assign(new Error('unauthorized'), { statusCode: 401 });
@@ -228,8 +228,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const promptStorageKeyForAgent = (agent: Pick<Agent, 'displayLabel' | 'id' | 'workspace'>) => {
     // isolate modal advisors from the configured repository prompt queue
     if (isUpdateAdvisorLabel(agent.displayLabel)) return `agent:${agent.id}`;
-    const worktree = configuredWorktreeForWorkspace(config.worktrees, agent.workspace);
-    return worktree === undefined ? `agent:${agent.id}` : `worktree:${worktree.id}`;
+    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), agent.workspace);
+    return worktree === undefined ? `agent:${agent.id}` : worktree.id;
   };
   // count prompts before dispatch starts
   const queuedPromptCounts = async (agents: Agent[]) => new Map(await Promise.all(agents.map(async agent => {
@@ -238,25 +238,27 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return [agent.id, count] as const;
   })));
   const dashboard = async (): Promise<DashboardPayload> => {
-    const discovered = await discovery.dashboard(config.worktrees);
+    const discovered = await discovery.dashboard();
     const queuedCounts = await queuedPromptCounts(discovered.agents);
     await Promise.all(discovered.agents.map(agent => prompts.observe(agent).catch(() => undefined)));
     // suppress completions while more work waits
     for (const agent of discovered.agents) notifications.observe(agent, (queuedCounts.get(agent.id) ?? 0) > 0);
     notifications.retain(discovered.agents);
-    const controls = new Map(await Promise.all(config.worktrees.map(async worktree => [worktree.id, { actions: stackCommands.actions(worktree), ...await stackCommands.state(worktree) }] as const)));
+    const worktrees = discovery.worktreesNow();
+    const controls = new Map(await Promise.all(worktrees.map(async worktree => [worktree.id, { actions: stackCommands.actions(worktree), ...await stackCommands.state(worktree) }] as const)));
     const controlFor = (worktreeId: string | undefined) => worktreeId === undefined ? undefined : controls.get(worktreeId);
-    const reviewBranches = config.worktrees.map(worktree => ({ worktreeId: worktree.id, branch: discovered.agents.find(agent => agent.worktreeId === worktree.id)?.branch ?? discovered.worktrees.find(candidate => candidate.id === worktree.id)?.branch }));
+    const worktreeViews = discovered.projects.flatMap(project => project.worktrees);
+    const reviewBranches = worktreeViews.map(view => ({ worktreeId: view.id, branch: discovered.agents.find(agent => agent.worktreeId === view.id)?.branch ?? view.branch }));
     const reviews = await reviewStore.summaries(reviewBranches);
     // resolve the Launch profile for every scope the web can launch into: each idle
     // worktree, each running agent's worktree (for Restart as…), and the Scratch group
-    const launchResolutions = await launch.launchResolutions([scratchLaunchKey, ...discovered.worktrees.map(worktree => worktree.id), ...discovered.agents.flatMap(agent => agent.worktreeId === undefined ? [] : [agent.worktreeId])]);
+    const launchResolutions = await launch.launchResolutions([scratchLaunchKey, ...worktreeViews.map(view => view.id), ...discovered.agents.flatMap(agent => agent.worktreeId === undefined ? [] : [agent.worktreeId])]);
     const launchFor = (worktreeId: string | undefined) => launchResolutions.get(worktreeId ?? scratchLaunchKey);
-    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }), ...(launchFor(agent.worktreeId) === undefined ? {} : { launch: launchFor(agent.worktreeId) }) })), worktrees: discovered.worktrees.map(worktree => ({ ...worktree, ...(sleepingWorktrees.has(worktree.id) ? { sleeping: true } : {}), ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }), ...(launchFor(worktree.id) === undefined ? {} : { launch: launchFor(worktree.id) }) })), cleanupPending: cleanup.pending().length, scratchLaunch: launchResolutions.get(scratchLaunchKey), reviewTour: reviewTourCapability, reviews };
+    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }), ...(launchFor(agent.worktreeId) === undefined ? {} : { launch: launchFor(agent.worktreeId) }) })), projects: discovered.projects.map(project => ({ ...project, worktrees: project.worktrees.map(worktree => ({ ...worktree, ...(sleepingWorktrees.has(worktree.id) ? { sleeping: true } : {}), ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }), ...(launchFor(worktree.id) === undefined ? {} : { launch: launchFor(worktree.id) }) })) })), cleanupPending: cleanup.pending().length, scratchLaunch: launchResolutions.get(scratchLaunchKey), reviewTour: reviewTourCapability, reviews };
   };
   // observe only agent state needed by cross-instance attention
   const localInstanceAttention = async () => {
-    const discovered = await discovery.dashboard(config.worktrees);
+    const discovered = await discovery.dashboard();
     const queuedCounts = await queuedPromptCounts(discovered.agents);
     // update completion and question state for every agent
     for (const agent of discovered.agents) notifications.observe(agent, (queuedCounts.get(agent.id) ?? 0) > 0);
@@ -445,7 +447,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (mappedId !== undefined) advisorIds.add(mappedId);
     let dashboard;
     try {
-      dashboard = await discovery.dashboard(config.worktrees);
+      dashboard = await discovery.dashboard();
     } catch {
       // never claim cleanup when pane discovery failed
       return false;
@@ -532,26 +534,37 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     await dashboardUpdates.refresh().catch(() => undefined);
     return { targets };
   });
-  const configuredWorktree = (id: string) => config.worktrees.find(worktree => worktree.id === id);
-  // resolve one configured shared persistence group
-  const worktreeSaveKey = (id: string) => {
-    const worktree = configuredWorktree(id);
-    return worktree === undefined ? undefined : worktree.saveKey ?? worktree.id;
-  };
+  const configuredWorktree = (id: string) => worktreeById(discovery.worktreesNow(), id);
+  // notes and bookmarks are Project-scoped: their shared key is the Worktree's projectId (ADR 0003)
+  const worktreeSaveKey = (id: string) => configuredWorktree(id)?.projectId;
   // resolve durable persistence for one live agent
   const agentPersistence = async (id: string) => {
     const target = await discovery.target(id);
     // require one current agent target
     if (target === undefined) return undefined;
-    const worktree = configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
-    return { agent: target.agent, worktree, saveKey: worktree?.saveKey ?? worktree?.id ?? scratchSaveKey(target.agent.workspace) };
+    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
+    return { agent: target.agent, worktree, saveKey: worktree?.projectId ?? scratchSaveKey(target.agent.workspace) };
   };
   // resolve the observed branch for one configured worktree
   const reviewBranch = async (id: string): Promise<string | undefined> => {
-    const discovered = await discovery.dashboard(config.worktrees);
-    return discovered.agents.find(agent => agent.worktreeId === id)?.branch ?? discovered.worktrees.find(worktree => worktree.id === id)?.branch;
+    const discovered = await discovery.dashboard();
+    return discovered.agents.find(agent => agent.worktreeId === id)?.branch ?? discovered.projects.flatMap(project => project.worktrees).find(worktree => worktree.id === id)?.branch;
   };
   app.get('/api/worktrees/:id/notes', async (request, reply) => { controlled(request); const id = (request.params as { id: string }).id; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const stored = await notes.list(saveKey); return stored === undefined ? reply.code(400).send({ error: 'invalid worktree' }) : { notes: stored }; });
+  // pin or unpin one Worktree so an idle checkout keeps (or drops) its tab; the override
+  // is stored in `.data`, discovery re-reads it on the next tick
+  app.post('/api/worktrees/:id/pin', async (request, reply) => {
+    controlled(request, true);
+    const id = (request.params as { id: string }).id;
+    const pinned = body(request).pinned;
+    // require one known Worktree and an explicit pin state
+    if (configuredWorktree(id) === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    if (typeof pinned !== 'boolean') return reply.code(400).send({ error: 'invalid pin state' });
+    await worktreeStore.setPinned(id, pinned);
+    discovery.invalidateWorktrees();
+    await dashboardUpdates.refresh().catch(() => undefined);
+    return reply.code(204).send();
+  });
   // create an optionally titled note
   app.post('/api/worktrees/:id/notes', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const saveKey = worktreeSaveKey(id); const title = body(request).title; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0'))) return reply.code(400).send({ error: 'invalid note title' }); const note = await notes.create(saveKey, title as string | undefined); return note === undefined ? reply.code(409).send({ error: 'note limit reached' }) : reply.code(201).send(note); });
   app.put('/api/worktrees/:id/notes/:noteId', { bodyLimit: 128_000 }, async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); const text = body(request).text; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof text !== 'string' || text.length > 30_000 || text.includes('\0')) return reply.code(400).send({ error: 'invalid note' }); const note = await notes.update(saveKey, noteId, text); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
@@ -632,7 +645,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // resolve current state only for the live worktree agent
     if (typeof agentId === 'string') {
       const target = await discovery.target(agentId);
-      const targetWorktree = target === undefined ? undefined : configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
+      const targetWorktree = target === undefined ? undefined : configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
       // ignore stale or mismatched agent identities
       if (targetWorktree?.id === id) {
         const threadId = await discovery.conversationId(agentId);
@@ -734,7 +747,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     controlled(request, true);
     const target = await discovery.target((request.params as { id: string }).id);
     if (!target) return reply.code(404).send({ error: 'target unavailable' });
-    const worktree = configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
+    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
     const scopedAgent = worktree === undefined ? target.agent : { ...target.agent, worktreeId: worktree.id };
     notifications.view(scopedAgent);
     return reply.code(204).send();
@@ -776,7 +789,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const adapter = adapterFor(target.agent.kind);
     // an Adapter without a command catalog serves an empty one
     if (adapter === undefined) return { commands: [] };
-    const worktree = configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
+    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
     // the Adapter resolves its own state directory (its skills root) from the environment
     const stateDirectory = adapter.commands?.stateDirectory() ?? '';
     return { commands: await commandCatalog.catalog(adapter, worktree?.path ?? target.agent.workspace, stateDirectory) };
@@ -788,7 +801,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (typeof message !== 'string' || message.length > 30_000 || message.includes('\0')) return reply.code(400).send({ error: 'invalid assistant message' });
     const target = await discovery.target((request.params as { id: string }).id);
     if (!target) return reply.code(404).send({ error: 'target unavailable' });
-    const worktree = configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
+    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
     return { files: await workspaceFiles.list(worktree?.identity ?? target.agent.workspace, message) };
   });
   // preview one workspace file or bounded host temporary screenshot
@@ -798,7 +811,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (typeof path !== 'string' || !path || path.length > 512 || path.includes('\0')) return reply.code(400).send({ error: 'invalid file path' });
     const target = await discovery.target((request.params as { id: string }).id);
     if (!target) return reply.code(404).send({ error: 'target unavailable' });
-    const worktree = configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
+    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
     const panePid = discovery.paneProcessId(target.agent.id);
     // fall back only to the image-only host temporary bridge
     const preview = await workspaceFiles.preview(worktree?.identity ?? target.agent.workspace, path) ?? await workspaceFiles.previewTemporaryImage(path, panePid);
@@ -892,13 +905,13 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return reply.code(204).send();
   });
   app.post('/api/agents/:id/foreground', async (request, reply) => { controlled(request, true); const target = await discovery.target((request.params as { id: string }).id); if (!target || !await tmux.foreground(target.socket, target.agent.paneId)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
-  app.delete('/api/agents/:id', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const target = await discovery.target(id); if (!target || config.worktrees.some(worktree => worktreeMatchesWorkspace(worktree, target.agent.workspace)) || !await prompts.close(id)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
+  app.delete('/api/agents/:id', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const target = await discovery.target(id); if (!target || discovery.worktreesNow().some(worktree => worktreeMatchesWorkspace(worktree, target.agent.workspace)) || !await prompts.close(id)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
   // permanently close one idle configured agent
   app.post('/api/agents/:id/deactivate', async (request, reply) => {
     controlled(request, true);
     const id = (request.params as { id: string }).id;
     const target = await discovery.target(id);
-    const worktree = target === undefined ? undefined : configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
+    const worktree = target === undefined ? undefined : configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
     // preserve active configured agents
     if (!target || worktree === undefined || agentAttentionState(target.agent) === 'working') return reply.code(409).send({ error: 'only idle configured agents can be turned off' });
     // require a live target
@@ -911,7 +924,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     controlled(request, true);
     const id = (request.params as { id: string }).id;
     const target = await discovery.target(id);
-    const worktree = target === undefined ? undefined : configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
+    const worktree = target === undefined ? undefined : configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
     // limit sleep to the same idle configured agents as turn off
     if (!target || worktree === undefined || agentAttentionState(target.agent) === 'working') return reply.code(409).send({ error: 'only idle configured agents can sleep' });
     // require a live target
@@ -930,7 +943,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const waitForAgent = async (before: Set<string>, worktreeId?: string, displayLabel?: string) => {
     // poll for up to sixty seconds
     for (let attempt = 0; attempt < launchPollAttempts; attempt += 1) {
-      const dashboard = await discovery.dashboard(config.worktrees);
+      const dashboard = await discovery.dashboard();
       const agent = dashboard.agents.find(candidate => !before.has(candidate.id)
         && (worktreeId === undefined || candidate.worktreeId === worktreeId)
         && (displayLabel === undefined || candidate.displayLabel === displayLabel));
@@ -949,7 +962,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const advisor = serverAdmin.updateAdvisor(preview);
     // require a server-owned advisor request
     if (advisor === undefined) return undefined;
-    const dashboard = await discovery.dashboard(config.worktrees);
+    const dashboard = await discovery.dashboard();
     const activeTarget = await serverAdmin.activeUpdateTarget();
     const protectedLabels = new Set([updateAdvisorLabel(targetSha), ...(activeTarget === undefined ? [] : [updateAdvisorLabel(activeTarget)])]);
     const protectedIds = new Set<string>();
@@ -1039,9 +1052,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // reject overlapping prompt and lifecycle work
     if (releaseRestart === undefined) return { status: 'skipped', worktreeId: expectedWorktreeId ?? 'unknown', reason: 'not-idle', error: 'The worktree is no longer idle.' };
     try {
-      const current = await discovery.dashboard(config.worktrees, true);
+      const current = await discovery.dashboard(true);
       const observed = current.agents.find(agent => agent.id === id);
-      const worktree = observed === undefined ? undefined : configuredWorktreeForWorkspace(config.worktrees, observed.workspace);
+      const worktree = observed === undefined ? undefined : configuredWorktreeForWorkspace(discovery.worktreesNow(), observed.workspace);
       const worktreeId = worktree?.id ?? expectedWorktreeId ?? 'unknown';
       // require the original configured target
       if (observed === undefined || worktree === undefined || (expectedWorktreeId !== undefined && worktree.id !== expectedWorktreeId)) return { status: 'skipped', worktreeId, reason: 'unavailable', error: 'The worktree agent is no longer open.' };
@@ -1097,13 +1110,13 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     accountSwitching = true;
     try {
       const selectionMutationGeneration = prompts.mutationGeneration();
-      const discovered = await discovery.dashboard(config.worktrees);
+      const discovered = await discovery.dashboard();
       const queuedCounts = await queuedPromptCounts(discovered.agents);
       const byWorktree = new Map<string, Agent[]>();
       // group only open configured worktrees
       for (const agent of discovered.agents) {
         // ignore scratch and stale configured identifiers
-        if (agent.worktreeId === undefined || config.worktrees.every(worktree => worktree.id !== agent.worktreeId)) continue;
+        if (agent.worktreeId === undefined || discovery.worktreesNow().every(worktree => worktree.id !== agent.worktreeId)) continue;
         const group = byWorktree.get(agent.worktreeId) ?? [];
         group.push(agent);
         byWorktree.set(agent.worktreeId, group);
@@ -1187,7 +1200,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const worktree = configuredWorktree(id);
     // require one configured worktree
     if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
-    const bookmark = await bookmarks.get(worktree.saveKey ?? worktree.id, bookmarkId);
+    const bookmark = await bookmarks.get(worktree.projectId, bookmarkId);
     // require one bookmark in the configured group
     if (bookmark === undefined) return reply.code(404).send({ error: 'bookmark unavailable' });
     // resume through the bookmark's own Adapter (absent kind = codex)
@@ -1195,7 +1208,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // fail before any destructive handoff
     if (!launch.canResumeConversation(worktree.id)) return reply.code(409).send({ error: 'Exact chat resume is not configured for this worktree.' });
     const selectionMutationGeneration = prompts.mutationGeneration();
-    const current = await discovery.dashboard(config.worktrees, true);
+    const current = await discovery.dashboard(true);
     const open = current.agents.filter(agent => agent.worktreeId === worktree.id);
     // avoid an ambiguous destructive handoff
     if (open.length > 1) return reply.code(409).send({ error: 'Close duplicate worktree agents before switching chats.' });
@@ -1240,7 +1253,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const kind = requestedKind(request);
     // reject an unknown kind before any handoff
     if (kind.invalid) return reply.code(400).send({ error: 'invalid agent kind' });
-    const before = new Set((await discovery.dashboard(config.worktrees)).agents.map(agent => agent.id));
+    const before = new Set((await discovery.dashboard()).agents.map(agent => agent.id));
     // require a successful launch handoff (refuses an unconfigured or unlaunchable kind)
     if (!await launch.launch(worktreeId, kind.kind)) return reply.code(409).send({ error: 'Could not start the worktree agent.' });
     sleepingWorktrees.delete(worktreeId);
@@ -1268,7 +1281,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (kind.invalid) return reply.code(400).send({ error: 'invalid agent kind' });
     // reject ordinary inactive worktrees
     if (configuredWorktree(worktreeId) === undefined || !sleepingWorktrees.has(worktreeId)) return reply.code(409).send({ error: 'worktree is not sleeping' });
-    const before = new Set((await discovery.dashboard(config.worktrees)).agents.map(agent => agent.id));
+    const before = new Set((await discovery.dashboard()).agents.map(agent => agent.id));
     // require a successful resume handoff
     if (!await launch.resume(worktreeId, kind.kind)) return reply.code(409).send({ error: 'Could not resume the worktree agent.' });
     const agent = await waitForAgent(before, worktreeId);
@@ -1291,7 +1304,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const kind = requestedKind(request);
     // reject an unknown kind before any handoff
     if (kind.invalid) return reply.code(400).send({ error: 'invalid agent kind' });
-    const before = new Set((await discovery.dashboard(config.worktrees)).agents.map(agent => agent.id));
+    const before = new Set((await discovery.dashboard()).agents.map(agent => agent.id));
     if (!await launch.launchHome(kind.kind)) return reply.code(409).send({ error: 'Could not start a new agent session.' });
     const agent = await waitForAgent(before);
     // report a true timeout

@@ -42,6 +42,16 @@ describe('review tour store', () => {
     expect(JSON.parse(await readFile(file, 'utf8'))).toEqual({});
   });
 
+  it('keys by the Worktree wire id, whose path carries `:` and `/`', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-review-tour-wire-'));
+    directories.push(directory);
+    const store = new ReviewTourStore(join(directory, 'reviews.json'));
+    const id = 'proj:/home/me/code/repo-feature';
+    // the old `[A-Za-z0-9_-]{1,80}` key rejected this and every real save silently failed
+    expect(await store.save(id, 'feature/one', tour)).toMatchObject({ worktreeId: id, branch: 'feature/one' });
+    expect(await store.current(id, 'feature/one')).toMatchObject({ branch: 'feature/one', tour: { title: tour.title } });
+  });
+
   it('dismisses a current cached review idempotently', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-review-tour-dismiss-'));
     directories.push(directory);

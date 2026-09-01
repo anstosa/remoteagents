@@ -1,49 +1,225 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applyListenOverrides, validateConfig } from '../src/config/schema.js';
-import { expandCommand } from '../src/launch/service.js';
-const dirs:string[]=[]; async function fixture(){const root=await mkdtemp(join(tmpdir(),'rac-'));dirs.push(root);const work=join(root,'work');await mkdir(work);return {root,work,input:{publicOrigin:'https://agents.example.com',worktrees:[{id:'a',path:work,command:'codex'}]}}} afterEach(async()=>{for(const dir of dirs.splice(0))await (await import('node:fs/promises')).rm(dir,{recursive:true,force:true})});
-describe('configuration safety',()=>{it('canonicalizes an allowed worktree and defaults new agents to the codex alias',async()=>{const {work,input}=await fixture();const config=await validateConfig(input);expect(config.worktrees[0]?.identity).toBe(work);expect(config.worktrees[0]?.saveKey).toBe('a');expect(config.listen.host).toBe('127.0.0.1');expect(config.newAgentCommand).toBe('codex');expect(config.name).toBe('Remote Agents');expect(config.remoteServers).toEqual([]);expect(config.integrations).toEqual({enabled:false,mcp:{readEnabled:true,writeEnabled:false,dangerousEnabled:false},realtime:{enabled:false,writeToolsEnabled:false},multiInstance:{enabled:false}});expect(config.worktrees[0]?.push).toEqual({label:'Commit/Push',prompt:'review, commit, and push'})});it('accepts a specific non-loopback listen address but rejects wildcards and non-IP hosts',async()=>{const {input}=await fixture();const config=await validateConfig({...input,listen:{host:'172.19.0.1',port:8787}});expect(config.listen).toEqual({host:'172.19.0.1',port:8787});const v6=await validateConfig({...input,listen:{host:'::1',port:8787}});expect(v6.listen.host).toBe('::1');await expect(validateConfig({...input,listen:{host:'0.0.0.0',port:8787}})).rejects.toThrow('wildcard');await expect(validateConfig({...input,listen:{host:'::',port:8787}})).rejects.toThrow('wildcard');await expect(validateConfig({...input,listen:{host:'localhost',port:8787}})).rejects.toThrow('IP address')});it('lets RAC_LISTEN_HOST and RAC_LISTEN_PORT override the listen block',async()=>{const {input}=await fixture();expect(applyListenOverrides(input,{})).toBe(input);const hostOnly=await validateConfig(applyListenOverrides(input,{RAC_LISTEN_HOST:'172.19.0.1'}));expect(hostOnly.listen).toEqual({host:'172.19.0.1',port:8787});const both=await validateConfig(applyListenOverrides({...input,listen:{host:'::1',port:9000}},{RAC_LISTEN_HOST:' 172.19.0.1 ',RAC_LISTEN_PORT:'8788'}));expect(both.listen).toEqual({host:'172.19.0.1',port:8788});const portOnly=await validateConfig(applyListenOverrides({...input,listen:{host:'::1',port:9000}},{RAC_LISTEN_PORT:'8788'}));expect(portOnly.listen).toEqual({host:'::1',port:8788});expect(()=>applyListenOverrides(input,{RAC_LISTEN_PORT:'abc'})).toThrow('integer');await expect(validateConfig(applyListenOverrides(input,{RAC_LISTEN_HOST:'0.0.0.0'}))).rejects.toThrow('wildcard')});it('accepts explicit integration feature gates',async()=>{const {input}=await fixture();const config=await validateConfig({...input,integrations:{enabled:true,mcp:{writeEnabled:true},realtime:{enabled:true,writeToolsEnabled:true},multiInstance:{enabled:true}}});expect(config.integrations).toMatchObject({enabled:true,mcp:{readEnabled:true,writeEnabled:true,dangerousEnabled:false},realtime:{enabled:true,writeToolsEnabled:true},multiInstance:{enabled:true}})});it('derives the tunnel URL from a configured local port and hostname',async()=>{const {work,input}=await fixture();const config=await validateConfig({...input,worktrees:[{id:'a',path:work,command:'codex',port:4041,hostname:'a.example.com'}]});expect(config.worktrees[0]?.projectUrl).toBe('https://a.example.com');expect(config.worktrees[0]?.projectPort).toBe(4041);await expect(validateConfig({...input,worktrees:[{id:'a',path:work,command:'codex',port:4041}]})).rejects.toThrow('both port and hostname')});it('accepts a configured push label and prompt',async()=>{const {work,input}=await fixture();const config=await validateConfig({...input,worktrees:[{id:'a',path:work,command:'codex',push:{label:'Finish and PR',prompt:'$finish'}}]});expect(config.worktrees[0]?.push).toEqual({label:'Finish and PR',prompt:'$finish'});await expect(validateConfig({...input,worktrees:[{id:'a',path:work,command:'codex',push:{label:'',prompt:'$finish'}}]})).rejects.toThrow()});it('accepts a shared save key for notes and bookmarks',async()=>{const {work,input}=await fixture();const config=await validateConfig({...input,worktrees:[{id:'a',path:work,command:'codex',saveKey:'potato'}]});expect(config.worktrees[0]?.saveKey).toBe('potato');await expect(validateConfig({...input,worktrees:[{id:'a',path:work,command:'codex',saveKey:'bad/key'}]})).rejects.toThrow()});it('accepts configured stack commands',async()=>{const {work,input}=await fixture();const config=await validateConfig({...input,worktrees:[{id:'a',path:work,command:'codex',commands:{status:'test -n running',start:'docker compose up -d',migrate:'docker compose up db_init'}}]});expect(config.worktrees[0]?.commands).toEqual({status:'test -n running',start:'docker compose up -d',migrate:'docker compose up db_init'})});it('accepts a per-worktree new task command with a task ID placeholder',async()=>{const {work,input}=await fixture();const config=await validateConfig({...input,worktrees:[{id:'a',path:work,command:'codex',newTask:'detach && new {taskId}'}]});expect(config.worktrees[0]?.newTask).toBe('detach && new {taskId}');await expect(validateConfig({...input,worktrees:[{id:'a',path:work,command:'codex',newTask:'new {unknown}'}]})).rejects.toThrow('unknown new task placeholder')});it('accepts an exact resume command with one thread placeholder',async()=>{const {work,input}=await fixture();const config=await validateConfig({...input,worktrees:[{id:'a',path:work,command:'codex',resumeCommand:'codex resume {threadId} -C .'}]});expect(config.worktrees[0]?.resumeCommand).toBe('codex resume {threadId} -C .');await expect(validateConfig({...input,worktrees:[{id:'a',path:work,command:'codex',resumeCommand:'codex resume --last'}]})).rejects.toThrow('threadId');await expect(validateConfig({...input,worktrees:[{id:'a',path:work,command:'codex',resumeCommand:'codex resume {threadId} {threadId}'}]})).rejects.toThrow('threadId')});it('accepts a per-worktree command and runs it after changing directories',async()=>{const {work,input}=await fixture();const config=await validateConfig({...input,worktrees:[{id:'a',path:work,command:'./scripts/agent'}]});const tree=config.worktrees[0]!;expect(tree.command).toBe('./scripts/agent');expect(expandCommand(tree.command!,tree)).toBe(`cd -- '${work}' && eval './scripts/agent'`);expect(expandCommand("alex 'prompt'",{identity:"/tmp/agent's work"})).toBe(`cd -- '/tmp/agent'\\''s work' && eval 'alex '\\''prompt'\\'''`)});it('rejects a non HTTPS origin',async()=>{const {input}=await fixture();await expect(validateConfig({...input,publicOrigin:'http://agents.example.com'})).rejects.toThrow('HTTPS')});it('rejects a worktree with no launch command and the removed launch template field',async()=>{const {work,input}=await fixture();await expect(validateConfig({...input,worktrees:[{id:'a',path:work}]})).rejects.toThrow('must define a command');await expect(validateConfig({...input,worktrees:[{id:'a',path:work,command:'codex',launch:{program:'/bin/echo',args:[]}}]})).rejects.toThrow(/[Uu]nrecognized/)});it('rejects duplicate canonical identities including symlinks',async()=>{const {root,work,input}=await fixture();const alias=join(root, 'alias');await symlink(work,alias);await expect(validateConfig({...input,worktrees:[{id:'a',path:work,command:'codex'},{id:'b',path:alias,command:'codex'}]})).rejects.toThrow('duplicate')});it('validates local identity and URL-only remote servers',async()=>{const {input}=await fixture();const config=await validateConfig({...input,name:'X1 Carbon',publicOrigin:'https://x1carbon.santosa.dev',remoteServers:[{url:'https://framework.santosa.dev'}]});expect(config.name).toBe('X1 Carbon');expect(config.publicOrigin.origin).toBe('https://x1carbon.santosa.dev');expect(config.remoteServers).toEqual([{url:new URL('https://framework.santosa.dev')}]);const migrated=await validateConfig({...input,remoteServers:[{name:'Ignored legacy name',icon:'heart',url:'https://framework.santosa.dev'}]});expect(migrated.remoteServers).toEqual([{url:new URL('https://framework.santosa.dev')}]);await expect(validateConfig({...input,remoteServers:[{url:'https://framework.santosa.dev'},{url:'https://framework.santosa.dev'}]})).rejects.toThrow('unique');await expect(validateConfig({...input,remoteServers:[{url:'http://framework.santosa.dev'}]})).rejects.toThrow('HTTPS')});
-  it('accepts an adapters block with an executable program and normalizes args and env',async()=>{const {input}=await fixture();const warnings:string[]=[];const config=await validateConfig({...input,worktrees:[],adapters:{codex:{program:process.execPath,args:['--model','o3'],env:{RAC_TEST:'1'}}}},{warn:m=>warnings.push(m)});expect(config.adapters?.codex).toEqual({program:process.execPath,args:['--model','o3'],env:{RAC_TEST:'1'},launchable:true});expect(warnings).toEqual([])});
-  it('disables a non-executable adapter program with a reason instead of refusing boot',async()=>{const {root,input}=await fixture();const fake=join(root,'not-exec');await writeFile(fake,'echo hi\n',{mode:0o644});const warnings:string[]=[];const config=await validateConfig({...input,worktrees:[],adapters:{codex:{program:fake}}},{warn:m=>warnings.push(m)});expect(config.adapters?.codex).toMatchObject({program:fake,launchable:false});expect(config.adapters?.codex?.unavailableReason).toContain('not an executable');expect(warnings.some(w=>w.includes('adapters.codex')&&w.includes('not an executable'))).toBe(true)});
-  it('treats a directory program as unavailable even though directories are executable',async()=>{const {root,input}=await fixture();const config=await validateConfig({...input,worktrees:[],adapters:{codex:{program:root}}},{});expect(config.adapters?.codex).toMatchObject({program:root,launchable:false});expect(config.adapters?.codex?.unavailableReason).toContain('not an executable')});
-  it('skips the executable probe when checkExecutables is false',async()=>{const {root,input}=await fixture();const fake=join(root,'missing-program');const config=await validateConfig({...input,worktrees:[],adapters:{codex:{program:fake}}},{checkExecutables:false});expect(config.adapters?.codex).toEqual({program:fake,args:[],env:{},launchable:true})});
-  it('requires an absolute adapter program and bounds args, env names and unknown keys',async()=>{const {input}=await fixture();await expect(validateConfig({...input,worktrees:[],adapters:{codex:{program:'codex'}}})).rejects.toThrow('absolute');await expect(validateConfig({...input,worktrees:[],adapters:{codex:{program:process.execPath,args:Array(65).fill('x')}}})).rejects.toThrow();await expect(validateConfig({...input,worktrees:[],adapters:{codex:{program:process.execPath,env:{'1BAD':'x'}}}})).rejects.toThrow();await expect(validateConfig({...input,worktrees:[],adapters:{codex:{program:process.execPath,extra:true}}})).rejects.toThrow(/[Uu]nrecognized/)});
-  it('lets adapters.codex retire the legacy agent keys and makes worktree command optional',async()=>{const {work,input}=await fixture();const warnings:string[]=[];const config=await validateConfig({...input,newAgentCommand:'codex',worktrees:[{id:'a',path:work,command:'codex',resumeCommand:'codex resume {threadId} -C .'}],adapters:{codex:{program:process.execPath}}},{warn:m=>warnings.push(m)});expect(config.adapters?.codex?.launchable).toBe(true);expect(warnings.some(w=>w.includes('newAgentCommand'))).toBe(true);expect(warnings.some(w=>w.includes('`command`'))).toBe(true);expect(warnings.some(w=>w.includes('resumeCommand'))).toBe(true);const noCommand=await validateConfig({...input,worktrees:[{id:'a',path:work}],adapters:{codex:{program:process.execPath}}});expect(noCommand.worktrees[0]?.id).toBe('a')});
-  it('treats an empty adapters block as an observe-only console and keeps the legacy default absent',async()=>{const {input}=await fixture();const empty=await validateConfig({...input,worktrees:[],adapters:{}});expect(empty.adapters).toEqual({});const legacy=await validateConfig({...input});expect(legacy.adapters).toBeUndefined()});});
+import { run } from '../src/tmux/command.js';
+
+const dirs: string[] = [];
+afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
+const git = async (cwd: string, ...args: string[]) => { const r = await run('/usr/bin/git', ['-C', cwd, ...args]); if (r.code !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`); return r.stdout.trim(); };
+
+// a temp git repository with one commit; the returned path is realpath'd so it equals discovery's
+async function gitRepo(name = 'work'): Promise<string> {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'rac-cfg-')));
+  dirs.push(root);
+  const repo = join(root, name);
+  await mkdir(repo);
+  await git(repo, 'init', '-q', '-b', 'main');
+  await git(repo, 'config', 'user.email', 'test@example.com');
+  await git(repo, 'config', 'user.name', 'Test');
+  await writeFile(join(repo, 'readme.md'), 'hi\n');
+  await git(repo, 'add', '.');
+  await git(repo, 'commit', '-q', '-m', 'initial');
+  return repo;
+}
+// a config over one Project at `path`, with a valid origin
+const withProject = async (path: string, extra: Record<string, unknown> = {}) => ({ publicOrigin: 'https://agents.example.com', projects: [{ id: 'a', path, ...extra }] });
+
+describe('project configuration', () => {
+  it('canonicalizes an available project and derives its identity from the common git dir', async () => {
+    const repo = await gitRepo();
+    const config = await validateConfig(await withProject(repo));
+    const project = config.projects[0]!;
+    expect(project.id).toBe('a');
+    expect(project.label).toBe('a');
+    expect(project.path).toBe(repo);
+    expect(project.identity).toBe(await realpath(join(repo, '.git')));
+    expect(project.available).toBe(true);
+    // default worktrees directory: a `<basename>-worktrees` sibling of the main worktree
+    expect(project.worktreesDirectory).toBe(join(repo, '..', 'work-worktrees'));
+    expect(project.push).toEqual({ label: 'Commit/Push', prompt: 'review, commit, and push' });
+  });
+
+  it('accepts a bare repository as an available Project with a sibling Worktrees directory', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'rac-cfg-bare-')));
+    dirs.push(root);
+    const bare = join(root, 'store.git'); await mkdir(bare); await git(bare, 'init', '--bare', '-q');
+    const config = await validateConfig(await withProject(bare));
+    expect(config.projects[0]?.available).toBe(true);
+    // with no Main worktree the default resolves against the bare repository itself
+    expect(config.projects[0]?.worktreesDirectory).toBe(join(root, 'store.git-worktrees'));
+  });
+
+  it('configures a Project through a linked worktree and shares one identity', async () => {
+    const repo = await gitRepo();
+    const linked = `${repo}-feature`;
+    dirs.push(linked);
+    await git(repo, 'worktree', 'add', '-q', '-b', 'feature', linked);
+    const config = await validateConfig(await withProject(linked));
+    // the common git dir is the same repository, so identity points at the main checkout's .git
+    expect(config.projects[0]?.identity).toBe(await realpath(join(repo, '.git')));
+    expect(config.projects[0]?.available).toBe(true);
+  });
+
+  it('loads a missing or non-git path as unavailable with a boot warning instead of failing', async () => {
+    const warnings: string[] = [];
+    const missing = await validateConfig(await withProject('/no/such/path'), { warn: m => warnings.push(m) });
+    expect(missing.projects[0]).toMatchObject({ available: false });
+    expect(missing.projects[0]?.unavailableReason).toContain('was not found');
+    expect(warnings.some(w => w.includes('projects.a') && w.includes('was not found'))).toBe(true);
+    const plainRoot = await realpath(await mkdtemp(join(tmpdir(), 'rac-plain-')));
+    dirs.push(plainRoot);
+    const plain = await validateConfig(await withProject(plainRoot));
+    expect(plain.projects[0]).toMatchObject({ available: false });
+    expect(plain.projects[0]?.unavailableReason).toContain('not a git repository');
+  });
+
+  it('refuses two Projects that resolve to the same repository, including through a symlink', async () => {
+    const repo = await gitRepo();
+    const alias = `${repo}-alias`;
+    dirs.push(alias);
+    await symlink(repo, alias);
+    await expect(validateConfig({ publicOrigin: 'https://agents.example.com', projects: [{ id: 'a', path: repo }, { id: 'b', path: alias }] })).rejects.toThrow('duplicate project identity');
+  });
+
+  it('refuses duplicate project ids and the reserved ids', async () => {
+    const repo = await gitRepo();
+    await expect(validateConfig({ publicOrigin: 'https://agents.example.com', projects: [{ id: 'a', path: repo }, { id: 'a', path: repo }] })).rejects.toThrow('duplicate project id');
+    await expect(validateConfig({ publicOrigin: 'https://agents.example.com', projects: [{ id: 'agent', path: repo }] })).rejects.toThrow();
+    await expect(validateConfig({ publicOrigin: 'https://agents.example.com', projects: [{ id: 'scratch', path: repo }] })).rejects.toThrow();
+  });
+
+  it('resolves worktreesDirectory: default, relative to the main worktree, and absolute as given', async () => {
+    const repo = await gitRepo();
+    const relative = await validateConfig(await withProject(repo, { worktreesDirectory: '../elsewhere' }));
+    expect(relative.projects[0]?.worktreesDirectory).toBe(join(repo, '..', 'elsewhere'));
+    const absolute = await validateConfig(await withProject(repo, { worktreesDirectory: '/var/checkouts' }));
+    expect(absolute.projects[0]?.worktreesDirectory).toBe('/var/checkouts');
+  });
+
+  it('derives the preview URL from a configured port and hostname, requiring both', async () => {
+    const repo = await gitRepo();
+    const config = await validateConfig(await withProject(repo, { port: 4041, hostname: 'a.example.com' }));
+    expect(config.projects[0]?.projectUrl).toBe('https://a.example.com');
+    expect(config.projects[0]?.projectPort).toBe(4041);
+    await expect(validateConfig(await withProject(repo, { port: 4041 }))).rejects.toThrow('both port and hostname');
+  });
+
+  it('accepts project-level push, stack commands, new task and hostPath', async () => {
+    const repo = await gitRepo();
+    const config = await validateConfig(await withProject(repo, { push: { label: 'Finish and PR', prompt: '$finish' }, commands: { start: 'up' }, newTask: 'detach && new {taskId}', hostPath: '/host/repo' }));
+    const project = config.projects[0]!;
+    expect(project.push).toEqual({ label: 'Finish and PR', prompt: '$finish' });
+    expect(project.commands).toEqual({ start: 'up' });
+    expect(project.newTask).toBe('detach && new {taskId}');
+    expect(project.hostPath).toBe('/host/repo');
+    await expect(validateConfig(await withProject(repo, { newTask: 'new {unknown}' }))).rejects.toThrow('unknown new task placeholder');
+  });
+
+  it('refuses a legacy worktrees[] configuration with a pointer to the migration', async () => {
+    await expect(validateConfig({ publicOrigin: 'https://agents.example.com', worktrees: [] })).rejects.toThrow(/migration/);
+    await expect(validateConfig({ publicOrigin: 'https://agents.example.com', worktrees: [{ id: 'a', path: '/x', command: 'codex' }] })).rejects.toThrow(/retired `worktrees\[\]`/);
+  });
+
+  it('rejects unknown project keys and the removed saveKey/command/launch fields', async () => {
+    const repo = await gitRepo();
+    await expect(validateConfig(await withProject(repo, { saveKey: 'x' }))).rejects.toThrow(/[Uu]nrecognized/);
+    await expect(validateConfig(await withProject(repo, { command: 'codex' }))).rejects.toThrow(/[Uu]nrecognized/);
+    await expect(validateConfig(await withProject(repo, { launch: { program: '/bin/echo' } }))).rejects.toThrow(/[Uu]nrecognized/);
+  });
+});
+
+describe('configuration safety', () => {
+  const scratch = { publicOrigin: 'https://agents.example.com', projects: [] as unknown[] };
+  it('defaults the listener, name and integrations for a scratch-only console', async () => {
+    const config = await validateConfig(scratch);
+    expect(config.projects).toEqual([]);
+    expect(config.listen.host).toBe('127.0.0.1');
+    expect(config.newAgentCommand).toBe('codex');
+    expect(config.name).toBe('Remote Agents');
+    expect(config.integrations).toEqual({ enabled: false, mcp: { readEnabled: true, writeEnabled: false, dangerousEnabled: false }, realtime: { enabled: false, writeToolsEnabled: false }, multiInstance: { enabled: false } });
+  });
+  it('accepts a specific non-loopback listen address but rejects wildcards and non-IP hosts', async () => {
+    expect((await validateConfig({ ...scratch, listen: { host: '172.19.0.1', port: 8787 } })).listen).toEqual({ host: '172.19.0.1', port: 8787 });
+    expect((await validateConfig({ ...scratch, listen: { host: '::1', port: 8787 } })).listen.host).toBe('::1');
+    await expect(validateConfig({ ...scratch, listen: { host: '0.0.0.0', port: 8787 } })).rejects.toThrow('wildcard');
+    await expect(validateConfig({ ...scratch, listen: { host: 'localhost', port: 8787 } })).rejects.toThrow('IP address');
+  });
+  it('lets RAC_LISTEN_HOST and RAC_LISTEN_PORT override the listen block', async () => {
+    expect(applyListenOverrides(scratch, {})).toBe(scratch);
+    expect((await validateConfig(applyListenOverrides(scratch, { RAC_LISTEN_HOST: '172.19.0.1' }))).listen).toEqual({ host: '172.19.0.1', port: 8787 });
+    const both = await validateConfig(applyListenOverrides({ ...scratch, listen: { host: '::1', port: 9000 } }, { RAC_LISTEN_HOST: ' 172.19.0.1 ', RAC_LISTEN_PORT: '8788' }));
+    expect(both.listen).toEqual({ host: '172.19.0.1', port: 8788 });
+    expect(() => applyListenOverrides(scratch, { RAC_LISTEN_PORT: 'abc' })).toThrow('integer');
+  });
+  it('accepts explicit integration feature gates', async () => {
+    const config = await validateConfig({ ...scratch, integrations: { enabled: true, mcp: { writeEnabled: true }, realtime: { enabled: true, writeToolsEnabled: true }, multiInstance: { enabled: true } } });
+    expect(config.integrations).toMatchObject({ enabled: true, mcp: { readEnabled: true, writeEnabled: true, dangerousEnabled: false }, realtime: { enabled: true, writeToolsEnabled: true }, multiInstance: { enabled: true } });
+  });
+  it('rejects a non HTTPS origin', async () => {
+    await expect(validateConfig({ ...scratch, publicOrigin: 'http://agents.example.com' })).rejects.toThrow('HTTPS');
+  });
+  it('validates local identity and URL-only remote servers', async () => {
+    const config = await validateConfig({ ...scratch, name: 'X1 Carbon', publicOrigin: 'https://x1carbon.santosa.dev', remoteServers: [{ url: 'https://framework.santosa.dev' }] });
+    expect(config.name).toBe('X1 Carbon');
+    expect(config.remoteServers).toEqual([{ url: new URL('https://framework.santosa.dev') }]);
+    await expect(validateConfig({ ...scratch, remoteServers: [{ url: 'https://framework.santosa.dev' }, { url: 'https://framework.santosa.dev' }] })).rejects.toThrow('unique');
+  });
+});
+
+describe('adapter configuration', () => {
+  const scratch = { publicOrigin: 'https://agents.example.com', projects: [] as unknown[] };
+  it('accepts an adapters block with an executable program and normalizes args and env', async () => {
+    const warnings: string[] = [];
+    const config = await validateConfig({ ...scratch, adapters: { codex: { program: process.execPath, args: ['--model', 'o3'], env: { RAC_TEST: '1' } } } }, { warn: m => warnings.push(m) });
+    expect(config.adapters?.codex).toEqual({ program: process.execPath, args: ['--model', 'o3'], env: { RAC_TEST: '1' }, launchable: true });
+    expect(warnings).toEqual([]);
+  });
+  it('disables a non-executable adapter program with a reason instead of refusing boot', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'rac-exec-')));
+    dirs.push(root);
+    const fake = join(root, 'not-exec');
+    await writeFile(fake, 'echo hi\n', { mode: 0o644 });
+    const warnings: string[] = [];
+    const config = await validateConfig({ ...scratch, adapters: { codex: { program: fake } } }, { warn: m => warnings.push(m) });
+    expect(config.adapters?.codex).toMatchObject({ program: fake, launchable: false });
+    expect(config.adapters?.codex?.unavailableReason).toContain('not an executable');
+  });
+  it('requires an absolute adapter program and bounds unknown keys', async () => {
+    await expect(validateConfig({ ...scratch, adapters: { codex: { program: 'codex' } } })).rejects.toThrow('absolute');
+    await expect(validateConfig({ ...scratch, adapters: { codex: { program: process.execPath, extra: true } } })).rejects.toThrow(/[Uu]nrecognized/);
+  });
+  it('treats an empty adapters block as observe-only and keeps the legacy default absent', async () => {
+    expect((await validateConfig({ ...scratch, adapters: {} })).adapters).toEqual({});
+    expect((await validateConfig(scratch)).adapters).toBeUndefined();
+  });
+});
 
 describe('claude adapter configuration', () => {
+  const scratch = { publicOrigin: 'https://agents.example.com', projects: [] as unknown[] };
   const saved: Record<string, string | undefined> = {};
   const setEnv = (key: string, value: string | undefined) => { if (!(key in saved)) saved[key] = process.env[key]; if (value === undefined) delete process.env[key]; else process.env[key] = value; };
   afterEach(() => { for (const key of Object.keys(saved)) { const value = saved[key]; if (value === undefined) delete process.env[key]; else process.env[key] = value; delete saved[key]; } });
 
   it('warns about and drops reserved Claude arguments the console composes itself', async () => {
-    const { input } = await fixture();
     const warnings: string[] = [];
-    const config = await validateConfig({ ...input, worktrees: [], adapters: { claude: { program: process.execPath, args: ['--model', 'opus', '--settings', '/tmp/x', '--continue', '-p'] } } }, { warn: m => warnings.push(m) });
-    // a reserved flag is dropped together with its attached value, so `/tmp/x` never
-    // survives as a stray launch positional; a value-less flag drops alone
+    const config = await validateConfig({ ...scratch, adapters: { claude: { program: process.execPath, args: ['--model', 'opus', '--settings', '/tmp/x', '--continue', '-p'] } } }, { warn: m => warnings.push(m) });
     expect(config.adapters?.claude?.args).toEqual(['--model', 'opus']);
     expect(warnings.some(w => w.includes('adapters.claude') && w.includes('--settings') && w.includes('--continue') && w.includes('-p'))).toBe(true);
   });
 
   it('leaves Claude unlaunchable under a bridge without RAC_HOST_REPOSITORY', async () => {
-    const { input } = await fixture();
     setEnv('RAC_HOST_TMUX_DIR', '/host/tmux'); setEnv('RAC_HOST_REPOSITORY', undefined);
-    const warnings: string[] = [];
-    const config = await validateConfig({ ...input, worktrees: [], adapters: { claude: { program: '/abs/claude' } } }, { warn: m => warnings.push(m) });
+    const config = await validateConfig({ ...scratch, adapters: { claude: { program: '/abs/claude' } } });
     expect(config.adapters?.claude).toMatchObject({ launchable: false });
     expect(config.adapters?.claude?.unavailableReason).toContain('RAC_HOST_REPOSITORY');
-    expect(warnings.some(w => w.includes('adapters.claude') && w.includes('RAC_HOST_REPOSITORY'))).toBe(true);
   });
 
   it('launches Claude under a bridge once RAC_HOST_REPOSITORY names the host checkout', async () => {
-    const { input } = await fixture();
     setEnv('RAC_HOST_TMUX_DIR', '/host/tmux'); setEnv('RAC_HOST_REPOSITORY', '/host/checkout');
-    const config = await validateConfig({ ...input, worktrees: [], adapters: { claude: { program: '/abs/claude' } } });
+    const config = await validateConfig({ ...scratch, adapters: { claude: { program: '/abs/claude' } } });
     expect(config.adapters?.claude).toMatchObject({ launchable: true });
-    expect(config.adapters?.claude?.unavailableReason).toBeUndefined();
   });
 });

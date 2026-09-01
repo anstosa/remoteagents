@@ -36,38 +36,40 @@ Open `http://127.0.0.1:8787`. The starter configuration intentionally has no
 worktrees. Use **New Agent** to launch a scratch agent inside the container.
 Loopback HTTP is local-only; configure canonical HTTPS before remote access.
 
-## Add container-managed worktrees
+## Add container-managed Projects
 
-The repository checkout is already mounted at `/workspace`. Add it or other
-bind-mounted projects to `config/remote-agent-console.docker.json`:
+The repository checkout is already mounted at `/workspace`. Declare it, or any
+other bind-mounted repository, as a Project in
+`config/remote-agent-console.docker.json`; its Worktrees are discovered from git
+inside the container:
 
 ```json
 {
-  "id": "remoteagents",
-  "path": "/workspace",
-  "command": "codex",
-  "resumeCommand": "codex resume {threadId} -C ."
+  "projects": [
+    { "id": "remoteagents", "label": "Remote Agent Console", "path": "/workspace" }
+  ]
 }
 ```
 
-For additional projects, copy `compose.override.example.yaml` to the ignored
+For additional Projects, copy `compose.override.example.yaml` to the ignored
 `compose.override.yaml`, remove the host-tmux settings if they are not needed,
-and add each project bind under `/worktrees`. The configuration `path` must
-match the container bind destination.
+and add each repository bind under `/worktrees`. A Project's `path` must match
+the container bind destination.
 
 ## Connect to the host tmux server
 
 Copy `compose.override.example.yaml` to `compose.override.yaml` when the console
 must discover and control Codex sessions already running on the host. The
 override adds the host process tree, tmux socket, tmux client, Codex home, and
-worktree mounts. For every host-backed worktree:
+worktree mounts. For every host-backed Project:
 
-- Set `path` to its container path.
-- Set `hostPath` to the corresponding absolute host path.
+- Set the Project's `path` to its container path.
+- Set `hostPath` to the corresponding absolute host path of the Main worktree.
 - Add a matching bind mount to `compose.override.yaml`.
-- For linked Git worktrees, mount the common Git directory at the same absolute
-  path referenced by the worktree's `.git` file.
-- Keep research-only worktrees read-only.
+- Discovered Linked worktrees must be mounted at the **same absolute path**
+  inside the container as on the host, and their common Git directory mounted at
+  the path referenced by each worktree's `.git` file.
+- Keep research-only checkouts read-only.
 
 The host bridge is controlled by environment variables rather than image
 assumptions:

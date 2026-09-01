@@ -41,7 +41,7 @@ async function fixture(): Promise<ResolvedWorkspace> {
   return {
     workspace: root,
     agent: { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: root, title: 'Ready' },
-    worktree: { id: 'cora', label: 'Cora', path: root, identity: root, available: true, pinned: false }
+    worktree: { id: 'cora', projectId: 'cora', label: 'Cora', path: root, identity: root, available: true, pinned: false, main: true, detached: false, locked: false }
   };
 }
 
@@ -78,11 +78,12 @@ describe('review snapshot capture', () => {
     const discovery = {
       // serve fast target metadata
       target: async () => ({ agent: raw.agent, socket: {} }),
+      worktreesNow: () => [raw.worktree],
       // serve enriched comparison metadata
-      dashboard: async () => ({ generation: 1, agents: [enriched], worktrees: [] })
+      dashboard: async () => ({ generation: 1, adapters: {}, agents: [enriched], projects: [] })
     };
 
-    const resolved = await resolveConfiguredWorkspace(discovery as never, [raw.worktree], raw.agent.id);
+    const resolved = await resolveConfiguredWorkspace(discovery as never, raw.agent.id);
 
     expect(resolved?.agent.gitPrStatus?.base).toBe('main');
     await expect(captureReviewSnapshot(resolved!, { scope: 'pr', includeTests: false, includeDocs: false })).resolves.toMatchObject({

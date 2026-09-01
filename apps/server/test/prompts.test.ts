@@ -13,14 +13,14 @@ const socket={fingerprint:'socket',path:'/tmp/sock',device:1,inode:1}; const age
 it('allows prompt attachments totaling 25 MiB', () => {
   expect(maxPromptAttachmentBytes).toBe(25 * 1024 * 1024);
 });
-describe('safe prompt flow',()=>{it('pastes through a generated buffer and submits an idle Codex composer with Enter',async()=>{const calls:string[][]=[];const discovery={target:async()=>({agent,socket})};const tmux={pastePrompt:async(_s:unknown,_p:string,b:string,p:string)=>{calls.push(['paste',b,p]);return true},sendKeys:async(_s:unknown,p:string,keys:string[])=>{calls.push([keys.join('+'),p]);return true}};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'hello; $(not-a-command)')).resolves.toBe(true);expect(calls[0]?.[0]).toBe('paste');expect(calls[0]?.[2]).toBe('hello; $(not-a-command) ');expect(calls.slice(1)).toEqual([['Enter','%1']]);expect(calls[0]?.[1]).toMatch(/^rac-/)});
+describe('safe prompt flow',()=>{it('pastes through a generated buffer and submits an idle Codex composer with Enter',async()=>{const calls:string[][]=[];const discovery={worktreesNow:()=>[],target:async()=>({agent,socket})};const tmux={pastePrompt:async(_s:unknown,_p:string,b:string,p:string)=>{calls.push(['paste',b,p]);return true},sendKeys:async(_s:unknown,p:string,keys:string[])=>{calls.push([keys.join('+'),p]);return true}};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'hello; $(not-a-command)')).resolves.toBe(true);expect(calls[0]?.[0]).toBe('paste');expect(calls[0]?.[2]).toBe('hello; $(not-a-command) ');expect(calls.slice(1)).toEqual([['Enter','%1']]);expect(calls[0]?.[1]).toMatch(/^rac-/)});
 
 it('uses the Adapter queue key if the pane becomes active while the prompt is pasted', async () => {
   const working = stated({ ...agent, title: '⠋ Working' });
   let targets = 0;
   const sent: string[][] = [];
   // expose the idle-to-working race across target revalidation
-  const discovery = { target: async () => ({ agent: targets++ === 0 ? agent : working, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: targets++ === 0 ? agent : working, socket }) };
   const tmux = {
     pastePrompt: async () => true,
     sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => { sent.push(keys); return true; }
@@ -36,7 +36,7 @@ it('stages attached files in a Git-ignored location and references each one in t
   execFileSync('/usr/bin/git', ['init', '--quiet', workspace]);
   const attachedAgent = { ...agent, workspace };
   const pasted: string[] = [];
-  const discovery = { target: async () => ({ agent: attachedAgent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: attachedAgent, socket }) };
   const tmux = { pastePrompt: async (_s: unknown, _p: string, _b: string, prompt: string) => { pasted.push(prompt); return true; }, sendKeys: async () => true };
   try {
     const service = new PromptService(discovery as never, tmux as never);
@@ -57,7 +57,7 @@ it('submits attachment-only prompts from a non-Git workspace', async () => {
   const attachment = { name: 'photo.jpg', data: Buffer.from('image data').toString('base64') };
   let pasted = '';
   let submitted = false;
-  const discovery = { target: async () => ({ agent: attachedAgent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: attachedAgent, socket }) };
   const tmux = {
     // retain the staged reference
     pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { pasted = prompt; return true; },
@@ -67,7 +67,7 @@ it('submits attachment-only prompts from a non-Git workspace', async () => {
     sendKeys: async () => { submitted = true; return true; }
   };
   try {
-    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue);
     await expect(service.submit(attachedAgent.id, '', [attachment])).resolves.toBe(true);
     expect(pasted).toMatch(/Attached files:\n@node_modules\/\.remote-agent-console\/attachments\/.+\/photo\.jpg /);
     const path = /@(node_modules\/[^\s]+)/u.exec(pasted)?.[1];
@@ -87,10 +87,11 @@ it('maps a discovered host worktree path to its mounted workspace before staging
   execFileSync('/usr/bin/git', ['init', '--quiet', workspace]);
   const discoveredAgent = { ...agent, workspace: '/host/worktree' };
   const pasted: string[] = [];
-  const discovery = { target: async () => ({ agent: discoveredAgent, socket }) };
+  const worktree = { id: 'p:/host/worktree', projectId: 'p', label: 'Worktree', path: workspace, identity: workspace, hostPath: '/host/worktree', available: true, pinned: true, main: true, detached: false, locked: false };
+  const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent: discoveredAgent, socket }) };
   const tmux = { pastePrompt: async (_s: unknown, _p: string, _b: string, prompt: string) => { pasted.push(prompt); return true; }, sendKeys: async () => true };
   try {
-    const service = new PromptService(discovery as never, tmux as never, [{ id: 'worktree', label: 'Worktree', path: workspace, identity: workspace, hostPath: '/host/worktree', available: true, pinned: false }]);
+    const service = new PromptService(discovery as never, tmux as never);
     await expect(service.submit(discoveredAgent.id, 'Read.', [{ name: 'notes.txt', data: Buffer.from('mounted').toString('base64') }])).resolves.toBe(true);
     const path = /@(node_modules\/[^\s]+)/.exec(pasted[0] ?? '')?.[1];
     await expect(readFile(join(workspace, path!), 'utf8')).resolves.toBe('mounted');
@@ -100,16 +101,16 @@ it('maps a discovered host worktree path to its mounted workspace before staging
 it('records successful submissions in the configured worktree history', async () => {
   const recorded: Array<[string, string]> = [];
   let submissions = 0;
-  const discovery = { target: async () => ({ agent, socket }) };
+  const worktree = { id: 'cora:/tmp', projectId: 'cora', label: 'Cora', path: '/tmp', identity: '/tmp', available: true, pinned: true, main: true, detached: false, locked: false };
+  const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }) };
   const tmux = { pastePrompt: async () => true, sendKeys: async () => ++submissions === 1 };
   const history = { record: async (scope: string, text: string) => { recorded.push([scope, text]); } };
-  const worktree = { id: 'cora', label: 'Cora', path: '/tmp', identity: '/tmp', available: true, pinned: false };
-  const service = new PromptService(discovery as never, tmux as never, [worktree], history as never);
+  const service = new PromptService(discovery as never, tmux as never, history as never);
 
   await expect(service.submit(agent.id, 'first prompt')).resolves.toBe(true);
   await expect(service.submit(agent.id, 'failed prompt')).resolves.toBe(false);
 
-  expect(recorded).toEqual([['worktree:cora', 'first prompt']]);
+  expect(recorded).toEqual([['cora:/tmp', 'first prompt']]);
 });
 
 it('isolates update advisor prompts from the configured repository queue', async () => {
@@ -123,11 +124,11 @@ it('isolates update advisor prompts from the configured repository queue', async
   const advisorPrompt = 'Review the pending update with enough additional instructions that the composer may clip the trailing content before submission';
   let advisorStarted = false;
   let captureCount = 0;
-  const discovery = { target: async (id: string) => ({ agent: id === advisorAgent.id ? stated({ ...advisorAgent, title: advisorStarted ? '⠋ Reviewing' : 'Ready' }) : normalAgent, socket }) };
+  const worktree = { id: 'remoteagents:/tmp', projectId: 'remoteagents', label: 'Remote Agents', path: '/tmp', identity: '/tmp', available: true, pinned: true, main: true, detached: false, locked: false };
+  const discovery = { worktreesNow: () => [worktree], target: async (id: string) => ({ agent: id === advisorAgent.id ? stated({ ...advisorAgent, title: advisorStarted ? '⠋ Reviewing' : 'Ready' }) : normalAgent, socket }) };
   const tmux = { pastePrompt: async (_socket: unknown, pane: string, _buffer: string, prompt: string) => { pasted.push([pane, prompt]); return true; }, capture: async () => ++captureCount < 3 ? 'Starting Codex' : pasted.length === 0 ? '› ' : `› [Pasted Content ${advisorPrompt.length + 1} chars]`, sendKeys: async (_socket: unknown, pane: string, keys: string[]) => { if (keys.includes('Enter')) { entered.push(pane); advisorStarted = entered.length >= 2; } else queued.push(pane); return true; } };
   const history = { record: async (scope: string, text: string) => ({ id: 'history-advisor', scope, text }) };
-  const worktree = { id: 'remoteagents', label: 'Remote Agents', path: '/tmp', identity: '/tmp', available: true, pinned: false };
-  const service = new PromptService(discovery as never, tmux as never, [worktree], history as never, queue);
+  const service = new PromptService(discovery as never, tmux as never, history as never, queue);
   try {
     const release = await service.acquireRestartLock(normalAgent.id);
     await expect(service.submitUpdateAdvisor(advisorAgent.id, '2'.repeat(40), advisorPrompt)).resolves.toBe(true);
@@ -136,7 +137,7 @@ it('isolates update advisor prompts from the configured repository queue', async
     expect(captureCount).toBeGreaterThanOrEqual(8);
     expect(entered).toEqual(['%2', '%2']);
     expect(queued).toEqual([]);
-    await expect(queue.list('worktree:remoteagents')).resolves.toEqual([]);
+    await expect(queue.list('remoteagents:/tmp')).resolves.toEqual([]);
     await expect(queue.list(`agent:${advisorAgent.id}`)).resolves.toEqual([]);
     release?.();
   } finally {
@@ -148,19 +149,19 @@ it('queues prompts that arrive while an idle restart holds the worktree lock', a
   const directory = await mkdtemp(join(tmpdir(), 'rac-restart-lock-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
   const pasted: string[] = [];
-  const discovery = { target: async () => ({ agent, socket }) };
+  const worktree = { id: 'cora:/tmp', projectId: 'cora', label: 'Cora', path: '/tmp', identity: '/tmp', available: true, pinned: true, main: true, detached: false, locked: false };
+  const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }) };
   const tmux = {
     pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt); return true; },
     sendKeys: async () => true
   };
-  const worktree = { id: 'cora', label: 'Cora', path: '/tmp', identity: '/tmp', available: true, pinned: false };
-  const service = new PromptService(discovery as never, tmux as never, [worktree], undefined, queue);
+  const service = new PromptService(discovery as never, tmux as never, undefined, queue);
   try {
     const release = await service.acquireRestartLock(agent.id);
     expect(release).toBeTypeOf('function');
     await expect(service.submit(agent.id, 'Run after restart')).resolves.toBe(true);
     expect(pasted).toEqual([]);
-    await expect(queue.list('worktree:cora')).resolves.toMatchObject([{ text: 'Run after restart' }]);
+    await expect(queue.list('cora:/tmp')).resolves.toMatchObject([{ text: 'Run after restart' }]);
     release?.();
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -170,9 +171,9 @@ it('queues prompts that arrive while an idle restart holds the worktree lock', a
 it('blocks restart acquisition while a submitted prompt awaits its working state', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-awaiting-start-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
-  const discovery = { target: async () => ({ agent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
   const tmux = { pastePrompt: async () => true, sendKeys: async () => true };
-  const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+  const service = new PromptService(discovery as never, tmux as never, undefined, queue);
   try {
     await expect(service.submit(agent.id, 'Start working')).resolves.toBe(true);
     await expect(service.acquireRestartLock(agent.id)).resolves.toBeUndefined();
@@ -185,10 +186,10 @@ it('releases a replacement-agent reservation after queuing behind a worktree res
   const directory = await mkdtemp(join(tmpdir(), 'rac-replacement-lock-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
   const replacement = { ...agent, id: 'socket:%2', paneId: '%2', sessionId: 'socket:$2' };
-  const discovery = { target: async (id: string) => ({ agent: id === replacement.id ? replacement : agent, socket }) };
+  const worktree = { id: 'cora:/tmp', projectId: 'cora', label: 'Cora', path: '/tmp', identity: '/tmp', available: true, pinned: true, main: true, detached: false, locked: false };
+  const discovery = { worktreesNow: () => [worktree], target: async (id: string) => ({ agent: id === replacement.id ? replacement : agent, socket }) };
   const tmux = { pastePrompt: async () => true, sendKeys: async () => true };
-  const worktree = { id: 'cora', label: 'Cora', path: '/tmp', identity: '/tmp', available: true, pinned: false };
-  const service = new PromptService(discovery as never, tmux as never, [worktree], undefined, queue);
+  const service = new PromptService(discovery as never, tmux as never, undefined, queue);
   try {
     const releaseOriginal = await service.acquireRestartLock(agent.id);
     await expect(service.submit(replacement.id, 'Run on replacement')).resolves.toBe(true);
@@ -202,7 +203,7 @@ it('releases a replacement-agent reservation after queuing behind a worktree res
 });
 
 it('rejects restart acquisition after the selected mutation generation changes', async () => {
-  const discovery = { target: async () => ({ agent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
   const service = new PromptService(discovery as never, {} as never);
   const selectedVersion = service.mutationVersion(agent.id);
   const releaseMutation = service.beginAgentMutation(agent.id);
@@ -212,7 +213,7 @@ it('rejects restart acquisition after the selected mutation generation changes',
 });
 
 it('rejects a completed mutation between dashboard selection and the agent snapshot', async () => {
-  const discovery = { target: async () => ({ agent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
   const service = new PromptService(discovery as never, {} as never);
   const selectionGeneration = service.mutationGeneration();
   const releaseMutation = service.beginAgentMutation(agent.id);
@@ -230,7 +231,7 @@ it('records the final assistant answer when the busy state is missed', async () 
   const completed: Array<[string, string, string]> = [];
   const historyEntry = { id: 'prompt-history-001', text: 'Summarize this', createdAt: '2026-08-07T01:00:00.000Z' };
   let submitted = false;
-  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
     pastePrompt: async () => true,
     capture: async () => submitted ? ['› Summarize this', '', '• Final summary', '', '  - One detail', '─ Worked for 2s', '', '› '].join('\n') : '› Summarize this ',
@@ -243,7 +244,7 @@ it('records the final assistant answer when the busy state is missed', async () 
       return { ...historyEntry, answer, answeredAt: '2026-08-07T01:00:02.000Z' };
     }
   };
-  const service = new PromptService(discovery as never, tmux as never, [], history as never, queue);
+  const service = new PromptService(discovery as never, tmux as never, history as never, queue);
   try {
     await expect(service.submit(agent.id, 'Summarize this')).resolves.toBe(true);
     await service.observe(mutableAgent);
@@ -261,6 +262,7 @@ it('records a recovered answer before dispatching queued work after a restart', 
   const historyEntry = { id: 'prompt-history-restart', text: 'Active prompt', createdAt: '2026-08-07T01:00:00.000Z' };
   let capture = ['› Active prompt', '', '• Answer still rendering'].join('\n');
   const discovery = {
+    worktreesNow: () => [],
     // resolve the stable pane
     target: async () => ({ agent: mutableAgent, socket })
   };
@@ -284,7 +286,7 @@ it('records a recovered answer before dispatching queued work after a restart', 
       return { ...historyEntry, answer, answeredAt: '2026-08-07T01:00:02.000Z' };
     }
   };
-  const service = new PromptService(discovery as never, tmux as never, [], history as never, queue);
+  const service = new PromptService(discovery as never, tmux as never, history as never, queue);
   try {
     await queue.enqueue('agent:socket:%1', 'Next prompt');
     await service.observe(mutableAgent);
@@ -311,7 +313,7 @@ it('retries answer recording after the agent first appears finished', async () =
   const historyEntry = { id: 'prompt-history-race', text: 'Explain the race', createdAt: '2026-08-07T01:00:00.000Z' };
   let submitted = false;
   let capture = ['› Explain the race', '', '• Still rendering', '', '› '].join('\n');
-  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
     pastePrompt: async () => true,
     capture: async () => submitted ? capture : '› Explain the race ',
@@ -325,7 +327,7 @@ it('retries answer recording after the agent first appears finished', async () =
       return { ...historyEntry, answer, answeredAt: '2026-08-07T01:00:02.000Z' };
     }
   };
-  const service = new PromptService(discovery as never, tmux as never, [], history as never, queue);
+  const service = new PromptService(discovery as never, tmux as never, history as never, queue);
   try {
     await expect(service.submit(agent.id, 'Explain the race')).resolves.toBe(true);
     mutableAgent.title = '⠋ Working';
@@ -351,7 +353,7 @@ it('records a completed answer after long output scrolls its prompt out of captu
   const historyEntry = { id: 'prompt-history-scrolled', text: 'Run the long task', createdAt: '2026-08-07T01:00:00.000Z' };
   let submitted = false;
   let capture = ['• Previous answer', '─ Worked for 1s', '', '› '].join('\n');
-  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
     pastePrompt: async () => true,
     capture: async () => submitted ? capture : ['• Previous answer', '─ Worked for 1s', '', '› Run the long task '].join('\n'),
@@ -365,7 +367,7 @@ it('records a completed answer after long output scrolls its prompt out of captu
       return { ...historyEntry, answer, answeredAt: '2026-08-07T01:00:02.000Z' };
     }
   };
-  const service = new PromptService(discovery as never, tmux as never, [], history as never, queue);
+  const service = new PromptService(discovery as never, tmux as never, history as never, queue);
   try {
     await expect(service.submit(agent.id, 'Run the long task')).resolves.toBe(true);
     mutableAgent.title = '⠋ Working';
@@ -389,7 +391,7 @@ it('records the newest unanswered completion after observing restarted work', as
   const completed: string[] = [];
   const historyEntry = { id: 'prompt-history-restarted-long', text: 'Run the restarted long task', createdAt: '2026-08-07T01:01:00.000Z' };
   const olderEntry = { id: 'prompt-history-older', text: 'Earlier task', createdAt: '2026-08-07T01:00:00.000Z', answer: 'Earlier answer', answeredAt: '2026-08-07T01:00:02.000Z' };
-  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
     capture: async () => ['• Recovered after restart', '', '─ Worked for 3m', ''].join('\n')
   };
@@ -401,7 +403,7 @@ it('records the newest unanswered completion after observing restarted work', as
       return { ...historyEntry, answer, answeredAt: '2026-08-07T01:04:00.000Z' };
     }
   };
-  const service = new PromptService(discovery as never, tmux as never, [], history as never);
+  const service = new PromptService(discovery as never, tmux as never, history as never);
 
   await service.observe(mutableAgent);
   mutableAgent.title = 'Ready';
@@ -415,7 +417,7 @@ it('does not assign a promptless completion to work not observed running', async
   const mutableAgent = stated({ ...agent, title: 'Ready' });
   const recorded: string[] = [];
   const pendingEntry = { id: 'prompt-history-pending', text: 'Pending task', createdAt: '2026-08-07T01:01:00.000Z' };
-  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
     capture: async () => ['• Previous answer', '', '─ Worked for 1m', ''].join('\n')
   };
@@ -427,7 +429,7 @@ it('does not assign a promptless completion to work not observed running', async
       return pendingEntry;
     }
   };
-  const service = new PromptService(discovery as never, tmux as never, [], history as never);
+  const service = new PromptService(discovery as never, tmux as never, history as never);
 
   await service.observe(mutableAgent);
 
@@ -440,7 +442,7 @@ it('does not duplicate a promptless completion onto an older unanswered entry', 
   const recorded: string[] = [];
   const newestEntry = { id: 'prompt-history-newest', text: 'Newest task', createdAt: '2026-08-07T01:01:00.000Z', answer: 'Newest answer', answeredAt: '2026-08-07T01:01:02.000Z' };
   const staleEntry = { id: 'prompt-history-stale', text: 'Stale task', createdAt: '2026-08-07T01:00:00.000Z' };
-  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
     capture: async () => ['• Newest answer', '', '─ Worked for 1m', ''].join('\n')
   };
@@ -452,7 +454,7 @@ it('does not duplicate a promptless completion onto an older unanswered entry', 
       return staleEntry;
     }
   };
-  const service = new PromptService(discovery as never, tmux as never, [], history as never);
+  const service = new PromptService(discovery as never, tmux as never, history as never);
 
   await service.observe(mutableAgent);
 
@@ -467,7 +469,7 @@ it('does not settle completion until the answer is stored in history', async () 
   const historyEntry = { id: 'prompt-history-storage', text: 'Persist this', createdAt: '2026-08-07T01:00:00.000Z' };
   let attempts = 0;
   let submitted = false;
-  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
     pastePrompt: async () => true,
     capture: async () => submitted ? ['› Persist this', '', '• Durable answer', '', '─ Worked for 1s', '', '› '].join('\n') : '› Persist this ',
@@ -481,7 +483,7 @@ it('does not settle completion until the answer is stored in history', async () 
       return attempts === 1 ? undefined : { ...historyEntry, answer, answeredAt: '2026-08-07T01:00:02.000Z' };
     }
   };
-  const service = new PromptService(discovery as never, tmux as never, [], history as never, queue);
+  const service = new PromptService(discovery as never, tmux as never, history as never, queue);
   try {
     await expect(service.submit(agent.id, 'Persist this')).resolves.toBe(true);
     mutableAgent.title = '⠋ Working';
@@ -497,7 +499,7 @@ it('does not settle completion until the answer is stored in history', async () 
 
 it('submits Codex shell-mode commands with Enter instead of queueing Tab', async () => {
   const calls: string[][] = [];
-  const discovery = { target: async () => ({ agent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
   const tmux = {
     pastePrompt: async (_socket: unknown, _pane: string, buffer: string, prompt: string) => { calls.push(['paste', buffer, prompt]); return true; },
     sendKeys: async (_socket: unknown, pane: string, keys: string[]) => { calls.push([keys.join('+'), pane]); return true; }
@@ -517,14 +519,14 @@ it('holds prompts while an agent works and dispatches them in the managed order'
   const calls: string[] = [];
   const recorded: string[] = [];
   let capture = ['› Active prompt', '', '• Working'].join('\n');
-  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
     pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { calls.push(prompt.trimEnd()); capture = `› ${prompt}`; return true; },
     capture: async () => capture,
     sendKeys: async () => { capture = '› '; return true; }
   };
   const history = { record: async (_scope: string, text: string) => { recorded.push(text); } };
-  const service = new PromptService(discovery as never, tmux as never, [], history as never, queue);
+  const service = new PromptService(discovery as never, tmux as never, history as never, queue);
   try {
     await expect(service.submit(agent.id, 'First managed prompt')).resolves.toBe(true);
     await expect(service.submit(agent.id, 'Second managed prompt')).resolves.toBe(true);
@@ -557,13 +559,13 @@ it('saves queued prompts instead of dispatching them after active work fails', a
   const mutableAgent = stated({ ...agent, title: '⠋ Working' });
   const pasted: string[] = [];
   let capture = ['› Earlier prompt', '', '• Earlier answer', '', '─ Worked for 1s', '', '› Active prompt', '', '• Working'].join('\n');
-  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
     pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt.trimEnd()); return true; },
     capture: async () => capture,
     sendKeys: async () => true
   };
-  const service = new PromptService(discovery as never, tmux as never, [], undefined, queue, saved);
+  const service = new PromptService(discovery as never, tmux as never, undefined, queue, saved);
   try {
     await expect(service.submit(agent.id, 'First queued prompt')).resolves.toBe(true);
     await expect(service.submit(agent.id, 'Second queued prompt', [{ name: 'context.txt', data: Buffer.from('context').toString('base64') }])).resolves.toBe(true);
@@ -588,7 +590,7 @@ it('keeps a failed queue transfer halted until every prompt is saved', async () 
   const pasted: string[] = [];
   const transferred: string[] = [];
   let saveSucceeds = false;
-  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
     pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt.trimEnd()); return true; },
     capture: async () => ['› Active prompt', '', '■ Cancelled', ''].join('\n'),
@@ -602,7 +604,7 @@ it('keeps a failed queue transfer halted until every prompt is saved', async () 
       return { id: 'saved-prompt-id', text };
     }
   };
-  const service = new PromptService(discovery as never, tmux as never, [], undefined, queue, saved as never);
+  const service = new PromptService(discovery as never, tmux as never, undefined, queue, saved as never);
   try {
     await expect(service.submit(agent.id, 'Queued after cancellation')).resolves.toBe(true);
     mutableAgent.title = 'Ready';
@@ -627,13 +629,13 @@ it('marks queued prompts for saving when cancellation succeeds', async () => {
   const saved = new SavedPromptService(join(directory, 'saved.json'));
   const mutableAgent = stated({ ...agent, title: '⠋ Working' });
   const interrupts: string[] = [];
-  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
     pastePrompt: async () => true,
     capture: async () => ['› Active prompt', '', '• Completed successfully', '', '─ Worked for 1s', ''].join('\n'),
     sendKeys: async (_socket: unknown, pane: string, keys: string[]) => { if (keys.includes('C-c')) interrupts.push(pane); return true; }
   };
-  const service = new PromptService(discovery as never, tmux as never, [], undefined, queue, saved);
+  const service = new PromptService(discovery as never, tmux as never, undefined, queue, saved);
   try {
     await expect(service.submit(agent.id, 'Do not run this')).resolves.toBe(true);
     await expect(service.cancel(agent.id)).resolves.toBe('ok');
@@ -660,6 +662,7 @@ it('dispatches a prompt queued behind a Codex turn that completes only in the ro
   let composer = '';
   let turnDone = false;
   const discovery = {
+    worktreesNow: () => [],
     target: async () => ({ agent: mutableAgent, socket }),
     paneProcessId: () => 4242
   };
@@ -681,7 +684,7 @@ it('dispatches a prompt queued behind a Codex turn that completes only in the ro
       since: async (baseline: { ordinal: number }) => turnDone ? { kind: 'completed' as const, ordinal: baseline.ordinal + 4, answer: 'The answer.' } : { kind: 'pending' as const }
     }
   };
-  const service = new PromptService(discovery as never, tmux as never, [], history as never, queue, saved, () => view);
+  const service = new PromptService(discovery as never, tmux as never, history as never, queue, saved, () => view);
   try {
     await expect(service.submit(agent.id, 'First prompt')).resolves.toBe(true);
     await expect(service.submit(agent.id, 'Second prompt')).resolves.toBe(true);
@@ -715,14 +718,14 @@ it('fails a rollout-tracked turn that the log records as aborted', async () => {
   const mutableAgent = stated({ ...agent, title: 'Ready' });
   const pasted: string[] = [];
   let composer = '';
-  const discovery = { target: async () => ({ agent: mutableAgent, socket }), paneProcessId: () => 4242 };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }), paneProcessId: () => 4242 };
   const tmux = {
     pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt.trimEnd()); composer = `› ${prompt} • Working`; return true; },
     capture: async () => composer || '› Ready',
     sendKeys: async () => { composer = ''; return true; }
   };
   const view = { ...codexAdapter, completion: { baseline: async () => ({ rollout: 'rollout.jsonl', ordinal: 0 }), since: async (baseline: { ordinal: number }) => ({ kind: 'aborted' as const, ordinal: baseline.ordinal + 3 }) } };
-  const service = new PromptService(discovery as never, tmux as never, [], undefined, queue, saved, () => view);
+  const service = new PromptService(discovery as never, tmux as never, undefined, queue, saved, () => view);
   try {
     await expect(service.submit(agent.id, 'First prompt')).resolves.toBe(true);
     await expect(service.submit(agent.id, 'Second prompt')).resolves.toBe(true);
@@ -751,7 +754,7 @@ it('keeps a dispatching prompt durable when delivery fails while another prompt 
   let pasteStarted: (() => void) | undefined;
   const started = new Promise<void>(resolve => { pasteStarted = resolve; });
   const blocked = new Promise<void>(resolve => { releasePaste = resolve; });
-  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
     pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => {
       pasted.push(prompt.trimEnd());
@@ -764,7 +767,7 @@ it('keeps a dispatching prompt durable when delivery fails while another prompt 
     capture: async () => capture,
     sendKeys: async () => { capture = '› '; return true; }
   };
-  const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+  const service = new PromptService(discovery as never, tmux as never, undefined, queue);
   try {
     await expect(service.submit(agent.id, 'First durable prompt')).resolves.toBe(true);
     await expect(service.submit(agent.id, 'Second durable prompt')).resolves.toBe(true);
@@ -814,7 +817,7 @@ it('submits a Turn-less prompt with Enter and completes on working then finished
   const events: unknown[][] = [];
   const recorded: Array<[string, string]> = [];
   const answered: string[] = [];
-  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = {
     pastePrompt: async (_s: unknown, _p: string, _b: string, prompt: string) => { events.push(['paste', prompt]); return true; },
     sendKeys: async (_s: unknown, _p: string, keys: string[]) => { events.push(keys); return true; },
@@ -823,7 +826,7 @@ it('submits a Turn-less prompt with Enter and completes on working then finished
     record: async (scope: string, text: string) => { recorded.push([scope, text]); return { id: 'turnless-entry', text, createdAt: '2026-08-29T00:00:00.000Z' }; },
     recordAnswer: async (_s: string, _e: string, answer: string) => { answered.push(answer); return undefined; },
   };
-  const service = new PromptService(discovery as never, tmux as never, [], history as never, queue, undefined, (() => turnlessReported) as never);
+  const service = new PromptService(discovery as never, tmux as never, history as never, queue, undefined, (() => turnlessReported) as never);
   try {
     await expect(service.submit(agent.id, 'Ship it')).resolves.toBe(true);
     // Enter, never Tab; the paste is the prompt verbatim
@@ -852,9 +855,9 @@ it('dispatches a queued Turn-less prompt only once the Agent is finished', async
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
   const mutableAgent = stated({ ...agent, title: '⠋ Working' });
   const dispatched: string[] = [];
-  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = { pastePrompt: async (_s: unknown, _p: string, _b: string, prompt: string) => { dispatched.push(prompt); return true; }, sendKeys: async () => true };
-  const service = new PromptService(discovery as never, tmux as never, [], undefined, queue, undefined, (() => turnlessReported) as never);
+  const service = new PromptService(discovery as never, tmux as never, undefined, queue, undefined, (() => turnlessReported) as never);
   try {
     await queue.enqueue('agent:socket:%1', 'Later prompt');
     // working: adopt the queue but never dispatch
@@ -872,9 +875,9 @@ it('fails a reported dispatch that never reports working within the window', asy
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
   const saved = new SavedPromptService(join(directory, 'saved.json'));
   const mutableAgent = stated({ ...agent, title: 'Ready' });   // the paste landed in a dialog: never works
-  const discovery = { target: async () => ({ agent: mutableAgent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = { pastePrompt: async () => true, sendKeys: async () => true };
-  const service = new PromptService(discovery as never, tmux as never, [], undefined, queue, saved, (() => turnlessReported) as never);
+  const service = new PromptService(discovery as never, tmux as never, undefined, queue, saved, (() => turnlessReported) as never);
   vi.useFakeTimers({ toFake: ['Date'] });
   try {
     const start = Date.now();
@@ -896,7 +899,7 @@ it('fails a reported dispatch that never reports working within the window', asy
 
 it('refuses to interrupt an already finished agent', async () => {
   const keys: string[] = [];
-  const discovery = { target: async () => ({ agent: stated({ ...agent, title: 'Ready' }), socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: stated({ ...agent, title: 'Ready' }), socket }) };
   const tmux = { sendKeys: async (_s: unknown, _p: string, sent: string[]) => { keys.push(...sent); return true; }, setReportedAttention: async () => true };
   const service = new PromptService(discovery as never, tmux as never);
   await expect(service.cancel(agent.id)).resolves.toBe('not-working');
@@ -906,12 +909,12 @@ it('refuses to interrupt an already finished agent', async () => {
 it('interrupts a reported Agent and writes finished on its pane', async () => {
   const keys: string[] = [];
   const attention: Array<[string, string]> = [];
-  const discovery = { target: async () => ({ agent: stated({ ...agent, title: '⠋ Working' }), socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: stated({ ...agent, title: '⠋ Working' }), socket }) };
   const tmux = {
     sendKeys: async (_s: unknown, _p: string, sent: string[]) => { keys.push(...sent); return true; },
     setReportedAttention: async (_s: unknown, pane: string, state: string) => { attention.push([pane, state]); return true; },
   };
-  const service = new PromptService(discovery as never, tmux as never, [], undefined, undefined, undefined, (() => turnlessReported) as never);
+  const service = new PromptService(discovery as never, tmux as never, undefined, undefined, undefined, (() => turnlessReported) as never);
   await expect(service.cancel(agent.id)).resolves.toBe('ok');
   expect(keys).toEqual(['Escape', 'C-c']);
   expect(attention).toEqual([['%1', 'finished']]);
@@ -921,7 +924,7 @@ it('confirms a numbered choice with the Adapter option-select keys on the discov
   const sent: string[][] = [];
   // the live pane shows the parsed numbered list; its id is re-derived here
   const capture = ['› pick', '', 'Which environment?', '', '1. Staging', '2. Production', '3. Cancel', '', '› '].join('\n');
-  const discovery = { target: async () => ({ agent, socket }) };
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
   const tmux = { capture: async () => capture, sendKeys: async (_s: unknown, pane: string, keys: string[]) => { sent.push([pane, ...keys]); return true; } };
   const service = new PromptService(discovery as never, tmux as never);
   const id = inlineQuestionId('Which environment?', ['Staging', 'Production', 'Cancel']);
@@ -932,4 +935,4 @@ it('confirms a numbered choice with the Adapter option-select keys on the discov
   await expect(service.answerQuestion(agent.id, 'a-stale-question-id000', 2)).resolves.toBe(false);
 });
 
-it('dismisses composer autocomplete before queuing a skill or plugin prompt',async()=>{const pasted:string[]=[];const discovery={target:async()=>({agent,socket})};const tmux={pastePrompt:async(_s:unknown,_p:string,_b:string,p:string)=>{pasted.push(p);return true},sendKeys:async()=>true};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'Use $my-plugin')).resolves.toBe(true);await expect(service.submit(agent.id,'/skill already resolved ')).resolves.toBe(true);expect(pasted).toEqual(['Use $my-plugin ','/skill already resolved '])});it('does not queue a stale target',async()=>{let count=0;const discovery={target:async()=>++count===1?{agent,socket}:undefined};const tmux={pastePrompt:async()=>true,sendKeys:async()=>true};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'synthetic')).resolves.toBe(false)});it('sends Ctrl-C only to the discovered agent pane',async()=>{const calls:string[][]=[];const discovery={target:async()=>({agent:stated({...agent,title:'⠋ Working'}),socket})};const tmux={sendKeys:async(_s:unknown,p:string,keys:string[])=>{if(keys.includes('C-c'))calls.push(['interrupt',p]);return true}};const service=new PromptService(discovery as never,tmux as never);await expect(service.cancel(agent.id)).resolves.toBe('ok');expect(calls).toEqual([['interrupt','%1']])});it('kills only the discovered pane when deleting an agent',async()=>{const calls:string[][]=[];const discovery={target:async()=>({agent,socket})};const tmux={close:async(_s:unknown,p:string)=>{calls.push(['close',p]);return true}};const service=new PromptService(discovery as never,tmux as never);await expect(service.close(agent.id)).resolves.toBe(true);expect(calls).toEqual([['close','%1']])})});
+it('dismisses composer autocomplete before queuing a skill or plugin prompt',async()=>{const pasted:string[]=[];const discovery={worktreesNow:()=>[],target:async()=>({agent,socket})};const tmux={pastePrompt:async(_s:unknown,_p:string,_b:string,p:string)=>{pasted.push(p);return true},sendKeys:async()=>true};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'Use $my-plugin')).resolves.toBe(true);await expect(service.submit(agent.id,'/skill already resolved ')).resolves.toBe(true);expect(pasted).toEqual(['Use $my-plugin ','/skill already resolved '])});it('does not queue a stale target',async()=>{let count=0;const discovery={worktreesNow:()=>[],target:async()=>++count===1?{agent,socket}:undefined};const tmux={pastePrompt:async()=>true,sendKeys:async()=>true};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'synthetic')).resolves.toBe(false)});it('sends Ctrl-C only to the discovered agent pane',async()=>{const calls:string[][]=[];const discovery={worktreesNow:()=>[],target:async()=>({agent:stated({...agent,title:'⠋ Working'}),socket})};const tmux={sendKeys:async(_s:unknown,p:string,keys:string[])=>{if(keys.includes('C-c'))calls.push(['interrupt',p]);return true}};const service=new PromptService(discovery as never,tmux as never);await expect(service.cancel(agent.id)).resolves.toBe('ok');expect(calls).toEqual([['interrupt','%1']])});it('kills only the discovered pane when deleting an agent',async()=>{const calls:string[][]=[];const discovery={worktreesNow:()=>[],target:async()=>({agent,socket})};const tmux={close:async(_s:unknown,p:string)=>{calls.push(['close',p]);return true}};const service=new PromptService(discovery as never,tmux as never);await expect(service.close(agent.id)).resolves.toBe(true);expect(calls).toEqual([['close','%1']])})});

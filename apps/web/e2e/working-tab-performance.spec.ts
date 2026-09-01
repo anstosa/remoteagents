@@ -13,7 +13,7 @@ test('uses one CSS label animation per working tab without per-letter DOM', asyn
           { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/delta', title: '⠙ Working in Delta', attention: 'working' },
           { id: 'agent-3', sessionId: 'socket:$3', workspace: '/worktrees/echo', title: '⠹ Working in Echo', attention: 'working' }
         ],
-        worktrees: []
+        projects: []
       }
     });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });

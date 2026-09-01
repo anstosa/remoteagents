@@ -6,14 +6,14 @@ import { TmuxAdapter } from '../tmux/adapter.js';
 import { failedTurnFromCapture, lastPromptFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from '../adapters/codex-turns.js';
 import { adapterFor } from '../adapters/registry.js';
 import type { Adapter, AgentKind, CompletionBaseline, CompletionEvent, SubmissionDraftState, SubmissionMode, TmuxKey } from '../adapters/types.js';
-import type { Agent, Worktree } from '../domain/models.js';
+import type { Agent } from '../domain/models.js';
 import { run } from '../tmux/command.js';
 import type { PromptHistoryService } from '../prompt-history/service.js';
 import type { SavedPromptService } from '../saved-prompts/service.js';
 import { agentAttentionState } from '../notifications.js';
 import { QueuedPromptService, type QueuedPromptSummary } from './queue.js';
 import { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentData, promptAttachmentName, validPrompt, validPromptAttachments, type PromptAttachment } from './validation.js';
-import { configuredWorktreeForWorkspace } from '../workspaces/resolver.js';
+import { configuredWorktreeForWorkspace, projectIdOf } from '../workspaces/resolver.js';
 import { isUpdateAdvisorLabel, updateAdvisorLabel, updateAdvisorPendingLabel } from '../update-advisor.js';
 import { isFullGitSha } from '../git/revision.js';
 export { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentBytes, validPromptAttachments, type PromptAttachment } from './validation.js';
@@ -63,7 +63,7 @@ export class PromptService {
   private readonly mutationVersions = new Map<string, number>();
   private lifecycleMutationVersion = 0;
 
-  constructor(private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly worktrees: Worktree[] = [], private readonly history?: PromptHistoryService, private readonly queued?: QueuedPromptService, private readonly saved?: SavedPromptService, private readonly resolveAdapter: (kind: AgentKind) => AdapterView | undefined = adapterFor) {}
+  constructor(private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly history?: PromptHistoryService, private readonly queued?: QueuedPromptService, private readonly saved?: SavedPromptService, private readonly resolveAdapter: (kind: AgentKind) => AdapterView | undefined = adapterFor) {}
 
   // submit or durably queue one prompt
   async submit(agentId: string, prompt: string, attachments: PromptAttachment[] = []): Promise<boolean> {
@@ -659,19 +659,23 @@ export class PromptService {
   }
 
   private workspaceFor(workspace: string): string {
-    return configuredWorktreeForWorkspace(this.worktrees, workspace)?.identity ?? workspace;
+    return configuredWorktreeForWorkspace(this.discovery.worktreesNow(), workspace)?.identity ?? workspace;
   }
 
+  // the Worktree-scoped key (queued prompts, history): the Worktree wire id
+  // `<projectId>:<realpath>`, or an `agent:<id>` scope for a Scratch or advisor pane
   private historyScope(agent: Pick<Agent, 'displayLabel' | 'workspace'>, agentId: string): string {
     // prevent advisor prompts and feedback from entering the repository queue
     if (isUpdateAdvisorLabel(agent.displayLabel)) return `agent:${agentId}`;
-    const worktree = configuredWorktreeForWorkspace(this.worktrees, agent.workspace);
-    return worktree === undefined ? `agent:${agentId}` : `worktree:${worktree.id}`;
+    const worktree = configuredWorktreeForWorkspace(this.discovery.worktreesNow(), agent.workspace);
+    return worktree === undefined ? `agent:${agentId}` : worktree.id;
   }
 
-  // map scratch queue scopes to saved prompt keys
+  // saved prompts are Project-scoped (shared across a Project's Worktrees, ADR 0003): a
+  // Worktree scope `<projectId>:<realpath>` collapses to `<projectId>`; a Scratch scope
+  // `agent:<id>` keeps its own agent key
   private savedScope(scope: string): string {
-    return scope.startsWith('agent:') ? scope.slice('agent:'.length) : scope;
+    return scope.startsWith('agent:') ? scope.slice('agent:'.length) : projectIdOf(scope);
   }
 
   // keep staged attachments outside Git status

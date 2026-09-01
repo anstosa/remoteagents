@@ -7,11 +7,11 @@ import { TmuxAdapter } from '../tmux/adapter.js';
 import { hostCommand, hostInteractiveShellPath, interactiveShellBootstrap, interactiveShellName, interactiveShellPath } from '../tmux/interactive-shell.js';
 import { startNamedReplacementSession, worktreeSessionName } from '../tmux/session-name.js';
 import { ProcSocketFinder, workspaceRoot, type SocketFinder } from '../discovery/service.js';
-import { worktreeHostRoot, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
+import { projectIdOf, worktreeHostRoot, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
 import { adapterCapabilities, adapterFor } from '../adapters/registry.js';
 import { renderAdapterFiles, type RenderedAdapterFiles } from '../adapters/files.js';
 import { agentKinds, type AgentKind, type LaunchInput, type LaunchMode } from '../adapters/types.js';
-import { resolveLaunchProfile, type LaunchResolution } from './resolution.js';
+import { resolveLaunchProfile, type LaunchResolution, type LaunchScope } from './resolution.js';
 import { WorktreeLaunchStore, scratchLaunchKey } from '../worktrees/store.js';
 import type { Pane, SocketRef, Worktree } from '../domain/models.js';
 import { updateAdvisorPendingLabel } from '../update-advisor.js';
@@ -60,7 +60,12 @@ export class LaunchService {
   private readonly localShell = interactiveShellPath();
   private readonly hostShell = hostInteractiveShellPath();
   private readonly hostShellName = interactiveShellName(this.hostShell);
-  constructor(private readonly config: ValidatedConfig, private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly panes: TmuxAdapter = new TmuxAdapter(), private readonly paneRoot: (path: string) => Promise<string> = workspaceRoot, private readonly worktreeStore: WorktreeLaunchStore = new WorktreeLaunchStore()) {}
+  constructor(private readonly config: ValidatedConfig, private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly panes: TmuxAdapter = new TmuxAdapter(), private readonly paneRoot: (path: string) => Promise<string> = workspaceRoot, private readonly worktreeStore: WorktreeLaunchStore = new WorktreeLaunchStore(), private readonly discoveredWorktrees: () => Worktree[] = () => []) {}
+
+  // one discovered Worktree by its wire id `<projectId>:<realpath>`
+  private worktreeById(worktreeId: string): Worktree | undefined {
+    return this.discoveredWorktrees().find(candidate => candidate.id === worktreeId);
+  }
 
   // the Codex binary the update advisor spawns (RAC_CODEX_BIN, else adapters.codex.program)
   codexProgram(): string | undefined {
@@ -99,9 +104,18 @@ export class LaunchService {
     if (requested !== undefined) return kinds.includes(requested) ? requested : undefined;
     // a single launchable kind is always the answer; skip the store read on the hot path
     if (kinds.length === 1) return kinds[0];
-    const remembered = await this.worktreeStore.launchProfile(scopeKey).catch(() => undefined);
-    const scope = scopeKey === scratchLaunchKey ? 'scratch' as const : 'worktree' as const;
-    return resolveLaunchProfile(kinds, [{ origin: scope, kind: remembered }], adapterCapabilities(this.config.adapters)).kind;
+    const remembered = await this.worktreeStore.launchProfiles().catch(() => ({} as Record<string, AgentKind | undefined>));
+    return resolveLaunchProfile(kinds, this.rememberedChain(scopeKey, remembered), adapterCapabilities(this.config.adapters)).kind;
+  }
+
+  // the remembered-kind precedence for one scope: a Worktree's own last-used kind, then
+  // its Project's (which seeds a fresh Worktree), then registry order; Scratch stands alone
+  private rememberedChain(key: string, remembered: Record<string, AgentKind | undefined>): Array<{ origin: LaunchScope; kind?: AgentKind }> {
+    if (key === scratchLaunchKey) return [{ origin: 'scratch', kind: remembered[key] }];
+    const projectId = projectIdOf(key);
+    // a bare `<projectId>` key resolves in the project scope; a worktree key falls back to it
+    if (projectId === key) return [{ origin: 'project', kind: remembered[key] }];
+    return [{ origin: 'worktree', kind: remembered[key] }, { origin: 'project', kind: remembered[projectId] }];
   }
 
   // The Launch profile resolution the dashboard publishes for each scope so the web
@@ -113,10 +127,7 @@ export class LaunchService {
     const capabilities = adapterCapabilities(this.config.adapters);
     const remembered = await this.worktreeStore.launchProfiles().catch(() => ({} as Record<string, AgentKind | undefined>));
     const resolutions = new Map<string, LaunchResolution>();
-    for (const key of new Set(scopeKeys)) {
-      const scope = key === scratchLaunchKey ? 'scratch' as const : 'worktree' as const;
-      resolutions.set(key, resolveLaunchProfile(launchable, [{ origin: scope, kind: remembered[key] }], capabilities));
-    }
+    for (const key of new Set(scopeKeys)) resolutions.set(key, resolveLaunchProfile(launchable, this.rememberedChain(key, remembered), capabilities));
     return resolutions;
   }
 
@@ -131,14 +142,11 @@ export class LaunchService {
     return configured === undefined ? legacy(spec.args) : composeLaunch(configured.program, spec.args, configured.args, spec.env, configured.env);
   }
 
-  // the inner command for a worktree launch: legacy honours an explicit resumeCommand
-  // override for exact resume, otherwise prepends the worktree's own command
+  // the inner command for a worktree launch; a Project has no per-checkout launch command,
+  // so a kind with no configured Adapter simply cannot launch (legacy returns undefined)
   private async worktreeCommand(worktree: Worktree, kind: AgentKind, input: LaunchRequest): Promise<string | undefined> {
     const files = await this.adapterFiles(kind);
-    return this.composeKindLaunch(kind, { mode: input.mode, ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }), cwd: worktree.identity, sandboxed: input.sandboxed, ...(files === undefined ? {} : { files }) }, adapterArgs => {
-      if (input.mode === 'resume' && input.conversationId !== undefined && worktree.resumeCommand !== undefined) return worktree.resumeCommand.replace('{threadId}', input.conversationId);
-      return worktree.command === undefined ? undefined : composeCommand(worktree.command, adapterArgs);
-    });
+    return this.composeKindLaunch(kind, { mode: input.mode, ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }), cwd: worktree.identity, sandboxed: input.sandboxed, ...(files === undefined ? {} : { files }) }, () => undefined);
   }
 
   // the inner command for a scratch launch; the legacy path launches newAgentCommand
@@ -149,7 +157,7 @@ export class LaunchService {
 
   // resolve the authenticated account home independently from the launch directory
   agentHome(): string {
-    const hostPath = this.config.worktrees.find(worktree => worktree.hostPath !== undefined)?.hostPath;
+    const hostPath = this.config.projects.find(project => project.hostPath !== undefined)?.hostPath;
     return hostPath === undefined ? process.env.HOME ?? '/' : dirname(hostPath);
   }
   private async existingPane(worktree: Worktree): Promise<{ socket: SocketRef; pane: Pane } | undefined> {
@@ -252,15 +260,16 @@ export class LaunchService {
   // expose exact-resume support before destructive lifecycle work: a configured
   // adapter resumes through the Adapter; the legacy path needs a command or template
   canResumeConversation(worktreeId: string): boolean {
-    const worktree = this.config.worktrees.find(candidate => candidate.id === worktreeId);
+    const worktree = this.worktreeById(worktreeId);
     if (worktree === undefined) return false;
-    if (this.config.adapters !== undefined) return this.launchableKinds().length > 0;
-    return worktree.command !== undefined || worktree.resumeCommand !== undefined;
+    // a configured Adapter resumes through the Adapter; the legacy path had a per-worktree
+    // command or template, which Projects retired, so only a configured Adapter can resume
+    return this.config.adapters !== undefined && this.launchableKinds().length > 0;
   }
 
   // start one worktree in the requested mode, composing its command from the Adapter
   private async launchWorktree(worktreeId: string, input: { mode: LaunchMode; conversationId?: string; sandboxed?: boolean; kind?: AgentKind }): Promise<boolean> {
-    const worktree = this.config.worktrees.find(candidate => candidate.id === worktreeId);
+    const worktree = this.worktreeById(worktreeId);
     // serialize each worktree launch
     if (!worktree || this.pending.has(worktreeId)) return false;
     this.pending.add(worktreeId);
@@ -274,8 +283,12 @@ export class LaunchService {
       // a worktree with no launch command (and no override) cannot start
       if (command === undefined) return false;
       const launched = await this.dispatchWorktreeLaunch(worktree, command, id, sandboxed);
-      // record the kind so it resolves first next time; storage failure never fails a live launch
-      if (launched) await this.worktreeStore.rememberLaunchProfile(worktreeId, kind).catch(() => {});
+      // record the kind so it resolves first next time — for this Worktree and for its
+      // Project (which seeds a fresh Worktree); storage failure never fails a live launch
+      if (launched) {
+        await this.worktreeStore.rememberLaunchProfile(worktreeId, kind).catch(() => {});
+        await this.worktreeStore.rememberLaunchProfile(worktree.projectId, kind).catch(() => {});
+      }
       return launched;
     } finally {
       this.pending.delete(worktreeId);

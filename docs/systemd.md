@@ -16,7 +16,7 @@ pnpm build
 
 Copy `.env.example` to the ignored `.env`, and copy
 `config/remote-agent-console.example.json` to an ignored, host-specific path.
-Set `RAC_CONFIG` to that path and use absolute paths for every worktree.
+Set `RAC_CONFIG` to that path and use absolute paths for every Project.
 
 The listener defaults to `127.0.0.1:8787` from the config file. To bind a
 different address without editing the config, set `RAC_LISTEN_HOST` and/or

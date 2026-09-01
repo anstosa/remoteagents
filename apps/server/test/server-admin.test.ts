@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ValidatedConfig } from '../src/config/schema.js';
 import { ServerAdminService } from '../src/server-admin/service.js';
 
-const config: ValidatedConfig = { name: 'Framework', remoteServers: [], listen: { host: '127.0.0.1', port: 8787 }, publicOrigin: new URL('https://framework.example.com'), trustedProxyIps: new Set(['127.0.0.1']), pollIntervalMs: 500, newAgentCommand: 'codex', worktrees: [] };
+const config: ValidatedConfig = { name: 'Framework', remoteServers: [], listen: { host: '127.0.0.1', port: 8787 }, publicOrigin: new URL('https://framework.example.com'), trustedProxyIps: new Set(['127.0.0.1']), pollIntervalMs: 500, newAgentCommand: 'codex', projects: [] };
 const baseSha = '1'.repeat(40);
 const targetSha = '2'.repeat(40);
 
@@ -20,11 +20,11 @@ describe('server administration', () => {
   it('renames the persisted server without changing other configuration', async () => {
     root = await mkdtemp(join(tmpdir(), 'rac-server-admin-'));
     const configPath = join(root, 'config.json');
-    await writeFile(configPath, JSON.stringify({ name: 'Framework', publicOrigin: 'https://framework.example.com', worktrees: [{ id: 'remoteagents' }] }));
+    await writeFile(configPath, JSON.stringify({ name: 'Framework', publicOrigin: 'https://framework.example.com', projects: [{ id: 'remoteagents' }] }));
     const service = new ServerAdminService(config, { configWritePath: configPath, statusDirectory: root });
 
     expect(await service.renameServer('  Garage Server  ')).toBe('Garage Server');
-    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ name: 'Garage Server', publicOrigin: 'https://framework.example.com', worktrees: [{ id: 'remoteagents' }] });
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ name: 'Garage Server', publicOrigin: 'https://framework.example.com', projects: [{ id: 'remoteagents' }] });
     expect(await service.renameServer('   ')).toBeUndefined();
   });
 

@@ -33,7 +33,7 @@ export const agentNotificationTag = (agent: Pick<Agent, 'id' | 'worktreeId'>) =>
 
 export function agentNotification(previous: AgentAttentionState | undefined, current: AgentAttentionState, agent: Agent): AgentNotification | undefined {
   if (previous === undefined || previous === current) return undefined;
-  const label = agent.worktreeLabel ?? agent.displayLabel ?? agent.title;
+  const label = agent.displayLabel ?? agent.title;
   const shared = { tag: agentNotificationTag(agent), url: `/#agent=${encodeURIComponent(agent.id)}`, ...(agent.worktreeId === undefined ? {} : { worktreeId: agent.worktreeId }) };
   if (current === 'question') {
     return {

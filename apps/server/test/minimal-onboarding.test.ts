@@ -5,10 +5,10 @@ import { buildApp } from '../src/app.js';
 import { validateConfig } from '../src/config/schema.js';
 
 describe('minimal onboarding', () => {
-  it('accepts an omitted worktree list for scratch-only loopback use', async () => {
+  it('accepts an omitted project list for scratch-only loopback use', async () => {
     const config = await validateConfig({ publicOrigin: 'http://127.0.0.1:8787' });
 
-    expect(config.worktrees).toEqual([]);
+    expect(config.projects).toEqual([]);
     expect(config.publicOrigin.origin).toBe('http://127.0.0.1:8787');
     await expect(validateConfig({ publicOrigin: 'http://agents.example.com' })).rejects.toThrow('loopback HTTP');
   });

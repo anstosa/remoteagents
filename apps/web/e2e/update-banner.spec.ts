@@ -31,7 +31,7 @@ test('keeps the embedded update advisor out of the main agent tabs', async ({ pa
     // restore one controlling session
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     // expose one normal agent beside one recovered update advisor
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-cora', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready', queuedPromptCount: 0 }, { id: 'update-advisor', sessionId: 'socket:$2', workspace: '/workspace', displayLabel: 'Update Advisor v4 3333333', title: 'Ready', queuedPromptCount: 0 }], worktrees: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-cora', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready', queuedPromptCount: 0 }, { id: 'update-advisor', sessionId: 'socket:$2', workspace: '/workspace', displayLabel: 'Update Advisor v4 3333333', title: 'Ready', queuedPromptCount: 0 }], projects: [] } });
     // keep the host repository current
     if (url.pathname === '/api/server/update-available') return route.fulfill({ json: { available: false } });
     // authorize the visible agent output
@@ -63,7 +63,7 @@ test('reloads a stale client instead of restarting the server', async ({ page })
     // restore one controlling session
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     // render the empty console
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [], worktrees: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [], projects: [] } });
     // report a newer browser bundle
     if (url.pathname === '/api/ui-version') return route.fulfill({ json: { version: '/assets/index-new.js' } });
     // keep the host repository current
@@ -102,7 +102,7 @@ test('opens the commit review before starting and retains update failures in the
     // restore one controlling session
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     // render one stable agent tab
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready' }], worktrees: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready' }], projects: [] } });
     // report remote commits on main
     if (url.pathname === '/api/server/update-available') return route.fulfill({ json: { available: true } });
     // preview one exact fast-forward update
@@ -219,7 +219,7 @@ test('opens an advisor for flagged update paths before enabling Update', async (
     // restore one controlling session
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     // reveal the dedicated advisor after launch
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: advisorLaunched ? 2 : 1, agents: advisorLaunched ? [{ id: 'update-advisor', sessionId: 'socket:$2', workspace: '/workspace', displayLabel: `Update Advisor v4 ${targetSha.slice(0, 7)}`, title: 'Ready', queuedPromptCount: 0 }] : [], worktrees: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: advisorLaunched ? 2 : 1, agents: advisorLaunched ? [{ id: 'update-advisor', sessionId: 'socket:$2', workspace: '/workspace', displayLabel: `Update Advisor v4 ${targetSha.slice(0, 7)}`, title: 'Ready', queuedPromptCount: 0 }] : [], projects: [] } });
     // report remote commits on main
     if (url.pathname === '/api/server/update-available') return route.fulfill({ json: { available: true } });
     // preview one flagged configuration change
@@ -337,7 +337,7 @@ test('reopens a durable rebuild retry after a post-merge failure', async ({ page
     // restore one controlling session
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     // render the empty console
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [], worktrees: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [], projects: [] } });
     // preserve the update chip for one failed rebuild
     if (url.pathname === '/api/server/update-available') return route.fulfill({ json: { available: true } });
     // expose the durable current-target retry

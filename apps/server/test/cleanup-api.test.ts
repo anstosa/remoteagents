@@ -21,7 +21,7 @@ describe('cleanup API', () => {
         return pending;
       }
     };
-    const discovery = { dashboard: async () => ({ generation: 1, agents: [], worktrees: [] }) };
+    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: 1, adapters: {}, agents: [], projects: [] }) };
     app = await buildApp(config, {
       auth: await testAuthService(),
       cleanup: cleanup as never,

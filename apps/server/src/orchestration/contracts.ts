@@ -29,9 +29,8 @@ export type AgentStatusV1 = {
   id: string;
   title: string;
   label: string;
+  projectId?: string;
   worktreeId?: string;
-  worktreeLabel?: string;
-  worktreeOrder?: number;
   branch?: string;
   gitStatus?: GitStatusSummary;
   gitPrStatus?: GitComparisonSummary;
