@@ -36,12 +36,20 @@ export function composeCommand(program: string, args: string[]): string {
 
 // Compose a configured Adapter launch: [program, …adapter args, …operator args]
 // with the Adapter's environment overlaid by the operator's, rendered as a
-// shell-quoted assignment prefix. Everything is quoted, so nothing expands.
-export function composeLaunch(program: string, adapterArgs: string[], operatorArgs: string[], adapterEnv: Record<string, string> = {}, operatorEnv: Record<string, string> = {}): string {
+// shell-quoted assignment prefix. The program, args, and env are all quoted, so
+// nothing in them expands. A configured `setup` command is the one deliberately
+// raw part — operator-trust shell (like the legacy `command`) — run in the
+// launched pane before the program, in the launch cwd. It is wrapped in its own
+// `eval '<setup>'` so it is a single command whose exit status gates the program
+// through `&&`: a non-zero setup stops the agent from ever starting, and a
+// compound setup (`a || b`, `a; b`, a multi-line command) cannot re-associate the
+// `&&` and silently launch or skip the program.
+export function composeLaunch(program: string, adapterArgs: string[], operatorArgs: string[], adapterEnv: Record<string, string> = {}, operatorEnv: Record<string, string> = {}, setup?: string): string {
   const env = { ...adapterEnv, ...operatorEnv };
   const prefix = Object.entries(env).map(([name, value]) => `${name}=${shellQuote(value)}`).join(' ');
   const command = composeCommand(shellQuote(program), [...adapterArgs, ...operatorArgs]);
-  return prefix === '' ? command : `${prefix} ${command}`;
+  const launch = prefix === '' ? command : `${prefix} ${command}`;
+  return setup === undefined ? launch : `eval ${shellQuote(setup)} && ${launch}`;
 }
 
 // one worktree launch request: which conversation (if any) and whether to confine it
@@ -139,7 +147,7 @@ export class LaunchService {
     if (adapter === undefined) return undefined;
     const spec = adapter.launch(input);
     const configured = this.config.adapters?.[kind];
-    return configured === undefined ? legacy(spec.args) : composeLaunch(configured.program, spec.args, configured.args, spec.env, configured.env);
+    return configured === undefined ? legacy(spec.args) : composeLaunch(configured.program, spec.args, configured.args, spec.env, configured.env, configured.setup);
   }
 
   // the inner command for a worktree launch; a Project has no per-checkout launch command,
@@ -224,7 +232,11 @@ export class LaunchService {
     const program = this.codexProgram();
     // report unavailable when no Codex binary is configured
     if (program === undefined) return false;
-    const command = composeLaunch(program, updateAdvisorArgs, []);
+    // the advisor launches the codex kind, so it gets the same pre-launch repair —
+    // but only when its program is the configured one (RAC_CODEX_BIN may override
+    // it with a different binary the setup was never configured alongside)
+    const configured = this.config.adapters?.codex;
+    const command = composeLaunch(program, updateAdvisorArgs, [], {}, {}, program === configured?.program ? configured.setup : undefined);
     return await this.launchScratch(repository, updateAdvisorPendingLabel(targetSha), command, this.agentHome());
   }
 

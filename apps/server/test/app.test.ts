@@ -570,6 +570,23 @@ describe('configured worktree deactivation', () => {
     } finally { await deactivateApp.close(); }
   }, 15_000);
 
+  it('runs the configured adapter teardown when the console stops an agent', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
+    const shell: string[] = [];
+    // the real buildApp wiring (`kind => config.adapters?.[kind]?.teardown`) must reach the tmux layer
+    const teardownConfig = { ...config, adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true, teardown: 'rm -f .omx/state/session.json' } } };
+    const teardownApp = await buildApp(teardownConfig, { auth: new AuthService(hash, Buffer.alloc(32, 8).toString('base64url')), discovery: { worktreesNow: () => [worktree], target: async (id: string) => id === agent.id ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined } as never, tmux: { close: async () => true, runShell: async (_socket: unknown, command: string) => { shell.push(command); return true; } } as never });
+    try {
+      const boot = await teardownApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await teardownApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const response = await teardownApp.inject({ method: 'POST', url: '/api/agents/agent-1/deactivate', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken } });
+      expect(response.statusCode).toBe(204);
+      expect(shell).toEqual(["cd -- '/worktrees/cora' && eval 'rm -f .omx/state/session.json'"]);
+    } finally { await teardownApp.close(); }
+  }, 15_000);
+
   it('sleeps, wakes, and turns off a retained worktree tab', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false };

@@ -105,7 +105,10 @@ submit a prompt, and find its conversations, while the console performs every
 side effect through its single tmux and `/proc` layer. Each agent CLI is
 configured once under [`adapters`](docs/setup.md#adapters); the console composes
 each launch as `[program, …adapter.launch(input).args, …operator args]` with the
-operator's environment and runs it through the operator's interactive shell. See
+operator's environment and runs it through the operator's interactive shell. An
+entry may also carry `setup`/`teardown` lifecycle commands, run before each
+launch (aborting it on failure) and best-effort after each console-driven
+stop. See
 [ADR 0002](docs/adr/0002-adapters-describe-the-console-acts.md) for why adapters
 describe and the console acts; the [`docs/adr/`](docs/adr) directory records the
 other architecture decisions.

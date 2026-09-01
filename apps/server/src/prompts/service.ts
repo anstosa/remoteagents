@@ -13,6 +13,7 @@ import type { SavedPromptService } from '../saved-prompts/service.js';
 import { agentAttentionState } from '../notifications.js';
 import { QueuedPromptService, type QueuedPromptSummary } from './queue.js';
 import { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentData, promptAttachmentName, validPrompt, validPromptAttachments, type PromptAttachment } from './validation.js';
+import { expandCommand } from '../launch/service.js';
 import { configuredWorktreeForWorkspace, projectIdOf } from '../workspaces/resolver.js';
 import { isUpdateAdvisorLabel, updateAdvisorLabel, updateAdvisorPendingLabel } from '../update-advisor.js';
 import { isFullGitSha } from '../git/revision.js';
@@ -63,7 +64,7 @@ export class PromptService {
   private readonly mutationVersions = new Map<string, number>();
   private lifecycleMutationVersion = 0;
 
-  constructor(private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly history?: PromptHistoryService, private readonly queued?: QueuedPromptService, private readonly saved?: SavedPromptService, private readonly resolveAdapter: (kind: AgentKind) => AdapterView | undefined = adapterFor) {}
+  constructor(private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly history?: PromptHistoryService, private readonly queued?: QueuedPromptService, private readonly saved?: SavedPromptService, private readonly resolveAdapter: (kind: AgentKind) => AdapterView | undefined = adapterFor, private readonly teardownFor: (kind: AgentKind) => string | undefined = () => undefined) {}
 
   // submit or durably queue one prompt
   async submit(agentId: string, prompt: string, attachments: PromptAttachment[] = []): Promise<boolean> {
@@ -775,5 +776,20 @@ export class PromptService {
     if (this.queued !== undefined) this.phases.set(this.historyScope(target.agent, agentId), { state: 'halted', changedAt: Date.now() });
     return 'ok';
   }
-  async close(agentId: string): Promise<boolean> { const target = await this.discovery.target(agentId); return target !== undefined && this.tmux.close(target.socket, target.agent.paneId); }
+  // stop one Agent by killing its pane; a kind with a configured teardown command
+  // then gets a best-effort post-stop cleanup in the stopped agent's workspace
+  // (never on cleanup or new-task pane kills, which bypass this path)
+  async close(agentId: string): Promise<boolean> {
+    const target = await this.discovery.target(agentId);
+    if (target === undefined || !await this.tmux.close(target.socket, target.agent.paneId)) return false;
+    const teardown = this.teardownFor(target.agent.kind);
+    if (teardown !== undefined) {
+      const done = await this.tmux.runShell(target.socket, expandCommand(teardown, { identity: target.agent.workspace })).catch(() => false);
+      // a failed teardown never blocks the stop; the setup command is the safety net.
+      // the workspace is an agent-controlled path (its cwd), so JSON-encode it — a
+      // directory name may hold newlines or control bytes that would forge log lines
+      if (!done) console.error(`[prompts] adapters.${target.agent.kind} teardown failed in ${JSON.stringify(target.agent.workspace)}`);
+    }
+    return true;
+  }
 }

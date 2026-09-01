@@ -54,7 +54,9 @@ RAC_INTERACTIVE_SHELL=/usr/bin/bash
 
 The agent programs come from the config file's `adapters` block (see
 [Adapters](setup.md#adapters)); use absolute paths and update them when a CLI is
-reinstalled elsewhere. `RAC_CODEX_BIN` selects the Codex executable the review
+reinstalled elsewhere. Host-specific lifecycle shims — such as the OMX-on-ZFS
+session-pointer cleanup — belong in the adapter entry's `setup`/`teardown`
+commands rather than a wrapper script. `RAC_CODEX_BIN` selects the Codex executable the review
 tour, ChatGPT account management, and the update advisor spawn; when it is unset
 those default to `adapters.codex.program`. With neither set, those Codex-only
 features report unavailable rather than spawning a bare `codex`.

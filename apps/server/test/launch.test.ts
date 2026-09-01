@@ -138,6 +138,32 @@ describe('LaunchService', () => {
     expect(run).toHaveBeenLastCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', expect.stringMatching(/^rac-[\w-]+$/u), '@rac_display_label', 'Update Advisor Starting v4 2222222']);
   });
 
+  it('gives the update advisor the configured codex setup, but not when RAC_CODEX_BIN overrides the program', async () => {
+    const savedBin = process.env.RAC_CODEX_BIN;
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    const config = { adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true, setup: 'rm -f .omx/state/session.json' } }, projects: [{ hostPath: '/home/ubuntu/remoteagents' }] };
+    try {
+      // the advisor is a codex-kind launch, so it gets the pre-launch repair
+      delete process.env.RAC_CODEX_BIN;
+      const service = new LaunchService(config as never);
+      await expect(service.launchUpdateAdvisor('/home/ubuntu/remoteagents', '2'.repeat(40))).resolves.toBe(true);
+      // the setup string is carried into the launch (single-quote-escaped by the shell bootstrap)
+      expect((run.mock.calls[0]?.[1] as string[]).join(' ')).toContain('rm -f .omx/state/session.json');
+
+      // an override points the advisor at a different binary the setup was never configured alongside
+      run.mockClear();
+      process.env.RAC_CODEX_BIN = '/opt/other/codex';
+      const overridden = new LaunchService(config as never);
+      await expect(overridden.launchUpdateAdvisor('/home/ubuntu/remoteagents', '2'.repeat(40))).resolves.toBe(true);
+      const command = (run.mock.calls[0]?.[1] as string[]).join(' ');
+      expect(command).toContain('/opt/other/codex --dangerously-bypass-approvals-and-sandbox');
+      expect(command).not.toContain('rm -f .omx/state/session.json');
+    } finally {
+      if (savedBin === undefined) delete process.env.RAC_CODEX_BIN; else process.env.RAC_CODEX_BIN = savedBin;
+    }
+  });
+
   it('refuses to launch the update advisor when no Codex binary is configured', async () => {
     const savedBin = process.env.RAC_CODEX_BIN;
     delete process.env.RAC_CODEX_BIN;
@@ -430,6 +456,17 @@ describe('LaunchService', () => {
     expect(composeLaunch('/opt/my agent/bin', [], ['--x'], { A: '1', B: '2' }, { B: 'two', C: "x'y" })).toBe("A=1 B=two C='x'\\''y' '/opt/my agent/bin' --x");
   });
 
+  it('wraps a configured setup in its own eval so a failing setup aborts the launch', () => {
+    // the setup is its own command (own eval), gating the program through &&
+    expect(composeLaunch('/usr/local/bin/codex', [], [], {}, {}, 'rm -f .omx/state/session.json')).toBe("eval 'rm -f .omx/state/session.json' && /usr/local/bin/codex");
+    // the setup precedes the env prefix; both run inside the same pane eval
+    expect(composeLaunch('/usr/local/bin/codex', ['resume', '--last'], [], { A: '1' }, {}, 'true')).toBe('eval true && A=1 /usr/local/bin/codex resume --last');
+    // a compound setup cannot re-associate the && and skip the program: it stays inside its eval
+    expect(composeLaunch('/usr/local/bin/codex', [], [], {}, {}, 'test -f marker || ./repair.sh')).toBe("eval 'test -f marker || ./repair.sh' && /usr/local/bin/codex");
+    // without a setup the composition is byte-identical to the setup-less call
+    expect(composeLaunch('/usr/local/bin/codex', ['resume', '--last'], ['--model', 'o3'], {}, {}, undefined)).toBe('/usr/local/bin/codex resume --last --model o3');
+  });
+
   it('launches a configured kind through its program, appending operator args and env', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const worktree = cora();
@@ -446,6 +483,21 @@ describe('LaunchService', () => {
     expect(calls[0]).toEqual(['paste', '%4', 'RAC_X=1 /usr/local/bin/codex --search']);
     // the resolved kind is recorded for this Worktree and its Project
     expect(remembered).toEqual([['cora', 'codex'], ['proj', 'codex']]);
+  });
+
+  it('runs a configured setup command before the program in the launched pane', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const worktree = cora();
+    const calls: string[][] = [];
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, _buffer: string, command: string) => { calls.push(['paste', pane, command]); return true; }, enter: async () => true };
+    const store = { launchProfiles: async () => ({}), rememberLaunchProfile: async () => {} };
+    const config = { adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true, setup: 'rm -f .omx/state/session.json' } }, projects: [] };
+    const service = new LaunchService(config as never, { find: async () => [socket] }, panes as never, undefined, store as never, () => [worktree]);
+
+    await expect(service.launch('cora')).resolves.toBe(true);
+
+    // the setup runs first in the same pane; its non-zero exit would stop the program
+    expect(calls[0]).toEqual(['paste', '%4', "eval 'rm -f .omx/state/session.json' && /usr/local/bin/codex"]);
   });
 
   it('refuses a requested kind that is not configured or launchable', async () => {

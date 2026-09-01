@@ -55,15 +55,54 @@ global:
 }
 ```
 
-Each entry is `{ program, args?, env? }`. `program` must be an **absolute path
-to a real executable** (not a version-manager shim that needs a shell); `args`
-(≤64) and `env` (names `^[A-Za-z_][A-Za-z0-9_]*$`) are the operator's additions.
-Values are never shell-expanded — the console shell-quotes them — so there are no
-placeholders, and `env` is not a place for secrets. Configuring zero adapters is
-valid: the console then only observes hand-started agents. Adding a kind whose
-program is missing or not executable does not stop the server; that kind shows as
-unavailable in **Global settings → Agents** with the reason, and every other kind
-still launches. `pnpm config:check` reports the same non-fatal warning.
+Each entry is `{ program, args?, env?, setup?, teardown? }`. `program` must be an
+**absolute path to a real executable** (not a version-manager shim that needs a
+shell); `args` (≤64) and `env` (names `^[A-Za-z_][A-Za-z0-9_]*$`) are the
+operator's additions. Values are never shell-expanded — the console shell-quotes
+them — so there are no placeholders, and `env` is not a place for secrets.
+Configuring zero adapters is valid: the console then only observes hand-started
+agents. Adding a kind whose program is missing or not executable does not stop
+the server; that kind shows as unavailable in **Global settings → Agents** with
+the reason, and every other kind still launches. `pnpm config:check` reports the
+same non-fatal warning.
+
+`setup` and `teardown` are optional shell-interpreted lifecycle commands for
+host- or operator-specific shims. `setup` runs in the launched pane through the
+same login shell as the agent, in the launch directory (the worktree for a
+worktree launch, the home directory for Scratch), before the program; a non-zero
+exit stops the agent from ever starting — the failure is visible in the pane.
+`teardown` runs after the console stops a running agent of the kind (Stop, Sleep,
+Restart), in the stopped agent's workspace, best-effort: a failure is logged and
+never blocks the stop. Unlike `setup`, `teardown` runs through the tmux server's
+`sh` with the server's environment, not your login shell, so it does not see
+profile-only `PATH` entries — keep it to absolute paths and plain commands. On
+Restart both fire, so make the commands idempotent.
+
+### OMX on ZFS
+
+The console stops agents by killing their pane, which leaves OMX's session
+pointer (`<worktree>/.omx/state/session.json`) pointing at a dead session. OMX's
+own recovery needs `renameat2(RENAME_NOREPLACE)`, which ZFS lacks, so every
+following launch aborts with `session_pointer_unusable`. Configure the pointer
+cleanup as the adapter's lifecycle commands:
+
+```json
+{
+  "adapters": {
+    "codex": {
+      "program": "/absolute/path/to/omx",
+      "args": ["--direct"],
+      "setup": "rm -f .omx/state/session.json",
+      "teardown": "rm -f .omx/state/session.json"
+    }
+  }
+}
+```
+
+`setup` alone is sufficient (it is the guaranteed pre-launch repair); `teardown`
+keeps the checkout tidy between launches. Relative paths in either command
+resolve against the directory the command runs in — the worktree for `setup`,
+the stopped agent's workspace for `teardown`.
 
 The program is launched from an interactive zsh shell by default. Set
 `RAC_INTERACTIVE_SHELL` for container or direct sessions and

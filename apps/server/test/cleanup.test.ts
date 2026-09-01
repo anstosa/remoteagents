@@ -75,6 +75,21 @@ describe('runtime cleanup', () => {
     await expect(service.scan()).resolves.toEqual(expect.arrayContaining([orphan, stale]));
   });
 
+  it('issues no adapter teardown when killing panes: cleanup only closes them', async () => {
+    // cleanup kills worker/HUD/stale panes, where a leader's teardown would be wrong
+    const shell: string[] = [];
+    const tmux = { listPanes: async () => [pane('%5', '$stale', 500)], close: async () => true, terminateHostProcess: async () => true, runShell: async (_socket: SocketRef, command: string) => { shell.push(command); return true; } };
+    const service = new CleanupService(
+      { refresh: async () => [] },
+      { find: async () => [socket] },
+      tmux,
+      { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }), listProcesses: async () => [] }
+    );
+    const [target] = await service.scan();
+    await expect(service.cleanup([target!.id])).resolves.toEqual([]);
+    expect(shell).toEqual([]);
+  });
+
   it('rejects duplicate, unknown, and malformed target selections', async () => {
     const service = new CleanupService(
       { refresh: async () => [] },

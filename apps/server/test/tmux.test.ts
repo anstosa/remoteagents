@@ -185,6 +185,22 @@ describe('TmuxAdapter capture', () => {
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'run-shell', 'kill -TERM -- 4321']);
   });
 
+  it('neutralizes tmux format expansion so a run-shell command reaches the shell literally', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    const adapter = new TmuxAdapter();
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+
+    // tmux format-expands a run-shell argument before executing it; a `#(…)` in an
+    // agent-controlled path (a teardown's `cd -- '<workspace>'`) would otherwise run
+    // as a shell substitution. Doubling `#` makes tmux collapse it back to a literal.
+    await expect(adapter.runShell(socket, "cd -- '/tmp/x/#(id>/tmp/pwned)' && eval 'rm -f x'")).resolves.toBe(true);
+    await expect(adapter.runShell(socket, '')).resolves.toBe(false);
+    await expect(adapter.runShell(socket, 'ok\0nul')).resolves.toBe(false);
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'run-shell', "cd -- '/tmp/x/##(id>/tmp/pwned)' && eval 'rm -f x'"]);
+  });
+
   it('captures only the requested visible history window and resizes the pane for the active client', async () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     run

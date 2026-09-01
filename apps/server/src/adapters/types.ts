@@ -196,8 +196,10 @@ export interface Adapter {
  * operator's `args`, merging the operator's `env` over the Adapter's. `launchable`
  * and `unavailableReason` come from the boot executable check (skipped under the
  * host bridge, where `program` is a host path the container cannot stat).
+ * `setup` runs in the launched pane before the program (a failure aborts the
+ * launch); `teardown` runs best-effort in the agent's workspace after a stop.
  */
-export type AdapterLaunchConfig = { program: string; args: string[]; env: Record<string, string>; launchable: boolean; unavailableReason?: string };
+export type AdapterLaunchConfig = { program: string; args: string[]; env: Record<string, string>; launchable: boolean; unavailableReason?: string; setup?: string; teardown?: string };
 /** The configured adapters, keyed by kind; absent entirely in the legacy (pre-`adapters`) configuration. */
 export type AdapterConfigs = Partial<Record<AgentKind, AdapterLaunchConfig>>;
 

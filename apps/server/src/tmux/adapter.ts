@@ -260,9 +260,24 @@ export class TmuxAdapter {
     return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'kill-pane', '-t', pane])).code === 0;
   }
 
+  // run one shell command through the agent's tmux server, so under the host
+  // bridge it executes on the host — the same side the agent's files live on.
+  // tmux format-expands a run-shell argument before running it, so a `#(…)` in
+  // the command would execute as a format substitution before `/bin/sh` ever
+  // sees it. Double every `#` so tmux collapses it back to a literal `#` and the
+  // command reaches the shell exactly as composed — the callers here compose a
+  // plain shell command and never a tmux format (existing callers carry no `#`,
+  // so this is a no-op for them), while a command built over an agent-controlled
+  // path (a teardown's `cd -- '<workspace>'`) cannot smuggle a `#(…)` through.
+  async runShell(socket: SocketRef, command: string): Promise<boolean> {
+    if (!command || command.includes('\0')) return false;
+    const literal = command.replaceAll('#', '##');
+    return (await run(this.binary, ['-S', socket.path, 'run-shell', literal])).code === 0;
+  }
+
   async terminateHostProcess(socket: SocketRef, pid: number): Promise<boolean> {
     if (!Number.isSafeInteger(pid) || pid <= 1) return false;
-    return (await run(this.binary, ['-S', socket.path, 'run-shell', `kill -TERM -- ${pid}`])).code === 0;
+    return await this.runShell(socket, `kill -TERM -- ${pid}`);
   }
 
   async closeSession(socket: SocketRef, session: string): Promise<boolean> {

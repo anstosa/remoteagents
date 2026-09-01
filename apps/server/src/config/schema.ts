@@ -24,7 +24,11 @@ const serverName = z.string().trim().min(1).max(80).refine(value => !value.inclu
 const adapterProgram = z.string().min(1).max(4096).startsWith('/', 'adapter program must be an absolute path').refine(value => !value.includes('\0'), 'NUL is forbidden');
 const adapterArgument = z.string().max(4096).refine(value => !value.includes('\0'), 'NUL is forbidden');
 const adapterEnvName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u, 'invalid environment variable name');
-const adapterEntry = z.object({ program: adapterProgram, args: z.array(adapterArgument).max(64).optional(), env: z.record(adapterEnvName, adapterArgument).optional() }).strict();
+// `setup`/`teardown` are operator-trust lifecycle commands (shell-interpreted, like a
+// Project's stack commands): `setup` runs in the launched pane before the program and
+// aborts the launch on failure; `teardown` runs best-effort after the console stops an
+// agent of this kind, in the stopped agent's workspace.
+const adapterEntry = z.object({ program: adapterProgram, args: z.array(adapterArgument).max(64).optional(), env: z.record(adapterEnvName, adapterArgument).optional(), setup: command.optional(), teardown: command.optional() }).strict();
 // keyed by kind, one strict entry each; an omitted block is the legacy configuration
 const adaptersSchema = z.object({ codex: adapterEntry.optional(), claude: adapterEntry.optional(), pi: adapterEntry.optional(), opencode: adapterEntry.optional() }).strict();
 // constrain icons to bundled artwork
@@ -154,7 +158,7 @@ async function resolveAdapters(parsed: ParsedAdapters, checkExecutables: boolean
   for (const kind of agentKinds) {
     const entry = parsed[kind];
     if (entry === undefined) continue;
-    const config: AdapterLaunchConfig = { program: entry.program, args: entry.args ?? [], env: entry.env ?? {}, launchable: true };
+    const config: AdapterLaunchConfig = { program: entry.program, args: entry.args ?? [], env: entry.env ?? {}, launchable: true, ...(entry.setup === undefined ? {} : { setup: entry.setup }), ...(entry.teardown === undefined ? {} : { teardown: entry.teardown }) };
     // a missing program, a directory, or a non-executable file never refuses boot;
     // it disables that kind with a reason (a directory is +x, so require a real file)
     if (checkExecutables) {

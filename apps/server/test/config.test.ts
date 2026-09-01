@@ -195,6 +195,14 @@ describe('adapter configuration', () => {
     expect((await validateConfig({ ...scratch, adapters: {} })).adapters).toEqual({});
     expect((await validateConfig(scratch)).adapters).toBeUndefined();
   });
+  it('accepts setup and teardown lifecycle commands and carries them onto the launch config', async () => {
+    const lifecycle = { setup: 'rm -f .omx/state/session.json', teardown: 'rm -f .omx/state/session.json' };
+    const config = await validateConfig({ ...scratch, adapters: { codex: { program: process.execPath, ...lifecycle } } });
+    expect(config.adapters?.codex).toMatchObject(lifecycle);
+    // bounded like every other command: no NUL, ≤32k
+    await expect(validateConfig({ ...scratch, adapters: { codex: { program: process.execPath, setup: 'rm\0-f' } } })).rejects.toThrow('NUL');
+    await expect(validateConfig({ ...scratch, adapters: { codex: { program: process.execPath, teardown: 'x'.repeat(32_001) } } })).rejects.toThrow();
+  });
 });
 
 describe('claude adapter configuration', () => {
