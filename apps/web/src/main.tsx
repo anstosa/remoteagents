@@ -116,7 +116,9 @@ const isCodexBookmark = (value: unknown): value is CodexBookmark => value !== nu
   && typeof (value as CodexBookmark).title === 'string'
   && typeof (value as CodexBookmark).createdAt === 'string';
 type AssistantFile = { path: string; size: number };
-type AssistantFilePreview = AssistantFile & { truncated: boolean } & ({ binary: true } | { binary: false; content: string });
+type AssistantPreviewImage = { mediaType: 'image/gif'|'image/jpeg'|'image/png'|'image/webp'; base64: string };
+type AssistantFilePreview = AssistantFile & { truncated: boolean } & ({ binary: true; image?: AssistantPreviewImage } | { binary: false; content: string });
+type FilePreviewState = 'loading'|'ready'|'error';
 type InstanceIcon = 'terminal'|'potato'|'heart';
 type RemoteServer = { name: string; url: string; icon?: InstanceIcon };
 type ServerInfo = { name: string; url: string; icon?: InstanceIcon; remotes: RemoteServer[] };
@@ -1977,11 +1979,30 @@ const isAssistantFile = (value: unknown): value is AssistantFile => value !== nu
   && typeof (value as AssistantFile).path === 'string'
   && Number.isInteger((value as AssistantFile).size)
   && (value as AssistantFile).size >= 0;
+// validate one inline raster image
+const isAssistantPreviewImage = (value: unknown): value is AssistantPreviewImage => value !== null && typeof value === 'object'
+  && ((value as AssistantPreviewImage).mediaType === 'image/gif' || (value as AssistantPreviewImage).mediaType === 'image/jpeg' || (value as AssistantPreviewImage).mediaType === 'image/png' || (value as AssistantPreviewImage).mediaType === 'image/webp')
+  && typeof (value as AssistantPreviewImage).base64 === 'string'
+  && /^[A-Za-z0-9+/]*={0,2}$/u.test((value as AssistantPreviewImage).base64);
 // validate one bounded workspace preview
 const isAssistantFilePreview = (value: unknown): value is AssistantFilePreview => isAssistantFile(value)
   && typeof (value as AssistantFilePreview).binary === 'boolean'
   && typeof (value as AssistantFilePreview).truncated === 'boolean'
-  && ((value as AssistantFilePreview).binary ? (value as { content?: unknown }).content === undefined : typeof (value as { content?: unknown }).content === 'string');
+  && ((value as AssistantFilePreview).binary
+    ? (value as { content?: unknown }).content === undefined && ((value as { image?: unknown }).image === undefined || isAssistantPreviewImage((value as { image?: unknown }).image))
+    : typeof (value as { content?: unknown }).content === 'string' && (value as { image?: unknown }).image === undefined);
+// render one explicit file-preview state
+const filePreviewContent = (path: string, state: FilePreviewState, preview?: AssistantFilePreview): ReactNode => {
+  // show pending requests
+  if (state === 'loading') return <div className="response-file-message" role="status"><span className="spinner" />Loading preview…</div>;
+  // show failed requests
+  if (state === 'error' || preview === undefined) return <div className="response-file-message error" role="alert">Preview unavailable</div>;
+  // show supported raster images
+  if (preview.binary && preview.image !== undefined) return <div className="response-file-image"><img src={`data:${preview.image.mediaType};base64,${preview.image.base64}`} alt={`Preview of ${path}`} /></div>;
+  // explain unsupported binary files
+  if (preview.binary) return <div className="response-file-message">Binary file preview unavailable</div>;
+  return <SyntaxHighlightedCode path={path} code={preview.content} label={`Contents of ${path}`} />;
+};
 // format compact file sizes
 const assistantFileSize = (size: number) => size < 1_024 ? `${size} B` : size < 1_048_576 ? `${(size / 1_024).toFixed(1)} KB` : `${(size / 1_048_576).toFixed(1)} MB`;
 
@@ -1989,7 +2010,7 @@ const assistantFileSize = (size: number) => size < 1_024 ? `${size} B` : size < 
 function useFilePreview(previewUrl: string) {
   const [previewPath, setPreviewPath] = useState<string>();
   const [preview, setPreview] = useState<AssistantFilePreview>();
-  const [previewState, setPreviewState] = useState<'loading'|'ready'|'error'>('loading');
+  const [previewState, setPreviewState] = useState<FilePreviewState>('loading');
   const [copied, setCopied] = useState(false);
   const previewRequest = useRef(0);
 
@@ -2031,7 +2052,7 @@ function useFilePreview(previewUrl: string) {
     try { await copyText(previewPath); setCopied(true); } catch { setCopied(false); }
   };
 
-  const dialog = previewPath === undefined ? null : createPortal(<div className="dialog response-file-dialog" role="dialog" aria-modal="true" aria-label={`File preview: ${previewPath}`} onKeyDown={event => { if (event.key === 'Escape') closePreview(); }}><div><header><strong title={previewPath}>{previewPath}</strong><button className="response-file-copy-path" type="button" onClick={() => void copyPath()}>{copied ? 'Path copied' : 'Copy path'}</button><button type="button" aria-label="Close file preview" title="Close" onClick={closePreview}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{previewState === 'loading' ? <div className="response-file-message" role="status"><span className="spinner" />Loading preview…</div> : previewState === 'error' ? <div className="response-file-message error" role="alert">Preview unavailable</div> : preview?.binary ? <div className="response-file-message">Binary file preview unavailable</div> : preview === undefined ? <div className="response-file-message error" role="alert">Preview unavailable</div> : <SyntaxHighlightedCode path={previewPath} code={preview.content} label={`Contents of ${previewPath}`} />}{preview?.truncated && <footer>Preview limited to the first 256 KB.</footer>}</div></div>, document.body);
+  const dialog = previewPath === undefined ? null : createPortal(<div className="dialog response-file-dialog" role="dialog" aria-modal="true" aria-label={`File preview: ${previewPath}`} onKeyDown={event => { if (event.key === 'Escape') closePreview(); }}><div><header><strong title={previewPath}>{previewPath}</strong><button className="response-file-copy-path" type="button" onClick={() => void copyPath()}>{copied ? 'Path copied' : 'Copy path'}</button><button type="button" aria-label="Close file preview" title="Close" onClick={closePreview}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{filePreviewContent(previewPath, previewState, preview)}{preview?.truncated && <footer>Preview limited to the first 256 KB.</footer>}</div></div>, document.body);
   return { dialog, openFile, closePreview };
 }
 

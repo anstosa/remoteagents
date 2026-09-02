@@ -42,4 +42,48 @@ describe('workspace response files', () => {
       await expect(service.preview(workspace, '../unavailable.txt')).resolves.toBeUndefined();
     } finally { await rm(workspace, { recursive: true, force: true }); }
   });
+
+  // verify host temporary screenshots stay image-only and pane-scoped
+  it('previews bounded host temporary images through the selected pane root', async () => {
+    const procRoot = await mkdtemp(join(tmpdir(), 'rac-host-proc-'));
+    const invalidProcRoot = await mkdtemp(join(tmpdir(), 'rac-empty-proc-'));
+    const pid = '1234';
+    const otherPid = '5678';
+    const hostTmp = join(procRoot, pid, 'root', 'tmp');
+    const otherHostTmp = join(procRoot, otherPid, 'root', 'tmp');
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+    const jpeg = Buffer.from('ffd8ffe000104a464946', 'hex');
+    try {
+      await mkdir(hostTmp, { recursive: true });
+      await mkdir(otherHostTmp, { recursive: true });
+      await writeFile(join(hostTmp, 'agent-screenshot.png'), png);
+      await writeFile(join(otherHostTmp, 'agent-screenshot.png'), jpeg);
+      await writeFile(join(hostTmp, 'not-an-image.png'), 'private text');
+      await symlink(join(hostTmp, 'agent-screenshot.png'), join(hostTmp, 'linked.png'));
+      const service = new WorkspaceFileService({ hostProcRoot: procRoot, hostUid: process.getuid() });
+
+      await expect(service.previewTemporaryImage('/tmp/agent-screenshot.png', Number(pid))).resolves.toEqual({
+        path: '/tmp/agent-screenshot.png',
+        size: png.length,
+        binary: true,
+        truncated: false,
+        image: { mediaType: 'image/png', base64: png.toString('base64') }
+      });
+      await expect(service.previewTemporaryImage('/tmp/agent-screenshot.png', Number(otherPid))).resolves.toMatchObject({ image: { mediaType: 'image/jpeg' } });
+      await expect(service.previewTemporaryImage('/tmp/not-an-image.png', Number(pid))).resolves.toBeUndefined();
+      await expect(service.previewTemporaryImage('/tmp/linked.png', Number(pid))).resolves.toBeUndefined();
+      await expect(service.previewTemporaryImage('/tmp/nested/agent-screenshot.png', Number(pid))).resolves.toBeUndefined();
+      await expect(service.previewTemporaryImage('/etc/agent-screenshot.png', Number(pid))).resolves.toBeUndefined();
+      await expect(service.previewTemporaryImage('/tmp/agent-screenshot.png')).resolves.toBeUndefined();
+      const unavailable = new WorkspaceFileService({ hostProcRoot: join(procRoot, 'missing'), hostUid: process.getuid() });
+      await expect(unavailable.previewTemporaryImage('/tmp/agent-screenshot.png', Number(pid))).rejects.toMatchObject({ statusCode: 503 });
+      const invalid = new WorkspaceFileService({ hostProcRoot: invalidProcRoot, hostUid: process.getuid() });
+      await expect(invalid.previewTemporaryImage('/tmp/agent-screenshot.png', Number(pid))).rejects.toMatchObject({ statusCode: 503 });
+    } finally {
+      await Promise.all([
+        rm(procRoot, { recursive: true, force: true }),
+        rm(invalidProcRoot, { recursive: true, force: true })
+      ]);
+    }
+  });
 });

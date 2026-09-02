@@ -255,7 +255,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   };
   dashboardUpdates.setLoader(dashboard);
   app.addHook('onSend', async (_request, reply, payload) => {
-    reply.header('Cache-Control', 'no-store').header('X-Frame-Options', 'DENY').header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()').header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups').header('Cross-Origin-Resource-Policy', 'same-origin').header('Content-Security-Policy', `default-src 'self'; connect-src 'self' ${websocketScheme}://${expectedHost}${integrationConfig.realtime.enabled ? ' https://api.openai.com' : ''}; style-src 'self' 'unsafe-inline'; ${frameSourcePolicy}; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
+    reply.header('Cache-Control', 'no-store').header('X-Frame-Options', 'DENY').header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()').header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups').header('Cross-Origin-Resource-Policy', 'same-origin').header('Content-Security-Policy', `default-src 'self'; connect-src 'self' ${websocketScheme}://${expectedHost}${integrationConfig.realtime.enabled ? ' https://api.openai.com' : ''}; img-src 'self' data:; style-src 'self' 'unsafe-inline'; ${frameSourcePolicy}; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
     // publish HSTS only for HTTPS deployments
     if (secureOrigin) reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
     return payload;
@@ -781,7 +781,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const worktree = configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
     return { files: await workspaceFiles.list(worktree?.identity ?? target.agent.workspace, message) };
   });
-  // preview one contained workspace file
+  // preview one workspace file or bounded host temporary screenshot
   app.post('/api/agents/:id/file-preview', async (request, reply) => {
     controlled(request, true);
     const path = body(request).path;
@@ -789,7 +789,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const target = await discovery.target((request.params as { id: string }).id);
     if (!target) return reply.code(404).send({ error: 'target unavailable' });
     const worktree = configuredWorktreeForWorkspace(config.worktrees, target.agent.workspace);
-    const preview = await workspaceFiles.preview(worktree?.identity ?? target.agent.workspace, path);
+    const panePid = discovery.paneProcessId(target.agent.id);
+    // fall back only to the image-only host temporary bridge
+    const preview = await workspaceFiles.preview(worktree?.identity ?? target.agent.workspace, path) ?? await workspaceFiles.previewTemporaryImage(path, panePid);
     return preview === undefined ? reply.code(404).send({ error: 'file unavailable' }) : preview;
   });
   app.post('/api/agents/:id/saved-prompts', { bodyLimit: Math.ceil(maxPromptAttachmentBytes * 1.4) }, async (request, reply) => { controlled(request, true); const key = await savedPromptKey((request.params as { id: string }).id); const data = body(request); const attachments = promptAttachments(data.attachments); if (key === undefined) return reply.code(404).send({ error: 'target unavailable' }); if (typeof data.prompt !== 'string' || attachments === undefined) return reply.code(400).send({ error: 'invalid prompt' }); const saved = await savedPrompts.save(key, data.prompt, attachments); return saved === undefined ? reply.code(400).send({ error: 'invalid prompt' }) : reply.code(201).send(saved); });

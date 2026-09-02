@@ -637,6 +637,8 @@ html.software-keyboard-open .tabs { display: none; }
 .response-file-dialog .syntax-constant { color: var(--sapphire); font-weight: 700; }
 .response-file-dialog .syntax-tag { color: var(--red); }
 .response-file-dialog .syntax-operator { color: var(--blue); }
+.response-file-image { display: grid; min-width: 0; min-height: 0; overflow: auto; padding: 1rem; place-items: center; background: var(--crust); }
+.response-file-image img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
 .response-file-message { display: flex; min-height: 0; align-items: center; justify-content: center; gap: .6rem; padding: 1rem; color: var(--subtext-0); }
 .response-file-message.error { color: var(--red); }
 .response-file-dialog footer { padding: .45rem .7rem; border-top: 1px solid var(--surface-1); color: var(--yellow); font-size: .7rem; }

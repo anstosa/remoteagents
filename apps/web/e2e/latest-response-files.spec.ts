@@ -51,10 +51,14 @@ test('lists and previews files from the latest assistant response above notes', 
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
     if (url.pathname === '/api/worktrees/cora/notes') return route.fulfill({ json: { notes: [] } });
     if (url.pathname === '/api/agents/agent-1/message-files') {
+      // omit temporary images from the completed-response file menu
+      if (request.postDataJSON().message === 'Screenshots: /tmp/agent-screenshot.png') return route.fulfill({ json: { files: [] } });
       expect(request.postDataJSON()).toEqual({ message: 'Updated `apps/web/src/main.tsx:1444` and `docs/setup.md`.' });
       return route.fulfill({ json: { files: [{ path: 'apps/web/src/main.tsx', size: 1_234 }, { path: 'docs/setup.md', size: 80 }] } });
     }
     if (url.pathname === '/api/agents/agent-1/file-preview') {
+      // return one host temporary image preview
+      if (request.postDataJSON().path === '/tmp/agent-screenshot.png') return route.fulfill({ json: { path: '/tmp/agent-screenshot.png', size: 68, binary: true, truncated: false, image: { mediaType: 'image/png', base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' } } });
       expect(request.postDataJSON()).toEqual({ path: 'apps/web/src/main.tsx' });
       return route.fulfill({ json: { path: 'apps/web/src/main.tsx', size: 1_234, binary: false, truncated: false, content: 'export const ready = true;\nconst count = 42;\n// highlighted' } });
     }
@@ -110,4 +114,12 @@ test('lists and previews files from the latest assistant response above notes', 
   await expect.poll(() => page.evaluate(() => (window as unknown as { __copiedPath?: string }).__copiedPath)).toBe('apps/web/src/main.tsx');
   await dialog.getByRole('button', { name: 'Close file preview' }).click();
   await expect(dialog).toHaveCount(0);
+
+  // preview one live host temporary screenshot
+  await page.evaluate(() => (window as unknown as { __emitLogFrame: (frame: { text: string; latestAssistantMessage: string }) => void }).__emitLogFrame({ text: 'Screenshots: /tmp/agent-screenshot.png', latestAssistantMessage: 'Screenshots: /tmp/agent-screenshot.png' }));
+  await page.getByRole('link', { name: 'Preview /tmp/agent-screenshot.png' }).click();
+  const imageDialog = page.getByRole('dialog', { name: 'File preview: /tmp/agent-screenshot.png' });
+  const image = imageDialog.getByRole('img', { name: 'Preview of /tmp/agent-screenshot.png' });
+  await expect(image).toBeVisible();
+  await expect.poll(() => image.evaluate(element => (element as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
 });

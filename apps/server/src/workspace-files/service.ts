@@ -3,13 +3,42 @@ import { open, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 export type WorkspaceFileSummary = { path: string; size: number };
-export type WorkspaceFilePreview = WorkspaceFileSummary & { binary: boolean; truncated: boolean; content?: string };
+export type PreviewImage = { mediaType: 'image/gif'|'image/jpeg'|'image/png'|'image/webp'; base64: string };
+export type WorkspaceFilePreview = WorkspaceFileSummary & { binary: boolean; truncated: boolean; content?: string; image?: PreviewImage };
+export type WorkspaceFileOptions = { hostProcRoot?: string; hostUid?: number };
 
 const maxMessageLength = 30_000;
 const maxCandidates = 24;
 const maxPathLength = 512;
 const maxPreviewBytes = 256 * 1024;
+const maxTemporaryImageBytes = 5 * 1024 * 1024;
 const knownBasenames = /^(?:README|LICENSE|Dockerfile|Makefile)(?:\.[A-Za-z0-9_-]+)?$/u;
+const temporaryImagePath = /^\/tmp\/([A-Za-z0-9][A-Za-z0-9._-]{0,254}\.(?:gif|jpe?g|png|webp))$/iu;
+
+// report one configured host preview bridge failure
+const temporaryImageBridgeError = () => Object.assign(new Error('host temporary image preview unavailable'), { statusCode: 503 });
+
+// identify expected temporary-file misses
+const temporaryImageMiss = (error: unknown): boolean => {
+  // require one filesystem error code
+  if (error === null || typeof error !== 'object' || !('code' in error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return code === 'ENOENT' || code === 'ELOOP';
+};
+
+// identify one supported raster image from its bytes
+const previewImageMediaType = (content: Buffer): PreviewImage['mediaType'] | undefined => {
+  // recognize PNG signatures
+  if (content.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) return 'image/png';
+  // recognize JPEG signatures
+  if (content[0] === 0xff && content[1] === 0xd8 && content[2] === 0xff) return 'image/jpeg';
+  const header = content.subarray(0, 6).toString('ascii');
+  // recognize GIF signatures
+  if (header === 'GIF87a' || header === 'GIF89a') return 'image/gif';
+  // recognize WebP signatures
+  if (content.subarray(0, 4).toString('ascii') === 'RIFF' && content.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  return undefined;
+};
 
 // normalize one mentioned path
 const normalizeMention = (value: string): string | undefined => {
@@ -57,6 +86,16 @@ const resolveFile = async (workspace: string, mention: string): Promise<{ root: 
 };
 
 export class WorkspaceFileService {
+  private readonly hostProcRoot?: string;
+  private readonly hostUid: number;
+
+  // bind optional host artifact access to the configured proc mount
+  constructor(options: WorkspaceFileOptions = {}) {
+    this.hostProcRoot = options.hostProcRoot ?? process.env.RAC_HOST_PROC;
+    const configuredUid = Number(process.env.RAC_HOST_UID);
+    this.hostUid = options.hostUid ?? (Number.isInteger(configuredUid) && configuredUid >= 0 ? configuredUid : process.getuid?.() ?? 0);
+  }
+
   // list real files mentioned by one response
   async list(workspace: string, message: string): Promise<WorkspaceFileSummary[]> {
     const files: WorkspaceFileSummary[] = [];
@@ -89,5 +128,55 @@ export class WorkspaceFileService {
       const binary = content.includes(0);
       return { ...summary, binary, truncated: summary.size > read, ...(binary ? {} : { content: content.toString('utf8') }) };
     } finally { await handle.close(); }
+  }
+
+  // load a flat screenshot from one proven pane namespace
+  async previewTemporaryImage(path: string, panePid?: number): Promise<WorkspaceFilePreview | undefined> {
+    const match = temporaryImagePath.exec(path);
+    // require an enabled bridge, one exact pane, and a flat image filename
+    if (this.hostProcRoot === undefined || match === null || typeof panePid !== 'number' || !Number.isInteger(panePid) || panePid < 1) return undefined;
+    const procRoot = await stat(this.hostProcRoot).catch(() => { throw temporaryImageBridgeError(); });
+    // reject a misconfigured proc bridge
+    if (!procRoot.isDirectory()) throw temporaryImageBridgeError();
+    const namespace = resolve(this.hostProcRoot, String(panePid), 'root', 'tmp');
+    const namespaceInfo = await stat(namespace).catch(() => { throw temporaryImageBridgeError(); });
+    // require one accessible pane temporary directory
+    if (!namespaceInfo.isDirectory()) throw temporaryImageBridgeError();
+    const filename = match[1]!;
+    const candidate = resolve(namespace, filename);
+    let handle: Awaited<ReturnType<typeof open>>;
+    try { handle = await open(candidate, constants.O_RDONLY | constants.O_NOFOLLOW); }
+    catch (error) {
+      // hide absent files and symlinks
+      if (temporaryImageMiss(error)) return undefined;
+      throw temporaryImageBridgeError();
+    }
+    try {
+      const info = await handle.stat();
+      // require one bounded regular file owned by the host agent user
+      if (!info.isFile() || info.uid !== this.hostUid || info.size < 1 || info.size > maxTemporaryImageBytes) return undefined;
+      const content = Buffer.alloc(info.size);
+      let offset = 0;
+      // fill only the prevalidated allocation
+      while (offset < content.length) {
+        const { bytesRead } = await handle.read(content, offset, content.length - offset, offset);
+        // stop on concurrent truncation
+        if (bytesRead === 0) break;
+        offset += bytesRead;
+      }
+      const settled = await handle.stat();
+      // reject concurrent truncation or growth
+      if (offset !== content.length || settled.size !== info.size) return undefined;
+      const mediaType = previewImageMediaType(content);
+      // return only recognized raster images
+      if (mediaType === undefined) return undefined;
+      return { path, size: info.size, binary: true, truncated: false, image: { mediaType, base64: content.toString('base64') } };
+    } catch (error) {
+      // preserve expected process-exit misses
+      if (temporaryImageMiss(error)) return undefined;
+      throw temporaryImageBridgeError();
+    } finally {
+      await handle.close();
+    }
   }
 }
