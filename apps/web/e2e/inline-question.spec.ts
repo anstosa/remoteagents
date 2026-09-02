@@ -28,6 +28,7 @@ test('renders inline questions from the metadata payload and answers through one
   let selectedIndex: number | undefined;
   let selectedQuestionId: string | undefined;
   let answerCount = 0;
+  const submittedPrompts: Array<{ prompt: string; attachments: unknown[] }> = [];
   await page.addInitScript(({ firstQuestion }) => {
     const logSockets: MockWebSocket[] = [];
     class MockWebSocket {
@@ -80,6 +81,11 @@ test('renders inline questions from the metadata payload and answers through one
     if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (/^\/api\/agents\/agent-[12]\/saved-prompts$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });
     if (/^\/api\/agents\/agent-[12]\/prompt-history$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });
+    // capture notes and false-positive prompts
+    if (url.pathname === '/api/agents/agent-1/prompt' && request.method() === 'POST') {
+      submittedPrompts.push(request.postDataJSON() as { prompt: string; attachments: unknown[] });
+      return route.fulfill({ status: 204 });
+    }
     if (url.pathname === '/api/agents/agent-1/question' && request.method() === 'POST') {
       const body = request.postDataJSON() as { index: number; questionId: string };
       selectedIndex = body.index;
@@ -132,6 +138,31 @@ test('renders inline questions from the metadata payload and answers through one
     expect(choice.numberLeft).toBeCloseTo(layout[0]!.numberLeft, 1);
     expect(choice.answerCenter).toBeCloseTo(0, 1);
   }
+
+  // expanded notes use the existing prompt submission path
+  const notesToggle = page.getByRole('button', { name: 'Add notes' });
+  await expect(notesToggle).toHaveAttribute('aria-expanded', 'false');
+  await notesToggle.click();
+  const notes = page.getByRole('textbox', { name: 'Answer notes' });
+  await expect(notes).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Hide notes' })).toHaveAttribute('aria-expanded', 'true');
+  await notes.fill('Keep the cleanup scoped to the selected option.');
+  await page.getByRole('button', { name: 'Submit notes' }).click();
+  await expect.poll(() => submittedPrompts.length).toBe(1);
+  expect(submittedPrompts[0]).toEqual({ prompt: 'Keep the cleanup scoped to the selected option.', attachments: [] });
+  await expect(notes).toHaveValue('');
+  await expect(page.getByRole('button', { name: 'Switch to normal prompt mode' })).toBeVisible();
+
+  // normal mode remains available when detection is a false positive
+  await page.getByRole('button', { name: 'Switch to normal prompt mode' }).click();
+  await expect(page.getByRole('button', { name: 'Switch to answer mode' })).toBeVisible();
+  const prompt = page.getByRole('textbox', { name: 'Prompt' });
+  await prompt.fill('Treat the detected question as ordinary output.');
+  await page.getByRole('button', { name: 'Queue', exact: true }).click();
+  await expect.poll(() => submittedPrompts.length).toBe(2);
+  expect(submittedPrompts[1]).toEqual({ prompt: 'Treat the detected question as ordinary output.', attachments: [] });
+  await page.getByRole('button', { name: 'Switch to answer mode' }).click();
+  await expect(page.getByRole('button', { name: 'Switch to normal prompt mode' })).toBeVisible();
 
   // answering posts the question id and the chosen index through the one endpoint
   await choices.nth(1).click();

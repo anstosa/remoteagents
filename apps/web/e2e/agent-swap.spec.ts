@@ -117,6 +117,19 @@ test('backgrounds an idle agent and swaps the output area to its interactive ter
   await expect.poll(() => backgroundRequests).toBe(1);
   await expect.poll(() => foregroundRequests).toBe(1);
 
+  // forward blank Enter from the normal prompt to the agent output
+  await prompt.press('Enter');
+  await expect.poll(async () => page.evaluate(() => {
+    const frames = (window as Window & { __terminalSocketFrames?: Array<{ url: string; data: string }> }).__terminalSocketFrames ?? [];
+    return frames.filter(frame => frame.url.includes('/ws/input/')).length;
+  })).toBe(3);
+  const forwardedFrames = await page.evaluate(() => {
+    const frames = (window as Window & { __terminalSocketFrames?: Array<{ url: string; data: string }> }).__terminalSocketFrames ?? [];
+    return frames.filter(frame => frame.url.includes('/ws/input/')).map(frame => JSON.parse(frame.data) as { data: string });
+  });
+  expect(Buffer.from(forwardedFrames[2]!.data, 'base64url').toString('utf8')).toBe('\r');
+  expect(promptRequests).toBe(0);
+
   await swapFromMenu();
   await expect(page.getByLabel('Interactive agent pane')).toBeVisible();
   await expect.poll(() => backgroundRequests).toBe(2);
