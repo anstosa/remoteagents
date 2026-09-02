@@ -1143,10 +1143,10 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .launch-inline-menu { flex-basis: 100%; margin: .2rem 0 .1rem; padding: .3rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 82%, var(--surface-0)); }
 .launch-inline-menu .launch-row { width: 100% !important; }
 
-/* one section per project in the + launcher, with its New worktree… control */
+/* one section per project in the + launcher: a header, its Worktree rows, then New worktree… */
 .launcher-project { margin-top: .35rem; }
 .launcher-project-header { display: flex; align-items: center; justify-content: space-between; gap: .5rem; padding: .3rem .45rem .15rem; color: var(--subtext-0); font-size: .64rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
-.launcher-new-worktree { border: 1px solid color-mix(in srgb, var(--lavender) 45%, transparent); border-radius: var(--control-radius); padding: .18rem .5rem; background: transparent; color: var(--lavender); font-size: .62rem; letter-spacing: 0; text-transform: none; cursor: pointer; white-space: nowrap; }
+.launcher-new-worktree { display: flex; align-items: center; margin-top: .1rem; padding: .3rem .45rem !important; border-radius: calc(var(--control-radius) - .1rem); background: transparent; color: var(--lavender); font-size: .7rem; letter-spacing: 0; text-transform: none; cursor: pointer; }
 .launcher-new-worktree:not(:disabled):hover { background: color-mix(in srgb, var(--lavender) 16%, transparent); }
 .launcher-new-worktree:disabled { opacity: .45; cursor: not-allowed; }
 
@@ -1167,13 +1167,26 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .new-worktree-error { margin: 0; color: var(--red); font-size: .74rem; }
 .new-worktree-actions { display: flex; justify-content: flex-end; gap: .5rem; }
 
-/* the launcher's per-Project Prune control and per-row Remove control */
+/* the launcher's per-Project Prune control */
 .launcher-prune { border: 1px solid color-mix(in srgb, var(--peach) 45%, transparent); border-radius: var(--control-radius); padding: .18rem .5rem; background: transparent; color: var(--peach); font-size: .62rem; letter-spacing: 0; text-transform: none; cursor: pointer; white-space: nowrap; }
 .launcher-prune:not(:disabled):hover { background: color-mix(in srgb, var(--peach) 16%, transparent); }
 .launcher-prune:disabled { opacity: .45; cursor: not-allowed; }
-.launcher-remove { border: 1px solid color-mix(in srgb, var(--red) 40%, transparent); border-radius: var(--control-radius); padding: .18rem .5rem; background: transparent; color: var(--red); font-size: .62rem; cursor: pointer; white-space: nowrap; }
-.launcher-remove:not(:disabled):hover { background: color-mix(in srgb, var(--red) 16%, transparent); }
-.launcher-remove:disabled { opacity: .45; cursor: not-allowed; }
+
+/* a row's Pin and Remove icons, in fixed columns between the name and Launch. Both are the
+   same size (Remove's border is transparent) so the columns hold on every row. */
+.launcher-menu .launcher-icon { display: inline-flex; flex: 0 0 1.7rem; width: 1.7rem; height: 1.7rem; align-items: center; justify-content: center !important; padding: 0 !important; border: 1px solid transparent !important; border-radius: var(--control-radius); background: transparent; color: var(--overlay-2); cursor: pointer; }
+.launcher-menu .launcher-icon:disabled { opacity: .3; cursor: not-allowed; }
+.launcher-icon-glyph { width: .95rem; height: .95rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
+/* Pin is a toggle, so it reads as pressed or not without being hovered: the whole difference
+   is the fill, and nothing else on the row changes with it */
+.launcher-menu .launcher-pin { border-color: var(--surface-1) !important; }
+.launcher-menu .launcher-pin.pinned { border-color: var(--lavender) !important; background: var(--lavender); color: var(--crust); }
+.launcher-pin.pinned .launcher-icon-glyph { fill: color-mix(in srgb, var(--crust) 35%, transparent); }
+.launcher-menu .launcher-pin:not(.pinned):not(:disabled):hover { background: color-mix(in srgb, var(--surface-2) 55%, transparent); color: var(--text); }
+.launcher-menu .launcher-remove:not(:disabled):hover { background: color-mix(in srgb, var(--red) 18%, transparent); color: var(--red); }
+/* hold every row's Launch control to one width (Wake up included) so the icons line up */
+.launcher-row > .launch-split.compact, .launcher-row > .launch-compact { min-width: 10rem; }
+.launcher-row > .launch-split.compact .launch-primary { flex: 1; min-width: 0; }
 
 /* the Remove worktree dialog */
 .remove-worktree-dialog > div { display: grid; width: min(30rem, 100%); gap: .8rem; }

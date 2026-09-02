@@ -131,7 +131,12 @@ test('the launcher offers Scratch and each worktree the same split button', asyn
   const launcher = page.locator('.launcher-menu');
   await expect(launcher.getByText('~ Scratch')).toBeVisible();
   // each worktree row carries its own resolved-kind split button
-  await expect(launcher.locator('.launcher-row').filter({ hasText: 'Cora' }).getByRole('button', { name: 'Launch Claude' })).toBeVisible();
+  const rowLaunch = launcher.locator('.launcher-row').filter({ hasText: 'Cora' }).getByRole('button', { name: 'Launch Claude' });
+  await expect(rowLaunch).toBeVisible();
+  // the compact primary drops the kind glyph its own label already carries; the worktree
+  // card's full-size button keeps it
+  await expect(rowLaunch.locator('.launch-kind-mark')).toHaveCount(0);
+  await expect(page.locator('.launch-split:not(.compact)').getByRole('button', { name: 'Launch Claude' }).locator('.launch-kind-mark')).toHaveText('✳');
   // the scratch row primary launches its own resolved kind
   await launcher.locator('.launcher-row').filter({ hasText: 'Scratch' }).getByRole('button', { name: 'Launch Codex' }).click();
   await expect.poll(() => posts).toEqual([{ path: '/api/agents/launch', body: { kind: 'codex', sandboxed: false } }]);

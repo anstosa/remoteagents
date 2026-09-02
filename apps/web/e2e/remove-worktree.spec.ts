@@ -1,8 +1,9 @@
 import { expect, test } from '@playwright/test';
 
-// the Remove and Prune flows: an idle linked Worktree's launcher row offers Remove (hidden
-// on Main, disabled when locked), the dialog decides with fresh facts, and a Project with
-// stale checkouts offers "N stale · Prune".
+// the Remove and Prune flows: every idle Worktree's launcher row carries a Remove icon —
+// disabled with its reason on Main and on locked checkouts, so the column never goes blank —
+// the dialog decides with fresh facts, and a Project with stale checkouts offers
+// "N stale · Prune".
 const dashboard = {
   generation: 1,
   agents: [],
@@ -17,7 +18,7 @@ const dashboard = {
 
 const facts = { main: false, detached: false, locked: false, branch: 'feat', dirtyCount: 2, pushed: true, merged: false, ahead: 1, behind: 0, blockers: [] };
 
-async function stub(page: import('@playwright/test').Page, handlers: { onDelete?: (body: unknown) => void; onPrune?: () => void; removal?: unknown } = {}) {
+async function stub(page: import('@playwright/test').Page, handlers: { onDelete?: (body: unknown) => void; onPrune?: (contentType: string | undefined) => void; removal?: unknown } = {}) {
   await page.route('**/api/**', async route => {
     const request = route.request();
     // the Worktree wire id carries `:` and `/`, so decode the encoded path before matching
@@ -31,7 +32,7 @@ async function stub(page: import('@playwright/test').Page, handlers: { onDelete?
       return route.fulfill({ status: 200, json: { removed: true } });
     }
     if (path === '/api/projects/repo/worktrees/prune' && request.method() === 'POST') {
-      handlers.onPrune?.();
+      handlers.onPrune?.(request.headers()['content-type']);
       return route.fulfill({ status: 204, body: '' });
     }
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
@@ -45,13 +46,19 @@ test('removes a linked worktree with discard and branch-delete from the launcher
   await page.locator('.new-agent-tab').click();
   const launcher = page.getByRole('group', { name: 'Agent launcher' });
 
-  // Main has no Remove; a locked linked worktree's Remove is disabled with its reason
-  await expect(launcher.getByRole('button', { name: 'Remove Repo', exact: true })).toHaveCount(0);
+  // Main keeps the Remove column but cannot act, and a locked linked worktree says why too
+  const mainRemove = launcher.getByRole('button', { name: 'Remove Repo', exact: true });
+  await expect(mainRemove).toBeDisabled();
+  await expect(mainRemove).toHaveAttribute('title', 'The main worktree cannot be removed');
   const lockedRemove = launcher.getByRole('button', { name: 'Remove Repo · held' });
   await expect(lockedRemove).toBeDisabled();
   await expect(lockedRemove).toHaveAttribute('title', 'Locked worktrees cannot be removed');
 
-  await launcher.getByRole('button', { name: 'Remove Repo · feat' }).click();
+  // Remove is icon-only, so its tooltip says what the icon does
+  const remove = launcher.getByRole('button', { name: 'Remove Repo · feat' });
+  await expect(remove).toHaveText('');
+  await expect(remove).toHaveAttribute('title', 'Remove worktree');
+  await remove.click();
   const dialog = page.getByRole('dialog', { name: 'Remove worktree' });
   await expect(dialog).toBeVisible();
   // the fresh facts render, a dirty tree needs the discard tick, and the branch is deletable
@@ -106,8 +113,8 @@ test('refuses removal while a blocker runs', async ({ page }) => {
 });
 
 test('prunes a project\'s stale checkouts from the launcher header', async ({ page }) => {
-  let pruned = false;
-  await stub(page, { onPrune: () => { pruned = true; } });
+  let pruned: { contentType: string | undefined } | undefined;
+  await stub(page, { onPrune: contentType => { pruned = { contentType }; } });
   await page.goto('/');
   await page.locator('.new-agent-tab').click();
   const launcher = page.getByRole('group', { name: 'Agent launcher' });
@@ -121,6 +128,9 @@ test('prunes a project\'s stale checkouts from the launcher header', async ({ pa
   await expect(dialog.getByText(/does not mount can look stale/u)).toBeVisible();
   await dialog.getByRole('button', { name: 'Prune', exact: true }).click();
 
-  await expect.poll(() => pruned).toBe(true);
+  await expect.poll(() => pruned !== undefined).toBe(true);
+  // a body-less POST must not claim a JSON body: Fastify answers that pair with 400
+  // "Body cannot be empty when content-type is set to 'application/json'"
+  expect(pruned?.contentType).toBeUndefined();
   await expect(dialog).toBeHidden();
 });

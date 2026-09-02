@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
 
-// the projects[] wire: the "+" launcher groups idle Worktrees under one section per Project,
-// and each row carries a Pin toggle that POSTs to /api/worktrees/:id/pin
+// the projects[] wire: the "+" launcher groups idle Worktrees under one section per Project
+// — a header, one row per Worktree (name, Pin icon, Remove icon, Launch), then New worktree…
+// — and each row's Pin toggle POSTs to /api/worktrees/:id/pin
 test('launcher lists per-project sections and pins a worktree', async ({ page }) => {
   const pins: Array<{ id: string; pinned: boolean }> = [];
   await page.route('**/api/**', async route => {
@@ -30,8 +31,23 @@ test('launcher lists per-project sections and pins a worktree', async ({ page })
   await page.locator('.new-agent-tab').click();
   const launcher = page.getByRole('group', { name: 'Agent launcher' });
   await expect(launcher.locator('.launcher-project-header > span')).toHaveText('Repo');
-  // the pinned Main worktree offers an Unpin toggle; the idle feature offers a Pin toggle
-  await expect(launcher.getByRole('button', { name: 'Unpin Repo', exact: true })).toBeVisible();
-  await launcher.getByRole('button', { name: 'Pin Repo · feature' }).click();
+  // rows sit under that header, so they name the Worktree alone: Main by its branch, the
+  // linked one with the Project prefix its wire label carries dropped
+  await expect(launcher.locator('.launcher-row-label')).toHaveText(['~ Scratch', 'main', 'feature']);
+  // New worktree… closes the section, below the last row
+  await expect(launcher.locator('.launcher-project > :last-child')).toHaveClass(/launcher-new-worktree/u);
+  // the pinned Main worktree offers an Unpin toggle; the idle feature offers a Pin toggle.
+  // Both are icon-only, so the accessible name and the tooltip carry the wording
+  const pin = launcher.getByRole('button', { name: 'Pin Repo · feature' });
+  const unpin = launcher.getByRole('button', { name: 'Unpin Repo', exact: true });
+  await expect(unpin).toBeVisible();
+  await expect(pin).toHaveText('');
+  await expect(pin).toHaveAttribute('title', 'Pin worktree');
+  // the toggle reads pressed or not without being hovered: `pinned` is the filled state
+  await expect(pin).toHaveAttribute('aria-pressed', 'false');
+  await expect(unpin).toHaveAttribute('aria-pressed', 'true');
+  await expect(unpin).toHaveClass(/\bpinned\b/u);
+  await expect(pin).not.toHaveClass(/\bpinned\b/u);
+  await pin.click();
   await expect.poll(() => pins).toContainEqual({ id: 'repo:/repo/feature', pinned: true });
 });

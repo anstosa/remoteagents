@@ -127,7 +127,7 @@ export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch
     {!compact && hint !== undefined && <small className="launch-hint">{hint}</small>}
     <span className={`launch-split${compact ? ' compact' : ''}`} role="group" aria-label={`${verb} agent`} ref={anchorRef}>
       <button type="button" className={`${primaryClass} launch-primary`} disabled={resolvedKind === undefined || disabled || pending} title={primaryTitle} onClick={() => resolvedKind !== undefined && launch({ kind: resolvedKind, sandboxed })}>
-        {pending ? <span className="spinner" /> : resolvedKind !== undefined && <KindMark kind={resolvedKind} />}{actionCopy(verb, resolvedKind)}{sandboxed && <LockIcon />}
+        {pending ? <span className="spinner" /> : !compact && resolvedKind !== undefined && <KindMark kind={resolvedKind} />}{actionCopy(verb, resolvedKind)}{sandboxed && <LockIcon />}
       </button>
       <button type="button" className={`launch-chevron${compact ? ' compact' : ''}`} aria-label="Choose agent" aria-haspopup="menu" aria-expanded={open} disabled={none || disabled || pending} onClick={() => setOpen(value => !value)}><ChevronIcon /></button>
     </span>
