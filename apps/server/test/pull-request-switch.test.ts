@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PullRequestSwitchService } from '../src/pull-requests/switch-service.js';
@@ -117,6 +117,32 @@ describe('pull request switching', () => {
 
     await expect(service.available(agent.id)).resolves.toEqual({ enabled: true, pullRequests: [{ ...choices[0], checkoutBranch: 'feature/draft', checkedOut: true, openIn: { agentId: 'agent-2', worktreeId: 'delta', worktreeName: 'Delta' } }], otherPullRequests: [] });
     await expect(service.switch(agent.id, 7)).resolves.toBe(false);
+  });
+
+  it('matches linked worktrees whose common repository has different mount paths', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'rac-pr-repository-alias-'));
+    try {
+      const common = join(root, 'common.git');
+      const targetAlias = join(root, 'target.git');
+      const sourceAlias = join(root, 'source.git');
+      await mkdir(common);
+      await symlink(common, targetAlias, 'dir');
+      await symlink(common, sourceAlias, 'dir');
+      const sourceWorktree = { ...worktree, id: 'delta', label: 'Delta', identity: '/worktrees/delta', path: '/worktrees/delta' };
+      const sourceAgent = { ...agent, id: 'agent-2', workspace: sourceWorktree.identity, branch: 'feature/draft', worktreeId: 'delta', worktreeLabel: 'Delta' };
+      const discovery = { target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent, sourceAgent], worktrees: [] }) };
+      const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
+      const command = async (_binary: string, args: string[]) => {
+        // expose two paths for one repository directory
+        if (args.includes('--git-common-dir')) return { code: 0, stdout: `${args[1] === worktree.identity ? targetAlias : sourceAlias}\n` };
+        return await cleanCommand(_binary, args);
+      };
+      const service = new PullRequestSwitchService({ ...config, worktrees: [worktree, sourceWorktree] }, discovery as never, {} as never, pulls as never, command);
+
+      await expect(service.available(agent.id)).resolves.toMatchObject({ pullRequests: [{ number: 7, checkedOut: true, openIn: { agentId: 'agent-2', worktreeId: 'delta', worktreeName: 'Delta' } }] });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   // preserve the newest git state after remote metadata loading

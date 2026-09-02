@@ -29,7 +29,7 @@ const plainTerminalText = (value: string) => value
   .replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '')
   .replace(/\r/gu, '');
 
-// read only the bottom-most live Codex composer, excluding matching scrollback
+// read only the bottom-most prompt or shell composer, excluding matching scrollback
 function activeComposerFromCapture(value: string): string | undefined {
   const lines = plainTerminalText(value).split('\n');
   let finalVisibleRow = lines.length - 1;
@@ -37,10 +37,11 @@ function activeComposerFromCapture(value: string): string | undefined {
   while (finalVisibleRow >= 0 && !lines[finalVisibleRow]!.trim()) finalVisibleRow -= 1;
   // inspect composer markers newest first
   for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const match = /^›(?:\s(.*))?$/u.exec(lines[index]!);
+    const match = /^([›!])(?:\s(.*))?$/u.exec(lines[index]!);
     // skip non-composer rows
     if (match === null) continue;
-    const draft = [match[1] ?? ''];
+    // restore the shell prefix that Codex renders as composer chrome
+    const draft = [match[1] === '!' ? `!${match[2] ?? ''}` : match[2] ?? ''];
     let submitted = false;
     // collect wrapped paragraphs and blank composer rows
     for (let following = index + 1; following < lines.length; following += 1) {
@@ -66,8 +67,8 @@ export function codexDraftState(capture: string, prompt: string): SubmissionDraf
   const composer = activeComposerFromCapture(capture);
   // a transition without a structurally valid composer is inconclusive
   if (composer === undefined) return 'unknown';
-  const normalizedComposer = composer.replace(/\s+/gu, ' ').trim();
-  const normalizedPrompt = prompt.replace(/\s+/gu, ' ').trim();
+  const normalizedComposer = composer.replace(/\s+/gu, ' ').trim().replace(/^!\s*/u, '!');
+  const normalizedPrompt = prompt.replace(/\s+/gu, ' ').trim().replace(/^!\s*/u, '!');
   const visibleSuffix = normalizedPrompt.slice(-Math.min(64, normalizedPrompt.length));
   const collapsedPaste = `[Pasted Content ${prompt.length} chars]`;
   // accept Codex's exact long-paste placeholder

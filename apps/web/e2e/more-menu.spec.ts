@@ -141,7 +141,7 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
   await expect(attachItem).toHaveCSS('background-color', 'rgb(49, 50, 68)');
 
   await expect(menu.getByRole('button', { name: 'Switch to PR', exact: true })).toHaveCount(0);
-  const pullRequest = menu.getByRole('button', { name: '#2567: Make prompt actions fit', exact: true });
+  const pullRequest = menu.getByRole('link', { name: '#2567: Make prompt actions fit', exact: true });
   await expect(pullRequest).toBeVisible();
   await expect.poll(async () => Math.abs((await attachMenuItem.boundingBox())!.y - stableItemBefore!.y)).toBeLessThanOrEqual(1);
   await expect(pullRequest).not.toContainText('Open');
@@ -153,27 +153,26 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
   await expect(pullRequestActions.getByRole('img', { name: 'Merge conflicts' })).toBeVisible();
   await expect(pullRequestActions.getByRole('img', { name: 'Unresolved review comments' })).toBeVisible();
   await expect(pullRequest.locator('.switch-pr-copy strong')).toHaveCSS('color', 'rgb(166, 227, 161)');
-  const draft = menu.getByRole('button', { name: '#2568: Prompt actions experiment', exact: true });
+  const draft = menu.getByRole('link', { name: '#2568: Prompt actions experiment', exact: true });
   await expect(draft).not.toContainText('Draft');
   const draftIcon = draft.locator('xpath=..').locator('.switch-pr-status-icon');
   await expect(draftIcon).toHaveCSS('background-color', 'rgb(147, 153, 178)');
   await expect(draft.locator('.switch-pr-copy strong')).toHaveCSS('color', 'rgb(147, 153, 178)');
-  const external = menu.getByRole('link', { name: 'Open PR #2567 in GitHub' });
-  await expect(external).toHaveAttribute('href', 'https://github.example.com/pull/2567');
-  await expect(external).toHaveAttribute('target', '_blank');
-  await expect(external.locator('svg')).toBeVisible();
-  await expect(external).toContainText('Open in GitHub');
-  await expect(external).toHaveCSS('border-top-style', 'solid');
-  await expect(external).toHaveCSS('border-top-width', '1px');
+  const checkout = pullRequest.locator('xpath=..').getByRole('button', { name: 'Checkout' });
+  await expect(pullRequest).toHaveAttribute('href', 'https://github.example.com/pull/2567');
+  await expect(pullRequest).toHaveAttribute('target', '_blank');
+  await expect(checkout).toBeEnabled();
   const moreOptions = page.getByRole('button', { name: 'More options' });
-  await moreOptions.click();
+  // dismiss through the click-blocking backdrop
+  await page.mouse.click(4, 4);
   await expect(menu).toBeHidden();
   await moreOptions.click();
   await expect(menu.getByRole('status', { name: 'Loading pull requests…', exact: true })).toBeVisible();
   await expect(pullRequest).toBeVisible();
-  await expect(pullRequest).toBeDisabled();
-  finishPullRequestRefresh();
   await expect(pullRequest).toBeEnabled();
+  await expect(checkout).toBeDisabled();
+  finishPullRequestRefresh();
+  await expect(checkout).toBeEnabled();
   const positions = await page.locator('.switch-pr-option').first().evaluate(element => {
     const title = element.querySelector(':scope > .switch-pr')!.getBoundingClientRect();
     const actions = element.querySelector('.switch-pr-actions')!.getBoundingClientRect();
@@ -183,7 +182,7 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
   });
   expect(positions.actionsTop).toBeGreaterThanOrEqual(positions.titleBottom - 1);
   expect(positions.firstButtonLeft).toBeGreaterThanOrEqual(positions.statusRight);
-  const [github] = await Promise.all([page.waitForEvent('popup'), external.click()]);
+  const [github] = await Promise.all([page.waitForEvent('popup'), pullRequest.click()]);
   await expect(github).toHaveURL('https://github.example.com/pull/2567');
   await github.close();
 
@@ -232,7 +231,7 @@ test('queues the configured push prompt and falls back to the default action', a
   await expect.poll(() => queued).toEqual(['$finish', 'review, commit, and push']);
 });
 
-test('shows every pull request target while keeping external and worktree actions available', async ({ page }) => {
+test('shows every pull request target while keeping checkout and worktree actions available', async ({ page }) => {
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -268,36 +267,86 @@ test('shows every pull request target while keeping external and worktree action
   await page.goto('/');
   await page.getByRole('button', { name: 'More options' }).click();
   const menu = page.locator('.more-menu');
-  const dirtyTarget = menu.getByRole('button', { name: '#300: Visible while dirty' });
-  const openTarget = menu.getByRole('button', { name: '#301: Already in Delta' });
-  const otherTarget = menu.getByRole('button', { name: '#302: Authored by someone else' });
+  const dirtyTarget = menu.getByRole('link', { name: '#300: Visible while dirty' });
+  const openTarget = menu.getByRole('link', { name: '#301: Already in Delta' });
+  const otherTarget = menu.getByRole('link', { name: '#302: Authored by someone else' });
   await expect(dirtyTarget).toBeVisible();
-  await expect(dirtyTarget).toBeDisabled();
+  await expect(dirtyTarget).toBeEnabled();
   await expect(openTarget).toBeVisible();
-  await expect(openTarget).toBeDisabled();
+  await expect(openTarget).toBeEnabled();
+  await expect(openTarget.getByText('Already open in Delta', { exact: true })).toBeVisible();
   await expect(otherTarget).not.toBeVisible();
   await menu.getByText(/^Pull requests by others/u).click();
   await expect(otherTarget).toBeVisible();
-  await expect(otherTarget).toBeDisabled();
-  await expect(menu.getByRole('link', { name: 'Open PR #300 in GitHub' })).toHaveAttribute('href', 'https://github.example.com/pull/300');
+  await expect(otherTarget).toBeEnabled();
+  await expect(dirtyTarget).toHaveAttribute('href', 'https://github.example.com/pull/300');
 
   const switchToDelta = menu.getByRole('button', { name: 'Switch to Delta' });
-  const moveHere = menu.getByRole('button', { name: 'Move it here' });
-  const openDeltaInGitHub = menu.getByRole('link', { name: 'Open PR #301 in GitHub' });
+  const checkout = openTarget.locator('xpath=..').getByRole('button', { name: 'Checkout' });
   const actionOrder = await openTarget.locator('xpath=..').locator('.switch-pr-actions').locator('.switch-pr-action').evaluateAll(elements => elements.map(element => element.textContent?.trim()));
-  expect(actionOrder).toEqual(['Open in GitHub', 'Switch to Delta', 'Move it here']);
-  await expect(moveHere).toBeDisabled();
-  await expect(moveHere).toHaveAttribute('title', 'Working copy must be clean and pushed');
-  const [externalBox, switchBox] = await Promise.all([openDeltaInGitHub.boundingBox(), switchToDelta.boundingBox()]);
-  expect(externalBox).not.toBeNull();
+  expect(actionOrder).toEqual(['Checkout', 'Switch to Delta']);
+  await expect(checkout).toBeDisabled();
+  await expect(checkout).toHaveAttribute('title', 'Working copy must be clean and pushed');
+  const [checkoutBox, switchBox] = await Promise.all([checkout.boundingBox(), switchToDelta.boundingBox()]);
+  expect(checkoutBox).not.toBeNull();
   expect(switchBox).not.toBeNull();
-  expect(switchBox!.x).toBeGreaterThanOrEqual(externalBox!.x + externalBox!.width);
+  expect(switchBox!.x).toBeGreaterThanOrEqual(checkoutBox!.x + checkoutBox!.width);
   await expect(switchToDelta).toHaveCSS('border-top-style', 'solid');
   await expect(switchToDelta).toHaveCSS('border-top-width', '1px');
+
+  // close without activating a covered control
+  const deltaTab = page.getByRole('tab', { name: /^Delta/u });
+  const settings = page.getByRole('button', { name: 'Global settings' }).first();
+  await expect(deltaTab).toHaveAttribute('aria-selected', 'false');
+  await expect(settings).toHaveAttribute('aria-expanded', 'false');
+  const [settingsBox, menuBox] = await Promise.all([settings.boundingBox(), menu.boundingBox()]);
+  expect(settingsBox).not.toBeNull();
+  expect(menuBox).not.toBeNull();
+  const settingsPoint = { x: settingsBox!.x + settingsBox!.width / 2, y: settingsBox!.y + settingsBox!.height / 2 };
+  const settingsOutsideMenu = settingsPoint.x < menuBox!.x || settingsPoint.x > menuBox!.x + menuBox!.width || settingsPoint.y < menuBox!.y || settingsPoint.y > menuBox!.y + menuBox!.height;
+  expect(settingsOutsideMenu).toBe(true);
+  await page.mouse.click(settingsPoint.x, settingsPoint.y);
+  await expect(menu).toBeHidden();
+  await expect(settings).toHaveAttribute('aria-expanded', 'false');
+  await expect(deltaTab).toHaveAttribute('aria-selected', 'false');
+
+  // reopen for the explicit switch action
+  await page.getByRole('button', { name: 'More options' }).click();
   await switchToDelta.click();
 
-  await expect(page.getByRole('tab', { name: /^Delta/u })).toHaveAttribute('aria-selected', 'true');
+  await expect(deltaTab).toHaveAttribute('aria-selected', 'true');
   await expect(menu).toBeHidden();
+});
+
+test('checks out an available pull request from its dedicated action', async ({ page }) => {
+  let checkedOut: unknown;
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    // authenticate the test client
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    // expose one active worktree
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' }], worktrees: [] } });
+    // disable unrelated setup
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    // connect the visible agent
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    // provide an empty saved-prompt list
+    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
+    // expose one available checkout
+    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [{ number: 300, title: 'Available checkout', branch: 'feature/available', draft: false, url: 'https://github.example.com/pull/300', checkedOut: false }], otherPullRequests: [] } });
+    // record the checkout action
+    if (url.pathname === '/api/agents/agent-1/switch-pr' && request.method() === 'POST') { checkedOut = request.postDataJSON(); return route.fulfill({ status: 202 }); }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'More options' }).click();
+  const option = page.getByRole('link', { name: '#300: Available checkout' }).locator('xpath=..');
+  await option.getByRole('button', { name: 'Checkout' }).click();
+
+  await expect.poll(() => checkedOut).toEqual({ number: 300 });
+  await expect(page.locator('.more-menu')).toBeHidden();
 });
 
 test('moves an occupied pull request into the current worktree', async ({ page }) => {
@@ -329,10 +378,10 @@ test('moves an occupied pull request into the current worktree', async ({ page }
 
   await page.goto('/');
   await page.getByRole('button', { name: 'More options' }).click();
-  const option = page.getByRole('button', { name: '#301: Already in Delta' }).locator('xpath=..');
-  const moveHere = option.getByRole('button', { name: 'Move it here' });
-  await expect(moveHere).toBeEnabled();
-  await moveHere.click();
+  const option = page.getByRole('link', { name: '#301: Already in Delta' }).locator('xpath=..');
+  const checkout = option.getByRole('button', { name: 'Checkout' });
+  await expect(checkout).toBeEnabled();
+  await checkout.click();
   await expect.poll(() => moved).toEqual({ number: 301 });
   await expect(option.getByRole('button', { name: 'Moving…' })).toBeDisabled();
   await expect(option.getByRole('button', { name: 'Switch to Delta' })).toBeDisabled();
@@ -375,8 +424,9 @@ test('shows the workspace pull request cache while refreshing after a tab remoun
 
   await page.goto('/');
   await page.getByRole('button', { name: 'More options' }).click();
-  await expect(page.getByRole('button', { name: '#401: Cached PR' })).toBeVisible();
-  await page.getByRole('button', { name: 'More options' }).click();
+  await expect(page.getByRole('link', { name: '#401: Cached PR' })).toBeVisible();
+  // dismiss through the click-blocking backdrop
+  await page.mouse.click(4, 4);
   await page.getByRole('tab', { name: /^Delta/u }).click();
   await page.getByRole('tab', { name: /^Cora/u }).click();
   await page.getByRole('button', { name: 'More options' }).click();
@@ -384,10 +434,10 @@ test('shows the workspace pull request cache while refreshing after a tab remoun
   const menu = page.locator('.more-menu');
   await expect.poll(() => pullRequestRequests).toBe(2);
   await expect(menu.getByRole('button', { name: 'Pull requests' }).locator('.spinner')).toBeVisible();
-  await expect(menu.getByRole('button', { name: '#401: Cached PR' })).toBeVisible();
+  await expect(menu.getByRole('link', { name: '#401: Cached PR' })).toBeVisible();
   finishRefresh();
-  await expect(menu.getByRole('button', { name: '#402: Refreshed PR' })).toBeVisible();
-  await expect(menu.getByRole('button', { name: '#401: Cached PR' })).toHaveCount(0);
+  await expect(menu.getByRole('link', { name: '#402: Refreshed PR' })).toBeVisible();
+  await expect(menu.getByRole('link', { name: '#401: Cached PR' })).toHaveCount(0);
 });
 
 // protect cached actions after refresh failures
@@ -423,19 +473,21 @@ test('disables stale pull request switching when a refresh fails', async ({ page
 
   await page.goto('/');
   await page.getByRole('button', { name: 'More options' }).click();
-  await expect(page.getByRole('button', { name: '#401: Cached PR' })).toBeEnabled();
-  await page.getByRole('button', { name: 'More options' }).click();
+  await expect(page.getByRole('link', { name: '#401: Cached PR' })).toBeEnabled();
+  // dismiss through the click-blocking backdrop
+  await page.mouse.click(4, 4);
   await page.getByRole('tab', { name: /^Delta/u }).click();
   await page.getByRole('tab', { name: /^Cora/u }).click();
   await page.getByRole('button', { name: 'More options' }).click();
 
   const menu = page.locator('.more-menu');
-  const stalePullRequest = menu.getByRole('button', { name: '#401: Cached PR' });
+  const stalePullRequest = menu.getByRole('link', { name: '#401: Cached PR' });
+  const staleCheckout = stalePullRequest.locator('xpath=..').getByRole('button', { name: 'Checkout' });
   await expect(menu.getByRole('alert')).toHaveText('GitHub could not load pull requests (503).');
   await expect(stalePullRequest).toBeVisible();
-  await expect(stalePullRequest).toBeDisabled();
-  await expect(stalePullRequest).toHaveAttribute('title', 'Pull request list could not be refreshed');
-  await expect(menu.getByRole('link', { name: 'Open PR #401 in GitHub' })).toBeEnabled();
+  await expect(stalePullRequest).toBeEnabled();
+  await expect(staleCheckout).toBeDisabled();
+  await expect(staleCheckout).toHaveAttribute('title', 'Pull request list could not be refreshed');
 });
 
 test('formats the empty pull request state like the New Task description', async ({ page }) => {

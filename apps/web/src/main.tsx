@@ -9,6 +9,7 @@ import { createAnimationFrameTextBatcher, pollWhileVisible } from './client-sche
 import { createOutputLinkOverlays, outputUrlMatchesHost } from './output-links.js';
 import { containOutputScroll } from './output-scroll.js';
 import { preserveOutputLongPressSelection } from './output-touch.js';
+import { FlyoutPortal } from './flyout-portal.js';
 import { NoteMarkdown } from './note-markdown.js';
 import { ProjectOpen } from './project-open.js';
 import { PullRequestCard, PullRequestIndicators, PullRequestStatusIcon, type PullRequestSummary } from './pull-request-card.js';
@@ -1059,19 +1060,6 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const [deviceCodeCopied, setDeviceCodeCopied] = useState(false);
   const accountLoginRequest = useRef(0);
   const { anchorRef, flyoutRef, style } = useViewportFlyout(open);
-  // close after outside interaction
-  useEffect(() => {
-    // listen only while visible
-    if (!open) return;
-    const close = (event: MouseEvent) => {
-      const target = event.target as Node;
-      // preserve interactions within either surface
-      if (anchorRef.current?.contains(target) || flyoutRef.current?.contains(target)) return;
-      setOpen(false);
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [open]);
   // query every configured account when opened
   useEffect(() => {
     // skip hidden menus
@@ -1275,7 +1263,7 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   });
   // render current client and server identities
   const settingsCards = <div className="client-settings-overview" role="presentation"><div className="client-settings-card" role="group" aria-label="Client"><header><small>CLIENT</small><span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Rename Client" onClick={() => beginRename('client')}>Rename</button></span></header><strong>{settings.deviceName}</strong></div><div className="client-settings-card" role="group" aria-label="Server"><header><small>SERVER</small><span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Rename Server" onClick={() => beginRename('server')}>Rename</button></span></header><strong>{settings.serverName}</strong><span>{serverHostLabel(settings.serverUrl)}</span></div></div>;
-  const flyout = !open ? null : createPortal(<div ref={flyoutRef} className="client-settings-menu more-menu flyout-menu" style={style} role="menu" aria-label="Global settings" aria-busy={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined}>{settingsCards}<hr className="more-menu-divider" />{accountsLoading && accounts.length === 0 ? <button className="chatgpt-account-loading" type="button" role="menuitem" disabled><span className="spinner" />Loading ChatGPT accounts…</button> : accountRows}{accountMessage && <span className="chatgpt-account-message" role="status">{accountMessage}</span>}<button className="chatgpt-account-add" type="button" role="menuitem" disabled={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined} onClick={() => void beginAccountLogin()}>+ Add account</button></div>, document.body);
+  const flyout = !open ? null : <FlyoutPortal onDismiss={() => setOpen(false)}><div ref={flyoutRef} className="client-settings-menu more-menu flyout-menu" style={style} role="menu" aria-label="Global settings" aria-busy={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined}>{settingsCards}<hr className="more-menu-divider" />{accountsLoading && accounts.length === 0 ? <button className="chatgpt-account-loading" type="button" role="menuitem" disabled><span className="spinner" />Loading ChatGPT accounts…</button> : accountRows}{accountMessage && <span className="chatgpt-account-message" role="status">{accountMessage}</span>}<button className="chatgpt-account-add" type="button" role="menuitem" disabled={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined} onClick={() => void beginAccountLogin()}>+ Add account</button></div></FlyoutPortal>;
   const renameTarget = dialog === 'client' || dialog === 'server' ? dialog : undefined;
   const renameDialog = renameTarget === undefined ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-rename-title" onKeyDown={event => { /* close on escape */ if (event.key === 'Escape') closeDialog(); }}><div><header><div><small>GLOBAL SETTINGS</small><h2 id="settings-rename-title">Rename {renameTarget === 'client' ? 'Client' : 'Server'}</h2></div><button type="button" aria-label={`Close rename ${renameTarget}`} disabled={pending} onClick={closeDialog}>×</button></header><form onSubmit={event => void submitRename(event)}><label>{renameTarget === 'client' ? 'Client' : 'Server'} name<input autoFocus type="text" value={name} maxLength={renameTarget === 'client' ? 64 : 80} autoComplete="nickname" onChange={event => setName(event.target.value)} /></label>{error && <span className="auth-error" role="alert">{error}</span>}<footer><button type="button" disabled={pending} onClick={closeDialog}>Cancel</button><button type="submit" disabled={pending || !name.trim()}>{pending ? <><span className="spinner" />Renaming…</> : 'Save'}</button></footer></form></div></div>, document.body);
   let accountLoginContent: ReactNode;
@@ -1386,21 +1374,6 @@ function AgentPowerMenu(props: AgentPowerMenuProps) {
   const { pending, onTurnOff } = props;
   const [open, setOpen] = useState(false);
   const { anchorRef, flyoutRef, style } = useViewportFlyout(open);
-  // close after outside interaction
-  useEffect(() => {
-    // listen only while visible
-    if (!open) return;
-    const close = (event: MouseEvent) => {
-      const target = event.target;
-      // ignore non-node event targets
-      if (!(target instanceof Node)) return;
-      // preserve interactions within either surface
-      if (anchorRef.current?.contains(target) || flyoutRef.current?.contains(target)) return;
-      setOpen(false);
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [open]);
   // choose one power action
   const choose = (action: () => void) => {
     setOpen(false);
@@ -1410,7 +1383,7 @@ function AgentPowerMenu(props: AgentPowerMenuProps) {
   const stateActions = props.mode === 'sleeping'
     ? <button type="button" role="menuitem" onClick={() => choose(props.onWake)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>
     : <><button type="button" role="menuitem" onClick={() => choose(props.onRestart)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart</button><button type="button" role="menuitem" onClick={() => choose(props.onClear)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 15 8-8 5 5-8 8H4v-5Zm7-7 5 5M10 20h10" /></svg>Clear</button><button type="button" role="menuitem" onClick={() => choose(props.onSleep)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg>Sleep</button></>;
-  return <><span className="power-menu-wrap" ref={anchorRef}><button className="danger icon-button deactivate-agent" disabled={pending} aria-label="Agent power options" aria-expanded={open} aria-haspopup="menu" title="Agent power options" onClick={() => setOpen(current => !current)}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button></span>{open && createPortal(<div className="more-menu flyout-menu agent-power-menu" ref={flyoutRef} style={style} role="menu" aria-label="Agent power options">{stateActions}<button className="agent-power-off" type="button" role="menuitem" onClick={() => choose(onTurnOff)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>Turn off</button></div>, document.body)}</>;
+  return <><span className="power-menu-wrap" ref={anchorRef}><button className="danger icon-button deactivate-agent" disabled={pending} aria-label="Agent power options" aria-expanded={open} aria-haspopup="menu" title="Agent power options" onClick={() => setOpen(current => !current)}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button></span>{open && <FlyoutPortal onDismiss={() => setOpen(false)}><div className="more-menu flyout-menu agent-power-menu" ref={flyoutRef} style={style} role="menu" aria-label="Agent power options">{stateActions}<button className="agent-power-off" type="button" role="menuitem" onClick={() => choose(onTurnOff)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>Turn off</button></div></FlyoutPortal>}</>;
 }
 
 // render reusable mobile terminal controls
@@ -1472,10 +1445,9 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
   const historyIndex = useRef<number | undefined>(undefined);
   const historyDraft = useRef('');
   const focusPromptAtEnd = useRef(false);
-  const savedPromptGroupRef = useRef<HTMLSpanElement | null>(null);
   const { anchorRef: savedPromptAnchorRef, flyoutRef: savedPromptFlyoutRef, style: savedPromptFlyoutStyle } = useViewportFlyout(savedPromptsOpen);
-  const queuedPromptGroupRef = useRef<HTMLSpanElement | null>(null);
   const { anchorRef: queuedPromptAnchorRef, flyoutRef: queuedPromptFlyoutRef, style: queuedPromptFlyoutStyle } = useViewportFlyout(queuedPromptsOpen);
+  const { anchorRef: commandAnchorRef, flyoutRef: commandFlyoutRef, style: commandFlyoutStyle } = useViewportFlyout<HTMLDivElement>(commandToken !== undefined, { placement: 'above', matchAnchorWidth: true });
   const commandOptions = commandToken === undefined ? [] : promptCommands.filter(command => command.value.startsWith(commandToken.prefix) && command.value.slice(1).toLocaleLowerCase().includes(commandToken.query.toLocaleLowerCase()));
   useEffect(() => { historyIndex.current = undefined; historyDraft.current = ''; }, [id]);
   useEffect(() => {
@@ -1520,24 +1492,6 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
     if (savedConfirmationTimer.current !== undefined) window.clearTimeout(savedConfirmationTimer.current);
     if (copiedSelectionTimer.current !== undefined) window.clearTimeout(copiedSelectionTimer.current);
   }, []);
-  useEffect(() => {
-    if (!savedPromptsOpen) return;
-    const close = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (!savedPromptGroupRef.current?.contains(target) && !savedPromptFlyoutRef.current?.contains(target)) setSavedPromptsOpen(false);
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [savedPromptsOpen, savedPromptFlyoutRef]);
-  useEffect(() => {
-    if (!queuedPromptsOpen) return;
-    const close = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (!queuedPromptGroupRef.current?.contains(target) && !queuedPromptFlyoutRef.current?.contains(target)) setQueuedPromptsOpen(false);
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [queuedPromptsOpen, queuedPromptFlyoutRef]);
   useLayoutEffect(() => {
     if (!focusPromptAtEnd.current) return;
     focusPromptAtEnd.current = false;
@@ -1972,18 +1926,18 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
       input.setSelectionRange(input.value.length, input.value.length);
     });
   };
-  const composer = <div className="prompt-composer"><textarea ref={promptInput} className={listening ? 'voice-listening' : undefined} aria-label="Prompt" aria-description={supportsSpeechRecognition ? 'Press and hold to start dictation. Tap again to stop.' : undefined} aria-autocomplete="list" aria-expanded={commandToken !== undefined} aria-controls={commandToken === undefined ? undefined : `prompt-commands-${id}`} aria-activedescendant={commandOptions[activeCommand] === undefined ? undefined : `prompt-command-${id}-${activeCommand}`} value={value} onFocus={() => { exitTerminalInput.get(id)?.(); onPromptFocus(); }} onBlur={() => setCommandToken(undefined)} onCopy={flashCopiedPromptSelection} onPaste={pasteAttachments} onPointerDown={beginVoiceHold} onPointerUp={endVoiceHold} onPointerCancel={endVoiceHold} onLostPointerCapture={endVoiceHold} onContextMenu={event => { if (voiceHoldStarted.current) event.preventDefault(); }} onKeyDown={event => { const plainArrow = !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey; if (commandOptions.length > 0 && plainArrow && event.key === 'ArrowDown') { event.preventDefault(); setActiveCommand(current => (current + 1) % commandOptions.length); } else if (commandOptions.length > 0 && plainArrow && event.key === 'ArrowUp') { event.preventDefault(); setActiveCommand(current => (current + commandOptions.length - 1) % commandOptions.length); } else if (commandOptions.length > 0 && plainArrow && event.key === 'Enter') { event.preventDefault(); selectCommand(commandOptions[activeCommand] ?? commandOptions[0]!); } else if (plainArrow && event.key === 'ArrowUp' && (historyIndex.current !== undefined || event.currentTarget.selectionStart === event.currentTarget.selectionEnd && !value.slice(0, event.currentTarget.selectionStart).includes('\n'))) { event.preventDefault(); recallPrompt(-1); } else if (plainArrow && event.key === 'ArrowDown' && historyIndex.current !== undefined) { event.preventDefault(); recallPrompt(1); } else if (event.key === 'Escape' && commandToken !== undefined) { event.preventDefault(); setCommandToken(undefined); } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void saveCurrentPrompt(); } else if (event.key === 'Tab') { event.preventDefault(); setValue(current => current + '\t'); } else if (event.key === 'Enter') { event.preventDefault(); /* insert line breaks at selection */ if (event.ctrlKey || event.shiftKey || window.matchMedia('(max-width: 600px)').matches) insertPromptText(event.currentTarget, '\n'); else void submit(); } }} onChange={updatePrompt} />{commandToken !== undefined && <div className="command-menu" id={`prompt-commands-${id}`} role="listbox" aria-label={`${commandToken.prefix} commands`}>{commandOptions.length > 0 ? commandOptions.map((command, index) => <button key={command.value} id={`prompt-command-${id}-${index}`} type="button" role="option" aria-selected={index === activeCommand} className={index === activeCommand ? 'active' : ''} onMouseDown={event => event.preventDefault()} onClick={() => selectCommand(command)}><code>{command.value}</code><span>{command.description}</span></button>) : <span className="command-menu-empty">No matching commands</span>}</div>}</div>;
-  const savedPanel = savedPromptsOpen && createPortal(<section className="saved-prompts-panel more-menu flyout-menu" ref={savedPromptFlyoutRef} style={savedPromptFlyoutStyle} aria-label="Saved prompts"><header><strong>Saved prompts</strong></header><div className="saved-prompts-list">{savedPrompts.map(saved => { const label = saved.text || saved.attachments?.map(attachment => attachment.name).join(', ') || 'Attachments only'; return <div className="saved-prompt-item" key={saved.id}><button className="saved-prompt-restore" type="button" disabled={savedPromptAction !== undefined} title={label} onClick={() => void useSavedPrompt(saved)}>{savedPromptAction?.id === saved.id && savedPromptAction.kind === 'restore' ? <span className="spinner" /> : null}<span className="saved-prompt-copy"><span>{saved.text || 'Attachments only'}</span>{saved.attachments?.length ? <small>{saved.attachments.map(attachment => attachment.name).join(', ')}</small> : null}</span></button><span className="saved-prompt-actions"><button className="saved-prompt-send" type="button" disabled={savedPromptAction !== undefined} aria-label={`Queue saved draft: ${label}`} title="Queue saved draft" onClick={() => void sendSavedPrompt(saved)}>{savedPromptAction?.id === saved.id && savedPromptAction.kind === 'send' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button><button className="saved-prompt-delete" type="button" disabled={savedPromptAction !== undefined} aria-label={`Delete saved draft: ${label}`} title="Delete saved draft" onClick={() => void removeSavedPrompt(saved)}>{savedPromptAction?.id === saved.id && savedPromptAction.kind === 'delete' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg>}</button></span></div>; })}</div></section>, document.body);
+  const composer = <div className="prompt-composer" ref={commandAnchorRef}><textarea ref={promptInput} className={listening ? 'voice-listening' : undefined} aria-label="Prompt" aria-description={supportsSpeechRecognition ? 'Press and hold to start dictation. Tap again to stop.' : undefined} aria-autocomplete="list" aria-expanded={commandToken !== undefined} aria-controls={commandToken === undefined ? undefined : `prompt-commands-${id}`} aria-activedescendant={commandOptions[activeCommand] === undefined ? undefined : `prompt-command-${id}-${activeCommand}`} value={value} onFocus={() => { exitTerminalInput.get(id)?.(); onPromptFocus(); }} onBlur={() => setCommandToken(undefined)} onCopy={flashCopiedPromptSelection} onPaste={pasteAttachments} onPointerDown={beginVoiceHold} onPointerUp={endVoiceHold} onPointerCancel={endVoiceHold} onLostPointerCapture={endVoiceHold} onContextMenu={event => { if (voiceHoldStarted.current) event.preventDefault(); }} onKeyDown={event => { const plainArrow = !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey; if (commandOptions.length > 0 && plainArrow && event.key === 'ArrowDown') { event.preventDefault(); setActiveCommand(current => (current + 1) % commandOptions.length); } else if (commandOptions.length > 0 && plainArrow && event.key === 'ArrowUp') { event.preventDefault(); setActiveCommand(current => (current + commandOptions.length - 1) % commandOptions.length); } else if (commandOptions.length > 0 && plainArrow && event.key === 'Enter') { event.preventDefault(); selectCommand(commandOptions[activeCommand] ?? commandOptions[0]!); } else if (plainArrow && event.key === 'ArrowUp' && (historyIndex.current !== undefined || event.currentTarget.selectionStart === event.currentTarget.selectionEnd && !value.slice(0, event.currentTarget.selectionStart).includes('\n'))) { event.preventDefault(); recallPrompt(-1); } else if (plainArrow && event.key === 'ArrowDown' && historyIndex.current !== undefined) { event.preventDefault(); recallPrompt(1); } else if (event.key === 'Escape' && commandToken !== undefined) { event.preventDefault(); setCommandToken(undefined); } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void saveCurrentPrompt(); } else if (event.key === 'Tab') { event.preventDefault(); setValue(current => current + '\t'); } else if (event.key === 'Enter') { event.preventDefault(); /* insert line breaks at selection */ if (event.ctrlKey || event.shiftKey || window.matchMedia('(max-width: 600px)').matches) insertPromptText(event.currentTarget, '\n'); else void submit(); } }} onChange={updatePrompt} />{commandToken !== undefined && <FlyoutPortal onDismiss={() => setCommandToken(undefined)}><div ref={commandFlyoutRef} className="command-menu" style={commandFlyoutStyle} id={`prompt-commands-${id}`} role="listbox" aria-label={`${commandToken.prefix} commands`}>{commandOptions.length > 0 ? commandOptions.map((command, index) => <button key={command.value} id={`prompt-command-${id}-${index}`} type="button" role="option" aria-selected={index === activeCommand} className={index === activeCommand ? 'active' : ''} onMouseDown={event => event.preventDefault()} onClick={() => selectCommand(command)}><code>{command.value}</code><span>{command.description}</span></button>) : <span className="command-menu-empty">No matching commands</span>}</div></FlyoutPortal>}</div>;
+  const savedPanel = savedPromptsOpen && <FlyoutPortal onDismiss={() => setSavedPromptsOpen(false)}><section className="saved-prompts-panel more-menu flyout-menu" ref={savedPromptFlyoutRef} style={savedPromptFlyoutStyle} aria-label="Saved prompts"><header><strong>Saved prompts</strong></header><div className="saved-prompts-list">{savedPrompts.map(saved => { const label = saved.text || saved.attachments?.map(attachment => attachment.name).join(', ') || 'Attachments only'; return <div className="saved-prompt-item" key={saved.id}><button className="saved-prompt-restore" type="button" disabled={savedPromptAction !== undefined} title={label} onClick={() => void useSavedPrompt(saved)}>{savedPromptAction?.id === saved.id && savedPromptAction.kind === 'restore' ? <span className="spinner" /> : null}<span className="saved-prompt-copy"><span>{saved.text || 'Attachments only'}</span>{saved.attachments?.length ? <small>{saved.attachments.map(attachment => attachment.name).join(', ')}</small> : null}</span></button><span className="saved-prompt-actions"><button className="saved-prompt-send" type="button" disabled={savedPromptAction !== undefined} aria-label={`Queue saved draft: ${label}`} title="Queue saved draft" onClick={() => void sendSavedPrompt(saved)}>{savedPromptAction?.id === saved.id && savedPromptAction.kind === 'send' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button><button className="saved-prompt-delete" type="button" disabled={savedPromptAction !== undefined} aria-label={`Delete saved draft: ${label}`} title="Delete saved draft" onClick={() => void removeSavedPrompt(saved)}>{savedPromptAction?.id === saved.id && savedPromptAction.kind === 'delete' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg>}</button></span></div>; })}</div></section></FlyoutPortal>;
   const savedToggle = savedPrompts.length > 0 ? <button className={`saved-prompts-toggle icon-button${savedPromptsOpen ? ' active' : ''}`} type="button" disabled={pending} aria-label={`Saved prompts (${savedPrompts.length})`} aria-expanded={savedPromptsOpen} title={`${savedPrompts.length} saved prompt${savedPrompts.length === 1 ? '' : 's'}`} onClick={() => setSavedPromptsOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg><span className="saved-prompts-count" aria-hidden="true">{savedPrompts.length}</span></button> : null;
   const saveLabel = savingPrompt ? 'Saving' : savedConfirmation ? 'Saved' : 'Save';
   const saveButton = <button className={`save-prompt outline-button icon-button${savedConfirmation ? ' saved' : ''}`} type="button" disabled={pending || savingPrompt || (!value.trim() && attachments.length === 0)} aria-label={saveLabel} title={saveLabel} onClick={() => void saveCurrentPrompt()}>{savingPrompt ? <span className="spinner" /> : savedConfirmation ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5V3Zm3 0v6h8V3M8 21v-7h8v7" /></svg>}</button>;
-  const saveControls = <><span className={`save-prompt-group${savedToggle === null ? '' : ' has-saved-prompts'}`} ref={element => { savedPromptGroupRef.current = element; savedPromptAnchorRef.current = element; }} role="group" aria-label="Saved prompt controls">{saveButton}{savedToggle}</span>{savedPanel}</>;
+  const saveControls = <><span className={`save-prompt-group${savedToggle === null ? '' : ' has-saved-prompts'}`} ref={savedPromptAnchorRef} role="group" aria-label="Saved prompt controls">{saveButton}{savedToggle}</span>{savedPanel}</>;
   // render numbered answers
   if (question) return <section className="prompt question-prompt"><div className="question-copy"><strong>Agent question</strong><span>{question.text}</span></div><div className="question-choices">{question.choices.map(choice => <button key={`${choice.answerIndex}-${choice.label}`} className="question-choice" disabled={pending} onClick={() => void answer(choice.answerIndex)}><b aria-hidden="true">{choice.number}</b><span>{choice.label}</span></button>)}</div><div className="prompt-actions">{stop}{swapped && swap}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}<More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} pushAction={pushAction} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onPromptQueued={onHistoryChanged} onSelectTarget={onSelectTarget} onOperationFeedback={onOperationFeedback} /></div></section>;
   const queueLabel = swapped ? 'Enter' : pending ? 'Queueing' : 'Queue';
-  const queuePanel = queuedPromptsOpen && createPortal(<section className="queued-prompts-panel more-menu flyout-menu" ref={queuedPromptFlyoutRef} style={queuedPromptFlyoutStyle} aria-label="Queued prompts"><header><strong>Queued prompts</strong></header>{queuedPromptError && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<div className="queued-prompts-list">{queuedPrompts.map((queued, index) => { const label = queued.text || queued.attachments?.map(attachment => attachment.name).join(', ') || 'Attachments only'; const editing = queuedPromptEdit?.id === queued.id; const busy = queuedPromptAction !== undefined; return <div className={`queued-prompt-item${editing ? ' editing' : ''}`} key={queued.id}><span className="queued-prompt-order"><strong className="queued-prompt-position" aria-label={`Queue position ${index + 1}`}>{index + 1}</strong><span className="queued-prompt-order-buttons"><button type="button" disabled={busy || index === 0} aria-label={`Move queued prompt earlier: ${label}`} title="Move earlier" onClick={() => void moveQueuedPrompt(queued, 'earlier')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button type="button" disabled={busy || index === queuedPrompts.length - 1} aria-label={`Move queued prompt later: ${label}`} title="Move later" onClick={() => void moveQueuedPrompt(queued, 'later')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></span></span>{editing ? <textarea aria-label={`Edit queued prompt: ${label}`} value={queuedPromptEdit.text} maxLength={32_000} autoFocus onChange={event => setQueuedPromptEdit({ id: queued.id, text: event.target.value })} /> : <button className="queued-prompt-copy" type="button" disabled={busy} title={label} onClick={() => setQueuedPromptEdit({ id: queued.id, text: queued.text })}><span>{queued.text || 'Attachments only'}</span>{queued.attachments?.length ? <small>{queued.attachments.map(attachment => attachment.name).join(', ')}</small> : null}</button>}<span className="queued-prompt-actions">{editing ? <><button type="button" disabled={busy || !queuedPromptEdit.text.trim() && queued.attachments === undefined} aria-label={`Save queued prompt changes: ${label}`} title="Save changes" onClick={() => void saveQueuedPromptEdit(queued)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={busy} aria-label={`Stop editing queued prompt: ${label}`} title="Stop editing" onClick={() => setQueuedPromptEdit(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></> : <button type="button" disabled={busy} aria-label={`Save queued prompt: ${label}`} title="Move to saved prompts" onClick={() => void moveQueuedPromptToSaved(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'save' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5V3Zm3 0v6h8V3M8 21v-7h8v7" /></svg>}</button>}<button className="queued-prompt-cancel" type="button" disabled={busy} aria-label={`Cancel queued prompt: ${label}`} title="Cancel queued prompt" onClick={() => void cancelQueuedPrompt(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'cancel' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button></span></div>; })}</div></section>, document.body);
+  const queuePanel = queuedPromptsOpen && <FlyoutPortal onDismiss={() => setQueuedPromptsOpen(false)}><section className="queued-prompts-panel more-menu flyout-menu" ref={queuedPromptFlyoutRef} style={queuedPromptFlyoutStyle} aria-label="Queued prompts"><header><strong>Queued prompts</strong></header>{queuedPromptError && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<div className="queued-prompts-list">{queuedPrompts.map((queued, index) => { const label = queued.text || queued.attachments?.map(attachment => attachment.name).join(', ') || 'Attachments only'; const editing = queuedPromptEdit?.id === queued.id; const busy = queuedPromptAction !== undefined; return <div className={`queued-prompt-item${editing ? ' editing' : ''}`} key={queued.id}><span className="queued-prompt-order"><strong className="queued-prompt-position" aria-label={`Queue position ${index + 1}`}>{index + 1}</strong><span className="queued-prompt-order-buttons"><button type="button" disabled={busy || index === 0} aria-label={`Move queued prompt earlier: ${label}`} title="Move earlier" onClick={() => void moveQueuedPrompt(queued, 'earlier')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button type="button" disabled={busy || index === queuedPrompts.length - 1} aria-label={`Move queued prompt later: ${label}`} title="Move later" onClick={() => void moveQueuedPrompt(queued, 'later')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></span></span>{editing ? <textarea aria-label={`Edit queued prompt: ${label}`} value={queuedPromptEdit.text} maxLength={32_000} autoFocus onChange={event => setQueuedPromptEdit({ id: queued.id, text: event.target.value })} /> : <button className="queued-prompt-copy" type="button" disabled={busy} title={label} onClick={() => setQueuedPromptEdit({ id: queued.id, text: queued.text })}><span>{queued.text || 'Attachments only'}</span>{queued.attachments?.length ? <small>{queued.attachments.map(attachment => attachment.name).join(', ')}</small> : null}</button>}<span className="queued-prompt-actions">{editing ? <><button type="button" disabled={busy || !queuedPromptEdit.text.trim() && queued.attachments === undefined} aria-label={`Save queued prompt changes: ${label}`} title="Save changes" onClick={() => void saveQueuedPromptEdit(queued)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={busy} aria-label={`Stop editing queued prompt: ${label}`} title="Stop editing" onClick={() => setQueuedPromptEdit(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></> : <button type="button" disabled={busy} aria-label={`Save queued prompt: ${label}`} title="Move to saved prompts" onClick={() => void moveQueuedPromptToSaved(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'save' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5V3Zm3 0v6h8V3M8 21v-7h8v7" /></svg>}</button>}<button className="queued-prompt-cancel" type="button" disabled={busy} aria-label={`Cancel queued prompt: ${label}`} title="Cancel queued prompt" onClick={() => void cancelQueuedPrompt(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'cancel' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button></span></div>; })}</div></section></FlyoutPortal>;
   const queuedToggle = !swapped && queuedPrompts.length > 0 ? <button className={`queued-prompts-toggle icon-button${queuedPromptsOpen ? ' active' : ''}`} type="button" disabled={pending} aria-label={`Queued prompts (${queuedPrompts.length})`} aria-expanded={queuedPromptsOpen} title={`${queuedPrompts.length} queued prompt${queuedPrompts.length === 1 ? '' : 's'}`} onClick={() => setQueuedPromptsOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg><span className="saved-prompts-count queued-prompts-count" aria-hidden="true">{queuedPrompts.length}</span></button> : null;
-  const queueControls = <><span className={`queue-prompt-group${queuedToggle === null ? '' : ' has-queued-prompts'}`} ref={element => { queuedPromptGroupRef.current = element; queuedPromptAnchorRef.current = element; }} role="group" aria-label="Queue controls"><button className="queue icon-button" disabled={pending || (!swapped && !value && attachments.length === 0)} aria-label={queueLabel} title={queueLabel} onClick={() => void submit()}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button>{queuedToggle}</span>{queuePanel}</>;
+  const queueControls = <><span className={`queue-prompt-group${queuedToggle === null ? '' : ' has-queued-prompts'}`} ref={queuedPromptAnchorRef} role="group" aria-label="Queue controls"><button className="queue icon-button" disabled={pending || (!swapped && !value && attachments.length === 0)} aria-label={queueLabel} title={queueLabel} onClick={() => void submit()}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button>{queuedToggle}</span>{queuePanel}</>;
   return <section className="prompt">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{savedPromptError && <p className="saved-prompt-error" role="alert">{savedPromptError}</p>}{queuedPromptError && !queuedPromptsOpen && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{stop}{swapped && swap}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}<More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} pushAction={pushAction} attachDisabled={pending} onAttach={swapped ? undefined : () => attachmentInput.current?.click()} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onPromptQueued={onHistoryChanged} onSelectTarget={onSelectTarget} onOperationFeedback={onOperationFeedback} /><ProjectOpen url={projectUrl} stack={stack} browserOpen={browserOpen} onBrowserToggle={onBrowserToggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} />{saveControls}{queueControls}</div><MobileTerminalKeys id={id} /></section>;
 }
 
@@ -2085,7 +2039,7 @@ function useFilePreview(previewUrl: string) {
 function useLatestAssistantFiles(agentId: string, message?: string) {
   const [files, setFiles] = useState<AssistantFile[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
-  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen, { placement: 'left', boundarySelector: '.log', boundaryRootSelector: '.agent-view', contentSized: true });
   const filePreview = useFilePreview(`/api/agents/${encodeURIComponent(agentId)}/file-preview`);
 
   useEffect(() => {
@@ -2108,19 +2062,8 @@ function useLatestAssistantFiles(agentId: string, message?: string) {
     return () => { cancelled = true; };
   }, [agentId, message]);
 
-  useEffect(() => {
-    // only bind outside-click handling while open
-    if (!menuOpen) return;
-    const close = (event: MouseEvent) => {
-      // preserve clicks inside the attachment control
-      if (!anchorRef.current?.contains(event.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [menuOpen]);
-
   const label = `Files from latest response (${files.length})`;
-  const control = files.length === 0 ? null : <div className="response-files-control" ref={anchorRef}><button className={`log-control page-arrow response-files-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} onPointerDown={event => event.preventDefault()} onClick={() => setMenuOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 12 5.7-5.7a3.5 3.5 0 1 1 5 5L11 20a5 5 0 1 1-7-7l8.3-8.3" /></svg><span className="saved-prompts-count response-files-count" aria-hidden="true">{files.length}</span></button>{menuOpen && <div className="response-files-menu" aria-label="Files from latest response">{files.map(file => <button className="log-control" type="button" key={file.path} title={file.path} onClick={() => { setMenuOpen(false); void filePreview.openFile(file.path); }}><span>{file.path}</span><small>{assistantFileSize(file.size)}</small></button>)}</div>}</div>;
+  const control = files.length === 0 ? null : <div className="response-files-control" ref={anchorRef}><button className={`log-control page-arrow response-files-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} onPointerDown={event => event.preventDefault()} onClick={() => setMenuOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 12 5.7-5.7a3.5 3.5 0 1 1 5 5L11 20a5 5 0 1 1-7-7l8.3-8.3" /></svg><span className="saved-prompts-count response-files-count" aria-hidden="true">{files.length}</span></button>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div ref={flyoutRef} className="response-files-menu" style={flyoutStyle} aria-label="Files from latest response">{files.map(file => <button className="log-control" type="button" key={file.path} title={file.path} onClick={() => { setMenuOpen(false); void filePreview.openFile(file.path); }}><span>{file.path}</span><small>{assistantFileSize(file.size)}</small></button>)}</div></FlyoutPortal>}</div>;
   return { control, ...filePreview };
 }
 
@@ -2173,20 +2116,6 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
     setDeletingId(undefined);
     setError('');
   }, [agentId, worktreeId]);
-
-  // close the portaled menu from outside clicks
-  useEffect(() => {
-    // bind only while visible
-    if (!menuOpen) return;
-    const close = (event: MouseEvent) => {
-      const target = event.target as Node;
-      // preserve both portal boundaries
-      if (anchorRef.current?.contains(target) || flyoutRef.current?.contains(target)) return;
-      setMenuOpen(false);
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [menuOpen]);
 
   // load one shared bookmark group
   const load = useCallback(async () => {
@@ -2346,7 +2275,7 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
   const label = `Bookmarked chats (${count})`;
   const busy = loading || saving || switchingId !== undefined || renamingId !== undefined || deletingId !== undefined || lifecycleSwitching;
   const resumeUnavailable = worktreeId === undefined ? 'Exact chat resume is not available for scratch agents.' : 'Exact chat resume is not configured for this worktree.';
-  const control = <div className="bookmarks-control" ref={anchorRef}><button className={`log-control page-arrow bookmarks-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18l-6-4-6 4V4Z" /></svg>}{count > 0 && <span className="saved-prompts-count bookmarks-count" aria-hidden="true">{count}</span>}</button>{menuOpen && createPortal(<div ref={flyoutRef} className="bookmarks-menu" style={flyoutStyle} aria-label="Bookmarked chats"><button className="log-control bookmark-current" type="button" disabled={agentId === undefined || busy || renameDraft !== undefined || currentBookmarkId !== undefined} onClick={() => void saveCurrent()}>{saving ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>}<span>{agentId === undefined ? 'Launch an agent to bookmark a chat' : 'Bookmark this chat'}</span></button>{error && <p className="bookmark-error" role="alert">{error}</p>}{!canResume && count > 0 && <p className="bookmark-warning">{resumeUnavailable}</p>}{bookmarks?.map(bookmark => {
+  const control = <div className="bookmarks-control" ref={anchorRef}><button className={`log-control page-arrow bookmarks-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18l-6-4-6 4V4Z" /></svg>}{count > 0 && <span className="saved-prompts-count bookmarks-count" aria-hidden="true">{count}</span>}</button>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div ref={flyoutRef} className="bookmarks-menu" style={flyoutStyle} aria-label="Bookmarked chats"><button className="log-control bookmark-current" type="button" disabled={agentId === undefined || busy || renameDraft !== undefined || currentBookmarkId !== undefined} onClick={() => void saveCurrent()}>{saving ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>}<span>{agentId === undefined ? 'Launch an agent to bookmark a chat' : 'Bookmark this chat'}</span></button>{error && <p className="bookmark-error" role="alert">{error}</p>}{!canResume && count > 0 && <p className="bookmark-warning">{resumeUnavailable}</p>}{bookmarks?.map(bookmark => {
     // render one saved chat row
     const editing = renameDraft?.id === bookmark.id;
     const current = currentBookmarkId === bookmark.id;
@@ -2354,7 +2283,7 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
       // save or cancel from the keyboard
       if (event.key === 'Escape') { event.preventDefault(); setRenameDraft(undefined); }
     }}><input aria-label="Chat name" value={renameDraft.title} maxLength={120} autoFocus disabled={renamingId !== undefined} onChange={event => setRenameDraft({ id: bookmark.id, title: event.target.value })} /><button className="log-control bookmark-rename-save" type="submit" disabled={busy || !renameDraft.title.trim()} aria-label="Save chat name" title="Save chat name">{renamingId === bookmark.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>}</button><button className="log-control bookmark-rename-cancel" type="button" disabled={busy} aria-label="Cancel chat rename" title="Cancel" onClick={() => setRenameDraft(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><button className="log-control bookmark-choice" type="button" aria-current={current ? 'true' : undefined} disabled={busy || renameDraft !== undefined || !canResume} title={canResume ? bookmark.title : resumeUnavailable} onClick={() => void switchTo(bookmark)}>{switchingId === bookmark.id ? <span className="spinner" /> : <span className="bookmark-details"><strong>{bookmark.title}</strong><small>{bookmarkDate(bookmark.createdAt)}</small></span>}</button><span className="bookmark-actions"><button className="log-control bookmark-rename" type="button" disabled={busy || renameDraft !== undefined} aria-label={`Rename saved chat: ${bookmark.title}`} title="Rename saved chat" onClick={() => setRenameDraft({ id: bookmark.id, title: bookmark.title })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button><button className="log-control bookmark-delete" type="button" disabled={busy || renameDraft !== undefined} aria-label={`Delete saved chat: ${bookmark.title}`} title="Delete saved chat" onClick={() => void remove(bookmark)}>{deletingId === bookmark.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg>}</button></span></>}</div>;
-  })}</div>, document.body)}</div>;
+  })}</div></FlyoutPortal>}</div>;
   return { control };
 }
 
@@ -2532,17 +2461,6 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     });
     return () => { cancelled = true; };
   }, [noteViewId, resourceBase]);
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = (event: MouseEvent) => {
-      const target = event.target as Node;
-      // preserve clicks inside either portal boundary
-      if (anchorRef.current?.contains(target) || flyoutRef.current?.contains(target)) return;
-      setMenuOpen(false);
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [menuOpen]);
   useLayoutEffect(() => { if (activeNote !== undefined && editing) editorRef.current?.focus(); }, [activeNote?.id, editing]);
   useLayoutEffect(() => { if (activeNote !== undefined && renaming) titleEditorRef.current?.select(); }, [activeNote?.id, renaming]);
   useEffect(() => {
@@ -2865,7 +2783,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   const noteMenuBusy = menuRenamingId !== undefined || menuDeletingId !== undefined;
   const control = <div className="notes-control" ref={anchorRef}>
     <button ref={triggerRef} className={`log-control page-arrow notes-toggle${menuOpen || activeNote !== undefined ? ' active' : ''}${dirtyCount > 0 ? ' unsaved' : ''}${highlightLatestResponse ? ' latest-response-available' : ''}`} aria-label={notesLabel} title={notesLabel} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}{noteCount > 0 && <span className="saved-prompts-count notes-count" aria-hidden="true">{noteCount}</span>}</button>
-    {menuOpen && createPortal(<div ref={flyoutRef} className="notes-menu" style={flyoutStyle} aria-label={worktreeId === undefined ? 'Scratch notes' : 'Worktree notes'}>
+    {menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div ref={flyoutRef} className="notes-menu" style={flyoutStyle} aria-label={worktreeId === undefined ? 'Scratch notes' : 'Worktree notes'}>
       <button className="log-control save-latest-response" disabled={!latestResponseAvailable || noteMenuBusy || menuRenameDraft !== undefined} onClick={() => {
         // save only an available response
         if (substantialResponse !== undefined) void create(substantialResponse, assistantNoteTitle(substantialResponse));
@@ -2881,7 +2799,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
         }}><input aria-label="Note name" value={menuRenameDraft.title} maxLength={120} autoFocus disabled={menuRenamingId !== undefined} onChange={event => setMenuRenameDraft({ id: note.id, title: event.target.value })} /><button className="log-control note-menu-rename-save" type="submit" disabled={noteMenuBusy || !menuRenameDraft.title.trim()} aria-label="Save note name" title="Save note name">{menuRenamingId === note.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>}</button><button className="log-control note-menu-rename-cancel" type="button" disabled={noteMenuBusy} aria-label="Cancel note rename" title="Cancel" onClick={() => setMenuRenameDraft(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><button className="log-control note-choice" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} title={(note.title ?? note.text) || 'Blank note'} onClick={() => open(note)}><span className="note-menu-name">{label}</span></button><span className="note-menu-actions"><button className="log-control note-menu-rename" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Rename note: ${label}`} title="Rename note" onClick={() => setMenuRenameDraft({ id: note.id, title: Array.from(note.title ?? label).slice(0, 120).join('') })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button><button className="log-control note-menu-delete" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Delete note: ${label}`} title="Delete note" onClick={() => void removeFromMenu(note)}>{menuDeletingId === note.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg>}</button></span></>}</div>;
       })}
       <button className="log-control new-note" disabled={noteMenuBusy || menuRenameDraft !== undefined} onClick={() => void create()}>+ New note</button>
-    </div>, document.body)}
+    </div></FlyoutPortal>}
   </div>;
   const actionStatus = copyState === 'error' ? 'Copy failed' : sendState === 'queued' ? 'Queued' : sendState === 'error' ? 'Queue failed' : '';
   const toggleExpanded = () => setExpanded(value => {
@@ -3217,20 +3135,46 @@ function ProjectBrowserPane({ url, homeUrl, worktreeId, navigationRequest, onNav
 type SplitPanel = 'agent'|'note'|'browser';
 type SplitSizes = Record<SplitPanel, number>;
 type SplitStyle = React.CSSProperties & { '--agent-split': string; '--note-split': string; '--browser-split': string };
-type SplitDrag = { pointerId: number; startX: number; left: SplitPanel; right: SplitPanel; leftWidth: number; rightWidth: number; sizes: SplitSizes };
+type SplitDrag = { pointerId: number; startX: number; left: SplitPanel; right: SplitPanel; leftWidth: number; rightWidth: number; sizes: SplitSizes; resized?: SplitSizes };
 const splitPanelSelector: Record<SplitPanel, string> = { agent: '.log-output', note: '.note-pane', browser: '.browser-pane' };
 const browserMobileWidth = 390;
 const minimumSplitPanelWidth = browserMobileWidth;
+// create an independent default layout
+const defaultSplitSizes = (): SplitSizes => ({ agent: 1, note: 1, browser: 1 });
+// scope split layouts to one browser client and workspace composition
+const splitSizesKey = (worktreeId: string, signature: string) => `rac.split-sizes:${worktreeId}:${signature}`;
+// restore one validated browser-local layout
+const savedSplitSizes = (worktreeId: string | undefined, signature: string): SplitSizes => {
+  // keep unscoped agent layouts ephemeral
+  if (worktreeId === undefined) return defaultSplitSizes();
+  try {
+    const stored = JSON.parse(localStorage.getItem(splitSizesKey(worktreeId, signature)) ?? 'null') as Partial<SplitSizes> | null;
+    // reject missing, nonnumeric, or unreasonable panel weights
+    if (stored !== null
+      && typeof stored.agent === 'number' && Number.isFinite(stored.agent) && stored.agent > 0 && stored.agent <= 100_000
+      && typeof stored.note === 'number' && Number.isFinite(stored.note) && stored.note > 0 && stored.note <= 100_000
+      && typeof stored.browser === 'number' && Number.isFinite(stored.browser) && stored.browser > 0 && stored.browser <= 100_000) return stored as SplitSizes;
+  } catch { /* browser storage is optional */ }
+  return defaultSplitSizes();
+};
+// persist one user-adjusted browser-local layout
+const saveSplitSizes = (worktreeId: string | undefined, signature: string, sizes: SplitSizes) => {
+  // keep unscoped agent layouts ephemeral
+  if (worktreeId === undefined) return;
+  try { localStorage.setItem(splitSizesKey(worktreeId, signature), JSON.stringify(sizes)); }
+  catch { /* browser storage is optional */ }
+};
 // render ordered resizable output panels
-function ResizableLogSplit({ output, note, browser }: { output: ReactNode; note?: ReactNode; browser?: ReactNode }) {
+function ResizableLogSplit({ worktreeId, output, note, browser }: { worktreeId?: string; output: ReactNode; note?: ReactNode; browser?: ReactNode }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<SplitDrag | undefined>(undefined);
   const hasNote = note !== undefined && note !== null;
   const hasBrowser = browser !== undefined && browser !== null;
   const signature = `${hasNote ? 'note' : ''}:${hasBrowser ? 'browser' : ''}`;
-  const [sizes, setSizes] = useState<SplitSizes>({ agent: 1, note: 1, browser: 1 });
+  const [sizes, setSizes] = useState<SplitSizes>(() => savedSplitSizes(worktreeId, signature));
   const [mobilePanel, setMobilePanel] = useState<'agent'|'browser'>('agent');
-  useEffect(() => setSizes({ agent: 1, note: 1, browser: 1 }), [signature]);
+  // restore the exact workspace layout for each open-panel composition
+  useEffect(() => setSizes(savedSplitSizes(worktreeId, signature)), [signature, worktreeId]);
   // start every mobile split on the agent
   useEffect(() => setMobilePanel('agent'), [hasBrowser]);
   // collect current panel widths
@@ -3264,13 +3208,19 @@ function ResizableLogSplit({ output, note, browser }: { output: ReactNode; note?
     const combined = drag.leftWidth + drag.rightWidth;
     const minimum = minimumSplitPanelWidth;
     const leftWidth = Math.max(minimum, Math.min(combined - minimum, drag.leftWidth + event.clientX - drag.startX));
-    setSizes({ ...drag.sizes, [drag.left]: leftWidth, [drag.right]: combined - leftWidth });
+    const resized = { ...drag.sizes, [drag.left]: leftWidth, [drag.right]: combined - leftWidth };
+    // retain the final pointer position for pointerup persistence
+    dragRef.current = { ...drag, resized };
+    setSizes(resized);
   };
   // finish pointer resizing
   const stopResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
     // ignore unrelated pointers
-    if (dragRef.current?.pointerId !== event.pointerId) return;
+    if (drag?.pointerId !== event.pointerId) return;
     dragRef.current = undefined;
+    // persist only layouts that the user actually moved
+    if (drag.resized !== undefined) saveSplitSizes(worktreeId, signature, drag.resized);
     // release an active drag capture
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
@@ -3285,7 +3235,9 @@ function ResizableLogSplit({ output, note, browser }: { output: ReactNode; note?
     const minimum = minimumSplitPanelWidth;
     const direction = event.key === 'ArrowLeft' ? -32 : 32;
     const leftWidth = Math.max(minimum, Math.min(combined - minimum, measured[left] + direction));
-    setSizes({ ...measured, [left]: leftWidth, [right]: combined - leftWidth });
+    const resized = { ...measured, [left]: leftWidth, [right]: combined - leftWidth };
+    setSizes(resized);
+    saveSplitSizes(worktreeId, signature, resized);
     event.preventDefault();
   };
   // switch the retained mobile split panel
@@ -3329,9 +3281,8 @@ function GitChangeGroup({ label, changes, onOpenFile }: { label: string; changes
 }
 // render working and pull-request changes
 function GitStatus({ branch, summary, prSummary, expanded = false, onToggle, onOpenFile, onReview, reviewOpen = false, reviewUnavailable }: { branch?: string; summary?: GitStatusSummary; prSummary?: GitComparisonSummary; expanded?: boolean; onToggle?: () => void; onOpenFile: (path: string) => void; onReview?: (scope: ReviewScope) => void; reviewOpen?: boolean; reviewUnavailable?: string }) {
-  const lastTouchToggle = useRef<number | undefined>(undefined);
   const wrapRef = useRef<HTMLSpanElement | null>(null);
-  const [panelMaxHeight, setPanelMaxHeight] = useState(0);
+  const [panelStyle, setPanelStyle] = useState<React.CSSProperties>({ visibility: 'hidden' });
   const [mode, setMode] = useState<'working' | 'pr'>(prSummary === undefined ? 'working' : 'pr');
   // default new branches to all pr changes
   useEffect(() => { setMode(prSummary === undefined ? 'working' : 'pr'); }, [branch]);
@@ -3346,30 +3297,33 @@ function GitStatus({ branch, summary, prSummary, expanded = false, onToggle, onO
     // wait for an expanded anchor
     if (!expanded || wrap === null) return;
     // measure the available viewport
-    const syncPanelHeight = () => {
+    // place the portal at its former anchored position
+    const syncPanelPosition = () => {
       const viewport = window.visualViewport;
       const viewportTop = viewport?.offsetTop ?? 0;
       const rootFontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-      const available = wrap.getBoundingClientRect().top - viewportTop - rootFontSize * .7 - 8;
-      setPanelMaxHeight(Math.max(0, Math.floor(available + 8)));
+      const anchorTop = wrap.getBoundingClientRect().top;
+      const gap = rootFontSize * .7;
+      const maxHeight = Math.max(0, Math.floor(anchorTop - viewportTop - gap));
+      setPanelStyle({ position: 'fixed', top: 'auto', right: '.375rem', bottom: window.innerHeight - anchorTop + gap, left: 'auto', maxHeight, visibility: 'visible' });
     };
-    const observer = new ResizeObserver(syncPanelHeight);
+    const observer = new ResizeObserver(syncPanelPosition);
     observer.observe(wrap);
     const shell = wrap.closest('.log-shell');
     // follow shell size changes
     if (shell !== null) observer.observe(shell);
-    window.addEventListener('resize', syncPanelHeight);
-    window.addEventListener('scroll', syncPanelHeight, true);
-    window.visualViewport?.addEventListener('resize', syncPanelHeight);
-    window.visualViewport?.addEventListener('scroll', syncPanelHeight);
-    syncPanelHeight();
+    window.addEventListener('resize', syncPanelPosition);
+    window.addEventListener('scroll', syncPanelPosition, true);
+    window.visualViewport?.addEventListener('resize', syncPanelPosition);
+    window.visualViewport?.addEventListener('scroll', syncPanelPosition);
+    syncPanelPosition();
     // release viewport listeners
     return () => {
       observer.disconnect();
-      window.removeEventListener('resize', syncPanelHeight);
-      window.removeEventListener('scroll', syncPanelHeight, true);
-      window.visualViewport?.removeEventListener('resize', syncPanelHeight);
-      window.visualViewport?.removeEventListener('scroll', syncPanelHeight);
+      window.removeEventListener('resize', syncPanelPosition);
+      window.removeEventListener('scroll', syncPanelPosition, true);
+      window.visualViewport?.removeEventListener('resize', syncPanelPosition);
+      window.visualViewport?.removeEventListener('scroll', syncPanelPosition);
     };
   }, [expanded]);
   // hide outside repositories
@@ -3399,22 +3353,9 @@ function GitStatus({ branch, summary, prSummary, expanded = false, onToggle, onO
       ? []
       : [`Compared with ${prSummary.base}`, gitCountLabel(prSummary.files, 'file'), `+${gitNumberLabel(prTotals.additions)} −${gitNumberLabel(prTotals.deletions)}`];
   const emptyLabel = activeSummary?.files === 0 ? mode === 'working' ? 'No working changes' : 'No PR changes' : 'Changed-file details unavailable';
-  // support touch without delayed clicks
-  const pointerToggle = (event: React.PointerEvent<HTMLButtonElement>) => {
-    // use immediate touch toggles
-    if (event.pointerType !== 'touch' && event.pointerType !== 'pen') return;
-    lastTouchToggle.current = performance.now();
-    event.preventDefault();
-    onToggle?.();
-  };
-  // suppress the synthetic touch click
-  const clickToggle = () => {
-    // toggle mouse clicks and nonduplicate touch clicks
-    if (lastTouchToggle.current === undefined || performance.now() - lastTouchToggle.current > 700) onToggle?.();
-  };
   const disabledReviewReason = reviewOpen ? undefined : reviewUnavailable ?? (activeSummary === undefined ? 'Selected changes unavailable' : undefined);
   const reviewLabel = reviewOpen ? 'Open Review' : 'Review';
-  return <span ref={wrapRef} className={`git-status-wrap${expanded ? ' expanded' : ''}`}><button className={`git-status-summary ${state}`} type="button" aria-label={label} aria-expanded={expanded} title={label} onPointerDown={pointerToggle} onClick={clickToggle}><span className="git-branch">{branch}</span><span className="git-status-separator" aria-hidden="true">·</span><span className="git-worktree-state">{stateLabel}</span></button>{expanded && <span className="git-status-panel" role="region" aria-label="Changed files" style={{ maxHeight: panelMaxHeight }}><span className="git-status-panel-header"><strong>{mode === 'working' ? 'Working changes' : 'PR changes'}</strong>{panelDetails.length > 0 && <small className="git-status-details">{panelDetails.join(' · ')}</small>}</span>{changedFiles !== undefined && changedFiles.length > 0 ? <span className="git-status-files"><GitChangeGroup label="Implementation" changes={implementationChanges} onOpenFile={onOpenFile} /><GitChangeGroup label="TESTS & DOCS" changes={supportingChanges} onOpenFile={onOpenFile} /></span> : <span className="git-status-empty">{emptyLabel}</span>}<span className="git-status-panel-footer"><button className="git-status-review" type="button" disabled={onReview === undefined || disabledReviewReason !== undefined} title={disabledReviewReason ?? (reviewOpen ? 'Open the current guided review' : `Start guided review of ${mode === 'working' ? 'Working' : 'All PR'} changes`)} onClick={() => onReview?.(mode)}>{reviewLabel}</button><span className="git-status-mode" role="group" aria-label="Git change view"><button type="button" aria-pressed={mode === 'working'} onClick={() => setMode('working')}>Working</button><button type="button" aria-pressed={mode === 'pr'} disabled={prSummary === undefined} title={prSummary === undefined ? 'Merge target unavailable' : `Compare with ${prSummary.base}`} onClick={() => setMode('pr')}>All PR</button></span></span></span>}</span>;
+  return <span ref={wrapRef} className={`git-status-wrap${expanded ? ' expanded' : ''}`}><button className={`git-status-summary ${state}`} type="button" aria-label={label} aria-expanded={expanded} title={label} onClick={onToggle}><span className="git-branch">{branch}</span><span className="git-status-separator" aria-hidden="true">·</span><span className="git-worktree-state">{stateLabel}</span></button>{expanded && <FlyoutPortal onDismiss={() => onToggle?.()}><div className="git-status-panel" role="region" aria-label="Changed files" style={panelStyle}><span className="git-status-panel-header"><strong>{mode === 'working' ? 'Working changes' : 'PR changes'}</strong>{panelDetails.length > 0 && <small className="git-status-details">{panelDetails.join(' · ')}</small>}</span>{changedFiles !== undefined && changedFiles.length > 0 ? <span className="git-status-files"><GitChangeGroup label="Implementation" changes={implementationChanges} onOpenFile={onOpenFile} /><GitChangeGroup label="TESTS & DOCS" changes={supportingChanges} onOpenFile={onOpenFile} /></span> : <span className="git-status-empty">{emptyLabel}</span>}<span className="git-status-panel-footer"><button className="git-status-review" type="button" disabled={onReview === undefined || disabledReviewReason !== undefined} title={disabledReviewReason ?? (reviewOpen ? 'Open the current guided review' : `Start guided review of ${mode === 'working' ? 'Working' : 'All PR'} changes`)} onClick={() => onReview?.(mode)}>{reviewLabel}</button><span className="git-status-mode" role="group" aria-label="Git change view"><button type="button" aria-pressed={mode === 'working'} onClick={() => setMode('working')}>Working</button><button type="button" aria-pressed={mode === 'pr'} disabled={prSummary === undefined} title={prSummary === undefined ? 'Merge target unavailable' : `Compare with ${prSummary.base}`} onClick={() => setMode('pr')}>All PR</button></span></span></div></FlyoutPortal>}</span>;
 }
 
 type LogProps = { id: string; worktreeId?: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; history: PromptHistoryEntry[]; refreshHistory: () => Promise<void>; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined) => void; cleanupControl?: ReactNode; browserUrl?: string; browserHomeUrl?: string; browserNavigationRequest?: ProjectBrowserNavigationRequest; onBrowserNavigate?: (url: string) => boolean; onBrowserOpen?: (url: string) => boolean; onBrowserClose?: () => void; terminalMode?: boolean; embedded?: boolean; onReview?: (scope: ReviewScope) => void; reviewOpen?: boolean; reviewUnavailable?: string; processingLabel?: string; processingDetail?: string };
@@ -3441,7 +3382,6 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
   const historyPanelOpenRef = useRef(false);
   const historyPinnedToLatestRef = useRef(true);
   const historyScrollIntentRef = useRef(false);
-  const lastPromptRef = useRef<HTMLButtonElement | null>(null);
   const [scrolledUp, setScrolledUp] = useState(false);
   const [inputActive, setInputActive] = useState(terminalMode);
   const [selectionActive, setSelectionActive] = useState(false);
@@ -3473,19 +3413,6 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
     const interval = window.setInterval(() => { void refreshHistory(); }, 1_000);
     return () => window.clearInterval(interval);
   }, [historyOpen, refreshHistory]);
-  useEffect(() => {
-    if (!historyOpen) return;
-    const close = (event: MouseEvent) => {
-      const target = event.target as Node;
-      // close outside the prompt controls
-      if (!historyAnchorRef.current?.contains(target) && !lastPromptRef.current?.contains(target) && !historyFlyoutRef.current?.contains(target)) {
-        setHistoryOpen(false);
-        setHistoryAnswerId(undefined);
-      }
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [historyOpen, historyAnchorRef, historyFlyoutRef]);
   useLayoutEffect(() => {
     const list = historyListRef.current;
     // reset closed history tracking
@@ -4102,7 +4029,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
     setHistoryAnswerId(undefined);
     void worktreeNotes.createWithText(entry.answer, assistantNoteTitle(entry.answer));
   };
-  const historyPanel = historyOpen && createPortal(<section className="prompt-history-menu more-menu flyout-menu" ref={historyFlyoutRef} style={historyFlyoutStyle} aria-label="Prompt history"><header><strong>Prompt history</strong><span>{history.length}</span></header><div className="prompt-history-list" ref={historyListRef} onScroll={updateHistoryPin} onWheel={markHistoryScrollIntent} onTouchStart={markHistoryScrollIntent} onPointerDown={markHistoryScrollIntent} onKeyDown={markHistoryScrollIntent}>{history.length === 0 ? <p>No prompts have been queued for this worktree yet.</p> : [...history].reverse().map(entry => <div className={`prompt-history-entry${historyAnswerId === entry.id ? ' answer-open' : ''}`} key={entry.id}><button className="prompt-history-prompt" type="button" title={entry.text} onClick={() => useHistoryEntry(entry)}><span>{entry.text}</span><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time></button><button className="prompt-history-answer-toggle" type="button" disabled={entry.answer === undefined} title={entry.answer === undefined ? 'Answer not recorded yet' : 'View final answer'} aria-label={`View answer for ${entry.text}`} aria-expanded={historyAnswerId === entry.id} onClick={() => toggleHistoryAnswer(entry)}>View answer</button>{historyAnswerId === entry.id && entry.answer !== undefined && <div className="prompt-history-answer" role="region" aria-label={`Answer for ${entry.text}`}><button className="prompt-history-save-note" type="button" disabled={!worktreeNotes.canCreate || entry.answer.length > 30_000} onClick={() => saveHistoryAnswer(entry)}>Save as note</button><div className="prompt-history-answer-text">{entry.answer}</div></div>}</div>)}</div></section>, document.body);
+  const historyPanel = historyOpen && <FlyoutPortal onDismiss={() => { setHistoryOpen(false); setHistoryAnswerId(undefined); }}><section className="prompt-history-menu more-menu flyout-menu" ref={historyFlyoutRef} style={historyFlyoutStyle} aria-label="Prompt history"><header><strong>Prompt history</strong><span>{history.length}</span></header><div className="prompt-history-list" ref={historyListRef} onScroll={updateHistoryPin} onWheel={markHistoryScrollIntent} onTouchStart={markHistoryScrollIntent} onPointerDown={markHistoryScrollIntent} onKeyDown={markHistoryScrollIntent}>{history.length === 0 ? <p>No prompts have been queued for this worktree yet.</p> : [...history].reverse().map(entry => <div className={`prompt-history-entry${historyAnswerId === entry.id ? ' answer-open' : ''}`} key={entry.id}><button className="prompt-history-prompt" type="button" title={entry.text} onClick={() => useHistoryEntry(entry)}><span>{entry.text}</span><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time></button><button className="prompt-history-answer-toggle" type="button" disabled={entry.answer === undefined} title={entry.answer === undefined ? 'Answer not recorded yet' : 'View final answer'} aria-label={`View answer for ${entry.text}`} aria-expanded={historyAnswerId === entry.id} onClick={() => toggleHistoryAnswer(entry)}>View answer</button>{historyAnswerId === entry.id && entry.answer !== undefined && <div className="prompt-history-answer" role="region" aria-label={`Answer for ${entry.text}`}><button className="prompt-history-save-note" type="button" disabled={!worktreeNotes.canCreate || entry.answer.length > 30_000} onClick={() => saveHistoryAnswer(entry)}>Save as note</button><div className="prompt-history-answer-text">{entry.answer}</div></div>}</div>)}</div></section></FlyoutPortal>;
   // open or close prompt history
   const toggleHistory = () => {
     const open = !historyOpen;
@@ -4115,12 +4042,12 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
   const historyToggle = !terminalMode ? <><span className="prompt-history-anchor" ref={historyAnchorRef}><button className={`prompt-history-toggle${historyOpen ? ' active' : ''}`} type="button" aria-label={`Prompt history (${history.length})`} title="Prompt history" aria-expanded={historyOpen} onClick={event => { event.stopPropagation(); toggleHistory(); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5M12 7v5l3 2" /></svg></button></span>{historyPanel}</> : null;
   // prefer the refreshed prompt history over a stale log frame
   const visibleLastPrompt = history[0]?.text ?? lastPrompt;
-  const promptSection = !terminalMode ? <div className="toolbar-prompt-group">{historyToggle}{visibleLastPrompt !== undefined && <button ref={lastPromptRef} className="toolbar-prompt" type="button" aria-label="Last prompt" aria-expanded={historyOpen} title={visibleLastPrompt} onClick={toggleHistory}><span className="toolbar-prompt-text">{visibleLastPrompt}</span></button>}</div> : null;
+  const promptSection = !terminalMode ? <div className="toolbar-prompt-group">{historyToggle}{visibleLastPrompt !== undefined && <button className="toolbar-prompt" type="button" aria-label="Last prompt" aria-expanded={historyOpen} title={visibleLastPrompt} onClick={toggleHistory}><span className="toolbar-prompt-text">{visibleLastPrompt}</span></button>}</div> : null;
   const gitSection = embedded ? null : <GitStatus branch={branch} summary={gitStatus} prSummary={gitPrStatus} expanded={toolbarExpanded === 'git'} onToggle={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'git' ? undefined : 'git'); }} onOpenFile={openGitFile} onReview={scope => { setToolbarExpanded(undefined); onReview?.(scope); }} reviewOpen={reviewOpen} reviewUnavailable={reviewUnavailable} />;
   // distinguish retained output from live frames
   const output = <div className={`log-output${cached ? ' cached' : ''}`}>{!embedded && <ServerSwitcher className="output-server-switcher" />}<div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'}><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{cached && <div className="log-cached-treatment" aria-hidden="true"><span>Cached view · reconnecting</span></div>}{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!terminalMode && <div className="log-controls-bottom"><div className="page-controls">{!embedded && cleanupControl}{!embedded && responseFiles.control}{!embedded && worktreeBookmarks.control}{!embedded && worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><div className="page-down-controls">{scrolledUp && <button className="log-control page-arrow back-to-bottom" aria-label="Back to bottom" title="Back to bottom" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(0)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19h14M6 8l6 6 6-6" /></svg></button>}<button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div>}</div></div>;
   const browserPane = browserUrl === undefined || browserHomeUrl === undefined || onBrowserNavigate === undefined || onBrowserClose === undefined ? null : <ProjectBrowserPane url={browserUrl} homeUrl={browserHomeUrl} worktreeId={worktreeId} navigationRequest={browserNavigationRequest} onNavigate={onBrowserNavigate} onClose={onBrowserClose} />;
-  return <section className={`log-shell${embedded ? ' embedded-log-shell' : ''}`}><div className={`log${embedded ? ' embedded-log' : ''}${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit output={output} note={embedded ? undefined : worktreeNotes.pane} browser={browserPane} /></div>{selectionActions}{!embedded && responseFiles.dialog}{!embedded && gitFilePreview.dialog}{!embedded && <div className={`log-topbar${toolbarExpanded === undefined ? '' : ' expanded'}`}>{promptSection}{gitSection}</div>}</section>;
+  return <section className={`log-shell${embedded ? ' embedded-log-shell' : ''}`}><div className={`log${embedded ? ' embedded-log' : ''}${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit worktreeId={worktreeId} output={output} note={embedded ? undefined : worktreeNotes.pane} browser={browserPane} /></div>{selectionActions}{!embedded && responseFiles.dialog}{!embedded && gitFilePreview.dialog}{!embedded && <div className={`log-topbar${toolbarExpanded === undefined ? '' : ' expanded'}`}>{promptSection}{gitSection}</div>}</section>;
 }
 
 type MoreMenuIconName = 'actions'|'attachment'|'new-task'|'pull-request'|'push'|'swap';
@@ -4153,25 +4080,32 @@ function switchablePullRequests(values: unknown[]): SwitchablePullRequest[] {
 }
 
 // explain one unavailable switch target
-function pullRequestUnavailableReason(pullRequest: SwitchablePullRequest, enabled: boolean, refreshFailed: boolean, label: string): string {
+function pullRequestCheckoutReason(pullRequest: SwitchablePullRequest, enabled: boolean, refreshFailed: boolean): string {
   // prioritize stale remote data
   if (refreshFailed) return 'Pull request list could not be refreshed';
-  // identify an occupied checkout branch
-  if (pullRequest.checkedOut) return `Already open in ${pullRequest.openIn?.worktreeName ?? 'another worktree'}`;
+  // reject an unresolvable checkout owner
+  if (pullRequest.checkedOut && pullRequest.openIn === undefined) return 'Already open in another worktree';
   // protect a dirty working copy
   if (!enabled) return 'Working copy must be clean and pushed';
-  return label;
+  return pullRequest.checkedOut ? `Move PR #${pullRequest.number} here` : `Checkout PR #${pullRequest.number}`;
 }
 
 // render one pull request switch target
 function SwitchPullRequestOption({ pullRequest, enabled, loading, refreshFailed, switchingPr, movingPr, onSwitch, onMove, onSelectTarget }: { pullRequest: SwitchablePullRequest; enabled: boolean; loading: boolean; refreshFailed: boolean; switchingPr?: number; movingPr?: number; onSwitch: (number: number) => void | Promise<void>; onMove: (number: number) => void | Promise<void>; onSelectTarget: (target: DashboardTarget) => void }) {
   const status = pullRequest.draft ? 'draft' : 'open';
   const label = `#${pullRequest.number}: ${pullRequest.title}`;
-  const unavailableReason = pullRequestUnavailableReason(pullRequest, enabled, refreshFailed, label);
   const openIn = pullRequest.openIn;
+  // expose checkout ownership in the row
+  const checkoutOwner = pullRequest.checkedOut ? `Already open in ${openIn?.worktreeName ?? 'another worktree'}` : undefined;
   const operationPending = switchingPr !== undefined || movingPr !== undefined;
-  const moveUnavailableReason = refreshFailed ? 'Pull request list could not be refreshed' : !enabled ? 'Working copy must be clean and pushed' : `Move PR #${pullRequest.number} here`;
-  return <div className="switch-pr-option"><button className="switch-pr" disabled={loading || refreshFailed || operationPending || pullRequest.checkedOut || !enabled} title={unavailableReason} aria-label={label} onClick={() => void onSwitch(pullRequest.number)}>{switchingPr === pullRequest.number ? <><span className="spinner" />Switching…</> : <span className="switch-pr-copy"><strong className={`status-${status}`}>#{pullRequest.number}</strong><span>: {pullRequest.title}</span></span>}</button><span className="switch-pr-actions"><PullRequestStatusIcon status={status} className="switch-pr-status-icon" /><PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} /><a className="switch-pr-action switch-pr-external outline-button" href={pullRequest.url} target="_blank" rel="noreferrer" aria-label={`Open PR #${pullRequest.number} in GitHub`} title={`Open PR #${pullRequest.number} in GitHub`}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5M19 5l-8 8M19 14v5H5V5h5" /></svg><span>Open in GitHub</span></a>{openIn !== undefined && <button className="switch-pr-action switch-pr-worktree outline-button" disabled={operationPending} onClick={() => onSelectTarget(openIn)}>Switch to {openIn.worktreeName}</button>}{pullRequest.checkedOut && openIn !== undefined && <button className="switch-pr-action switch-pr-move outline-button" disabled={loading || refreshFailed || operationPending || !enabled} title={moveUnavailableReason} onClick={() => void onMove(pullRequest.number)}>{movingPr === pullRequest.number ? <><span className="spinner" />Moving…</> : 'Move it here'}</button>}</span></div>;
+  const checkoutReason = pullRequestCheckoutReason(pullRequest, enabled, refreshFailed);
+  // run one checkout transaction
+  const checkout = () => {
+    // transfer occupied branches
+    if (pullRequest.checkedOut) return void onMove(pullRequest.number);
+    void onSwitch(pullRequest.number);
+  };
+  return <div className="switch-pr-option"><a className="switch-pr" href={pullRequest.url} target="_blank" rel="noreferrer" title={`Open ${label} in GitHub`} aria-label={label}><span className="switch-pr-copy"><span><strong className={`status-${status}`}>#{pullRequest.number}</strong><span>: {pullRequest.title}</span></span>{checkoutOwner !== undefined && <small className="switch-pr-open-in">{checkoutOwner}</small>}</span></a><span className="switch-pr-actions"><PullRequestStatusIcon status={status} className="switch-pr-status-icon" /><PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} /><button className="switch-pr-action switch-pr-checkout outline-button" disabled={loading || refreshFailed || operationPending || !enabled || pullRequest.checkedOut && openIn === undefined} title={checkoutReason} onClick={checkout}>{movingPr === pullRequest.number ? <><span className="spinner" />Moving…</> : switchingPr === pullRequest.number ? <><span className="spinner" />Checking out…</> : 'Checkout'}</button>{openIn !== undefined && <button className="switch-pr-action switch-pr-worktree outline-button" disabled={operationPending} onClick={() => onSelectTarget(openIn)}>Switch to {openIn.worktreeName}</button>}</span></div>;
 }
 
 // explain pull request availability
@@ -4199,7 +4133,6 @@ function More({ id, worktreeId, newTaskConfigured = false, pushAction = defaultP
   const startingNewTask = usePendingOperation(newTaskKey);
   const promptPendingKey = `prompt:${id ?? 'unavailable'}`;
   const promptPending = usePendingOperation(promptPendingKey);
-  useEffect(() => { if (!menuOpen) return; const close = (event: MouseEvent) => { const target = event.target as Node; if (!anchorRef.current?.contains(target) && !flyoutRef.current?.contains(target)) setMenuOpen(false); }; document.addEventListener('mousedown', close); return () => document.removeEventListener('mousedown', close); }, [menuOpen]);
   // refresh menu availability
   useEffect(() => {
     if (!menuOpen || id === undefined) return;
@@ -4326,7 +4259,7 @@ function More({ id, worktreeId, newTaskConfigured = false, pushAction = defaultP
   const otherPullRequestCount = prSwitch?.otherPullRequests.length ?? 0;
   const pullRequestReason = pullRequestStatusReason(loadingPrSwitch, prSwitchError, prSwitchLoaded, prSwitch);
   const newTaskReason = !newTaskConfigured ? 'Not configured for this worktree.' : newTask === undefined ? 'Checking availability…' : newTask.enabled ? 'Start a fresh task for this worktree.' : newTask.reason ?? 'New Task is currently unavailable.';
-  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} onClick={toggleMenu}>⋮</button></span>{menuOpen && createPortal(<div className="more-menu flyout-menu pr-switch-menu" ref={flyoutRef} style={style} aria-busy={loadingPrSwitch || loadingGithubActions || loadingNewTask}><div className="pr-switch-summary"><button className="pr-switch-heading" type="button" aria-label="Pull requests" disabled>{loadingPrSwitch ? <span className="spinner" /> : <MoreMenuIcon name="pull-request" />}Pull requests</button>{pullRequestReason !== undefined && <span className={`more-menu-reason${prSwitchError === undefined ? '' : ' pr-switch-error'}`} role={prSwitchError === undefined ? 'status' : 'alert'} aria-label={pullRequestReason}>{pullRequestReason}</span>}</div>{prSwitch?.pullRequests.map(pullRequest => <SwitchPullRequestOption key={pullRequest.number} pullRequest={pullRequest} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingPr={switchingPr} movingPr={movingPr} onSwitch={switchPullRequest} onMove={movePullRequest} onSelectTarget={selectWorktree} />)}{prSwitch !== undefined && otherPullRequestCount > 0 && <details className="other-pull-requests"><summary>Pull requests by others <span>{otherPullRequestCount}</span></summary><div>{prSwitch.otherPullRequests.map(pullRequest => <SwitchPullRequestOption key={pullRequest.number} pullRequest={pullRequest} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingPr={switchingPr} movingPr={movingPr} onSwitch={switchPullRequest} onMove={movePullRequest} onSelectTarget={selectWorktree} />)}</div></details>}<hr className="more-menu-divider" /><button disabled={onSwap === undefined || swapDisabled} onClick={swapToTerminal}><MoreMenuIcon name="swap" />Swap to terminal</button><button disabled={promptPending} onClick={() => void queuePush()}>{promptPending ? <span className="spinner" /> : <MoreMenuIcon name="push" />}{pushAction.label}</button><button disabled={onAttach === undefined || attachDisabled} onClick={attachFiles}><MoreMenuIcon name="attachment" />Attach files</button>{loadingGithubActions ? <button className="github-actions-loading" type="button" disabled><span className="spinner" />GitHub Actions</button> : githubActionsUrl === undefined ? <button type="button" disabled title="GitHub Actions unavailable"><MoreMenuIcon name="actions" />GitHub Actions</button> : <a className="more-menu-link" href={githubActionsUrl} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)}><MoreMenuIcon name="actions" />GitHub Actions</a>}<div className="new-task-option"><button disabled={!newTaskConfigured || loadingNewTask || !newTask?.enabled || startingNewTask} onClick={() => void startNewTask()}>{loadingNewTask || startingNewTask ? <><span className="spinner" />{startingNewTask ? 'Starting New Task' : 'New Task'}</> : <><MoreMenuIcon name="new-task" />New Task</>}</button><span className="more-menu-reason" role="status">{newTaskReason}</span></div></div>, document.body)}</>;
+  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} onClick={toggleMenu}>⋮</button></span>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="more-menu flyout-menu pr-switch-menu" ref={flyoutRef} style={style} aria-busy={loadingPrSwitch || loadingGithubActions || loadingNewTask}><div className="pr-switch-summary"><button className="pr-switch-heading" type="button" aria-label="Pull requests" disabled>{loadingPrSwitch ? <span className="spinner" /> : <MoreMenuIcon name="pull-request" />}Pull requests</button>{pullRequestReason !== undefined && <span className={`more-menu-reason${prSwitchError === undefined ? '' : ' pr-switch-error'}`} role={prSwitchError === undefined ? 'status' : 'alert'} aria-label={pullRequestReason}>{pullRequestReason}</span>}</div>{prSwitch?.pullRequests.map(pullRequest => <SwitchPullRequestOption key={pullRequest.number} pullRequest={pullRequest} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingPr={switchingPr} movingPr={movingPr} onSwitch={switchPullRequest} onMove={movePullRequest} onSelectTarget={selectWorktree} />)}{prSwitch !== undefined && otherPullRequestCount > 0 && <details className="other-pull-requests"><summary>Pull requests by others <span>{otherPullRequestCount}</span></summary><div>{prSwitch.otherPullRequests.map(pullRequest => <SwitchPullRequestOption key={pullRequest.number} pullRequest={pullRequest} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingPr={switchingPr} movingPr={movingPr} onSwitch={switchPullRequest} onMove={movePullRequest} onSelectTarget={selectWorktree} />)}</div></details>}<hr className="more-menu-divider" /><button disabled={onSwap === undefined || swapDisabled} onClick={swapToTerminal}><MoreMenuIcon name="swap" />Swap to terminal</button><button disabled={promptPending} onClick={() => void queuePush()}>{promptPending ? <span className="spinner" /> : <MoreMenuIcon name="push" />}{pushAction.label}</button><button disabled={onAttach === undefined || attachDisabled} onClick={attachFiles}><MoreMenuIcon name="attachment" />Attach files</button>{loadingGithubActions ? <button className="github-actions-loading" type="button" disabled><span className="spinner" />GitHub Actions</button> : githubActionsUrl === undefined ? <button type="button" disabled title="GitHub Actions unavailable"><MoreMenuIcon name="actions" />GitHub Actions</button> : <a className="more-menu-link" href={githubActionsUrl} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)}><MoreMenuIcon name="actions" />GitHub Actions</a>}<div className="new-task-option"><button disabled={!newTaskConfigured || loadingNewTask || !newTask?.enabled || startingNewTask} onClick={() => void startNewTask()}>{loadingNewTask || startingNewTask ? <><span className="spinner" />{startingNewTask ? 'Starting New Task' : 'New Task'}</> : <><MoreMenuIcon name="new-task" />New Task</>}</button><span className="more-menu-reason" role="status">{newTaskReason}</span></div></div></FlyoutPortal>}</>;
 }
 
 // render an active agent
@@ -4648,7 +4581,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
   const sleepingPowerMenu = sleeping ? <AgentPowerMenu mode="sleeping" pending={!worktree.available || processing} onWake={() => void start()} onTurnOff={() => void turnOff()} /> : null;
   const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className={`log-loading inactive${sleeping ? ' sleeping' : ''}`} role={processing || sleeping ? 'status' : undefined} aria-label={presentation.ariaLabel}>{processing ? <span className="spinner" /> : sleeping ? <svg className="sleeping-agent-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg> : null}<strong>{presentation.heading}</strong><span>{presentation.detail}</span>{sleeping && !processing && <button className="wake-agent" type="button" disabled={!worktree.available} onClick={() => void start()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>}</div><span className={`status log-status ${processing ? 'connecting' : sleeping ? 'sleeping' : 'inactive'}`}>{presentation.status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeBookmarks.control}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div>;
   const browserPane = projectBrowser.url === undefined || projectBrowser.homeUrl === undefined ? null : <ProjectBrowserPane url={projectBrowser.url} homeUrl={projectBrowser.homeUrl} worktreeId={worktree.id} onNavigate={projectBrowser.navigate} onClose={projectBrowser.close} />;
-  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{filePreview.dialog}<div className={`log-topbar${gitExpanded ? ' expanded' : ''}`}><GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} expanded={gitExpanded} onToggle={() => setGitExpanded(value => !value)} onOpenFile={openGitFile} reviewUnavailable="Launch agent to review" /></div></section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} /><PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions">{sleepingPowerMenu}<span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} />{!sleeping && <button className="queue" disabled={!worktree.available || processing} onClick={() => void start()}>{processing && <span className="spinner" />}{presentation.buttonLabel}</button>}</div></section></article>;
+  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit worktreeId={worktree.id} output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{filePreview.dialog}<div className={`log-topbar${gitExpanded ? ' expanded' : ''}`}><GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} expanded={gitExpanded} onToggle={() => setGitExpanded(value => !value)} onOpenFile={openGitFile} reviewUnavailable="Launch agent to review" /></div></section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} /><PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions">{sleepingPowerMenu}<span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} />{!sleeping && <button className="queue" disabled={!worktree.available || processing} onClick={() => void start()}>{processing && <span className="spinner" />}{presentation.buttonLabel}</button>}</div></section></article>;
 }
 
 // render browser notification enrollment
@@ -4763,12 +4696,6 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
     const timer = window.setTimeout(() => setOperationFeedback(current => current?.id === id ? undefined : current), 5_000);
     return () => window.clearTimeout(timer);
   }, [operationFeedback]);
-  useEffect(() => {
-    if (!launcherOpen) return;
-    const close = (event: MouseEvent) => { const target = event.target as Node; if (!launcherRef.current?.contains(target) && !launcherMenuRef.current?.contains(target)) setLauncherOpen(false); };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [launcherOpen]);
   const agentStates = useRef(new Map<string, AgentState>());
   const pendingCompletions = useRef(new Map<string, { due: number; timer: number }>());
   // release launch state when the dashboard leaves
@@ -5358,7 +5285,7 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
     const transition = dashboardOperationLabel(entry.operation);
     const label = transition ?? stateLabel[entry.state];
     return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
-  })}<NotificationControl />{updateControl !== undefined && <button className="update-ready" type="button" onClick={updateControl.onClick}>{updateControl.label} <span>{updateControl.action}</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && createPortal(<div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><button disabled={creatingAgent} onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div>, document.body)}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
+  })}<NotificationControl />{updateControl !== undefined && <button className="update-ready" type="button" onClick={updateControl.onClick}>{updateControl.label} <span>{updateControl.action}</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><button disabled={creatingAgent} onClick={() => void createAgent()}>~ Scratch</button>{data.worktrees.map(worktree => <button key={worktree.id} disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onClick={() => void launchWorktree(worktree)}>{worktree.label}</button>)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
   const consoleClass = `console${voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{reviewDialog}</article></main></VoiceTriggerContext.Provider>;
   return <VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{reviewDialog}</main></VoiceTriggerContext.Provider>;

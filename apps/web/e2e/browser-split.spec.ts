@@ -155,6 +155,28 @@ test('opens the configured project in desktop and mobile split views', async ({ 
   expect(browserResizedPanels[1]!.width).toBeLessThan(resizedPanels[1]!.width - 40);
   expect(browserResizedPanels[2]!.width).toBeGreaterThan(resizedPanels[2]!.width + 40);
 
+  // retain user-sized panel weights for this client and workspace
+  const retainedSplit = await page.locator('.log-split').evaluate(element => {
+    const style = (element as HTMLElement).style;
+    return {
+      agent: style.getPropertyValue('--agent-split'),
+      note: style.getPropertyValue('--note-split'),
+      browser: style.getPropertyValue('--browser-split')
+    };
+  });
+  await page.reload();
+  await expect(note).toBeVisible();
+  await expect(browser).toBeVisible();
+  // restore the exact saved layout after the workspace remounts
+  await expect.poll(async () => await page.locator('.log-split').evaluate(element => {
+    const style = (element as HTMLElement).style;
+    return {
+      agent: style.getPropertyValue('--agent-split'),
+      note: style.getPropertyValue('--note-split'),
+      browser: style.getPropertyValue('--browser-split')
+    };
+  })).toEqual(retainedSplit);
+
   const resizedNoteDividerBounds = await noteDivider.boundingBox();
   await page.mouse.move(resizedNoteDividerBounds!.x + resizedNoteDividerBounds!.width / 2, resizedNoteDividerBounds!.y + resizedNoteDividerBounds!.height / 2);
   await page.mouse.down();

@@ -277,6 +277,38 @@ describe('interactive submit settle', () => {
     }
   });
 
+  // recognize Codex's dedicated shell composer
+  it('submits a durable command from Codex shell mode', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-submit-shell-mode-'));
+    const queue = new QueuedPromptService(join(directory, 'queue.json'));
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/tmp', title: 'Ready' });
+    const sent: string[][] = [];
+    let submitted = false;
+    // keep one stable target
+    const discovery = { target: async () => ({ agent, socket }) };
+    const tmux = {
+      // accept the shell paste
+      pastePrompt: async () => true,
+      // render Codex's real shell-mode marker and footer
+      capture: async () => submitted
+        ? ['• You ran git status', '', '› Ask Codex to do anything', '', '  gpt-5.6-sol · /tmp'].join('\n')
+        : ['! git status', '', '  gpt-5.6-sol · /tmp                                      Shell mode'].join('\n'),
+      // accept the rendered shell command
+      sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => { sent.push(keys); submitted = true; return true; }
+    };
+    const service = new PromptService(discovery as never, tmux as never, [], undefined, queue);
+    try {
+      await queue.enqueue(`agent:${agent.id}`, '!git status');
+      await service.observe(agent);
+
+      expect(sent).toEqual([['Enter']]);
+      await expect(service.listQueued(agent.id)).resolves.toEqual([]);
+    } finally {
+      // remove test state
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('retains a durable shell command when Codex leaves it in the composer', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-submit-shell-unaccepted-'));
     const queue = new QueuedPromptService(join(directory, 'queue.json'));
@@ -286,7 +318,8 @@ describe('interactive submit settle', () => {
     const discovery = { target: async () => ({ agent, socket }) };
     const tmux = {
       pastePrompt: async () => true,
-      capture: async () => '› !git status',
+      // keep the actual shell composer visible through every retry
+      capture: async () => ['! git status', '', '  gpt-5.6-sol · /tmp                                      Shell mode'].join('\n'),
       // model every bounded Enter attempt being swallowed despite successful tmux delivery
       sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => { sent.push(keys); return true; }
     };

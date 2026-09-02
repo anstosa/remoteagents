@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { stat } from 'node:fs/promises';
 import type { ValidatedConfig } from '../config/schema.js';
 import type { DiscoveryService } from '../discovery/service.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
@@ -33,7 +34,7 @@ export class PullRequestSwitchService {
       this.pullRequests.open(worktree.identity),
       this.discovery.dashboard(this.config.worktrees).catch(() => undefined)
     ]);
-    const repository = await this.repositoryCommonDir(worktree.identity);
+    const repository = await this.repositoryIdentity(worktree.identity);
     // require one canonical repository identity
     if (repository === undefined) return undefined;
     const checkedOut = new Map<string, PullRequestWorktree | undefined>();
@@ -41,7 +42,7 @@ export class PullRequestSwitchService {
       // skip the destination and branchless agents
       if (agent.id === agentId || agent.branch === undefined) return undefined;
       const candidate = this.worktree(agent.workspace)?.identity ?? agent.workspace;
-      return await this.repositoryCommonDir(candidate) === repository ? agent : undefined;
+      return await this.repositoryIdentity(candidate) === repository ? agent : undefined;
     }));
     // prioritize active agents in this repository
     for (const agent of agents) {
@@ -52,7 +53,7 @@ export class PullRequestSwitchService {
       const configured = this.config.worktrees.find(worktree => worktree.id === candidate.id);
       // ignore unknown or branchless worktrees
       if (configured === undefined || candidate.branch === undefined) return undefined;
-      return await this.repositoryCommonDir(configured.identity) === repository ? candidate : undefined;
+      return await this.repositoryIdentity(configured.identity) === repository ? candidate : undefined;
     }));
     // fill inactive worktrees after active agents
     for (const candidate of worktrees) {
@@ -134,10 +135,18 @@ export class PullRequestSwitchService {
   }
 
   // resolve one linked-worktree repository identity
-  private async repositoryCommonDir(workspace: string): Promise<string | undefined> {
+  private async repositoryIdentity(workspace: string): Promise<string | undefined> {
     const repository = await this.command('/usr/bin/git', ['-C', workspace, 'rev-parse', '--path-format=absolute', '--git-common-dir']);
     const path = repository.stdout.trim();
-    return repository.code === 0 && path.startsWith('/') ? path : undefined;
+    // reject unreadable repository metadata
+    if (repository.code !== 0 || !path.startsWith('/')) return undefined;
+    try {
+      const info = await stat(path, { bigint: true });
+      return `inode:${info.dev}:${info.ino}`;
+    } catch {
+      // retain deterministic command-test identities
+      return `path:${path}`;
+    }
   }
 
   // hold the mutation lock until one submitted pane command finishes
@@ -199,7 +208,7 @@ export class PullRequestSwitchService {
 
   // execute the git transaction after both agents pause
   private async performMove(sourceWorktree: Worktree, targetWorktree: Worktree, pullRequest: SwitchablePullRequest, number: number): Promise<PullRequestMoveResult> {
-    const [sourceRepository, targetRepository] = await Promise.all([this.repositoryCommonDir(sourceWorktree.identity), this.repositoryCommonDir(targetWorktree.identity)]);
+    const [sourceRepository, targetRepository] = await Promise.all([this.repositoryIdentity(sourceWorktree.identity), this.repositoryIdentity(targetWorktree.identity)]);
     // prevent branch-name collisions across repositories
     if (sourceRepository === undefined || sourceRepository !== targetRepository) return 'unavailable';
     const sourceBranch = await this.command('/usr/bin/git', ['-C', sourceWorktree.identity, 'symbolic-ref', '--quiet', '--short', 'HEAD']);

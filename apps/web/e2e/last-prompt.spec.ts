@@ -73,7 +73,8 @@ test('opens prompt history from the last prompt while git status expands indepen
   await expect(git).toBeVisible();
   expect(await toolbar.evaluate(element => element.getBoundingClientRect().height)).toBeCloseTo(collapsedHeight, 0);
 
-  await prompt.click();
+  // dismiss through the click-blocking backdrop
+  await page.mouse.click(4, 4);
   await expect(prompt).toHaveAttribute('aria-expanded', 'false');
   await expect(history).toBeHidden();
   await page.setViewportSize({ width: 428, height: 420 });
@@ -151,7 +152,8 @@ test('opens prompt history from the last prompt while git status expands indepen
   expect((await changesFooter.boundingBox())!.y).toBeCloseTo(footerTop, 0);
 
   await expect(page.getByRole('button', { name: 'Collapse git status' })).toHaveCount(0);
-  await expandedGit.tap();
+  // dismiss through the click-blocking backdrop
+  await page.touchscreen.tap(4, 4);
   await expect(changedFiles).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Last prompt', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Prompt history (1)' }).click();
