@@ -27,7 +27,9 @@ export class PullRequestSwitchService {
   // list one agent's switchable pull requests
   async available(agentId: string): Promise<PullRequestSwitchAvailability | undefined> {
     const target = await this.discovery.target(agentId);
-    const worktree = target === undefined ? undefined : this.worktree(target.agent.workspace);
+    // require one current target
+    if (target === undefined) return undefined;
+    const worktree = this.worktree(target.agent.workspace);
     if (worktree === undefined || !await this.pullRequests.supports(worktree.identity)) return undefined;
     // load slow remote metadata before taking the readiness snapshot
     const [pullRequests, dashboard] = await Promise.all([
@@ -38,15 +40,18 @@ export class PullRequestSwitchService {
     // require one canonical repository identity
     if (repository === undefined) return undefined;
     const checkedOut = new Map<string, PullRequestWorktree | undefined>();
+    const currentBranch = await this.command('/usr/bin/git', ['-C', worktree.identity, 'symbolic-ref', '--quiet', '--short', 'HEAD']);
+    // prefer the live destination branch over cached dashboard metadata
+    if (currentBranch.code === 0 && currentBranch.stdout.trim()) checkedOut.set(currentBranch.stdout.trim(), { agentId: target.agent.id, worktreeId: worktree.id, worktreeName: worktree.label });
     const agents = await Promise.all((dashboard?.agents ?? []).map(async agent => {
-      // skip the destination and branchless agents
-      if (agent.id === agentId || agent.branch === undefined) return undefined;
+      // skip the freshly resolved target and branchless agents
+      if (agent.id === target.agent.id || agent.branch === undefined) return undefined;
       const candidate = this.worktree(agent.workspace)?.identity ?? agent.workspace;
       return await this.repositoryIdentity(candidate) === repository ? agent : undefined;
     }));
     // prioritize active agents in this repository
     for (const agent of agents) {
-      if (agent === undefined || agent.branch === undefined) continue;
+      if (agent === undefined || agent.branch === undefined || checkedOut.has(agent.branch)) continue;
       checkedOut.set(agent.branch, agent.worktreeId === undefined || agent.worktreeLabel === undefined ? undefined : { agentId: agent.id, worktreeId: agent.worktreeId, worktreeName: agent.worktreeLabel });
     }
     const worktrees = await Promise.all((dashboard?.worktrees ?? []).map(async candidate => {

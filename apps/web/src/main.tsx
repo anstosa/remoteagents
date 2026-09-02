@@ -4134,9 +4134,11 @@ function switchablePullRequests(values: unknown[]): SwitchablePullRequest[] {
 }
 
 // explain one unavailable switch target
-function pullRequestCheckoutReason(pullRequest: SwitchablePullRequest, enabled: boolean, refreshFailed: boolean): string {
+function pullRequestCheckoutReason(pullRequest: SwitchablePullRequest, enabled: boolean, refreshFailed: boolean, checkedOutHere: boolean): string {
   // prioritize stale remote data
   if (refreshFailed) return 'Pull request list could not be refreshed';
+  // identify the current checkout
+  if (checkedOutHere) return 'Already checked out here';
   // reject an unresolvable checkout owner
   if (pullRequest.checkedOut && pullRequest.openIn === undefined) return 'Already open in another worktree';
   // protect a dirty working copy
@@ -4145,21 +4147,25 @@ function pullRequestCheckoutReason(pullRequest: SwitchablePullRequest, enabled: 
 }
 
 // render one pull request switch target
-function SwitchPullRequestOption({ pullRequest, enabled, loading, refreshFailed, switchingPr, movingPr, onSwitch, onMove, onSelectTarget }: { pullRequest: SwitchablePullRequest; enabled: boolean; loading: boolean; refreshFailed: boolean; switchingPr?: number; movingPr?: number; onSwitch: (number: number) => void | Promise<void>; onMove: (number: number) => void | Promise<void>; onSelectTarget: (target: DashboardTarget) => void }) {
+function SwitchPullRequestOption({ pullRequest, currentWorktreeId, enabled, loading, refreshFailed, switchingPr, movingPr, onSwitch, onMove, onSelectTarget }: { pullRequest: SwitchablePullRequest; currentWorktreeId?: string; enabled: boolean; loading: boolean; refreshFailed: boolean; switchingPr?: number; movingPr?: number; onSwitch: (number: number) => void | Promise<void>; onMove: (number: number) => void | Promise<void>; onSelectTarget: (target: DashboardTarget) => void }) {
   const status = pullRequest.draft ? 'draft' : 'open';
   const label = `#${pullRequest.number}: ${pullRequest.title}`;
   const openIn = pullRequest.openIn;
+  const checkedOutHere = currentWorktreeId !== undefined && openIn?.worktreeId === currentWorktreeId;
+  let checkoutOwner: string | undefined;
   // expose checkout ownership in the row
-  const checkoutOwner = pullRequest.checkedOut ? `Already open in ${openIn?.worktreeName ?? 'another worktree'}` : undefined;
+  if (pullRequest.checkedOut) checkoutOwner = checkedOutHere ? 'Already open here' : `Already open in ${openIn?.worktreeName ?? 'another worktree'}`;
   const operationPending = switchingPr !== undefined || movingPr !== undefined;
-  const checkoutReason = pullRequestCheckoutReason(pullRequest, enabled, refreshFailed);
+  const checkoutReason = pullRequestCheckoutReason(pullRequest, enabled, refreshFailed, checkedOutHere);
   // run one checkout transaction
   const checkout = () => {
+    // ignore the current branch defensively
+    if (checkedOutHere) return;
     // transfer occupied branches
     if (pullRequest.checkedOut) return void onMove(pullRequest.number);
     void onSwitch(pullRequest.number);
   };
-  return <div className="switch-pr-option"><a className="switch-pr" href={pullRequest.url} target="_blank" rel="noreferrer" title={`Open ${label} in GitHub`} aria-label={label}><span className="switch-pr-copy"><span><strong className={`status-${status}`}>#{pullRequest.number}</strong><span>: {pullRequest.title}</span></span>{checkoutOwner !== undefined && <small className="switch-pr-open-in">{checkoutOwner}</small>}</span></a><span className="switch-pr-actions"><PullRequestStatusIcon status={status} className="switch-pr-status-icon" /><PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} /><button className="switch-pr-action switch-pr-checkout outline-button" disabled={loading || refreshFailed || operationPending || !enabled || pullRequest.checkedOut && openIn === undefined} title={checkoutReason} onClick={checkout}>{movingPr === pullRequest.number ? <><span className="spinner" />Moving…</> : switchingPr === pullRequest.number ? <><span className="spinner" />Checking out…</> : 'Checkout'}</button>{openIn !== undefined && <button className="switch-pr-action switch-pr-worktree outline-button" disabled={operationPending} onClick={() => onSelectTarget(openIn)}>Switch to {openIn.worktreeName}</button>}</span></div>;
+  return <div className="switch-pr-option"><a className="switch-pr" href={pullRequest.url} target="_blank" rel="noreferrer" title={`Open ${label} in GitHub`} aria-label={label}><span className="switch-pr-copy"><span><strong className={`status-${status}`}>#{pullRequest.number}</strong><span>: {pullRequest.title}</span></span>{checkoutOwner !== undefined && <small className="switch-pr-open-in">{checkoutOwner}</small>}</span></a><span className="switch-pr-actions"><PullRequestStatusIcon status={status} className="switch-pr-status-icon" /><PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} /><button className="switch-pr-action switch-pr-checkout outline-button" disabled={loading || refreshFailed || operationPending || !enabled || pullRequest.checkedOut && (openIn === undefined || checkedOutHere)} title={checkoutReason} onClick={checkout}>{movingPr === pullRequest.number ? <><span className="spinner" />Moving…</> : switchingPr === pullRequest.number ? <><span className="spinner" />Checking out…</> : 'Checkout'}</button>{openIn !== undefined && !checkedOutHere && <button className="switch-pr-action switch-pr-worktree outline-button" disabled={operationPending} onClick={() => onSelectTarget(openIn)}>Switch to {openIn.worktreeName}</button>}</span></div>;
 }
 
 // explain pull request availability
@@ -4252,7 +4258,24 @@ function More({ id, worktreeId, newTaskConfigured = false, pushAction = defaultP
       if (response.ok) { setMenuOpen(false); await onPromptQueued?.(); }
     } finally { setPendingOperation(promptPendingKey, false); }
   };
-  const switchPullRequest = async (number: number) => { if (id === undefined || switchingPr !== undefined) return; setSwitchingPr(number); try { const response = await request(`/api/agents/${encodeURIComponent(id)}/switch-pr`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ number }) }); if (response.ok) setMenuOpen(false); } finally { setSwitchingPr(undefined); } };
+  // check out one pull request branch
+  const switchPullRequest = async (number: number) => {
+    // prevent duplicate checkout transactions
+    if (id === undefined || switchingPr !== undefined || movingPr !== undefined) return;
+    setSwitchingPr(number);
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(id)}/switch-pr`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ number }) });
+      // surface a rejected server transaction
+      if (!response.ok) return onOperationFeedback({ tone: 'error', message: 'Pull request could not be checked out', detail: await launchError(response), worktreeId });
+      // discard stale checkout ownership after success
+      if (prSwitchCacheKey !== undefined) pullRequestSwitchCache.delete(prSwitchCacheKey);
+      setMenuOpen(false);
+    } catch {
+      onOperationFeedback({ tone: 'error', message: 'Pull request could not be checked out', detail: 'The console could not be reached. Check the worktree before trying again.', worktreeId });
+    } finally {
+      setSwitchingPr(undefined);
+    }
+  };
   // move one occupied pull request into this worktree
   const movePullRequest = async (number: number) => {
     // prevent duplicate move transactions
@@ -4313,7 +4336,7 @@ function More({ id, worktreeId, newTaskConfigured = false, pushAction = defaultP
   const otherPullRequestCount = prSwitch?.otherPullRequests.length ?? 0;
   const pullRequestReason = pullRequestStatusReason(loadingPrSwitch, prSwitchError, prSwitchLoaded, prSwitch);
   const newTaskReason = !newTaskConfigured ? 'Not configured for this worktree.' : newTask === undefined ? 'Checking availability…' : newTask.enabled ? 'Start a fresh task for this worktree.' : newTask.reason ?? 'New Task is currently unavailable.';
-  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} onClick={toggleMenu}>⋮</button></span>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="more-menu flyout-menu pr-switch-menu" ref={flyoutRef} style={style} aria-busy={loadingPrSwitch || loadingGithubActions || loadingNewTask}><div className="pr-switch-summary"><button className="pr-switch-heading" type="button" aria-label="Pull requests" disabled>{loadingPrSwitch ? <span className="spinner" /> : <MoreMenuIcon name="pull-request" />}Pull requests</button>{pullRequestReason !== undefined && <span className={`more-menu-reason${prSwitchError === undefined ? '' : ' pr-switch-error'}`} role={prSwitchError === undefined ? 'status' : 'alert'} aria-label={pullRequestReason}>{pullRequestReason}</span>}</div>{prSwitch?.pullRequests.map(pullRequest => <SwitchPullRequestOption key={pullRequest.number} pullRequest={pullRequest} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingPr={switchingPr} movingPr={movingPr} onSwitch={switchPullRequest} onMove={movePullRequest} onSelectTarget={selectWorktree} />)}{prSwitch !== undefined && otherPullRequestCount > 0 && <details className="other-pull-requests"><summary>Pull requests by others <span>{otherPullRequestCount}</span></summary><div>{prSwitch.otherPullRequests.map(pullRequest => <SwitchPullRequestOption key={pullRequest.number} pullRequest={pullRequest} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingPr={switchingPr} movingPr={movingPr} onSwitch={switchPullRequest} onMove={movePullRequest} onSelectTarget={selectWorktree} />)}</div></details>}<hr className="more-menu-divider" /><button disabled={onSwap === undefined || swapDisabled} onClick={swapToTerminal}><MoreMenuIcon name="swap" />Swap to terminal</button><button disabled={promptPending} onClick={() => void queuePush()}>{promptPending ? <span className="spinner" /> : <MoreMenuIcon name="push" />}{pushAction.label}</button><button disabled={onAttach === undefined || attachDisabled} onClick={attachFiles}><MoreMenuIcon name="attachment" />Attach files</button>{loadingGithubActions ? <button className="github-actions-loading" type="button" disabled><span className="spinner" />GitHub Actions</button> : githubActionsUrl === undefined ? <button type="button" disabled title="GitHub Actions unavailable"><MoreMenuIcon name="actions" />GitHub Actions</button> : <a className="more-menu-link" href={githubActionsUrl} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)}><MoreMenuIcon name="actions" />GitHub Actions</a>}<div className="new-task-option"><button disabled={!newTaskConfigured || loadingNewTask || !newTask?.enabled || startingNewTask} onClick={() => void startNewTask()}>{loadingNewTask || startingNewTask ? <><span className="spinner" />{startingNewTask ? 'Starting New Task' : 'New Task'}</> : <><MoreMenuIcon name="new-task" />New Task</>}</button><span className="more-menu-reason" role="status">{newTaskReason}</span></div></div></FlyoutPortal>}</>;
+  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} onClick={toggleMenu}>⋮</button></span>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="more-menu flyout-menu pr-switch-menu" ref={flyoutRef} style={style} aria-busy={loadingPrSwitch || loadingGithubActions || loadingNewTask}><div className="pr-switch-summary"><button className="pr-switch-heading" type="button" aria-label="Pull requests" disabled>{loadingPrSwitch ? <span className="spinner" /> : <MoreMenuIcon name="pull-request" />}Pull requests</button>{pullRequestReason !== undefined && <span className={`more-menu-reason${prSwitchError === undefined ? '' : ' pr-switch-error'}`} role={prSwitchError === undefined ? 'status' : 'alert'} aria-label={pullRequestReason}>{pullRequestReason}</span>}</div>{prSwitch?.pullRequests.map(pullRequest => <SwitchPullRequestOption key={pullRequest.number} pullRequest={pullRequest} currentWorktreeId={worktreeId} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingPr={switchingPr} movingPr={movingPr} onSwitch={switchPullRequest} onMove={movePullRequest} onSelectTarget={selectWorktree} />)}{prSwitch !== undefined && otherPullRequestCount > 0 && <details className="other-pull-requests"><summary>Pull requests by others <span>{otherPullRequestCount}</span></summary><div>{prSwitch.otherPullRequests.map(pullRequest => <SwitchPullRequestOption key={pullRequest.number} pullRequest={pullRequest} currentWorktreeId={worktreeId} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingPr={switchingPr} movingPr={movingPr} onSwitch={switchPullRequest} onMove={movePullRequest} onSelectTarget={selectWorktree} />)}</div></details>}<hr className="more-menu-divider" /><button disabled={onSwap === undefined || swapDisabled} onClick={swapToTerminal}><MoreMenuIcon name="swap" />Swap to terminal</button><button disabled={promptPending} onClick={() => void queuePush()}>{promptPending ? <span className="spinner" /> : <MoreMenuIcon name="push" />}{pushAction.label}</button><button disabled={onAttach === undefined || attachDisabled} onClick={attachFiles}><MoreMenuIcon name="attachment" />Attach files</button>{loadingGithubActions ? <button className="github-actions-loading" type="button" disabled><span className="spinner" />GitHub Actions</button> : githubActionsUrl === undefined ? <button type="button" disabled title="GitHub Actions unavailable"><MoreMenuIcon name="actions" />GitHub Actions</button> : <a className="more-menu-link" href={githubActionsUrl} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)}><MoreMenuIcon name="actions" />GitHub Actions</a>}<div className="new-task-option"><button disabled={!newTaskConfigured || loadingNewTask || !newTask?.enabled || startingNewTask} onClick={() => void startNewTask()}>{loadingNewTask || startingNewTask ? <><span className="spinner" />{startingNewTask ? 'Starting New Task' : 'New Task'}</> : <><MoreMenuIcon name="new-task" />New Task</>}</button><span className="more-menu-reason" role="status">{newTaskReason}</span></div></div></FlyoutPortal>}</>;
 }
 
 // render an active agent

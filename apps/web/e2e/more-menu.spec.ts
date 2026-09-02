@@ -326,7 +326,7 @@ test('checks out an available pull request from its dedicated action', async ({ 
     // authenticate the test client
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     // expose one active worktree
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' }], worktrees: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready' }], worktrees: [] } });
     // disable unrelated setup
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     // connect the visible agent
@@ -347,6 +347,68 @@ test('checks out an available pull request from its dedicated action', async ({ 
 
   await expect.poll(() => checkedOut).toEqual({ number: 300 });
   await expect(page.locator('.more-menu')).toBeHidden();
+});
+
+// reject a no-op checkout in the current worktree
+test('disables checkout for the pull request already open in the current worktree', async ({ page }) => {
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    // authenticate the test client
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    // expose the current worktree
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' }], worktrees: [] } });
+    // disable unrelated setup
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    // connect the visible agent
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    // provide an empty saved-prompt list
+    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
+    // expose the branch as checked out here
+    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [{ number: 300, title: 'Current checkout', branch: 'feature/current', draft: false, url: 'https://github.example.com/pull/300', checkedOut: true, openIn: { agentId: 'agent-1', worktreeId: 'cora', worktreeName: 'Cora' } }], otherPullRequests: [] } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'More options' }).click();
+  const option = page.getByRole('link', { name: '#300: Current checkout' }).locator('xpath=..');
+  const checkout = option.getByRole('button', { name: 'Checkout' });
+
+  await expect(checkout).toBeDisabled();
+  await expect(checkout).toHaveAttribute('title', 'Already checked out here');
+  await expect(option).toContainText('Already open here');
+  await expect(option.getByRole('button', { name: 'Switch to Cora' })).toHaveCount(0);
+});
+
+// surface one rejected checkout transaction
+test('shows the server reason when pull request checkout fails', async ({ page }) => {
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    // authenticate the test client
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    // expose one active worktree
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' }], worktrees: [] } });
+    // disable unrelated setup
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    // connect the visible agent
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    // provide an empty saved-prompt list
+    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
+    // expose one available checkout
+    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [{ number: 300, title: 'Rejected checkout', branch: 'feature/rejected', draft: false, url: 'https://github.example.com/pull/300', checkedOut: false }], otherPullRequests: [] } });
+    // reject the checkout with an actionable reason
+    if (url.pathname === '/api/agents/agent-1/switch-pr' && request.method() === 'POST') return route.fulfill({ status: 409, json: { error: 'The branch changed before checkout.' } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'More options' }).click();
+  const option = page.getByRole('link', { name: '#300: Rejected checkout' }).locator('xpath=..');
+  await option.getByRole('button', { name: 'Checkout' }).click();
+
+  await expect(page.getByRole('alert')).toContainText('Pull request could not be checked out');
+  await expect(page.getByRole('alert')).toContainText('The branch changed before checkout.');
 });
 
 test('moves an occupied pull request into the current worktree', async ({ page }) => {

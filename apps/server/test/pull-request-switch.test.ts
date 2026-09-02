@@ -119,6 +119,40 @@ describe('pull request switching', () => {
     await expect(service.switch(agent.id, 7)).resolves.toBe(false);
   });
 
+  // reject a no-op checkout in the current worktree
+  it('marks a pull request unavailable when the target worktree already has its branch checked out', async () => {
+    const currentAgent = { ...agent, branch: 'feature/draft', worktreeId: 'cora', worktreeLabel: 'Cora' };
+    const discovery = { target: async () => ({ agent: currentAgent, socket }), dashboard: async () => ({ generation: 1, agents: [currentAgent], worktrees: [] }) };
+    const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
+    const command = async (_binary: string, args: string[]) => {
+      // expose the current symbolic branch
+      if (args.includes('symbolic-ref')) return { code: 0, stdout: 'feature/draft\n' };
+      return await cleanCommand(_binary, args);
+    };
+    let suspended = false;
+    const tmux = { suspend: async () => { /* detect unintended suspension */ suspended = true; return true; } };
+    const service = new PullRequestSwitchService(config, discovery as never, tmux as never, pulls as never, command);
+
+    await expect(service.available(currentAgent.id)).resolves.toEqual({ enabled: true, pullRequests: [{ ...choices[0], checkoutBranch: 'feature/draft', checkedOut: true, openIn: { agentId: 'agent-1', worktreeId: 'cora', worktreeName: 'Cora' } }], otherPullRequests: [] });
+    await expect(service.switch(currentAgent.id, 7)).resolves.toBe(false);
+    expect(suspended).toBe(false);
+  });
+
+  // prefer the live branch over cached dashboard metadata
+  it('marks the live target branch checked out when the dashboard branch is stale', async () => {
+    const staleAgent = { ...agent, worktreeId: 'cora', worktreeLabel: 'Cora' };
+    const discovery = { target: async () => ({ agent: staleAgent, socket }), dashboard: async () => ({ generation: 1, agents: [staleAgent], worktrees: [] }) };
+    const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
+    const command = async (_binary: string, args: string[]) => {
+      // expose the branch changed after dashboard caching
+      if (args.includes('symbolic-ref')) return { code: 0, stdout: 'feature/draft\n' };
+      return await cleanCommand(_binary, args);
+    };
+    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, command);
+
+    await expect(service.available(staleAgent.id)).resolves.toMatchObject({ pullRequests: [{ number: 7, checkedOut: true, openIn: { agentId: 'agent-1', worktreeId: 'cora', worktreeName: 'Cora' } }] });
+  });
+
   it('matches linked worktrees whose common repository has different mount paths', async () => {
     const root = await mkdtemp(join(tmpdir(), 'rac-pr-repository-alias-'));
     try {
