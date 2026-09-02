@@ -14,7 +14,7 @@
 import type { HostProcess } from '../discovery/processes.js';
 import type { CleanupTarget, Pane } from '../domain/models.js';
 
-export const agentKinds = ['codex', 'claude', 'pi', 'opencode'] as const;   // closed union; the registry is code, not plugins
+export const agentKinds = ['codex', 'omx', 'claude', 'pi', 'opencode'] as const;   // closed union in resolution order; the registry is code, not plugins
 export type AgentKind = typeof agentKinds[number];
 export type AttentionState = 'working' | 'finished' | 'question';
 export type TmuxKey = 'Enter' | 'Tab' | 'Escape' | 'C-c' | 'Up' | 'Down' | 'M-Enter';
@@ -53,9 +53,11 @@ export type AdapterFileContext = { repoRoot: string; tmuxBin?: string };
 /**
  * The agent-agnostic facts the console feeds `panes.classify`/`classifyProcess`
  * so an Adapter can reproduce its runtime-cleanup rules without embedding any
- * tmux or `/proc` knowledge (ADR 0002). The OMX/HUD rules themselves live in the
- * Adapter; the console only supplies the pane set, the process tree, and the
- * generic derivations (`identity`, `active`, `recognizedKind`, `paneAncestor`).
+ * tmux or `/proc` knowledge (ADR 0002). The rules themselves live in each
+ * Adapter — the worker/HUD rules in the OMX Adapter, the stale-Codex rule in the
+ * Codex Adapter; the console only supplies the pane set, the process tree, and
+ * the generic derivations (`identity`, `active`, `recognizedKind`, `excluded`,
+ * `paneAncestor`).
  */
 export type PaneScan = {
   panes: readonly Pane[];
@@ -64,10 +66,18 @@ export type PaneScan = {
   sessionIdentity(pane: Pane): string;
   active(pane: Pane): boolean;
   recognizedKind(pane: Pane): AgentKind | undefined;
+  /**
+   * Whether any registered Adapter hides this pane from the dashboard (its own
+   * `panes.exclude`), so one kind's rules never call another kind's hidden pane a
+   * stale agent — a Codex rule need not know OMX's worker paths.
+   */
+  excluded(pane: Pane): boolean;
   paneAncestor(pid: number): Pane | undefined;
 };
 /** One runtime-cleanup classification an Adapter emits; the console wraps it with a stable id. */
 export type CleanupClassification = Pick<CleanupTarget, 'kind' | 'label' | 'detail'>;
+/** The pane's human-readable name for a cleanup classification's detail line. */
+export const paneLabel = (pane: Pane): string => pane.displayLabel || pane.title || pane.sessionName || pane.paneId;
 /**
  * The outcome of a turn read from the agent's structured event log: `pending`
  * while no terminal turn has been recorded past the baseline, `completed` (with
@@ -176,17 +186,19 @@ export interface Adapter {
   };
   /**
    * Runtime-cleanup rules for this agent's panes and processes. `exclude` names
-   * the panes the console never shows on the dashboard (OMX worker panes);
-   * `classify`/`classifyProcess` recognise the stale runtime targets the Cleanup
-   * screen offers. Every OMX/HUD-specific rule lives here rather than in
-   * discovery or cleanup (ADR 0002). The console builds one immutable `PaneScan`
-   * per cleanup pass and calls `classify`/`classifyProcess` once per pane/process
-   * against it, so an Adapter may memoise derived sets keyed on the scan.
+   * the panes the console never shows on the dashboard (the OMX Adapter's worker
+   * panes); `classify`/`classifyProcess` recognise the stale runtime targets the
+   * Cleanup screen offers. Every agent-specific rule lives in its own Adapter
+   * rather than in discovery or cleanup (ADR 0002); a kind that hides no panes or
+   * runs no helper processes simply omits `exclude`/`classifyProcess`. The console
+   * builds one immutable `PaneScan` per cleanup pass and calls `classify`/
+   * `classifyProcess` once per pane/process against it — in registry order, first
+   * classification wins — so an Adapter may memoise derived sets keyed on the scan.
    */
   readonly panes?: {
-    exclude(pane: Pane): boolean;
+    exclude?(pane: Pane): boolean;
     classify(pane: Pane, scan: PaneScan): CleanupClassification | undefined;
-    classifyProcess(process: HostProcess, scan: PaneScan): CleanupClassification | undefined;
+    classifyProcess?(process: HostProcess, scan: PaneScan): CleanupClassification | undefined;
   };
 }
 

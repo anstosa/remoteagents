@@ -1,20 +1,23 @@
 import { codexAdapter } from './codex.js';
+import { omxAdapter } from './omx.js';
 import { claudeAdapter } from './claude.js';
 import type { Pane } from '../domain/models.js';
 import type { Adapter, AdapterCapability, AdapterConfigs, AgentKind } from './types.js';
 
 /**
  * The closed registry. It is code, not plugins: adding a kind means adding an
- * Adapter here. Chunk 2 registers Codex and Claude; Pi and OpenCode arrive in
- * later chunks. Order is the resolution/priority order (`codex`, `claude`, `pi`,
- * `opencode`).
+ * Adapter here. Codex, OMX and Claude are registered; Pi and OpenCode arrive in
+ * later chunks. Order is the resolution/priority order (`codex`, `omx`, `claude`,
+ * `pi`, `opencode`) and the order cleanup rules are tried in. It plays no part in
+ * telling OMX from Codex: the walker meets the OMX wrapper above the Codex child
+ * in the pane's tree, and neither recognizer matches the other's process (ADR 0005).
  *
- * This module sits in an import cycle (processes.ts ↔ registry ↔ codex.ts), which
- * is safe only because every cross-module reference is used at call time, never
- * at load time. Keep it that way: do not invoke `recognizeProcess`,
- * `adapterCapabilities`, or an adapter method at module scope.
+ * The process walker (`discovery/processes.ts`) imports this module, and this
+ * module imports every Adapter, so an Adapter must never import the walker for
+ * a value (types are fine): the Codex and OMX Adapters both hold the `codex-tui.ts`
+ * objects at load time, which only works while the graph stays acyclic.
  */
-export const adapters: readonly Adapter[] = [codexAdapter, claudeAdapter];
+export const adapters: readonly Adapter[] = [codexAdapter, omxAdapter, claudeAdapter];
 
 export function adapterFor(kind: AgentKind): Adapter | undefined {
   return adapters.find((adapter) => adapter.kind === kind);
@@ -27,7 +30,7 @@ export function recognizeProcess(process: { comm: string; argv: string[] }): Ada
 
 /** Whether any Adapter excludes this pane from the dashboard (e.g. OMX worker panes). */
 export function paneExcluded(pane: Pane): boolean {
-  return adapters.some((adapter) => adapter.panes?.exclude(pane) ?? false);
+  return adapters.some((adapter) => adapter.panes?.exclude?.(pane) ?? false);
 }
 
 /**

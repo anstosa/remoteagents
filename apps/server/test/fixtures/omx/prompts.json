@@ -1,0 +1,7 @@
+[
+  { "name": "normal prompt queues with Tab or submits idle with Enter", "prompt": "hello; $(not-a-command)", "mode": "prompt", "text": "hello; $(not-a-command) ", "keys": ["Tab"], "idleKeys": ["Enter"] },
+  { "name": "a prompt already ending in whitespace is not double-spaced", "prompt": "already ends ", "mode": "prompt", "text": "already ends ", "keys": ["Tab"], "idleKeys": ["Enter"] },
+  { "name": "multi-line prompts keep their newlines and gain a trailing space", "prompt": "line one\nline two", "mode": "prompt", "text": "line one\nline two ", "keys": ["Tab"], "idleKeys": ["Enter"] },
+  { "name": "skill invocations gain a trailing space", "prompt": "Use $my-plugin", "mode": "prompt", "text": "Use $my-plugin ", "keys": ["Tab"], "idleKeys": ["Enter"] },
+  { "name": "shell mode submits with Enter and no trailing space", "prompt": "!git status", "mode": "shell", "text": "!git status", "keys": ["Enter"] }
+]

@@ -1,14 +1,13 @@
 import { createHash } from 'node:crypto';
-import { readFile, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
 import type { InlineQuestion } from './types.js';
 
 /**
- * The Codex/OMX inline-question logic, moved server-side (chunk 1 commit 5). An
- * Inline question reaches the console two ways: OMX writes a structured question
- * file, or the agent draws a numbered choice list on its pane. Both are described
- * here and normalised to one {@link InlineQuestion}; the console renders it and
- * answers it through the Adapter's `selectOption`.
+ * The Codex inline-question logic, moved server-side (chunk 1 commit 5). An
+ * Inline question reaches the console two ways: the agent draws a numbered choice
+ * list on its pane (parsed here), or OMX writes a structured question file
+ * (`omx-questions.ts`, ADR 0005). Both are normalised to one {@link InlineQuestion}
+ * with the same id rule; the console renders it and answers it through the
+ * Adapter's `selectOption`.
  */
 
 // A stable id both transports agree on: the operator answers the question they
@@ -77,36 +76,4 @@ export function parseChoiceQuestion(message: string): InlineQuestion | undefined
   return detected === undefined
     ? undefined
     : { id: inlineQuestionId(detected.text, detected.choices), text: detected.text, choices: detected.choices, source: 'parsed' };
-}
-
-type OmxRecord = { kind?: unknown; question_id?: unknown; status?: unknown; question?: unknown; options?: unknown; questions?: unknown; renderer?: { target?: unknown; return_target?: unknown } };
-const omxQuestionId = /^question-[A-Za-z0-9_.-]+$/u;
-// read one OMX question file addressed at this pane into the unified shape
-const readOmxQuestion = (raw: OmxRecord, paneId: string): InlineQuestion | undefined => {
-  if (raw.kind !== 'omx.question/v1' || (raw.status !== 'pending' && raw.status !== 'prompting') || raw.renderer?.return_target !== paneId || typeof raw.renderer.target !== 'string' || !/^%\d+$/u.test(raw.renderer.target) || typeof raw.question_id !== 'string' || !omxQuestionId.test(raw.question_id)) return undefined;
-  const first = Array.isArray(raw.questions) ? raw.questions[0] as { question?: unknown; options?: unknown } : undefined;
-  const text = typeof first?.question === 'string' ? first.question : typeof raw.question === 'string' ? raw.question : undefined;
-  const options = Array.isArray(first?.options) ? first.options : Array.isArray(raw.options) ? raw.options : [];
-  const choices = options.map(option => option && typeof option === 'object' && typeof (option as { label?: unknown }).label === 'string' ? (option as { label: string }).label : undefined).filter((value): value is string => value !== undefined);
-  return text && choices.length >= 2 && choices.length <= 16
-    ? { id: inlineQuestionId(text, choices), text, choices, source: 'structured', targetPaneId: raw.renderer.target }
-    : undefined;
-};
-
-/**
- * The structured OMX question currently addressed at `paneId`, read from the
- * workspace's `.omx/state` question files. `targetPaneId` is OMX's renderer pane
- * — where the answer keys are sent, which is not always the agent's own pane.
- */
-export async function pendingOmxQuestion(workspace: string, paneId: string): Promise<InlineQuestion | undefined> {
-  const root = join(workspace, '.omx', 'state');
-  const directories = [join(root, 'questions')];
-  const sessions = await readdir(join(root, 'sessions'), { withFileTypes: true }).catch(() => []);
-  for (const session of sessions) if (session.isDirectory()) directories.push(join(root, 'sessions', session.name, 'questions'));
-  for (const directory of directories) for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
-    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
-    const parsed = await readFile(join(directory, entry.name), 'utf8').then(value => JSON.parse(value) as OmxRecord).catch(() => undefined);
-    const question = parsed && readOmxQuestion(parsed, paneId); if (question) return question;
-  }
-  return undefined;
 }

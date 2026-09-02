@@ -5,7 +5,8 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { addUntrackedLineStats, DiscoveryService, gitComparisonSummary, gitStatusSummary, gitUpstreamSummary, ProcSocketFinder } from '../src/discovery/service.js';
-import { inlineQuestionId, pendingOmxQuestion } from '../src/adapters/codex-questions.js';
+import { inlineQuestionId } from '../src/adapters/codex-questions.js';
+import { pendingOmxQuestion } from '../src/adapters/omx-questions.js';
 import type { SocketRef } from '../src/domain/models.js';
 import type { WorktreeEntry } from '../src/git/worktrees.js';
 import { paneLister, processInspector, socketFinder } from './helpers/discovery-stubs.js';
@@ -368,7 +369,7 @@ describe('DiscoveryService dashboard', () => {
     expect(dashboard.agents[0]).not.toHaveProperty('conversationId');
   });
 
-  it('does not expose OMX team workers as dashboard agents', async () => {
+  it.each(['codex', 'omx'] as const)('does not expose OMX team workers as dashboard agents when their panes are recognised as %s', async (kind) => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const finder = { find: async () => [socket] };
     const tmux = { listPanes: async () => [
@@ -376,12 +377,12 @@ describe('DiscoveryService dashboard', () => {
       { paneId: '%2', sessionId: '$0', pid: 124, path: '/host/cora/.omx/team/signup/worktrees/worker-1', title: 'worker-1' },
       { paneId: '%3', sessionId: '$0', pid: 125, path: '/host/cora', title: 'worker-2', startCommand: "exec /bin/sh '/tmp/run/.omx/state/team/signup/runtime/worker-2-startup.sh'" }
     ] };
-    const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
+    const processes = { recognizeAgent: async (pid: number) => ({ kind, pid, wrapped: false }) };
     const service = new DiscoveryService(finder, tmux as never, processes);
 
     const dashboard = await service.dashboard();
 
-    expect(dashboard.agents).toEqual([expect.objectContaining({ paneId: '%1', title: 'Cora' })]);
+    expect(dashboard.agents).toEqual([expect.objectContaining({ paneId: '%1', title: 'Cora', kind })]);
   });
 
   it('coalesces concurrent discovery requests and reuses a fresh snapshot', async () => {
@@ -605,7 +606,7 @@ describe('DiscoveryService dashboard', () => {
     } finally { await rm(workspace, { recursive: true, force: true }); }
   });
 
-  it('resolves a pending inline question to the question state through the dashboard', async () => {
+  it('resolves a pending OMX question file to the question state through the dashboard for an OMX pane', async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'rac-question-dash-'));
     try {
       // git-init so workspaceRoot() resolves to a stable toplevel; build the question dir under it
@@ -617,13 +618,14 @@ describe('DiscoveryService dashboard', () => {
       const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
       const finder = { find: async () => [socket] };
       const tmux = { listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 123, path: workspace, title: 'Ready' }] };
-      const processes = { recognizeAgent: async (pid: number) => ({ kind: 'codex' as const, pid, wrapped: false }) };
+      // the structured question files are OMX's: a plain Codex pane never reads them
+      const processes = { recognizeAgent: async (pid: number) => ({ kind: 'omx' as const, pid, wrapped: false }) };
       const service = new DiscoveryService(finder, tmux as never, processes);
 
       const dashboard = await service.dashboard();
 
       // the title infers 'finished', but the pending question outranks it
-      expect(dashboard.agents[0]).toMatchObject({ attention: 'question', question: { id: inlineQuestionId('Deploy?', ['Yes', 'No']), text: 'Deploy?', choices: ['Yes', 'No'], source: 'structured', targetPaneId: '%9' } });
+      expect(dashboard.agents[0]).toMatchObject({ kind: 'omx', attention: 'question', question: { id: inlineQuestionId('Deploy?', ['Yes', 'No']), text: 'Deploy?', choices: ['Yes', 'No'], source: 'structured', targetPaneId: '%9' } });
     } finally { await rm(workspace, { recursive: true, force: true }); }
   });
 });

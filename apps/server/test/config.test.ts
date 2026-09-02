@@ -231,3 +231,45 @@ describe('claude adapter configuration', () => {
     expect(config.adapters?.claude).toMatchObject({ launchable: true });
   });
 });
+
+describe('omx adapter configuration', () => {
+  const scratch = { publicOrigin: 'https://agents.example.com', projects: [] as unknown[] };
+  // two executable stand-ins named like the real programs, so only the name-based warnings fire
+  const programsNamed = async (...names: string[]): Promise<string[]> => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'rac-omx-cfg-')));
+    dirs.push(root);
+    return Promise.all(names.map(async name => { const path = join(root, name); await writeFile(path, '#!/bin/sh\n', { mode: 0o755 }); return path; }));
+  };
+
+  it('accepts adapters.omx beside adapters.codex, each with its own lifecycle commands', async () => {
+    const [codex, omx] = await programsNamed('codex', 'omx');
+    const warnings: string[] = [];
+    const lifecycle = { setup: 'rm -f .omx/state/session.json', teardown: 'rm -f .omx/state/session.json' };
+    const config = await validateConfig({ ...scratch, adapters: { codex: { program: codex! }, omx: { program: omx!, ...lifecycle } } }, { warn: m => warnings.push(m) });
+    expect(config.adapters?.omx).toEqual({ program: omx, args: [], env: {}, launchable: true, ...lifecycle });
+    expect(config.adapters?.codex).toEqual({ program: codex, args: [], env: {}, launchable: true });
+    expect(warnings).toEqual([]);
+  });
+
+  it('warns about and drops the tmux-policy flags the OMX Adapter composes itself', async () => {
+    const [omx] = await programsNamed('omx');
+    const warnings: string[] = [];
+    const config = await validateConfig({ ...scratch, adapters: { omx: { program: omx!, args: ['--direct', '--preset=minimal', '--tmux'] } } }, { warn: m => warnings.push(m) });
+    expect(config.adapters?.omx?.args).toEqual(['--preset=minimal']);
+    expect(warnings).toEqual(['adapters.omx: ignoring reserved arguments --direct, --tmux']);
+  });
+
+  it('warns when adapters.codex points at OMX and when adapters.omx points at plain Codex', async () => {
+    const [codex, omx, omxJs] = await programsNamed('codex', 'omx', 'omx.js');
+    const crossed: string[] = [];
+    await validateConfig({ ...scratch, adapters: { codex: { program: omx! }, omx: { program: codex! } } }, { warn: m => crossed.push(m) });
+    expect(crossed).toEqual([
+      'adapters.codex.program looks like OMX; configure it under adapters.omx so it is recognised, badged and torn down as OMX',
+      'adapters.omx.program looks like plain Codex; configure it under adapters.codex so it is recognised, badged and torn down as Codex'
+    ]);
+    // the packaged CLI entry counts as OMX too, and a lone legacy OMX-under-codex config warns the same way
+    const legacy: string[] = [];
+    await validateConfig({ ...scratch, adapters: { codex: { program: omxJs! } } }, { warn: m => legacy.push(m) });
+    expect(legacy).toEqual([expect.stringContaining('adapters.codex.program looks like OMX')]);
+  });
+});

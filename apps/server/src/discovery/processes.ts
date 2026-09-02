@@ -1,19 +1,8 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { recognizeProcess } from '../adapters/registry.js';
 import type { AgentKind } from '../adapters/types.js';
-const allowed = /^(codex|omx)(?:\.js)?$/i;
-const codex = /^codex(?:\.js)?$/i;
-const node = /^(?:node|nodejs)(?:\.exe)?$/i;
 // srt/bwrap are the sandbox wrappers; an agent found beneath one is `wrapped`.
 const sandboxWrapper = /^(?:bwrap|srt)$/u;
-
-export function isAgentCommand(comm: string, cmdline: string): boolean {
-  if (allowed.test(comm)) return true;
-  const args = cmdline.split('\0').filter(Boolean);
-  const program = args[0]?.split('/').pop() ?? '';
-  if (allowed.test(program)) return true;
-  return node.test(program) && args.slice(1).some(arg => codex.test(arg.split('/').pop() ?? ''));
-}
 
 export type HostProcess = { pid: number; parentPid: number; startTime: string; comm: string; cmdline: string };
 export interface HostProcessInspector { listProcesses(): Promise<HostProcess[]>; }

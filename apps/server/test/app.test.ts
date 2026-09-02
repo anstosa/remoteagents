@@ -587,6 +587,27 @@ describe('configured worktree deactivation', () => {
     } finally { await teardownApp.close(); }
   }, 15_000);
 
+  it('runs adapters.omx.teardown for an OMX agent and no teardown for a Codex agent when only adapters.omx has one', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
+    const omxAgent = { ...stated({ id: 'agent-omx', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' }), kind: 'omx' as const };
+    const codexAgent = stated({ id: 'agent-codex', paneId: '%2', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
+    const agents = [omxAgent, codexAgent];
+    const shell: string[] = [];
+    // the teardown is keyed by the stopped agent's kind: the OMX-on-ZFS cleanup never fires for a plain Codex stop
+    const teardownConfig = { ...config, adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true }, omx: { program: '/abs/omx', args: [], env: {}, launchable: true, teardown: 'rm -f .omx/state/session.json' } } };
+    const app = await buildApp(teardownConfig, { auth: new AuthService(hash, Buffer.alloc(32, 9).toString('base64url')), discovery: { worktreesNow: () => [worktree], target: async (id: string) => { const agent = agents.find(candidate => candidate.id === id); return agent === undefined ? undefined : { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } }; } } as never, tmux: { close: async () => true, runShell: async (_socket: unknown, command: string) => { shell.push(command); return true; } } as never });
+    try {
+      const boot = await app.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await app.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      expect((await app.inject({ method: 'POST', url: '/api/agents/agent-omx/deactivate', headers })).statusCode).toBe(204);
+      expect(shell).toEqual(["cd -- '/worktrees/cora' && eval 'rm -f .omx/state/session.json'"]);
+      expect((await app.inject({ method: 'POST', url: '/api/agents/agent-codex/deactivate', headers })).statusCode).toBe(204);
+      expect(shell).toHaveLength(1);
+    } finally { await app.close(); }
+  }, 15_000);
+
   it('sleeps, wakes, and turns off a retained worktree tab', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false };

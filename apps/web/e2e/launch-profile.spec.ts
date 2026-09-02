@@ -45,6 +45,23 @@ test('launches the resolved kind in one click and lists every configured kind in
   await expect.poll(() => posts).toEqual([{ path: '/api/worktrees/cora/launch', body: { kind: 'codex', sandboxed: false } }]);
 });
 
+test('OMX is its own kind: badged ◈, listed beside Codex, and launched as omx', async ({ page }) => {
+  const omx = adapter('/bin/omx', { stateSource: 'title', turnCapture: true, inlineQuestions: true });
+  const posts = await mount(page, { generation: 1, adapters: { codex, omx }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'omx', origin: 'worktree' })] }] });
+  const primary = page.getByRole('button', { name: 'Launch OMX' });
+  await expect(primary).toBeEnabled();
+  await expect(primary.locator('.launch-kind-omx')).toHaveText('◈');
+  await page.getByRole('button', { name: 'Choose agent' }).click();
+  const menu = page.locator('.launch-menu');
+  // both kinds are offered; OMX runs the Codex TUI, so it names Codex's own sandbox like Codex does
+  await expect(menu.getByRole('menuitem', { name: /^Codex/ })).toBeVisible();
+  const omxRow = menu.getByRole('menuitem', { name: /^OMX/ });
+  await expect(omxRow).toContainText('last used here');
+  await expect(omxRow).toContainText("Uses Codex's own sandbox");
+  await omxRow.click();
+  await expect.poll(() => posts).toEqual([{ path: '/api/worktrees/cora/launch', body: { kind: 'omx', sandboxed: false } }]);
+});
+
 test('one click on the primary launches the resolved kind unsandboxed', async ({ page }) => {
   const posts = await mount(page, { generation: 1, adapters: { codex, claude }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'codex', origin: 'default' })] }] });
   await page.getByRole('button', { name: 'Launch Codex' }).click();

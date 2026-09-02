@@ -500,6 +500,29 @@ describe('LaunchService', () => {
     expect(calls[0]).toEqual(['paste', '%4', "eval 'rm -f .omx/state/session.json' && /usr/local/bin/codex"]);
   });
 
+  it('composes an OMX launch from adapters.omx: the setup, then the program with --direct and the mode arguments', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const worktree = cora();
+    const calls: string[][] = [];
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, _buffer: string, command: string) => { calls.push(['paste', pane, command]); return true; }, enter: async () => true };
+    const store = { launchProfiles: async () => ({}), rememberLaunchProfile: async () => {} };
+    // the OMX-on-ZFS configuration: plain Codex stays on adapters.codex, OMX carries the pointer cleanup
+    const config = { adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true }, omx: { program: '/abs/omx', args: [], env: {}, launchable: true, setup: 'rm -f .omx/state/session.json' } }, projects: [] };
+    const service = new LaunchService(config as never, { find: async () => [socket] }, panes as never, undefined, store as never, () => [worktree]);
+
+    // with both configured and nothing remembered, Codex stays the default: OMX must be asked for
+    await expect(service.resolveLaunchKind('cora')).resolves.toBe('codex');
+    await expect(service.launch('cora', 'omx')).resolves.toBe(true);
+    await expect(service.resume('cora', 'omx')).resolves.toBe(true);
+    await expect(service.resumeConversation('cora', '0198c333-3333-7333-8333-333333333333', 'omx')).resolves.toBe(true);
+
+    expect(calls.map(call => call[2])).toEqual([
+      "eval 'rm -f .omx/state/session.json' && /abs/omx --direct",
+      "eval 'rm -f .omx/state/session.json' && /abs/omx --direct resume --last",
+      "eval 'rm -f .omx/state/session.json' && /abs/omx --direct resume 0198c333-3333-7333-8333-333333333333"
+    ]);
+  });
+
   it('refuses a requested kind that is not configured or launchable', async () => {
     const worktree = cora();
     const config = { adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true } }, projects: [] };

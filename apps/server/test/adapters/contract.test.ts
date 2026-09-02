@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { adapters as adaptersUnderTest } from '../../src/adapters/registry.js';
 import { inlineQuestionId } from '../../src/adapters/codex-questions.js';
-import type { AttentionState, Submission, SubmissionMode, TmuxKey } from '../../src/adapters/types.js';
+import { agentKinds, type AttentionState, type Submission, type SubmissionMode, type TmuxKey } from '../../src/adapters/types.js';
 
 const fixturesRoot = fileURLToPath(new URL('../fixtures/', import.meta.url));
 const has = (kind: string, file: string) => existsSync(join(fixturesRoot, kind, file));
@@ -48,6 +48,11 @@ describe('Adapter contract suite', () => {
     for (const adapter of adaptersUnderTest) {
       expect(existsSync(join(fixturesRoot, adapter.kind)), `missing fixtures for ${adapter.kind}`).toBe(true);
     }
+  });
+
+  it('registers adapters in agentKinds order, which is the launch and cleanup precedence', () => {
+    const registered = adaptersUnderTest.map(adapter => adapter.kind);
+    expect(registered).toEqual(agentKinds.filter(kind => registered.includes(kind)));
   });
 
   for (const adapter of adaptersUnderTest) describe(`${adapter.kind} adapter`, () => {

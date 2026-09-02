@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Agent, CleanupTarget, CleanupTargetKind, Pane, SocketRef } from '../domain/models.js';
 import { ProcSocketFinder, type SocketFinder } from '../discovery/service.js';
 import { ProcInspector, type HostProcess, type HostProcessInspector, type ProcessInspector } from '../discovery/processes.js';
-import { adapters } from '../adapters/registry.js';
+import { adapters, paneExcluded } from '../adapters/registry.js';
 import type { AgentKind, PaneScan } from '../adapters/types.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 
@@ -86,6 +86,7 @@ export class CleanupService {
       sessionIdentity: pane => `${pane.socket.fingerprint}:${pane.sessionId}`,
       active: pane => activeAgents.has(paneIdentity(pane)),
       recognizedKind: pane => recognizedKind.get(paneIdentity(pane)),
+      excluded: paneExcluded,
       paneAncestor
     };
 
@@ -102,7 +103,7 @@ export class CleanupService {
     const executorSocket = sockets[0];
     for (const process of processes) {
       for (const adapter of adapters) {
-        const classification = adapter.panes?.classifyProcess(process, scan);
+        const classification = adapter.panes?.classifyProcess?.(process, scan);
         if (classification === undefined) continue;
         candidates.push({
           target: this.target(classification.kind, `${process.pid}:${process.startTime}`, classification.label, classification.detail),

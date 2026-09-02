@@ -30,17 +30,36 @@ Each `<kind>/` directory holds:
 
 ## Codex
 
-Captured from today's Codex/OMX behaviour: the inline strings already exercised
-by `tmux.test.ts`, `prompts.test.ts` and `processes.test.ts`, which are
-themselves snapshots of live Codex panes. Because chunk 1 commit 1 lands
-fixtures-first, the suite runs green against today's code through the shim in
+Captured from today's Codex behaviour: the inline strings already exercised by
+`tmux.test.ts`, `prompts.test.ts` and `processes.test.ts`, which are themselves
+snapshots of live Codex panes. Because chunk 1 commit 1 lands fixtures-first,
+the suite runs green against today's code through the shim in
 `../adapters/codex-shim.ts` before any Codex logic moves — so a later chunk that
 drifts Codex behaviour fails the contract suite rather than a person.
+`processes.json` recognises plain Codex only: the OMX wrapper is `noMatch`
+because OMX is its own kind (ADR 0005), while the Codex child OMX launches still
+matches by its own identity (the walker meets the OMX wrapper first).
 
 Codex has no golden `files` (hooks/sandbox settings) to pin; those arrive with
 the Claude and Pi kinds. The numbered-choice → Inline question parser still
 lives in the web bundle today, so it is not yet exercised here; it moves
 server-side (and gains capture fixtures) later in chunk 1.
+
+## OMX
+
+`recognizes` the OMX wrapper — a `comm` of `omx`, an argv[0] basename of `omx`,
+or `node` running `…/dist/cli/omx.js` (the form every npm/mise install takes,
+since the bin shim execs node) — and only in its Agent forms, decided from the
+first argument after the entry as OMX's own dispatcher does: absent, `launch`,
+`resume`, or a leading `--flag` is the launch. Every other subcommand
+(`hud --watch`, `team`, `sidecar`, `mcp-serve`, …), the Codex child OMX
+launches, and the notify-fallback watcher it spawns beside Codex are `noMatch`. The `(probed)` entries are verbatim `/proc` captures
+of OMX 0.21.0 launched console-style (`--direct`, `--direct resume --last`,
+`hud --watch`), with only the home directory renamed. `titles.json`,
+`prompts.json`, `submission.json`, `conversations.json` and `questions.json`
+mirror Codex's because OMX runs the Codex TUI and the Adapter shares those
+objects by reference; a drift between the two directories means the sharing
+broke.
 
 ## Claude
 

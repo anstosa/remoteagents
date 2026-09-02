@@ -41,7 +41,7 @@ To run the console and its managed tmux/Codex sessions in Docker instead, see
 ## Adapters
 
 Each agent CLI the console launches is configured once under `adapters`, keyed
-by kind (`codex`, `claude`, `pi`, `opencode`). The console launches a kind by
+by kind (`codex`, `omx`, `claude`, `pi`, `opencode`). The console launches a kind by
 prepending its `program` to the adapter's own arguments and appending the
 operator's, so a checkout never chooses a program — adapter configuration is
 global:
@@ -78,20 +78,40 @@ never blocks the stop. Unlike `setup`, `teardown` runs through the tmux server's
 profile-only `PATH` entries — keep it to absolute paths and plain commands. On
 Restart both fire, so make the commands idempotent.
 
+### OMX
+
+OMX (oh-my-codex) is its own kind, configured under `adapters.omx` with the real
+OMX executable — for a mise install that is `node_modules/.bin/omx` inside the
+install, not the mise shim. Codex and OMX sit side by side, so some worktrees
+can run plain Codex and others OMX: the Launch menu offers both, and the console
+remembers which one each worktree used last. The console launches OMX with
+`--direct` (OMX's direct policy, which runs the Codex TUI in the pane and manages
+no HUD panes) and forwards Continue and Bookmark resumes as `resume --last` and
+`resume <id>`; `--direct` and `--tmux` are reserved, so a copy in `args` is
+dropped with a boot warning. An OMX pane is badged OMX, the plain-Codex team
+workers OMX spawns stay hidden from the dashboard, and Bookmarks stay pinned to
+the kind they were taken under.
+
+The Codex-only features — review tour, ChatGPT accounts, update advisor, the
+app-server command catalog — still read `adapters.codex`; an OMX-only
+configuration does without them. A `codex` entry whose program is actually OMX
+(the pre-split configuration) still launches, but as the wrong kind; the console
+warns at boot and in `pnpm config:check`.
+
 ### OMX on ZFS
 
 The console stops agents by killing their pane, which leaves OMX's session
 pointer (`<worktree>/.omx/state/session.json`) pointing at a dead session. OMX's
 own recovery needs `renameat2(RENAME_NOREPLACE)`, which ZFS lacks, so every
 following launch aborts with `session_pointer_unusable`. Configure the pointer
-cleanup as the adapter's lifecycle commands:
+cleanup as the OMX adapter's lifecycle commands:
 
 ```json
 {
   "adapters": {
-    "codex": {
+    "codex": { "program": "/usr/local/bin/codex" },
+    "omx": {
       "program": "/absolute/path/to/omx",
-      "args": ["--direct"],
       "setup": "rm -f .omx/state/session.json",
       "teardown": "rm -f .omx/state/session.json"
     }
@@ -100,9 +120,10 @@ cleanup as the adapter's lifecycle commands:
 ```
 
 `setup` alone is sufficient (it is the guaranteed pre-launch repair); `teardown`
-keeps the checkout tidy between launches. Relative paths in either command
-resolve against the directory the command runs in — the worktree for `setup`,
-the stopped agent's workspace for `teardown`.
+keeps the checkout tidy between launches and, being keyed by kind, never fires
+for a plain Codex stop. Relative paths in either command resolve against the
+directory the command runs in — the worktree for `setup`, the stopped agent's
+workspace for `teardown`.
 
 The program is launched from an interactive zsh shell by default. Set
 `RAC_INTERACTIVE_SHELL` for container or direct sessions and

@@ -48,6 +48,29 @@ describe('runtime cleanup', () => {
     expect(targets.every(target => /^cleanup-[A-Za-z0-9_-]{24}$/u.test(target.id))).toBe(true);
   });
 
+  it('keeps workers under an OMX leader, flags a stale OMX pane as OMX, and never calls an excluded Codex worker stale', async () => {
+    const panes = [
+      pane('%1', '$team', 100, { title: 'leader' }),
+      pane('%2', '$team', 200, { path: '/repo/.omx/team/demo/worktrees/worker-1' }),
+      pane('%3', '$orphan', 300, { path: '/repo/.omx/team/demo/worktrees/worker-2' }),
+      pane('%6', '$stale', 600, { title: 'old omx' })
+    ];
+    // the leader and the stale pane are OMX; the team workers run plain Codex
+    const kinds: Record<number, 'codex' | 'omx'> = { 100: 'omx', 200: 'codex', 300: 'codex', 600: 'omx' };
+    const service = new CleanupService(
+      { refresh: async () => [{ id: 'socket-a:%1' } as never] },
+      { find: async () => [socket] },
+      { listPanes: async () => panes, close: async () => true, terminateHostProcess: async () => true },
+      { recognizeAgent: async pid => kinds[pid] === undefined ? undefined : { kind: kinds[pid]!, pid, wrapped: false }, listProcesses: async () => [] }
+    );
+
+    const targets = await service.scan();
+
+    expect(targets.map(target => [target.kind, target.label]).sort()).toEqual([['orphan-worker', 'Orphan OMX worker'], ['stale-agent', 'Stale OMX agent']]);
+    expect(targets.find(target => target.kind === 'orphan-worker')?.detail).toContain('%3');
+    expect(targets.find(target => target.kind === 'stale-agent')?.detail).toContain('old omx');
+  });
+
   it('cleans selected targets, dismisses unchecked targets, and leaves failures pending until they disappear', async () => {
     let panes = [pane('%3', '$orphan', 300, { path: '/repo/.omx/team/demo/worktrees/worker-2' }), pane('%5', '$stale', 500)];
     const closed: string[] = [];

@@ -2,13 +2,14 @@ import { createPortal } from 'react-dom';
 import { createContext, useContext, useEffect, useState } from 'react';
 import { useViewportFlyout } from './viewport-flyout.js';
 
-// The closed registry of agent kinds, in resolution/priority order. A configured kind
-// (one with a program) is launchable; recognition of a kind needs no configuration.
-export type AgentKind = 'codex' | 'claude' | 'pi' | 'opencode';
-export const agentKinds: readonly AgentKind[] = ['codex', 'claude', 'pi', 'opencode'];
+// The closed registry of agent kinds, in resolution/priority order (duplicated from the
+// server's `agentKinds` by design). A configured kind (one with a program) is launchable;
+// recognition of a kind needs no configuration.
+export type AgentKind = 'codex' | 'omx' | 'claude' | 'pi' | 'opencode';
+export const agentKinds: readonly AgentKind[] = ['codex', 'omx', 'claude', 'pi', 'opencode'];
 // per-kind badge glyph and display label, shared by the split button, tab badge and AGENTS card
-export const agentKindGlyph: Record<AgentKind, string> = { codex: '◆', claude: '✳', pi: 'π', opencode: '◇' };
-export const agentKindLabel: Record<AgentKind, string> = { codex: 'Codex', claude: 'Claude', pi: 'Pi', opencode: 'OpenCode' };
+export const agentKindGlyph: Record<AgentKind, string> = { codex: '◆', omx: '◈', claude: '✳', pi: 'π', opencode: '◇' };
+export const agentKindLabel: Record<AgentKind, string> = { codex: 'Codex', omx: 'OMX', claude: 'Claude', pi: 'Pi', opencode: 'OpenCode' };
 
 // The capability record the Dashboard publishes per registered kind (ADR 0002). The web
 // reads presence and reasons; it never re-derives capabilities. `sandbox*` stay undefined
@@ -38,8 +39,8 @@ export const launchRequestInit = (choice: LaunchChoice): RequestInit => ({ metho
 // sandbox line per kind and state — copy from the effort's Launch profile section
 export const sandboxCopy = (kind: AgentKind, capability: AdapterCapability | undefined, sandboxed: boolean): string => {
   if (capability === undefined) return '';
-  // Codex names its own sandbox; other kinds say nothing until chunk 4 arms `sandbox`
-  if (!capability.sandbox) return kind === 'codex' ? "Uses Codex's own sandbox" : '';
+  // Codex (and OMX, which runs Codex) names its own sandbox; other kinds say nothing until chunk 4 arms `sandbox`
+  if (!capability.sandbox) return kind === 'codex' || kind === 'omx' ? "Uses Codex's own sandbox" : '';
   if (capability.sandboxUnavailableReason !== undefined) return kind === 'claude' ? `Sandbox as configured in Claude — ${capability.sandboxUnavailableReason}` : `Sandbox unavailable — ${capability.sandboxUnavailableReason}`;
   if (sandboxed) return kind === 'claude' ? 'Sandbox enforced by console' : 'Tool commands sandboxed by console';
   return kind === 'claude' ? 'Sandbox disabled for this launch' : 'Tool commands unsandboxed for this launch';

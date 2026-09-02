@@ -1087,6 +1087,7 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 
 /* Launch profile: split button, actions menu, tab badge (chunk 2) */
 .launch-kind-codex { --launch-kind: var(--green); }
+.launch-kind-omx { --launch-kind: var(--teal); }
 .launch-kind-claude { --launch-kind: var(--peach); }
 .launch-kind-pi { --launch-kind: var(--sky); }
 .launch-kind-opencode { --launch-kind: var(--mauve); }

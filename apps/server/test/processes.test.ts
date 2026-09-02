@@ -2,20 +2,27 @@ import { describe, expect, it } from 'vitest';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isAgentCommand, ProcInspector } from '../src/discovery/processes.js';
+import { ProcInspector } from '../src/discovery/processes.js';
+import { isCodexCommand } from '../src/adapters/codex-processes.js';
 import { openRollouts } from '../src/adapters/codex-conversations.js';
 
-describe('isAgentCommand', () => {
+describe('isCodexCommand', () => {
   it('recognizes the Node launcher used by current Codex installations', () => {
-    expect(isAgentCommand('MainThread', 'node\0/home/ubuntu/n/bin/codex\0')).toBe(true);
+    expect(isCodexCommand('MainThread', ['node', '/home/ubuntu/n/bin/codex'])).toBe(true);
   });
 
   it('does not treat unrelated Node processes as agents', () => {
-    expect(isAgentCommand('node', 'node\0/app/server.js\0')).toBe(false);
+    expect(isCodexCommand('node', ['node', '/app/server.js'])).toBe(false);
   });
 
   it('does not treat an OMX HUD process as an agent', () => {
-    expect(isAgentCommand('MainThread', 'node\0/home/ubuntu/n/bin/omx\0hud\0--watch\0')).toBe(false);
+    expect(isCodexCommand('MainThread', ['node', '/home/ubuntu/n/bin/omx', 'hud', '--watch'])).toBe(false);
+  });
+
+  it('no longer treats the OMX wrapper as Codex: OMX is its own kind', () => {
+    expect(isCodexCommand('omx', ['/home/ubuntu/bin/omx'])).toBe(false);
+    expect(isCodexCommand('MainThread', ['node', '/home/ubuntu/n/bin/omx', '--direct'])).toBe(false);
+    expect(isCodexCommand('MainThread', ['/usr/bin/node', '/opt/oh-my-codex/dist/cli/omx.js', '--direct', 'resume', '--last'])).toBe(false);
   });
 });
 
@@ -71,6 +78,30 @@ describe('ProcInspector recognizeAgent', () => {
       503: { comm: 'codex', argv: ['codex'], children: [] }
     }, async () => {
       await expect(new ProcInspector().recognizeAgent(500)).resolves.toEqual({ kind: 'codex', pid: 503, wrapped: false });
+    });
+  });
+
+  it('claims an OMX pane as omx at the wrapper, before reaching the Codex child it launched', async () => {
+    // the OMX 0.21.0 tree: shell → node omx.js --direct → { notify watcher, codex }. The probe
+    // saw Codex as a direct child; an `sh -c` hop between them (as older OMX spawned it) is
+    // kept here to show the walker claims the wrapper regardless of what sits beneath it.
+    await withProcTree({
+      600: { comm: 'zsh', argv: ['-zsh'], children: [601] },
+      601: { comm: 'MainThread', argv: ['/usr/bin/node', '/opt/oh-my-codex/dist/cli/omx.js', '--direct'], children: [602, 603] },
+      602: { comm: 'MainThread', argv: ['/usr/bin/node', '/opt/oh-my-codex/dist/scripts/notify-fallback-watcher.js', '--cwd', '/repo', '--parent-pid', '601'], children: [] },
+      603: { comm: 'sh', argv: ['sh', '-c', 'codex -c model_instructions_file=x'], children: [604] },
+      604: { comm: 'codex', argv: ['codex', '-c', 'model_instructions_file=x'], children: [] }
+    }, async () => {
+      await expect(new ProcInspector().recognizeAgent(600)).resolves.toEqual({ kind: 'omx', pid: 601, wrapped: false });
+    });
+  });
+
+  it('does not claim an OMX HUD pane, which runs no Codex', async () => {
+    await withProcTree({
+      700: { comm: 'zsh', argv: ['-zsh'], children: [701] },
+      701: { comm: 'MainThread', argv: ['/usr/bin/node', '/opt/oh-my-codex/dist/cli/omx.js', 'hud', '--watch'], children: [] }
+    }, async () => {
+      await expect(new ProcInspector().recognizeAgent(700)).resolves.toBeUndefined();
     });
   });
 

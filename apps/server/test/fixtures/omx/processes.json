@@ -1,0 +1,35 @@
+{
+  "_note": "OMX process identities, captured from a console-style launch of OMX 0.21.0 through the mise install's node_modules/.bin/omx (a #!/bin/sh shim that execs node). The wrapper is `node …/oh-my-codex/dist/cli/omx.js …` with comm MainThread; its Codex child and notify-fallback watcher are separate processes that belong in noMatch. recognizes() decides from the first argument after the entry exactly as OMX's own dispatcher does: absent, `launch`, `resume` or a `--flag` is the launch (an Agent); any other first argument (hud, team, sidecar, mcp-serve, …) names a helper and is noMatch.",
+  "match": [
+    { "name": "fresh --direct launch through the mise bin shim (probed)", "comm": "MainThread", "argv": ["/home/ubuntu/.local/share/mise/installs/node/24.18.1/bin/node", "/home/ubuntu/.local/share/mise/installs/npm-oh-my-codex/v0.21.0/node_modules/.bin/../.mise/oh-my-codex@0.21.0/node_modules/oh-my-codex/dist/cli/omx.js", "--direct"] },
+    { "name": "--direct resume --last through the mise bin shim (probed)", "comm": "MainThread", "argv": ["/home/ubuntu/.local/share/mise/installs/node/24.18.1/bin/node", "/home/ubuntu/.local/share/mise/installs/npm-oh-my-codex/v0.21.0/node_modules/.bin/../.mise/oh-my-codex@0.21.0/node_modules/oh-my-codex/dist/cli/omx.js", "--direct", "resume", "--last"] },
+    { "name": "resume by id through a global npm bin", "comm": "MainThread", "argv": ["node", "/home/ubuntu/n/bin/omx", "--direct", "resume", "0198c333-3333-7333-8333-333333333333"] },
+    { "name": "omx reported directly as the process comm", "comm": "omx", "argv": ["/home/ubuntu/bin/omx"] },
+    { "name": "omx with only flags is the bare launch", "comm": "omx", "argv": ["omx", "--direct", "--preset=minimal"] },
+    { "name": "an operator value flag after the console's --direct is Codex passthrough, still the launch", "comm": "MainThread", "argv": ["/home/ubuntu/.local/share/mise/installs/node/24.18.1/bin/node", "/home/ubuntu/.local/share/mise/installs/npm-oh-my-codex/v0.21.0/node_modules/.bin/../.mise/oh-my-codex@0.21.0/node_modules/oh-my-codex/dist/cli/omx.js", "--direct", "-c", "model_reasoning_effort=high"] },
+    { "name": "a -- before any positional hands the rest to Codex", "comm": "omx", "argv": ["omx", "--direct", "--", "--model", "o3"] },
+    { "name": "the explicit launch subcommand", "comm": "omx", "argv": ["omx", "launch", "--direct"] }
+  ],
+  "noMatch": [
+    { "name": "OMX HUD watcher (probed)", "comm": "MainThread", "argv": ["/home/ubuntu/.local/share/mise/installs/node/24.18.1/bin/node", "/home/ubuntu/.local/share/mise/installs/npm-oh-my-codex/v0.21.0/node_modules/.bin/../.mise/oh-my-codex@0.21.0/node_modules/oh-my-codex/dist/cli/omx.js", "hud", "--watch"] },
+    { "name": "OMX HUD watcher through a global npm bin", "comm": "MainThread", "argv": ["node", "/home/ubuntu/n/bin/omx", "hud", "--watch"] },
+    { "name": "omx team is the worker spawner, not an agent", "comm": "omx", "argv": ["omx", "team", "spawn", "3"] },
+    { "name": "omx sidecar is a visualisation", "comm": "omx", "argv": ["omx", "sidecar", "--watch"] },
+    { "name": "omx mcp-serve is a helper server", "comm": "omx", "argv": ["omx", "mcp-serve"] },
+    { "name": "omx sparkshell", "comm": "omx", "argv": ["omx", "sparkshell"] },
+    { "name": "omx exec is non-interactive", "comm": "omx", "argv": ["omx", "exec", "--json", "do the thing"] },
+    { "name": "omx update", "comm": "omx", "argv": ["omx", "update", "--stable"] },
+    { "name": "the notify-fallback watcher OMX spawns beside Codex (probed)", "comm": "MainThread", "argv": ["/home/ubuntu/.local/share/mise/installs/node/24.18.1/bin/node", "/home/ubuntu/.local/share/mise/installs/npm-oh-my-codex/v0.21.0/node_modules/.mise/oh-my-codex@0.21.0/node_modules/oh-my-codex/dist/scripts/notify-fallback-watcher.js", "--cwd", "/home/ubuntu/repo", "--notify-script", "/home/ubuntu/.local/share/mise/installs/npm-oh-my-codex/v0.21.0/node_modules/.mise/oh-my-codex@0.21.0/node_modules/oh-my-codex/dist/scripts/notify-hook.js", "--pid-file", "/home/ubuntu/repo/.omx/state/notify-fallback.pid", "--parent-pid", "18"] },
+    { "name": "the notify-fallback watcher run for a checkout that happens to be named omx", "comm": "MainThread", "argv": ["/usr/bin/node", "/opt/oh-my-codex/dist/scripts/notify-fallback-watcher.js", "--cwd", "/home/ubuntu/code/omx", "--parent-pid", "18"] },
+    { "name": "omx --help exits without launching anything", "comm": "omx", "argv": ["omx", "--help"] },
+    { "name": "the Codex child OMX launches (probed)", "comm": "codex", "argv": ["codex", "-c", "model_instructions_file=\"/home/ubuntu/repo/.omx/state/sessions/omx-1788324720706-thhcy6/AGENTS.md\""] },
+    { "name": "plain codex", "comm": "codex", "argv": ["codex"] },
+    { "name": "node launcher used by current Codex installs", "comm": "MainThread", "argv": ["node", "/home/ubuntu/n/bin/codex"] },
+    { "name": "sh -c that mentions omx", "comm": "sh", "argv": ["sh", "-c", "omx --direct"] },
+    { "name": "bash -c tool child", "comm": "bash", "argv": ["bash", "-c", "codex exec --json"] },
+    { "name": "srt sandbox wrapper (ancestor, not the agent)", "comm": "srt", "argv": ["srt", "--settings", "/tmp/srt.json", "--", "omx", "--direct"] },
+    { "name": "bwrap sandbox wrapper (ancestor, not the agent)", "comm": "bwrap", "argv": ["bwrap", "--", "omx"] },
+    { "name": "unrelated node process", "comm": "node", "argv": ["node", "/app/server.js"] },
+    { "name": "a plain login shell", "comm": "zsh", "argv": ["-zsh"] }
+  ]
+}

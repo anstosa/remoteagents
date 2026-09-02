@@ -202,7 +202,9 @@ The `projects` array may be empty or omitted for scratch-only use. Each Project
 is a git repository with a stable ID, canonical path, and label; its Worktrees
 are discovered from `git worktree list`. Optional fields expose project links,
 stack actions, new-task flows, and customized prompt actions. Agents launch by
-Adapter kind (configure each CLI once under `adapters`).
+Adapter kind — `codex`, `omx`, `claude`, and later `pi` and `opencode` —
+configured once under `adapters`; Codex and OMX are separate kinds, so a
+deployment can run plain Codex in some worktrees and OMX in others.
 
 ```json
 {
@@ -213,7 +215,8 @@ Adapter kind (configure each CLI once under `adapters`).
     { "url": "https://other-agents.example.com" }
   ],
   "adapters": {
-    "codex": { "program": "/usr/local/bin/codex" }
+    "codex": { "program": "/usr/local/bin/codex" },
+    "omx": { "program": "/absolute/path/to/omx" }
   },
   "projects": [
     {

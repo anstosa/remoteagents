@@ -1,12 +1,14 @@
 {
-  "_note": "Codex/OMX process identities. recognizes() classifies one process by its own comm + argv, so a codex/omx process is recognized whether or not it runs under an srt/bwrap sandbox — the wrapper is a separate ancestor process whose own identity does not match, so it belongs in noMatch. Finding the codex process inside a wrapped tree is the process walker's job (hasCodexDescendant), not the recognizer's. Match/no-match cases mirror processes.test.ts.",
+  "_note": "Codex process identities. recognizes() classifies one process by its own comm + argv, so a codex process is recognized whether or not it runs under an srt/bwrap sandbox — the wrapper is a separate ancestor process whose own identity does not match, so it belongs in noMatch. Finding the codex process inside a wrapped tree is the process walker's job, not the recognizer's. OMX is its own kind (ADR 0005): its wrapper never matches here, and the walker meets that wrapper before the Codex child it launches, so a Codex process is badged Codex only when no OMX ancestor claimed the pane. Match/no-match cases mirror processes.test.ts.",
   "match": [
     { "name": "node launcher used by current Codex installs", "comm": "MainThread", "argv": ["node", "/home/ubuntu/n/bin/codex"] },
     { "name": "codex reported directly as the process comm", "comm": "codex", "argv": ["codex"] },
-    { "name": "omx worker shares the codex kind", "comm": "omx", "argv": ["/home/ubuntu/bin/omx"] }
+    { "name": "the Codex child OMX launches is still Codex by its own identity", "comm": "codex", "argv": ["codex", "-c", "model_instructions_file=\"/home/ubuntu/repo/.omx/state/sessions/omx-1788324720706-thhcy6/AGENTS.md\""] }
   ],
   "noMatch": [
     { "name": "unrelated node process", "comm": "node", "argv": ["node", "/app/server.js"] },
+    { "name": "omx wrapper is its own kind", "comm": "omx", "argv": ["/home/ubuntu/bin/omx"] },
+    { "name": "omx wrapper via node is its own kind", "comm": "MainThread", "argv": ["/usr/bin/node", "/opt/oh-my-codex/dist/cli/omx.js", "--direct"] },
     { "name": "OMX HUD watcher is not an agent", "comm": "MainThread", "argv": ["node", "/home/ubuntu/n/bin/omx", "hud", "--watch"] },
     { "name": "bash -c tool child", "comm": "bash", "argv": ["bash", "-c", "codex exec --json"] },
     { "name": "srt sandbox wrapper (ancestor, not the agent)", "comm": "srt", "argv": ["srt", "--settings", "/tmp/srt.json", "--", "codex"] },

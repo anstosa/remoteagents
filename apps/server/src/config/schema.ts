@@ -5,6 +5,7 @@ import { z } from 'zod';
 import type { Project, StackCommands } from '../domain/models.js';
 import { gitCommonDir, listWorktrees } from '../git/worktrees.js';
 import { adapterFor } from '../adapters/registry.js';
+import { codexProgramName, omxProgramName } from '../adapters/program-names.js';
 import { hostVisibleRepoRoot } from '../adapters/files.js';
 import { agentKinds, type AdapterConfigs, type AdapterLaunchConfig } from '../adapters/types.js';
 import { instanceIconNames, type InstanceIcon } from '../instance-icon.js';
@@ -30,7 +31,7 @@ const adapterEnvName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u, 'invalid en
 // agent of this kind, in the stopped agent's workspace.
 const adapterEntry = z.object({ program: adapterProgram, args: z.array(adapterArgument).max(64).optional(), env: z.record(adapterEnvName, adapterArgument).optional(), setup: command.optional(), teardown: command.optional() }).strict();
 // keyed by kind, one strict entry each; an omitted block is the legacy configuration
-const adaptersSchema = z.object({ codex: adapterEntry.optional(), claude: adapterEntry.optional(), pi: adapterEntry.optional(), opencode: adapterEntry.optional() }).strict();
+const adaptersSchema = z.object({ codex: adapterEntry.optional(), omx: adapterEntry.optional(), claude: adapterEntry.optional(), pi: adapterEntry.optional(), opencode: adapterEntry.optional() }).strict();
 // constrain icons to bundled artwork
 const instanceIcon = z.enum(instanceIconNames);
 const remoteServer = z.object({ url: z.string(), name: serverName.optional(), icon: instanceIcon.optional() }).strict();
@@ -203,7 +204,16 @@ async function resolveAdapters(parsed: ParsedAdapters, checkExecutables: boolean
     }
     configs[kind] = config;
   }
+  warnCrossedPrograms(parsed, warn);
   return configs;
+}
+// OMX was once launched through `adapters.codex` (one kind recognised both). Now that
+// OMX is its own kind (ADR 0005), a Codex entry whose program is OMX — or an OMX entry
+// whose program is plain Codex — still launches, but is recognised, badged and torn
+// down as the wrong kind; say so at boot rather than leaving the mismatch to the UI.
+function warnCrossedPrograms(parsed: ParsedAdapters, warn: (message: string) => void): void {
+  if (parsed.codex !== undefined && omxProgramName.test(basename(parsed.codex.program))) warn('adapters.codex.program looks like OMX; configure it under adapters.omx so it is recognised, badged and torn down as OMX');
+  if (parsed.omx !== undefined && codexProgramName.test(basename(parsed.omx.program))) warn('adapters.omx.program looks like plain Codex; configure it under adapters.codex so it is recognised, badged and torn down as Codex');
 }
 // warn once per legacy agent key that `adapters.codex` overrides and the console now ignores
 function warnLegacyAgentKeys(input: unknown, warn: (message: string) => void): void {
