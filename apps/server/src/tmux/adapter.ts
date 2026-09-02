@@ -54,6 +54,53 @@ function bottomAlignedWindow(lines: string[], rows: number): string[] {
 
 export type CapturedWindow = { text: string; older: boolean; lastPrompt?: string; latestAgentMessage?: string; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean };
 
+export type PaneSize = { cols: number; rows: number };
+// clientLimit: the largest pane size every tmux client attached to the pane's
+// session can display; absent when nothing is attached
+export type PaneGeometry = PaneSize & { clientLimit?: PaneSize };
+// the largest pane the console will ask tmux for; a pane tmux has already made
+// larger (a wide attached terminal) is still reported as it is
+export const paneSizeLimit: PaneSize = { cols: 500, rows: 300 };
+
+type Layout = { windowCols: number; windowRows: number; paneCols: number; paneRows: number };
+const layoutFormat = '#{window_width}\t#{window_height}\t#{pane_width}\t#{pane_height}';
+// one attached client per line: tty width, tty height, flags, its session's status-line setting
+const clientFormat = '#{client_width}\t#{client_height}\t#{client_flags}\t#{status}';
+
+function parseLayout(line: string | undefined): Layout | undefined {
+  const match = /^(\d+)\t(\d+)\t(\d+)\t(\d+)$/u.exec(line ?? '');
+  if (match === null) return undefined;
+  return { windowCols: Number(match[1]), windowRows: Number(match[2]), paneCols: Number(match[3]), paneRows: Number(match[4]) };
+}
+
+// `status` is off, on, or a line count
+const statusLines = (status: string): number => status === 'off' ? 0 : status === 'on' ? 1 : Number.parseInt(status, 10) || 1;
+
+// Mirror tmux's own ignore_client_size(): suspended clients and control-mode
+// clients that never published a size do not count, and an ignore-size client
+// counts only when no other client is attached. tmux sizes a window to the
+// space beneath each client's status line, and the console sizes a pane to
+// the window minus its companion panes, so both come off the limit.
+function clientLimit(layout: Layout, lines: string[]): PaneSize | undefined {
+  const clients = lines.flatMap(line => {
+    const match = /^(\d+)\t(\d+)\t([^\t]*)\t([^\t]*)$/u.exec(line);
+    if (match === null) return [];
+    const flags = new Set(match[3]!.split(','));
+    const ttyCols = Number(match[1]);
+    const ttyRows = Number(match[2]);
+    if (flags.has('suspended') || ttyCols < 2 || ttyRows < 2) return [];
+    return [{ cols: ttyCols, rows: ttyRows - statusLines(match[4]!), ignored: flags.has('ignore-size') }];
+  });
+  const counted = clients.some(client => !client.ignored) ? clients.filter(client => !client.ignored) : clients;
+  if (counted.length === 0) return undefined;
+  const extraCols = Math.max(0, layout.windowCols - layout.paneCols);
+  const extraRows = Math.max(0, layout.windowRows - layout.paneRows);
+  return {
+    cols: Math.max(2, Math.min(...counted.map(client => client.cols)) - extraCols),
+    rows: Math.max(2, Math.min(...counted.map(client => client.rows)) - extraRows)
+  };
+}
+
 export class TmuxAdapter {
   private readonly binary = process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux';
   private readonly inputQueues = new Map<string, Promise<boolean>>();
@@ -125,12 +172,10 @@ export class TmuxAdapter {
   }
 
   async resize(socket: SocketRef, pane: string, cols: number, rows: number): Promise<boolean> {
-    if (!paneId.test(pane) || !Number.isInteger(cols) || cols < 2 || cols > 500 || !Number.isInteger(rows) || rows < 2 || rows > 300) return false;
+    if (!paneId.test(pane) || !Number.isInteger(cols) || cols < 2 || cols > paneSizeLimit.cols || !Number.isInteger(rows) || rows < 2 || rows > paneSizeLimit.rows) return false;
     const readLayout = async () => {
-      const out = await run(this.binary, ['-S', socket.path, 'display-message', '-p', '-t', pane, '#{window_width}\t#{window_height}\t#{pane_width}\t#{pane_height}']);
-      const match = /^(\d+)\t(\d+)\t(\d+)\t(\d+)$/u.exec(out.stdout.trim());
-      if (out.code !== 0 || match === null) return undefined;
-      return { windowCols: Number(match[1]), windowRows: Number(match[2]), paneCols: Number(match[3]), paneRows: Number(match[4]) };
+      const out = await run(this.binary, ['-S', socket.path, 'display-message', '-p', '-t', pane, layoutFormat]);
+      return out.code === 0 ? parseLayout(out.stdout.trim()) : undefined;
     };
     const apply = async (windowCols: number, windowRows: number) => {
       if (windowCols < 2 || windowRows < 2) return false;
@@ -162,14 +207,25 @@ export class TmuxAdapter {
     return corrected?.paneCols === cols && corrected.paneRows === rows;
   }
 
-  async size(socket: SocketRef, pane: string): Promise<{ cols: number; rows: number } | undefined> {
+  async size(socket: SocketRef, pane: string): Promise<PaneGeometry | undefined> {
     if (!paneId.test(pane)) return undefined;
-    const out = await run(this.binary, ['-S', socket.path, 'display-message', '-p', '-t', pane, '#{pane_width}\t#{pane_height}']);
-    const match = /^(\d+)\t(\d+)$/u.exec(out.stdout.trim());
-    if (out.code !== 0 || match === null) return undefined;
-    const cols = Number(match[1]);
-    const rows = Number(match[2]);
-    return cols >= 2 && cols <= 500 && rows >= 2 && rows <= 300 ? { cols, rows } : undefined;
+    // one tmux process answers both questions; the layout line comes first
+    const out = await run(this.binary, ['-S', socket.path, 'display-message', '-p', '-t', pane, layoutFormat, ';', 'list-clients', '-t', pane, '-F', clientFormat]);
+    if (out.code !== 0) return undefined;
+    const [first, ...clients] = out.stdout.split('\n').filter(line => line !== '');
+    const layout = parseLayout(first);
+    if (layout === undefined) return undefined;
+    const { paneCols: cols, paneRows: rows } = layout;
+    if (cols < 1 || rows < 1) return undefined;
+    const limit = clientLimit(layout, clients);
+    return limit === undefined ? { cols, rows } : { cols, rows, clientLimit: limit };
+  }
+
+  // resize-window pins the window at a manual size that ignores attached
+  // clients; unsetting the option hands the size back to tmux
+  async unpinWindowSize(socket: SocketRef, pane: string): Promise<boolean> {
+    if (!paneId.test(pane)) return false;
+    return (await run(this.binary, ['-S', socket.path, 'set-option', '-w', '-t', pane, '-u', 'window-size'])).code === 0;
   }
 
   async pastePrompt(socket: SocketRef, pane: string, buffer: string, prompt: string): Promise<boolean> {

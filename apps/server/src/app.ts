@@ -32,6 +32,7 @@ import { agentAttentionState, AgentNotificationCoordinator } from './notificatio
 import { stackActions, type Agent, type StackAction, type Worktree } from './domain/models.js';
 import { CommandCatalogService } from './commands/service.js';
 import { LatestViewportScheduler, PaneViewportCoordinator } from './logs/viewport-scheduler.js';
+import { boundedViewport } from './logs/viewport.js';
 import { DashboardUpdates, type DashboardPayload } from './dashboard/updates.js';
 import { WorktreeNoteService } from './notes/service.js';
 import { CleanupService } from './cleanup/service.js';
@@ -1482,7 +1483,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       const viewportLease = () => paneViewport ??= paneViewports.acquire(
         `${target.socket.fingerprint}:${target.agent.paneId}`,
         () => tmux.size(target.socket, target.agent.paneId),
-        (nextCols, nextRows) => tmux.resize(target.socket, target.agent.paneId, nextCols, nextRows)
+        (nextCols, nextRows) => tmux.resize(target.socket, target.agent.paneId, nextCols, nextRows),
+        () => tmux.unpinWindowSize(target.socket, target.agent.paneId)
       );
       let last = '';
       let history = 0;
@@ -1562,6 +1564,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         viewportRefreshing = true;
         try {
           if (viewportEstablished) {
+            // each tick re-targets the pane: external layout changes are
+            // repaired, and a terminal attached to the session caps the size
             const ensured = await viewportLease().ensure(cols, rows);
             if (!ensured.ok) return socket.close(1011);
             if (ensured.resized) {
@@ -1580,9 +1584,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
           const frame = JSON.parse(String(raw));
           if (frame?.v !== 1 || typeof frame?.type !== 'string') throw new Error();
           if (frame.type === 'viewport') {
-            if (!Number.isInteger(frame.cols) || !Number.isInteger(frame.rows) || frame.cols < 2 || frame.cols > 500 || frame.rows < 2 || frame.rows > 300) throw new Error();
-            cols = frame.cols;
-            rows = frame.rows;
+            const requested = boundedViewport(frame);
+            if (requested === undefined) throw new Error();
+            ({ cols, rows } = requested);
             viewportEstablished = true;
             void viewport.schedule({ cols, rows, history, onFailure: () => socket.close(1011) });
             return;
@@ -1590,10 +1594,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
           if (frame.type === 'history') {
             if (!Number.isInteger(frame.offset) || frame.offset < 0 || frame.offset > 5_000) throw new Error();
             const hasViewport = frame.cols !== undefined || frame.rows !== undefined;
-            if (hasViewport && (!Number.isInteger(frame.cols) || !Number.isInteger(frame.rows) || frame.cols < 2 || frame.cols > 500 || frame.rows < 2 || frame.rows > 300)) throw new Error();
             if (!hasViewport) { requestView(frame.offset); return; }
-            cols = frame.cols;
-            rows = frame.rows;
+            const requested = boundedViewport(frame);
+            if (requested === undefined) throw new Error();
+            ({ cols, rows } = requested);
             viewportEstablished = true;
             void viewport.schedule({ cols, rows, history: frame.offset, onFailure: () => socket.close(1011) });
             return;
