@@ -367,6 +367,8 @@ test.describe('phone browser split', () => {
       if (path === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
       // serve empty agent collections
       if (path === '/api/agents/agent-1/saved-prompts' || path === '/api/agents/agent-1/prompt-history' || path === '/api/agents/agent-1/queued-prompts') return route.fulfill({ json: { prompts: [] } });
+      // serve one mobile note
+      if (path === '/api/worktrees/cora/notes') return route.fulfill({ json: { notes: [{ id: 'note-cora-000001', text: 'Keep notes beside the browser.' }] } });
       // serve an unavailable push key
       if (path === '/api/push/public-key') return route.fulfill({ json: {} });
       return route.fulfill({ status: 404, json: { error: 'not mocked' } });
@@ -383,6 +385,24 @@ test.describe('phone browser split', () => {
     await expect(output).toBeVisible();
     await expect(browser).toBeHidden();
     await expect(browserSwitch).toBeVisible();
+
+    // switch directly among output, note, and browser panes
+    await page.getByRole('button', { name: 'Notes (1)' }).click();
+    await page.getByRole('button', { name: 'Keep notes beside the browser.…', exact: true }).click();
+    const note = page.getByRole('dialog', { name: 'Note' });
+    await expect(note).toBeVisible();
+    await expect(output).toBeHidden();
+    await expect(browser).toBeHidden();
+    await expect(page.getByRole('button', { name: 'Show agent output' })).toBeVisible();
+    await page.getByRole('button', { name: 'Show project browser' }).click();
+    await expect(browser).toBeVisible();
+    await expect(note).toBeHidden();
+    await expect(page.getByRole('button', { name: 'Show note' })).toBeVisible();
+    await page.getByRole('button', { name: 'Show note' }).click();
+    await expect(note).toBeVisible();
+    await note.getByRole('button', { name: 'Close note' }).click();
+    await expect(output).toBeVisible();
+    await expect(note).toHaveCount(0);
     await browserSwitch.click();
 
     const mobileSwitch = page.getByRole('button', { name: 'Show agent output' });

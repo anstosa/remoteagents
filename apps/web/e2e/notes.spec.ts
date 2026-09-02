@@ -246,7 +246,7 @@ test('keeps note flyouts left-aligned and shifts long menus within the output bo
   await expect(page.getByRole('button', { name: 'Notes (3)', exact: true })).toBeVisible();
 });
 
-test('switches sticky notes between vertical and horizontal output splits', async ({ page }) => {
+test('switches sticky notes between full-screen mobile panes and a horizontal desktop split', async ({ page }) => {
   const note = { id: 'note-identifier-001', text: 'Keep this note beside the output.' };
   await page.setViewportSize({ width: 428, height: 952 });
   await page.route('**/api/**', route => {
@@ -272,26 +272,33 @@ test('switches sticky notes between vertical and horizontal output splits', asyn
   await expect(outputStatus).toHaveCount(1);
   await expect(page.locator('.log > .log-status')).toHaveCount(0);
 
-  const vertical = await Promise.all([log.boundingBox(), output.boundingBox(), pane.boundingBox(), outputStatus.boundingBox()]);
-  expect(vertical[0]!.width).toBeLessThan(vertical[0]!.height);
-  expect(vertical[1]!.x).toBeCloseTo(vertical[0]!.x, 0);
-  expect(vertical[2]!.x).toBeCloseTo(vertical[0]!.x, 0);
-  expect(vertical[2]!.y).toBeCloseTo(vertical[1]!.y + vertical[1]!.height, 0);
-  expect(vertical[1]!.width / vertical[0]!.width).toBeGreaterThan(0.95);
-  expect(vertical[2]!.width / vertical[0]!.width).toBeGreaterThan(0.95);
-  expect(vertical[3]!.x).toBeGreaterThanOrEqual(vertical[1]!.x);
-  expect(vertical[3]!.x - vertical[1]!.x).toBeLessThanOrEqual(24);
-  expect(vertical[3]!.y).toBeGreaterThanOrEqual(vertical[1]!.y);
-  expect(vertical[3]!.y - vertical[1]!.y).toBeLessThanOrEqual(60);
+  // show one full-size pane with a bottom-left switch on phones
+  const showOutput = page.getByRole('button', { name: 'Show agent output' });
+  await expect(output).toBeHidden();
+  await expect(showOutput).toBeVisible();
+  await expect(page.getByRole('separator', { name: 'Resize agent and note panels' })).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Expand note' })).toBeHidden();
+  const mobileNote = await Promise.all([renderedBounds(log), renderedBounds(pane), renderedBounds(showOutput)]);
+  expect(mobileNote[1].width / mobileNote[0].width).toBeGreaterThan(0.95);
+  expect(mobileNote[1].height / mobileNote[0].height).toBeGreaterThan(0.95);
+  expect(mobileNote[2].x - mobileNote[0].x).toBeLessThan(10);
+  expect(mobileNote[0].y + mobileNote[0].height - mobileNote[2].y - mobileNote[2].height).toBeLessThan(10);
+
+  await showOutput.click();
+  const showNote = page.getByRole('button', { name: 'Show note' });
+  await expect(output).toBeVisible();
+  await expect(pane).toBeHidden();
+  await expect(showNote).toBeVisible();
+  const mobileOutput = await Promise.all([renderedBounds(log), renderedBounds(output)]);
+  expect(mobileOutput[1].width / mobileOutput[0].width).toBeGreaterThan(0.95);
+  expect(mobileOutput[1].height / mobileOutput[0].height).toBeGreaterThan(0.95);
+  await showNote.click();
+  await expect(pane).toBeVisible();
+  await expect(output).toBeHidden();
 
   await page.getByLabel('Note preview').click();
   await expect(page.getByRole('textbox', { name: 'Note content' })).toBeFocused();
-  await expect(page.getByRole('button', { name: 'Restore note' })).toHaveAttribute('aria-pressed', 'true');
   await expect(output).toBeHidden();
-  await page.getByRole('button', { name: 'Restore note' }).click();
-  await expect(page.getByLabel('Note preview')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Expand note' })).toHaveAttribute('aria-pressed', 'false');
-  await expect(output).toBeVisible();
 
   await page.setViewportSize({ width: 1_000, height: 600 });
   await expect.poll(async () => {
@@ -299,6 +306,7 @@ test('switches sticky notes between vertical and horizontal output splits', asyn
     return bounds === null ? false : bounds.width > bounds.height;
   }).toBe(true);
   const divider = page.getByRole('separator', { name: 'Resize agent and note panels' });
+  await expect(page.getByRole('button', { name: 'Expand note' })).toHaveAttribute('aria-pressed', 'false');
   const horizontal = await Promise.all([log.boundingBox(), output.boundingBox(), pane.boundingBox(), outputStatus.boundingBox(), divider.boundingBox()]);
   expect(horizontal[1]!.y).toBeCloseTo(horizontal[0]!.y, 0);
   expect(horizontal[2]!.y).toBeCloseTo(horizontal[0]!.y, 0);

@@ -240,10 +240,9 @@ test('long press selects mobile output without entering terminal input mode', as
   const noteEditor = page.getByRole('textbox', { name: 'Note content' });
   await notePreview.click();
   await expect(noteEditor).toHaveValue('Selectable');
-  const restoreNote = page.getByRole('button', { name: 'Restore note' });
-  await expect(restoreNote).toHaveAttribute('aria-pressed', 'true');
-  await restoreNote.click();
-  await expect(page.getByRole('button', { name: 'Expand note' })).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByRole('button', { name: 'Expand note' })).toBeHidden();
+  await page.getByRole('button', { name: 'Show agent output' }).click();
+  await expect(page.getByRole('dialog', { name: 'Note' })).toBeHidden();
   await expect.poll(() => savedNotes).toContain('Selectable');
   await selectableRow.evaluate(row => {
     const text = row.firstChild!;
@@ -314,8 +313,9 @@ test('long press selects mobile output without entering terminal input mode', as
   expect(selectionTreatment.glow).toContain('rgba(208, 208, 208');
   expect(selectionTreatment.highlight).toBe('rgb(203, 166, 247)');
   expect(await log.evaluate(element => getComputedStyle(element, '::after').content)).toBe('none');
-  const [selectedOutputBounds, selectedNoteBounds] = await Promise.all([outputPane.boundingBox(), page.getByRole('dialog', { name: 'Note' }).boundingBox()]);
-  expect(selectedOutputBounds!.y + selectedOutputBounds!.height).toBeCloseTo(selectedNoteBounds!.y, 0);
+  const [selectedOutputBounds, selectedLogBounds] = await Promise.all([outputPane.boundingBox(), log.boundingBox()]);
+  expect(selectedOutputBounds!.width / selectedLogBounds!.width).toBeGreaterThan(0.95);
+  expect(selectedOutputBounds!.height / selectedLogBounds!.height).toBeGreaterThan(0.95);
   await page.keyboard.press('y');
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('Selected terminal output');
   await expect(log).toHaveClass(/selection-copied/u);

@@ -53,11 +53,13 @@ test('keeps the software keyboard open across output refreshes and closes it on 
       value: (text: string) => sockets.find(socket => socket.url.includes('/ws/logs/'))?.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ v: 1, type: 'reset', text }) }))
     });
   });
+  // serve the embedded project locally
+  await page.route('https://project.example.com/**', route => route.fulfill({ contentType: 'text/html', body: '<main>Project preview</main>' }));
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready' }], worktrees: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', title: 'Ready', projectUrl: 'https://project.example.com', stack: { running: true, tunnel: true } }], worktrees: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: `${String((request.postDataJSON() as { kind?: unknown }).kind)}-ticket` } });
     if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
@@ -108,4 +110,24 @@ test('keeps the software keyboard open across output refreshes and closes it on 
   await expect(page.locator('.log')).not.toHaveClass(/input-active/u);
   await expect(page.locator('.xterm-helper-textarea:focus')).toHaveCount(0);
   await expect(tabs).toBeVisible();
+
+  // keep output full-width when the keyboard changes the split aspect ratio
+  await page.setViewportSize({ width: 900, height: 1200 });
+  await page.evaluate(() => (
+    window as unknown as { __setVisualViewportHeight: (height: number) => void }
+  ).__setVisualViewportHeight(1200));
+  await page.getByRole('button', { name: 'Open project in split view' }).click();
+  const browser = page.getByRole('dialog', { name: 'Browser' });
+  await expect(browser).toBeVisible();
+  await expect.poll(() => output.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThanOrEqual(899);
+  await prompt.focus();
+  await page.evaluate(() => (
+    window as unknown as { __setVisualViewportHeight: (height: number) => void }
+  ).__setVisualViewportHeight(500));
+  await expect(browser).toBeHidden();
+  await expect.poll(() => output.evaluate(element => element.getBoundingClientRect().right)).toBeGreaterThanOrEqual(899);
+  await page.evaluate(() => (
+    window as unknown as { __setVisualViewportHeight: (height: number) => void }
+  ).__setVisualViewportHeight(1200));
+  await expect(browser).toBeVisible();
 });

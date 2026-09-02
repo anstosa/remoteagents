@@ -2358,6 +2358,27 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   const [selectionToolbar, setSelectionToolbar] = useState<{ text: string; top: number }>();
   const promptPendingKey = `prompt:${agentId ?? 'unavailable'}`;
   const promptPending = usePendingOperation(promptPendingKey);
+  // keep explicit note expansion desktop-only
+  useLayoutEffect(() => {
+    // skip inactive expansion state
+    if (!expanded) return;
+    const mobile = window.matchMedia('(max-width: 768px)');
+    const collapse = () => {
+      // preserve desktop expansion
+      if (!mobile.matches) return;
+      setExpanded(current => {
+        // skip already collapsed notes
+        if (!current) return current;
+        const note = activeNoteRef.current;
+        // normalize retained mobile state
+        if (noteViewId !== undefined && note !== undefined) setWorktreeNoteView(noteViewId, { noteId: note.id, expanded: false });
+        return false;
+      });
+    };
+    collapse();
+    mobile.addEventListener('change', collapse);
+    return () => mobile.removeEventListener('change', collapse);
+  }, [expanded, noteViewId]);
 
   const clearActionStatusLater = () => {
     if (actionStatusTimer.current !== undefined) window.clearTimeout(actionStatusTimer.current);
@@ -2524,15 +2545,14 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     const text = dirtyTexts.current.get(note.id) ?? note.text;
     const opened = { ...note, text };
     const editingOnOpen = edit ?? !text.trim();
-    const expandOnOpen = editingOnOpen && window.matchMedia('(max-width: 600px)').matches;
     activeNoteRef.current = opened;
     draftRef.current = text;
     if (!acknowledgedTexts.current.has(note.id)) acknowledgedTexts.current.set(note.id, note.text);
     setDraft(text);
     setActiveNote(opened);
-    setExpanded(expandOnOpen);
+    setExpanded(false);
     // retain this context's open note
-    if (noteViewId !== undefined) setWorktreeNoteView(noteViewId, { noteId: note.id, expanded: expandOnOpen });
+    if (noteViewId !== undefined) setWorktreeNoteView(noteViewId, { noteId: note.id, expanded: false });
     setEditing(editingOnOpen);
     setRenaming(false);
     setTitleDraft(note.title ?? '');
@@ -2845,11 +2865,6 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     if (selectionAtPointerDown.current || selected) {
       selectionAtPointerDown.current = false;
       return;
-    }
-    if (window.matchMedia('(max-width: 600px)').matches) {
-      setExpanded(true);
-      // retain mobile expansion state
-      if (noteViewId !== undefined && activeNote !== undefined) setWorktreeNoteView(noteViewId, { noteId: activeNote.id, expanded: true });
     }
     setEditing(true);
   };
@@ -3198,13 +3213,24 @@ function ResizableLogSplit({ worktreeId, output, note, browser }: { worktreeId?:
   const dragRef = useRef<SplitDrag | undefined>(undefined);
   const hasNote = note !== undefined && note !== null;
   const hasBrowser = browser !== undefined && browser !== null;
+  const previousPanels = useRef({ hasNote, hasBrowser });
   const signature = `${hasNote ? 'note' : ''}:${hasBrowser ? 'browser' : ''}`;
   const [sizes, setSizes] = useState<SplitSizes>(() => savedSplitSizes(worktreeId, signature));
-  const [mobilePanel, setMobilePanel] = useState<'agent'|'browser'>('agent');
+  const [mobilePanel, setMobilePanel] = useState<SplitPanel>('agent');
   // restore the exact workspace layout for each open-panel composition
   useEffect(() => setSizes(savedSplitSizes(worktreeId, signature)), [signature, worktreeId]);
-  // start every mobile split on the agent
-  useEffect(() => setMobilePanel('agent'), [hasBrowser]);
+  // select newly opened mobile panes
+  useLayoutEffect(() => {
+    const previous = previousPanels.current;
+    previousPanels.current = { hasNote, hasBrowser };
+    setMobilePanel(current => {
+      // prioritize a newly opened note
+      if (hasNote && !previous.hasNote) return 'note';
+      // return from closed panes
+      if ((current === 'note' && !hasNote) || (current === 'browser' && !hasBrowser)) return 'agent';
+      return current;
+    });
+  }, [hasBrowser, hasNote]);
   // collect current panel widths
   const measuredSizes = () => {
     const container = containerRef.current;
@@ -3268,14 +3294,14 @@ function ResizableLogSplit({ worktreeId, output, note, browser }: { worktreeId?:
     saveSplitSizes(worktreeId, signature, resized);
     event.preventDefault();
   };
-  // switch the retained mobile split panel
-  const toggleMobilePanel = () => setMobilePanel(current => current === 'browser' ? 'agent' : 'browser');
+  const visibleMobilePanel = mobilePanel === 'note' && !hasNote || mobilePanel === 'browser' && !hasBrowser ? 'agent' : mobilePanel;
   const style: SplitStyle = { '--agent-split': `${sizes.agent}fr`, '--note-split': `${sizes.note}fr`, '--browser-split': `${sizes.browser}fr` };
   const noteDivider = hasNote ? <div className="split-resizer note-resizer" role="separator" aria-label="Resize agent and note panels" aria-orientation="vertical" tabIndex={0} data-left="agent" data-right="note" onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={stopResize} onPointerCancel={stopResize} onKeyDown={keyboardResize} /> : null;
   const browserDivider = hasBrowser ? <div className="split-resizer browser-resizer" role="separator" aria-label={`Resize ${hasNote ? 'note' : 'agent'} and browser panels`} aria-orientation="vertical" tabIndex={0} data-left={hasNote ? 'note' : 'agent'} data-right="browser" onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={stopResize} onPointerCancel={stopResize} onKeyDown={keyboardResize} /> : null;
-  // expose the hidden mobile split peer
-  const mobileSwitch = hasBrowser ? <button className="mobile-split-switch" type="button" aria-label={mobilePanel === 'browser' ? 'Show agent output' : 'Show project browser'} title={mobilePanel === 'browser' ? 'Agent output' : 'Project browser'} onClick={toggleMobilePanel}><svg viewBox="0 0 24 24" aria-hidden="true">{mobilePanel === 'browser' ? <><rect x="3" y="4" width="18" height="16" rx="1" /><path d="m7 9 3 3-3 3M12 15h5" /></> : <><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" /></>}</svg></button> : null;
-  return <div ref={containerRef} className={`log-split${hasNote ? ' has-note' : ''}${hasBrowser ? ` has-browser mobile-${mobilePanel}-view` : ''}`} style={style}>{output}{noteDivider}{note}{browserDivider}{browser}{mobileSwitch}</div>;
+  // expose hidden mobile split peers
+  const mobileSwitches = hasNote || hasBrowser ? <div className="mobile-split-switches" role="toolbar" aria-label="Split view">{visibleMobilePanel !== 'agent' && <button className="mobile-agent-switch" type="button" aria-label="Show agent output" title="Agent output" onClick={() => { /* show agent output */ setMobilePanel('agent'); }}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1" /><path d="m7 9 3 3-3 3M12 15h5" /></svg></button>}{hasNote && visibleMobilePanel !== 'note' && <button className="mobile-note-switch" type="button" aria-label="Show note" title="Note" onClick={() => { /* show note */ setMobilePanel('note'); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg></button>}{hasBrowser && visibleMobilePanel !== 'browser' && <button className="mobile-browser-switch" type="button" aria-label="Show project browser" title="Project browser" onClick={() => { /* show project browser */ setMobilePanel('browser'); }}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" /></svg></button>}</div> : null;
+  const mobileView = hasNote || hasBrowser ? ` mobile-${visibleMobilePanel}-view` : '';
+  return <div ref={containerRef} className={`log-split${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}${mobileView}`} style={style}>{output}{noteDivider}{note}{browserDivider}{browser}{mobileSwitches}</div>;
 }
 
 // format one git stat number
