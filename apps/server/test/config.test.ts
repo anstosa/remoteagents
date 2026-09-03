@@ -91,6 +91,14 @@ describe('project configuration', () => {
     await expect(validateConfig({ publicOrigin: 'https://agents.example.com', projects: [{ id: 'scratch', path: repo }] })).rejects.toThrow();
   });
 
+  it('accepts an absolute scratchDirectory, omits it when unset, and refuses a relative one', async () => {
+    const set = await validateConfig({ publicOrigin: 'https://agents.example.com', scratchDirectory: '/srv/scratch' });
+    expect(set.scratchDirectory).toBe('/srv/scratch');
+    const unset = await validateConfig({ publicOrigin: 'https://agents.example.com' });
+    expect(unset.scratchDirectory).toBeUndefined();
+    await expect(validateConfig({ publicOrigin: 'https://agents.example.com', scratchDirectory: 'relative/path' })).rejects.toThrow('absolute path');
+  });
+
   it('resolves worktreesDirectory: default, relative to the main worktree, and absolute as given', async () => {
     const repo = await gitRepo();
     const relative = await validateConfig(await withProject(repo, { worktreesDirectory: '../elsewhere' }));

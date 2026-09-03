@@ -51,6 +51,11 @@ const sourceSchema = z.object({
   proxy: z.object({ trustedSourceIps: z.array(z.string()).default(['127.0.0.1', '::1']) }).strict().default({}),
   tmux: z.object({ pollIntervalMs: z.number().int().min(250).max(10000).default(500) }).strict().default({}),
   newAgentCommand: command.default('codex'),
+  // where a Scratch (home) agent launches. An absolute path; defaults to the launch
+  // account home (`$HOME`, or the host account home derived under the Docker bridge).
+  // The account home the shell exports stays independent of it (launch/service.ts
+  // agentHome), so this only moves the working directory, not HOME.
+  scratchDirectory: z.string().min(1).max(4096).startsWith('/', 'scratchDirectory must be an absolute path').refine(value => !value.includes('\0'), 'NUL is forbidden').optional(),
   adapters: adaptersSchema.optional(),
   integrations: integrationFeatures,
   // a repository the console manages; its checkouts are discovered from git, never
@@ -63,7 +68,7 @@ const sourceSchema = z.object({
 export type ConfigInput = z.input<typeof sourceSchema>;
 export type RemoteServer = { url: URL };
 export type IntegrationConfig = z.output<typeof integrationFeatures>;
-export type ValidatedConfig = { listen: { host: string; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; newAgentCommand: string; adapters?: AdapterConfigs; integrations?: IntegrationConfig; projects: Project[] };
+export type ValidatedConfig = { listen: { host: string; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; newAgentCommand: string; scratchDirectory?: string; adapters?: AdapterConfigs; integrations?: IntegrationConfig; projects: Project[] };
 // how validation surfaces non-fatal facts: `warn` collects boot warnings (ignored
 // legacy keys, non-executable programs); `checkExecutables` runs the boot X_OK probe
 // and is skipped under the host bridge, where `program` is a host path the container
@@ -254,5 +259,5 @@ export async function validateConfig(input: unknown, options: ValidateConfigOpti
     else { if (identities.has(project.identity)) throw new Error('duplicate project identity'); identities.add(project.identity); }
     projects.push(project);
   }
-  return { listen: { host: parsed.listen.host, port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, newAgentCommand: parsed.newAgentCommand, ...(adapters === undefined ? {} : { adapters }), integrations: parsed.integrations, projects };
+  return { listen: { host: parsed.listen.host, port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, newAgentCommand: parsed.newAgentCommand, ...(parsed.scratchDirectory === undefined ? {} : { scratchDirectory: resolve(parsed.scratchDirectory) }), ...(adapters === undefined ? {} : { adapters }), integrations: parsed.integrations, projects };
 }

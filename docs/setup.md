@@ -25,8 +25,11 @@ pnpm start
 ```
 
 Open `http://127.0.0.1:8787`. Leave `projects` empty or omit it entirely to
-launch scratch agents without configuring a repository. Before publishing the
-console, replace `publicOrigin` with its canonical HTTPS origin.
+launch scratch agents without configuring a repository. By default a scratch
+agent starts in the console's home directory; set the top-level
+`scratchDirectory` (an absolute path) to launch it elsewhere. The account home
+the shell exports is unaffected — only the working directory changes. Before
+publishing the console, replace `publicOrigin` with its canonical HTTPS origin.
 
 When `remoteServers` connects multiple console instances, configure the same
 separately generated `RAC_INSTANCE_STATUS_SECRET` on every peer. Keep each

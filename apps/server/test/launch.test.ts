@@ -121,6 +121,21 @@ describe('LaunchService', () => {
     expect(run).toHaveBeenLastCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', expect.stringMatching(/^rac-[\w-]+$/u), '@rac_display_label', scratchLabel]);
   });
 
+  it('launches a scratch agent in the configured scratchDirectory while HOME stays the account home', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    // a project hostPath makes the account home distinct from the scratch directory
+    const config = { newAgentCommand: 'codex', scratchDirectory: '/srv/scratch', projects: [{ hostPath: '/host/home/code' }] };
+    const service = new LaunchService(config as never);
+
+    await expect(service.launchHome()).resolves.toBe(true);
+
+    // tmux opens the pane in the configured directory (`-c`), not the account home
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['-c', '/srv/scratch']));
+    // HOME the shell exports stays the account home (dirname of the hostPath), independent of the cwd
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining([expect.stringContaining("export HOME='/host/home'")]));
+  });
+
   it('launches a dedicated update advisor in the fixed repository', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });

@@ -215,10 +215,13 @@ export class LaunchService {
     const resolved = await this.resolveLaunchKind(scratchLaunchKey, kind);
     // refuse an unconfigured or unlaunchable kind
     if (resolved === undefined) return false;
+    // launch in the configured Scratch directory when set, else the account home; the
+    // shell's exported HOME stays the account home either way (agentHome)
     const home = this.agentHome();
-    const command = await this.scratchCommand(resolved, home);
+    const cwd = this.config.scratchDirectory ?? home;
+    const command = await this.scratchCommand(resolved, cwd);
     if (command === undefined) return false;
-    const launched = await this.launchScratch(home, scratchLabel, command, home);
+    const launched = await this.launchScratch(cwd, scratchLabel, command, home);
     // remember the Scratch group's last-used kind
     // persisting the profile is best-effort; a storage failure never fails a live launch
     if (launched) await this.worktreeStore.rememberLaunchProfile(scratchLaunchKey, resolved).catch(() => {});
