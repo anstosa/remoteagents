@@ -17,7 +17,7 @@ import { isStackOperationLog, type StackAction, type StackOperationLog } from '.
 import { SyntaxHighlightedCode } from './syntax-highlight.js';
 import { isPromptKeyboardTarget, useShiftArrowTabCycling } from './tab-navigation.js';
 import { defaultTerminalFontSize, maxTerminalFontSize, minTerminalFontSize, readTerminalFontSize, resetTerminalFontSize, stepTerminalFontSize, subscribeTerminalFontSize, useTerminalFontSize } from './terminal-font-size.js';
-import { applyColorTheme, setColorTheme, useColorTheme } from './color-theme.js';
+import { applyColorTheme, setColorTheme, subscribeColorTheme, useColorTheme } from './color-theme.js';
 import { UpstreamRebaseBanner, type GitUpstreamSummary } from './upstream-rebase.js';
 import { useViewportFlyout } from './viewport-flyout.js';
 import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
@@ -3764,7 +3764,11 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
     // tokens; white/brightWhite follow canonical Catppuccin (subtext-0/subtext-1).
     const paletteStyle = getComputedStyle(document.documentElement);
     const paletteColor = (token: string) => paletteStyle.getPropertyValue(token).trim();
-    const terminalTheme = { background: paletteColor('--base'), foreground: paletteColor('--text'), cursor: paletteColor('--rosewater'), selectionBackground: paletteColor('--mauve'), selectionForeground: paletteColor('--crust'), black: paletteColor('--surface-1'), red: paletteColor('--red'), green: paletteColor('--green'), yellow: paletteColor('--yellow'), blue: paletteColor('--blue'), magenta: paletteColor('--pink'), cyan: paletteColor('--teal'), white: paletteColor('--subtext-0'), brightBlack: paletteColor('--surface-2'), brightRed: paletteColor('--term-bright-red'), brightGreen: paletteColor('--term-bright-green'), brightYellow: paletteColor('--term-bright-yellow'), brightBlue: paletteColor('--term-bright-blue'), brightMagenta: paletteColor('--term-bright-magenta'), brightCyan: paletteColor('--term-bright-cyan'), brightWhite: paletteColor('--subtext-1') };
+    // `paletteStyle` is a live computed-style view, so recomputing after the flavour
+    // flips `[data-theme]` reads the new palette — the terminal reflavours with the
+    // UI rather than staying frozen on the flavour it was born in.
+    const computeTerminalTheme = () => ({ background: paletteColor('--base'), foreground: paletteColor('--text'), cursor: paletteColor('--rosewater'), selectionBackground: paletteColor('--mauve'), selectionForeground: paletteColor('--crust'), black: paletteColor('--surface-1'), red: paletteColor('--red'), green: paletteColor('--green'), yellow: paletteColor('--yellow'), blue: paletteColor('--blue'), magenta: paletteColor('--pink'), cyan: paletteColor('--teal'), white: paletteColor('--subtext-0'), brightBlack: paletteColor('--surface-2'), brightRed: paletteColor('--term-bright-red'), brightGreen: paletteColor('--term-bright-green'), brightYellow: paletteColor('--term-bright-yellow'), brightBlue: paletteColor('--term-bright-blue'), brightMagenta: paletteColor('--term-bright-magenta'), brightCyan: paletteColor('--term-bright-cyan'), brightWhite: paletteColor('--subtext-1') });
+    let terminalTheme = computeTerminalTheme();
     const terminalOptions = { convertEol: true, fontFamily: monoFontFamily, fontSize: readTerminalFontSize(), scrollback: 0, screenReaderMode: window.matchMedia('(pointer: coarse)').matches, theme: terminalTheme };
     const terminals = [new XTerm(terminalOptions), new XTerm(terminalOptions)];
     const fits = [new FitAddon(), new FitAddon()];
@@ -3851,6 +3855,14 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
       scheduleViewport();
     };
     const unsubscribeTerminalFontSize = subscribeTerminalFontSize(() => { if (!closed) applyTerminalFontSize(readTerminalFontSize()); });
+    // Repaint both already-open frames when the browser flips flavour, mirroring the
+    // font-size subscription. The store reflavours the document before it notifies,
+    // so recomputing here reads the new palette; re-applying `options.theme` repaints
+    // every ANSI slot, background, foreground, cursor, and selection with no refit
+    // (only colours change, not cell dimensions) and no reconnect.
+    const paintTerminalTheme = () => { terminals.forEach(candidate => { candidate.options.theme = { ...terminalTheme }; }); };
+    const applyTerminalColorTheme = () => { terminalTheme = computeTerminalTheme(); paintTerminalTheme(); };
+    const unsubscribeColorTheme = subscribeColorTheme(() => { if (!closed) applyTerminalColorTheme(); });
     const observer = new ResizeObserver(scheduleViewport);
     observer.observe(canvas.current!);
     window.addEventListener('resize', scheduleViewport);
@@ -3883,7 +3895,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
       copiedSelectionTimer = window.setTimeout(() => {
         copiedSelectionTimer = undefined;
         log?.classList.remove('selection-copied');
-        terminals.forEach(candidate => { candidate.options.theme = { ...terminalTheme }; });
+        paintTerminalTheme();
       }, selectionCopyFlashMs);
     };
     const copyOutputSelection = async (value: string) => {
@@ -4289,7 +4301,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
       } catch { setStatus('Connecting'); reconnect(); }
     };
     void connect();
-    return () => { closed = true; appendWrites.clear(); cancelConnectedPaint(); if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (answeredQuestionActions.get(id) === answeredQuestion) answeredQuestionActions.delete(id); if (retry !== undefined) window.clearTimeout(retry); if (flushFrame !== undefined) window.cancelAnimationFrame(flushFrame); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (overlayFrame !== undefined) window.cancelAnimationFrame(overlayFrame); if (analysisFrame !== undefined) window.cancelAnimationFrame(analysisFrame); if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer); selectionSubscriptions.forEach(subscription => subscription.dispose()); inputSubscriptions.forEach(subscription => subscription.dispose()); window.removeEventListener('resize', scheduleViewport); window.visualViewport?.removeEventListener('resize', scheduleViewport); document.removeEventListener('visibilitychange', syncVisibleViewport); window.removeEventListener('pageshow', scheduleViewport); document.removeEventListener('selectionchange', syncSelectionMode); window.removeEventListener('keydown', interruptOutput, true); document.removeEventListener('keydown', copySelectionShortcut, true); if (!embedded) document.removeEventListener('keydown', terminalFontShortcut, true); unsubscribeTerminalFontSize(); document.removeEventListener('copy', nativeOutputCopied); canvas.current?.closest('.log')?.classList.remove('selection-copied'); canvas.current?.removeEventListener('pointerdown', captureSelectionMode, true); canvas.current?.removeEventListener('click', focus); releaseLongPressSelection(); releaseScrollContainment(); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; overlays.clear(); terminals.forEach(candidate => candidate.dispose()); };
+    return () => { closed = true; appendWrites.clear(); cancelConnectedPaint(); if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (answeredQuestionActions.get(id) === answeredQuestion) answeredQuestionActions.delete(id); if (retry !== undefined) window.clearTimeout(retry); if (flushFrame !== undefined) window.cancelAnimationFrame(flushFrame); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (overlayFrame !== undefined) window.cancelAnimationFrame(overlayFrame); if (analysisFrame !== undefined) window.cancelAnimationFrame(analysisFrame); if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer); selectionSubscriptions.forEach(subscription => subscription.dispose()); inputSubscriptions.forEach(subscription => subscription.dispose()); window.removeEventListener('resize', scheduleViewport); window.visualViewport?.removeEventListener('resize', scheduleViewport); document.removeEventListener('visibilitychange', syncVisibleViewport); window.removeEventListener('pageshow', scheduleViewport); document.removeEventListener('selectionchange', syncSelectionMode); window.removeEventListener('keydown', interruptOutput, true); document.removeEventListener('keydown', copySelectionShortcut, true); if (!embedded) document.removeEventListener('keydown', terminalFontShortcut, true); unsubscribeTerminalFontSize(); unsubscribeColorTheme(); document.removeEventListener('copy', nativeOutputCopied); canvas.current?.closest('.log')?.classList.remove('selection-copied'); canvas.current?.removeEventListener('pointerdown', captureSelectionMode, true); canvas.current?.removeEventListener('click', focus); releaseLongPressSelection(); releaseScrollContainment(); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; overlays.clear(); terminals.forEach(candidate => candidate.dispose()); };
   }, [embedded, id, onQuestion, terminalMode]);
   const processing = processingLabel !== undefined;
   const loading = !hasRendered || processing;

@@ -67,6 +67,16 @@ const rootBackground = (page: Page) => page.evaluate(() => getComputedStyle(docu
 // The mobile browser-chrome colour the app advertises.
 const metaThemeColor = (page: Page) => page.evaluate(() => document.querySelector('meta[name="theme-color"]')?.getAttribute('content'));
 
+// The open terminal's painted background: xterm mirrors its theme's background
+// onto the `.xterm-viewport` element's inline `background-color`, rewriting it
+// whenever `options.theme` changes. Reading the on-screen (active) frame's
+// viewport proves an already-open terminal repainted, using xterm's own DOM
+// rather than any production-only hook.
+const terminalBackground = (page: Page) => page.evaluate(() => {
+  const viewport = document.querySelector<HTMLElement>('.log-canvas .terminal-frame.active .xterm-viewport');
+  return viewport?.style.backgroundColor ?? '';
+});
+
 const openSettings = async (page: Page) => {
   await page.getByRole('button', { name: 'Global settings' }).first().click();
   await expect(page.getByRole('dialog', { name: 'Settings' })).toBeVisible();
@@ -141,6 +151,27 @@ test('switching back to Dark forgets the stored key', async ({ page }) => {
   await expect.poll(() => themeAttr(page), { timeout: 5_000 }).toBeUndefined();
   // Mocha is the key's absence, so returning to Dark clears storage.
   expect(await page.evaluate(() => localStorage.getItem('rac.color-theme'))).toBeNull();
+});
+
+test('an already-open terminal repaints live when the flavour flips', async ({ page }) => {
+  test.setTimeout(60_000);
+  await openConsole(page);
+  // The terminal is open and painted Mocha before any toggle.
+  await expect.poll(() => terminalBackground(page), { timeout: 10_000 }).not.toBe('');
+  const mochaTerminal = await terminalBackground(page);
+
+  await openSettings(page);
+  await page.getByRole('radio', { name: 'Light theme' }).click();
+  // The already-open terminal follows the switch with no reload or reconnect: its
+  // painted background flips to the Latte base the moment the document reflavours.
+  await expect.poll(() => themeAttr(page), { timeout: 5_000 }).toBe('latte');
+  await expect.poll(() => terminalBackground(page), { timeout: 5_000 }).not.toBe(mochaTerminal);
+  const latteTerminal = await terminalBackground(page);
+  expect(latteTerminal).not.toBe('');
+
+  await page.getByRole('radio', { name: 'Dark theme' }).click();
+  // And back: switching to Dark repaints the same open terminal to Mocha again.
+  await expect.poll(() => terminalBackground(page), { timeout: 5_000 }).toBe(mochaTerminal);
 });
 
 test('the pre-paint head script flavours the document before the app mounts', async ({ page }) => {
