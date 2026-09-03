@@ -16,6 +16,7 @@ import { PullRequestCard, PullRequestIndicators, PullRequestStatusIcon, type Pul
 import { isStackOperationLog, type StackAction, type StackOperationLog } from './stack-operations.js';
 import { SyntaxHighlightedCode } from './syntax-highlight.js';
 import { isPromptKeyboardTarget, useShiftArrowTabCycling } from './tab-navigation.js';
+import { defaultTerminalFontSize, maxTerminalFontSize, minTerminalFontSize, readTerminalFontSize, resetTerminalFontSize, stepTerminalFontSize, subscribeTerminalFontSize, useTerminalFontSize } from './terminal-font-size.js';
 import { UpstreamRebaseBanner, type GitUpstreamSummary } from './upstream-rebase.js';
 import { useViewportFlyout } from './viewport-flyout.js';
 import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
@@ -1099,6 +1100,7 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const configuredAdapters = agentKinds.flatMap(kind => { const capability = adapters?.[kind]; return capability?.program === undefined ? [] : [[kind, capability] as const]; });
   // Codex account management is available only when adapters.codex is configured
   const codexConfigured = adapters?.codex?.program !== undefined;
+  const terminalFontSize = useTerminalFontSize();
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<'client' | 'server' | 'account-login'>();
   const [name, setName] = useState(settings.deviceName);
@@ -1320,7 +1322,11 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   // render current client and server identities
   // one AGENTS row per configured kind: glyph, label, availability line, program path (dimmed when unavailable)
   const agentsCard = configuredAdapters.length === 0 ? null : <div className="client-settings-card client-settings-agents" role="group" aria-label="Agents"><header><small>AGENTS</small></header>{configuredAdapters.map(([kind, capability]) => <div key={kind} className={`client-settings-agent${capability.launchable ? '' : ' unavailable'}`} role="group" aria-label={agentKindLabel[kind]}><span className="client-settings-agent-glyph" aria-hidden="true">{agentKindGlyph[kind]}</span><span className="client-settings-agent-copy"><strong>{agentKindLabel[kind]}</strong><span className="client-settings-agent-availability">{capability.launchable ? 'Available' : capability.unavailableReason ?? 'Unavailable'}</span><span className="client-settings-agent-program">{capability.program}</span></span></div>)}</div>;
-  const settingsCards = <div className="client-settings-overview" role="presentation"><div className="client-settings-card" role="group" aria-label="Client"><header><small>CLIENT</small><span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Rename Client" onClick={() => beginRename('client')}>Rename</button></span></header><strong>{settings.deviceName}</strong></div><div className="client-settings-card" role="group" aria-label="Server"><header><small>SERVER</small><span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Rename Server" onClick={() => beginRename('server')}>Rename</button></span></header><strong>{settings.serverName}</strong><span>{serverHostLabel(settings.serverUrl)}</span></div>{agentsCard}</div>;
+  // Terminal font stepper: −, the current size, +, and Reset once the size
+  // differs from the default. Steps keep the menu open so repeated taps work on
+  // a phone, and each button disables at its range limit.
+  const terminalFontCard = <div className="client-settings-card client-settings-terminal-font" role="group" aria-label="Terminal font"><header><small>TERMINAL FONT</small>{terminalFontSize !== defaultTerminalFontSize() && <span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Reset terminal font" onClick={() => resetTerminalFontSize()}>Reset</button></span>}</header><div className="client-settings-stepper"><button type="button" role="menuitem" aria-label="Smaller terminal font" disabled={terminalFontSize <= minTerminalFontSize} onClick={() => stepTerminalFontSize(-1)}>−</button><strong aria-live="polite">{terminalFontSize}px</strong><button type="button" role="menuitem" aria-label="Larger terminal font" disabled={terminalFontSize >= maxTerminalFontSize} onClick={() => stepTerminalFontSize(1)}>+</button></div></div>;
+  const settingsCards = <div className="client-settings-overview" role="presentation"><div className="client-settings-card" role="group" aria-label="Client"><header><small>CLIENT</small><span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Rename Client" onClick={() => beginRename('client')}>Rename</button></span></header><strong>{settings.deviceName}</strong></div><div className="client-settings-card" role="group" aria-label="Server"><header><small>SERVER</small><span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Rename Server" onClick={() => beginRename('server')}>Rename</button></span></header><strong>{settings.serverName}</strong><span>{serverHostLabel(settings.serverUrl)}</span></div>{agentsCard}{terminalFontCard}</div>;
   // the Codex accounts section renders only when adapters.codex is configured
   const accountsSection = !codexConfigured ? null : <><hr className="more-menu-divider" />{accountsLoading && accounts.length === 0 ? <button className="chatgpt-account-loading" type="button" role="menuitem" disabled><span className="spinner" />Loading ChatGPT accounts…</button> : accountRows}{accountMessage && <span className="chatgpt-account-message" role="status">{accountMessage}</span>}<button className="chatgpt-account-add" type="button" role="menuitem" disabled={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined} onClick={() => void beginAccountLogin()}>+ Add account</button></>;
   const flyout = !open ? null : <FlyoutPortal onDismiss={() => setOpen(false)}><div ref={flyoutRef} className="client-settings-menu more-menu flyout-menu" style={style} role="menu" aria-label="Global settings" aria-busy={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined}>{settingsCards}{accountsSection}</div></FlyoutPortal>;
@@ -3635,8 +3641,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
     let historyOffset = 0;
     let requestHistory = (_offset: number) => {};
     const terminalTheme = { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#cba6f7', selectionForeground: '#11111b', black: '#45475a', red: '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af', blue: '#89b4fa', magenta: '#f5c2e7', cyan: '#94e2d5', white: '#bac2de', brightBlack: '#585b70', brightRed: '#f38ba8', brightGreen: '#a6e3a1', brightYellow: '#f9e2af', brightBlue: '#89b4fa', brightMagenta: '#f5c2e7', brightCyan: '#89dceb', brightWhite: '#a6adc8' };
-    const outputFontSize = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--output-font-size')) || 11;
-    const terminalOptions = { convertEol: true, fontFamily: monoFontFamily, fontSize: outputFontSize, scrollback: 0, screenReaderMode: window.matchMedia('(pointer: coarse)').matches, theme: terminalTheme };
+    const terminalOptions = { convertEol: true, fontFamily: monoFontFamily, fontSize: readTerminalFontSize(), scrollback: 0, screenReaderMode: window.matchMedia('(pointer: coarse)').matches, theme: terminalTheme };
     const terminals = [new XTerm(terminalOptions), new XTerm(terminalOptions)];
     const fits = [new FitAddon(), new FitAddon()];
     let suppressOutputFocusUntil = 0;
@@ -3712,6 +3717,16 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
         sendViewport();
       });
     };
+    // Re-render both frames at the browser's chosen terminal font size, then let
+    // scheduleViewport refit and send the new cols and rows to tmux.
+    const applyTerminalFontSize = (px: number) => {
+      terminals.forEach(candidate => {
+        candidate.options.fontSize = px;
+        if (candidate.element) candidate.element.style.fontSize = `${px}px`;
+      });
+      scheduleViewport();
+    };
+    const unsubscribeTerminalFontSize = subscribeTerminalFontSize(() => { if (!closed) applyTerminalFontSize(readTerminalFontSize()); });
     const observer = new ResizeObserver(scheduleViewport);
     observer.observe(canvas.current!);
     window.addEventListener('resize', scheduleViewport);
@@ -3786,6 +3801,22 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
       event.preventDefault();
       event.stopPropagation();
       void copyOutputSelection(selected);
+    };
+    // Ctrl/Cmd =/+ grow, - shrink, 0 reset the terminal font. Handled in the
+    // capture phase so the browser does not also page-zoom, and skipped in
+    // editable fields and when Shift or Alt is held.
+    const terminalFontShortcut = (event: KeyboardEvent) => {
+      // Leave the shortcut to the browser while an editable field (prompt
+      // composer, note editor, rename or login input) owns the keys — but not
+      // xterm's own hidden textarea, which holds focus exactly when the user
+      // wants to resize the pane.
+      const target = event.target;
+      const editable = target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
+      if (editable && (target as HTMLElement).closest('.xterm') === null) return;
+      if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) return;
+      if (event.key === '=' || event.key === '+') { event.preventDefault(); stepTerminalFontSize(1); }
+      else if (event.key === '-') { event.preventDefault(); stepTerminalFontSize(-1); }
+      else if (event.key === '0') { event.preventDefault(); resetTerminalFontSize(); }
     };
     const nativeOutputCopied = () => { if (nativeSelectionActive()) flashCopiedOutputSelection(); };
     let outputSelectionActive = false;
@@ -3880,6 +3911,9 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
     document.addEventListener('selectionchange', syncSelectionMode);
     window.addEventListener('keydown', interruptOutput, true);
     document.addEventListener('keydown', copySelectionShortcut, true);
+    // Only the panel's own Log owns the font shortcut; the embedded update
+    // advisor still follows the store, so gating here keeps a single step per key.
+    if (!embedded) document.addEventListener('keydown', terminalFontShortcut, true);
     document.addEventListener('copy', nativeOutputCopied);
     const inputSubscriptions = terminals.map(candidate => candidate.onData(value => {
       const { alt, ctrl, shift } = mobileModifiers.get(id) ?? { alt: false, ctrl: false, shift: false };
@@ -4131,7 +4165,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
       } catch { setStatus('Connecting'); reconnect(); }
     };
     void connect();
-    return () => { closed = true; appendWrites.clear(); cancelConnectedPaint(); if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (answeredQuestionActions.get(id) === answeredQuestion) answeredQuestionActions.delete(id); if (retry !== undefined) window.clearTimeout(retry); if (flushFrame !== undefined) window.cancelAnimationFrame(flushFrame); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (overlayFrame !== undefined) window.cancelAnimationFrame(overlayFrame); if (analysisFrame !== undefined) window.cancelAnimationFrame(analysisFrame); if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer); selectionSubscriptions.forEach(subscription => subscription.dispose()); inputSubscriptions.forEach(subscription => subscription.dispose()); window.removeEventListener('resize', scheduleViewport); window.visualViewport?.removeEventListener('resize', scheduleViewport); document.removeEventListener('visibilitychange', syncVisibleViewport); window.removeEventListener('pageshow', scheduleViewport); document.removeEventListener('selectionchange', syncSelectionMode); window.removeEventListener('keydown', interruptOutput, true); document.removeEventListener('keydown', copySelectionShortcut, true); document.removeEventListener('copy', nativeOutputCopied); canvas.current?.closest('.log')?.classList.remove('selection-copied'); canvas.current?.removeEventListener('pointerdown', captureSelectionMode, true); canvas.current?.removeEventListener('click', focus); releaseLongPressSelection(); releaseScrollContainment(); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; overlays.clear(); terminals.forEach(candidate => candidate.dispose()); };
+    return () => { closed = true; appendWrites.clear(); cancelConnectedPaint(); if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (answeredQuestionActions.get(id) === answeredQuestion) answeredQuestionActions.delete(id); if (retry !== undefined) window.clearTimeout(retry); if (flushFrame !== undefined) window.cancelAnimationFrame(flushFrame); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (overlayFrame !== undefined) window.cancelAnimationFrame(overlayFrame); if (analysisFrame !== undefined) window.cancelAnimationFrame(analysisFrame); if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer); selectionSubscriptions.forEach(subscription => subscription.dispose()); inputSubscriptions.forEach(subscription => subscription.dispose()); window.removeEventListener('resize', scheduleViewport); window.visualViewport?.removeEventListener('resize', scheduleViewport); document.removeEventListener('visibilitychange', syncVisibleViewport); window.removeEventListener('pageshow', scheduleViewport); document.removeEventListener('selectionchange', syncSelectionMode); window.removeEventListener('keydown', interruptOutput, true); document.removeEventListener('keydown', copySelectionShortcut, true); if (!embedded) document.removeEventListener('keydown', terminalFontShortcut, true); unsubscribeTerminalFontSize(); document.removeEventListener('copy', nativeOutputCopied); canvas.current?.closest('.log')?.classList.remove('selection-copied'); canvas.current?.removeEventListener('pointerdown', captureSelectionMode, true); canvas.current?.removeEventListener('click', focus); releaseLongPressSelection(); releaseScrollContainment(); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; overlays.clear(); terminals.forEach(candidate => candidate.dispose()); };
   }, [embedded, id, onQuestion, terminalMode]);
   const processing = processingLabel !== undefined;
   const loading = !hasRendered || processing;

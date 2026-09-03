@@ -839,6 +839,11 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .client-settings-agent-copy > strong { color: var(--text); font-size: .74rem; }
 .client-settings-agent-availability { color: var(--overlay-1); font: 600 .6rem var(--font-mono); }
 .client-settings-agent-program { overflow: hidden; color: var(--overlay-0); font: 600 .58rem var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.client-settings-stepper { display: flex; align-items: center; gap: .5rem; }
+.client-settings-stepper > strong { min-width: 3.2rem; color: var(--text); font: 700 .78rem var(--font-mono); text-align: center; }
+.more-menu .client-settings-stepper > button { width: auto; min-width: 2rem; min-height: 1.8rem; justify-content: center; border: 1px solid var(--surface-2); border-radius: calc(var(--control-radius) - .08rem); padding: .25rem .5rem; color: var(--blue); font-size: .9rem; }
+.more-menu .client-settings-stepper > button:not(:disabled):hover { border-color: var(--blue); background: var(--surface-1); color: var(--text); }
+.more-menu .client-settings-stepper > button:disabled { color: var(--overlay-0); opacity: .5; }
 .client-settings-menu .chatgpt-account-option { display: grid; min-width: 0; border-radius: calc(var(--control-radius) - .1rem); white-space: normal; }
 .client-settings-menu .chatgpt-account-select { min-width: 0; align-items: flex-start; gap: .55rem; padding: .65rem .9rem; white-space: normal; }
 .client-settings-menu .chatgpt-account-select:disabled[aria-checked='true'] { cursor: default; opacity: 1; }
