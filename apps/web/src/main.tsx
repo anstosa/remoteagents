@@ -3757,7 +3757,14 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
     setSelectionToolbar(undefined);
     let historyOffset = 0;
     let requestHistory = (_offset: number) => {};
-    const terminalTheme = { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#cba6f7', selectionForeground: '#11111b', black: '#45475a', red: '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af', blue: '#89b4fa', magenta: '#f5c2e7', cyan: '#94e2d5', white: '#bac2de', brightBlack: '#585b70', brightRed: '#f38ba8', brightGreen: '#a6e3a1', brightYellow: '#f9e2af', brightBlue: '#89b4fa', brightMagenta: '#f5c2e7', brightCyan: '#89dceb', brightWhite: '#a6adc8' };
+    // Derive the xterm palette from the same CSS custom properties that theme the
+    // UI, so the terminal and the rest of the app share one source of truth and a
+    // newly-opened pane renders in the document's current flavour. Shared slots read
+    // the palette tokens; the bright ANSI slots read the terminal-only --term-bright-*
+    // tokens; white/brightWhite follow canonical Catppuccin (subtext-0/subtext-1).
+    const paletteStyle = getComputedStyle(document.documentElement);
+    const paletteColor = (token: string) => paletteStyle.getPropertyValue(token).trim();
+    const terminalTheme = { background: paletteColor('--base'), foreground: paletteColor('--text'), cursor: paletteColor('--rosewater'), selectionBackground: paletteColor('--mauve'), selectionForeground: paletteColor('--crust'), black: paletteColor('--surface-1'), red: paletteColor('--red'), green: paletteColor('--green'), yellow: paletteColor('--yellow'), blue: paletteColor('--blue'), magenta: paletteColor('--pink'), cyan: paletteColor('--teal'), white: paletteColor('--subtext-0'), brightBlack: paletteColor('--surface-2'), brightRed: paletteColor('--term-bright-red'), brightGreen: paletteColor('--term-bright-green'), brightYellow: paletteColor('--term-bright-yellow'), brightBlue: paletteColor('--term-bright-blue'), brightMagenta: paletteColor('--term-bright-magenta'), brightCyan: paletteColor('--term-bright-cyan'), brightWhite: paletteColor('--subtext-1') };
     const terminalOptions = { convertEol: true, fontFamily: monoFontFamily, fontSize: readTerminalFontSize(), scrollback: 0, screenReaderMode: window.matchMedia('(pointer: coarse)').matches, theme: terminalTheme };
     const terminals = [new XTerm(terminalOptions), new XTerm(terminalOptions)];
     const fits = [new FitAddon(), new FitAddon()];
@@ -3870,7 +3877,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
       const log = canvas.current?.closest('.log');
       log?.classList.add('selection-copied');
       terminals.filter(candidate => candidate.hasSelection()).forEach(candidate => {
-        candidate.options.theme = { ...terminalTheme, selectionBackground: '#a6e3a1', selectionInactiveBackground: '#a6e3a1' };
+        candidate.options.theme = { ...terminalTheme, selectionBackground: terminalTheme.green, selectionInactiveBackground: terminalTheme.green };
       });
       if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer);
       copiedSelectionTimer = window.setTimeout(() => {
