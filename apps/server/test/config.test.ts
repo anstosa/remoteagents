@@ -4,6 +4,7 @@ import { realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applyListenOverrides, validateConfig } from '../src/config/schema.js';
+import { defaultDavoContext } from '../src/integrations/realtime/settings.js';
 import { run } from '../src/tmux/command.js';
 
 const dirs: string[] = [];
@@ -147,7 +148,12 @@ describe('configuration safety', () => {
     expect(config.listen.host).toBe('127.0.0.1');
     expect(config.newAgentCommand).toBe('codex');
     expect(config.name).toBe('Remote Agents');
-    expect(config.integrations).toEqual({ enabled: false, mcp: { readEnabled: true, writeEnabled: false, dangerousEnabled: false }, realtime: { enabled: false, writeToolsEnabled: false }, multiInstance: { enabled: false } });
+    expect(config.defaultAgent).toBeUndefined();
+    expect(config.integrations).toEqual({ enabled: false, mcp: { readEnabled: true, writeEnabled: false, dangerousEnabled: false }, realtime: { enabled: false, name: 'Davo', context: defaultDavoContext, writeToolsEnabled: false }, multiInstance: { enabled: false } });
+  });
+  it('accepts a known default agent and rejects unknown kinds', async () => {
+    expect((await validateConfig({ ...scratch, defaultAgent: 'claude' })).defaultAgent).toBe('claude');
+    await expect(validateConfig({ ...scratch, defaultAgent: 'unknown' })).rejects.toThrow();
   });
   it('accepts a specific non-loopback listen address but rejects wildcards and non-IP hosts', async () => {
     expect((await validateConfig({ ...scratch, listen: { host: '172.19.0.1', port: 8787 } })).listen).toEqual({ host: '172.19.0.1', port: 8787 });
@@ -163,8 +169,10 @@ describe('configuration safety', () => {
     expect(() => applyListenOverrides(scratch, { RAC_LISTEN_PORT: 'abc' })).toThrow('integer');
   });
   it('accepts explicit integration feature gates', async () => {
-    const config = await validateConfig({ ...scratch, integrations: { enabled: true, mcp: { writeEnabled: true }, realtime: { enabled: true, writeToolsEnabled: true }, multiInstance: { enabled: true } } });
-    expect(config.integrations).toMatchObject({ enabled: true, mcp: { readEnabled: true, writeEnabled: true, dangerousEnabled: false }, realtime: { enabled: true, writeToolsEnabled: true }, multiInstance: { enabled: true } });
+    const config = await validateConfig({ ...scratch, integrations: { enabled: true, mcp: { writeEnabled: true }, realtime: { enabled: true, name: 'Riley', context: 'Dry and direct.', writeToolsEnabled: true }, multiInstance: { enabled: true } } });
+    expect(config.integrations).toMatchObject({ enabled: true, mcp: { readEnabled: true, writeEnabled: true, dangerousEnabled: false }, realtime: { enabled: true, name: 'Riley', context: 'Dry and direct.', writeToolsEnabled: true }, multiInstance: { enabled: true } });
+    await expect(validateConfig({ ...scratch, integrations: { realtime: { name: '   ' } } })).rejects.toThrow();
+    await expect(validateConfig({ ...scratch, integrations: { realtime: { context: 'x'.repeat(16_001) } } })).rejects.toThrow();
   });
   it('rejects a non HTTPS origin', async () => {
     await expect(validateConfig({ ...scratch, publicOrigin: 'http://agents.example.com' })).rejects.toThrow('HTTPS');

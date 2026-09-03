@@ -103,6 +103,17 @@ export class LaunchService {
     return agentKinds.filter(kind => (this.config.adapters?.[kind]?.launchable ?? false) && adapterFor(kind) !== undefined);
   }
 
+  // expose the effective server default, falling back when its configured kind is unavailable
+  defaultAgent(): AgentKind | undefined {
+    const launchable = this.launchableKinds();
+    return this.config.defaultAgent !== undefined && launchable.includes(this.config.defaultAgent) ? this.config.defaultAgent : launchable[0];
+  }
+
+  // accept settings choices only for kinds this server can launch now
+  isLaunchableKind(kind: AgentKind): boolean {
+    return this.launchableKinds().includes(kind);
+  }
+
   // resolve which kind a launch uses: an explicit request must be launchable; otherwise
   // the same precedence the dashboard displays, so the launched kind never diverges from
   // the one the Launch button named (an unreadable store falls back to the first launchable)
@@ -113,7 +124,7 @@ export class LaunchService {
     // a single launchable kind is always the answer; skip the store read on the hot path
     if (kinds.length === 1) return kinds[0];
     const remembered = await this.worktreeStore.launchProfiles().catch(() => ({} as Record<string, AgentKind | undefined>));
-    return resolveLaunchProfile(kinds, this.rememberedChain(scopeKey, remembered), adapterCapabilities(this.config.adapters)).kind;
+    return resolveLaunchProfile(kinds, this.rememberedChain(scopeKey, remembered), adapterCapabilities(this.config.adapters), this.defaultAgent()).kind;
   }
 
   // the remembered-kind precedence for one scope: a Worktree's own last-used kind, then
@@ -135,7 +146,7 @@ export class LaunchService {
     const capabilities = adapterCapabilities(this.config.adapters);
     const remembered = await this.worktreeStore.launchProfiles().catch(() => ({} as Record<string, AgentKind | undefined>));
     const resolutions = new Map<string, LaunchResolution>();
-    for (const key of new Set(scopeKeys)) resolutions.set(key, resolveLaunchProfile(launchable, this.rememberedChain(key, remembered), capabilities));
+    for (const key of new Set(scopeKeys)) resolutions.set(key, resolveLaunchProfile(launchable, this.rememberedChain(key, remembered), capabilities, this.defaultAgent()));
     return resolutions;
   }
 

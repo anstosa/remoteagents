@@ -426,7 +426,7 @@ test('waits for MCP tools and requests a spoken follow-up after tool completion'
   await expect(page.getByRole('button', { name: 'Hang up' })).toBeVisible();
   await expect(page.locator('audio.voice-ringing')).toHaveCount(0);
   expect(await page.evaluate(() => (window as unknown as { davoTrack: { enabled: boolean } }).davoTrack.enabled)).toBe(true);
-  await expect.poll(() => page.evaluate(() => (window as unknown as { davoChannel: { sent: string[] } }).davoChannel.sent.map(value => JSON.parse(value) as { type: string; response?: { instructions?: string; tools?: unknown[] } }).find(value => value.type === 'response.create'))).toMatchObject({ response: { instructions: expect.stringMatching(/Ansel.*active worktree is Cora/u), tools: [] } });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { davoChannel: { sent: string[] } }).davoChannel.sent.map(value => JSON.parse(value) as { type: string; response?: { instructions?: string; tools?: unknown[] } }).find(value => value.type === 'response.create'))).toMatchObject({ response: { instructions: expect.stringMatching(/caller.*active worktree is Cora/u), tools: [] } });
   const mute = page.getByRole('button', { name: 'Mute' });
   await mute.click();
   await expect(page.getByRole('button', { name: 'Unmute' })).toHaveAttribute('aria-pressed', 'true');

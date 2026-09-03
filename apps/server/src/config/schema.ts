@@ -7,9 +7,10 @@ import { gitCommonDir, listWorktrees } from '../git/worktrees.js';
 import { adapterFor } from '../adapters/registry.js';
 import { codexProgramName, omxProgramName } from '../adapters/program-names.js';
 import { hostVisibleRepoRoot } from '../adapters/files.js';
-import { agentKinds, type AdapterConfigs, type AdapterLaunchConfig } from '../adapters/types.js';
+import { agentKinds, type AdapterConfigs, type AdapterLaunchConfig, type AgentKind } from '../adapters/types.js';
 import { instanceIconNames, type InstanceIcon } from '../instance-icon.js';
 import { isIP } from 'node:net';
+import { defaultDavoContext, defaultDavoName } from '../integrations/realtime/settings.js';
 
 const loopback = new Set(['127.0.0.1', '::1']);
 // wildcard binds expose every interface; require an explicit address instead
@@ -35,11 +36,14 @@ const adaptersSchema = z.object({ codex: adapterEntry.optional(), omx: adapterEn
 // constrain icons to bundled artwork
 const instanceIcon = z.enum(instanceIconNames);
 const remoteServer = z.object({ url: z.string(), name: serverName.optional(), icon: instanceIcon.optional() }).strict();
+const davoName = z.string().trim().min(1).max(80).refine(value => !value.includes('\0'), 'NUL is forbidden');
+const davoContext = z.string().trim().max(16_000).refine(value => !value.includes('\0'), 'NUL is forbidden');
+const davoSettingsSchema = z.object({ enabled: z.boolean(), name: davoName, context: davoContext }).strict();
 // default every remote surface off
 const integrationFeatures = z.object({
   enabled: z.boolean().default(false),
   mcp: z.object({ readEnabled: z.boolean().default(true), writeEnabled: z.boolean().default(false), dangerousEnabled: z.boolean().default(false) }).strict().default({}),
-  realtime: z.object({ enabled: z.boolean().default(false), writeToolsEnabled: z.boolean().default(false) }).strict().default({}),
+  realtime: z.object({ enabled: z.boolean().default(false), name: davoName.default(defaultDavoName), context: davoContext.default(defaultDavoContext), writeToolsEnabled: z.boolean().default(false) }).strict().default({}),
   multiInstance: z.object({ enabled: z.boolean().default(false) }).strict().default({})
 }).strict().default({});
 const sourceSchema = z.object({
@@ -51,6 +55,7 @@ const sourceSchema = z.object({
   proxy: z.object({ trustedSourceIps: z.array(z.string()).default(['127.0.0.1', '::1']) }).strict().default({}),
   tmux: z.object({ pollIntervalMs: z.number().int().min(250).max(10000).default(500) }).strict().default({}),
   newAgentCommand: command.default('codex'),
+  defaultAgent: z.enum(agentKinds).optional(),
   // where a Scratch (home) agent launches. An absolute path; defaults to the launch
   // account home (`$HOME`, or the host account home derived under the Docker bridge).
   // The account home the shell exports stays independent of it (launch/service.ts
@@ -68,7 +73,8 @@ const sourceSchema = z.object({
 export type ConfigInput = z.input<typeof sourceSchema>;
 export type RemoteServer = { url: URL };
 export type IntegrationConfig = z.output<typeof integrationFeatures>;
-export type ValidatedConfig = { listen: { host: string; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; newAgentCommand: string; scratchDirectory?: string; adapters?: AdapterConfigs; integrations?: IntegrationConfig; projects: Project[] };
+export type DavoSettings = z.output<typeof davoSettingsSchema>;
+export type ValidatedConfig = { listen: { host: string; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; newAgentCommand: string; defaultAgent?: AgentKind; scratchDirectory?: string; adapters?: AdapterConfigs; integrations?: IntegrationConfig; projects: Project[] };
 // how validation surfaces non-fatal facts: `warn` collects boot warnings (ignored
 // legacy keys, non-executable programs); `checkExecutables` runs the boot X_OK probe
 // and is skipped under the host bridge, where `program` is a host path the container
@@ -76,6 +82,12 @@ export type ValidatedConfig = { listen: { host: string; port: number }; name: st
 export type ValidateConfigOptions = { warn?: (message: string) => void; checkExecutables?: boolean };
 // support legacy test fixtures
 export const defaultIntegrationConfig: IntegrationConfig = integrationFeatures.parse(undefined);
+
+// parse one exact voice setting update
+export function parseDavoSettings(value: unknown): DavoSettings | undefined {
+  const parsed = davoSettingsSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
 
 // the Codex binary the out-of-band services (review tour, accounts, update advisor)
 // spawn: an explicit RAC_CODEX_BIN override, else the configured adapters.codex program.
@@ -259,5 +271,5 @@ export async function validateConfig(input: unknown, options: ValidateConfigOpti
     else { if (identities.has(project.identity)) throw new Error('duplicate project identity'); identities.add(project.identity); }
     projects.push(project);
   }
-  return { listen: { host: parsed.listen.host, port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, newAgentCommand: parsed.newAgentCommand, ...(parsed.scratchDirectory === undefined ? {} : { scratchDirectory: resolve(parsed.scratchDirectory) }), ...(adapters === undefined ? {} : { adapters }), integrations: parsed.integrations, projects };
+  return { listen: { host: parsed.listen.host, port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, newAgentCommand: parsed.newAgentCommand, ...(parsed.defaultAgent === undefined ? {} : { defaultAgent: parsed.defaultAgent }), ...(parsed.scratchDirectory === undefined ? {} : { scratchDirectory: resolve(parsed.scratchDirectory) }), ...(adapters === undefined ? {} : { adapters }), integrations: parsed.integrations, projects };
 }

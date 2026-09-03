@@ -46,7 +46,7 @@ export const sandboxCopy = (kind: AgentKind, capability: AdapterCapability | und
   return kind === 'claude' ? 'Sandbox disabled for this launch' : 'Tool commands unsandboxed for this launch';
 };
 // why the resolved kind is resolved, shown against it in the menu
-const originCopy = (origin: LaunchOrigin | undefined): string => origin === 'worktree' ? 'last used here' : origin === 'project' ? 'last used in this project' : origin === 'scratch' ? 'last used for scratch' : 'first configured';
+const originCopy = (origin: LaunchOrigin | undefined): string => origin === 'worktree' ? 'last used here' : origin === 'project' ? 'last used in this project' : origin === 'scratch' ? 'last used for scratch' : 'default agent';
 const scopeCopy = (scope: LaunchScope): string => scope === 'worktree' ? 'here' : scope === 'project' ? 'this project' : 'scratch';
 
 export type LaunchVerb = 'Launch' | 'Restart';

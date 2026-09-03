@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type { ValidatedConfig } from '../config/schema.js';
+import type { DavoSettings, ValidatedConfig } from '../config/schema.js';
+import type { AgentKind } from '../adapters/types.js';
 import { serverCheckout, serverCheckoutOnHost } from '../workspaces/server-checkout.js';
 import { run } from '../tmux/command.js';
 import { isFullGitSha } from '../git/revision.js';
@@ -12,6 +13,8 @@ export type ServerUpdateTargetConflict = { kind: 'target-conflict'; targetSha: s
 export type ServerUpdateCommit = { sha: string; subject: string; author: string; authoredAt: string };
 export type ServerUpdateAdvisoryReason = { kind: 'config' | 'compose' | 'runtime' | 'dependency' | 'state' | 'other'; paths: string[] };
 export type ServerUpdatePreview = { available: boolean; rebuildRetryAvailable: boolean; baseSha: string; targetSha: string; fastForwardable: boolean; commitCount: number; commits: ServerUpdateCommit[]; commitsTruncated: boolean; filesTruncated: boolean; advisory: { required: boolean; reasons: ServerUpdateAdvisoryReason[] } };
+type ConfigObject = Record<string, unknown>;
+type ConfigUpdate<T> = { config: ConfigObject; value: T };
 type RunCommand = typeof run;
 type ServerUpdateAvailabilityState = 'available' | 'current' | 'failed';
 type ServerUpdateAvailability = { kind: 'update-availability'; state: ServerUpdateAvailabilityState; baseSha: string; targetSha: string; fastForwardable: boolean; commitCount: number; commitsTruncated: boolean; filesTruncated: boolean };
@@ -83,20 +86,43 @@ export class ServerAdminService {
     this.runCommand = options.runCommand ?? run;
   }
 
+  // atomically replace one bounded configuration surface
+  private async updateConfig<T>(update: (config: ConfigObject) => ConfigUpdate<T> | undefined): Promise<T | undefined> {
+    // require one writable configuration path
+    if (!this.configWritePath) return undefined;
+    const raw = JSON.parse(await readFile(this.configWritePath, 'utf8')) as unknown;
+    // require one object configuration
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    const changed = update(raw as ConfigObject);
+    // reject invalid requested changes
+    if (changed === undefined) return undefined;
+    const temporary = `${this.configWritePath}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+    await mkdir(dirname(this.configWritePath), { recursive: true });
+    await writeFile(temporary, `${JSON.stringify(changed.config, null, 2)}\n`, { mode: 0o600 });
+    await rename(temporary, this.configWritePath);
+    return changed.value;
+  }
+
   // replace only the persisted server name
   async renameServer(name: string): Promise<string | undefined> {
     const normalized = name.trim();
     // match configuration validation
-    if (!normalized || normalized.length > 80 || normalized.includes('\0') || !this.configWritePath) return undefined;
-    const raw = JSON.parse(await readFile(this.configWritePath, 'utf8')) as unknown;
-    // require one object configuration
-    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-    const updated = { ...raw, name: normalized };
-    const temporary = `${this.configWritePath}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
-    await mkdir(dirname(this.configWritePath), { recursive: true });
-    await writeFile(temporary, `${JSON.stringify(updated, null, 2)}\n`, { mode: 0o600 });
-    await rename(temporary, this.configWritePath);
-    return normalized;
+    if (!normalized || normalized.length > 80 || normalized.includes('\0')) return undefined;
+    return await this.updateConfig(raw => ({ config: { ...raw, name: normalized }, value: normalized }));
+  }
+
+  // replace only the persisted default agent
+  async setDefaultAgent(kind: AgentKind): Promise<AgentKind | undefined> {
+    return await this.updateConfig(raw => ({ config: { ...raw, defaultAgent: kind }, value: kind }));
+  }
+
+  // replace only the persisted voice settings
+  async setDavoSettings(settings: DavoSettings): Promise<DavoSettings | undefined> {
+    return await this.updateConfig(raw => {
+      const existingIntegrations = raw.integrations !== null && typeof raw.integrations === 'object' && !Array.isArray(raw.integrations) ? raw.integrations : {};
+      const existingRealtime = 'realtime' in existingIntegrations && existingIntegrations.realtime !== null && typeof existingIntegrations.realtime === 'object' && !Array.isArray(existingIntegrations.realtime) ? existingIntegrations.realtime : {};
+      return { config: { ...raw, integrations: { ...existingIntegrations, realtime: { ...existingRealtime, ...settings } } }, value: settings };
+    });
   }
 
   // launch the fixed host update script

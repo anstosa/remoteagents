@@ -10,7 +10,7 @@ import { IntegrationPolicyService } from '../src/integrations/policy/service.js'
 import { IntegrationControlService } from '../src/integrations/control/index.js';
 
 const principal: IntegrationPrincipal = { authentication: 'oauth', subjectId: 'user', clientId: 'chatgpt', audience: 'https://agents.example.com/mcp', scopes: ['status:read', 'prompts:write'] };
-const config = { enabled: true, mcp: { readEnabled: true, writeEnabled: true, dangerousEnabled: false }, realtime: { enabled: true, writeToolsEnabled: true }, multiInstance: { enabled: true } };
+const config = { enabled: true, mcp: { readEnabled: true, writeEnabled: true, dangerousEnabled: false }, realtime: { enabled: true, name: 'Davo', context: '', writeToolsEnabled: true }, multiInstance: { enabled: true } };
 
 // create one private policy-backed gateway fixture
 async function fixture(audit?: { record: (event: AuditEvent) => Promise<void> }) {

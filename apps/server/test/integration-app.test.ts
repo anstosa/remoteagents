@@ -37,7 +37,7 @@ describe('application integration surfaces', () => {
       trustedProxyIps: new Set(['127.0.0.1']),
       pollIntervalMs: 500,
       newAgentCommand: 'codex',
-      integrations: { enabled: true, mcp: { readEnabled: true, writeEnabled: true, dangerousEnabled: false }, realtime: { enabled: true, writeToolsEnabled: true }, multiInstance: { enabled: false } },
+      integrations: { enabled: true, mcp: { readEnabled: true, writeEnabled: true, dangerousEnabled: false }, realtime: { enabled: true, name: 'Davo', context: '', writeToolsEnabled: true }, multiInstance: { enabled: false } },
       projects: []
     };
     const auth = new AuthService('$argon2id$unused', secret);

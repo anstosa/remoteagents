@@ -16,8 +16,9 @@ vi.mock('../src/adapters/registry.js', () => ({
 
 const { LaunchService } = await import('../src/launch/service.js');
 
-const twoKinds = (claudeLaunchable = true) => ({
+const twoKinds = (claudeLaunchable = true, defaultAgent?: 'codex' | 'claude') => ({
   newAgentCommand: 'codex',
+  ...(defaultAgent === undefined ? {} : { defaultAgent }),
   adapters: {
     codex: { program: '/bin/codex', args: [], env: {}, launchable: true },
     claude: { program: '/bin/claude', args: [], env: {}, launchable: claudeLaunchable, ...(claudeLaunchable ? {} : { unavailableReason: '/bin/claude is not executable' }) }
@@ -44,6 +45,21 @@ describe('resolveLaunchKind with more than one launchable kind', () => {
     expect(await service.resolveLaunchKind(cora)).toBe('codex');
   });
 
+  it('takes the configured default kind when nothing is remembered', async () => {
+    const service = new LaunchService(twoKinds(true, 'claude'), undefined, undefined, undefined, store(undefined));
+    expect(await service.resolveLaunchKind(cora)).toBe('claude');
+  });
+
+  it('keeps remembered kinds ahead of the configured default', async () => {
+    const service = new LaunchService(twoKinds(true, 'claude'), undefined, undefined, undefined, store('codex'));
+    expect(await service.resolveLaunchKind(cora)).toBe('codex');
+  });
+
+  it('falls back when the configured default is unavailable', async () => {
+    const service = new LaunchService(twoKinds(false, 'claude'), undefined, undefined, undefined, store(undefined));
+    expect(await service.resolveLaunchKind(cora)).toBe('codex');
+  });
+
   it('refuses a requested kind that is not launchable', async () => {
     const service = new LaunchService(twoKinds(false), undefined, undefined, undefined, store());
     expect(await service.resolveLaunchKind(cora, 'claude')).toBeUndefined();
@@ -61,6 +77,10 @@ describe('resolveLaunchProfile (pure)', () => {
 
   it('falls back to the first launchable kind as the default when nothing is remembered', () => {
     expect(resolveLaunchProfile(['codex', 'claude'], [{ origin: 'worktree', kind: undefined }], caps)).toEqual({ kind: 'codex', origin: 'default' });
+  });
+
+  it('uses a configured launchable default when nothing is remembered', () => {
+    expect(resolveLaunchProfile(['codex', 'claude'], [{ origin: 'worktree', kind: undefined }], caps, 'claude')).toEqual({ kind: 'claude', origin: 'default' });
   });
 
   it('skips a remembered-but-unlaunchable kind, surfaces its reason, and falls back', () => {

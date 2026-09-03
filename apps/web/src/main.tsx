@@ -161,7 +161,8 @@ type RemoteServer = { name: string; url: string; icon?: InstanceIcon };
 type ServerInfo = { name: string; url: string; icon?: InstanceIcon; remotes: RemoteServer[] };
 type InstanceAttention = 'idle'|'working'|'question'|'completed'|'unavailable';
 type InstanceStatus = RemoteServer & { attention: InstanceAttention };
-type SessionInfo = { csrfToken: string; active: boolean; deviceName?: string; controllingDeviceName?: string; server?: ServerInfo };
+type DavoSettings = { enabled: boolean; available: boolean; name: string; context: string };
+type SessionInfo = { csrfToken: string; active: boolean; deviceName?: string; controllingDeviceName?: string; defaultAgent?: AgentKind; davo?: DavoSettings; server?: ServerInfo };
 type CodexLimitWindow = { usedPercent: number; windowDurationMins?: number; resetsAt?: number };
 type CodexAccount = { id: string; label: string; active: boolean; email?: string; planType?: string; primary?: CodexLimitWindow; secondary?: CodexLimitWindow; resetCount?: number; error?: string };
 type CodexAccountRestart = { worktreeId: string; status: 'restarted'|'skipped'|'failed'; error?: string };
@@ -609,7 +610,7 @@ const voiceHoldDelayMs = 450;
 
 const ServerContext = createContext<ServerInfo | undefined>(undefined);
 const ServerStatusContext = createContext<Readonly<Record<string, InstanceAttention>>>({});
-const VoiceTriggerContext = createContext<{ open: () => void; active: boolean; visible: boolean } | undefined>(undefined);
+const VoiceTriggerContext = createContext<{ open: () => void; active: boolean; visible: boolean; name: string } | undefined>(undefined);
 type ServerUpdateState = 'queued' | 'running' | 'complete' | 'failed';
 type ServerUpdateAvailability = { available: boolean };
 type ServerUpdateCommit = { sha: string; subject: string; author: string; authoredAt: string };
@@ -619,8 +620,12 @@ type ClientSettings = {
   deviceName: string;
   serverName: string;
   serverUrl: string;
+  defaultAgent?: AgentKind;
+  davo: DavoSettings;
   renameClient: (name: string) => Promise<string | undefined>;
   renameServer: (name: string) => Promise<string | undefined>;
+  setDefaultAgent: (kind: AgentKind) => Promise<string | undefined>;
+  updateDavo: (settings: Pick<DavoSettings, 'enabled' | 'name' | 'context'>) => Promise<string | undefined>;
   codexAccounts: () => Promise<{ accounts?: CodexAccount[]; error?: string }>;
   switchCodexAccount: (id: string) => Promise<{ account?: CodexAccount; restarts?: CodexAccountRestart[]; error?: string }>;
   resetCodexAccount: (id: string) => Promise<{ outcome?: CodexAccountResetOutcome; account?: CodexAccount; error?: string }>;
@@ -629,6 +634,16 @@ type ClientSettings = {
   cancelCodexAccountLogin: (id: string) => Promise<void>;
 };
 const ClientSettingsContext = createContext<ClientSettings | undefined>(undefined);
+const legacyDavoSettings: DavoSettings = { enabled: true, available: true, name: 'Davo', context: '' };
+// validate one agent kind returned by the settings API
+const isAgentKind = (value: unknown): value is AgentKind => (agentKinds as readonly unknown[]).includes(value);
+// validate one public voice settings response
+const isDavoSettings = (value: unknown): value is DavoSettings => value !== null
+  && typeof value === 'object'
+  && typeof (value as DavoSettings).enabled === 'boolean'
+  && typeof (value as DavoSettings).available === 'boolean'
+  && typeof (value as DavoSettings).name === 'string'
+  && typeof (value as DavoSettings).context === 'string';
 // format one server host
 const serverHostLabel = (url: string): string => {
   try {
@@ -1106,6 +1121,13 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const [name, setName] = useState(settings.deviceName);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
+  const [defaultAgentPending, setDefaultAgentPending] = useState(false);
+  const [defaultAgentError, setDefaultAgentError] = useState('');
+  const [davoEnabled, setDavoEnabled] = useState(settings.davo.enabled);
+  const [davoDraft, setDavoDraft] = useState(() => ({ name: settings.davo.name, context: settings.davo.context }));
+  const [davoPending, setDavoPending] = useState(false);
+  const [davoError, setDavoError] = useState('');
+  const [davoMessage, setDavoMessage] = useState('');
   const [accounts, setAccounts] = useState<CodexAccount[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [switchingAccountId, setSwitchingAccountId] = useState<string>();
@@ -1127,6 +1149,11 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     pageRef.current?.focus();
     return () => trigger?.focus();
   }, [open]);
+  // follow settings saved by this page or another client
+  useEffect(() => {
+    setDavoEnabled(settings.davo.enabled);
+    setDavoDraft({ name: settings.davo.name, context: settings.davo.context });
+  }, [settings.davo.context, settings.davo.enabled, settings.davo.name]);
   // query every configured account when opened, only when Codex is configured
   useEffect(() => {
     // skip hidden menus and consoles without a configured Codex adapter
@@ -1281,6 +1308,59 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     }
     setDialog(undefined);
   };
+  // persist one launch fallback without closing settings
+  const selectDefaultAgent = async (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const kind = event.currentTarget.value;
+    // ignore impossible or duplicate selections
+    if (!isAgentKind(kind) || kind === settings.defaultAgent || defaultAgentPending) return;
+    setDefaultAgentPending(true);
+    setDefaultAgentError('');
+    const failure = await settings.setDefaultAgent(kind);
+    setDefaultAgentPending(false);
+    // retain the previous choice after a failed write
+    if (failure !== undefined) setDefaultAgentError(failure);
+  };
+  // persist the voice feature gate immediately
+  const toggleDavo = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    // prevent duplicate writes
+    if (davoPending) return;
+    const enabled = event.currentTarget.checked;
+    const previous = davoEnabled;
+    setDavoEnabled(enabled);
+    setDavoPending(true);
+    setDavoError('');
+    setDavoMessage('');
+    const failure = await settings.updateDavo({ enabled, name: davoDraft.name.trim() || settings.davo.name, context: davoDraft.context.trim() });
+    setDavoPending(false);
+    // retain the current server state after failure
+    if (failure !== undefined) {
+      setDavoEnabled(previous);
+      setDavoError(failure);
+    }
+  };
+  // persist the editable voice identity and context
+  const saveDavo = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    // prevent duplicate writes
+    if (davoPending) return;
+    const name = davoDraft.name.trim();
+    // keep invalid names local
+    if (!name) {
+      setDavoError('Enter a Davo name.');
+      return;
+    }
+    setDavoPending(true);
+    setDavoError('');
+    setDavoMessage('');
+    const failure = await settings.updateDavo({ enabled: davoEnabled, name, context: davoDraft.context.trim() });
+    setDavoPending(false);
+    // retain the editor after a failed write
+    if (failure !== undefined) {
+      setDavoError(failure);
+      return;
+    }
+    setDavoMessage('Saved.');
+  };
   // poll one device-code login
   useEffect(() => {
     // require an active login
@@ -1329,20 +1409,24 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   // render current client and server identities
   // one AGENTS row per configured kind: glyph, label, availability line, program path (dimmed when unavailable)
   const agentsCard = configuredAdapters.length === 0 ? null : <div className="client-settings-card client-settings-agents" role="group" aria-label="Agents"><header><small>AGENTS</small></header>{configuredAdapters.map(([kind, capability]) => <div key={kind} className={`client-settings-agent${capability.launchable ? '' : ' unavailable'}`} role="group" aria-label={agentKindLabel[kind]}><span className="client-settings-agent-glyph" aria-hidden="true">{agentKindGlyph[kind]}</span><span className="client-settings-agent-copy"><strong>{agentKindLabel[kind]}</strong><span className="client-settings-agent-availability">{capability.launchable ? 'Available' : capability.unavailableReason ?? 'Unavailable'}</span><span className="client-settings-agent-program">{capability.program}</span></span></div>)}</div>;
+  // choose the server-wide fallback from launchable configured adapters
+  const defaultAgentCard = configuredAdapters.length === 0 ? null : <div className="client-settings-card client-settings-default-agent" role="group" aria-label="Default agent"><header><small>DEFAULT AGENT</small>{defaultAgentPending && <span className="spinner" role="status" aria-label="Saving default agent" />}</header><select aria-label="Default agent" value={settings.defaultAgent ?? ''} disabled={defaultAgentPending || !configuredAdapters.some(([, capability]) => capability.launchable)} onChange={event => void selectDefaultAgent(event)}>{settings.defaultAgent === undefined && <option value="" disabled>No agent available</option>}{configuredAdapters.map(([kind, capability]) => <option key={kind} value={kind} disabled={!capability.launchable}>{agentKindLabel[kind]}{capability.launchable ? '' : ' — unavailable'}</option>)}</select>{defaultAgentError && <span className="client-settings-default-agent-error" role="alert">{defaultAgentError}</span>}</div>;
   // Terminal font stepper: −, the current size, +, and Reset once the size
   // differs from the default. Steps keep the menu open so repeated taps work on
   // a phone, and each button disables at its range limit.
   const terminalFontCard = <div className="client-settings-card client-settings-terminal-font" role="group" aria-label="Terminal font"><header><small>TERMINAL FONT</small>{terminalFontSize !== defaultTerminalFontSize() && <span className="client-settings-card-actions"><button type="button" aria-label="Reset terminal font" onClick={() => resetTerminalFontSize()}>Reset</button></span>}</header><div className="client-settings-stepper"><button type="button" aria-label="Smaller terminal font" disabled={terminalFontSize <= minTerminalFontSize} onClick={() => stepTerminalFontSize(-1)}>−</button><strong aria-live="polite">{terminalFontSize}px</strong><button type="button" aria-label="Larger terminal font" disabled={terminalFontSize >= maxTerminalFontSize} onClick={() => stepTerminalFontSize(1)}>+</button></div></div>;
-  const settingsCards = <div className="client-settings-overview"><div className="client-settings-card" role="group" aria-label="Client"><header><small>CLIENT</small><span className="client-settings-card-actions"><button type="button" aria-label="Rename Client" onClick={() => beginRename('client')}>Rename</button></span></header><strong>{settings.deviceName}</strong><span>This browser</span></div><div className="client-settings-card" role="group" aria-label="Server"><header><small>SERVER</small><span className="client-settings-card-actions"><button type="button" aria-label="Rename Server" onClick={() => beginRename('server')}>Rename</button></span></header><strong>{settings.serverName}</strong><span>{serverHostLabel(settings.serverUrl)}</span></div>{agentsCard}{terminalFontCard}</div>;
+  const settingsCards = <div className="client-settings-overview"><div className="client-settings-card" role="group" aria-label="Client"><header><small>CLIENT</small><span className="client-settings-card-actions"><button type="button" aria-label="Rename Client" onClick={() => beginRename('client')}>Rename</button></span></header><strong>{settings.deviceName}</strong><span>This browser</span></div><div className="client-settings-card" role="group" aria-label="Server"><header><small>SERVER</small><span className="client-settings-card-actions"><button type="button" aria-label="Rename Server" onClick={() => beginRename('server')}>Rename</button></span></header><strong>{settings.serverName}</strong><span>{serverHostLabel(settings.serverUrl)}</span></div>{defaultAgentCard}{terminalFontCard}{agentsCard}</div>;
+  // configure the optional voice surface without an outer card
+  const davoSection = <section className="client-settings-section client-settings-davo" aria-labelledby="settings-davo-title"><header><div><small>VOICE</small><h2 id="settings-davo-title">Davo</h2></div><label className="client-settings-davo-toggle"><input aria-label="Enable Davo" type="checkbox" checked={davoEnabled} disabled={davoPending || !settings.davo.available && !davoEnabled} onChange={event => void toggleDavo(event)} /><span>{davoEnabled ? 'On' : settings.davo.available ? 'Off' : 'Unavailable'}</span></label></header>{davoEnabled && <form className="client-settings-davo-form" onSubmit={event => void saveDavo(event)}><label>Name<input aria-label="Davo name" type="text" value={davoDraft.name} maxLength={80} disabled={davoPending} onChange={event => setDavoDraft(current => ({ ...current, name: event.target.value }))} /></label><label>Context<textarea aria-label="Davo context" value={davoDraft.context} maxLength={16_000} disabled={davoPending} onChange={event => setDavoDraft(current => ({ ...current, context: event.target.value }))} /></label><footer>{davoError ? <span className="client-settings-davo-error" role="alert">{davoError}</span> : <span className="client-settings-davo-message" role="status">{davoMessage}</span>}<button type="submit" disabled={davoPending || !davoDraft.name.trim()}>{davoPending ? <><span className="spinner" />Saving…</> : 'Save'}</button></footer></form>}{!davoEnabled && davoError && <span className="client-settings-davo-error" role="alert">{davoError}</span>}</section>;
   // the Codex accounts section renders only when adapters.codex is configured
-  const accountsSection = !codexConfigured ? null : <section className="client-settings-section client-settings-accounts" aria-labelledby="settings-accounts-title"><header><small>CHATGPT</small><h2 id="settings-accounts-title">Accounts</h2><p>Choose the account Codex uses and review its current limits.</p></header><div className="client-settings-account-list" role="radiogroup" aria-label="ChatGPT accounts">{accountsLoading && accounts.length === 0 ? <div className="chatgpt-account-loading" role="status"><span className="spinner" />Loading ChatGPT accounts…</div> : accountRows}</div>{accountMessage && <span className="chatgpt-account-message" role="status">{accountMessage}</span>}<button className="chatgpt-account-add" type="button" disabled={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined} onClick={() => void beginAccountLogin()}>+ Add account</button></section>;
+  const accountsSection = !codexConfigured ? null : <section className="client-settings-section client-settings-accounts" aria-labelledby="settings-accounts-title"><header><small>CHATGPT</small><h2 id="settings-accounts-title">Accounts</h2><button className="chatgpt-account-add" type="button" disabled={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined} onClick={() => void beginAccountLogin()}>+ Add account</button></header><div className="client-settings-account-list" role="radiogroup" aria-label="ChatGPT accounts">{accountsLoading && accounts.length === 0 ? <div className="chatgpt-account-loading" role="status"><span className="spinner" />Loading ChatGPT accounts…</div> : accountRows}</div>{accountMessage && <span className="chatgpt-account-message" role="status">{accountMessage}</span>}</section>;
   // contain keyboard focus inside the settings page
   const pageKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
     // close the page on escape while no child dialog is active
     if (event.key === 'Escape' && dialog === undefined) { setOpen(false); return; }
     // retain ordinary keys and child-dialog input
     if (event.key !== 'Tab' || dialog !== undefined || pageRef.current === null) return;
-    const controls = Array.from(pageRef.current.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [href], [tabindex]:not([tabindex="-1"])')).filter(control => control.offsetParent !== null);
+    const controls = Array.from(pageRef.current.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])')).filter(control => control.offsetParent !== null);
     // retain focus when no controls exist
     if (controls.length === 0) { event.preventDefault(); pageRef.current.focus(); return; }
     const active = document.activeElement;
@@ -1355,7 +1439,7 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     event.preventDefault();
     controls.at(next)?.focus();
   };
-  const settingsPage = !open ? null : createPortal(<div ref={pageRef} id="global-settings-page" className="client-settings-page" role="dialog" aria-modal="true" aria-labelledby="global-settings-title" aria-busy={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined} tabIndex={-1} onKeyDown={pageKey}><header className="client-settings-page-header"><div className="client-settings-page-heading"><small>REMOTE AGENT CONSOLE</small><h1 id="global-settings-title">Settings</h1><p>Manage this console, its display, and connected accounts.</p></div><button className="client-settings-page-close" type="button" aria-label="Back to console" title="Back to console" onClick={() => setOpen(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6M9 12h10" /></svg><span>Back to console</span></button></header><div className="client-settings-page-content"><section className="client-settings-section" aria-labelledby="settings-console-title"><header><small>GENERAL</small><h2 id="settings-console-title">Console</h2><p>Identify this browser and server, inspect available agents, and tune terminal text.</p></header>{settingsCards}</section>{accountsSection}</div></div>, document.body);
+  const settingsPage = !open ? null : createPortal(<div ref={pageRef} id="global-settings-page" className="client-settings-page" role="dialog" aria-modal="true" aria-labelledby="global-settings-title" aria-busy={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined || defaultAgentPending || davoPending} tabIndex={-1} onKeyDown={pageKey}><header className="client-settings-page-header"><div className="client-settings-page-heading"><small>REMOTE AGENT CONSOLE</small><h1 id="global-settings-title">Settings</h1><p>Manage this console, its display, and connected accounts.</p></div><button className="client-settings-page-close" type="button" aria-label="Back to console" title="Back to console" onClick={() => setOpen(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6M9 12h10" /></svg><span>Back to console</span></button></header><div className="client-settings-page-content"><section className="client-settings-section" aria-labelledby="settings-console-title"><header><small>GENERAL</small><h2 id="settings-console-title">Console</h2></header>{settingsCards}</section>{davoSection}{accountsSection}</div></div>, document.body);
   const renameTarget = dialog === 'client' || dialog === 'server' ? dialog : undefined;
   const renameDialog = renameTarget === undefined ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-rename-title" onKeyDown={event => { /* close on escape */ if (event.key === 'Escape') closeDialog(); }}><div><header><div><small>GLOBAL SETTINGS</small><h2 id="settings-rename-title">Rename {renameTarget === 'client' ? 'Client' : 'Server'}</h2></div><button type="button" aria-label={`Close rename ${renameTarget}`} disabled={pending} onClick={closeDialog}>×</button></header><form onSubmit={event => void submitRename(event)}><label>{renameTarget === 'client' ? 'Client' : 'Server'} name<input autoFocus type="text" value={name} maxLength={renameTarget === 'client' ? 64 : 80} autoComplete="nickname" onChange={event => setName(event.target.value)} /></label>{error && <span className="auth-error" role="alert">{error}</span>}<footer><button type="button" disabled={pending} onClick={closeDialog}>Cancel</button><button type="submit" disabled={pending || !name.trim()}>{pending ? <><span className="spinner" />Renaming…</> : 'Save'}</button></footer></form></div></div>, document.body);
   let accountLoginContent: ReactNode;
@@ -1398,8 +1482,8 @@ function ServerSwitcher({ className = '' }: { className?: string }) {
     // expose an OS-capturable HTTPS link
     return <a key={target.url} href={target.url} className={`server-switcher-button attention-${attention}`} aria-label={`${target.name}${attentionLabel === undefined ? '' : ` — ${attentionLabel}`}`}>{content}</a>;
   });
-  const voiceLabel = voice?.active ? voice.visible ? 'Ongoing Davo call' : 'Show ongoing Davo call' : 'Call Davo';
-  return <div className={`server-switcher${className ? ` ${className}` : ''}`} role="group" aria-label="Davo and Remote Agents servers">{voice && <button type="button" className={`server-switcher-button server-switcher-voice${voice.active ? ' active' : ''}`} aria-label={voiceLabel} aria-pressed={voice.visible} onClick={voice.open}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.69 2.8a2 2 0 0 1-.45 2.11L8.08 9.9a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.9.33 1.84.56 2.8.69A2 2 0 0 1 22 16.92Z" /></svg><span>{voice.active ? 'Ongoing' : 'Call Davo'}</span></button>}{serverTargets}{clientSettings && <ClientSettingsMenu settings={clientSettings} />}</div>;
+  const voiceLabel = voice?.active ? voice.visible ? `Ongoing ${voice.name} call` : `Show ongoing ${voice.name} call` : `Call ${voice?.name ?? 'voice assistant'}`;
+  return <div className={`server-switcher${className ? ` ${className}` : ''}`} role="group" aria-label={voice === undefined ? 'Remote Agents servers' : `${voice.name} and Remote Agents servers`}>{voice && <button type="button" className={`server-switcher-button server-switcher-voice${voice.active ? ' active' : ''}`} aria-label={voiceLabel} aria-pressed={voice.visible} onClick={voice.open}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.69 2.8a2 2 0 0 1-.45 2.11L8.08 9.9a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.9.33 1.84.56 2.8.69A2 2 0 0 1 22 16.92Z" /></svg><span>{voice.active ? 'Ongoing' : `Call ${voice.name}`}</span></button>}{serverTargets}{clientSettings && <ClientSettingsMenu settings={clientSettings} />}</div>;
 }
 
 function Login({ done, initialError }: { done: (session: SessionInfo) => void; initialError?: string }) {
@@ -5028,6 +5112,8 @@ function PruneWorktreesDialog({ project, request, onClose, onPruned }: { project
 // render the active console dashboard
 function DashboardView({ onUnauthorized, onInactive, updateControl, updateError }: { onUnauthorized: () => void; onInactive: () => void; updateControl?: UpdateControl; updateError?: string }) {
   const serverInfo = useContext(ServerContext) ?? fallbackServerInfo();
+  const clientSettings = useContext(ClientSettingsContext);
+  const davo = clientSettings?.davo ?? legacyDavoSettings;
   const [data, setData] = useState<Dashboard>();
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
@@ -5045,8 +5131,15 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
     setVoiceOpen(true);
     setVoiceCallRequest(current => current + 1);
   }, [voiceActive]);
+  // remove the call surface as soon as voice is disabled
+  useEffect(() => {
+    // retain state while voice remains enabled
+    if (davo.enabled) return;
+    setVoiceOpen(false);
+    setVoiceActive(false);
+  }, [davo.enabled]);
   // retain one stable voice trigger context
-  const voiceTrigger = useMemo(() => ({ open: openVoice, active: voiceActive, visible: voiceOpen }), [openVoice, voiceActive, voiceOpen]);
+  const voiceTrigger = useMemo(() => davo.enabled ? { open: openVoice, active: voiceActive, visible: voiceOpen, name: davo.name } : undefined, [davo.enabled, davo.name, openVoice, voiceActive, voiceOpen]);
   const [reviewLaunch, setReviewLaunch] = useState<ReviewLaunch>();
   const [reviewInitialTour, setReviewInitialTour] = useState<ReviewTour>();
   const [reviewMinimized, setReviewMinimized] = useState(false);
@@ -5463,7 +5556,7 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
     return () => window.removeEventListener('hashchange', activateLinkedItem);
   }, [tabKey, viewAgent]);
   const select = (index: number) => { const item = items[index]; if (!item) return; const changed = selectedItemKey.current !== item.key; selectedItemKey.current = item.key; if (changed && item.agent !== undefined) viewAgent(item.agent); const target = item.agent === undefined ? `tab=${encodeURIComponent(item.label)}` : `agent=${encodeURIComponent(item.agent.id)}`; history.replaceState(null, '', `${location.pathname}${location.search}#${target}`); setActive(index); };
-  // select one canonical worktree from Davo
+  // select one canonical worktree from voice
   const selectVoiceWorktree = (worktreeId: string) => {
     const index = items.findIndex(candidate => candidate.agent?.worktreeId === worktreeId || candidate.worktree?.id === worktreeId);
     // reject worktrees without a visible tab
@@ -5712,7 +5805,7 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
   // the Project owning the active tab's Worktree, so an idle tab gates Remove on manageability
   const activeProject = data.projects.find(project => project.id === (item?.worktree?.projectId ?? item?.agent?.projectId));
   const voiceContext = { server: serverInfo.name, serverUrl: serverInfo.url, openWorktrees: otherOpenWorktrees(data.agents, activeWorktreeId, worktreeLabelById), ...(activeWorktreeId === undefined ? {} : { worktreeId: activeWorktreeId, worktree: worktrees.find(worktree => worktree.id === activeWorktreeId)?.label ?? item?.agent?.worktreeLabel ?? (item?.agent === undefined ? activeWorktreeId : agentLabel(item.agent)) }), ...(item?.agent === undefined ? {} : { agentId: item.agent.id, agent: activeWorktree?.label ?? item.agent.worktreeLabel ?? agentLabel(item.agent) }) };
-  const voiceDialog = <VoiceDialog open={voiceOpen} callRequest={voiceCallRequest} context={voiceContext} request={request} onClose={closeVoice} onSelectWorktree={selectVoiceWorktree} onActiveChange={setVoiceActive} />;
+  const voiceDialog = davo.enabled ? <VoiceDialog name={davo.name} open={voiceOpen} callRequest={voiceCallRequest} context={voiceContext} request={request} onClose={closeVoice} onSelectWorktree={selectVoiceWorktree} onActiveChange={setVoiceActive} /> : null;
   const visibleOperationFeedback = operationFeedback?.worktreeId === undefined || operationFeedback.worktreeId === activeWorktreeId ? operationFeedback : undefined;
   // minimize without discarding the cached review
   const minimizeReview = () => {
@@ -5753,7 +5846,7 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
   })}<NotificationControl />{updateControl !== undefined && <button className="update-ready" type="button" onClick={updateControl.onClick}>{updateControl.label} <span>{updateControl.action}</span></button>}<span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label">~ Scratch</span><LaunchSplitButton label="~ Scratch" resolution={data.scratchLaunch} compact disabled={creatingAgent} onLaunch={choice => void createAgent(choice)} /></div>{data.projects.map(project => { const idle = project.worktrees.filter(worktree => !data.agents.some(agent => agent.worktreeId === worktree.id)); return <div key={project.id} className="launcher-project" role="group" aria-label={project.label}><div className="launcher-project-header"><span>{project.label}</span>{(project.stalePaths?.length ?? 0) > 0 && <button type="button" className="launcher-prune" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setPruneProjectId(project.id)}>{project.stalePaths!.length} stale · Prune</button>}</div>{idle.map(worktree => <div key={worktree.id} className="launcher-row"><span className="launcher-row-label">{launcherRowLabel(worktree, project)}</span><button type="button" className={`launcher-icon launcher-pin${worktree.pinned ? ' pinned' : ''}`} aria-pressed={worktree.pinned} aria-label={`${worktree.pinned ? 'Unpin' : 'Pin'} ${worktree.label}`} title={worktree.pinned ? 'Unpin worktree' : 'Pin worktree'} onClick={() => void togglePin(worktree)}><LauncherRowIcon name="pin" /></button><button type="button" className="launcher-icon launcher-remove" disabled={creatingAgent || worktreeRemoveDisabledReason(worktree, project) !== undefined} aria-label={`Remove ${worktree.label}`} title={worktreeRemoveDisabledReason(worktree, project) ?? 'Remove worktree'} onClick={() => setRemoveWorktreeId(worktree.id)}><LauncherRowIcon name="trash" /></button>{worktree.sleeping === true
         ? <button type="button" className="launch-compact" disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onClick={() => void launchWorktree(worktree)}>Wake up</button>
         : <LaunchSplitButton label={worktree.label} resolution={worktree.launch} compact disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onLaunch={choice => void launchWorktree(worktree, choice)} />}</div>)}<button type="button" className="launcher-new-worktree" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setNewWorktreeProjectId(project.id)}>+ New worktree…</button></div>; })}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
-  const consoleClass = `console${voiceOpen ? ' voice-visible' : ''}`;
+  const consoleClass = `console${davo.enabled && voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
   return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} {...(activeWorktree === undefined ? {} : { pinned: activeWorktree.pinned, onTogglePin: () => void togglePin(activeWorktree), worktreeLabel: activeWorktree.label })} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
 }
@@ -5800,6 +5893,30 @@ function App() {
     const payload = await response.json() as { server?: unknown };
     // publish only validated identity
     if (isServerInfo(payload.server)) setServerInfo(payload.server);
+    return undefined;
+  }, []);
+  // persist the server-wide launch fallback
+  const setDefaultAgent = useCallback(async (kind: AgentKind): Promise<string | undefined> => {
+    const response = await request('/api/server/default-agent', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind }) });
+    const payload = await response.json().catch(() => undefined) as { defaultAgent?: unknown; error?: unknown } | undefined;
+    // surface validation and persistence failures
+    if (!response.ok) return typeof payload?.error === 'string' ? payload.error : 'Unable to update the default agent.';
+    // require the exact persisted choice
+    if (!isAgentKind(payload?.defaultAgent)) return 'Unable to update the default agent.';
+    const defaultAgent = payload.defaultAgent;
+    setSessionInfo(current => current === undefined ? current : { ...current, defaultAgent });
+    return undefined;
+  }, []);
+  // persist the server-wide voice identity and feature gate
+  const updateDavo = useCallback(async (settings: Pick<DavoSettings, 'enabled' | 'name' | 'context'>): Promise<string | undefined> => {
+    const response = await request('/api/server/davo', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings) });
+    const payload = await response.json().catch(() => undefined) as { davo?: unknown; error?: unknown } | undefined;
+    // surface validation and persistence failures
+    if (!response.ok) return typeof payload?.error === 'string' ? payload.error : 'Unable to update Davo settings.';
+    // require the exact persisted settings
+    if (!isDavoSettings(payload?.davo)) return 'Unable to update Davo settings.';
+    const davo = payload.davo;
+    setSessionInfo(current => current === undefined ? current : { ...current, davo });
     return undefined;
   }, []);
   // open or restore one shared update review
@@ -6079,7 +6196,7 @@ function App() {
           ? <ControlScreen session={sessionInfo} claimed={applySession} />
           : <Login initialError={error} done={applySession} />;
   // expose settings without a manual server update bypass
-  const clientSettings = useMemo<ClientSettings | undefined>(() => state === 'ready' && sessionInfo?.deviceName !== undefined ? { deviceName: sessionInfo.deviceName, serverName: serverInfo.name, serverUrl: serverInfo.url, renameClient, renameServer, codexAccounts, switchCodexAccount, resetCodexAccount, startCodexAccountLogin, codexAccountLoginStatus, cancelCodexAccountLogin } : undefined, [cancelCodexAccountLogin, codexAccountLoginStatus, codexAccounts, renameClient, renameServer, resetCodexAccount, serverInfo.name, serverInfo.url, sessionInfo?.deviceName, startCodexAccountLogin, state, switchCodexAccount]);
+  const clientSettings = useMemo<ClientSettings | undefined>(() => state === 'ready' && sessionInfo?.deviceName !== undefined ? { deviceName: sessionInfo.deviceName, serverName: serverInfo.name, serverUrl: serverInfo.url, defaultAgent: sessionInfo.defaultAgent, davo: sessionInfo.davo ?? legacyDavoSettings, renameClient, renameServer, setDefaultAgent, updateDavo, codexAccounts, switchCodexAccount, resetCodexAccount, startCodexAccountLogin, codexAccountLoginStatus, cancelCodexAccountLogin } : undefined, [cancelCodexAccountLogin, codexAccountLoginStatus, codexAccounts, renameClient, renameServer, resetCodexAccount, serverInfo.name, serverInfo.url, sessionInfo?.davo, sessionInfo?.defaultAgent, sessionInfo?.deviceName, setDefaultAgent, startCodexAccountLogin, state, switchCodexAccount, updateDavo]);
   return <ServerContext.Provider value={serverInfo}><ServerStatusContext.Provider value={serverStatuses}><ClientSettingsContext.Provider value={clientSettings}>{screen}<ServerUpdateDialog open={serverUpdateOpen} minimized={serverUpdateMinimized} onMinimize={minimizeServerUpdate} onClose={closeServerUpdate} />{reconnecting && <ReconnectingOverlay />}</ClientSettingsContext.Provider></ServerStatusContext.Provider></ServerContext.Provider>;
 }
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');

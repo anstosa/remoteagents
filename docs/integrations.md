@@ -25,6 +25,8 @@ Add the integration gates to the server JSON configuration:
     },
     "realtime": {
       "enabled": true,
+      "name": "Davo",
+      "context": "The caller is Ansel. Always speak with a masculine, broad Australian accent and a relaxed bogan tradie cadence.",
       "writeToolsEnabled": true
     },
     "multiInstance": {
@@ -80,11 +82,14 @@ for the ChatGPT product-side setup and account availability.
 
 ## Use Davo
 
-Choose **Call Davo** and grant microphone access. Davo uses the
-`cedar` voice with a masculine Australian bogan-tradie persona. The current
-server, worktree, and agent canonical identifiers are included as session
-context. Realtime calls the same remote MCP endpoint; the browser does not
-implement a second tool router. No separate MCP setup is required for Davo.
+Enable **Davo** in Settings, then choose **Call Davo** and grant microphone
+access. While enabled, Settings exposes the assistant's display name and a free-form
+context field. The name defaults to `Davo`; the context defaults to the repository's
+current Ansel-facing Australian bogan-tradie persona. Changing the context replaces
+that persona without changing the fixed tool, safety, or call-control instructions.
+The current server, worktree, and agent canonical identifiers are included as session
+context. Realtime calls the same remote MCP endpoint; the browser does not implement
+a second tool router. No separate MCP setup is required for voice.
 
 Starting Davo activates remote mutations. A browser heartbeat retains that
 access while Davo remains active. **Hang up** revokes access immediately without
@@ -105,7 +110,7 @@ access within 25 seconds.
 | `review:write` | reserved for typed review operations |
 | `admin:dangerous` | additive scope for disruptive operations |
 
-Scopes do not override deployment flags or the active purple Davo-mode gate.
+Scopes do not override deployment flags or the active browser voice-mode gate.
 Mutation calls also require an idempotency request ID. Interrupted effects are
 recorded as an unknown outcome and are not repeated automatically.
 

@@ -29,6 +29,27 @@ describe('server administration', () => {
     expect(await service.renameServer('   ')).toBeUndefined();
   });
 
+  it('persists the default agent without changing other configuration', async () => {
+    root = await mkdtemp(join(tmpdir(), 'rac-server-admin-'));
+    const configPath = join(root, 'config.json');
+    await writeFile(configPath, JSON.stringify({ name: 'Framework', publicOrigin: 'https://framework.example.com', adapters: { codex: { program: '/bin/codex' }, claude: { program: '/bin/claude' } } }));
+    const service = new ServerAdminService(config, { configWritePath: configPath, statusDirectory: root });
+
+    expect(await service.setDefaultAgent('claude')).toBe('claude');
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ name: 'Framework', publicOrigin: 'https://framework.example.com', adapters: { codex: { program: '/bin/codex' }, claude: { program: '/bin/claude' } }, defaultAgent: 'claude' });
+  });
+
+  it('persists Davo settings without changing other integration configuration', async () => {
+    root = await mkdtemp(join(tmpdir(), 'rac-server-admin-'));
+    const configPath = join(root, 'config.json');
+    await writeFile(configPath, JSON.stringify({ name: 'Framework', integrations: { enabled: true, mcp: { writeEnabled: true }, realtime: { enabled: true, writeToolsEnabled: true }, multiInstance: { enabled: true } } }));
+    const service = new ServerAdminService(config, { configWritePath: configPath, statusDirectory: root });
+    const settings = { enabled: false, name: 'Riley', context: 'Direct and dry.' };
+
+    expect(await service.setDavoSettings(settings)).toEqual(settings);
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ name: 'Framework', integrations: { enabled: true, mcp: { writeEnabled: true }, realtime: { enabled: false, writeToolsEnabled: true, name: 'Riley', context: 'Direct and dry.' }, multiInstance: { enabled: true } } });
+  });
+
   it('launches only the fixed updater through the host tmux bridge', async () => {
     root = await mkdtemp(join(tmpdir(), 'rac-server-admin-'));
     const runCommand = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));

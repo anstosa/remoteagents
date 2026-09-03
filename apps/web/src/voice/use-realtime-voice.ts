@@ -89,19 +89,29 @@ function normalizedVoiceCommand(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9\s]/gu, ' ').replace(/\s+/gu, ' ').trim();
 }
 
+// replace the configured assistant name in spoken controls
+function assistantVoiceCommand(text: string, assistantName: string): string {
+  const command = normalizedVoiceCommand(text);
+  const name = normalizedVoiceCommand(assistantName);
+  // retain commands when the configured name has no searchable tokens
+  if (name === '') return command;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  return command.replace(new RegExp(`(^|\\s)${escaped}(?=\\s|$)`, 'gu'), '$1assistant');
+}
+
 // recognize direct call-ending requests
-function isHangupRequest(text: string): boolean {
-  return /^(?:davo\s+)?(?:(?:can|could|would|will) you\s+|please\s+)?(?:hang up|end (?:the )?call)(?:\s+(?:please|davo|mate|now))*$/u.test(normalizedVoiceCommand(text));
+function isHangupRequest(text: string, assistantName: string): boolean {
+  return /^(?:assistant\s+)?(?:(?:can|could|would|will) you\s+|please\s+)?(?:hang up|end (?:the )?call)(?:\s+(?:please|assistant|mate|now))*$/u.test(assistantVoiceCommand(text, assistantName));
 }
 
 // recognize reply-free speech interruptions
-function isSilentInterruption(text: string): boolean {
-  return /^(?:davo\s+)?(?:please\s+)?(?:stop|stop talking|shut up|nope|nah|enough|that s enough|quiet|cut it out)(?:\s+(?:please|davo|mate|now))*$/u.test(normalizedVoiceCommand(text));
+function isSilentInterruption(text: string, assistantName: string): boolean {
+  return /^(?:assistant\s+)?(?:please\s+)?(?:stop|stop talking|shut up|nope|nah|enough|that s enough|quiet|cut it out)(?:\s+(?:please|assistant|mate|now))*$/u.test(assistantVoiceCommand(text, assistantName));
 }
 
 // recognize the exact mute control command
-function isMuteRequest(text: string): boolean {
-  return /^(?:davo\s+)?(?:please\s+)?mute(?:\s+(?:please|davo|mate|now))*$/u.test(normalizedVoiceCommand(text));
+function isMuteRequest(text: string, assistantName: string): boolean {
+  return /^(?:assistant\s+)?(?:please\s+)?mute(?:\s+(?:please|assistant|mate|now))*$/u.test(assistantVoiceCommand(text, assistantName));
 }
 
 // read one bounded worktree tool argument
@@ -132,7 +142,7 @@ export type RealtimeVoice = {
 };
 
 // manage one browser WebRTC Realtime session
-export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelectWorktree: SelectWorktree | undefined, muteCommandActive: boolean): RealtimeVoice {
+export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelectWorktree: SelectWorktree | undefined, muteCommandActive: boolean, assistantName: string): RealtimeVoice {
   const [state, setState] = useState<VoiceState>('idle');
   const [error, setError] = useState<string>();
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
@@ -384,7 +394,7 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
   }, []);
 
   // cancel generation and buffered WebRTC audio
-  const silenceDavo = useCallback(() => {
+  const silenceAssistant = useCallback(() => {
     // require one live provider channel
     if (channel.current?.readyState !== 'open') return;
     channel.current.send(JSON.stringify({ type: 'response.cancel' }));
@@ -408,7 +418,7 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
       if (!greeted.current && channel.current?.readyState === 'open') {
         greeted.current = true;
         const worktree = activeWorktreeLabel.current ?? 'none selected';
-        channel.current.send(JSON.stringify({ type: 'response.create', response: { instructions: `Answer the call with exactly one quick sentence greeting Ansel by name, state that the active worktree is ${worktree}, and invite him to say what needs doing. Sound like Davo with broad Australian tradie banter.`, tools: [] } }));
+        channel.current.send(JSON.stringify({ type: 'response.create', response: { instructions: `Answer the call with exactly one quick sentence. Greet the caller using any identity in your configured context, state that the active worktree is ${worktree}, and invite them to say what needs doing.`, tools: [] } }));
       }
       return;
     }
@@ -438,7 +448,7 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
     }
     // fail instead of exposing a disconnected voice session
     if (type === 'mcp_list_tools.failed') {
-      failConnection('Davo could not connect to the Remote Agents tools.');
+      failConnection(`${assistantName} could not connect to the Remote Agents tools.`);
       return;
     }
     // silently discard speech the provider cannot transcribe
@@ -451,21 +461,21 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
     // replace partial text with the final user transcript
     if (type === 'conversation.item.input_audio_transcription.completed' && typeof payload.transcript === 'string') {
       completeUser(typeof payload.item_id === 'string' ? payload.item_id : crypto.randomUUID(), payload.transcript);
-      // mute only while the Davo surface is open
-      if (muteCommandActiveRef.current && isMuteRequest(payload.transcript)) mute();
-      // arm automatic hang-up after Davo's goodbye finishes
-      if (isHangupRequest(payload.transcript)) hangupPending.current = true;
+      // mute only while the voice surface is open
+      if (muteCommandActiveRef.current && isMuteRequest(payload.transcript, assistantName)) mute();
+      // arm automatic hang-up after the assistant's goodbye finishes
+      if (isHangupRequest(payload.transcript, assistantName)) hangupPending.current = true;
       // suppress replies to bare interruptions
-      if (isSilentInterruption(payload.transcript)) {
+      if (isSilentInterruption(payload.transcript, assistantName)) {
         silentInterruptionUntil.current = Date.now() + 3_000;
         silentResponseStarted.current = false;
-        silenceDavo();
+        silenceAssistant();
       }
     }
     // cancel any response raced by automatic VAD
     if (type === 'response.created' && Date.now() < silentInterruptionUntil.current) {
       silentResponseStarted.current = true;
-      silenceDavo();
+      silenceAssistant();
     }
     // release suppression after the cancelled reply ends
     if (type === 'response.done' && silentResponseStarted.current) {
@@ -494,11 +504,11 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
         return [...current.filter(entry => entry.id !== 'assistant-live').slice(-99), { id: crypto.randomUUID(), role: 'assistant', text: payload.transcript as string, timestamp: existing?.timestamp ?? Date.now() }];
       });
     }
-    // provide a provider-backed Davo playback fallback
+    // provide a provider-backed assistant playback fallback
     if (type === 'output_audio_buffer.started') {
       // cut off audio raced by cancellation
       if (Date.now() < silentInterruptionUntil.current) {
-        silenceDavo();
+        silenceAssistant();
         return;
       }
       outputSpeaking.current = true;
@@ -578,13 +588,13 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
       syncToolStatus();
       const duplicateTerminal = finalizedToolIds.current.has(itemId);
       finalizedToolIds.current.add(itemId);
-      // ask Davo to speak once after the complete tool batch
+      // ask the assistant to speak once after the complete tool batch
       if (!duplicateTerminal && pendingToolNames.current.size === 0 && channel.current?.readyState === 'open') channel.current.send(JSON.stringify({ type: 'response.create' }));
       return;
     }
     // retain MCP discovery progress without history noise
     if (type === 'mcp_list_tools.in_progress') {
-      setToolStatus('Loading Davo tools…');
+      setToolStatus(`Loading ${assistantName} tools…`);
       return;
     }
     // hang up only after WebRTC playback drains
@@ -596,9 +606,9 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
     if (type === 'error') {
       // ignore expected empty-cancel errors
       if (Date.now() < silentInterruptionUntil.current) return;
-      setError('Davo reported a session error.');
+      setError(`${assistantName} reported a session error.`);
     }
-  }, [completeUser, discardUser, failConnection, mute, silenceDavo, stop, syncToolStatus, updateAssistant, updateToolTranscript, updateUser]);
+  }, [assistantName, completeUser, discardUser, failConnection, mute, silenceAssistant, stop, syncToolStatus, updateAssistant, updateToolTranscript, updateUser]);
 
   // establish one direct browser-to-provider WebRTC session
   const start = useCallback(async () => {
@@ -640,7 +650,7 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
       // abandon closed dialogs before requesting microphone access
       if (stale()) return;
       // require one server-minted ephemeral credential
-      if (!credentialResponse.ok) throw new Error(credentialResponse.status === 503 ? 'Davo is not configured on this server.' : 'Unable to start Davo.');
+      if (!credentialResponse.ok) throw new Error(credentialResponse.status === 503 ? `${assistantName} is not configured on this server.` : `Unable to start ${assistantName}.`);
       const credential = await credentialResponse.json() as RealtimeCredential;
       // abandon closed dialogs after response parsing
       if (stale()) return;
@@ -651,7 +661,7 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
         void request('/api/realtime/session/heartbeat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceSessionId }) }).then(response => {
           const accessRevoked = [400, 401, 403, 404, 409, 423].includes(response.status);
           // stop only after an authoritative lease rejection
-          if (accessRevoked && voiceSession.current === voiceSessionId) failConnection('Davo lost remote control access. Call again to reconnect.');
+          if (accessRevoked && voiceSession.current === voiceSessionId) failConnection(`${assistantName} lost remote control access. Call again to reconnect.`);
         });
       }, 10_000);
       const media = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -675,15 +685,15 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
       media.getTracks().forEach(track => connection.addTrack(track, media));
       const data = connection.createDataChannel('oai-events');
       data.addEventListener('message', handleEvent);
-      data.addEventListener('open', () => { if (!stale()) setToolStatus('Loading Davo tools…'); });
+      data.addEventListener('open', () => { if (!stale()) setToolStatus(`Loading ${assistantName} tools…`); });
       data.addEventListener('close', () => {
         // keep unexpected disconnects visible
-        if (!stale()) failConnection('Davo disconnected. Call again to reconnect.');
+        if (!stale()) failConnection(`${assistantName} disconnected. Call again to reconnect.`);
       });
       // release the microphone after transport failure
       connection.addEventListener('connectionstatechange', () => {
         // stop only terminal transport states
-        if (!stale() && (connection.connectionState === 'failed' || connection.connectionState === 'closed')) failConnection('Davo disconnected. Call again to reconnect.');
+        if (!stale() && (connection.connectionState === 'failed' || connection.connectionState === 'closed')) failConnection(`${assistantName} disconnected. Call again to reconnect.`);
       });
       peer.current = connection;
       stream.current = media;
@@ -709,9 +719,9 @@ export function useRealtimeVoice(request: Request, target: VoiceTarget, onSelect
     } catch (cause) {
       // ignore deliberate cancellation while cleaning this attempt
       if (stale()) { disposePending(); return; }
-      failConnection(cause instanceof Error ? cause.message : 'Unable to start Davo.');
+      failConnection(cause instanceof Error ? cause.message : `Unable to start ${assistantName}.`);
     }
-  }, [connectMeter, failConnection, handleEvent, request, state, stop, target.agentId, target.worktreeId]);
+  }, [assistantName, connectMeter, failConnection, handleEvent, request, state, stop, target.agentId, target.worktreeId]);
 
   // stop media and mutation access on close or navigation
   useEffect(() => {

@@ -48,7 +48,7 @@ import { WorkspaceFileService } from './workspace-files/service.js';
 import { instanceIconSvg, isInstanceIcon } from './instance-icon.js';
 import { instanceAttention, RemoteInstanceStatusPoller, validInstanceStatusRequest, type InstanceStatus } from './instance-status.js';
 import { createHash, createHmac } from 'node:crypto';
-import { defaultIntegrationConfig, resolveCodexProgram } from './config/schema.js';
+import { defaultIntegrationConfig, parseDavoSettings, resolveCodexProgram } from './config/schema.js';
 import { OrchestrationService } from './orchestration/index.js';
 import { IntegrationAuthService, registerIntegrationAuthServer, type IntegrationScope, type LocalIntegrationSubject } from './integrations/auth/index.js';
 import { IntegrationPolicyService } from './integrations/policy/service.js';
@@ -92,7 +92,7 @@ export function logFrame(last: string, value: string, refreshMetadata = false): 
 }
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, promptHistory, queuedPrompts, savedPrompts, undefined, kind => config.adapters?.[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new BookmarkService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, promptHistory, queuedPrompts, savedPrompts, undefined, kind => config.adapters?.[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new BookmarkService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
   const accounts = deps.accounts ?? new CodexAccountService({ ...(codexProgram === undefined ? {} : { codexProgram }) });
   const paneViewports = new PaneViewportCoordinator();
   const updateAdvisors = new Map<string, string>();
@@ -116,7 +116,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // retain sleeping tabs during this server session
   const sleepingWorktrees = new Set<string>();
   let accountSwitching = false;
-  const integrationConfig = config.integrations ?? defaultIntegrationConfig;
+  const integrationConfig = structuredClone(config.integrations ?? defaultIntegrationConfig);
+  const davoAvailable = integrationConfig.enabled && Boolean(process.env.RAC_OPENAI_API_KEY?.trim());
+  // expose one secret-free voice settings snapshot
+  const publicDavoSettings = () => ({ enabled: integrationConfig.realtime.enabled, available: davoAvailable, name: integrationConfig.realtime.name, context: integrationConfig.realtime.context });
   // prefer a dedicated federation secret while retaining existing deployments
   const instanceStatusSecret = process.env.RAC_INSTANCE_STATUS_SECRET ?? process.env.RAC_SESSION_SECRET ?? '';
   const instanceStatusPoller = deps.instanceStatusPoller ?? new RemoteInstanceStatusPoller(instanceStatusSecret);
@@ -209,6 +212,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       active,
       deviceName: await devices.get(s.id),
       controllingDeviceName: owner === undefined ? undefined : await devices.get(owner),
+      defaultAgent: typeof launch.defaultAgent === 'function' ? launch.defaultAgent() : undefined,
+      davo: publicDavoSettings(),
       server
     };
   };
@@ -336,7 +341,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       if (delegated === undefined) return reply.code(401).send({ error: 'unauthorized' });
       return await integrationGateway.call({ authentication: 'oauth', subjectId: delegated.principal.subjectId, audience: resource, scopes: delegated.principal.scopes, ...(delegated.principal.clientId === undefined ? {} : { clientId: delegated.principal.clientId }) }, delegated.name, delegated.arguments, { voiceAuthorized: delegated.voiceAuthorized });
     });
-    const realtime = new RealtimeService({ apiKey: process.env.RAC_OPENAI_API_KEY });
+    const realtime = new RealtimeService({ apiKey: process.env.RAC_OPENAI_API_KEY, settings: () => ({ name: integrationConfig.realtime.name, context: integrationConfig.realtime.context }) });
     app.get('/api/integrations/status', async request => {
       session(request);
       return { enabled: true, mcp: integrationConfig.mcp, control: integrationControl.snapshot(), realtime: { enabled: integrationConfig.realtime.enabled, available: integrationConfig.realtime.enabled && realtime.available(), writeToolsEnabled: integrationConfig.realtime.writeToolsEnabled } };
@@ -440,6 +445,46 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     } catch {
       return reply.code(503).send({ error: 'Unable to update the server configuration.' });
     }
+  });
+  // persist the launch fallback selected by the controlling browser
+  app.patch('/api/server/default-agent', async (request, reply) => {
+    controlled(request, true);
+    const selected = requestedKind(request);
+    // require one known agent kind
+    if (selected.invalid || selected.kind === undefined) return reply.code(400).send({ error: 'Choose a valid default agent.' });
+    // refuse configured kinds that cannot launch now
+    if (!launch.isLaunchableKind(selected.kind)) return reply.code(409).send({ error: 'The selected default agent is unavailable.' });
+    let kind: AgentKind | undefined;
+    try {
+      kind = await serverAdmin.setDefaultAgent(selected.kind);
+    } catch {
+      return reply.code(503).send({ error: 'Unable to update the server configuration.' });
+    }
+    // require a durable configuration write
+    if (kind === undefined) return reply.code(503).send({ error: 'Unable to update the server configuration.' });
+    config.defaultAgent = kind;
+    // push fresh launch resolutions without rolling back a successful preference write
+    await dashboardUpdates.refresh().catch(() => undefined);
+    return { defaultAgent: kind };
+  });
+  // persist the configurable voice surface
+  app.patch('/api/server/davo', async (request, reply) => {
+    controlled(request, true);
+    const requested = parseDavoSettings(body(request));
+    // require one exact settings payload
+    if (requested === undefined) return reply.code(400).send({ error: 'Choose valid Davo settings.' });
+    // prevent enabling a provider surface unavailable in this process
+    if (requested.enabled && !davoAvailable) return reply.code(409).send({ error: 'Davo is unavailable on this server.' });
+    let saved;
+    try {
+      saved = await serverAdmin.setDavoSettings(requested);
+    } catch {
+      return reply.code(503).send({ error: 'Unable to update Davo settings.' });
+    }
+    // require a durable configuration write
+    if (saved === undefined) return reply.code(503).send({ error: 'Unable to update Davo settings.' });
+    integrationConfig.realtime = { ...integrationConfig.realtime, ...saved };
+    return { davo: publicDavoSettings() };
   });
   // stop every advisor tied to one reviewed target
   const stopUpdateAdvisors = async (targetSha: string): Promise<boolean> => {

@@ -38,7 +38,7 @@ function serverLocation(value: string | undefined): string | undefined {
   catch { return normalized; }
 }
 
-// normalize the visible Davo context
+// normalize the visible voice context
 function formatVoiceContext(context: VoiceContext): VoiceContextDetails {
   const activeWorktree = context.worktree?.trim() || 'No worktree selected';
   const server = context.server?.trim() || 'Unavailable';
@@ -100,7 +100,7 @@ const ToolHistoryEntry = memo(function ToolHistoryEntry({ entry }: { entry: Tool
   </details>;
 });
 
-// hold the screen while mobile Davo is visible
+// hold the screen while mobile voice is visible
 function useMobileScreenWakeLock(active: boolean) {
   useEffect(() => {
     // degrade when inactive or unsupported
@@ -143,7 +143,7 @@ function useMobileScreenWakeLock(active: boolean) {
             void acquire();
           }
         }, { once: true });
-      } catch { /* Wake lock denial must not interrupt Davo. */ }
+      } catch { /* Wake lock denial must not interrupt voice. */ }
       finally { acquiring = false; }
     };
     // match the lock to current page state
@@ -181,11 +181,12 @@ function useMobileScreenWakeLock(active: boolean) {
   }, [active]);
 }
 
-export type VoiceDialogProps = { open: boolean; callRequest: number; context: VoiceContext; request: Request; onClose: () => void; onSelectWorktree?: (worktreeId: string) => WorktreeSelection | undefined; onActiveChange?: (active: boolean) => void };
+export type VoiceDialogProps = { name: string; open: boolean; callRequest: number; context: VoiceContext; request: Request; onClose: () => void; onSelectWorktree?: (worktreeId: string) => WorktreeSelection | undefined; onActiveChange?: (active: boolean) => void };
 
 // render the responsive voice orchestration surface
-export function VoiceDialog({ open, callRequest, context, request, onClose, onSelectWorktree, onActiveChange }: VoiceDialogProps) {
-  const voice = useRealtimeVoice(request, { ...(context.worktreeId === undefined ? {} : { worktreeId: context.worktreeId }), ...(context.worktree === undefined ? {} : { worktreeLabel: context.worktree }), ...(context.agentId === undefined ? {} : { agentId: context.agentId }) }, onSelectWorktree, open);
+export function VoiceDialog({ name, open, callRequest, context, request, onClose, onSelectWorktree, onActiveChange }: VoiceDialogProps) {
+  const assistantName = name.trim() || 'Davo';
+  const voice = useRealtimeVoice(request, { ...(context.worktreeId === undefined ? {} : { worktreeId: context.worktreeId }), ...(context.worktree === undefined ? {} : { worktreeLabel: context.worktree }), ...(context.agentId === undefined ? {} : { agentId: context.agentId }) }, onSelectWorktree, open, assistantName);
   useMobileScreenWakeLock(open);
   const connection = formatVoiceContext(context);
   const [historyQuery, setHistoryQuery] = useState('');
@@ -266,7 +267,7 @@ export function VoiceDialog({ open, callRequest, context, request, onClose, onSe
     // render tool lifecycle detail separately
     if (entry.role === 'tool') return <ToolHistoryEntry key={entry.id} entry={entry} />;
     const time = new Date(entry.timestamp);
-    return <p key={entry.id} className={`voice-${entry.role}`}><strong>{entry.role === 'user' ? 'You' : 'Davo'}</strong><time dateTime={time.toISOString()} title={time.toLocaleString()}>{historyTime(entry.timestamp)}</time><span>{entry.text}</span></p>;
+    return <p key={entry.id} className={`voice-${entry.role}`}><strong>{entry.role === 'user' ? 'You' : assistantName}</strong><time dateTime={time.toISOString()} title={time.toLocaleString()}>{historyTime(entry.timestamp)}</time><span>{entry.text}</span></p>;
   });
   let openWorktrees: ReactNode;
   // show missing server context explicitly
@@ -281,14 +282,14 @@ export function VoiceDialog({ open, callRequest, context, request, onClose, onSe
   return <div className="dialog voice-dialog" role="dialog" aria-modal={window.matchMedia('(max-width: 600px)').matches} aria-labelledby="voice-title">
     <div style={soundwaveStyle}>
       <div className="voice-soundwaves" aria-hidden="true"><div className="voice-soundwave davo">{soundwaveBars.map(index => <i key={index} style={{ animationDelay: `${index * -47}ms` }} />)}</div><div className="voice-soundwave mic">{soundwaveBars.map(index => <i key={index} style={{ animationDelay: `${index * -47}ms` }} />)}</div></div>
-      <header><div><small>OPENAI REALTIME</small><h2 id="voice-title">Davo</h2></div><button ref={closeButton} className="voice-view-toggle" type="button" aria-label="Ongoing Davo call — show main UI" onClick={close}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.69 2.8a2 2 0 0 1-.45 2.11L8.08 9.9a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.9.33 1.84.56 2.8.69A2 2 0 0 1 22 16.92Z" /></svg></button></header>
-      <section className="voice-context" aria-label="Davo connection context">
+      <header><div><small>OPENAI REALTIME</small><h2 id="voice-title">{assistantName}</h2></div><button ref={closeButton} className="voice-view-toggle" type="button" aria-label={`Ongoing ${assistantName} call — show main UI`} onClick={close}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.69 2.8a2 2 0 0 1-.45 2.11L8.08 9.9a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.9.33 1.84.56 2.8.69A2 2 0 0 1 22 16.92Z" /></svg></button></header>
+      <section className="voice-context" aria-label={`${assistantName} connection context`}>
         <div className="voice-context-card voice-context-active"><small>Active worktree</small><strong>{connection.activeWorktree}</strong>{connection.agent && <span>Agent · {connection.agent}</span>}</div>
         <div className="voice-context-card voice-context-server"><small>Server / instance</small><strong>{connection.server}</strong>{connection.serverLocation && <span>{connection.serverLocation}</span>}</div>
         <div className="voice-context-card voice-context-open"><small>Other open worktrees</small>{openWorktrees}</div>
       </section>
       <section ref={transcript} className="voice-transcript" aria-live="polite">
-        <div className="voice-history-toolbar"><strong>History</strong><label className="voice-history-search"><span className="sr-only">Search Davo history</span><input type="search" value={historyQuery} placeholder="Search history" onChange={event => setHistoryQuery(event.target.value)} /></label></div>
+        <div className="voice-history-toolbar"><strong>History</strong><label className="voice-history-search"><span className="sr-only">Search {assistantName} history</span><input type="search" value={historyQuery} placeholder="Search history" onChange={event => setHistoryQuery(event.target.value)} /></label></div>
         {history}
       </section>
       {voice.toolStatus && <p className="voice-tool-status"><span className="spinner" />{voice.toolStatus}</p>}
@@ -297,7 +298,7 @@ export function VoiceDialog({ open, callRequest, context, request, onClose, onSe
       <audio ref={hangupSound} className="voice-hangup-sound" src="/davo-hangup.wav" preload="auto" aria-hidden="true" />
       <footer>
         {voice.state === 'idle' || voice.state === 'error'
-          ? <button type="button" className="voice-start" onClick={() => void voice.start()}>Call Davo</button>
+          ? <button type="button" className="voice-start" onClick={() => void voice.start()}>Call {assistantName}</button>
           : <div className="voice-call-actions"><button type="button" className="voice-mute" aria-pressed={voice.muted} disabled={voice.state === 'connecting'} onClick={voice.toggleMute}>{voice.muted ? 'Unmute' : 'Mute'}</button><button type="button" className="voice-stop" disabled={voice.state === 'connecting'} onClick={voice.stop}>{voice.state === 'connecting' ? 'Calling...' : 'Hang up'}</button></div>}
         <small>Hanging up does not cancel agent work.</small>
       </footer>

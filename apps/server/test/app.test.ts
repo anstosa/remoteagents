@@ -75,12 +75,16 @@ describe('server administration API', () => {
   it('renames and updates only from the controlling browser', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const renamed: string[] = [];
+    const defaults: string[] = [];
+    const davoSettings: Array<{ enabled: boolean; name: string; context: string }> = [];
     const targetSha = '2'.repeat(40);
     const reviewedPreview = { available: true, rebuildRetryAvailable: false, baseSha: '1'.repeat(40), targetSha, fastForwardable: true, commitCount: 1, commits: [{ sha: targetSha, subject: 'Update server', author: 'Ansel', authoredAt: '2026-08-27T12:00:00-07:00' }], commitsTruncated: false, filesTruncated: false, advisory: { required: false, reasons: [] as Array<{ kind: 'config'; paths: string[] }> } };
     let preview = reviewedPreview;
     const startUpdate = vi.fn(async () => ({ id: 'server_update_operation_1234', kind: 'update' as const, state: 'queued' as const, targetSha }));
     const serverAdmin = {
       renameServer: async (name: string) => { renamed.push(name); return name.trim() || undefined; },
+      setDefaultAgent: async (kind: string) => { defaults.push(kind); return kind; },
+      setDavoSettings: async (settings: { enabled: boolean; name: string; context: string }) => { davoSettings.push(settings); return settings; },
       startUpdate,
       updateStatus: async (id: string) => id === 'server_update_operation_1234' ? ({ id, kind: 'update' as const, state: 'running' as const, targetSha }) : undefined,
       // expose fetched upstream state
@@ -94,6 +98,12 @@ describe('server administration API', () => {
       const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
 
       const rename = await adminApp.inject({ method: 'PATCH', url: '/api/server/name', headers, payload: { name: 'Garage Server' } });
+      const defaultAgent = await adminApp.inject({ method: 'PATCH', url: '/api/server/default-agent', headers, payload: { kind: 'codex' } });
+      const unavailableDefault = await adminApp.inject({ method: 'PATCH', url: '/api/server/default-agent', headers, payload: { kind: 'claude' } });
+      const invalidDefault = await adminApp.inject({ method: 'PATCH', url: '/api/server/default-agent', headers, payload: { kind: 'unknown' } });
+      const davo = await adminApp.inject({ method: 'PATCH', url: '/api/server/davo', headers, payload: { enabled: false, name: 'Riley', context: 'Direct and dry.' } });
+      const invalidDavo = await adminApp.inject({ method: 'PATCH', url: '/api/server/davo', headers, payload: { enabled: false, name: ' ', context: '' } });
+      const unavailableDavo = await adminApp.inject({ method: 'PATCH', url: '/api/server/davo', headers, payload: { enabled: true, name: 'Riley', context: '' } });
       const update = await adminApp.inject({ method: 'POST', url: '/api/server/update', headers, payload: { expectedTargetSha: targetSha } });
       const status = await adminApp.inject({ method: 'GET', url: '/api/server/update/server_update_operation_1234', headers: { host: headers.host, cookie: headers.cookie } });
       const availability = await adminApp.inject({ method: 'GET', url: '/api/server/update-available', headers: { host: headers.host, cookie: headers.cookie } });
@@ -104,6 +114,14 @@ describe('server administration API', () => {
 
       expect(rename.json()).toMatchObject({ name: 'Garage Server', server: { name: 'Garage Server' } });
       expect(renamed).toEqual(['Garage Server']);
+      expect(defaultAgent.json()).toEqual({ defaultAgent: 'codex' });
+      expect(defaults).toEqual(['codex']);
+      expect(unavailableDefault.statusCode).toBe(409);
+      expect(invalidDefault.statusCode).toBe(400);
+      expect(davo.json()).toEqual({ davo: { enabled: false, available: false, name: 'Riley', context: 'Direct and dry.' } });
+      expect(davoSettings).toEqual([{ enabled: false, name: 'Riley', context: 'Direct and dry.' }]);
+      expect(invalidDavo.statusCode).toBe(400);
+      expect(unavailableDavo.statusCode).toBe(409);
       expect(update.statusCode).toBe(202);
       expect(update.json()).toMatchObject({ state: 'queued' });
       expect(startUpdate).toHaveBeenCalledWith(targetSha);

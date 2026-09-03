@@ -56,7 +56,7 @@ describe('RealtimeService', () => {
     expect(body.session.instructions).toContain('Never include branch, Git, stack, pull-request');
     expect(body.session.instructions).toContain('execution requests, not questions');
     expect(body.session.instructions).toContain('inspect the named or current worktree');
-    expect(body.session.instructions).toContain('submit Ansel’s requested outcome as a queue_prompt');
+    expect(body.session.instructions).toContain('submit the caller’s requested outcome as a queue_prompt');
     expect(body.session.instructions).toContain('Never replace an execution request with instructions');
     expect(body.session.instructions).toContain('explicitly asks how, asks for a plan');
     expect(body.session.instructions).toContain('worktree_id=cora');
@@ -68,5 +68,23 @@ describe('RealtimeService', () => {
 
     await expect(service.create({ ...request, mcpUrl: 'http://agents.example.com/mcp' })).resolves.toEqual({ ok: false, code: 'invalid_request' });
     await expect(service.create(request)).resolves.toEqual({ ok: false, code: 'provider_error' });
+  });
+
+  it('uses the current configurable name and context without retaining the default persona', async () => {
+    const provider = vi.fn(async () => new Response(JSON.stringify({ value: 'ek_ephemeral-client-secret' }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    let settings = { name: 'Riley', context: 'Speak plainly and keep the tone dry.' };
+    const service = new RealtimeService({ apiKey: 'provider-key', fetch: provider as typeof fetch, settings: () => settings });
+
+    await service.create(request);
+    settings = { name: 'Morgan', context: '' };
+    await service.create(request);
+
+    const first = JSON.parse(String(provider.mock.calls[0]![1].body));
+    const second = JSON.parse(String(provider.mock.calls[1]![1].body));
+    expect(first.session.instructions).toContain('Your name is Riley');
+    expect(first.session.instructions).toContain('Speak plainly and keep the tone dry.');
+    expect(first.session.instructions).not.toContain('broad Australian accent');
+    expect(second.session.instructions).toContain('Your name is Morgan');
+    expect(second.session.instructions).not.toContain('Speak plainly and keep the tone dry.');
   });
 });
