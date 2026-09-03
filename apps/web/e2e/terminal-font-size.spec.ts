@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 // A console whose one agent renders a Live log, so both the terminal and the
-// Global settings menu are on screen. `stored` seeds the localStorage key before
+// Global settings are on screen. `stored` seeds the localStorage key before
 // the app loads, which is how the garbage-value case stages a bad value.
 async function openConsole(page: Page, stored?: string) {
   await page.setViewportSize({ width: 1280, height: 800 });
@@ -82,7 +82,7 @@ const terminalFontPx = (page: Page) => page.evaluate(() => {
 
 const openSettings = async (page: Page) => {
   await page.getByRole('button', { name: 'Global settings' }).first().click();
-  await expect(page.getByRole('menu', { name: 'Global settings' })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Settings' })).toBeVisible();
 };
 
 test('the stepper enlarges the terminal, drops columns, and resets to the default', async ({ page }) => {
@@ -93,31 +93,31 @@ test('the stepper enlarges the terminal, drops columns, and resets to the defaul
   expect(await terminalFontPx(page)).toBe('11px');
 
   await openSettings(page);
-  const larger = page.getByRole('menuitem', { name: 'Larger terminal font' });
-  const smaller = page.getByRole('menuitem', { name: 'Smaller terminal font' });
+  const larger = page.getByRole('button', { name: 'Larger terminal font' });
+  const smaller = page.getByRole('button', { name: 'Smaller terminal font' });
   // Reset appears only once the size differs from the default.
-  await expect(page.getByRole('menuitem', { name: 'Reset terminal font' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Reset terminal font' })).toHaveCount(0);
   await larger.click();
   await larger.click();
   await larger.click();
-  await expect(page.getByRole('menu', { name: 'Global settings' })).toContainText('14px');
+  await expect(page.getByRole('dialog', { name: 'Settings' })).toContainText('14px');
   await expect.poll(async () => await terminalFontPx(page), { timeout: 5_000 }).toBe('14px');
   await expect.poll(async () => (await latestViewport(page))?.cols ?? Infinity, { timeout: 10_000 }).toBeLessThan(baseline.cols!);
 
-  const reset = page.getByRole('menuitem', { name: 'Reset terminal font' });
+  const reset = page.getByRole('button', { name: 'Reset terminal font' });
   await expect(reset).toBeVisible();
   await reset.click();
-  await expect(page.getByRole('menu', { name: 'Global settings' })).toContainText('11px');
+  await expect(page.getByRole('dialog', { name: 'Settings' })).toContainText('11px');
   await expect.poll(async () => await terminalFontPx(page), { timeout: 5_000 }).toBe('11px');
   await expect(reset).toHaveCount(0);
   // Larger disables at the 24px ceiling (13 steps up from the 11px default).
   for (let step = 0; step < 13; step += 1) await larger.click();
-  await expect(page.getByRole('menu', { name: 'Global settings' })).toContainText('24px');
+  await expect(page.getByRole('dialog', { name: 'Settings' })).toContainText('24px');
   await expect(larger).toBeDisabled();
   await reset.click();
   // Smaller disables at the 8px floor (3 steps down from the default).
   for (let step = 0; step < 3; step += 1) await smaller.click();
-  await expect(page.getByRole('menu', { name: 'Global settings' })).toContainText('8px');
+  await expect(page.getByRole('dialog', { name: 'Settings' })).toContainText('8px');
   await expect(smaller).toBeDisabled();
 });
 
@@ -213,5 +213,5 @@ test('a garbage stored value falls back to the default', async ({ page }) => {
   await expect(page.getByLabel('Live log')).toBeVisible({ timeout: 15_000 });
   await expect.poll(async () => await terminalFontPx(page), { timeout: 10_000 }).toBe('11px');
   await openSettings(page);
-  await expect(page.getByRole('menu', { name: 'Global settings' })).toContainText('11px');
+  await expect(page.getByRole('dialog', { name: 'Settings' })).toContainText('11px');
 });

@@ -1093,7 +1093,7 @@ function ServerUpdateDialog({ open, minimized, onMinimize, onClose }: { open: bo
   return createPortal(<div ref={dialog} className="dialog server-update-dialog" role="dialog" aria-modal="true" aria-labelledby="server-update-review-title" tabIndex={-1} onKeyDown={dialogKey}><div><header><div><small>SERVER UPDATE</small><h2 id="server-update-review-title">Review update</h2></div><span className="server-update-controls"><button type="button" aria-label="Minimize server update" title="Minimize" onClick={onMinimize}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg></button><button type="button" aria-label="Close server update" title="Close" disabled={updating} onClick={closeDialog}>×</button></span></header>{body}{error && preview !== undefined && <p className="update-review-error" role="alert">{error}</p>}{progress}<footer><span>{preview?.advisory.required && !advisorAcknowledged ? 'Advisor acknowledgement required' : preview?.fastForwardable === false ? 'Manual Git reconciliation required' : preview?.rebuildRetryAvailable ? 'Retry the failed host rebuild.' : 'The update will rebuild this host only.'}</span><button type="button" disabled={updateBlocked} onClick={() => void startUpdate()}>{updating ? <><span className="spinner" />Updating…</> : preview?.rebuildRetryAvailable ? 'Retry rebuild' : 'Update'}</button></footer></div></div>, document.body);
 }
 
-// render the client settings flyout
+// render the full-screen client settings page
 function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const adapters = useContext(AdaptersContext);
   // one row per configured kind (a configured kind carries a program), in registry order
@@ -1117,7 +1117,16 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const [accountLoginState, setAccountLoginState] = useState<'pending' | 'failed'>('pending');
   const [deviceCodeCopied, setDeviceCodeCopied] = useState(false);
   const accountLoginRequest = useRef(0);
-  const { anchorRef, flyoutRef, style } = useViewportFlyout(open);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const pageRef = useRef<HTMLDivElement>(null);
+  // move focus into the page and restore the trigger on close
+  useEffect(() => {
+    // skip focus work while the page is closed
+    if (!open) return;
+    const trigger = triggerRef.current;
+    pageRef.current?.focus();
+    return () => trigger?.focus();
+  }, [open]);
   // query every configured account when opened, only when Codex is configured
   useEffect(() => {
     // skip hidden menus and consoles without a configured Codex adapter
@@ -1149,7 +1158,6 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const beginRename = (target: 'client' | 'server') => {
     setName(target === 'client' ? settings.deviceName : settings.serverName);
     setError('');
-    setOpen(false);
     setDialog(target);
   };
   // switch the global Codex account
@@ -1206,7 +1214,6 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const beginAccountLogin = async (account?: CodexAccount) => {
     const requestId = accountLoginRequest.current + 1;
     accountLoginRequest.current = requestId;
-    setOpen(false);
     setDialog('account-login');
     setAccountLogin(undefined);
     setAccountLoginTarget(account === undefined ? undefined : { email: codexAccountEmail(account) });
@@ -1317,7 +1324,7 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     const inlinePlan = plan === undefined ? '' : ` (${plan})`;
     const atLimit = details.some(window => window.usedPercent === 100);
     const busy = accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined;
-    return <div key={account.id} className="chatgpt-account-option"><button className="chatgpt-account-select" type="button" role="menuitemradio" aria-checked={account.active} disabled={account.active || busy} onClick={() => void switchAccount(account)}><span className="chatgpt-account-check" aria-hidden="true">{switchingAccountId === account.id ? <span className="spinner" /> : account.active ? '✓' : ''}</span><span className="chatgpt-account-copy"><strong>{email}{inlinePlan}</strong>{details.map((window, index) => <CodexLimitUsage key={`${account.id}:${index}`} window={window} now={accountClock} />)}{account.resetCount !== undefined && account.resetCount > 0 && <small>{account.resetCount} {account.resetCount === 1 ? 'reset' : 'resets'} available</small>}{account.error !== undefined && <small className="chatgpt-account-error">{account.error}</small>}</span></button>{atLimit && account.resetCount !== undefined && account.resetCount > 0 && <button className="chatgpt-account-reset" type="button" role="menuitem" aria-label={`Use reset for ${email}`} disabled={busy} onClick={() => void useAccountReset(account)}>{resettingAccountId === account.id ? <><span className="spinner" />Using reset…</> : 'Use reset'}</button>}{account.error !== undefined && <button className="chatgpt-account-relogin" type="button" role="menuitem" aria-label={`Re-login to ${email}`} disabled={busy} onClick={() => void beginAccountLogin(account)}>Re-login</button>}</div>;
+    return <div key={account.id} className="chatgpt-account-option"><button className="chatgpt-account-select" type="button" role="radio" aria-checked={account.active} disabled={account.active || busy} onClick={() => void switchAccount(account)}><span className="chatgpt-account-check" aria-hidden="true">{switchingAccountId === account.id ? <span className="spinner" /> : account.active ? '✓' : ''}</span><span className="chatgpt-account-copy"><strong>{email}{inlinePlan}</strong>{details.map((window, index) => <CodexLimitUsage key={`${account.id}:${index}`} window={window} now={accountClock} />)}{account.resetCount !== undefined && account.resetCount > 0 && <small>{account.resetCount} {account.resetCount === 1 ? 'reset' : 'resets'} available</small>}{account.error !== undefined && <small className="chatgpt-account-error">{account.error}</small>}</span></button>{atLimit && account.resetCount !== undefined && account.resetCount > 0 && <button className="chatgpt-account-reset" type="button" aria-label={`Use reset for ${email}`} disabled={busy} onClick={() => void useAccountReset(account)}>{resettingAccountId === account.id ? <><span className="spinner" />Using reset…</> : 'Use reset'}</button>}{account.error !== undefined && <button className="chatgpt-account-relogin" type="button" aria-label={`Re-login to ${email}`} disabled={busy} onClick={() => void beginAccountLogin(account)}>Re-login</button>}</div>;
   });
   // render current client and server identities
   // one AGENTS row per configured kind: glyph, label, availability line, program path (dimmed when unavailable)
@@ -1325,11 +1332,30 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   // Terminal font stepper: −, the current size, +, and Reset once the size
   // differs from the default. Steps keep the menu open so repeated taps work on
   // a phone, and each button disables at its range limit.
-  const terminalFontCard = <div className="client-settings-card client-settings-terminal-font" role="group" aria-label="Terminal font"><header><small>TERMINAL FONT</small>{terminalFontSize !== defaultTerminalFontSize() && <span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Reset terminal font" onClick={() => resetTerminalFontSize()}>Reset</button></span>}</header><div className="client-settings-stepper"><button type="button" role="menuitem" aria-label="Smaller terminal font" disabled={terminalFontSize <= minTerminalFontSize} onClick={() => stepTerminalFontSize(-1)}>−</button><strong aria-live="polite">{terminalFontSize}px</strong><button type="button" role="menuitem" aria-label="Larger terminal font" disabled={terminalFontSize >= maxTerminalFontSize} onClick={() => stepTerminalFontSize(1)}>+</button></div></div>;
-  const settingsCards = <div className="client-settings-overview" role="presentation"><div className="client-settings-card" role="group" aria-label="Client"><header><small>CLIENT</small><span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Rename Client" onClick={() => beginRename('client')}>Rename</button></span></header><strong>{settings.deviceName}</strong></div><div className="client-settings-card" role="group" aria-label="Server"><header><small>SERVER</small><span className="client-settings-card-actions"><button type="button" role="menuitem" aria-label="Rename Server" onClick={() => beginRename('server')}>Rename</button></span></header><strong>{settings.serverName}</strong><span>{serverHostLabel(settings.serverUrl)}</span></div>{agentsCard}{terminalFontCard}</div>;
+  const terminalFontCard = <div className="client-settings-card client-settings-terminal-font" role="group" aria-label="Terminal font"><header><small>TERMINAL FONT</small>{terminalFontSize !== defaultTerminalFontSize() && <span className="client-settings-card-actions"><button type="button" aria-label="Reset terminal font" onClick={() => resetTerminalFontSize()}>Reset</button></span>}</header><div className="client-settings-stepper"><button type="button" aria-label="Smaller terminal font" disabled={terminalFontSize <= minTerminalFontSize} onClick={() => stepTerminalFontSize(-1)}>−</button><strong aria-live="polite">{terminalFontSize}px</strong><button type="button" aria-label="Larger terminal font" disabled={terminalFontSize >= maxTerminalFontSize} onClick={() => stepTerminalFontSize(1)}>+</button></div></div>;
+  const settingsCards = <div className="client-settings-overview"><div className="client-settings-card" role="group" aria-label="Client"><header><small>CLIENT</small><span className="client-settings-card-actions"><button type="button" aria-label="Rename Client" onClick={() => beginRename('client')}>Rename</button></span></header><strong>{settings.deviceName}</strong><span>This browser</span></div><div className="client-settings-card" role="group" aria-label="Server"><header><small>SERVER</small><span className="client-settings-card-actions"><button type="button" aria-label="Rename Server" onClick={() => beginRename('server')}>Rename</button></span></header><strong>{settings.serverName}</strong><span>{serverHostLabel(settings.serverUrl)}</span></div>{agentsCard}{terminalFontCard}</div>;
   // the Codex accounts section renders only when adapters.codex is configured
-  const accountsSection = !codexConfigured ? null : <><hr className="more-menu-divider" />{accountsLoading && accounts.length === 0 ? <button className="chatgpt-account-loading" type="button" role="menuitem" disabled><span className="spinner" />Loading ChatGPT accounts…</button> : accountRows}{accountMessage && <span className="chatgpt-account-message" role="status">{accountMessage}</span>}<button className="chatgpt-account-add" type="button" role="menuitem" disabled={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined} onClick={() => void beginAccountLogin()}>+ Add account</button></>;
-  const flyout = !open ? null : <FlyoutPortal onDismiss={() => setOpen(false)}><div ref={flyoutRef} className="client-settings-menu more-menu flyout-menu" style={style} role="menu" aria-label="Global settings" aria-busy={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined}>{settingsCards}{accountsSection}</div></FlyoutPortal>;
+  const accountsSection = !codexConfigured ? null : <section className="client-settings-section client-settings-accounts" aria-labelledby="settings-accounts-title"><header><small>CHATGPT</small><h2 id="settings-accounts-title">Accounts</h2><p>Choose the account Codex uses and review its current limits.</p></header><div className="client-settings-account-list" role="radiogroup" aria-label="ChatGPT accounts">{accountsLoading && accounts.length === 0 ? <div className="chatgpt-account-loading" role="status"><span className="spinner" />Loading ChatGPT accounts…</div> : accountRows}</div>{accountMessage && <span className="chatgpt-account-message" role="status">{accountMessage}</span>}<button className="chatgpt-account-add" type="button" disabled={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined} onClick={() => void beginAccountLogin()}>+ Add account</button></section>;
+  // contain keyboard focus inside the settings page
+  const pageKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    // close the page on escape while no child dialog is active
+    if (event.key === 'Escape' && dialog === undefined) { setOpen(false); return; }
+    // retain ordinary keys and child-dialog input
+    if (event.key !== 'Tab' || dialog !== undefined || pageRef.current === null) return;
+    const controls = Array.from(pageRef.current.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [href], [tabindex]:not([tabindex="-1"])')).filter(control => control.offsetParent !== null);
+    // retain focus when no controls exist
+    if (controls.length === 0) { event.preventDefault(); pageRef.current.focus(); return; }
+    const active = document.activeElement;
+    const index = active instanceof HTMLElement ? controls.indexOf(active) : -1;
+    let next = index + 1;
+    // wrap backward focus
+    if (event.shiftKey) next = index <= 0 ? controls.length - 1 : index - 1;
+    // wrap forward focus
+    else if (index < 0 || index === controls.length - 1) next = 0;
+    event.preventDefault();
+    controls.at(next)?.focus();
+  };
+  const settingsPage = !open ? null : createPortal(<div ref={pageRef} id="global-settings-page" className="client-settings-page" role="dialog" aria-modal="true" aria-labelledby="global-settings-title" aria-busy={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined} tabIndex={-1} onKeyDown={pageKey}><header className="client-settings-page-header"><div className="client-settings-page-heading"><small>REMOTE AGENT CONSOLE</small><h1 id="global-settings-title">Settings</h1><p>Manage this console, its display, and connected accounts.</p></div><button className="client-settings-page-close" type="button" aria-label="Back to console" title="Back to console" onClick={() => setOpen(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6M9 12h10" /></svg><span>Back to console</span></button></header><div className="client-settings-page-content"><section className="client-settings-section" aria-labelledby="settings-console-title"><header><small>GENERAL</small><h2 id="settings-console-title">Console</h2><p>Identify this browser and server, inspect available agents, and tune terminal text.</p></header>{settingsCards}</section>{accountsSection}</div></div>, document.body);
   const renameTarget = dialog === 'client' || dialog === 'server' ? dialog : undefined;
   const renameDialog = renameTarget === undefined ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-rename-title" onKeyDown={event => { /* close on escape */ if (event.key === 'Escape') closeDialog(); }}><div><header><div><small>GLOBAL SETTINGS</small><h2 id="settings-rename-title">Rename {renameTarget === 'client' ? 'Client' : 'Server'}</h2></div><button type="button" aria-label={`Close rename ${renameTarget}`} disabled={pending} onClick={closeDialog}>×</button></header><form onSubmit={event => void submitRename(event)}><label>{renameTarget === 'client' ? 'Client' : 'Server'} name<input autoFocus type="text" value={name} maxLength={renameTarget === 'client' ? 64 : 80} autoComplete="nickname" onChange={event => setName(event.target.value)} /></label>{error && <span className="auth-error" role="alert">{error}</span>}<footer><button type="button" disabled={pending} onClick={closeDialog}>Cancel</button><button type="submit" disabled={pending || !name.trim()}>{pending ? <><span className="spinner" />Renaming…</> : 'Save'}</button></footer></form></div></div>, document.body);
   let accountLoginContent: ReactNode;
@@ -1344,14 +1370,14 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     accountLoginContent = <><span className="spinner" /><span>Starting secure ChatGPT login…</span></>;
   }
   const accountLoginDialog = dialog !== 'account-login' ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="account-login-title"><div><header><div><small>GLOBAL SETTINGS</small><h2 id="account-login-title">{accountLoginTarget === undefined ? 'Add ChatGPT account' : 'Re-login to ChatGPT'}</h2></div><button type="button" aria-label="Close account login" onClick={closeDialog}>×</button></header><div className={`chatgpt-account-login ${accountLoginState}`} role="status">{accountLoginContent}</div><footer className="chatgpt-account-login-actions"><button type="button" onClick={closeDialog}>Cancel</button></footer></div></div>, document.body);
-  // toggle the menu as a fresh user action
+  // toggle the settings page as a fresh user action
   const toggleSettings = () => {
     // clear stale operation messages on a new open
     if (!open) setAccountMessage('');
     setOpen(current => !current);
     setError('');
   };
-  return <span ref={anchorRef} className="server-switcher-settings-wrap"><button type="button" className="server-switcher-button server-switcher-settings" aria-label="Global settings" aria-haspopup="menu" aria-expanded={open} onClick={toggleSettings}>⋮</button>{flyout}{renameDialog}{accountLoginDialog}</span>;
+  return <span className="server-switcher-settings-wrap"><button ref={triggerRef} type="button" className="server-switcher-button server-switcher-settings" aria-label="Global settings" aria-haspopup="dialog" aria-controls="global-settings-page" aria-expanded={open} onClick={toggleSettings}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63a1.7 1.7 0 0 0 1-1.55V3h4v.08A1.7 1.7 0 0 0 15 4.63a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9a1.7 1.7 0 0 0 1.55 1H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z" /></svg></button>{settingsPage}{renameDialog}{accountLoginDialog}</span>;
 }
 
 // render native links for remote server handoff

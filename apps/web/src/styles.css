@@ -111,6 +111,7 @@ main { max-width: 1100px; margin: auto; padding: var(--edge); }
 .server-switcher-settings-wrap { display: flex; flex: none; }
 .server-switcher-settings-wrap .server-switcher-button { height: 100%; border-left: 0; border-radius: 0 var(--control-radius) var(--control-radius) 0; }
 .server-switcher-settings { width: 2rem; min-width: 2rem; justify-content: center; padding: .2rem; color: var(--overlay-1); font-size: 1.25rem; line-height: 1; }
+.server-switcher-settings svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.65; }
 .server-switcher-button:hover { background: color-mix(in srgb, var(--mantle) 86%, var(--lavender)); color: var(--text); filter: none; }
 .server-switcher-button[aria-current='page'] { background: linear-gradient(145deg, #454168, #282640 68%, var(--surface-0)); color: var(--text); box-shadow: inset 0 0 0 1px var(--blue), inset 0 0 1.35rem color-mix(in srgb, var(--blue) 34%, transparent), inset 0 1px #ffffff24; }
 .server-switcher-button.attention-question { color: var(--red); }
@@ -820,17 +821,29 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .flyout-menu[data-flyout-side="below"] { top: calc(100% + .4rem); bottom: auto; }
 .flyout-menu .spinner { box-sizing: border-box; flex: 0 0 1rem; width: 1rem; height: 1rem; }
 .more-menu button { width: 100%; justify-content: flex-start; border: 0; background: transparent; color: var(--text); box-shadow: none; white-space: nowrap; transition: background-color .15s ease, color .15s ease; }
-.client-settings-menu { width: min(24rem, calc(100vw - 1rem)); min-width: 12rem; }
-.client-settings-menu > button { padding: .65rem .9rem; }
-.client-settings-overview { display: flex; flex-direction: column; gap: .5rem; padding: .65rem; }
-.client-settings-card { display: flex; min-width: 0; flex-direction: column; gap: .25rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); padding: .65rem .7rem; background: color-mix(in srgb, var(--mantle) 82%, var(--surface-0)); }
+.client-settings-page { position: fixed; inset: 0; z-index: calc(var(--layer-dialog) - 1); isolation: isolate; display: grid; width: 100vw; height: var(--app-height, 100dvh); grid-template-rows: auto minmax(0, 1fr); overflow: hidden; background: radial-gradient(circle at 80% -12rem, #3a3765 0, var(--mantle) 34rem, var(--crust) 78rem); color: var(--text); }
+.client-settings-page::before { position: absolute; inset: 0; z-index: -1; content: ''; opacity: .28; background-image: linear-gradient(#585b7018 1px, transparent 1px), linear-gradient(90deg, #585b7018 1px, transparent 1px); background-size: 2.5rem 2.5rem; mask-image: radial-gradient(ellipse at 70% 0, #000 0, transparent 72%); }
+.client-settings-page:focus { outline: none; }
+.client-settings-page-header { display: flex; align-items: center; justify-content: space-between; gap: 2rem; padding: clamp(1rem, 2.5vw, 2rem) clamp(1rem, 4vw, 3rem); border-bottom: 1px solid color-mix(in srgb, var(--lavender) 32%, var(--surface-1)); background: color-mix(in srgb, var(--mantle) 88%, transparent); box-shadow: 0 .8rem 2rem #11111b52; backdrop-filter: blur(12px); }
+.client-settings-page-heading { display: grid; min-width: 0; gap: .22rem; }
+.client-settings-page-heading > small, .client-settings-section > header > small { color: var(--mauve); font: 800 .62rem var(--font-mono); letter-spacing: .14em; }
+.client-settings-page-heading h1 { margin: 0; font-size: clamp(1.45rem, 3vw, 2rem); letter-spacing: -.035em; }
+.client-settings-page-heading p, .client-settings-section > header > p { margin: 0; color: var(--subtext-0); font-size: .74rem; line-height: 1.5; }
+.client-settings-page-close { flex: none; justify-content: center; border-color: var(--surface-2); background: color-mix(in srgb, var(--surface-0) 84%, transparent); color: var(--text); box-shadow: none; }
+.client-settings-page-close svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.client-settings-page-content { display: grid; width: min(76rem, 100%); min-height: 0; align-content: start; gap: 1.25rem; justify-self: center; overflow-y: auto; overscroll-behavior: contain; padding: clamp(1rem, 4vw, 3rem); touch-action: pan-y; -webkit-overflow-scrolling: touch; }
+.client-settings-section { display: grid; min-width: 0; gap: 1rem; border: 1px solid color-mix(in srgb, var(--surface-1) 82%, transparent); border-radius: calc(var(--control-radius) + .12rem); padding: clamp(1rem, 2.5vw, 1.5rem); background: linear-gradient(145deg, color-mix(in srgb, var(--base) 94%, var(--mauve)), color-mix(in srgb, var(--mantle) 96%, transparent)); box-shadow: 0 1rem 2.5rem #11111b75, inset 0 1px #ffffff0b; }
+.client-settings-section > header { display: grid; gap: .18rem; }
+.client-settings-section > header > h2 { margin: 0; font-size: 1.05rem; }
+.client-settings-overview { display: grid; min-width: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+.client-settings-card { display: flex; min-width: 0; min-height: 7rem; flex-direction: column; justify-content: center; gap: .35rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); padding: .9rem 1rem; background: color-mix(in srgb, var(--mantle) 82%, var(--surface-0)); box-shadow: inset 0 1px #ffffff09; }
 .client-settings-card > header { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: .6rem; }
 .client-settings-card > header > small { color: var(--mauve); font: 800 .58rem var(--font-mono); letter-spacing: .12em; }
-.client-settings-card > strong { overflow: hidden; color: var(--text); font-size: .78rem; text-overflow: ellipsis; white-space: nowrap; }
+.client-settings-card > strong { overflow: hidden; color: var(--text); font-size: .86rem; text-overflow: ellipsis; white-space: nowrap; }
 .client-settings-card > span:not(.client-settings-card-actions) { overflow: hidden; color: var(--overlay-1); font: 600 .64rem var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .client-settings-card-actions { display: flex; align-items: center; gap: .3rem; }
-.more-menu .client-settings-card-actions > button { width: auto; min-height: 1.65rem; justify-content: center; border: 1px solid var(--surface-2); border-radius: calc(var(--control-radius) - .08rem); padding: .25rem .45rem; color: var(--blue); font-size: .62rem; }
-.more-menu .client-settings-card-actions > button:hover { border-color: var(--blue); background: var(--surface-1); color: var(--text); }
+.client-settings-card-actions > button { width: auto; min-height: 1.8rem; justify-content: center; border: 1px solid var(--surface-2); border-radius: calc(var(--control-radius) - .08rem); padding: .25rem .55rem; background: transparent; color: var(--blue); box-shadow: none; font-size: .62rem; }
+.client-settings-card-actions > button:hover { border-color: var(--blue); background: var(--surface-1); color: var(--text); }
 .client-settings-agents { grid-column: 1 / -1; gap: .45rem; }
 .client-settings-agent { display: flex; min-width: 0; align-items: flex-start; gap: .5rem; }
 .client-settings-agent.unavailable { opacity: .55; }
@@ -841,12 +854,14 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .client-settings-agent-program { overflow: hidden; color: var(--overlay-0); font: 600 .58rem var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .client-settings-stepper { display: flex; align-items: center; gap: .5rem; }
 .client-settings-stepper > strong { min-width: 3.2rem; color: var(--text); font: 700 .78rem var(--font-mono); text-align: center; }
-.more-menu .client-settings-stepper > button { width: auto; min-width: 2rem; min-height: 1.8rem; justify-content: center; border: 1px solid var(--surface-2); border-radius: calc(var(--control-radius) - .08rem); padding: .25rem .5rem; color: var(--blue); font-size: .9rem; }
-.more-menu .client-settings-stepper > button:not(:disabled):hover { border-color: var(--blue); background: var(--surface-1); color: var(--text); }
-.more-menu .client-settings-stepper > button:disabled { color: var(--overlay-0); opacity: .5; }
-.client-settings-menu .chatgpt-account-option { display: grid; min-width: 0; border-radius: calc(var(--control-radius) - .1rem); white-space: normal; }
-.client-settings-menu .chatgpt-account-select { min-width: 0; align-items: flex-start; gap: .55rem; padding: .65rem .9rem; white-space: normal; }
-.client-settings-menu .chatgpt-account-select:disabled[aria-checked='true'] { cursor: default; opacity: 1; }
+.client-settings-stepper > button { width: auto; min-width: 2rem; min-height: 1.8rem; justify-content: center; border: 1px solid var(--surface-2); border-radius: calc(var(--control-radius) - .08rem); padding: .25rem .5rem; background: transparent; color: var(--blue); box-shadow: none; font-size: .9rem; }
+.client-settings-stepper > button:not(:disabled):hover { border-color: var(--blue); background: var(--surface-1); color: var(--text); }
+.client-settings-stepper > button:disabled { color: var(--overlay-0); opacity: .5; }
+.client-settings-account-list { display: grid; min-width: 0; grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr)); gap: .75rem; }
+.client-settings-accounts .chatgpt-account-option { display: grid; min-width: 0; align-content: start; overflow: hidden; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 82%, var(--surface-0)); white-space: normal; }
+.client-settings-accounts .chatgpt-account-select { width: 100%; min-width: 0; align-items: flex-start; gap: .55rem; border: 0; border-radius: 0; padding: .9rem 1rem; background: transparent; box-shadow: none; color: var(--text); white-space: normal; }
+.client-settings-accounts .chatgpt-account-select:not(:disabled):hover { background: var(--surface-0); filter: none; }
+.client-settings-accounts .chatgpt-account-select:disabled[aria-checked='true'] { cursor: default; opacity: 1; }
 .chatgpt-account-check { display: grid; flex: 0 0 1rem; width: 1rem; height: 1.15rem; place-items: center; color: var(--green); font-size: .9rem; }
 .chatgpt-account-copy { display: flex; min-width: 0; flex: 1 1 auto; flex-direction: column; gap: .16rem; text-align: left; }
 .chatgpt-account-copy strong { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
@@ -862,13 +877,14 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .chatgpt-limit.at-limit progress::-webkit-progress-value { background: var(--red); }
 .chatgpt-limit.at-limit progress::-moz-progress-bar { background: var(--red); }
 .chatgpt-account-copy .chatgpt-limit-reset { color: var(--subtext-0); font-variant-numeric: tabular-nums; }
-.client-settings-menu .chatgpt-account-reset { width: auto; min-height: 1.8rem; justify-self: start; margin: 0 .9rem .65rem 2.45rem; border: 1px solid color-mix(in srgb, var(--red) 70%, var(--surface-2)); padding: .35rem .6rem; background: color-mix(in srgb, var(--red) 12%, transparent); color: var(--red); font-size: .68rem; }
-.client-settings-menu .chatgpt-account-reset:not(:disabled):hover { border-color: var(--red); background: color-mix(in srgb, var(--red) 22%, var(--surface-0)); color: var(--red); }
-.client-settings-menu .chatgpt-account-relogin { width: auto; min-height: 1.8rem; justify-self: start; margin: 0 .9rem .65rem 2.45rem; border: 1px solid color-mix(in srgb, var(--blue) 70%, var(--surface-2)); padding: .35rem .6rem; background: color-mix(in srgb, var(--blue) 12%, transparent); color: var(--blue); font-size: .68rem; }
-.client-settings-menu .chatgpt-account-relogin:not(:disabled):hover { border-color: var(--blue); background: color-mix(in srgb, var(--blue) 22%, var(--surface-0)); color: var(--blue); }
-.client-settings-menu .chatgpt-account-add { color: var(--blue); }
-.client-settings-menu .chatgpt-account-loading { gap: .5rem; color: var(--overlay-1); }
-.chatgpt-account-message { display: block; padding: .35rem .9rem .45rem; color: var(--subtext-0); font: 600 .65rem/1.35 var(--font-mono); letter-spacing: normal; white-space: normal; }
+.client-settings-accounts .chatgpt-account-reset { width: auto; min-height: 1.8rem; justify-self: start; margin: 0 1rem .8rem 2.55rem; border: 1px solid color-mix(in srgb, var(--red) 70%, var(--surface-2)); padding: .35rem .6rem; background: color-mix(in srgb, var(--red) 12%, transparent); color: var(--red); box-shadow: none; font-size: .68rem; }
+.client-settings-accounts .chatgpt-account-reset:not(:disabled):hover { border-color: var(--red); background: color-mix(in srgb, var(--red) 22%, var(--surface-0)); color: var(--red); }
+.client-settings-accounts .chatgpt-account-relogin { width: auto; min-height: 1.8rem; justify-self: start; margin: 0 1rem .8rem 2.55rem; border: 1px solid color-mix(in srgb, var(--blue) 70%, var(--surface-2)); padding: .35rem .6rem; background: color-mix(in srgb, var(--blue) 12%, transparent); color: var(--blue); box-shadow: none; font-size: .68rem; }
+.client-settings-accounts .chatgpt-account-relogin:not(:disabled):hover { border-color: var(--blue); background: color-mix(in srgb, var(--blue) 22%, var(--surface-0)); color: var(--blue); }
+.client-settings-accounts .chatgpt-account-add { width: max-content; min-width: 9rem; justify-content: center; border-color: color-mix(in srgb, var(--blue) 62%, var(--surface-2)); background: color-mix(in srgb, var(--blue) 14%, var(--surface-0)); color: var(--blue); box-shadow: none; }
+.client-settings-accounts .chatgpt-account-loading { display: flex; min-height: 6rem; align-items: center; justify-content: center; gap: .5rem; color: var(--overlay-1); }
+.chatgpt-account-message { display: block; color: var(--subtext-0); font: 600 .65rem/1.35 var(--font-mono); letter-spacing: normal; white-space: normal; }
+@media (max-width: 600px) { .client-settings-page-header { align-items: flex-start; gap: 1rem; }.client-settings-page-heading p { display: none; }.client-settings-page-close { width: var(--standard-control-size); height: var(--standard-control-size); padding: 0; }.client-settings-page-close span { display: none; }.client-settings-page-content { gap: .75rem; padding: .75rem; }.client-settings-section { gap: .75rem; padding: .85rem; }.client-settings-overview { grid-template-columns: minmax(0, 1fr); }.client-settings-agents { grid-column: auto; }.client-settings-card { min-height: 6.25rem; }.client-settings-accounts .chatgpt-account-reset, .client-settings-accounts .chatgpt-account-relogin { margin-left: 2.45rem; } }
 .client-rename-dialog > div { width: min(26rem, 100%); overflow: hidden; padding: 0; }
 .client-rename-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem; border-bottom: 1px solid var(--surface-1); }
 .client-rename-dialog header small { color: var(--mauve); font: 700 .62rem var(--font-mono); letter-spacing: .14em; }

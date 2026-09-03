@@ -35,15 +35,15 @@ async function openSettings(page: import('@playwright/test').Page, adapters: unk
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'Global settings' }).click();
-  return page.getByRole('menu', { name: 'Global settings' });
+  return page.getByRole('dialog', { name: 'Settings' });
 }
 
 test('shows an AGENTS card per configured kind and the Codex accounts section', async ({ page }) => {
-  const menu = await openSettings(page, {
+  const settingsPage = await openSettings(page, {
     codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: false, commands: true, sandbox: false },
     claude: { program: '/opt/claude', launchable: false, unavailableReason: '/opt/claude is not an executable file', stateSource: 'reported', turnCapture: false, bookmarks: false, inlineQuestions: false, commands: true, sandbox: false }
   });
-  const agents = menu.getByRole('group', { name: 'Agents' });
+  const agents = settingsPage.getByRole('group', { name: 'Agents' });
   await expect(agents).toBeVisible();
   const codex = agents.getByRole('group', { name: 'Codex' });
   await expect(codex).toContainText('Codex');
@@ -54,14 +54,41 @@ test('shows an AGENTS card per configured kind and the Codex accounts section', 
   await expect(claude).toHaveClass(/unavailable/);
   await expect(claude).toContainText('is not an executable file');
   // Codex accounts render because adapters.codex exists
-  await expect(menu.getByRole('menuitem', { name: '+ Add account' })).toBeVisible();
+  await expect(settingsPage.getByRole('button', { name: '+ Add account' })).toBeVisible();
 });
 
 test('hides the AGENTS card and Codex accounts on an observe-only console', async ({ page }) => {
-  const menu = await openSettings(page, {});
-  await expect(menu.getByRole('group', { name: 'Agents' })).toHaveCount(0);
-  await expect(menu.getByRole('menuitem', { name: '+ Add account' })).toHaveCount(0);
+  const settingsPage = await openSettings(page, {});
+  await expect(settingsPage.getByRole('group', { name: 'Agents' })).toHaveCount(0);
+  await expect(settingsPage.getByRole('button', { name: '+ Add account' })).toHaveCount(0);
   // CLIENT and SERVER cards still render
-  await expect(menu.getByRole('group', { name: 'Client' })).toBeVisible();
-  await expect(menu.getByRole('group', { name: 'Server' })).toBeVisible();
+  await expect(settingsPage.getByRole('group', { name: 'Client' })).toBeVisible();
+  await expect(settingsPage.getByRole('group', { name: 'Server' })).toBeVisible();
+});
+
+test('opens settings as a full-screen page from a gear and returns focus to the console', async ({ page }) => {
+  await page.setViewportSize({ width: 428, height: 812 });
+  const settingsPage = await openSettings(page, {});
+  const trigger = page.getByRole('button', { name: 'Global settings' });
+  await expect(trigger).toHaveAttribute('aria-haspopup', 'dialog');
+  await expect(trigger.locator('svg')).toHaveCount(1);
+  await expect(trigger).toHaveText('');
+  await expect(page.getByRole('menu', { name: 'Global settings' })).toHaveCount(0);
+  const bounds = await settingsPage.boundingBox();
+  expect(bounds).not.toBeNull();
+  // require measurable viewport coverage
+  if (bounds === null) throw new Error('Settings page has no layout bounds');
+  expect(Math.abs(bounds.x)).toBeLessThanOrEqual(1);
+  expect(Math.abs(bounds.y)).toBeLessThanOrEqual(1);
+  expect(Math.abs(bounds.width - 428)).toBeLessThanOrEqual(1);
+  expect(Math.abs(bounds.height - 812)).toBeLessThanOrEqual(1);
+  const back = settingsPage.getByRole('button', { name: 'Back to console' });
+  await back.focus();
+  await page.keyboard.press('Shift+Tab');
+  await expect(settingsPage.getByRole('button', { name: 'Larger terminal font' })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(back).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(settingsPage).toHaveCount(0);
+  await expect(trigger).toBeFocused();
 });

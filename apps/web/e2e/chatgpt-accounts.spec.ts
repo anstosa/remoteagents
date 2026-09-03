@@ -56,7 +56,7 @@ test('queries, repairs, switches, and adds ChatGPT accounts from global settings
     if (url.pathname === '/api/agents/agent-cora/commands') return route.fulfill({ json: { commands: [] } });
     if (url.pathname === '/api/worktrees/cora/notes') return route.fulfill({ json: { notes: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
-    // query every account on menu open
+    // query every account on settings open
     if (url.pathname === '/api/codex/accounts' && request.method() === 'GET') {
       accountQueries += 1;
       return route.fulfill({ json: { accounts: accounts() } });
@@ -101,9 +101,9 @@ test('queries, repairs, switches, and adds ChatGPT accounts from global settings
   await page.goto('/');
   const settings = page.getByRole('button', { name: 'Global settings' });
   await settings.click();
-  const menu = page.getByRole('menu', { name: 'Global settings' });
-  const personal = menu.getByRole('menuitemradio', { name: /personal@example\.com/u });
-  const work = menu.getByRole('menuitemradio', { name: /work@example\.com/u });
+  const settingsPage = page.getByRole('dialog', { name: 'Settings' });
+  const personal = settingsPage.getByRole('radio', { name: /personal@example\.com/u });
+  const work = settingsPage.getByRole('radio', { name: /work@example\.com/u });
   await expect(personal).toHaveAttribute('aria-checked', 'true');
   await expect(personal).toContainText('personal@example.com (Pro)');
   await expect(personal).not.toContainText('Personal');
@@ -120,15 +120,15 @@ test('queries, repairs, switches, and adds ChatGPT accounts from global settings
   await expect.poll(async () => await countdown.textContent(), { timeout: 2_500 }).not.toBe(initialCountdown);
   expect(accountQueries).toBe(1);
 
-  const useReset = menu.getByRole('menuitem', { name: 'Use reset for personal@example.com' });
+  const useReset = settingsPage.getByRole('button', { name: 'Use reset for personal@example.com' });
   await useReset.click();
   await expect(personal.getByRole('progressbar', { name: '5h ChatGPT limit consumed' })).toHaveAttribute('value', '0');
   await expect(personal).toContainText('1 reset available');
   await expect(useReset).toHaveCount(0);
-  await expect(menu.getByRole('status')).toContainText('Used one reset for personal@example.com.');
+  await expect(settingsPage.getByRole('status')).toContainText('Used one reset for personal@example.com.');
   expect(resetCsrf).toBe('account-csrf');
 
-  const relogin = menu.getByRole('menuitem', { name: 'Re-login to work@example.com' });
+  const relogin = settingsPage.getByRole('button', { name: 'Re-login to work@example.com' });
   await relogin.click();
   const repairDialog = page.getByRole('dialog', { name: 'Re-login to ChatGPT' });
   await expect(repairDialog.getByRole('link', { name: /Open activation page/u })).toHaveAttribute('href', 'https://auth.openai.com/device');
@@ -139,26 +139,26 @@ test('queries, repairs, switches, and adds ChatGPT accounts from global settings
   await expect(repairDialog.getByText('Copied!')).toBeVisible();
   await expect(repairDialog).toContainText('Waiting for authorization…');
   await expect(repairDialog).toHaveCount(0, { timeout: 5_000 });
-  await expect(menu).toBeVisible();
-  await expect(menu.getByRole('status')).toContainText('Re-login complete for work@example.com.');
+  await expect(settingsPage).toBeVisible();
+  await expect(settingsPage.getByRole('status')).toContainText('Re-login complete for work@example.com.');
   await expect(personal).toHaveAttribute('aria-checked', 'true');
   await expect(work).toHaveAttribute('aria-checked', 'false');
   expect(loginBodies[0]).toEqual({ repairAccountId: 'account-2' });
 
   await work.click();
   await expect(work).toHaveAttribute('aria-checked', 'true');
-  await expect(menu.getByRole('status')).toContainText('Restarted 1 idle worktree.');
+  await expect(settingsPage.getByRole('status')).toContainText('Restarted 1 idle worktree.');
   expect(switchBody).toEqual({ id: 'account-2' });
   expect(switchCsrf).toBe('account-csrf');
 
-  await menu.getByRole('menuitem', { name: '+ Add account' }).click();
+  await settingsPage.getByRole('button', { name: '+ Add account' }).click();
   const dialog = page.getByRole('dialog', { name: 'Add ChatGPT account' });
   await expect(dialog.getByRole('link', { name: /Open activation page/u })).toHaveAttribute('href', 'https://auth.openai.com/device');
   await expect(dialog.getByRole('button', { name: 'ABCD-EFGH' })).toBeVisible();
   await expect(dialog).toHaveCount(0, { timeout: 5_000 });
-  await expect(menu).toBeVisible();
-  await expect(menu.getByRole('status')).toContainText('new@example.com added.');
-  const added = menu.getByRole('menuitemradio', { name: /new@example.com/u });
+  await expect(settingsPage).toBeVisible();
+  await expect(settingsPage.getByRole('status')).toContainText('new@example.com added.');
+  const added = settingsPage.getByRole('radio', { name: /new@example.com/u });
   await expect(added).toBeVisible();
   await expect(added).toHaveAttribute('aria-checked', 'false');
   await expect(work).toHaveAttribute('aria-checked', 'true');
@@ -230,7 +230,7 @@ test('cancels a device login that starts after its dialog closes', async ({ page
 
   await page.goto('/');
   await page.getByRole('button', { name: 'Global settings' }).click();
-  await page.getByRole('menuitem', { name: '+ Add account' }).click();
+  await page.getByRole('dialog', { name: 'Settings' }).getByRole('button', { name: '+ Add account' }).click();
   const dialog = page.getByRole('dialog', { name: 'Add ChatGPT account' });
   await expect(dialog).toContainText('Starting secure ChatGPT login…');
   await dialog.getByRole('button', { name: 'Close account login' }).click();
