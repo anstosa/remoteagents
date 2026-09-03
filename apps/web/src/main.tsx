@@ -46,8 +46,10 @@ type AttentionState = 'working' | 'finished' | 'question';
 type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; projectId?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: InlineQuestion; stack?: Stack; unread?: boolean; queuedPromptCount: number; launch?: LaunchResolution };
 type Worktree = { id: string; projectId: string; label: string; path: string; main: boolean; detached: boolean; locked: boolean; branch?: string; sha?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; sleeping?: boolean; order: number; projectUrl?: string; pullRequest?: PullRequestSummary; stack?: Stack; launch?: LaunchResolution };
 type Project = { id: string; label: string; available: boolean; unavailableReason?: string; manageWorktrees?: boolean; manageWorktreesReason?: string; stalePaths?: string[]; worktrees: Worktree[] };
-// one branch the Add dialog can check out; `remote` marks a remote-only ref git will track
-type BranchOption = { name: string; remote: boolean };
+// one branch the Add dialog can offer: `ref` is the commit-ish that resolves it and the
+// picker's value, `remote` marks a remote-only ref git will track, and `checkedOut` marks a
+// local branch a Worktree already holds — it can base a new branch but not be checked out
+type BranchOption = { name: string; ref: string; remote: boolean; checkedOut: boolean };
 // the fresh facts the Remove dialog decides with (GET /api/worktrees/:id/removal)
 type RemovalFacts = { main: boolean; detached: boolean; locked: boolean; lockedReason?: string; branch?: string; dirtyCount: number; pushed: boolean; merged: boolean; ahead?: number; behind?: number; blockers: string[] };
 type ReviewTourCapability = { available: true } | { available: false; reason: 'generator_unavailable'|'unsupported_cli'|'configuration_invalid'|'authentication_required' };
@@ -4790,16 +4792,32 @@ function OperationFeedbackBanner({ feedback, onDismiss }: { feedback: OperationF
 // what a successful worktree creation hands back to the launcher
 type WorktreeCreated = { worktreeId: string; agentId?: string; launchError?: string };
 
-// The "New worktree…" dialog: create a checkout for a new branch (name + editable base,
-// pre-filled with the Project's default branch) or an existing local / remote-only branch,
-// launching the Project's last-used kind by default. One dialog from branch to prompting.
+// Password managers offer to fill a lone text field in a dialog, reading a branch name as a
+// username; `autoComplete="off"` alone does not stop them, so opt out per vendor as well.
+const noAutofill = { autoComplete: 'off', autoCorrect: 'off', autoCapitalize: 'off', spellCheck: false, 'data-1p-ignore': 'true', 'data-lpignore': 'true', 'data-bwignore': 'true', 'data-form-type': 'other' } as const;
+
+// The branch <select> both modes share: the Base a new branch starts from and the existing
+// branch to check out. Options carry the git ref as their value so a remote-only branch
+// resolves, and the fetch's loading, failure, and empty states render in the field's place.
+function BranchSelect({ label, options, value, failed, empty, onChange }: { label: string; options: BranchOption[] | undefined; value: string; failed: boolean; empty: string; onChange: (ref: string) => void }) {
+  if (failed) return <p className="new-worktree-error" role="alert">Could not load branches.</p>;
+  if (options === undefined) return <p className="new-worktree-loading" role="status"><span className="spinner" />Loading branches…</p>;
+  if (options.length === 0) return <p className="new-worktree-empty">{empty}</p>;
+  return <label>{label}<select aria-label={label} value={value} onChange={event => onChange(event.target.value)}>{options.map(option => <option key={option.ref} value={option.ref}>{option.name}{option.remote ? ' (remote)' : ''}</option>)}</select></label>;
+}
+
+// The "New worktree…" dialog: create a checkout for a new branch (name + a base chosen
+// from the Project's branches, pre-selected to its default) or an existing local /
+// remote-only branch, launching the Project's last-used kind by default. One dialog from
+// branch to prompting.
 function NewWorktreeDialog({ project, request, onClose, onCreated }: { project: Project; request: (url: string, init?: RequestInit) => Promise<Response>; onClose: () => void; onCreated: (result: WorktreeCreated) => void }) {
   const [mode, setMode] = useState<'new' | 'existing'>('new');
   const [branches, setBranches] = useState<BranchOption[] | undefined>(undefined);
   const [branchesFailed, setBranchesFailed] = useState(false);
   const [newBranch, setNewBranch] = useState('');
+  // both pickers hold the selected option's ref, not its branch name
   const [base, setBase] = useState('');
-  const [existingBranch, setExistingBranch] = useState('');
+  const [existingRef, setExistingRef] = useState('');
   const [launchAgent, setLaunchAgent] = useState(true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
@@ -4813,19 +4831,28 @@ function NewWorktreeDialog({ project, request, onClose, onCreated }: { project: 
       const payload = await response.json().catch(() => undefined) as { branches?: BranchOption[]; defaultBranch?: string } | undefined;
       const offered = payload?.branches ?? [];
       setBranches(offered);
-      if (typeof payload?.defaultBranch === 'string') setBase(current => current === '' ? payload.defaultBranch! : current);
-      if (offered[0] !== undefined) setExistingBranch(current => current === '' ? offered[0]!.name : current);
+      // pre-select the default branch by the ref that resolves it, keeping the plain name
+      // when git named a branch it did not list
+      const fallback = typeof payload?.defaultBranch === 'string' ? offered.find(option => option.name === payload.defaultBranch)?.ref ?? payload.defaultBranch : undefined;
+      if (fallback !== undefined && fallback !== '') setBase(current => current === '' ? fallback : current);
+      const checkoutable = offered.find(option => !option.checkedOut);
+      if (checkoutable !== undefined) setExistingRef(current => current === '' ? checkoutable.ref : current);
     })();
     return () => { cancelled = true; };
   }, [project.id]);
+  // a Worktree already holds a checked-out branch, so only the base picker offers those
+  const existingOptions = branches?.filter(option => !option.checkedOut);
+  // an unlisted base (git named a default branch it did not list) stays selectable
+  const baseOptions = branches === undefined || base === '' || branches.some(option => option.ref === base) ? branches : [{ name: base, ref: base, remote: false, checkedOut: false }, ...branches];
   const submit = async () => {
     setError(undefined);
-    const branch = mode === 'new' ? newBranch.trim() : existingBranch;
+    // git checks out an existing branch by name; the ref only told the picker where it lives
+    const branch = mode === 'new' ? newBranch.trim() : existingOptions?.find(option => option.ref === existingRef)?.name ?? '';
     if (branch === '') return setError(mode === 'new' ? 'Enter a branch name.' : 'Choose a branch to check out.');
     setPending(true);
     try {
       // an empty base falls to the Project's default branch on the server
-      const response = await request(`/api/projects/${encodeURIComponent(project.id)}/worktrees`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode, branch, ...(mode === 'new' && base.trim() !== '' ? { base: base.trim() } : {}), launch: launchAgent }) }).catch(() => undefined);
+      const response = await request(`/api/projects/${encodeURIComponent(project.id)}/worktrees`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode, branch, ...(mode === 'new' && base !== '' ? { base } : {}), launch: launchAgent }) }).catch(() => undefined);
       if (response === undefined) return setError('Unable to reach the console.');
       if (!response.ok) {
         const payload = await response.json().catch(() => undefined) as { error?: string } | undefined;
@@ -4835,7 +4862,7 @@ function NewWorktreeDialog({ project, request, onClose, onCreated }: { project: 
       onCreated(payload);
     } finally { setPending(false); }
   };
-  const noExisting = branches !== undefined && branches.length === 0;
+  const noExisting = existingOptions !== undefined && existingOptions.length === 0;
   return createPortal(<div className="dialog new-worktree-dialog" role="dialog" aria-modal="true" aria-labelledby="new-worktree-title"><div>
     <header className="new-worktree-header"><div><h2 id="new-worktree-title">New worktree</h2><p>{project.label}</p></div><button className="new-worktree-close" type="button" aria-label="Close new worktree" disabled={pending} onClick={onClose}>×</button></header>
     <div className="new-worktree-modes" role="tablist" aria-label="Branch source">
@@ -4843,11 +4870,11 @@ function NewWorktreeDialog({ project, request, onClose, onCreated }: { project: 
       <button type="button" role="tab" aria-selected={mode === 'existing'} className={mode === 'existing' ? 'active' : ''} onClick={() => setMode('existing')}>Existing branch</button>
     </div>
     {mode === 'new'
-      ? <div className="new-worktree-fields"><label>Branch name<input aria-label="Branch name" value={newBranch} onChange={event => setNewBranch(event.target.value)} placeholder="feature/login" autoFocus /></label><label>Base<input aria-label="Base" value={base} onChange={event => setBase(event.target.value)} placeholder="main" /></label></div>
-      : <div className="new-worktree-fields">{branchesFailed ? <p className="new-worktree-error" role="alert">Could not load branches.</p> : branches === undefined ? <p className="new-worktree-loading" role="status"><span className="spinner" />Loading branches…</p> : noExisting ? <p className="new-worktree-empty">No branches are available to check out.</p> : <label>Branch<select aria-label="Branch" value={existingBranch} onChange={event => setExistingBranch(event.target.value)}>{branches.map(option => <option key={option.name} value={option.name}>{option.name}{option.remote ? ' (remote)' : ''}</option>)}</select></label>}</div>}
+      ? <div className="new-worktree-fields"><label>Branch name<input aria-label="Branch name" type="text" name="worktree-branch-name" value={newBranch} onChange={event => setNewBranch(event.target.value)} placeholder="feature/login" autoFocus {...noAutofill} /></label><BranchSelect label="Base" options={baseOptions} value={base} failed={branchesFailed} empty="No branches are available as a base." onChange={setBase} /></div>
+      : <div className="new-worktree-fields"><BranchSelect label="Branch" options={existingOptions} value={existingRef} failed={branchesFailed} empty="No branches are available to check out." onChange={setExistingRef} /></div>}
     <label className="new-worktree-launch"><input type="checkbox" checked={launchAgent} onChange={event => setLaunchAgent(event.target.checked)} />Launch agent in the new worktree</label>
     {error && <p className="new-worktree-error" role="alert">{error}</p>}
-    <footer className="new-worktree-actions"><button type="button" className="outline-button" disabled={pending} onClick={onClose}>Cancel</button><button type="button" disabled={pending || (mode === 'existing' && (branches === undefined || noExisting))} onClick={() => void submit()}>{pending ? <><span className="spinner" />Creating…</> : 'Create worktree'}</button></footer>
+    <footer className="new-worktree-actions"><button type="button" className="outline-button" disabled={pending} onClick={onClose}>Cancel</button><button type="button" disabled={pending || (mode === 'existing' && (existingOptions === undefined || noExisting))} onClick={() => void submit()}>{pending ? <><span className="spinner" />Creating…</> : 'Create worktree'}</button></footer>
   </div></div>, document.body);
 }
 

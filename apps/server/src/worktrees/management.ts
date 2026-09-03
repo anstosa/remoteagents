@@ -15,8 +15,13 @@ const defaultGit: GitExec = (args, timeoutMs) => run('/usr/bin/git', args, undef
 // git `worktree add` may clone a large tree; the shared executor's default 5s is not enough
 const addTimeoutMs = 120_000;
 
-/** One offerable branch for the Add "existing" picker; `remote` marks a remote-only ref. */
-export type BranchOption = { name: string; remote: boolean };
+/**
+ * One branch the Add dialog can offer. `ref` is the commit-ish that resolves it (a
+ * remote-only branch resolves only through its remote), `remote` marks a remote-only ref,
+ * and `checkedOut` marks a local branch a Worktree already holds: such a branch can base a
+ * new one but cannot itself be checked out again.
+ */
+export type BranchOption = { name: string; ref: string; remote: boolean; checkedOut: boolean };
 export type BranchesResult = { ok: true; branches: BranchOption[]; defaultBranch?: string } | { ok: false; status: number; error: string };
 export type AddInput = { mode: 'new' | 'existing'; branch: string; base?: string };
 export type AddResult = { ok: true; path: string } | { ok: false; status: number; error: string };
@@ -95,8 +100,8 @@ export class WorktreeManagementService {
     return next;
   }
 
-  // the offerable branches (local checked out nowhere, plus remote-only) and the resolved
-  // default branch (`origin/HEAD`, else the checkout's HEAD) for the Add dialog
+  // every branch the Add dialog can offer (local, marked when a Worktree holds it, plus
+  // remote-only) and the resolved default branch (`origin/HEAD`, else the checkout's HEAD)
   async branches(projectId: string): Promise<BranchesResult> {
     const project = this.project(projectId);
     if (project === undefined) return { ok: false, status: 404, error: 'project unavailable' };
@@ -104,7 +109,7 @@ export class WorktreeManagementService {
     if (!availability.available) return { ok: false, status: 409, error: availability.reason! };
     const listed = await this.git(['-C', project.path, 'for-each-ref', '--format', '%(refname)\t%(worktreepath)', 'refs/heads', 'refs/remotes']);
     if (listed.code !== 0) return { ok: false, status: 409, error: (listed.stderr.trim() || 'could not list branches') };
-    const localCheckedOutNowhere: BranchOption[] = [];
+    const local: BranchOption[] = [];
     const localNames = new Set<string>();
     const remoteOnly = new Map<string, BranchOption>();
     for (const line of listed.stdout.split('\n')) {
@@ -115,16 +120,17 @@ export class WorktreeManagementService {
       if (refname.startsWith('refs/heads/')) {
         const name = refname.slice('refs/heads/'.length);
         localNames.add(name);
-        if (worktreepath === '') localCheckedOutNowhere.push({ name, remote: false });
+        local.push({ name, ref: name, remote: false, checkedOut: worktreepath !== '' });
       } else if (refname.startsWith('refs/remotes/')) {
         const rest = refname.slice('refs/remotes/'.length);
         const slash = rest.indexOf('/');
         // skip a remote's symbolic HEAD (`refs/remotes/origin/HEAD`), never a real branch
         const name = slash === -1 ? '' : rest.slice(slash + 1);
-        if (name !== '' && name !== 'HEAD' && !remoteOnly.has(name)) remoteOnly.set(name, { name, remote: true });
+        // the remote-qualified ref is what resolves: bare `hotfix` names no local branch
+        if (name !== '' && name !== 'HEAD' && !remoteOnly.has(name)) remoteOnly.set(name, { name, ref: rest, remote: true, checkedOut: false });
       }
     }
-    const branches = [...localCheckedOutNowhere, ...[...remoteOnly.values()].filter(option => !localNames.has(option.name))];
+    const branches = [...local, ...[...remoteOnly.values()].filter(option => !localNames.has(option.name))];
     const defaultBranch = await this.defaultBranch(project.path);
     return { ok: true, branches, ...(defaultBranch === undefined ? {} : { defaultBranch }) };
   }

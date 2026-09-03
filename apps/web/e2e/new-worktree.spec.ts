@@ -22,7 +22,11 @@ async function stub(page: import('@playwright/test').Page, onCreate: (body: unkn
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     if (url.pathname === '/api/dashboard') return route.fulfill({ json: dashboard });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
-    if (url.pathname === '/api/projects/repo/branches') return route.fulfill({ json: { branches: [{ name: 'feature', remote: false }, { name: 'hotfix', remote: true }], defaultBranch: 'main' } });
+    if (url.pathname === '/api/projects/repo/branches') return route.fulfill({ json: { branches: [
+      { name: 'main', ref: 'main', remote: false, checkedOut: true },
+      { name: 'feature', ref: 'feature', remote: false, checkedOut: false },
+      { name: 'hotfix', ref: 'origin/hotfix', remote: true, checkedOut: false }
+    ], defaultBranch: 'main' } });
     if (url.pathname === '/api/projects/repo/worktrees' && request.method() === 'POST') {
       onCreate(request.postDataJSON());
       return route.fulfill({ status: 201, json: { worktreeId: 'repo:/repo/wts/feature-login' } });
@@ -48,9 +52,16 @@ test('creates a worktree for a new branch with the default base pre-filled', asy
   await manageable.click();
   const dialog = page.getByRole('dialog', { name: 'New worktree' });
   await expect(dialog).toBeVisible();
-  // the base field pre-fills with the resolved default branch
-  await expect(dialog.getByLabel('Base')).toHaveValue('main');
-  await dialog.getByLabel('Branch name').fill('feature/login');
+  // the base is a picker over every branch — the checked-out default included — pre-selected
+  // to the resolved default branch
+  const baseSelect = dialog.getByLabel('Base');
+  await expect(baseSelect.locator('option')).toHaveText(['main', 'feature', 'hotfix (remote)']);
+  await expect(baseSelect).toHaveValue('main');
+  // a branch name is not a credential: password managers are told to leave the field alone
+  const branchName = dialog.getByLabel('Branch name');
+  await expect(branchName).toHaveAttribute('autocomplete', 'off');
+  await expect(branchName).toHaveAttribute('data-1p-ignore', 'true');
+  await branchName.fill('feature/login');
   await dialog.getByRole('button', { name: 'Create worktree' }).click();
 
   await expect.poll(() => created).toEqual({ mode: 'new', branch: 'feature/login', base: 'main', launch: true });
@@ -58,7 +69,22 @@ test('creates a worktree for a new branch with the default base pre-filled', asy
   await expect(dialog).toBeHidden();
 });
 
-test('checks out an existing branch, offering remote-only branches marked', async ({ page }) => {
+test('bases a new branch on a chosen branch, sending the ref that resolves it', async ({ page }) => {
+  let created: unknown;
+  await stub(page, body => { created = body; });
+  await page.goto('/');
+  await page.locator('.new-agent-tab').click();
+  await page.getByRole('group', { name: 'Agent launcher' }).getByRole('group', { name: 'Repo' }).getByRole('button', { name: '+ New worktree…' }).click();
+  const dialog = page.getByRole('dialog', { name: 'New worktree' });
+
+  await dialog.getByLabel('Branch name').fill('feature/login');
+  await dialog.getByLabel('Base').selectOption('origin/hotfix');
+  await dialog.getByRole('button', { name: 'Create worktree' }).click();
+
+  await expect.poll(() => created).toEqual({ mode: 'new', branch: 'feature/login', base: 'origin/hotfix', launch: true });
+});
+
+test('checks out an existing branch, hiding checked-out ones and marking remote-only ones', async ({ page }) => {
   let created: unknown;
   await stub(page, body => { created = body; });
   await page.goto('/');
@@ -70,7 +96,7 @@ test('checks out an existing branch, offering remote-only branches marked', asyn
   await dialog.getByRole('tab', { name: 'Existing branch' }).click();
   const select = dialog.getByLabel('Branch', { exact: true });
   await expect(select.locator('option')).toHaveText(['feature', 'hotfix (remote)']);
-  await select.selectOption('hotfix');
+  await select.selectOption('origin/hotfix');
   // opt out of launching so only the checkout is created
   await dialog.getByLabel('Launch agent in the new worktree').uncheck();
   await dialog.getByRole('button', { name: 'Create worktree' }).click();

@@ -43,12 +43,12 @@ async function app(deps: Record<string, unknown>) {
 
 describe('GET /api/projects/:id/branches', () => {
   it('returns the offerable branches and the default', async () => {
-    const worktreeManagement = { branches: async () => ({ ok: true, branches: [{ name: 'feature', remote: false }, { name: 'hotfix', remote: true }], defaultBranch: 'main' }) } as never;
+    const worktreeManagement = { branches: async () => ({ ok: true, branches: [{ name: 'feature', ref: 'feature', remote: false, checkedOut: false }, { name: 'hotfix', ref: 'origin/hotfix', remote: true, checkedOut: false }], defaultBranch: 'main' }) } as never;
     const server = await app({ discovery: discoveryStub(), worktreeManagement, worktreeStore: await store() });
     try {
       const response = await server.inject({ method: 'GET', url: '/api/projects/proj/branches', headers: readHeaders });
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ branches: [{ name: 'feature', remote: false }, { name: 'hotfix', remote: true }], defaultBranch: 'main' });
+      expect(response.json()).toEqual({ branches: [{ name: 'feature', ref: 'feature', remote: false, checkedOut: false }, { name: 'hotfix', ref: 'origin/hotfix', remote: true, checkedOut: false }], defaultBranch: 'main' });
     } finally { await server.close(); }
   });
 

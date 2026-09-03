@@ -1264,8 +1264,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (!agent) return reply.code(504).send({ error: `The worktree session started, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
     return reply.code(201).send({ agentId: agent.id });
   });
-  // the branches the Add dialog offers: local branches checked out nowhere plus
-  // remote-only branches, and the resolved default branch to pre-fill the base field
+  // the branches the Add dialog offers — local branches (flagged when a Worktree already
+  // holds one, which the checkout picker hides but the base picker keeps) plus remote-only
+  // branches — and the resolved default branch to pre-select the base
   app.get('/api/projects/:id/branches', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     controlled(request);
     const result = await worktreeManagement.branches((request.params as { id: string }).id);

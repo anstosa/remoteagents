@@ -119,14 +119,14 @@ describe('WorktreeManagementService.add — refusals before git runs', () => {
 });
 
 describe('WorktreeManagementService.branches', () => {
-  it('offers local branches checked out nowhere plus remote-only branches, and the default', async () => {
+  it('offers every local branch, marking the checked-out ones, plus remote-only branches and the default', async () => {
     const project = await fakeProject();
     const forEach = [
-      'refs/heads/main\t/repo',            // checked out here — excluded
+      'refs/heads/main\t/repo',            // checked out here — offered, marked
       'refs/heads/feature\t',              // free local — offered
       'refs/remotes/origin/HEAD\t',        // symbolic — skipped
       'refs/remotes/origin/feature\t',     // has a local — not remote-only
-      'refs/remotes/origin/hotfix\t'       // remote-only — offered, marked
+      'refs/remotes/origin/hotfix\t'       // remote-only — offered by its remote ref
     ].join('\n');
     const git = fakeGit(args => {
       if (has(args, 'for-each-ref') && args.includes('refs/heads')) return ok(forEach);
@@ -135,8 +135,9 @@ describe('WorktreeManagementService.branches', () => {
     }).git;
     const result = await new WorktreeManagementService(() => [project], git).branches('proj');
     expect(result).toEqual({ ok: true, defaultBranch: 'main', branches: [
-      { name: 'feature', remote: false },
-      { name: 'hotfix', remote: true }
+      { name: 'main', ref: 'main', remote: false, checkedOut: true },
+      { name: 'feature', ref: 'feature', remote: false, checkedOut: false },
+      { name: 'hotfix', ref: 'origin/hotfix', remote: true, checkedOut: false }
     ] });
   });
 
@@ -148,7 +149,7 @@ describe('WorktreeManagementService.branches', () => {
       if (has(args, 'symbolic-ref', 'HEAD')) return ok('trunk\n');
       return undefined;
     }).git;
-    expect(await new WorktreeManagementService(() => [project], git).branches('proj')).toEqual({ ok: true, defaultBranch: 'trunk', branches: [{ name: 'trunk', remote: false }] });
+    expect(await new WorktreeManagementService(() => [project], git).branches('proj')).toEqual({ ok: true, defaultBranch: 'trunk', branches: [{ name: 'trunk', ref: 'trunk', remote: false, checkedOut: false }] });
     expect(await new WorktreeManagementService(() => [], git).branches('nope')).toMatchObject({ ok: false, status: 404 });
   });
 });

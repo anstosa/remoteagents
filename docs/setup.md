@@ -241,12 +241,14 @@ git-locked one is flagged, and a detached HEAD is labelled by its short SHA.
 The `+` launcher lists one section per Project. Each header carries a **New
 worktree…** control that opens a dialog with two modes:
 
-- **New branch** — a branch name plus an editable base (pre-filled with the
-  Project's default branch, `origin/HEAD` when the remote publishes one, else the
-  checkout's current branch). The console creates the branch with
-  `git worktree add --no-track -b <name> <path> <base>`.
-- **Existing branch** — a picker of local branches checked out nowhere plus
-  remote-only branches (marked); git creates the tracking branch for the latter.
+- **New branch** — a branch name plus a base picked from the Project's branches,
+  pre-selected to its default branch (`origin/HEAD` when the remote publishes one,
+  else the checkout's current branch). A branch another Worktree already holds is
+  still offered here — the default branch usually is one. The console creates the
+  branch with `git worktree add --no-track -b <name> <path> <base>`.
+- **Existing branch** — the same picker over the branches that can still be checked
+  out: local branches checked out nowhere plus remote-only branches (marked); git
+  creates the tracking branch for the latter.
 
 The checkout is created under the Project's `worktreesDirectory` at a leaf named
 for the branch (`/` flattened to `-`); you never type a path. The console pins
