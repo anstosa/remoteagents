@@ -917,6 +917,10 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .client-settings-stepper > button { width: auto; min-width: 2rem; min-height: 1.8rem; justify-content: center; border: 1px solid var(--surface-2); border-radius: calc(var(--control-radius) - .08rem); padding: .25rem .5rem; background: transparent; color: var(--blue); box-shadow: none; font-size: .9rem; }
 .client-settings-stepper > button:not(:disabled):hover { border-color: var(--blue); background: var(--surface-1); color: var(--text); }
 .client-settings-stepper > button:disabled { color: var(--overlay-0); opacity: .5; }
+.client-settings-segmented { display: flex; gap: .35rem; }
+.client-settings-segmented > button { flex: 1; min-height: 1.8rem; justify-content: center; border: 1px solid var(--surface-2); border-radius: calc(var(--control-radius) - .08rem); padding: .3rem .5rem; background: transparent; color: var(--blue); box-shadow: none; font: 700 .72rem var(--font-mono); }
+.client-settings-segmented > button:not(.active):hover { border-color: var(--blue); background: var(--surface-1); color: var(--text); }
+.client-settings-segmented > button.active { border-color: var(--mauve); background: var(--mauve); color: var(--crust); }
 .client-settings-davo > header { grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: .75rem; }
 .client-settings-davo > header > div { display: grid; gap: .08rem; }
 .client-settings-davo > header small { color: var(--mauve); font: 800 .62rem var(--font-mono); letter-spacing: .14em; }

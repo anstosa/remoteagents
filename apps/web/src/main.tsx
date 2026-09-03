@@ -17,6 +17,7 @@ import { isStackOperationLog, type StackAction, type StackOperationLog } from '.
 import { SyntaxHighlightedCode } from './syntax-highlight.js';
 import { isPromptKeyboardTarget, useShiftArrowTabCycling } from './tab-navigation.js';
 import { defaultTerminalFontSize, maxTerminalFontSize, minTerminalFontSize, readTerminalFontSize, resetTerminalFontSize, stepTerminalFontSize, subscribeTerminalFontSize, useTerminalFontSize } from './terminal-font-size.js';
+import { applyColorTheme, setColorTheme, useColorTheme } from './color-theme.js';
 import { UpstreamRebaseBanner, type GitUpstreamSummary } from './upstream-rebase.js';
 import { useViewportFlyout } from './viewport-flyout.js';
 import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
@@ -1116,6 +1117,7 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   // Codex account management is available only when adapters.codex is configured
   const codexConfigured = adapters?.codex?.program !== undefined;
   const terminalFontSize = useTerminalFontSize();
+  const colorTheme = useColorTheme();
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<'client' | 'server' | 'account-login'>();
   const [name, setName] = useState(settings.deviceName);
@@ -1415,7 +1417,12 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   // differs from the default. Steps keep the menu open so repeated taps work on
   // a phone, and each button disables at its range limit.
   const terminalFontCard = <div className="client-settings-card client-settings-terminal-font" role="group" aria-label="Terminal font"><header><small>TERMINAL FONT</small>{terminalFontSize !== defaultTerminalFontSize() && <span className="client-settings-card-actions"><button type="button" aria-label="Reset terminal font" onClick={() => resetTerminalFontSize()}>Reset</button></span>}</header><div className="client-settings-stepper"><button type="button" aria-label="Smaller terminal font" disabled={terminalFontSize <= minTerminalFontSize} onClick={() => stepTerminalFontSize(-1)}>−</button><strong aria-live="polite">{terminalFontSize}px</strong><button type="button" aria-label="Larger terminal font" disabled={terminalFontSize >= maxTerminalFontSize} onClick={() => stepTerminalFontSize(1)}>+</button></div></div>;
-  const settingsCards = <div className="client-settings-overview"><div className="client-settings-card" role="group" aria-label="Client"><header><small>CLIENT</small><span className="client-settings-card-actions"><button type="button" aria-label="Rename Client" onClick={() => beginRename('client')}>Rename</button></span></header><strong>{settings.deviceName}</strong><span>This browser</span></div><div className="client-settings-card" role="group" aria-label="Server"><header><small>SERVER</small><span className="client-settings-card-actions"><button type="button" aria-label="Rename Server" onClick={() => beginRename('server')}>Rename</button></span></header><strong>{settings.serverName}</strong><span>{serverHostLabel(settings.serverUrl)}</span></div>{defaultAgentCard}{terminalFontCard}{agentsCard}</div>;
+  // Dark / Light segmented control sitting beside the terminal-font card so
+  // related display preferences group together. Two exclusive options: Dark is
+  // Mocha (the default), Light is Latte. Selecting a flavour recolours the whole
+  // UI live and persists per-browser.
+  const themeCard = <div className="client-settings-card client-settings-color-theme" role="group" aria-label="Theme"><header><small>THEME</small></header><div className="client-settings-segmented" role="radiogroup" aria-label="Theme">{([['mocha', 'Dark'], ['latte', 'Light']] as const).map(([theme, label]) => <button key={theme} type="button" role="radio" aria-checked={colorTheme === theme} aria-label={`${label} theme`} className={colorTheme === theme ? 'active' : undefined} onClick={() => setColorTheme(theme)}>{label}</button>)}</div></div>;
+  const settingsCards = <div className="client-settings-overview"><div className="client-settings-card" role="group" aria-label="Client"><header><small>CLIENT</small><span className="client-settings-card-actions"><button type="button" aria-label="Rename Client" onClick={() => beginRename('client')}>Rename</button></span></header><strong>{settings.deviceName}</strong><span>This browser</span></div><div className="client-settings-card" role="group" aria-label="Server"><header><small>SERVER</small><span className="client-settings-card-actions"><button type="button" aria-label="Rename Server" onClick={() => beginRename('server')}>Rename</button></span></header><strong>{settings.serverName}</strong><span>{serverHostLabel(settings.serverUrl)}</span></div>{defaultAgentCard}{terminalFontCard}{themeCard}{agentsCard}</div>;
   // configure the optional voice surface without an outer card
   const davoSection = <section className="client-settings-section client-settings-davo" aria-labelledby="settings-davo-title"><header><div><small>VOICE</small><h2 id="settings-davo-title">Davo</h2></div><label className="client-settings-davo-toggle"><input aria-label="Enable Davo" type="checkbox" checked={davoEnabled} disabled={davoPending || !settings.davo.available && !davoEnabled} onChange={event => void toggleDavo(event)} /><span>{davoEnabled ? 'On' : settings.davo.available ? 'Off' : 'Unavailable'}</span></label></header>{davoEnabled && <form className="client-settings-davo-form" onSubmit={event => void saveDavo(event)}><label>Name<input aria-label="Davo name" type="text" value={davoDraft.name} maxLength={80} disabled={davoPending} onChange={event => setDavoDraft(current => ({ ...current, name: event.target.value }))} /></label><label>Context<textarea aria-label="Davo context" value={davoDraft.context} maxLength={16_000} disabled={davoPending} onChange={event => setDavoDraft(current => ({ ...current, context: event.target.value }))} /></label><footer>{davoError ? <span className="client-settings-davo-error" role="alert">{davoError}</span> : <span className="client-settings-davo-message" role="status">{davoMessage}</span>}<button type="submit" disabled={davoPending || !davoDraft.name.trim()}>{davoPending ? <><span className="spinner" />Saving…</> : 'Save'}</button></footer></form>}{!davoEnabled && davoError && <span className="client-settings-davo-error" role="alert">{davoError}</span>}</section>;
   // the Codex accounts section renders only when adapters.codex is configured
@@ -6200,4 +6207,8 @@ function App() {
   return <ServerContext.Provider value={serverInfo}><ServerStatusContext.Provider value={serverStatuses}><ClientSettingsContext.Provider value={clientSettings}>{screen}<ServerUpdateDialog open={serverUpdateOpen} minimized={serverUpdateMinimized} onMinimize={minimizeServerUpdate} onClose={closeServerUpdate} />{reconnecting && <ReconnectingOverlay />}</ClientSettingsContext.Provider></ServerStatusContext.Provider></ServerContext.Provider>;
 }
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');
+// Reflect the stored flavour before the first render, now that the stylesheet is
+// registered so `--base` resolves for the browser-chrome colour. A future ticket
+// moves this ahead of first paint with an inline head script.
+applyColorTheme();
 createRoot(document.getElementById('root')!).render(<ConsoleBoundary><App /></ConsoleBoundary>);
