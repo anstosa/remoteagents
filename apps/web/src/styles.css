@@ -1140,9 +1140,6 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .launcher-menu .launch-split.compact .launch-chevron { flex: 0 0 1.7rem; min-height: 1.8rem; height: auto; border-radius: 0 var(--control-radius) var(--control-radius) 0; }
 .launcher-menu .launch-compact .launch-kind-mark { width: 1rem; height: 1rem; background: color-mix(in srgb, var(--crust) 22%, transparent); color: var(--crust); font-size: .6rem; }
 .launcher-menu .launch-compact .launch-lock { stroke: var(--crust); }
-.launch-inline-menu { flex-basis: 100%; margin: .2rem 0 .1rem; padding: .3rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 82%, var(--surface-0)); }
-.launch-inline-menu .launch-row { width: 100% !important; }
-
 /* one section per project in the + launcher: a header, its Worktree rows, then New worktree… */
 .launcher-project { margin-top: .35rem; }
 .launcher-project-header { display: flex; align-items: center; justify-content: space-between; gap: .5rem; padding: .3rem .45rem .15rem; color: var(--subtext-0); font-size: .64rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }

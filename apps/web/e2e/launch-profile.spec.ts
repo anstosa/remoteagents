@@ -142,6 +142,28 @@ test('the launcher offers Scratch and each worktree the same split button', asyn
   await expect.poll(() => posts).toEqual([{ path: '/api/agents/launch', body: { kind: 'codex', sandboxed: false } }]);
 });
 
+// the launcher rows open the same anchored flyout every other Launch control opens: one
+// fixed-width menu hung off the row, dismissed by a press anywhere outside it — including
+// one inside the launcher, whose own backdrop only covers presses outside itself
+test('a launcher row menu is one fixed-width flyout that an outside press closes', async ({ page }) => {
+  await mount(page, { generation: 1, adapters: { codex, claude }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'claude', origin: 'worktree' })] }], scratchLaunch: { kind: 'codex', origin: 'scratch' } });
+  await page.getByRole('button', { name: 'Launch agent' }).click();
+  const launcher = page.locator('.launcher-menu');
+  const menu = page.locator('.launch-menu');
+  const row = (name: string) => launcher.locator('.launcher-row').filter({ hasText: name });
+  await row('Scratch').getByRole('button', { name: 'Choose agent' }).click();
+  await expect(menu.getByText('Launch · ~ Scratch')).toBeVisible();
+  const scratchWidth = (await menu.boundingBox())!.width;
+  // a press elsewhere in the launcher closes the menu alone, leaving the launcher open
+  await launcher.locator('.launcher-project-header > span').click();
+  await expect(menu).toHaveCount(0);
+  await expect(launcher).toBeVisible();
+  // the row label no longer sizes the menu, so every row's sandbox line wraps the same way
+  await row('Cora').getByRole('button', { name: 'Choose agent' }).click();
+  await expect(menu.getByText('Launch · Cora')).toBeVisible();
+  expect((await menu.boundingBox())!.width).toBe(scratchWidth);
+});
+
 test('an idle agent restarts as another kind from its power menu', async ({ page }) => {
   const agent = { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 1, title: 'Ready', kind: 'codex', attention: 'finished', queuedPromptCount: 0, launch: { kind: 'codex', origin: 'worktree' } };
   const posts = await mount(page, { generation: 1, adapters: { codex, claude }, agents: [agent], projects: [] });

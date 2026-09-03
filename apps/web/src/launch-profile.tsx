@@ -91,16 +91,18 @@ export function LaunchMenu({ verb, label, resolution, onLaunch }: { verb: Launch
 }
 
 // The split button: primary launches the resolved kind in one click (naming it, with a
-// lock when Sandboxed); the chevron opens the actions menu. `compact`/`inline` give the
-// launcher rows the same control with the menu expanded inline under the row. When the
+// lock when Sandboxed); the chevron opens the actions menu. `compact` gives the launcher
+// rows the same control sized to a row, its menu the same anchored flyout. When the
 // dashboard carries no resolution (`resolution === undefined`) the control degrades to a
 // single plain "Launch agent" that launches without a kind, as before the split button.
-export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch, disabled = false, pending = false, compact = false, inline = false }: { verb?: LaunchVerb; label: string; resolution: LaunchResolution | undefined; onLaunch: (choice?: LaunchChoice) => void; disabled?: boolean; pending?: boolean; compact?: boolean; inline?: boolean }) {
+export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch, disabled = false, pending = false, compact = false }: { verb?: LaunchVerb; label: string; resolution: LaunchResolution | undefined; onLaunch: (choice?: LaunchChoice) => void; disabled?: boolean; pending?: boolean; compact?: boolean }) {
   const adapters = useContext(AdaptersContext);
   const [open, setOpen] = useState(false);
-  const { anchorRef, flyoutRef, style } = useViewportFlyout<HTMLSpanElement>(open && !inline);
+  const { anchorRef, flyoutRef, style } = useViewportFlyout<HTMLSpanElement>(open);
+  // an outside press closes the menu, including one inside the "+" launcher flyout these
+  // rows live in — its backdrop only covers presses outside itself
   useEffect(() => {
-    if (!open || inline) return;
+    if (!open) return;
     const close = (event: MouseEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
@@ -109,7 +111,7 @@ export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch
     };
     document.addEventListener('mousedown', close);
     return () => document.removeEventListener('mousedown', close);
-  }, [open, inline]);
+  }, [open]);
   const primaryClass = compact ? 'launch-compact' : 'queue';
   const launch = (choice?: LaunchChoice) => { setOpen(false); onLaunch(choice); };
   // no resolution from the server: a plain, chevron-less launch of the default kind,
@@ -131,9 +133,7 @@ export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch
       </button>
       <button type="button" className={`launch-chevron${compact ? ' compact' : ''}`} aria-label="Choose agent" aria-haspopup="menu" aria-expanded={open} disabled={none || disabled || pending} onClick={() => setOpen(value => !value)}><ChevronIcon /></button>
     </span>
-    {open && (inline
-      ? <div className="launch-inline-menu more-menu" role="menu" aria-label="Choose agent">{menu}</div>
-      : createPortal(<div ref={flyoutRef} style={style} className="more-menu flyout-menu launch-menu" role="menu" aria-label="Choose agent">{menu}</div>, document.body))}
+    {open && createPortal(<div ref={flyoutRef} style={style} className="more-menu flyout-menu launch-menu" role="menu" aria-label="Choose agent">{menu}</div>, document.body)}
   </>;
 }
 
