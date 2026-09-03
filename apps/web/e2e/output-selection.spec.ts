@@ -309,8 +309,8 @@ test('long press selects mobile output without entering terminal input mode', as
     const highlight = getComputedStyle(document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Prompt"]')!, '::selection');
     return { borderColor: border.borderTopColor, glow: border.boxShadow, highlight: highlight.backgroundColor };
   });
-  expect(selectionTreatment.borderColor).toBe('rgb(184, 184, 184)');
-  expect(selectionTreatment.glow).toContain('rgba(208, 208, 208');
+  expect(selectionTreatment.borderColor).toBe('rgb(166, 173, 200)');
+  expect(selectionTreatment.glow).toContain('color(srgb 0.576471 0.6 0.698039');
   expect(selectionTreatment.highlight).toBe('rgb(203, 166, 247)');
   expect(await log.evaluate(element => getComputedStyle(element, '::after').content)).toBe('none');
   const [selectedOutputBounds, selectedLogBounds] = await Promise.all([outputPane.boundingBox(), log.boundingBox()]);

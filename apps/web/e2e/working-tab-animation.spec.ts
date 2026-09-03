@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('animates working tabs from left to right with an orange status dot', async ({ page }) => {
+test('animates working tabs from left to right with a peach status dot', async ({ page }) => {
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -43,7 +43,7 @@ test('animates working tabs from left to right with an orange status dot', async
   expect(treatment.labelAnimationDuration).toBe('3s');
   expect(treatment.labelBackground).toContain('linear-gradient');
   expect(treatment.dotAnimation).toBe('tab-working-dot');
-  expect(treatment.dotColor).toBe('rgb(255, 138, 31)');
+  expect(treatment.dotColor).toBe('rgb(250, 179, 135)');
   expect(treatment.dotRadius).toBe('50%');
 });
 
