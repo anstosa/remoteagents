@@ -51,24 +51,36 @@ async function openSettings(page: import('@playwright/test').Page, adapters: unk
   return page.getByRole('dialog', { name: 'Settings' });
 }
 
-test('shows an AGENTS card per configured kind and the Codex accounts section', async ({ page }) => {
+test('shows flat agent settings and the Codex accounts section', async ({ page }) => {
   const settingsPage = await openSettings(page, {
     codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: false, commands: true, sandbox: false },
     claude: { program: '/opt/claude', launchable: false, unavailableReason: '/opt/claude is not an executable file', stateSource: 'reported', turnCapture: false, bookmarks: false, inlineQuestions: false, commands: true, sandbox: false }
   }, { defaultAgent: 'codex' });
-  const agents = settingsPage.getByRole('group', { name: 'Agents' });
+  const agents = settingsPage.getByRole('radiogroup', { name: 'Agents' });
   await expect(agents).toBeVisible();
-  const codex = agents.getByRole('group', { name: 'Codex' });
+  const codex = agents.getByRole('radio', { name: 'Codex' });
+  await expect(codex).toBeChecked();
+  await expect(codex).toBeDisabled();
+  await expect(codex.locator('.client-settings-agent-star')).toHaveText('★');
   await expect(codex).toContainText('Codex');
   await expect(codex).toContainText('/usr/local/bin/codex');
-  await expect(codex).toContainText('Available');
+  await expect(codex).toContainText('Default');
   // an unlaunchable kind is dimmed and shows its reason
-  const claude = agents.getByRole('group', { name: 'Claude' });
+  const claude = agents.getByRole('radio', { name: 'Claude' });
+  await expect(claude).not.toBeChecked();
+  await expect(claude).toBeDisabled();
   await expect(claude).toHaveClass(/unavailable/);
   await expect(claude).toContainText('is not an executable file');
-  const defaultAgent = settingsPage.getByRole('combobox', { name: 'Default agent' });
-  await expect(defaultAgent).toHaveValue('codex');
-  await expect(defaultAgent.locator('option[value="claude"]')).toBeDisabled();
+  await expect(settingsPage.getByRole('combobox', { name: 'Default agent' })).toHaveCount(0);
+  const clientStyle = await settingsPage.getByRole('group', { name: 'Client' }).evaluate(element => ({ border: getComputedStyle(element).borderWidth, background: getComputedStyle(element).backgroundColor }));
+  expect(clientStyle).toEqual({ border: '0px', background: 'rgba(0, 0, 0, 0)' });
+  const clientBounds = await settingsPage.getByRole('group', { name: 'Client' }).boundingBox();
+  const serverBounds = await settingsPage.getByRole('group', { name: 'Server' }).boundingBox();
+  // align the flat settings on one shared edge
+  if (clientBounds === null || serverBounds === null) throw new Error('Settings have no layout bounds');
+  expect(Math.abs(clientBounds.x - serverBounds.x)).toBeLessThanOrEqual(1);
+  await expect(settingsPage.getByText('GENERAL', { exact: true })).toHaveCount(0);
+  await expect(settingsPage.getByRole('heading', { name: 'Console', exact: true })).toHaveCount(0);
   // Codex accounts render because adapters.codex exists
   const accountsTitle = settingsPage.getByRole('heading', { name: 'Accounts' });
   const addAccount = settingsPage.getByRole('button', { name: '+ Add account' });
@@ -78,6 +90,7 @@ test('shows an AGENTS card per configured kind and the Codex accounts section', 
   expect(addBounds?.height).toBeLessThanOrEqual(32);
   await expect(settingsPage.getByText('Identify this browser and server')).toHaveCount(0);
   await expect(settingsPage.getByText('Choose the account Codex uses')).toHaveCount(0);
+  await expect(settingsPage.getByText('Manage this console, its display, and connected accounts.')).toHaveCount(0);
 });
 
 test('changes the server default agent without closing settings', async ({ page }) => {
@@ -87,25 +100,40 @@ test('changes the server default agent without closing settings', async ({ page 
     claude: { program: '/opt/claude', launchable: true, stateSource: 'reported', turnCapture: false, bookmarks: false, inlineQuestions: false, commands: true, sandbox: false }
   }, { defaultAgent: 'codex', onDefaultAgent: kind => { selected = kind; } });
 
-  const picker = settingsPage.getByRole('combobox', { name: 'Default agent' });
-  await picker.selectOption('claude');
+  const codex = settingsPage.getByRole('radio', { name: 'Codex' });
+  const claude = settingsPage.getByRole('radio', { name: 'Claude' });
+  await claude.click();
 
   await expect.poll(() => selected).toBe('claude');
-  await expect(picker).toHaveValue('claude');
+  await expect(claude).toBeChecked();
+  await expect(claude.locator('.client-settings-agent-star')).toHaveText('★');
+  await expect(codex).not.toBeChecked();
+  await expect(codex.locator('.client-settings-agent-star')).toHaveText('☆');
+  await expect(settingsPage.getByRole('combobox', { name: 'Default agent' })).toHaveCount(0);
   await expect(settingsPage).toBeVisible();
 });
 
 test('enables Davo and saves a configurable name and context', async ({ page }) => {
   const updates: Array<{ enabled: boolean; name: string; context: string }> = [];
   const settingsPage = await openSettings(page, {}, { onDavo: settings => { updates.push(settings); } });
-  const enabled = settingsPage.getByRole('checkbox', { name: 'Enable Davo' });
+  const enabled = settingsPage.getByRole('switch', { name: 'Enable Davo' });
+  const switchTrack = settingsPage.locator('.client-settings-switch-track');
+  const davoSection = settingsPage.locator('.client-settings-davo');
 
   await expect(enabled).not.toBeChecked();
+  const [davoBounds, switchBounds] = await Promise.all([davoSection.boundingBox(), switchTrack.boundingBox()]);
+  // keep the switch on the setting's right edge
+  if (davoBounds === null || switchBounds === null) throw new Error('Davo switch has no layout bounds');
+  expect(Math.abs(davoBounds.x + davoBounds.width - switchBounds.x - switchBounds.width)).toBeLessThanOrEqual(1);
+  const offBackground = await switchTrack.evaluate(element => getComputedStyle(element).backgroundColor);
   await expect(settingsPage.getByLabel('Davo name')).toHaveCount(0);
   await enabled.check();
+  await expect(switchTrack).not.toHaveCSS('background-color', offBackground);
   await expect(settingsPage.getByLabel('Davo name')).toHaveValue('Davo');
   await expect(settingsPage.getByLabel('Davo context')).toHaveValue('Existing Davo persona.');
   await settingsPage.getByLabel('Davo name').fill('Riley');
+  await expect(settingsPage.getByRole('heading', { name: 'Riley' })).toBeVisible();
+  await expect(settingsPage.getByRole('switch', { name: 'Enable Riley' })).toBeChecked();
   await settingsPage.getByLabel('Davo context').fill('Speak plainly and keep the tone dry.');
   await settingsPage.getByRole('button', { name: 'Save' }).click();
 
@@ -119,11 +147,11 @@ test('enables Davo and saves a configurable name and context', async ({ page }) 
   await expect(page.getByRole('button', { name: 'Call Riley' }).first()).toBeVisible();
 });
 
-test('hides the AGENTS card and Codex accounts on an observe-only console', async ({ page }) => {
+test('hides agent and Codex account settings on an observe-only console', async ({ page }) => {
   const settingsPage = await openSettings(page, {});
-  await expect(settingsPage.getByRole('group', { name: 'Agents' })).toHaveCount(0);
+  await expect(settingsPage.getByRole('radiogroup', { name: 'Agents' })).toHaveCount(0);
   await expect(settingsPage.getByRole('button', { name: '+ Add account' })).toHaveCount(0);
-  // CLIENT and SERVER cards still render
+  // client and server settings remain available
   await expect(settingsPage.getByRole('group', { name: 'Client' })).toBeVisible();
   await expect(settingsPage.getByRole('group', { name: 'Server' })).toBeVisible();
 });
@@ -144,10 +172,17 @@ test('opens settings as a full-screen page from a gear and returns focus to the 
   expect(Math.abs(bounds.y)).toBeLessThanOrEqual(1);
   expect(Math.abs(bounds.width - 428)).toBeLessThanOrEqual(1);
   expect(Math.abs(bounds.height - 812)).toBeLessThanOrEqual(1);
+  const clientBounds = await settingsPage.getByRole('group', { name: 'Client' }).boundingBox();
+  const serverBounds = await settingsPage.getByRole('group', { name: 'Server' }).boundingBox();
+  const terminalBounds = await settingsPage.getByRole('group', { name: 'Terminal font' }).boundingBox();
+  // retain visible breathing room between flat settings
+  if (clientBounds === null || serverBounds === null || terminalBounds === null) throw new Error('Settings have no layout bounds');
+  expect(serverBounds.y - (clientBounds.y + clientBounds.height)).toBeGreaterThanOrEqual(12);
+  expect(Math.abs((serverBounds.y - clientBounds.y) - (terminalBounds.y - serverBounds.y))).toBeLessThanOrEqual(4);
   const back = settingsPage.getByRole('button', { name: 'Back to console' });
   await back.focus();
   await page.keyboard.press('Shift+Tab');
-  await expect(settingsPage.getByRole('checkbox', { name: 'Enable Davo' })).toBeFocused();
+  await expect(settingsPage.getByRole('switch', { name: 'Enable Davo' })).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(back).toBeFocused();
   await page.keyboard.press('Escape');
