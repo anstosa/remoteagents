@@ -142,3 +142,21 @@ test('switching back to Dark forgets the stored key', async ({ page }) => {
   // Mocha is the key's absence, so returning to Dark clears storage.
   expect(await page.evaluate(() => localStorage.getItem('rac.color-theme'))).toBeNull();
 });
+
+test('the pre-paint head script flavours the document before the app mounts', async ({ page }) => {
+  test.setTimeout(60_000);
+  // Seed the persisted Latte choice, then block the app's entry module so nothing
+  // but the render-blocking /theme-init.js head script can set the attribute. If
+  // Latte is present with the React app never mounted, it was applied at first
+  // paint — proving the no-FOUC path.
+  await page.addInitScript(() => localStorage.setItem('rac.color-theme', 'latte'));
+  await page.route('**/src/main.tsx**', route => route.abort());
+  await page.goto('/', { waitUntil: 'commit' });
+  await expect.poll(() => themeAttr(page), { timeout: 10_000 }).toBe('latte');
+  // The head script also flavours the mobile browser chrome, so the address bar
+  // never flashes the Mocha default before the store takes over on mount.
+  expect(await metaThemeColor(page)).toBe('#eff1f5');
+  // Guard the isolation: the entry module was blocked, so React never mounted and
+  // the flavour above can only have come from the head script — not the store.
+  expect(await page.evaluate(() => document.getElementById('root')?.childElementCount)).toBe(0);
+});
