@@ -1385,9 +1385,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     await deleteWorktreeRecords(worktree.id);
     let branchDeleted: boolean | undefined;
     let branchDeleteError: string | undefined;
-    // the branch is deletable only when nothing is lost (pushed or merged); the web enforces
-    // this too, but the server never force-deletes an unmerged, unpushed branch on request
-    if (deleteBranch === true && facts.facts.branch !== undefined && (facts.facts.pushed || facts.facts.merged)) {
+    // deleting the branch is the operator's explicit decision — the dialog warns first when it
+    // is neither pushed nor merged, so a request that still asks for it is honoured
+    if (deleteBranch === true && facts.facts.branch !== undefined) {
       const outcome = await worktreeManagement.deleteBranch(worktree, facts.facts.branch);
       if (outcome.ok) branchDeleted = true; else branchDeleteError = outcome.error;
     }

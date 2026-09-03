@@ -197,7 +197,7 @@ describe('DELETE /api/worktrees/:id', () => {
     } finally { await server.close(); }
   });
 
-  it('deletes the branch only when pushed or merged, reporting its failure without undoing', async () => {
+  it('deletes the branch when asked, reporting its failure without undoing the removal', async () => {
     const deleted: string[] = [];
     const worktreeManagement = { removal: async () => ({ ok: true, facts: cleanFacts }), removeCheckout: async () => ({ ok: true }), deleteBranch: async (_w: unknown, b: string) => { deleted.push(b); return { ok: false, error: 'error: unmerged' }; } } as never;
     const launch = { killWorktreeShells: async () => {} } as never;
@@ -210,13 +210,28 @@ describe('DELETE /api/worktrees/:id', () => {
     } finally { await server.close(); }
   });
 
-  it('never deletes an ineligible branch even when requested', async () => {
+  // the dialog warns before offering it, so an unpushed, unmerged branch is still the
+  // operator's call to lose
+  it('deletes an unpushed, unmerged branch when it is explicitly requested', async () => {
     const deleted: string[] = [];
     const worktreeManagement = { removal: async () => ({ ok: true, facts: { ...cleanFacts, pushed: false, merged: false } }), removeCheckout: async () => ({ ok: true }), deleteBranch: async (_w: unknown, b: string) => { deleted.push(b); return { ok: true }; } } as never;
     const launch = { killWorktreeShells: async () => {} } as never;
     const server = await app({ discovery: discoveryStub(), worktreeManagement, launch, ...(await stores()) });
     try {
       const response = await server.inject({ method: 'DELETE', url: `/api/worktrees/${encodeURIComponent(linked.id)}`, headers: mutationHeaders, payload: { deleteBranch: true } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ removed: true, branchDeleted: true });
+      expect(deleted).toEqual(['feat']);
+    } finally { await server.close(); }
+  });
+
+  it('leaves the branch alone when it was not requested', async () => {
+    const deleted: string[] = [];
+    const worktreeManagement = { removal: async () => ({ ok: true, facts: { ...cleanFacts, pushed: false, merged: false } }), removeCheckout: async () => ({ ok: true }), deleteBranch: async (_w: unknown, b: string) => { deleted.push(b); return { ok: true }; } } as never;
+    const launch = { killWorktreeShells: async () => {} } as never;
+    const server = await app({ discovery: discoveryStub(), worktreeManagement, launch, ...(await stores()) });
+    try {
+      const response = await server.inject({ method: 'DELETE', url: `/api/worktrees/${encodeURIComponent(linked.id)}`, headers: mutationHeaders, payload: {} });
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ removed: true });
       expect(deleted).toEqual([]);

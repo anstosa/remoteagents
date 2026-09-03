@@ -4913,8 +4913,9 @@ function NewWorktreeDialog({ project, request, onClose, onCreated }: { project: 
 }
 
 // The Remove dialog: fetch the worktree's fresh facts, then let the operator remove it —
-// a dirty tree only behind "Discard uncommitted changes", the branch only when nothing is
-// lost (pushed or merged). A running Agent or stack session is a blocker that refuses it.
+// a dirty tree only behind "Discard uncommitted changes", the branch behind its own tick,
+// which warns first when the branch is neither pushed nor merged (deleting it then loses
+// those commits). A running Agent or stack session is a blocker that refuses it.
 function RemoveWorktreeDialog({ worktree, request, onClose, onRemoved }: { worktree: Worktree; request: (url: string, init?: RequestInit) => Promise<Response>; onClose: () => void; onRemoved: (message: string) => void }) {
   const [facts, setFacts] = useState<RemovalFacts | undefined>(undefined);
   const [factsError, setFactsError] = useState<string | undefined>(undefined);
@@ -4936,14 +4937,14 @@ function RemoveWorktreeDialog({ worktree, request, onClose, onRemoved }: { workt
   }, [worktree.id]);
   const dirty = (facts?.dirtyCount ?? 0) > 0;
   const blocked = (facts?.blockers.length ?? 0) > 0;
-  const branchDeletable = facts?.branch !== undefined && (facts.pushed || facts.merged);
-  // the branch checkbox is only meaningful when it would lose nothing
-  const branchDisabledReason = facts?.branch === undefined ? undefined : branchDeletable ? undefined : 'The branch is neither pushed nor merged, so it is kept.';
+  // deleting a branch that is neither pushed nor merged loses its commits; the operator may
+  // still choose it, so this only escalates the warning rather than disabling the tick
+  const branchAtRisk = facts?.branch !== undefined && !facts.pushed && !facts.merged;
   const submit = async () => {
     setError(undefined);
     setPending(true);
     try {
-      const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ discardChanges: discard, deleteBranch: deleteBranch && branchDeletable }) }).catch(() => undefined);
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ discardChanges: discard, deleteBranch }) }).catch(() => undefined);
       if (response === undefined) return setError('Unable to reach the console.');
       if (!response.ok) return setError(await launchError(response));
       const payload = await response.json().catch(() => ({})) as { branchDeleted?: boolean; branchDeleteError?: string };
@@ -4963,7 +4964,8 @@ function RemoveWorktreeDialog({ worktree, request, onClose, onRemoved }: { workt
         </ul>
         {blocked && <p className="remove-worktree-blocked" role="alert">Cannot remove while {facts.blockers.join(' and ')} {facts.blockers.length === 1 ? 'is' : 'are'} running.</p>}
         {dirty && <label className="remove-worktree-option"><input type="checkbox" checked={discard} disabled={blocked} onChange={event => setDiscard(event.target.checked)} />Discard uncommitted changes</label>}
-        {facts.branch !== undefined && <label className="remove-worktree-option"><input type="checkbox" checked={deleteBranch && branchDeletable} disabled={blocked || !branchDeletable} onChange={event => setDeleteBranch(event.target.checked)} />Also delete branch <code>{facts.branch}</code>{branchDisabledReason !== undefined && <small>{branchDisabledReason}</small>}</label>}
+        {facts.branch !== undefined && <label className="remove-worktree-option"><input type="checkbox" checked={deleteBranch} disabled={blocked} onChange={event => setDeleteBranch(event.target.checked)} />Also delete branch <code>{facts.branch}</code></label>}
+        {branchAtRisk && <p className={deleteBranch ? 'remove-worktree-branch-warning armed' : 'remove-worktree-branch-warning'} role="alert"><code>{facts.branch}</code> is neither pushed nor merged.</p>}
       </>}
     {error !== undefined && <p className="remove-worktree-error" role="alert">{error}</p>}
     <footer className="remove-worktree-actions"><button type="button" className="outline-button" disabled={pending} onClick={onClose}>Cancel</button><button type="button" className="danger" disabled={disabled} onClick={() => void submit()}>{pending ? <><span className="spinner" />Removing…</> : 'Remove worktree'}</button></footer>

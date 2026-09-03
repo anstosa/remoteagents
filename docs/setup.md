@@ -271,10 +271,11 @@ is ahead of or behind its upstream:
 - A tree with uncommitted changes can only be removed after you tick **Discard
   uncommitted changes**; git is then run with `--force` (never `-f -f`). An
   unpushed branch is only a warning, never a block.
-- **Also delete branch `<name>`** is off by default, absent on a detached HEAD,
-  and enabled only when the branch is pushed or merged (so nothing is lost). It
-  runs `git branch -D` after the checkout is removed; if that delete fails, the
-  removal still stands and the failure is reported.
+- **Also delete branch `<name>`** is off by default and absent on a detached
+  HEAD. When the branch is neither pushed nor merged the dialog warns that
+  deleting it discards its commits for good, but the tick stays yours to make.
+  It force-deletes the branch after the checkout is removed; if that delete
+  fails, the removal still stands and the failure is reported.
 
 Removing a Worktree kills its idle shell, removes the checkout, and deletes its
 console records (pin, last-used kind, queued prompts, prompt history, sleeping

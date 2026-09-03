@@ -87,18 +87,24 @@ test('removes a linked worktree from the idle tab power menu', async ({ page }) 
   await expect.poll(() => deleted).toEqual({ discardChanges: true, deleteBranch: false });
 });
 
-test('keeps a branch that is neither pushed nor merged, disabling the checkbox', async ({ page }) => {
-  await stub(page, { removal: { ...facts, dirtyCount: 0, pushed: false, merged: false } });
+test('warns before deleting a branch that is neither pushed nor merged, but allows it', async ({ page }) => {
+  let deleted: unknown;
+  await stub(page, { removal: { ...facts, dirtyCount: 0, pushed: false, merged: false }, onDelete: body => { deleted = body; } });
   await page.goto('/');
   await page.locator('.new-agent-tab').click();
   await page.getByRole('group', { name: 'Agent launcher' }).getByRole('button', { name: 'Remove Repo · feat' }).click();
   const dialog = page.getByRole('dialog', { name: 'Remove worktree' });
 
+  // the warning is there before the tick, and the tick is the operator's to make
+  const warning = dialog.locator('.remove-worktree-branch-warning');
+  await expect(warning).toContainText('neither pushed nor merged');
   const branchOption = dialog.getByLabel(/Also delete branch/u);
-  await expect(branchOption).toBeDisabled();
-  await expect(dialog.getByText('neither pushed nor merged')).toBeVisible();
+  await expect(branchOption).toBeEnabled();
+  await branchOption.check();
+  await expect(warning).toHaveClass(/armed/u);
   // a clean tree removes with no discard needed
-  await expect(dialog.getByRole('button', { name: 'Remove worktree', exact: true })).toBeEnabled();
+  await dialog.getByRole('button', { name: 'Remove worktree', exact: true }).click();
+  await expect.poll(() => deleted).toEqual({ discardChanges: false, deleteBranch: true });
 });
 
 test('refuses removal while a blocker runs', async ({ page }) => {

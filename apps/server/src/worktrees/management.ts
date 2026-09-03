@@ -226,9 +226,10 @@ export class WorktreeManagementService {
     });
   }
 
-  // force-delete the Worktree's branch (`git branch -D`) after a successful removal. The
-  // caller only reaches here when the branch is pushed or merged (nothing is lost); its
-  // failure is reported and never undoes the removal, so it returns a plain error string.
+  // force-delete the Worktree's branch after a successful removal, which the
+  // operator asked for even when the branch is unpushed and unmerged (the dialog warns
+  // first); its failure is reported and never undoes the removal, so it returns a plain
+  // error string.
   async deleteBranch(worktree: Worktree, branch: string): Promise<BranchDeleteOutcome> {
     const project = this.project(worktree.projectId);
     if (project === undefined) return { ok: false, error: 'project unavailable' };
