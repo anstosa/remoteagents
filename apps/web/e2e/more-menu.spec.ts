@@ -147,20 +147,21 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
   await expect(pullRequest).toBeVisible();
   await expect.poll(async () => Math.abs((await attachMenuItem.boundingBox())!.y - stableItemBefore!.y)).toBeLessThanOrEqual(1);
   await expect(pullRequest).not.toContainText('Open');
-  const pullRequestActions = pullRequest.locator('xpath=..').locator('.switch-pr-actions');
+  const pullRequestActions = pullRequest.locator('xpath=../..').locator('.switch-pr-actions');
   const statusIcon = pullRequestActions.locator('.switch-pr-status-icon');
   await expect(statusIcon).toHaveCSS('mask-image', /github-favicon\.svg/);
   await expect(statusIcon).toHaveCSS('background-color', 'rgb(166, 227, 161)');
+  await expect(statusIcon).toHaveAttribute('title', 'Open pull request on GitHub');
   await expect(pullRequestActions.getByRole('img', { name: 'CI checks failed' })).toBeVisible();
   await expect(pullRequestActions.getByRole('img', { name: 'Merge conflicts' })).toBeVisible();
   await expect(pullRequestActions.getByRole('img', { name: 'Unresolved review comments' })).toBeVisible();
   await expect(pullRequest.locator('.switch-pr-copy strong')).toHaveCSS('color', 'rgb(166, 227, 161)');
   const draft = menu.getByRole('link', { name: '#2568: Prompt actions experiment', exact: true });
   await expect(draft).not.toContainText('Draft');
-  const draftIcon = draft.locator('xpath=..').locator('.switch-pr-status-icon');
+  const draftIcon = draft.locator('xpath=../..').locator('.switch-pr-status-icon');
   await expect(draftIcon).toHaveCSS('background-color', 'rgb(147, 153, 178)');
   await expect(draft.locator('.switch-pr-copy strong')).toHaveCSS('color', 'rgb(147, 153, 178)');
-  const checkout = pullRequest.locator('xpath=..').getByRole('button', { name: 'Checkout' });
+  const checkout = pullRequest.locator('xpath=../..').getByRole('button', { name: 'Checkout' });
   await expect(pullRequest).toHaveAttribute('href', 'https://github.example.com/pull/2567');
   await expect(pullRequest).toHaveAttribute('target', '_blank');
   await expect(checkout).toBeEnabled();
@@ -176,13 +177,15 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
   finishPullRequestRefresh();
   await expect(checkout).toBeEnabled();
   const positions = await page.locator('.switch-pr-option').first().evaluate(element => {
-    const title = element.querySelector(':scope > .switch-pr')!.getBoundingClientRect();
+    const title = element.querySelector(':scope > .switch-pr-main')!.getBoundingClientRect();
     const actions = element.querySelector('.switch-pr-actions')!.getBoundingClientRect();
     const statusIcon = element.querySelector('.switch-pr-status-icon')!.getBoundingClientRect();
     const firstButton = element.querySelector('.switch-pr-action')!.getBoundingClientRect();
-    return { titleBottom: title.bottom, actionsTop: actions.top, statusRight: statusIcon.right, firstButtonLeft: firstButton.left };
+    return { titleBottom: title.bottom, titleRight: title.right, actionsTop: actions.top, actionsLeft: actions.left, statusRight: statusIcon.right, firstButtonLeft: firstButton.left };
   });
-  expect(positions.actionsTop).toBeGreaterThanOrEqual(positions.titleBottom - 1);
+  // the actions sit inline to the right of the title, not stacked below it
+  expect(positions.actionsLeft).toBeGreaterThanOrEqual(positions.titleRight - 1);
+  expect(positions.actionsTop).toBeLessThan(positions.titleBottom);
   expect(positions.firstButtonLeft).toBeGreaterThanOrEqual(positions.statusRight);
   const [github] = await Promise.all([page.waitForEvent('popup'), pullRequest.click()]);
   await expect(github).toHaveURL('https://github.example.com/pull/2567');
@@ -276,7 +279,7 @@ test('shows every pull request target while keeping checkout and worktree action
   await expect(dirtyTarget).toBeEnabled();
   await expect(openTarget).toBeVisible();
   await expect(openTarget).toBeEnabled();
-  await expect(openTarget.getByText('Already open in Delta', { exact: true })).toBeVisible();
+  await expect(menu.getByRole('button', { name: 'Switch to Delta' })).toContainText('Open in Delta');
   await expect(otherTarget).not.toBeVisible();
   await menu.getByText(/^Pull requests by others/u).click();
   await expect(otherTarget).toBeVisible();
@@ -284,17 +287,17 @@ test('shows every pull request target while keeping checkout and worktree action
   await expect(dirtyTarget).toHaveAttribute('href', 'https://github.example.com/pull/300');
 
   const switchToDelta = menu.getByRole('button', { name: 'Switch to Delta' });
-  const checkout = openTarget.locator('xpath=..').getByRole('button', { name: 'Checkout' });
-  const actionOrder = await openTarget.locator('xpath=..').locator('.switch-pr-actions').locator('.switch-pr-action').evaluateAll(elements => elements.map(element => element.textContent?.trim()));
-  expect(actionOrder).toEqual(['Checkout', 'Switch to Delta']);
+  const checkout = openTarget.locator('xpath=../..').getByRole('button', { name: 'Checkout' });
+  // the checkout action is the only button in the action cluster; the merged switch link lives on its own owner line
+  const actionOrder = await openTarget.locator('xpath=../..').locator('.switch-pr-actions').locator('.switch-pr-action').evaluateAll(elements => elements.map(element => element.textContent?.trim()));
+  expect(actionOrder).toEqual(['Checkout']);
   await expect(checkout).toBeDisabled();
   await expect(checkout).toHaveAttribute('title', 'Working copy must be clean and pushed');
   const [checkoutBox, switchBox] = await Promise.all([checkout.boundingBox(), switchToDelta.boundingBox()]);
   expect(checkoutBox).not.toBeNull();
   expect(switchBox).not.toBeNull();
-  expect(switchBox!.x).toBeGreaterThanOrEqual(checkoutBox!.x + checkoutBox!.width);
-  await expect(switchToDelta).toHaveCSS('border-top-style', 'solid');
-  await expect(switchToDelta).toHaveCSS('border-top-width', '1px');
+  // the merged switch link sits on its own line below the checkout row, not beside it
+  expect(switchBox!.y).toBeGreaterThanOrEqual(checkoutBox!.y + checkoutBox!.height - 2);
 
   // close without activating a covered control
   const deltaTab = page.getByRole('tab', { name: /^Delta/u });
@@ -344,7 +347,7 @@ test('checks out an available pull request from its dedicated action', async ({ 
 
   await page.goto('/');
   await page.getByRole('button', { name: 'More options' }).click();
-  const option = page.getByRole('link', { name: '#300: Available checkout' }).locator('xpath=..');
+  const option = page.getByRole('link', { name: '#300: Available checkout' }).locator('xpath=../..');
   await option.getByRole('button', { name: 'Checkout' }).click();
 
   await expect.poll(() => checkedOut).toEqual({ number: 300 });
@@ -373,12 +376,12 @@ test('disables checkout for the pull request already open in the current worktre
 
   await page.goto('/');
   await page.getByRole('button', { name: 'More options' }).click();
-  const option = page.getByRole('link', { name: '#300: Current checkout' }).locator('xpath=..');
+  const option = page.getByRole('link', { name: '#300: Current checkout' }).locator('xpath=../..');
   const checkout = option.getByRole('button', { name: 'Checkout' });
 
   await expect(checkout).toBeDisabled();
   await expect(checkout).toHaveAttribute('title', 'Already checked out here');
-  await expect(option).toContainText('Already open here');
+  await expect(option).toContainText('Open here');
   await expect(option.getByRole('button', { name: 'Switch to Cora' })).toHaveCount(0);
 });
 
@@ -406,7 +409,7 @@ test('shows the server reason when pull request checkout fails', async ({ page }
 
   await page.goto('/');
   await page.getByRole('button', { name: 'More options' }).click();
-  const option = page.getByRole('link', { name: '#300: Rejected checkout' }).locator('xpath=..');
+  const option = page.getByRole('link', { name: '#300: Rejected checkout' }).locator('xpath=../..');
   await option.getByRole('button', { name: 'Checkout' }).click();
 
   await expect(page.getByRole('alert')).toContainText('Pull request could not be checked out');
@@ -442,7 +445,7 @@ test('moves an occupied pull request into the current worktree', async ({ page }
 
   await page.goto('/');
   await page.getByRole('button', { name: 'More options' }).click();
-  const option = page.getByRole('link', { name: '#301: Already in Delta' }).locator('xpath=..');
+  const option = page.getByRole('link', { name: '#301: Already in Delta' }).locator('xpath=../..');
   const checkout = option.getByRole('button', { name: 'Checkout' });
   await expect(checkout).toBeEnabled();
   await checkout.click();
@@ -546,7 +549,7 @@ test('disables stale pull request switching when a refresh fails', async ({ page
 
   const menu = page.locator('.more-menu');
   const stalePullRequest = menu.getByRole('link', { name: '#401: Cached PR' });
-  const staleCheckout = stalePullRequest.locator('xpath=..').getByRole('button', { name: 'Checkout' });
+  const staleCheckout = stalePullRequest.locator('xpath=../..').getByRole('button', { name: 'Checkout' });
   await expect(menu.getByRole('alert')).toHaveText('GitHub could not load pull requests (503).');
   await expect(stalePullRequest).toBeVisible();
   await expect(stalePullRequest).toBeEnabled();
@@ -683,7 +686,7 @@ test('moves a branch open in another worktree into the current worktree', async 
   await page.getByRole('button', { name: 'More options' }).click();
   const menu = page.locator('.more-menu');
   const option = menu.locator('.switch-branch-option', { hasText: 'feature/delta' });
-  await expect(option.getByText('Already open in Delta', { exact: true })).toBeVisible();
+  await expect(option.getByRole('button', { name: 'Switch to Delta' })).toContainText('Open in Delta');
   const checkout = option.getByRole('button', { name: 'Checkout' });
   await expect(checkout).toBeEnabled();
   await expect(checkout).toHaveAttribute('title', 'Move feature/delta here');
@@ -799,4 +802,33 @@ test('shows the server reason and no success when a branch move fails', async ({
   // a rejected move must not claim success or dismiss the menu
   await expect(page.getByText('Branch moved here', { exact: true })).toHaveCount(0);
   await expect(menu).toBeVisible();
+});
+
+// the merged owner line navigates to the worktree that holds the branch
+test('switches to the worktree that already holds a branch', async ({ page }) => {
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [
+      { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' },
+      { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/delta', worktreeId: 'delta', worktreeLabel: 'Delta', worktreeOrder: 1, title: 'Ready' }
+    ], projects: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (/^\/api\/agents\/agent-[12]\/saved-prompts$/u.test(url.pathname) && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
+    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [], otherPullRequests: [], pullRequestsSupported: true, branches: [
+      { branch: 'feature/delta', checkedOut: true, openIn: { agentId: 'agent-2', worktreeId: 'delta', worktreeName: 'Delta' } }
+    ] } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'More options' }).click();
+  const deltaTab = page.getByRole('tab', { name: /^Delta/u });
+  await expect(deltaTab).toHaveAttribute('aria-selected', 'false');
+  await page.locator('.more-menu').getByRole('button', { name: 'Switch to Delta' }).click();
+
+  await expect(deltaTab).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.more-menu')).toBeHidden();
 });

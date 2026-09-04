@@ -1100,22 +1100,25 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .other-pull-requests > summary::before { content: '›'; color: var(--overlay-1); font-size: 1rem; line-height: 1; transition: transform .15s ease; }
 .other-pull-requests[open] > summary::before { transform: rotate(90deg); }
 .other-pull-requests > summary > span { min-width: 1.25rem; margin-left: auto; border-radius: 999px; padding: .12rem .32rem; background: var(--surface-1); color: var(--overlay-1); font-size: .6rem; text-align: center; }
-.switch-pr-option { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr); align-items: stretch; border-radius: calc(var(--control-radius) - .15rem); }
+.switch-pr-option { display: flex; flex-wrap: wrap; min-width: 0; align-items: center; gap: .25rem .6rem; padding: .5rem .9rem; border-radius: calc(var(--control-radius) - .15rem); }
 .switch-pr-option:hover { background: var(--surface-0); }
-.more-menu .switch-pr-option > a.switch-pr { display: block; width: 100%; min-width: 0; padding: .65rem .9rem; border-radius: var(--control-radius); color: var(--text); line-height: 1.25; overflow-wrap: anywhere; text-align: left; text-decoration: none; white-space: normal; }
-.more-menu .switch-pr-option > a.switch-pr:focus-visible { outline: 2px solid var(--sky); outline-offset: -2px; }
+.switch-pr-main { flex: 1 1 11rem; min-width: 0; }
+.more-menu .switch-pr-main > a.switch-pr { display: inline-block; max-width: 100%; min-width: 0; border-radius: var(--control-radius); color: var(--text); line-height: 1.25; overflow-wrap: anywhere; text-align: left; text-decoration: none; white-space: normal; }
+.more-menu .switch-pr-main > a.switch-pr:focus-visible { outline: 2px solid var(--sky); outline-offset: 2px; }
 .switch-pr-status-icon { flex: 0 0 1rem; width: 1rem; height: 1rem; }
 .switch-pr-copy { display: grid; min-width: 0; gap: .18rem; }
 .switch-pr-copy strong.status-draft { color: var(--overlay-2); }
 .switch-pr-copy strong.status-open { color: var(--green); }
-.switch-pr-open-in { color: var(--blue); font: 650 .64rem/1.2 var(--font-mono); letter-spacing: normal; }
-.more-menu .switch-branch-option > .switch-branch { display: block; width: 100%; min-width: 0; padding: .65rem .9rem; color: var(--text); line-height: 1.25; overflow-wrap: anywhere; text-align: left; }
 .switch-branch-name { color: var(--text); font: 700 .72rem/1.25 var(--font-mono); letter-spacing: normal; overflow-wrap: anywhere; }
-.switch-pr-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; padding: .05rem .9rem .65rem; }
+.switch-pr-owner { flex-basis: 100%; min-width: 0; }
+.switch-pr-open-in { display: inline-block; max-width: 100%; color: var(--blue); font: 650 .64rem/1.2 var(--font-mono); letter-spacing: normal; overflow-wrap: anywhere; }
+.more-menu button.switch-pr-open-in-link { width: auto; min-height: 0; padding: 0; border-radius: 0; gap: .15rem; background: none; box-shadow: none; color: var(--blue); white-space: normal; }
+.more-menu .switch-pr-owner button.switch-pr-open-in-link:not(:disabled):hover { background: none; color: var(--blue); text-decoration: underline; }
+.more-menu button.switch-pr-open-in-link:disabled { opacity: .55; text-decoration: none; }
+.switch-pr-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; gap: .4rem; margin-left: auto; }
 .switch-pr-actions > .pull-request-issues { gap: .2rem; padding: 0; }
 .more-menu .switch-pr-actions > .switch-pr-action { display: inline-flex; width: auto; min-height: 1.85rem; align-items: center; justify-content: center; gap: .35rem; padding: .3rem .55rem; border: 1px solid var(--surface-2); border-radius: calc(var(--control-radius) - .05rem); background: transparent; box-shadow: none; color: var(--subtext-0); font-size: .68rem; font-weight: 700; line-height: 1; text-decoration: none; white-space: nowrap; }
 .more-menu .switch-pr-actions > .switch-pr-checkout { color: var(--green); }
-.more-menu .switch-pr-actions > .switch-pr-worktree { color: var(--blue); }
 .more-menu .switch-pr-actions > .switch-pr-action:hover { border-color: var(--blue); background: var(--surface-1); color: var(--blue); }
 .more-menu .switch-pr-actions > .switch-pr-checkout:not(:disabled):hover { border-color: var(--green); color: var(--green); }
 
