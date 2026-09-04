@@ -47,6 +47,10 @@ describe('isOmxWorkerPane', () => {
     expect(isOmxWorkerPane({ path: '/repo', startCommand: 'bash /repo/.omx/state/team/demo/runtime/worker-2-startup.sh' })).toBe(true);
     expect(isOmxWorkerPane({ path: '/worktrees/repo', startCommand: 'codex' })).toBe(false);
   });
+
+  it('keeps a console-managed launch visible inside an old OMX worker checkout', () => {
+    expect(isOmxWorkerPane({ path: worker(1), startCommand: undefined, consoleManaged: true })).toBe(false);
+  });
 });
 
 describe('classifyOmxPane', () => {

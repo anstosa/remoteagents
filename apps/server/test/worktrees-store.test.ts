@@ -49,10 +49,31 @@ describe('WorktreeLaunchStore', () => {
     expect(JSON.parse(await readFile(file, 'utf8'))[cora]).toEqual({ launchProfile: 'codex', pinned: false });
   });
 
+  it('records, reads and clears a custom worktree label', async () => {
+    const { file, store: worktrees } = await store();
+    expect(await worktrees.labels()).toEqual({});
+    await worktrees.rememberLaunchProfile(cora, 'codex');
+    await worktrees.setLabel(cora, '🥔 Dave');
+    // the custom label shares the Worktree record with its launch state
+    expect(await worktrees.labels()).toEqual({ [cora]: '🥔 Dave' });
+    expect(JSON.parse(await readFile(file, 'utf8'))[cora]).toEqual({ launchProfile: 'codex', label: '🥔 Dave' });
+    await worktrees.setLabel(cora, undefined);
+    expect(await worktrees.labels()).toEqual({});
+    expect(JSON.parse(await readFile(file, 'utf8'))[cora]).toEqual({ launchProfile: 'codex' });
+  });
+
+  it('deletes an empty record when its custom label is cleared', async () => {
+    const { store: worktrees } = await store();
+    await worktrees.setLabel(cora, 'Dave');
+    await worktrees.setLabel(cora, undefined);
+    expect(await worktrees.keys()).toEqual([]);
+  });
+
   it('ignores unsafe keys and unknown kinds instead of persisting them', async () => {
     const { file, store: worktrees } = await store();
     await worktrees.rememberLaunchProfile('has\nnewline', 'codex');
     await worktrees.setPinned('has\0nul', true);
+    await worktrees.setLabel(cora, 'has\nnewline');
     await worktrees.rememberLaunchProfile(cora, 'bogus' as never);
     expect(await worktrees.launchProfile('has\nnewline')).toBeUndefined();
     expect(await worktrees.launchProfile(cora)).toBeUndefined();

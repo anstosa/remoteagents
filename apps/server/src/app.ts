@@ -615,6 +615,24 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(204).send();
   });
+  // set or clear one Worktree's durable display label
+  app.patch('/api/worktrees/:id/label', async (request, reply) => {
+    controlled(request, true);
+    const id = (request.params as { id: string }).id;
+    const requestedLabel = body(request).label;
+    // require one known Worktree before writing operator state
+    if (configuredWorktree(id) === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    // null restores the generated Project/branch label
+    if (requestedLabel !== null && typeof requestedLabel !== 'string') return reply.code(400).send({ error: 'invalid worktree label' });
+    const label = typeof requestedLabel === 'string' ? requestedLabel.trim() : undefined;
+    // keep labels bounded and single-line
+    if (label !== undefined && (label.length === 0 || label.length > 120 || /[\0-\x1f\x7f]/u.test(label))) return reply.code(400).send({ error: 'invalid worktree label' });
+    await worktreeStore.setLabel(id, label);
+    discovery.invalidateWorktrees();
+    // publish independently so a slow dashboard scan never blocks the saved response
+    void dashboardUpdates.refresh().catch(() => undefined);
+    return reply.code(204).send();
+  });
   // create an optionally titled note
   app.post('/api/worktrees/:id/notes', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const saveKey = worktreeSaveKey(id); const title = body(request).title; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0'))) return reply.code(400).send({ error: 'invalid note title' }); const note = await notes.create(saveKey, title as string | undefined); return note === undefined ? reply.code(409).send({ error: 'note limit reached' }) : reply.code(201).send(note); });
   app.put('/api/worktrees/:id/notes/:noteId', { bodyLimit: 128_000 }, async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); const text = body(request).text; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof text !== 'string' || text.length > 30_000 || text.includes('\0')) return reply.code(400).send({ error: 'invalid note' }); const note = await notes.update(saveKey, noteId, text); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });

@@ -168,6 +168,17 @@ describe('runMigration', () => {
 
     expect(await readJson(worktrees)).toEqual({ [`a:${repo}`]: { pinned: false } });
   });
+
+  it('creates the worktrees store to preserve a migrated worktree label', async () => {
+    const { root, repo } = await workspace();
+    const configPath = join(root, 'config.json');
+    await writeFile(configPath, JSON.stringify({ publicOrigin: 'https://x', worktrees: [{ id: 'a', label: '🥔 Dave', path: repo, command: 'codex' }] }));
+    const worktrees = join(root, 'worktrees.json');
+
+    await runMigration(deps(configPath, { worktrees }));
+
+    expect(await readJson(worktrees)).toEqual({ [`a:${repo}`]: { label: '🥔 Dave' } });
+  });
 });
 
 describe('dryRunMigration', () => {

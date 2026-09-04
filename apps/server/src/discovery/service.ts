@@ -333,7 +333,7 @@ export class DiscoveryService {
   private readonly commonDirCache = new Map<string, string | null>();
   private static readonly refreshCacheMs = 2_000;
   private static readonly gitMetadataCacheMs = 30_000;
-  constructor(private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly tmux = new TmuxAdapter(), private readonly processes: ProcessInspector = new ProcInspector(), private readonly pullRequests = new PullRequestService(), private readonly adapters?: AdapterConfigs, private readonly projects: Project[] = [], private readonly pinStore?: Pick<WorktreeLaunchStore, 'pins'> & Partial<Pick<WorktreeLaunchStore, 'keys'>>, private readonly listWorktreesImpl: (path: string) => Promise<WorktreeEntry[] | undefined> = listWorktrees) {}
+  constructor(private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly tmux = new TmuxAdapter(), private readonly processes: ProcessInspector = new ProcInspector(), private readonly pullRequests = new PullRequestService(), private readonly adapters?: AdapterConfigs, private readonly projects: Project[] = [], private readonly pinStore?: Pick<WorktreeLaunchStore, 'pins'> & Partial<Pick<WorktreeLaunchStore, 'keys' | 'labels'>>, private readonly listWorktreesImpl: (path: string) => Promise<WorktreeEntry[] | undefined> = listWorktrees) {}
   // reuse socket discovery across adjacent requests
   private async sockets(force = false): Promise<SocketRef[]> {
     // serve the recent socket snapshot
@@ -500,6 +500,7 @@ export class DiscoveryService {
 
   private async discoverWorktrees(): Promise<{ worktrees: Worktree[]; stale: Map<string, string[]> }> {
     const pins = (await this.pinStore?.pins()) ?? {};
+    const labels = (await this.pinStore?.labels?.()) ?? {};
     // every stored key, so a worktree key git lists nowhere counts as an orphaned record
     const storeKeys = (await this.pinStore?.keys?.()) ?? [];
     const worktrees: Worktree[] = [];
@@ -528,9 +529,11 @@ export class DiscoveryService {
         const main = path === mainPath;
         const id = worktreeWireId(project.id, path);
         const sha = entry.head === undefined ? undefined : entry.head.slice(0, 7);
-        const label = main ? project.label : entry.branch !== undefined ? `${project.label} · ${entry.branch}` : `${project.label} · ${sha ?? path.split('/').pop() ?? path}`;
+        const generatedLabel = main ? project.label : entry.branch !== undefined ? `${project.label} · ${entry.branch}` : `${project.label} · ${sha ?? path.split('/').pop() ?? path}`;
+        const customLabel = labels[id];
+        const label = customLabel ?? generatedLabel;
         usable.push({
-          id, projectId: project.id, label, path, identity: path,
+          id, projectId: project.id, label, ...(customLabel === undefined ? {} : { customLabel: true }), path, identity: path,
           ...(main && project.hostPath !== undefined ? { hostPath: project.hostPath } : {}),
           available: true, pinned: pins[id] ?? main, main, detached: entry.detached, locked: entry.locked,
           ...(entry.locked && entry.lockedReason !== undefined ? { lockedReason: entry.lockedReason } : {}),
@@ -624,7 +627,7 @@ export class DiscoveryService {
     const activeAgents = agents.filter(agent => !isUpdateAdvisorLabel(agent.displayLabel));
     const activeWorktreeIds = new Set(activeAgents.flatMap(agent => agent.worktreeId === undefined ? [] : [agent.worktreeId]));
     const worktreeViews = await Promise.all(worktrees.map(async (worktree): Promise<DashboardWorktree> => {
-      const base: DashboardWorktree = { id: worktree.id, projectId: worktree.projectId, label: worktree.label, path: worktree.path, available: worktree.available, pinned: worktree.pinned, main: worktree.main, detached: worktree.detached, locked: worktree.locked, order: orderOf.get(worktree.id) ?? 0, ...(worktree.branch === undefined ? {} : { branch: worktree.branch }), ...(worktree.sha === undefined ? {} : { sha: worktree.sha }), ...(worktree.projectUrl === undefined ? {} : { projectUrl: worktree.projectUrl }) };
+      const base: DashboardWorktree = { id: worktree.id, projectId: worktree.projectId, label: worktree.label, ...(worktree.customLabel === true ? { customLabel: true } : {}), path: worktree.path, available: worktree.available, pinned: worktree.pinned, main: worktree.main, detached: worktree.detached, locked: worktree.locked, order: orderOf.get(worktree.id) ?? 0, ...(worktree.branch === undefined ? {} : { branch: worktree.branch }), ...(worktree.sha === undefined ? {} : { sha: worktree.sha }), ...(worktree.projectUrl === undefined ? {} : { projectUrl: worktree.projectUrl }) };
       if (activeWorktreeIds.has(worktree.id)) return base;
       const meta = await metadataFor(worktree.identity);
       const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, meta.branch);

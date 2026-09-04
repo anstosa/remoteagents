@@ -3,14 +3,14 @@ import { dirname } from 'node:path';
 import { agentKinds, type AgentKind } from '../adapters/types.js';
 
 /**
- * Per-scope launch and pin state persisted outside the config file (ADR 0003).
- * Keyed by the Worktree wire id `<projectId>:<realpath>` for a Worktree's pin and
- * last-used `launchProfile`, by `<projectId>` for a Project's last-used profile, and
- * by the reserved `scratch` key for the Scratch group. `pinned` is an explicit
- * operator override; its absence means the default (a Main worktree pinned, a Linked
- * worktree not), which discovery applies. Sandboxed is never stored.
+ * per-scope launch, pin and label state persisted outside the config file (ADR 0003).
+ * keyed by the Worktree wire id `<projectId>:<realpath>` for a Worktree's pin, custom
+ * `label` and last-used `launchProfile`, by `<projectId>` for a Project's last-used
+ * profile, and by the reserved `scratch` key for the Scratch group. `pinned` is an
+ * explicit operator override; its absence means the default (a Main worktree pinned,
+ * a Linked worktree not), which discovery applies. Sandboxed is never stored.
  */
-export type WorktreeRecord = { pinned?: boolean; launchProfile?: AgentKind };
+export type WorktreeRecord = { pinned?: boolean; launchProfile?: AgentKind; label?: string };
 type StoredRecords = Record<string, WorktreeRecord>;
 
 // the reserved key for the single Scratch launch group
@@ -22,13 +22,17 @@ const maxKeys = 2_000;
 // keys are `scratch`, a `<projectId>`, or a `<projectId>:<realpath>` worktree key —
 // bounded, single-line, no NUL, so a stray value never corrupts the on-disk map
 const validKey = (value: string) => value.length >= 1 && value.length <= 4096 && !/[\0\n\r]/u.test(value);
+// labels are stored normalized and safe for one-line controls
+const validLabel = (value: string) => value.length >= 1 && value.length <= 120 && value === value.trim() && !/[\0-\x1f\x7f]/u.test(value);
 const isKind = (value: unknown): value is AgentKind => (agentKinds as readonly string[]).includes(value as string);
 
 // validate one persisted record
 function isRecord(value: unknown): value is WorktreeRecord {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  const record = value as { pinned?: unknown; launchProfile?: unknown };
-  return (record.pinned === undefined || typeof record.pinned === 'boolean') && (record.launchProfile === undefined || isKind(record.launchProfile));
+  const record = value as { pinned?: unknown; launchProfile?: unknown; label?: unknown };
+  return (record.pinned === undefined || typeof record.pinned === 'boolean')
+    && (record.launchProfile === undefined || isKind(record.launchProfile))
+    && (record.label === undefined || typeof record.label === 'string' && validLabel(record.label));
 }
 
 export class WorktreeLaunchStore {
@@ -64,6 +68,15 @@ export class WorktreeLaunchStore {
     return pins;
   }
 
+  // every custom Worktree label, read once so discovery applies aliases in one scan
+  async labels(): Promise<Record<string, string>> {
+    await this.mutation;
+    const stored = await this.read();
+    const labels: Record<string, string> = {};
+    for (const [key, record] of Object.entries(stored)) if (record.label !== undefined) labels[key] = record.label;
+    return labels;
+  }
+
   // record the kind a launch or restart used so it resolves first next time
   async rememberLaunchProfile(key: string, kind: AgentKind): Promise<void> {
     // reject unsafe keys and unknown kinds rather than persisting them
@@ -84,6 +97,27 @@ export class WorktreeLaunchStore {
     });
   }
 
+  // set or clear one custom Worktree label
+  async setLabel(key: string, label: string | undefined): Promise<void> {
+    // reject unsafe keys and non-normalized labels
+    if (!validKey(key) || label !== undefined && !validLabel(label)) return;
+    await this.mutate(stored => {
+      // clear the alias without discarding other Worktree state
+      if (label === undefined) {
+        const record = stored[key];
+        if (record === undefined) return;
+        const { label: _label, ...remaining } = record;
+        // avoid retaining an empty orphan record
+        if (Object.keys(remaining).length === 0) delete stored[key];
+        else stored[key] = remaining;
+        return;
+      }
+      // bound the file before adding a new record
+      if (stored[key] === undefined && Object.keys(stored).length >= maxKeys) return;
+      stored[key] = { ...stored[key], label };
+    });
+  }
+
   // every stored key, so discovery can spot a worktree key git lists nowhere (Prune's
   // orphaned-record group). Read once per worktree scan, like `pins()`.
   async keys(): Promise<string[]> {
@@ -91,7 +125,7 @@ export class WorktreeLaunchStore {
     return Object.keys(await this.read());
   }
 
-  // forget one Worktree's pin and last-used kind — Remove deletes the record outright
+  // forget one Worktree's pin, label and last-used kind — Remove deletes the record outright
   async delete(key: string): Promise<void> {
     if (!validKey(key)) return;
     await this.mutate(stored => { delete stored[key]; });

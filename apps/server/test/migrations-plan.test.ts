@@ -64,6 +64,7 @@ describe('planMigration — config mapping', () => {
     expect(plan.projectsCreated).toEqual([{ id: 'a', mergedFrom: ['a'] }]);
     // a main checkout explicitly unpinned keeps a { pinned: false } record (differs from the default)
     expect(plan.pins).toEqual({ 'a:/repo-a': false });
+    expect(plan.labels).toEqual({ 'a:/repo-a': 'A' });
     expect(plan.keyMaps.notes).toEqual({ a: 'a' });
     // saved prompts are Worktree-scoped like queued/history (the live reader keys by wire id)
     expect(plan.keyMaps.savedPrompts).toEqual({ 'worktree:a': 'a:/repo-a' });
@@ -86,6 +87,7 @@ describe('planMigration — config mapping', () => {
     expect(plan.warnings.some(w => w.includes('merged worktree entries main, wt'))).toBe(true);
     // each member re-keys onto the one Project, keeping its own checkout realpath
     expect(plan.keyMaps.worktrees).toEqual({ main: 'main:/repo', wt: 'main:/repo-wt' });
+    expect(plan.labels).toEqual({ 'main:/repo-wt': 'ignored' });
     expect(plan.keyMaps.notes).toEqual({ main: 'main', wt: 'main' });
   });
 
@@ -101,6 +103,13 @@ describe('planMigration — config mapping', () => {
     const plan = planMigration(raw, facts([{}]));
     expect(plan.keyMaps.worktrees).toEqual({ gone: 'gone:/gone' });
     expect(plan.warnings.some(w => w.includes('worktree gone: path is not a resolvable git checkout'))).toBe(true);
+  });
+
+  it('normalizes safe legacy labels and skips unsafe aliases', () => {
+    const raw = { worktrees: [{ id: 'a', path: '/a', label: '  Dave  ', command: 'codex' }, { id: 'b', path: '/b', label: 'bad\nname', command: 'codex' }] };
+    const plan = planMigration(raw, facts([mainAt('/a'), mainAt('/b')]));
+    expect(plan.labels).toEqual({ 'a:/a': 'Dave' });
+    expect(plan.warnings.some(warning => warning.includes('invalid label'))).toBe(true);
   });
 
   it('keeps an operator adapters.codex and drops the legacy keys unresolved', () => {
@@ -201,11 +210,11 @@ describe('data-store rewrites', () => {
     expect(value['proj:/repo']).toEqual({ worktreeId: 'proj:/repo', branch: 'b', savedAt: '2026-02-01T00:00:00Z', tour: { t: 2 } });
     expect(warnings.some(w => w.includes('merge onto'))).toBe(true);
   });
-  it('re-keys worktree records and applies config pins, preserving launchProfile', () => {
+  it('re-keys worktree records and applies config pins and labels, preserving launchProfile', () => {
     const raw = { main: { launchProfile: 'claude' }, scratch: { launchProfile: 'codex' } };
-    const { value } = rewriteWorktreeRecords(raw, { main: 'proj:/repo' }, { 'proj:/repo': true, 'proj:/repo-wt': false });
-    expect(value['proj:/repo']).toEqual({ launchProfile: 'claude', pinned: true });
-    expect(value['proj:/repo-wt']).toEqual({ pinned: false });
+    const { value } = rewriteWorktreeRecords(raw, { main: 'proj:/repo' }, { 'proj:/repo': true, 'proj:/repo-wt': false }, { 'proj:/repo': 'Cora', 'proj:/repo-wt': 'Dave' });
+    expect(value['proj:/repo']).toEqual({ launchProfile: 'claude', pinned: true, label: 'Cora' });
+    expect(value['proj:/repo-wt']).toEqual({ pinned: false, label: 'Dave' });
     expect(value.scratch).toEqual({ launchProfile: 'codex' });
   });
   it('throws on a non-object data file', () => {

@@ -527,7 +527,10 @@ describe('DiscoveryService dashboard', () => {
     const processes = processInspector({ codex: false });
     const project = testProject({ id: 'app', label: 'App', path: '/repo' });
     // an explicit pin override on the detached checkout; the Main worktree pins by default
-    const pins = { pins: async () => ({ 'app:/repo/wt-detached': true }) };
+    const pins = {
+      pins: async () => ({ 'app:/repo/wt-detached': true }),
+      labels: async () => ({ 'app:/repo': 'App', 'app:/repo/wt-feature': '🥔 Dave' })
+    };
     const service = new DiscoveryService(finder, tmux as never, processes, undefined, undefined, [project], pins, listImpl({ '/repo': [
       entry('/repo', 'main'),
       entry('/repo/wt-feature', 'feature'),
@@ -540,11 +543,11 @@ describe('DiscoveryService dashboard', () => {
     const worktrees = (await service.dashboard()).projects[0]!.worktrees;
 
     // bare and stale (prunable) entries drop out; Main first, then Linked by branch, detached last
-    expect(worktrees.map(view => ({ id: view.id, label: view.label, main: view.main, detached: view.detached, locked: view.locked, pinned: view.pinned, order: view.order }))).toEqual([
-      { id: 'app:/repo', label: 'App', main: true, detached: false, locked: false, pinned: true, order: 0 },
-      { id: 'app:/repo/wt-feature', label: 'App · feature', main: false, detached: false, locked: false, pinned: false, order: 1 },
-      { id: 'app:/repo/held', label: 'App · held', main: false, detached: false, locked: true, pinned: false, order: 2 },
-      { id: 'app:/repo/wt-detached', label: 'App · abcdef1', main: false, detached: true, locked: false, pinned: true, order: 3 }
+    expect(worktrees.map(view => ({ id: view.id, label: view.label, customLabel: view.customLabel === true, main: view.main, detached: view.detached, locked: view.locked, pinned: view.pinned, order: view.order }))).toEqual([
+      { id: 'app:/repo', label: 'App', customLabel: true, main: true, detached: false, locked: false, pinned: true, order: 0 },
+      { id: 'app:/repo/wt-feature', label: '🥔 Dave', customLabel: true, main: false, detached: false, locked: false, pinned: false, order: 1 },
+      { id: 'app:/repo/held', label: 'App · held', customLabel: false, main: false, detached: false, locked: true, pinned: false, order: 2 },
+      { id: 'app:/repo/wt-detached', label: 'App · abcdef1', customLabel: false, main: false, detached: true, locked: false, pinned: true, order: 3 }
     ]);
   });
 

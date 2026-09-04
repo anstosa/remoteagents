@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { run } = vi.hoisted(() => ({ run: vi.fn() }));
 vi.mock('../src/tmux/command.js', () => ({ run }));
@@ -26,6 +26,8 @@ const hostInteractiveShell = process.env.RAC_HOST_INTERACTIVE_SHELL;
 const hostPath = process.env.RAC_HOST_PATH;
 const adapterFilesDir = process.env.RAC_ADAPTER_FILES_DIR;
 const tempDirs: string[] = [];
+// default external tmux operations to success
+beforeEach(() => { run.mockResolvedValue({ code: 0, stdout: '', stderr: '' }); });
 afterEach(async () => {
   run.mockReset();
   if (hostTmuxDirectory === undefined) delete process.env.RAC_HOST_TMUX_DIR;
@@ -220,6 +222,27 @@ describe('LaunchService', () => {
     expect(continueSession[10]).toContain('codex resume --last');
   });
 
+  // nested checkouts still use the authenticated host account
+  it('keeps the account HOME when launching a nested host worktree', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    const worktree = cora({
+      id: 'worker-1',
+      path: '/worktrees/cora/.omx/team/example/worktrees/worker-1',
+      hostPath: '/home/ubuntu/cora/.omx/team/example/worktrees/worker-1'
+    });
+    const config = { ...codex, projects: [{ id: 'other', hostPath: '/home/other/repo' }, { id: 'proj', hostPath: '/home/ubuntu/cora' }] };
+    const service = new LaunchService(config, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
+
+    await expect(service.launch(worktree.id)).resolves.toBe(true);
+
+    const created = run.mock.calls.find(call => (call[1] as string[]).includes('new-session'))?.[1] as string[];
+    expect(created).toContain(worktree.hostPath);
+    expect(created.join(' ')).toContain("export HOME='/home/ubuntu'");
+    expect(created.join(' ')).not.toContain("export HOME='/home/ubuntu/cora/.omx/team/example/worktrees'");
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', 'worker-1', '@rac_console_managed', '1']);
+  });
+
   it('records @rac_sandboxed on a Sandboxed launch and leaves an ordinary launch unmarked', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
@@ -287,6 +310,26 @@ describe('LaunchService', () => {
     const created = run.mock.calls.find(call => (call[1] as string[]).includes('new-session'))?.[1] as string[];
     expect(created.slice(0, 8)).toEqual(['-S', '/host-tmux/default', 'new-session', '-d', '-s', 'owen', '-c', '/home/ubuntu/owen']);
     expect(run.mock.calls.some(call => (call[1] as string[]).includes('rename-session'))).toBe(false);
+  });
+
+  // nested idle shells share the authenticated host account too
+  it('keeps the account HOME when starting a nested worktree shell', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    const worktree = cora({
+      id: 'worker-1',
+      path: '/worktrees/cora/.omx/team/example/worktrees/worker-1',
+      hostPath: '/home/ubuntu/cora/.omx/team/example/worktrees/worker-1'
+    });
+    const config = { ...codex, projects: [{ id: 'other', hostPath: '/home/other/repo' }, { id: 'proj', hostPath: '/home/ubuntu/cora' }] };
+    const service = new LaunchService(config, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
+
+    await expect(service.startWorktreeShell(worktree)).resolves.toBe(true);
+
+    const created = run.mock.calls.find(call => (call[1] as string[]).includes('new-session'))?.[1] as string[];
+    expect(created).toContain(worktree.hostPath);
+    expect(created.join(' ')).toContain("export HOME='/home/ubuntu'");
+    expect(created.join(' ')).not.toContain("export HOME='/home/ubuntu/cora/.omx/team/example/worktrees'");
   });
 
   it('suffixes the idle shell session name when a different worktree already holds it', async () => {
@@ -443,7 +486,7 @@ describe('LaunchService', () => {
     await expect(service.launch(worktree.id)).resolves.toBe(true);
 
     expect(panes.pastePrompt).toHaveBeenCalled();
-    expect(run).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%7', '@rac_console_managed', '1']);
   });
 
   it('does not launch Owen inside a transient stack command session', async () => {

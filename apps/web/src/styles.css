@@ -993,6 +993,9 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .client-rename-dialog form input { width: 100%; min-width: 0; }
 .client-rename-dialog footer { display: flex; justify-content: flex-end; gap: .45rem; }
 .client-rename-dialog footer button { min-width: 5rem; justify-content: center; }
+/* keep the pending save glyph circular inside its flex button */
+.client-rename-dialog footer .spinner { box-sizing: border-box; flex: 0 0 .8rem; }
+.client-rename-dialog footer .worktree-rename-reset { margin-right: auto; }
 .server-update-progress { display: flex; min-height: 6rem; align-items: center; justify-content: center; gap: .65rem; padding: 1rem; color: var(--subtext-0); }
 .server-update-progress > button { margin-left: auto; }
 /* server update review */
@@ -1231,11 +1234,12 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 
 /* the split button on the worktree card */
 .launch-hint { max-width: 18rem; color: var(--yellow); font: 600 .62rem var(--font-mono); text-align: right; }
-.launch-split { display: inline-flex; flex: none; align-items: stretch; }
-.launch-split .launch-primary { gap: .4rem; border-top-right-radius: 0; border-bottom-right-radius: 0; }
-/* the chevron carries its own gradient so it never matches the plain `.queue` launch button */
-.launch-split .launch-chevron { display: inline-flex; flex: 0 0 2.1rem; align-items: center; justify-content: center; height: var(--standard-control-size); padding: 0; border: 1px solid color-mix(in srgb, var(--lavender) 54%, transparent); border-left: 1px solid color-mix(in srgb, var(--crust) 30%, transparent); border-radius: 0 var(--control-radius) var(--control-radius) 0; background: linear-gradient(135deg, var(--mauve), var(--blue)); color: var(--crust); }
-.launch-split .launch-chevron:not(:disabled):hover { filter: brightness(1.08); }
+.launch-split { display: inline-flex; flex: none; align-items: stretch; overflow: hidden; border-radius: var(--control-radius); background: linear-gradient(135deg, var(--mauve), var(--blue)); transition: filter .15s ease; }
+/* one wrapper gradient paints continuously beneath both button segments */
+.launch-split .launch-primary { gap: .4rem; border-right: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; background: transparent; box-shadow: none; }
+.launch-split .launch-chevron { display: inline-flex; flex: 0 0 2.1rem; align-items: center; justify-content: center; height: var(--standard-control-size); padding: 0; border: 1px solid color-mix(in srgb, var(--lavender) 54%, transparent); border-left: 1px solid color-mix(in srgb, var(--crust) 65%, transparent); border-radius: 0 var(--control-radius) var(--control-radius) 0; background: transparent; color: var(--crust); box-shadow: none; }
+.launch-split:has(> button:not(:disabled):hover) { filter: brightness(1.08); }
+.prompt-actions .launch-split > button:not(:disabled):hover, .launcher-menu .launch-split > button:not(:disabled):hover { filter: none; }
 .launch-split .launch-chevron:disabled { opacity: .5; }
 .launch-chevron-icon { width: .9rem; height: .9rem; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
 .queue.launch-primary .launch-kind-mark { background: color-mix(in srgb, var(--crust) 22%, transparent); color: var(--crust); }
@@ -1251,16 +1255,16 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .launcher-row { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; padding: .3rem .45rem; border-radius: calc(var(--control-radius) - .1rem); }
 .launcher-row:hover { background: color-mix(in srgb, var(--surface-0) 70%, transparent); }
 .launcher-row-label { flex: 1; min-width: 0; overflow: hidden; color: var(--text); font-size: .74rem; text-overflow: ellipsis; white-space: nowrap; }
-.launcher-menu .launch-compact { width: auto !important; min-height: 1.8rem; justify-content: center !important; gap: .35rem; padding: .25rem .6rem !important; border: 1px solid color-mix(in srgb, var(--lavender) 54%, transparent) !important; border-radius: var(--control-radius); background: linear-gradient(135deg, var(--mauve), var(--blue)); color: var(--crust); font-size: .64rem; box-shadow: none; }
+.launcher-menu .launch-compact { width: auto !important; min-height: 1.8rem; justify-content: center !important; gap: .35rem; padding: .25rem .45rem !important; border: 1px solid color-mix(in srgb, var(--lavender) 54%, transparent) !important; border-radius: var(--control-radius); background: linear-gradient(135deg, var(--mauve), var(--blue)); color: var(--crust); font-size: .64rem; box-shadow: none; }
 .launcher-menu .launch-compact:disabled { opacity: .45; }
-.launcher-menu .launch-compact:not(:disabled):hover { filter: brightness(1.08); }
-.launcher-menu .launch-split.compact .launch-primary { border-top-right-radius: 0 !important; border-bottom-right-radius: 0 !important; }
-.launcher-menu .launch-split.compact .launch-chevron { flex: 0 0 1.7rem; min-height: 1.8rem; height: auto; border-radius: 0 var(--control-radius) var(--control-radius) 0; }
+.launcher-menu .launch-compact:not(.launch-primary):not(:disabled):hover { filter: brightness(1.08); }
+.launcher-menu .launch-split.compact .launch-primary { border-right: 0 !important; border-top-right-radius: 0 !important; border-bottom-right-radius: 0 !important; background: transparent; }
+.launcher-menu .launch-split.compact .launch-chevron { flex: 0 0 1.7rem; min-height: 1.8rem; height: auto; border: 1px solid color-mix(in srgb, var(--lavender) 54%, transparent) !important; border-left: 1px solid color-mix(in srgb, var(--crust) 65%, transparent) !important; border-radius: 0 var(--control-radius) var(--control-radius) 0; }
 .launcher-menu .launch-compact .launch-kind-mark { width: 1rem; height: 1rem; background: color-mix(in srgb, var(--crust) 22%, transparent); color: var(--crust); font-size: .6rem; }
 .launcher-menu .launch-compact .launch-lock { stroke: var(--crust); }
 /* one section per project in the + launcher: a header, its Worktree rows, then New worktree… */
 .launcher-project { margin-top: .35rem; }
-.launcher-project-header { display: flex; align-items: center; justify-content: space-between; gap: .5rem; padding: .3rem .45rem .15rem; color: var(--subtext-0); font-size: .64rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.launcher-project-header { display: flex; min-height: 2.4rem; align-items: center; justify-content: space-between; gap: .5rem; padding: .3rem .45rem; color: var(--mauve); font-size: .74rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
 .launcher-new-worktree { display: flex; align-items: center; margin-top: .1rem; padding: .3rem .45rem !important; border-radius: calc(var(--control-radius) - .1rem); background: transparent; color: var(--lavender); font-size: .7rem; letter-spacing: 0; text-transform: none; cursor: pointer; }
 .launcher-new-worktree:not(:disabled):hover { background: color-mix(in srgb, var(--lavender) 16%, transparent); }
 .launcher-new-worktree:disabled { opacity: .45; cursor: not-allowed; }
@@ -1292,15 +1296,15 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .launcher-menu .launcher-icon { display: inline-flex; flex: 0 0 1.7rem; width: 1.7rem; height: 1.7rem; align-items: center; justify-content: center !important; padding: 0 !important; border: 1px solid transparent !important; border-radius: var(--control-radius); background: transparent; color: var(--overlay-2); cursor: pointer; }
 .launcher-menu .launcher-icon:disabled { opacity: .3; cursor: not-allowed; }
 .launcher-icon-glyph { width: .95rem; height: .95rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
-/* Pin is a toggle, so it reads as pressed or not without being hovered: the whole difference
-   is the fill, and nothing else on the row changes with it */
-.launcher-menu .launcher-pin { border-color: var(--surface-1) !important; }
+/* pin is a toggle, so only the pressed button gains a surface */
+.launcher-menu .launcher-pin { border-color: transparent !important; }
 .launcher-menu .launcher-pin.pinned { border-color: var(--lavender) !important; background: var(--lavender); color: var(--crust); }
-.launcher-pin.pinned .launcher-icon-glyph { fill: color-mix(in srgb, var(--crust) 35%, transparent); }
+.launcher-rename .launcher-icon-glyph { fill: currentColor; stroke: none; }
 .launcher-menu .launcher-pin:not(.pinned):not(:disabled):hover { background: color-mix(in srgb, var(--surface-2) 55%, transparent); color: var(--text); }
+.launcher-menu .launcher-rename:not(:disabled):hover { background: color-mix(in srgb, var(--blue) 18%, transparent); color: var(--blue); }
 .launcher-menu .launcher-remove:not(:disabled):hover { background: color-mix(in srgb, var(--red) 18%, transparent); color: var(--red); }
-/* hold every row's Launch control to one width (Wake up included) so the icons line up */
-.launcher-row > .launch-split.compact, .launcher-row > .launch-compact { min-width: 10rem; }
+/* hold every row's compact Launch control to one tighter width so the icons line up */
+.launcher-row > .launch-split.compact, .launcher-row > .launch-compact { min-width: 8rem; }
 .launcher-row > .launch-split.compact .launch-primary { flex: 1; min-width: 0; }
 
 /* the Remove worktree dialog */

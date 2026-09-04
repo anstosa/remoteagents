@@ -238,6 +238,11 @@ The console launches an agent in a Worktree by Adapter kind (see
 list` checkout appears automatically: the Main worktree is git's first entry, a
 bare entry is never a Worktree, a Stale (git-prunable) checkout is hidden, a
 git-locked one is flagged, and a detached HEAD is labelled by its short SHA.
+Use **Rename worktree** from a launch row or agent menu to replace that generated
+Project/branch label with a stable operator name such as `Dave`. The alias is
+stored in `.data/worktrees.json`, follows the checkout path across launches, and
+does not rename the branch or directory. **Use branch name** clears the alias and
+restores the generated label.
 
 ### Creating Worktrees
 
@@ -312,8 +317,9 @@ once.** On the first boot it detects the legacy shape (a `worktrees` array, or a
 `command`/`newAgentCommand`/`launch`/`resumeCommand` key) and, in one eager pass
 driven by the config, rewrites the config to `projects[]` + `adapters.codex` and
 re-keys every `.data` store to the Projects model (notes and bookmarks by
-Project; saved prompts, queued prompts, history, review tours and pins by
-Worktree).
+Project; saved prompts, queued prompts, history, review tours, pins and labels by
+Worktree). Distinct legacy `worktrees[]` labels are preserved as Worktree aliases
+when several entries collapse into one Project.
 Each rewritten file — the config included — gets a sibling `*.pre-projects.bak`
 holding the original, so the change is revertable; an existing backup is never
 overwritten. The boot log prints one report of what changed. A config already in

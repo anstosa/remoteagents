@@ -58,6 +58,70 @@ describe('POST /api/worktrees/:id/pin', () => {
   });
 });
 
+describe('PATCH /api/worktrees/:id/label', () => {
+  const worktree = testWorktree({ id: 'proj:/repo', projectId: 'proj', path: '/repo', pinned: true });
+  const encoded = encodeURIComponent(worktree.id);
+  // a no-op dashboard fan-out keeps the label route off the full loader
+  const dashboardUpdates = { setLoader: () => {}, refresh: async () => {}, close: () => {} } as never;
+
+  it('records and clears a trimmed custom label, invalidating discovery', async () => {
+    const worktreeStore = await store();
+    let invalidated = 0;
+    const discovery = { worktreesNow: () => [worktree], invalidateWorktrees: () => { invalidated += 1; } } as never;
+    const app = await buildApp(testConfig({ publicOrigin: new URL(`https://${host}`) }), { auth, control, discovery, worktreeStore, dashboardUpdates });
+    try {
+      const renamed = await app.inject({ method: 'PATCH', url: `/api/worktrees/${encoded}/label`, headers: mutationHeaders, payload: { label: '  🥔 Dave  ' } });
+      expect(renamed.statusCode).toBe(204);
+      expect(await worktreeStore.labels()).toEqual({ 'proj:/repo': '🥔 Dave' });
+      const reset = await app.inject({ method: 'PATCH', url: `/api/worktrees/${encoded}/label`, headers: mutationHeaders, payload: { label: null } });
+      expect(reset.statusCode).toBe(204);
+      expect(await worktreeStore.labels()).toEqual({});
+      expect(invalidated).toBe(2);
+    } finally { await app.close(); }
+  });
+
+  it('returns after persistence without waiting for dashboard reconciliation', async () => {
+    const worktreeStore = await store();
+    const discovery = { worktreesNow: () => [worktree], invalidateWorktrees: () => {} } as never;
+    let releaseRefresh = () => {};
+    const refreshGate = new Promise<void>(resolve => { releaseRefresh = resolve; });
+    let markRefreshStarted = () => {};
+    const refreshStarted = new Promise<void>(resolve => { markRefreshStarted = resolve; });
+    const stalledDashboardUpdates = { setLoader: () => {}, refresh: () => { markRefreshStarted(); return refreshGate; }, close: () => {} } as never;
+    const app = await buildApp(testConfig({ publicOrigin: new URL(`https://${host}`) }), { auth, control, discovery, worktreeStore, dashboardUpdates: stalledDashboardUpdates });
+    try {
+      const pendingResponse = app.inject({ method: 'PATCH', url: `/api/worktrees/${encoded}/label`, headers: mutationHeaders, payload: { label: '🥔 Dave' } });
+      await refreshStarted;
+      // detect a handler blocked behind the unrelated dashboard scan
+      const outcome = await Promise.race([pendingResponse, new Promise<'blocked'>(resolve => setTimeout(() => resolve('blocked'), 250))]);
+      releaseRefresh();
+      const response = await pendingResponse;
+      expect(outcome).not.toBe('blocked');
+      expect(response.statusCode).toBe(204);
+      expect(await worktreeStore.labels()).toEqual({ 'proj:/repo': '🥔 Dave' });
+    } finally {
+      releaseRefresh();
+      await app.close();
+    }
+  });
+
+  it('rejects an unknown Worktree and invalid custom labels', async () => {
+    const worktreeStore = await store();
+    const discovery = { worktreesNow: () => [worktree], invalidateWorktrees: () => {} } as never;
+    const app = await buildApp(testConfig({ publicOrigin: new URL(`https://${host}`) }), { auth, control, discovery, worktreeStore, dashboardUpdates });
+    try {
+      const unknown = await app.inject({ method: 'PATCH', url: `/api/worktrees/${encodeURIComponent('proj:/gone')}/label`, headers: mutationHeaders, payload: { label: 'Gone' } });
+      expect(unknown.statusCode).toBe(404);
+      // reject every invalid label shape
+      for (const label of ['', 'has\nnewline', 'x'.repeat(121), 42]) {
+        const invalid = await app.inject({ method: 'PATCH', url: `/api/worktrees/${encoded}/label`, headers: mutationHeaders, payload: { label } });
+        expect(invalid.statusCode).toBe(400);
+      }
+      expect(await worktreeStore.labels()).toEqual({});
+    } finally { await app.close(); }
+  });
+});
+
 describe('GET /api/dashboard project shape', () => {
   it('nests each Worktree under its Project with tab order, pin and Launch profile', async () => {
     const worktreeStore = await store();

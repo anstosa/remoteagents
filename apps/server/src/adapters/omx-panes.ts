@@ -17,7 +17,9 @@ const omxWorkerStartup = /(?:^|\/)\.omx\/state\/team\/[^/]+\/runtime\/worker-\d+
 // A pane whose recorded start command launched the OMX HUD watcher.
 const omxHudStartCommand = /(?:^|[/\s])omx\s+hud(?:\s+[^\s]+)*\s+--watch(?:\s|$)/u;
 
-export function isOmxWorkerPane(pane: Pick<Pane, 'path' | 'startCommand'>): boolean {
+export function isOmxWorkerPane(pane: Pick<Pane, 'path' | 'startCommand' | 'consoleManaged'>): boolean {
+  // an explicit console launch owns the pane even inside a retained team checkout
+  if (pane.consoleManaged === true) return false;
   return omxWorkerWorktree.test(pane.path) || omxWorkerStartup.test(pane.startCommand ?? '');
 }
 

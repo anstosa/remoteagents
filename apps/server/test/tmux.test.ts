@@ -24,7 +24,7 @@ describe('TmuxAdapter capture', () => {
 
   it('reports the tmux session name used to distinguish internal command panes', async () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
-    run.mockResolvedValueOnce({ code: 0, stdout: "%1\t$1\trac-stack-owen-a1b2c3\t123\t/home/ubuntu/owen\tbash\tstack\t\texec /bin/bash -lc 'echo ready'\n", stderr: '' });
+    run.mockResolvedValueOnce({ code: 0, stdout: "%1\t$1\trac-stack-owen-a1b2c3\t123\t/home/ubuntu/owen\tbash\tstack\t\texec /bin/bash -lc 'echo ready'\t\t\t\t1\n", stderr: '' });
 
     await expect(new TmuxAdapter().listPanes(socket)).resolves.toEqual([{
       paneId: '%1',
@@ -35,10 +35,11 @@ describe('TmuxAdapter capture', () => {
       command: 'bash',
       title: 'stack',
       startCommand: "exec /bin/bash -lc 'echo ready'",
+      consoleManaged: true,
       socket
     }]);
 
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}']);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_console_managed}']);
   });
 
   it('labels one exact server-owned pane', async () => {
@@ -59,6 +60,7 @@ describe('TmuxAdapter capture', () => {
     }
     // never touches the server-owned display label
     expect(run).not.toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'set-option', '-p', '-t', '%1', '-u', '@rac_display_label']);
+    expect(run).not.toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'set-option', '-p', '-t', '%1', '-u', '@rac_console_managed']);
   });
 
   it('refuses to unset reported state for an unsafe pane coordinate', async () => {

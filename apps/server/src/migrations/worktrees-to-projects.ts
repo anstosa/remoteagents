@@ -18,6 +18,13 @@ const legacyAgentKeys = ['command', 'newAgentCommand', 'launch', 'resumeCommand'
 
 type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json => value !== null && typeof value === 'object' && !Array.isArray(value);
+// normalize legacy labels to the durable Worktree store contract
+const normalizedWorktreeLabel = (value: unknown): string | undefined => {
+  // ignore absent non-string labels
+  if (typeof value !== 'string') return undefined;
+  const label = value.trim();
+  return label.length >= 1 && label.length <= 120 && !/[\0-\x1f\x7f]/u.test(label) ? label : undefined;
+};
 
 /** The retired top-level `launch` template and its per-worktree form. */
 export type LegacyLaunch = { program?: unknown; args?: unknown };
@@ -83,6 +90,8 @@ export type MigrationPlan = {
   keyMaps: DataKeyMaps;
   /** explicit config pins that differ from the new default, keyed by `<projectId>:<realpath>`. */
   pins: Record<string, boolean>;
+  /** legacy per-worktree labels, keyed by `<projectId>:<realpath>`. */
+  labels: Record<string, string>;
   /** the resolved Codex program (or a bare name when deferred to boot under the bridge/compose). */
   codexProgram?: string;
   projectsCreated: ProjectCreated[];
@@ -254,8 +263,9 @@ export function planMigration(raw: unknown, facts: ResolvedFacts): MigrationPlan
   const warnings: string[] = [];
   const keyMaps: DataKeyMaps = { notes: {}, bookmarks: {}, savedPrompts: {}, queued: {}, history: {}, reviewTours: {}, worktrees: {} };
   const pins: Record<string, boolean> = {};
+  const labels: Record<string, string> = {};
   const projectsCreated: ProjectCreated[] = [];
-  if (!isObject(raw)) { errors.push('configuration is not a JSON object'); return { newConfig: {}, keyMaps, pins, projectsCreated, warnings, errors }; }
+  if (!isObject(raw)) { errors.push('configuration is not a JSON object'); return { newConfig: {}, keyMaps, pins, labels, projectsCreated, warnings, errors }; }
   if ('worktrees' in raw && 'projects' in raw) errors.push('configuration declares both `worktrees` and `projects`; keep one');
 
   const entries = Array.isArray(raw.worktrees) ? (raw.worktrees as LegacyWorktree[]) : [];
@@ -295,6 +305,11 @@ export function planMigration(raw: unknown, facts: ResolvedFacts): MigrationPlan
       keyMaps.history[`worktree:${oldId}`] = worktreeKey;
       keyMaps.reviewTours[oldId] = worktreeKey;
       keyMaps.worktrees[oldId] = worktreeKey;
+      // preserve each retired entry's distinct display name after its Project merge
+      const label = normalizedWorktreeLabel(entry.label);
+      if (label !== undefined) labels[worktreeKey] = label;
+      // leave an unsafe legacy label out of the strict state store
+      else if (typeof entry.label === 'string') warnings.push(`worktree ${oldId}: its invalid label was not preserved as a Worktree alias`);
       // only an explicit pin that differs from the new default (main pinned, linked unpinned) migrates
       if (typeof entry.pinned === 'boolean') {
         const isMain = entryFacts.main !== false;
@@ -319,7 +334,7 @@ export function planMigration(raw: unknown, facts: ResolvedFacts): MigrationPlan
   // exist (only its agent keys are legacy) passes them through with any retired keys stripped
   const projectsForConfig = 'worktrees' in raw ? projects : (Array.isArray(raw.projects) ? raw.projects.map(stripRetiredKeys) : []);
   const newConfig = composeConfig(raw, projectsForConfig, adapters);
-  return { newConfig, keyMaps, pins, ...(codexProgram === undefined ? {} : { codexProgram }), projectsCreated, warnings, errors };
+  return { newConfig, keyMaps, pins, labels, ...(codexProgram === undefined ? {} : { codexProgram }), projectsCreated, warnings, errors };
 }
 
 // ---- per-file data rewrites (pure) ---------------------------------------------------
@@ -398,12 +413,11 @@ export function rewriteReviewTours(raw: unknown, keyMap: Record<string, string>,
 }
 
 /**
- * Rewrite `.data/worktrees.json`: re-key each chunk-2 `{ pinned?, launchProfile? }` record
- * to its Worktree wire id, then apply the config pins (an explicit old-config `pinned` that
- * differs from the new default). Config pins win the `pinned` field; a re-keyed record's
- * `launchProfile` is preserved.
+ * rewrite `.data/worktrees.json`: re-key each `{ pinned?, launchProfile?, label? }` record
+ * to its Worktree wire id, then apply legacy config pins and labels. Config values win
+ * their fields; a re-keyed record's `launchProfile` is preserved.
  */
-export function rewriteWorktreeRecords(raw: unknown, keyMap: Record<string, string>, pins: Record<string, boolean>): { value: Json; count: number } {
+export function rewriteWorktreeRecords(raw: unknown, keyMap: Record<string, string>, pins: Record<string, boolean>, labels: Record<string, string>): { value: Json; count: number } {
   if (!isObject(raw)) throw new DataFileError('data file is not a JSON object');
   const out: Json = {};
   let count = 0;
@@ -414,5 +428,7 @@ export function rewriteWorktreeRecords(raw: unknown, keyMap: Record<string, stri
     out[newKey] = { ...(isObject(out[newKey]) ? out[newKey] as Json : {}), ...(isObject(raw[oldKey]) ? raw[oldKey] as Json : {}) };
   }
   for (const [key, pinned] of Object.entries(pins)) out[key] = { ...(isObject(out[key]) ? out[key] as Json : {}), pinned };
+  // apply every legacy display name after record merges
+  for (const [key, label] of Object.entries(labels)) out[key] = { ...(isObject(out[key]) ? out[key] as Json : {}), label };
   return { value: out, count };
 }

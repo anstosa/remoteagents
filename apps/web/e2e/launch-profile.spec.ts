@@ -131,8 +131,28 @@ test('the launcher offers Scratch and each worktree the same split button', asyn
   const launcher = page.locator('.launcher-menu');
   await expect(launcher.getByText('~ Scratch')).toBeVisible();
   // each worktree row carries its own resolved-kind split button
-  const rowLaunch = launcher.locator('.launcher-row').filter({ hasText: 'Cora' }).getByRole('button', { name: 'Launch Claude' });
+  const worktreeRow = launcher.locator('.launcher-row').filter({ hasText: 'Cora' });
+  const rowLaunch = worktreeRow.getByRole('button', { name: 'Launch Claude' });
   await expect(rowLaunch).toBeVisible();
+  // the wrapper paints one gradient beneath both transparent button segments
+  const fullSplit = page.locator('.prompt-actions .launch-split');
+  const compactSplit = worktreeRow.locator('.launch-split.compact');
+  await expect(fullSplit).toHaveCSS('background-image', /linear-gradient/);
+  await expect(compactSplit).toHaveCSS('background-image', /linear-gradient/);
+  await expect(fullSplit.locator('.launch-primary')).toHaveCSS('background-image', 'none');
+  await expect(fullSplit.locator('.launch-chevron')).toHaveCSS('background-image', 'none');
+  await expect(compactSplit.locator('.launch-primary')).toHaveCSS('background-image', 'none');
+  await expect(compactSplit.locator('.launch-chevron')).toHaveCSS('background-image', 'none');
+  await expect(fullSplit.locator('.launch-chevron')).toHaveCSS('border-left-width', '1px');
+  await expect(compactSplit.locator('.launch-chevron')).toHaveCSS('border-left-width', '1px');
+  // keep the new-task action compact without losing its aligned fixed column
+  const compactBox = await compactSplit.boundingBox();
+  expect(compactBox).toBeDefined();
+  expect(compactBox?.width).toBeLessThanOrEqual(130);
+  // hover brightness belongs to the shared gradient wrapper, not both segments
+  await rowLaunch.hover();
+  await expect(rowLaunch).toHaveCSS('filter', 'none');
+  await expect(compactSplit).not.toHaveCSS('filter', 'none');
   // the compact primary drops the kind glyph its own label already carries; the worktree
   // card's full-size button keeps it
   await expect(rowLaunch.locator('.launch-kind-mark')).toHaveCount(0);

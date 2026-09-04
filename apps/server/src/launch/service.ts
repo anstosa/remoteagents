@@ -175,8 +175,11 @@ export class LaunchService {
   }
 
   // resolve the authenticated account home independently from the launch directory
-  agentHome(): string {
-    const hostPath = this.config.projects.find(project => project.hostPath !== undefined)?.hostPath;
+  agentHome(projectId?: string): string {
+    const project = projectId === undefined
+      ? this.config.projects.find(candidate => candidate.hostPath !== undefined)
+      : this.config.projects.find(candidate => candidate.id === projectId);
+    const hostPath = project?.hostPath;
     return hostPath === undefined ? process.env.HOME ?? '/' : dirname(hostPath);
   }
   private async existingPane(worktree: Worktree): Promise<{ socket: SocketRef; pane: Pane } | undefined> {
@@ -346,15 +349,18 @@ export class LaunchService {
       const buffer = `rac-launch-${id}`;
       return await this.panes.pastePrompt(existing.socket, existing.pane.paneId, buffer, command)
         && await this.panes.enter(existing.socket, existing.pane.paneId)
+        && await this.markConsoleManaged(existing.socket.path, existing.pane.paneId)
         && await this.markSandboxed(existing.socket.path, existing.pane.paneId, sandboxed);
     }
     const session = worktreeSessionName(worktreeHostRoot(worktree));
     // launch host-mounted worktrees on the host socket
     if (this.hostSocket !== undefined) {
       const hostWorktree = { ...worktree, identity: worktreeHostRoot(worktree) };
-      const home = dirname(hostWorktree.identity);
+      // keep credentials and CLI state rooted in the authenticated account
+      const home = this.agentHome(worktree.projectId);
       const tail = ['-c', hostWorktree.identity, this.hostShell, '-lc', interactiveShellBootstrap(hostCommand(expandCommand(command, hostWorktree), home), home, this.hostShell)];
       return await startNamedReplacementSession(this.tmux, this.hostSocket, session, session, tail)
+        && await this.markConsoleManaged(this.hostSocket, session)
         && await this.markSandboxed(this.hostSocket, session, sandboxed);
     }
     await mkdir(this.root, { recursive: true, mode: 0o700 });
@@ -370,7 +376,8 @@ export class LaunchService {
       await unlink(descriptor).catch(() => {});
       return false;
     }
-    return await this.markSandboxed(undefined, session, sandboxed);
+    return await this.markConsoleManaged(undefined, session)
+      && await this.markSandboxed(undefined, session, sandboxed);
   }
 
   // Start the Worktree's own idle interactive shell — a login shell in the checkout, no
@@ -385,12 +392,15 @@ export class LaunchService {
     const name = await this.availableSessionName(worktreeSessionName(worktreeHostRoot(worktree)));
     if (this.hostSocket !== undefined) {
       const hostRoot = worktreeHostRoot(worktree);
-      const home = dirname(hostRoot);
+      // keep credentials and CLI state rooted in the authenticated account
+      const home = this.agentHome(worktree.projectId);
       // the bridge shell still needs the host HOME/PATH the launch bootstrap sets
       const tail = ['-c', hostRoot, this.hostShell, '-lc', interactiveShellBootstrap(hostCommand('', home), home, this.hostShell)];
-      return (await run(this.tmux, ['-S', this.hostSocket, 'new-session', '-d', '-s', name, ...tail])).code === 0;
+      return (await run(this.tmux, ['-S', this.hostSocket, 'new-session', '-d', '-s', name, ...tail])).code === 0
+        && await this.markConsoleManaged(this.hostSocket, name);
     }
-    return (await run(this.tmux, ['new-session', '-d', '-s', name, '-c', worktree.identity, this.localShell, '-l'])).code === 0;
+    return (await run(this.tmux, ['new-session', '-d', '-s', name, '-c', worktree.identity, this.localShell, '-l'])).code === 0
+      && await this.markConsoleManaged(undefined, name);
   }
 
   // a session name free on the relevant socket: the base name, else `-2`/`-3`/… — so a
@@ -403,6 +413,12 @@ export class LaunchService {
     if (!taken.has(base)) return base;
     for (let suffix = 2; suffix <= 99; suffix += 1) { const candidate = `${base}-${suffix}`; if (!taken.has(candidate)) return candidate; }
     return `${base}-${randomBytes(4).toString('hex')}`;
+  }
+
+  // mark panes the console deliberately owns so retained OMX workers remain launchable
+  private async markConsoleManaged(socketPath: string | undefined, target: string): Promise<boolean> {
+    const socket = socketPath === undefined ? [] : ['-S', socketPath];
+    return (await run(this.tmux, [...socket, 'set-option', '-p', '-t', target, '@rac_console_managed', '1'])).code === 0;
   }
 
   // record a Sandboxed launch on the pane so `Agent.sandboxed` reflects it; a

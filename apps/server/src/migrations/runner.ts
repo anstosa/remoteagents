@@ -32,7 +32,7 @@ export class MigrationError extends Error {
 }
 
 /** One `.data` store the migration re-keys, resolved to its on-disk path. */
-type Store = { key: string; file: string; rewrite: (raw: unknown, plan: MigrationPlan, warnings: string[]) => { value: Record<string, unknown>; count: number }; createForPins?: boolean };
+type Store = { key: string; file: string; rewrite: (raw: unknown, plan: MigrationPlan, warnings: string[]) => { value: Record<string, unknown>; count: number }; createForWorktreeState?: boolean };
 
 /** The resolved paths of every re-keyed `.data` store; each defaults to its store's own default. */
 export type DataFilePaths = Partial<Record<'notes' | 'bookmarks' | 'savedPrompts' | 'queued' | 'history' | 'reviewTours' | 'worktrees', string>>;
@@ -80,7 +80,7 @@ function stores(deps: MigrationDeps): Store[] {
     { key: 'queued-prompts', file: storePath('queued', 'RAC_QUEUED_PROMPTS_FILE', '.data/queued-prompts.json', deps), rewrite: (raw, plan) => rewriteListStore(raw, plan.keyMaps.queued) },
     { key: 'prompt-history', file: storePath('history', 'RAC_PROMPT_HISTORY_FILE', '.data/prompt-history.json', deps), rewrite: (raw, plan) => rewriteListStore(raw, plan.keyMaps.history) },
     { key: 'review-tours', file: storePath('reviewTours', 'RAC_REVIEW_TOURS_FILE', '.data/review-tours.json', deps), rewrite: (raw, plan, warnings) => rewriteReviewTours(raw, plan.keyMaps.reviewTours, warnings) },
-    { key: 'worktrees', file: storePath('worktrees', 'RAC_WORKTREES_FILE', '.data/worktrees.json', deps), rewrite: (raw, plan) => rewriteWorktreeRecords(raw, plan.keyMaps.worktrees, plan.pins), createForPins: true },
+    { key: 'worktrees', file: storePath('worktrees', 'RAC_WORKTREES_FILE', '.data/worktrees.json', deps), rewrite: (raw, plan) => rewriteWorktreeRecords(raw, plan.keyMaps.worktrees, plan.pins, plan.labels), createForWorktreeState: true },
   ];
 }
 
@@ -124,7 +124,7 @@ async function resolveFacts(raw: unknown, deps: MigrationDeps): Promise<Resolved
 /**
  * One data store's planned rewrite: the parsed content, its re-keyed form, and whether the
  * migration would write it. A missing file is skipped unless the worktrees store must be
- * created to hold config pins; an unparseable or non-object file is a content error.
+ * created to hold config pins or labels; an unparseable or non-object file is a content error.
  */
 type PlannedStore = { store: Store; originalText?: string; value: Record<string, unknown>; changed: boolean; count: number };
 
@@ -132,9 +132,9 @@ async function planStore(store: Store, plan: MigrationPlan, warnings: string[], 
   let originalText: string | undefined;
   try { originalText = await readFile(store.file, 'utf8'); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { errors.push(`${store.file}: ${(error as Error).message}`); return undefined; } }
-  // a missing file is never created, except the worktrees store when config pins need a home
-  const pinsNeedFile = store.createForPins === true && Object.keys(plan.pins).length > 0;
-  if (originalText === undefined && !pinsNeedFile) return undefined;
+  // a missing file is never created, except when migrated Worktree state needs a home
+  const stateNeedsFile = store.createForWorktreeState === true && (Object.keys(plan.pins).length > 0 || Object.keys(plan.labels).length > 0);
+  if (originalText === undefined && !stateNeedsFile) return undefined;
   let parsed: unknown = {};
   if (originalText !== undefined) {
     try { parsed = JSON.parse(originalText); }
@@ -142,7 +142,7 @@ async function planStore(store: Store, plan: MigrationPlan, warnings: string[], 
   }
   try {
     const { value, count } = store.rewrite(parsed, plan, warnings);
-    return { store, originalText, value, changed: count > 0 || pinsNeedFile, count };
+    return { store, originalText, value, changed: count > 0 || stateNeedsFile, count };
   } catch (error) {
     if (error instanceof DataFileError) { errors.push(`${store.file}: ${error.message}`); return undefined; }
     throw error;
