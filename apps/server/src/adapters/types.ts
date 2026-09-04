@@ -134,9 +134,12 @@ export interface Adapter {
     /**
      * The Inline question an Agent reported on its own pane (`@rac_question`),
      * confirmed live against the pane's capture (ADR 0006). Pure: the base64 hook
-     * payload and the capture in, one question out — `undefined` when the payload
-     * is unrenderable (multiSelect, no options, several questions) or its dialog is
-     * no longer on screen (cancelled or already answered).
+     * payload and the capture in, one question out. A call carrying several
+     * questions is walked one tab at a time — the single question drawn on screen,
+     * then a Submit answers / Cancel step at its review page. `undefined` when the
+     * payload is unrenderable (multiSelect, no options), when no question is on
+     * screen (cancelled or already answered), or when the on-screen tab is
+     * indistinguishable (two questions sharing a text and first option).
      */
     reported?(payload: string, capture: string): InlineQuestion | undefined;
   };

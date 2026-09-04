@@ -139,11 +139,85 @@ describe('reportedClaudeQuestion', () => {
     expect(reportedClaudeQuestion(encode([text]), dialog)).toBeUndefined();
   });
 
-  it('skips a call carrying several questions', () => {
-    const region: Question = { question: 'Which region should host the deploy?', options: [{ label: 'us-east' }, { label: 'eu-west' }] };
-    const rollout: Question = { question: 'How should the rollout proceed?', options: [{ label: 'Canary' }, { label: 'All at once' }] };
-    const dialog = ['Which region should host the deploy?', '❯ 1. us-east', '  2. eu-west'].join('\n');
-    expect(reportedClaudeQuestion(encode([region, rollout]), dialog)).toBeUndefined();
+  // a two-question call and the tab it draws for whichever question is active
+  const region: Question = { question: 'Which region should host the deploy?', header: 'Region', options: [{ label: 'us-east' }, { label: 'eu-west' }] };
+  const rollout: Question = { question: 'How should the rollout proceed?', header: 'Rollout', options: [{ label: 'Canary' }, { label: 'All at once' }] };
+  const tab = (active: Question): string => [
+    '────────────────────────────────────────',
+    '←  ☐ Region  ☐ Rollout  ✔ Submit  →',
+    '',
+    active.question,
+    '',
+    `❯ 1. ${active.options![0]!.label}`,
+    `  2. ${active.options![1]!.label}`,
+    '  3. Type something.',
+    'Enter to select · Tab/Arrow keys to navigate · Esc to cancel',
+  ].join('\n');
+
+  it('renders the question currently on screen from a multi-question call', () => {
+    const choices = ['us-east', 'eu-west'];
+    expect(reportedClaudeQuestion(encode([region, rollout]), tab(region))).toEqual({
+      id: inlineQuestionId(region.question, choices), text: region.question, choices, source: 'structured',
+    });
+  });
+
+  it('advances to the second question once the first tab has been answered', () => {
+    // only the active tab's text and rows are drawn, so a capture showing the
+    // second question renders it even though the first is earlier in the payload
+    const choices = ['Canary', 'All at once'];
+    expect(reportedClaudeQuestion(encode([region, rollout]), tab(rollout))).toEqual({
+      id: inlineQuestionId(rollout.question, choices), text: rollout.question, choices, source: 'structured',
+    });
+  });
+
+  it('renders Submit answers / Cancel at the review step', () => {
+    // the review page repeats every question's text, so it is matched by its own
+    // literal before any question text; Submit is drawn first so selectOption(0) submits
+    const review = [
+      '←  ☒ Region  ☒ Rollout  ✔ Submit  →',
+      '',
+      'Review your answers',
+      '',
+      ' ● Which region should host the deploy?',
+      '   → us-east',
+      ' ● How should the rollout proceed?',
+      '   → All at once',
+      '',
+      'Ready to submit your answers?',
+      '',
+      '❯ 1. Submit answers',
+      '  2. Cancel',
+    ].join('\n');
+    const choices = ['Submit answers', 'Cancel'];
+    expect(reportedClaudeQuestion(encode([region, rollout]), review)).toEqual({
+      id: inlineQuestionId('Ready to submit your answers?', choices),
+      text: 'Ready to submit your answers?', choices, source: 'structured',
+    });
+  });
+
+  it('renders nothing when two questions share the same text and first option', () => {
+    // an on-screen dialog matches both tabs, so the console cannot tell which is live
+    const a: Question = { question: 'Which should I pick?', options: [{ label: 'Left' }, { label: 'Right' }] };
+    const b: Question = { question: 'Which should I pick?', options: [{ label: 'Left' }, { label: 'Up' }] };
+    const dialog = ['Which should I pick?', '❯ 1. Left', '  2. Right'].join('\n');
+    expect(reportedClaudeQuestion(encode([a, b]), dialog)).toBeUndefined();
+  });
+
+  it('renders nothing when none of several questions is on screen', () => {
+    // the answered transcript repeats each question's text but draws no numbered row
+    const answered = [
+      "● User answered Claude's questions:",
+      '  ⎿  · Which region should host the deploy? → us-east',
+      '     · How should the rollout proceed? → All at once',
+    ].join('\n');
+    expect(reportedClaudeQuestion(encode([region, rollout]), answered)).toBeUndefined();
+  });
+
+  it('does not treat the review step of a single-question call as a submit prompt', () => {
+    // a lone question never shows the multi-question review page; the submit-literal
+    // shortcut is gated on two or more questions so a stray match cannot fire
+    const review = ['Ready to submit your answers?', '❯ 1. Submit answers', '  2. Cancel'].join('\n');
+    expect(reportedClaudeQuestion(encode([deploy]), review)).toBeUndefined();
   });
 
   it('rejects fewer than two or more than sixteen options', () => {
