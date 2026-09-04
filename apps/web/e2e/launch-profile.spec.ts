@@ -153,9 +153,9 @@ test('the launcher offers Scratch and each worktree the same split button', asyn
   await rowLaunch.hover();
   await expect(rowLaunch).toHaveCSS('filter', 'none');
   await expect(compactSplit).not.toHaveCSS('filter', 'none');
-  // the compact primary drops the kind glyph its own label already carries; the worktree
-  // card's full-size button keeps it
-  await expect(rowLaunch.locator('.launch-kind-mark')).toHaveCount(0);
+  // both new-task and full-size launch buttons show their resolved agent icon
+  await expect(rowLaunch.locator('.launch-kind-mark')).toHaveText('✳');
+  await expect(launcher.locator('.launcher-row').filter({ hasText: 'Scratch' }).getByRole('button', { name: 'Launch Codex' }).locator('.launch-kind-mark')).toHaveText('◆');
   await expect(page.locator('.launch-split:not(.compact)').getByRole('button', { name: 'Launch Claude' }).locator('.launch-kind-mark')).toHaveText('✳');
   // the scratch row primary launches its own resolved kind
   await launcher.locator('.launcher-row').filter({ hasText: 'Scratch' }).getByRole('button', { name: 'Launch Codex' }).click();

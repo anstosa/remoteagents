@@ -124,12 +124,14 @@ export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch
   const sandboxed = defaultSandboxed(resolvedKind === undefined ? undefined : adapters?.[resolvedKind]);
   const hint = launchHint(adapters, resolution);
   const menu = <LaunchMenu verb={verb} label={label} resolution={resolution} onLaunch={launch} />;
-  const primaryTitle = hint ?? `${agentKindLabel[resolvedKind!]} — ${originCopy(resolution.origin)}${sandboxed ? ' — sandboxed' : ''}`;
+  // let the icon identify compact agents without widening the new-task column
+  const visibleAction = compact && resolvedKind !== undefined ? verb : actionCopy(verb, resolvedKind);
+  const primaryTitle = hint ?? (resolvedKind === undefined ? undefined : `${agentKindLabel[resolvedKind]} — ${originCopy(resolution.origin)}${sandboxed ? ' — sandboxed' : ''}`);
   return <>
     {!compact && hint !== undefined && <small className="launch-hint">{hint}</small>}
     <span className={`launch-split${compact ? ' compact' : ''}`} role="group" aria-label={`${verb} agent`} ref={anchorRef}>
-      <button type="button" className={`${primaryClass} launch-primary`} disabled={resolvedKind === undefined || disabled || pending} title={primaryTitle} onClick={() => resolvedKind !== undefined && launch({ kind: resolvedKind, sandboxed })}>
-        {pending ? <span className="spinner" /> : !compact && resolvedKind !== undefined && <KindMark kind={resolvedKind} />}{actionCopy(verb, resolvedKind)}{sandboxed && <LockIcon />}
+      <button type="button" className={`${primaryClass} launch-primary`} aria-label={actionCopy(verb, resolvedKind)} disabled={resolvedKind === undefined || disabled || pending} title={primaryTitle} onClick={() => resolvedKind !== undefined && launch({ kind: resolvedKind, sandboxed })}>
+        {pending ? <span className="spinner" /> : resolvedKind !== undefined && <KindMark kind={resolvedKind} />}{visibleAction}{sandboxed && <LockIcon />}
       </button>
       <button type="button" className={`launch-chevron${compact ? ' compact' : ''}`} aria-label="Choose agent" aria-haspopup="menu" aria-expanded={open} disabled={none || disabled || pending} onClick={() => setOpen(value => !value)}><ChevronIcon /></button>
     </span>

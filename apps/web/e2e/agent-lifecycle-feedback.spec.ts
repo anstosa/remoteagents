@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 
+// verify lifecycle feedback names the chosen launch agent
 test('keeps agent on/off progress visible across lifecycle transitions', async ({ page }) => {
   let agentRunning = true;
   let agentId = 'agent-1';
@@ -7,6 +8,10 @@ test('keeps agent on/off progress visible across lifecycle transitions', async (
   let finishLaunch!: () => void;
   const deactivateFinished = new Promise<void>(resolve => { finishDeactivate = resolve; });
   const launchFinished = new Promise<void>(resolve => { finishLaunch = resolve; });
+  const adapters = {
+    codex: { launchable: true, program: '/bin/codex', stateSource: 'both', turnCapture: true, bookmarks: true, inlineQuestions: false, commands: true, sandbox: false },
+    omx: { launchable: true, program: '/bin/omx', stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: true, commands: true, sandbox: false }
+  };
 
   await page.route('**/api/**', async route => {
     const request = route.request();
@@ -15,8 +20,8 @@ test('keeps agent on/off progress visible across lifecycle transitions', async (
     if (url.pathname === '/api/dashboard') {
       return route.fulfill({
         json: agentRunning
-          ? { generation: agentId === 'agent-1' ? 1 : 3, agents: [{ id: agentId, sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' }], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'delta', label: 'Delta', path: '/worktrees/delta', available: true, pinned: true, order: 1 }] }] }
-          : { generation: 2, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: true, order: 0 }, { id: 'delta', label: 'Delta', path: '/worktrees/delta', available: true, pinned: true, order: 1 }] }] }
+          ? { generation: agentId === 'agent-1' ? 1 : 3, adapters, agents: [{ id: agentId, sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready', kind: 'codex', launch: { kind: 'codex', origin: 'worktree' } }], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'delta', label: 'Delta', path: '/worktrees/delta', available: true, pinned: true, order: 1 }] }] }
+          : { generation: 2, adapters, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: true, order: 0, launch: { kind: 'codex', origin: 'worktree' } }, { id: 'delta', label: 'Delta', path: '/worktrees/delta', available: true, pinned: true, order: 1 }] }] }
       });
     }
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
@@ -58,11 +63,12 @@ test('keeps agent on/off progress visible across lifecycle transitions', async (
   await expect(page.getByRole('tab', { name: 'Cora — Agent closed' })).toBeVisible();
   await expect(page.getByText('Agent is off', { exact: true })).toBeVisible();
 
-  await page.locator('.prompt-actions').getByRole('button', { name: 'Launch agent' }).click();
+  await page.locator('.prompt-actions').getByRole('button', { name: 'Choose agent' }).click();
+  await page.getByRole('menu', { name: 'Choose agent' }).getByRole('menuitem', { name: /^OMX/u }).click();
   const pendingLaunch = page.getByRole('status').filter({ hasText: 'Starting Cora' });
   await expect(pendingLaunch).toContainText('waiting for the agent session to become ready');
   await expect(page.getByRole('tab', { name: 'Cora — Starting agent' })).toHaveAttribute('aria-busy', 'true');
-  await expect(page.getByText('Starting Codex…', { exact: true })).toBeVisible();
+  await expect(page.getByText('Starting OMX…', { exact: true })).toBeVisible();
   await page.getByRole('tab', { name: 'Delta — Agent closed' }).click();
   await expect(pendingLaunch).toHaveCount(0);
   await page.getByRole('tab', { name: 'Cora — Starting agent' }).click();
@@ -189,7 +195,7 @@ test('sleeps an idle agent and wakes the retained tab through resume', async ({ 
 
   await page.getByRole('button', { name: 'Agent power options' }).click();
   const sleepingPowerMenu = page.getByRole('menu', { name: 'Agent power options' });
-  await expect(sleepingPowerMenu.getByRole('menuitem')).toHaveText(['Wake up', 'Turn off']);
+  await expect(sleepingPowerMenu.getByRole('menuitem')).toHaveText(['Rename worktree', 'Wake up', 'Turn off']);
   await sleepingPowerMenu.getByRole('menuitem', { name: 'Wake up' }).click();
   await expect.poll(() => wakeRequests).toBe(1);
   await expect(page.getByRole('tab', { name: 'Cora — Waking up' })).toHaveAttribute('aria-busy', 'true');
@@ -229,7 +235,7 @@ test('turns off a retained sleeping tab from its power menu', async ({ page }) =
   await page.goto('/');
   await page.getByRole('button', { name: 'Agent power options' }).click();
   const powerMenu = page.getByRole('menu', { name: 'Agent power options' });
-  await expect(powerMenu.getByRole('menuitem')).toHaveText(['Wake up', 'Turn off']);
+  await expect(powerMenu.getByRole('menuitem')).toHaveText(['Rename worktree', 'Wake up', 'Turn off']);
   await powerMenu.getByRole('menuitem', { name: 'Turn off' }).click();
 
   await expect.poll(() => turnOffRequests).toBe(1);

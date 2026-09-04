@@ -317,7 +317,7 @@ const pendingOperations = new Set<string>();
 const pendingOperationListeners = new Map<string, Set<() => void>>();
 const pendingNewTaskSources = new Map<string, string>();
 // retain launch handoffs by worktree
-type PendingWorktreeLaunch = { operationKey: string; sourceAgentId?: string; agentId?: string; confirmationTimer?: number };
+type PendingWorktreeLaunch = { operationKey: string; kind?: AgentKind; sourceAgentId?: string; agentId?: string; confirmationTimer?: number };
 const pendingWorktreeLaunches = new Map<string, PendingWorktreeLaunch>();
 const worktreeLaunchConfirmationMs = 30_000;
 const pullRequestSwitchCache = new Map<string, PullRequestSwitchAvailability>();
@@ -4820,8 +4820,14 @@ function launchError(response: Response): Promise<string> {
 }
 
 type InactiveWorktreePresentation = { ariaLabel?: string; heading: string; detail: string; status: string };
+// describe one pending worktree launch
+const worktreeLaunchPendingDetail = (waking: boolean, kind: AgentKind | undefined): string => waking
+  ? 'Running the resume alias and waiting for the previous conversation.'
+  : `Launching ${kind === undefined ? 'an agent' : agentKindLabel[kind]} and waiting for the agent session to become ready.`;
 // describe one inactive worktree state (the Launch button now shows its own kind label)
-const inactiveWorktreePresentation = (label: string, state: { startingNewTask: boolean; restarting: boolean; turningOff: boolean; waking: boolean; launching: boolean; sleeping: boolean }): InactiveWorktreePresentation => {
+const inactiveWorktreePresentation = (label: string, kind: AgentKind | undefined, state: { startingNewTask: boolean; restarting: boolean; turningOff: boolean; waking: boolean; launching: boolean; sleeping: boolean }): InactiveWorktreePresentation => {
+  // name the configured launch agent
+  const agentName = kind === undefined ? 'agent' : agentKindLabel[kind];
   // describe a fresh conversation
   if (state.startingNewTask) return { ariaLabel: 'Starting new task', heading: 'Starting new task…', detail: 'Waiting for the fresh agent session to become ready.', status: 'Starting' };
   // describe a restarted conversation
@@ -4831,7 +4837,7 @@ const inactiveWorktreePresentation = (label: string, state: { startingNewTask: b
   // describe a waking conversation
   if (state.waking) return { ariaLabel: `Waking ${label}`, heading: 'Waking up…', detail: 'Running the resume alias and reconnecting the previous conversation.', status: 'Waking' };
   // describe a fresh launch
-  if (state.launching) return { ariaLabel: `Starting ${label}`, heading: 'Starting Codex…', detail: 'Creating the agent session and connecting its output.', status: 'Starting' };
+  if (state.launching) return { ariaLabel: `Starting ${label}`, heading: `Starting ${agentName}…`, detail: 'Creating the agent session and connecting its output.', status: 'Starting' };
   // describe retained sleep
   if (state.sleeping) return { ariaLabel: `${label} sleeping`, heading: 'Agent is sleeping', detail: 'The agent process is closed, but this tab is waiting for you.', status: 'Sleep' };
   return { heading: 'Agent is off', detail: 'This worktree is available. Launch an agent when you are ready to continue.', status: 'Off' };
@@ -4850,7 +4856,9 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
   const startingNewTask = usePendingOperation(newTaskOperationKey(worktree.id));
   const sleeping = worktree.sleeping === true;
   const processing = launching || restarting || turningOff || waking || startingNewTask;
-  const presentation = inactiveWorktreePresentation(worktree.label, { startingNewTask, restarting, turningOff, waking, launching, sleeping });
+  // prefer the explicitly selected pending agent
+  const launchKind = pendingWorktreeLaunches.get(worktree.id)?.kind ?? worktree.launch?.kind;
+  const presentation = inactiveWorktreePresentation(worktree.label, launchKind, { startingNewTask, restarting, turningOff, waking, launching, sleeping });
   const worktreeBookmarks = useWorktreeBookmarks(worktree.id);
   const worktreeNotes = useWorktreeNotes(worktree.id);
   const projectBrowser = useProjectBrowser(worktree.projectUrl, worktree.id);
@@ -4873,10 +4881,11 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
     const action = sleeping ? 'wake' : 'launch';
     // serialize inactive worktree actions
     if (!worktree.available || processing || !beginPendingOperation(operationKey)) return;
-    pendingWorktreeLaunches.set(worktree.id, { operationKey });
+    const kind = choice?.kind ?? worktree.launch?.kind;
+    pendingWorktreeLaunches.set(worktree.id, { operationKey, ...(kind === undefined ? {} : { kind }) });
     let handedOff = false;
     setError('');
-    onOperationFeedback({ tone: 'pending', message: `${sleeping ? 'Waking' : 'Starting'} ${worktree.label}…`, detail: sleeping ? 'Running the resume alias and waiting for the previous conversation.' : 'Launching Codex and waiting for the agent session to become ready.', worktreeId: worktree.id });
+    onOperationFeedback({ tone: 'pending', message: `${sleeping ? 'Waking' : 'Starting'} ${worktree.label}…`, detail: worktreeLaunchPendingDetail(sleeping, kind), worktreeId: worktree.id });
     try {
       const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/${action}`, sleeping || choice === undefined ? { method: 'POST' } : launchRequestInit(choice));
       // surface failed starts
@@ -5708,7 +5717,7 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
         showOperationFeedback({ tone: 'error', message: `${worktree.label} did not finish ${action === 'wake' ? 'waking up' : 'starting'}`, detail, worktreeId: worktree.id });
         void refresh();
       }, worktreeLaunchConfirmationMs);
-      pendingWorktreeLaunches.set(worktree.id, { operationKey, agentId, confirmationTimer });
+      pendingWorktreeLaunches.set(worktree.id, { ...(existing ?? {}), operationKey, agentId, confirmationTimer });
     }
     else {
       pendingWorktreeLaunches.delete(worktree.id);
@@ -5764,12 +5773,13 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
     const key = worktreeLaunchOperationKey(worktree);
     // prevent duplicate worktree launches
     if (!beginPendingOperation(key)) return;
-    pendingWorktreeLaunches.set(worktree.id, { operationKey: key });
+    const kind = choice?.kind ?? worktree.launch?.kind;
+    pendingWorktreeLaunches.set(worktree.id, { operationKey: key, ...(kind === undefined ? {} : { kind }) });
     let handedOff = false;
     setLauncherOpen(false);
     setActivateWorktreeId(worktree.id);
     setLaunchErrorMessage('');
-    showOperationFeedback({ tone: 'pending', message: `${waking ? 'Waking' : 'Starting'} ${worktree.label}…`, detail: waking ? 'Running the resume alias and waiting for the previous conversation.' : 'Launching Codex and waiting for the agent session to become ready.', worktreeId: worktree.id });
+    showOperationFeedback({ tone: 'pending', message: `${waking ? 'Waking' : 'Starting'} ${worktree.label}…`, detail: worktreeLaunchPendingDetail(waking, kind), worktreeId: worktree.id });
     try {
       const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/${waking ? 'wake' : 'launch'}`, waking || choice === undefined ? { method: 'POST' } : launchRequestInit(choice));
       // surface failed starts
