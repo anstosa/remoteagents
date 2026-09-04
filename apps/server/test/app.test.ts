@@ -575,6 +575,41 @@ describe('pull request switch API', () => {
       await pullRequestApp.close();
     }
   }, 15_000);
+
+  it('switches and moves a local branch through the controlled HTTP boundary', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const switchBranch = vi.fn<() => Promise<boolean>>().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const moveBranch = vi.fn<() => Promise<'moved' | 'recovery-required'>>().mockResolvedValueOnce('moved').mockResolvedValueOnce('recovery-required');
+    const prSwitch = { switchBranch, moveBranch };
+    const pullRequestApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 19).toString('base64url')), prSwitch: prSwitch as never });
+    try {
+      const boot = await pullRequestApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await pullRequestApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      const switched = await pullRequestApp.inject({ method: 'POST', url: '/api/agents/agent-1/switch-branch', headers, payload: { branch: 'feature/solo' } });
+      const rejectedSwitch = await pullRequestApp.inject({ method: 'POST', url: '/api/agents/agent-1/switch-branch', headers, payload: { branch: 'feature/solo' } });
+      const moved = await pullRequestApp.inject({ method: 'POST', url: '/api/agents/agent-1/move-branch', headers, payload: { branch: 'feature/solo' } });
+      const recovery = await pullRequestApp.inject({ method: 'POST', url: '/api/agents/agent-1/move-branch', headers, payload: { branch: 'feature/solo' } });
+      // a non-string branch is rejected before the service is consulted
+      const invalidSwitch = await pullRequestApp.inject({ method: 'POST', url: '/api/agents/agent-1/switch-branch', headers, payload: { branch: 42 } });
+      const invalidMove = await pullRequestApp.inject({ method: 'POST', url: '/api/agents/agent-1/move-branch', headers, payload: {} });
+
+      expect(switched.statusCode).toBe(202);
+      expect(switchBranch).toHaveBeenCalledWith('agent-1', 'feature/solo');
+      expect(rejectedSwitch.statusCode).toBe(409);
+      expect(moved.statusCode).toBe(202);
+      expect(moveBranch).toHaveBeenCalledWith('agent-1', 'feature/solo');
+      expect(recovery.statusCode).toBe(409);
+      expect(recovery.json()).toMatchObject({ recoveryRequired: true, error: expect.any(String) });
+      expect(invalidSwitch.statusCode).toBe(409);
+      expect(invalidMove.statusCode).toBe(409);
+      // the invalid requests short-circuit, so the mocks saw only the two valid calls each
+      expect(switchBranch).toHaveBeenCalledTimes(2);
+      expect(moveBranch).toHaveBeenCalledTimes(2);
+    } finally {
+      await pullRequestApp.close();
+    }
+  }, 15_000);
 });
 
 describe('dashboard launch resolution', () => {

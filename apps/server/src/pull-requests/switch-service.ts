@@ -22,6 +22,7 @@ export type SwitchableBranch = { branch: string; checkedOut: boolean; openIn?: P
 export type PullRequestSwitchAvailability = { enabled: boolean; pullRequests: SwitchablePullRequest[]; otherPullRequests: SwitchablePullRequest[]; branches: SwitchableBranch[]; pullRequestsSupported: boolean };
 export type PullRequestMoveResult = 'moved' | 'unavailable' | 'recovery-required';
 type GitHead = { branch?: string; commit: string };
+type SwitchTarget = NonNullable<Awaited<ReturnType<DiscoveryService['target']>>>;
 
 export class PullRequestSwitchService {
   private branchMutationInProgress = false;
@@ -119,34 +120,55 @@ export class PullRequestSwitchService {
     this.branchMutationInProgress = true;
     try {
       const available = await this.available(agentId);
-      const ownPullRequest = available?.pullRequests.find(candidate => candidate.number === number);
-      const otherPullRequest = available?.otherPullRequests.find(candidate => candidate.number === number);
-      const pullRequest = ownPullRequest ?? otherPullRequest;
+      const pullRequest = available?.pullRequests.find(candidate => candidate.number === number) ?? available?.otherPullRequests.find(candidate => candidate.number === number);
       const target = await this.discovery.target(agentId);
       const targetWorktree = target === undefined ? undefined : this.worktree(target.agent.workspace);
       // require one ready and unused target
       if (!available?.enabled || pullRequest === undefined || pullRequest.checkedOut || target === undefined || targetWorktree === undefined) return false;
-      const currentBranch = await this.command('/usr/bin/git', ['-C', targetWorktree.identity, 'symbolic-ref', '--quiet', '--short', 'HEAD']);
-      // reject a no-op switch that cannot prove command completion
-      if (currentBranch.code === 0 && currentBranch.stdout.trim() === pullRequest.checkoutBranch) return false;
-      const completionPath = `/tmp/rac-switch-${randomUUID()}`;
-      const temporaryCompletionPath = `${completionPath}.tmp`;
       const switchCommand = pullRequest.headOnOrigin ? this.branchSwitchCommand(pullRequest) : this.pullRequestSwitchCommand(pullRequest);
-      const recordCompletion = `rac_switch_status=$?; trap - EXIT HUP INT TERM; printf '%s\\n' "$rac_switch_status" > ${quote(temporaryCompletionPath)} && mv -- ${quote(temporaryCompletionPath)} ${quote(completionPath)}; exit "$rac_switch_status"`;
-      const command = `/bin/sh -c ${quote(`trap ${quote(recordCompletion)} EXIT HUP INT TERM; ${switchCommand}`)}; clear; fg`;
-      // suspend before handing the pane to Git
-      if (!await this.tmux.suspend(target.socket, target.agent.paneId)) return false;
-      const accepted = await this.tmux.input(target.socket, target.agent.paneId, `\x15${command}\r`);
-      // resume after failed input delivery
-      if (!accepted) {
-        await this.command('/usr/bin/rm', ['-f', '--', temporaryCompletionPath, completionPath]);
-        await this.tmux.foreground(target.socket, target.agent.paneId);
-        return false;
-      }
-      return await this.waitForSwitchCompletion(completionPath, targetWorktree.identity, pullRequest.checkoutBranch);
+      return await this.runSwitch(target, targetWorktree, pullRequest.checkoutBranch, switchCommand);
     } finally {
       this.branchMutationInProgress = false;
     }
+  }
+
+  // switch to one available local branch open in no other worktree
+  async switchBranch(agentId: string, branch: string): Promise<boolean> {
+    // reject an empty or concurrent branch mutation
+    if (typeof branch !== 'string' || branch === '' || this.branchMutationInProgress) return false;
+    this.branchMutationInProgress = true;
+    try {
+      const available = await this.available(agentId);
+      // require the branch on the availability list, held by no other worktree
+      const switchable = available?.branches.find(candidate => candidate.branch === branch);
+      const target = await this.discovery.target(agentId);
+      const targetWorktree = target === undefined ? undefined : this.worktree(target.agent.workspace);
+      if (!available?.enabled || switchable === undefined || switchable.checkedOut || target === undefined || targetWorktree === undefined) return false;
+      return await this.runSwitch(target, targetWorktree, branch, this.plainSwitchCommand(branch));
+    } finally {
+      this.branchMutationInProgress = false;
+    }
+  }
+
+  // suspend the pane, inject one branch-changing command, and await its completion
+  private async runSwitch(target: SwitchTarget, targetWorktree: Worktree, checkoutBranch: string, switchCommand: string): Promise<boolean> {
+    const currentBranch = await this.command('/usr/bin/git', ['-C', targetWorktree.identity, 'symbolic-ref', '--quiet', '--short', 'HEAD']);
+    // reject a no-op switch that cannot prove command completion
+    if (currentBranch.code === 0 && currentBranch.stdout.trim() === checkoutBranch) return false;
+    const completionPath = `/tmp/rac-switch-${randomUUID()}`;
+    const temporaryCompletionPath = `${completionPath}.tmp`;
+    const recordCompletion = `rac_switch_status=$?; trap - EXIT HUP INT TERM; printf '%s\\n' "$rac_switch_status" > ${quote(temporaryCompletionPath)} && mv -- ${quote(temporaryCompletionPath)} ${quote(completionPath)}; exit "$rac_switch_status"`;
+    const command = `/bin/sh -c ${quote(`trap ${quote(recordCompletion)} EXIT HUP INT TERM; ${switchCommand}`)}; clear; fg`;
+    // suspend before handing the pane to Git
+    if (!await this.tmux.suspend(target.socket, target.agent.paneId)) return false;
+    const accepted = await this.tmux.input(target.socket, target.agent.paneId, `\x15${command}\r`);
+    // resume after failed input delivery
+    if (!accepted) {
+      await this.command('/usr/bin/rm', ['-f', '--', temporaryCompletionPath, completionPath]);
+      await this.tmux.foreground(target.socket, target.agent.paneId);
+      return false;
+    }
+    return await this.waitForSwitchCompletion(completionPath, targetWorktree.identity, checkoutBranch);
   }
 
   // move one occupied pull request into the requested worktree
@@ -155,7 +177,25 @@ export class PullRequestSwitchService {
     if (!Number.isInteger(number) || number < 1 || this.branchMutationInProgress) return 'unavailable';
     this.branchMutationInProgress = true;
     try {
-      return await this.moveCheckedOutPullRequest(agentId, number);
+      const available = await this.available(agentId);
+      const pullRequest = [...(available?.pullRequests ?? []), ...(available?.otherPullRequests ?? [])].find(candidate => candidate.number === number);
+      if (available === undefined || pullRequest === undefined) return 'unavailable';
+      return await this.moveCheckedOutBranch(agentId, available.enabled, { branch: pullRequest.checkoutBranch, checkedOut: pullRequest.checkedOut, openIn: pullRequest.openIn });
+    } finally {
+      this.branchMutationInProgress = false;
+    }
+  }
+
+  // move one occupied local branch into the requested worktree
+  async moveBranch(agentId: string, branch: string): Promise<PullRequestMoveResult> {
+    // reject an empty or concurrent move request
+    if (typeof branch !== 'string' || branch === '' || this.branchMutationInProgress) return 'unavailable';
+    this.branchMutationInProgress = true;
+    try {
+      const available = await this.available(agentId);
+      const switchable = available?.branches.find(candidate => candidate.branch === branch);
+      if (available === undefined || switchable === undefined) return 'unavailable';
+      return await this.moveCheckedOutBranch(agentId, available.enabled, switchable);
     } finally {
       this.branchMutationInProgress = false;
     }
@@ -201,21 +241,19 @@ export class PullRequestSwitchService {
   }
 
   // transfer one checked-out branch and its working state
-  private async moveCheckedOutPullRequest(agentId: string, number: number): Promise<PullRequestMoveResult> {
-    const available = await this.available(agentId);
-    const pullRequest = [...(available?.pullRequests ?? []), ...(available?.otherPullRequests ?? [])].find(candidate => candidate.number === number);
+  private async moveCheckedOutBranch(agentId: string, enabled: boolean, movable: SwitchableBranch): Promise<PullRequestMoveResult> {
+    const { branch: checkoutBranch, checkedOut, openIn } = movable;
     const target = await this.discovery.target(agentId);
     const targetWorktree = target === undefined ? undefined : this.worktree(target.agent.workspace);
-    const sourceReference = pullRequest?.openIn;
-    const sourceWorktree = sourceReference === undefined ? undefined : worktreeById(this.discovery.worktreesNow(), sourceReference.worktreeId);
+    const sourceWorktree = openIn === undefined ? undefined : worktreeById(this.discovery.worktreesNow(), openIn.worktreeId);
     // require one ready destination and one resolvable source
-    if (!available?.enabled || pullRequest === undefined || !pullRequest.checkedOut || target === undefined || targetWorktree === undefined || sourceReference === undefined || sourceWorktree === undefined || sourceWorktree.id === targetWorktree.id) return 'unavailable';
-    const sourceTarget = sourceReference.agentId === undefined ? undefined : await this.discovery.target(sourceReference.agentId);
+    if (!enabled || !checkedOut || target === undefined || targetWorktree === undefined || openIn === undefined || sourceWorktree === undefined || sourceWorktree.id === targetWorktree.id) return 'unavailable';
+    const sourceTarget = openIn.agentId === undefined ? undefined : await this.discovery.target(openIn.agentId);
     // fail closed when the active source changed identity
-    if (sourceReference.agentId !== undefined && (sourceTarget === undefined || sourceTarget.agent.id === target.agent.id || this.worktree(sourceTarget.agent.workspace)?.id !== sourceWorktree.id)) return 'unavailable';
+    if (openIn.agentId !== undefined && (sourceTarget === undefined || sourceTarget.agent.id === target.agent.id || this.worktree(sourceTarget.agent.workspace)?.id !== sourceWorktree.id)) return 'unavailable';
     const sourceBranch = await this.command('/usr/bin/git', ['-C', sourceWorktree.identity, 'symbolic-ref', '--quiet', '--short', 'HEAD']);
     // revalidate the occupied branch immediately before mutation
-    if (sourceBranch.code !== 0 || sourceBranch.stdout.trim() !== pullRequest.checkoutBranch) return 'unavailable';
+    if (sourceBranch.code !== 0 || sourceBranch.stdout.trim() !== checkoutBranch) return 'unavailable';
 
     let sourceSuspended = sourceTarget === undefined;
     // pause the source agent before moving its working copy
@@ -230,7 +268,7 @@ export class PullRequestSwitchService {
 
     let result: PullRequestMoveResult = 'recovery-required';
     try {
-      result = await this.performMove(sourceWorktree, targetWorktree, pullRequest, number);
+      result = await this.performMove(sourceWorktree, targetWorktree, checkoutBranch);
     } catch {
       result = 'recovery-required';
     }
@@ -242,13 +280,13 @@ export class PullRequestSwitchService {
   }
 
   // execute the git transaction after both agents pause
-  private async performMove(sourceWorktree: Worktree, targetWorktree: Worktree, pullRequest: SwitchablePullRequest, number: number): Promise<PullRequestMoveResult> {
+  private async performMove(sourceWorktree: Worktree, targetWorktree: Worktree, checkoutBranch: string): Promise<PullRequestMoveResult> {
     const [sourceRepository, targetRepository] = await Promise.all([this.repositoryIdentity(sourceWorktree.identity), this.repositoryIdentity(targetWorktree.identity)]);
     // prevent branch-name collisions across repositories
     if (sourceRepository === undefined || sourceRepository !== targetRepository) return 'unavailable';
     const sourceBranch = await this.command('/usr/bin/git', ['-C', sourceWorktree.identity, 'symbolic-ref', '--quiet', '--short', 'HEAD']);
     // close the source branch race after suspension
-    if (sourceBranch.code !== 0 || sourceBranch.stdout.trim() !== pullRequest.checkoutBranch) return 'unavailable';
+    if (sourceBranch.code !== 0 || sourceBranch.stdout.trim() !== checkoutBranch) return 'unavailable';
     // close the destination readiness race after suspension
     if (!await this.cleanAndPushed(targetWorktree)) return 'unavailable';
     const targetHead = await this.gitHead(targetWorktree.identity);
@@ -261,7 +299,7 @@ export class PullRequestSwitchService {
     let stashOid: string | undefined;
     // capture all tracked and untracked source changes
     if (sourceStatus.stdout.trim()) {
-      const stashMessage = `rac move ${randomUUID()} PR #${number}`;
+      const stashMessage = `rac move ${randomUUID()} ${checkoutBranch}`;
       const stashed = await this.command('/usr/bin/git', ['-C', sourceWorktree.identity, 'stash', 'push', '--include-untracked', '--message', stashMessage]);
       if (stashed.code !== 0) return 'unavailable';
       const stashes = await this.command('/usr/bin/git', ['-C', sourceWorktree.identity, 'stash', 'list', '--format=%H%x09%gs']);
@@ -284,14 +322,14 @@ export class PullRequestSwitchService {
       if (stashOid === undefined) return 'unavailable';
       return await this.applyAndDropStash(sourceWorktree.identity, stashOid) ? 'unavailable' : 'recovery-required';
     }
-    const switched = await this.command('/usr/bin/git', ['-C', targetWorktree.identity, 'switch', '--', pullRequest.checkoutBranch]);
+    const switched = await this.command('/usr/bin/git', ['-C', targetWorktree.identity, 'switch', '--', checkoutBranch]);
     // roll back both worktrees when checkout fails
     if (switched.code !== 0) {
-      return await this.rollbackMove(sourceWorktree, targetWorktree, pullRequest.checkoutBranch, targetHead, stashOid, false) ? 'unavailable' : 'recovery-required';
+      return await this.rollbackMove(sourceWorktree, targetWorktree, checkoutBranch, targetHead, stashOid, false) ? 'unavailable' : 'recovery-required';
     }
     // recover the source index and working tree at the destination
     if (stashOid !== undefined && !await this.applyAndDropStash(targetWorktree.identity, stashOid)) {
-      return await this.rollbackMove(sourceWorktree, targetWorktree, pullRequest.checkoutBranch, targetHead, stashOid, true) ? 'unavailable' : 'recovery-required';
+      return await this.rollbackMove(sourceWorktree, targetWorktree, checkoutBranch, targetHead, stashOid, true) ? 'unavailable' : 'recovery-required';
     }
     return 'moved';
   }
@@ -345,6 +383,9 @@ export class PullRequestSwitchService {
 
   // derive one app-owned local branch
   private pullRequestBranch(pullRequest: PullRequestChoice): string { return `rac/pr/${pullRequest.number}/${pullRequest.headSha.slice(0, 12)}`; }
+
+  // switch one existing local branch without touching origin
+  private plainSwitchCommand(branch: string): string { return `git switch -- ${quote(branch)}`; }
 
   // switch one SHA-pinned origin branch
   private branchSwitchCommand(pullRequest: SwitchablePullRequest): string {
