@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
 import { userInfo } from 'node:os';
-// build one restricted subprocess environment
-export const safeEnv = (): NodeJS.ProcessEnv => { const user = userInfo(); return { HOME: user.homedir, USER: user.username, LOGNAME: user.username, SHELL: process.env.RAC_INTERACTIVE_SHELL?.trim() || user.shell || '/bin/sh', TERM: 'xterm-256color', COLORTERM: 'truecolor', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', PATH: '/usr/local/bin:/usr/bin:/bin' }; };
+import { interactiveShellPath } from './interactive-shell.js';
+// build one restricted subprocess environment; SHELL names the console's interactive shell,
+// resolved by the one reader of RAC_INTERACTIVE_SHELL
+export const safeEnv = (): NodeJS.ProcessEnv => { const user = userInfo(); return { HOME: user.homedir, USER: user.username, LOGNAME: user.username, SHELL: interactiveShellPath(), TERM: 'xterm-256color', COLORTERM: 'truecolor', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', PATH: '/usr/local/bin:/usr/bin:/bin' }; };
 // the variables tmux sets on the process it starts in a pane, naming that pane
 const paneVariables = ['TMUX', 'TMUX_PANE'] as const;
 /**

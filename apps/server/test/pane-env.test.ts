@@ -23,3 +23,19 @@ describe('paneEnv', () => {
     expect(paneEnv({ TMUX: '', TMUX_PANE: '' })).toEqual(safeEnv());
   });
 });
+
+// SHELL in the restricted environment is the console's interactive shell — the same
+// resolver the launch bootstrap uses — never the account's login shell from passwd.
+describe('safeEnv', () => {
+  it('names the interactive shell as SHELL through the one RAC_INTERACTIVE_SHELL reader', () => {
+    const previous = process.env.RAC_INTERACTIVE_SHELL;
+    try {
+      process.env.RAC_INTERACTIVE_SHELL = '/usr/local/bin/bash';
+      expect(safeEnv().SHELL).toBe('/usr/local/bin/bash');
+      delete process.env.RAC_INTERACTIVE_SHELL;
+      expect(safeEnv().SHELL).toBe('/usr/bin/zsh');
+    } finally {
+      if (previous === undefined) delete process.env.RAC_INTERACTIVE_SHELL; else process.env.RAC_INTERACTIVE_SHELL = previous;
+    }
+  });
+});
