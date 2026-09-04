@@ -64,17 +64,30 @@ describe('project configuration', () => {
     expect(config.projects[0]?.available).toBe(true);
   });
 
-  it('loads a missing or non-git path as unavailable with a boot warning instead of failing', async () => {
+  it('loads a missing path as unavailable with a boot warning instead of failing', async () => {
     const warnings: string[] = [];
     const missing = await validateConfig(await withProject('/no/such/path'), { warn: m => warnings.push(m) });
-    expect(missing.projects[0]).toMatchObject({ available: false });
+    expect(missing.projects[0]).toMatchObject({ available: false, mode: 'repository' });
     expect(missing.projects[0]?.unavailableReason).toContain('was not found');
     expect(warnings.some(w => w.includes('projects.a') && w.includes('was not found'))).toBe(true);
+  });
+
+  it('loads an existing non-git path as an available directory Project keyed by its own realpath', async () => {
+    const warnings: string[] = [];
     const plainRoot = await realpath(await mkdtemp(join(tmpdir(), 'rac-plain-')));
     dirs.push(plainRoot);
-    const plain = await validateConfig(await withProject(plainRoot));
-    expect(plain.projects[0]).toMatchObject({ available: false });
-    expect(plain.projects[0]?.unavailableReason).toContain('not a git repository');
+    const plain = await validateConfig(await withProject(plainRoot), { warn: m => warnings.push(m) });
+    const project = plain.projects[0]!;
+    // a non-git directory is launchable in place (like Scratch), never unavailable
+    expect(project).toMatchObject({ available: true, mode: 'directory' });
+    expect(project.unavailableReason).toBeUndefined();
+    // its identity is its own path, so it dedups against another entry at the same directory
+    expect(project.identity).toBe(plainRoot);
+    expect(project.path).toBe(plainRoot);
+    // an available directory Project needs no boot warning
+    expect(warnings.some(w => w.includes('projects.a'))).toBe(false);
+    // two directory Projects at the same path still collide on identity
+    await expect(validateConfig({ publicOrigin: 'https://agents.example.com', projects: [{ id: 'a', path: plainRoot }, { id: 'b', path: plainRoot }] })).rejects.toThrow('duplicate project identity');
   });
 
   it('refuses two Projects that resolve to the same repository, including through a symlink', async () => {

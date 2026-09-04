@@ -25,7 +25,7 @@ export function testConfig(overrides: Partial<ValidatedConfig> = {}): ValidatedC
 /** A configured Project (config `projects[]`). Override any field. */
 export function testProject(overrides: Partial<Project> = {}): Project {
   const path = overrides.path ?? '/repo';
-  return { id: 'proj', label: 'Proj', path, identity: `${path}/.git`, worktreesDirectory: `${path}-worktrees`, available: true, push: defaultPush, ...overrides };
+  return { id: 'proj', label: 'Proj', path, identity: `${path}/.git`, mode: 'repository', worktreesDirectory: `${path}-worktrees`, available: true, push: defaultPush, ...overrides };
 }
 
 /**

@@ -264,10 +264,11 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const reviewBranches = worktreeViews.map(view => ({ worktreeId: view.id, branch: discovered.agents.find(agent => agent.worktreeId === view.id)?.branch ?? view.branch }));
     const reviews = await reviewStore.summaries(reviewBranches);
     // resolve the Launch profile for every scope the web can launch into: each idle
-    // worktree, each running agent's worktree (for Restart as…), and the Scratch group
-    const launchResolutions = await launch.launchResolutions([scratchLaunchKey, ...worktreeViews.map(view => view.id), ...discovered.agents.flatMap(agent => agent.worktreeId === undefined ? [] : [agent.worktreeId])]);
+    // worktree, each running agent's worktree (for Restart as…), each non-git directory
+    // Project (launched in place), and the Scratch group
+    const launchResolutions = await launch.launchResolutions([scratchLaunchKey, ...worktreeViews.map(view => view.id), ...discovered.agents.flatMap(agent => agent.worktreeId === undefined ? [] : [agent.worktreeId]), ...discovered.projects.flatMap(project => project.mode === 'directory' ? [project.id] : [])]);
     const launchFor = (worktreeId: string | undefined) => launchResolutions.get(worktreeId ?? scratchLaunchKey);
-    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }), ...(launchFor(agent.worktreeId) === undefined ? {} : { launch: launchFor(agent.worktreeId) }) })), projects: discovered.projects.map(project => ({ ...project, worktrees: project.worktrees.map(worktree => ({ ...worktree, ...(sleepingWorktrees.has(worktree.id) ? { sleeping: true } : {}), ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }), ...(launchFor(worktree.id) === undefined ? {} : { launch: launchFor(worktree.id) }) })) })), cleanupPending: cleanup.pending().length, scratchLaunch: launchResolutions.get(scratchLaunchKey), reviewTour: reviewTourCapability, reviews };
+    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }), ...(launchFor(agent.worktreeId) === undefined ? {} : { launch: launchFor(agent.worktreeId) }) })), projects: discovered.projects.map(project => ({ ...project, ...(project.mode === 'directory' && launchResolutions.get(project.id) !== undefined ? { launch: launchResolutions.get(project.id) } : {}), worktrees: project.worktrees.map(worktree => ({ ...worktree, ...(sleepingWorktrees.has(worktree.id) ? { sleeping: true } : {}), ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }), ...(launchFor(worktree.id) === undefined ? {} : { launch: launchFor(worktree.id) }) })) })), cleanupPending: cleanup.pending().length, scratchLaunch: launchResolutions.get(scratchLaunchKey), reviewTour: reviewTourCapability, reviews };
   };
   // observe only agent state needed by cross-instance attention
   const localInstanceAttention = async () => {
@@ -1351,6 +1352,25 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const agent = await waitForAgent(before, worktreeId);
     // report a true timeout
     if (!agent) return reply.code(504).send({ error: `The worktree session started, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
+    return reply.code(201).send({ agentId: agent.id });
+  });
+  // launch an agent in place in a non-git `directory` Project (it has no Worktrees). The
+  // new session is labeled with the Project, so it is matched back by display label.
+  app.post('/api/projects/:id/launch', async (request, reply) => {
+    controlled(request, true);
+    const projectId = (request.params as { id: string }).id;
+    const kind = requestedKind(request);
+    // reject an unknown kind before any handoff
+    if (kind.invalid) return reply.code(400).send({ error: 'invalid agent kind' });
+    const project = config.projects.find(candidate => candidate.id === projectId);
+    // only an available non-git directory Project launches in place
+    if (project === undefined || !project.available || project.mode !== 'directory') return reply.code(404).send({ error: 'project unavailable' });
+    const before = new Set((await discovery.dashboard()).agents.map(agent => agent.id));
+    // require a successful launch handoff (refuses an unconfigured or unlaunchable kind)
+    if (!await launch.launchProjectDirectory(projectId, kind.kind)) return reply.code(409).send({ error: 'Could not start the project agent.' });
+    const agent = await waitForAgent(before, undefined, project.label);
+    // report a true timeout
+    if (!agent) return reply.code(504).send({ error: `The project session started, but the agent did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
     return reply.code(201).send({ agentId: agent.id });
   });
   // the branches the Add dialog offers — local branches (flagged when a Worktree already

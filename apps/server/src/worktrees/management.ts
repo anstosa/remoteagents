@@ -51,13 +51,16 @@ export type BranchDeleteOutcome = { ok: true } | { ok: false; error: string };
 export type PruneOutcome = { ok: true } | { ok: false; status: number; error: string };
 
 /**
- * Whether the console may create or remove Worktrees in this Project. A missing or
- * non-git checkout cannot be managed; under the Docker bridge a Project whose container
- * path differs from its host path is refused, because git would otherwise write the
- * container's paths into worktree metadata the host cannot follow (ADR 0003).
+ * Whether the console may create or remove Worktrees in this Project. A missing checkout
+ * cannot be managed; a non-git `directory` Project has no Worktrees at all; under the
+ * Docker bridge a Project whose container path differs from its host path is refused,
+ * because git would otherwise write the container's paths into worktree metadata the host
+ * cannot follow (ADR 0003).
  */
 export function worktreeManagementAvailability(project: Project): { available: boolean; reason?: string } {
   if (!project.available) return { available: false, reason: project.unavailableReason ?? `project ${project.id} is unavailable` };
+  // a non-git directory Project launches in place (like Scratch); it has no Worktrees
+  if (project.mode === 'directory') return { available: false, reason: 'this project is not a git repository, so it has no worktrees to manage' };
   if (project.hostPath !== undefined && project.hostPath !== project.path) {
     return { available: false, reason: 'the container does not mount this project at its host path, so git cannot manage its worktrees' };
   }

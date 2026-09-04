@@ -161,6 +161,12 @@ describe('worktreeManagementAvailability', () => {
     expect(worktreeManagementAvailability(testProject({ available: true, path: '/repo', hostPath: '/repo' }))).toEqual({ available: true });
     expect(worktreeManagementAvailability(testProject({ available: true }))).toEqual({ available: true });
   });
+
+  it('blocks an available non-git directory Project: it has no worktrees to manage', async () => {
+    const result = worktreeManagementAvailability(testProject({ available: true, mode: 'directory' }));
+    expect(result.available).toBe(false);
+    expect(result.reason).toContain('not a git repository');
+  });
 });
 
 // exercised against a real repository so the actual git invocation is proven end to end

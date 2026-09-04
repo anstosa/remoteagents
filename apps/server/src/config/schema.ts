@@ -122,10 +122,12 @@ function resolveWorktreesDirectory(configured: string | undefined, mainWorktree:
   const anchor = mainWorktree ?? identity;
   return resolve(dirname(anchor), `${basename(anchor)}-worktrees`);
 }
-// resolve one configured Project: canonicalise the checkout, derive its identity from
-// the common git directory, resolve the Worktrees directory, and — when the path is
-// missing or not a git checkout — load it unavailable with a reason rather than failing
-// the whole boot (ADR 0003).
+// resolve one configured Project. A git checkout canonicalises to its common git
+// directory identity and resolves a Worktrees directory (`repository` mode). A path that
+// exists but is not a git checkout loads as an available `directory` Project — an agent
+// launches directly in it, like Scratch, with no Worktrees — keyed by its own realpath.
+// Only a path that does not resolve at all loads unavailable with a reason, rather than
+// failing the whole boot (ADR 0003).
 async function resolveProject(raw: ParsedProject): Promise<Project> {
   if (raw.newTask !== undefined) validateNewTask(raw.newTask);
   if ((raw.port === undefined) !== (raw.hostname === undefined)) throw new Error(`project ${raw.id} must define both port and hostname`);
@@ -137,17 +139,22 @@ async function resolveProject(raw: ParsedProject): Promise<Project> {
     ...(raw.hostname === undefined ? {} : { projectUrl: `https://${raw.hostname}`, projectPort: raw.port })
   };
   const canonical = await realpath(raw.path).catch(() => undefined);
-  const identity = canonical === undefined ? undefined : await gitCommonDir(canonical);
-  if (canonical === undefined || identity === undefined) {
-    const base = canonical ?? resolve(raw.path);
-    const reason = canonical === undefined ? `path ${raw.path} was not found` : `path ${raw.path} is not a git repository`;
-    return { id: raw.id, label, path: base, identity: base, available: false, unavailableReason: reason, worktreesDirectory: resolveWorktreesDirectory(raw.worktreesDirectory, undefined, base), push: raw.push, ...optional };
+  // a path that does not resolve is unavailable: there is no directory to launch into
+  if (canonical === undefined) {
+    const base = resolve(raw.path);
+    return { id: raw.id, label, path: base, identity: base, mode: 'repository', available: false, unavailableReason: `path ${raw.path} was not found`, worktreesDirectory: resolveWorktreesDirectory(raw.worktreesDirectory, undefined, base), push: raw.push, ...optional };
+  }
+  const identity = await gitCommonDir(canonical);
+  // a real directory that is not a git checkout is an available `directory` Project: an
+  // agent launches directly in it (no Worktrees), so its identity is just its own path
+  if (identity === undefined) {
+    return { id: raw.id, label, path: canonical, identity: canonical, mode: 'directory', available: true, worktreesDirectory: resolveWorktreesDirectory(raw.worktreesDirectory, undefined, canonical), push: raw.push, ...optional };
   }
   // git lists the Main worktree first; a bare repository has none
   const entries = await listWorktrees(canonical);
   const mainEntry = entries?.find(entry => !entry.bare);
   const mainWorktree = mainEntry === undefined ? undefined : await realpath(mainEntry.path).catch(() => mainEntry.path);
-  return { id: raw.id, label, path: canonical, identity, available: true, worktreesDirectory: resolveWorktreesDirectory(raw.worktreesDirectory, mainWorktree, identity), push: raw.push, ...optional };
+  return { id: raw.id, label, path: canonical, identity, mode: 'repository', available: true, worktreesDirectory: resolveWorktreesDirectory(raw.worktreesDirectory, mainWorktree, identity), push: raw.push, ...optional };
 }
 // the console now declares repositories as `projects[]`; a config that still carries the
 // retired `worktrees[]` key is refused with a pointer to the migration rather than a bare

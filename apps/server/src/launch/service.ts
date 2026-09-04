@@ -244,6 +244,29 @@ export class LaunchService {
     return launched;
   }
 
+  // launch one agent directly in a non-git `directory` Project — the same in-place spawn
+  // Scratch uses (a fresh session, no Worktree, no shell reuse), labeled with the Project
+  // so its tab reads as the Project and discovery keeps its notes/bookmarks under the
+  // Scratch persistence key for the directory. Only an available `directory` Project
+  // launches this way: a `repository` Project launches through its Worktrees, and an
+  // unavailable one has nothing to launch into. Remembers the kind under the Project scope.
+  async launchProjectDirectory(projectId: string, kind?: AgentKind): Promise<boolean> {
+    const project = this.config.projects.find(candidate => candidate.id === projectId);
+    if (project === undefined || !project.available || project.mode !== 'directory') return false;
+    const resolved = await this.resolveLaunchKind(projectId, kind);
+    // refuse an unconfigured or unlaunchable kind
+    if (resolved === undefined) return false;
+    // launch in the Project directory; under the Docker bridge its host-visible path is what
+    // the host tmux can cd into. HOME stays the account home, as Scratch resolves it.
+    const cwd = project.hostPath ?? project.path;
+    const command = await this.scratchCommand(resolved, cwd);
+    if (command === undefined) return false;
+    const launched = await this.launchScratch(cwd, project.label, command, this.agentHome());
+    // remember the Project group's last-used kind; storage failure never fails a live launch
+    if (launched) await this.worktreeStore.rememberLaunchProfile(projectId, resolved).catch(() => {});
+    return launched;
+  }
+
   // launch one dedicated advisor in a fixed server-owned checkout
   async launchUpdateAdvisor(repository: string, targetSha: string): Promise<boolean> {
     // reject malformed internal paths

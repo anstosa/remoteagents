@@ -494,6 +494,50 @@ describe('agent launches', () => {
       expect(kinds).toEqual(['codex']);
     } finally { await launchApp.close(); }
   }, 15_000);
+
+  it('launches a non-git directory Project in place and returns its labeled agent id', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const directoryConfig = { ...config, projects: [testProject({ id: 'notes', label: 'Notes', path: '/home/me/notes', identity: '/home/me/notes', mode: 'directory', available: true })] };
+    const agent = stated({ id: 'socket:%5', paneId: '%5', sessionId: 'socket:$5', socketFingerprint: 'socket', workspace: '/home/me/notes', displayLabel: 'Notes', title: '' });
+    let dashboards = 0;
+    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: ++dashboards, agents: dashboards === 1 ? [] : [agent], projects: [] }) };
+    const kinds: Array<string | undefined> = [];
+    const launch = { launchProjectDirectory: async (id: string, kind?: string) => { kinds.push(kind); return id === 'notes'; } };
+    const launchApp = await buildApp(directoryConfig, { auth: new AuthService(hash, Buffer.alloc(32, 12).toString('base64url')), discovery: discovery as never, launch: launch as never, launchPollDelay: async () => {} });
+    try {
+      const boot = await launchApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await launchApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      // the new session is matched back by its Project display label
+      const ok = await launchApp.inject({ method: 'POST', url: '/api/projects/notes/launch', headers, payload: { kind: 'codex' } });
+      expect(ok.statusCode).toBe(201);
+      expect(ok.json()).toEqual({ agentId: agent.id });
+      expect(kinds).toEqual(['codex']);
+      // an unknown kind is rejected before any handoff
+      const bad = await launchApp.inject({ method: 'POST', url: '/api/projects/notes/launch', headers, payload: { kind: 'nope' } });
+      expect(bad.statusCode).toBe(400);
+      expect(kinds).toEqual(['codex']);
+    } finally { await launchApp.close(); }
+  }, 15_000);
+
+  it('refuses an in-place launch for a git repository Project or an unknown id, before any handoff', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const repoConfig = { ...config, projects: [testProject({ id: 'repo', label: 'Repo', mode: 'repository', available: true })] };
+    let called = false;
+    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: 1, agents: [], projects: [] }) };
+    const launch = { launchProjectDirectory: async () => { called = true; return true; } };
+    const launchApp = await buildApp(repoConfig, { auth: new AuthService(hash, Buffer.alloc(32, 13).toString('base64url')), discovery: discovery as never, launch: launch as never, launchPollDelay: async () => {} });
+    try {
+      const boot = await launchApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await launchApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      const repo = await launchApp.inject({ method: 'POST', url: '/api/projects/repo/launch', headers });
+      const absent = await launchApp.inject({ method: 'POST', url: '/api/projects/absent/launch', headers });
+      expect(repo.statusCode).toBe(404);
+      expect(absent.statusCode).toBe(404);
+      expect(called).toBe(false);
+    } finally { await launchApp.close(); }
+  }, 15_000);
 });
 
 describe('pull request switch API', () => {

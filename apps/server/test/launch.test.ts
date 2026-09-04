@@ -145,6 +145,54 @@ describe('LaunchService', () => {
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining([expect.stringContaining("export HOME='/host/home'")]));
   });
 
+  it('launches a non-git directory Project in place, labeled with the Project and remembering its kind', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    const remembered: Array<[string, string]> = [];
+    const store = { launchProfiles: async () => ({}), rememberLaunchProfile: async (key: string, kind: string) => { remembered.push([key, kind]); } };
+    const config = { adapters: { codex: { program: codexProgram, args: [], env: {}, launchable: true } }, projects: [{ id: 'notes', label: 'Notes', path: '/home/me/notes', identity: '/home/me/notes', mode: 'directory', available: true }] };
+    const service = new LaunchService(config as never, undefined, undefined, undefined, store as never);
+
+    await expect(service.launchProjectDirectory('notes')).resolves.toBe(true);
+
+    // the pane opens in the Project directory, like Scratch (a fresh session, no worktree)
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['-c', '/home/me/notes']));
+    // the session is labeled with the Project so its tab reads as the Project
+    expect(run).toHaveBeenLastCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', expect.stringMatching(/^rac-[\w-]+$/u), '@rac_display_label', 'Notes']);
+    // the resolved kind is remembered under the Project scope, seeding the next launch
+    expect(remembered).toEqual([['notes', 'codex']]);
+  });
+
+  it('launches a directory Project at its host-visible path under the Docker bridge', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    const store = { launchProfiles: async () => ({}), rememberLaunchProfile: async () => {} };
+    const config = { adapters: { codex: { program: codexProgram, args: [], env: {}, launchable: true } }, projects: [{ id: 'notes', label: 'Notes', path: '/container/notes', hostPath: '/host/notes', identity: '/container/notes', mode: 'directory', available: true }] };
+    const service = new LaunchService(config as never, undefined, undefined, undefined, store as never);
+
+    await expect(service.launchProjectDirectory('notes')).resolves.toBe(true);
+
+    // the host tmux can only cd into the host-visible path, not the container path
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['-c', '/host/notes']));
+  });
+
+  it('refuses to launch a git repository Project, an unavailable directory, or an absent id in place', async () => {
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    const config = { adapters: { codex: { program: codexProgram, args: [], env: {}, launchable: true } }, projects: [
+      { id: 'repo', label: 'Repo', path: '/repo', identity: '/repo/.git', mode: 'repository', available: true },
+      { id: 'gone', label: 'Gone', path: '/gone', identity: '/gone', mode: 'directory', available: false }
+    ] };
+    const service = new LaunchService(config as never);
+
+    // a git repository launches through its worktrees, not in place
+    await expect(service.launchProjectDirectory('repo')).resolves.toBe(false);
+    // an unavailable path has nothing to launch into
+    await expect(service.launchProjectDirectory('gone')).resolves.toBe(false);
+    await expect(service.launchProjectDirectory('absent')).resolves.toBe(false);
+    // no session was ever spawned
+    expect(run.mock.calls.some(call => (call[1] as string[]).includes('new-session'))).toBe(false);
+  });
+
   it('launches a dedicated update advisor in the fixed repository', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     process.env.RAC_CODEX_BIN = '/container/bin/codex';

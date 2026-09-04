@@ -15,15 +15,18 @@ export type GitComparisonSummary = { base: string; files: number; changes?: GitS
 export type GitUpstreamSummary = { upstream: string; ahead: number; behind: number };
 export type Agent = { id: string; paneId: string; sessionId: string; socketFingerprint: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind: AgentKind; attention: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; projectId?: string; worktreeId?: string; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: InlineQuestion };
 /**
- * A configured git repository (config `projects[]`). Its identity is the realpath
- * of the common git directory, so two entries pointing at the same repository are
- * refused as duplicates and a Project may be configured through any of its checkouts
- * (ADR 0003). `path` is unavailable when it is missing or not a git checkout at boot,
- * which loads the Project as `available: false` rather than failing to boot. Stack
- * commands, the new-task and push actions, the Worktrees directory and the preview
- * URL are all Project-wide; discovered Worktrees denormalise them for convenience.
+ * A configured directory the console manages (config `projects[]`). A `repository`
+ * Project's identity is the realpath of its common git directory, so two entries
+ * pointing at the same repository are refused as duplicates and a Project may be
+ * configured through any of its checkouts (ADR 0003). A `directory` Project's path
+ * exists but is not a git checkout: it has no Worktrees and an agent launches directly
+ * in it, like Scratch, so its identity is just its own realpath'd path. `path` is
+ * unavailable only when it is missing at boot, which loads the Project as
+ * `available: false` rather than failing to boot. Stack commands, the new-task and push
+ * actions, the Worktrees directory and the preview URL are all Project-wide; discovered
+ * Worktrees denormalise them for convenience.
  */
-export type Project = { id: string; label: string; path: string; identity: string; hostPath?: string; worktreesDirectory: string; available: boolean; unavailableReason?: string; commands?: StackCommands; newTask?: string; push: PromptAction; projectUrl?: string; projectPort?: number };
+export type Project = { id: string; label: string; path: string; identity: string; mode: 'repository' | 'directory'; hostPath?: string; worktreesDirectory: string; available: boolean; unavailableReason?: string; commands?: StackCommands; newTask?: string; push: PromptAction; projectUrl?: string; projectPort?: number };
 /**
  * One checkout of a Project as `git worktree list` reports it, keyed by the wire id
  * `<projectId>:<realpath>` (ADR 0003). `identity` equals the checkout's realpath
@@ -45,10 +48,13 @@ export type CleanupTarget = { id: string; kind: CleanupTargetKind; label: string
  */
 export type DashboardWorktree = { id: string; projectId: string; label: string; customLabel?: boolean; path: string; available: boolean; pinned: boolean; main: boolean; detached: boolean; locked: boolean; order: number; branch?: string; sha?: string; projectUrl?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; pullRequest?: PullRequestSummary };
 // `manageWorktrees` (with a reason when false) gates the Add/Remove/Prune controls: a
-// Project whose checkout is missing, or which the Docker bridge does not mount at its
-// host path, cannot have Worktrees created or removed even when its Worktrees still show.
-// `stalePaths` are the checkouts an explicit Prune would clear (git's prunable entries plus
-// console records whose path git lists nowhere, ADR 0003); the Project header shows their
-// count as `N stale · Prune` and the confirm lists them by path. Empty when nothing is stale.
-export type DashboardProject = { id: string; label: string; available: boolean; unavailableReason?: string; manageWorktrees: boolean; manageWorktreesReason?: string; stalePaths: string[]; worktrees: DashboardWorktree[] };
+// Project whose checkout is missing, which is a non-git `directory` Project, or which the
+// Docker bridge does not mount at its host path, cannot have Worktrees created or removed
+// even when its Worktrees still show. `mode` distinguishes a git `repository` (launched
+// through its Worktrees) from a non-git `directory` (launched in place, like Scratch — the
+// web renders a Project-level Launch button for it). `stalePaths` are the checkouts an
+// explicit Prune would clear (git's prunable entries plus console records whose path git
+// lists nowhere, ADR 0003); the Project header shows their count as `N stale · Prune` and
+// the confirm lists them by path. Empty when nothing is stale.
+export type DashboardProject = { id: string; label: string; mode: 'repository' | 'directory'; available: boolean; unavailableReason?: string; manageWorktrees: boolean; manageWorktreesReason?: string; stalePaths: string[]; worktrees: DashboardWorktree[] };
 export type Dashboard = { generation: number; serverStartedAt?: number; adapters: Partial<Record<AgentKind, AdapterCapability>>; agents: Agent[]; projects: DashboardProject[] };

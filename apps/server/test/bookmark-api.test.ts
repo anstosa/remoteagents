@@ -1,9 +1,10 @@
 import argon2 from 'argon2';
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { AuthService } from '../src/auth/service.js';
 import { buildApp } from '../src/app.js';
 import { stated } from './helpers/agent.js';
-import { testConfig, testWorktree } from './helpers/config.js';
+import { testConfig, testProject, testWorktree } from './helpers/config.js';
 
 const bookmark = { id: 'bookmark-identifier-001', threadId: '0198c333-3333-7333-8333-333333333333', title: 'Shared Potato chat', createdAt: '2026-08-20T20:00:00.000Z' };
 // a configured codex Adapter lets any of a Project's worktrees resume through the Adapter
@@ -118,6 +119,39 @@ describe('chat bookmark API', () => {
       const keys = calls.map(call => call.split(':')[1]);
       expect(new Set(keys).size).toBe(1);
       expect(keys[0]).toMatch(/^scratch_[A-Za-z0-9_-]{40}$/u);
+    } finally {
+      await app.close();
+    }
+  }, 15_000);
+
+  it('keys a non-git directory Project agent under the Scratch key, so notes and bookmarks still work', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    // a `directory` Project has no worktrees, so its agent never resolves to one: notes and
+    // bookmarks fall through to the Scratch key for its directory, exactly like Scratch
+    const config = testConfig({ projects: [testProject({ id: 'notes', label: 'Notes', path: '/home/me/notes', identity: '/home/me/notes', mode: 'directory', available: true })] });
+    const agent = stated({ id: 'agent-dir', paneId: '%9', sessionId: 'socket:$9', socketFingerprint: 'socket', workspace: '/home/me/notes', title: 'Ready' });
+    const noteCalls: string[] = [];
+    const bookmarkCalls: string[] = [];
+    const notes = { create: async (key: string) => { noteCalls.push(key); return { id: 'note-1' }; } };
+    const bookmarks = { create: async (key: string, value: { threadId: string }) => { bookmarkCalls.push(key); return { ...bookmark, threadId: value.threadId }; } };
+    const discovery = {
+      target: async (id: string) => id === agent.id ? { agent, socket } : undefined,
+      conversation: async () => ({ id: bookmark.threadId, title: bookmark.title }),
+      // no worktree matches the directory workspace, so persistence resolves to the Scratch key
+      worktreesNow: () => [],
+      dashboard: async () => ({ generation: 1, adapters: {}, agents: [agent], projects: [] })
+    };
+    const app = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 24).toString('base64url')), discovery: discovery as never, notes: notes as never, bookmarks: bookmarks as never });
+    try {
+      const headers = await authenticatedHeaders(app);
+      const note = await app.inject({ method: 'POST', url: '/api/agents/agent-dir/notes', headers });
+      const created = await app.inject({ method: 'POST', url: '/api/agents/agent-dir/bookmarks', headers });
+      expect(note.statusCode).toBe(201);
+      expect(created.statusCode).toBe(201);
+      // both persist under the Scratch key derived from the directory path, never a projectId
+      const scratchKey = `scratch_${createHash('sha256').update('/home/me/notes').digest('base64url').slice(0, 40)}`;
+      expect(noteCalls).toEqual([scratchKey]);
+      expect(bookmarkCalls).toEqual([scratchKey]);
     } finally {
       await app.close();
     }

@@ -665,7 +665,7 @@ export class DiscoveryService {
     for (const view of worktreeViews) { const list = byProject.get(view.projectId) ?? []; list.push(view); byProject.set(view.projectId, list); }
     const projects: DashboardProject[] = this.projects.map(project => {
       const management = worktreeManagementAvailability(project);
-      return { id: project.id, label: project.label, available: project.available, ...(project.unavailableReason === undefined ? {} : { unavailableReason: project.unavailableReason }), manageWorktrees: management.available, ...(management.reason === undefined ? {} : { manageWorktreesReason: management.reason }), stalePaths: this.staleSnapshot.get(project.id) ?? [], worktrees: byProject.get(project.id) ?? [] };
+      return { id: project.id, label: project.label, mode: project.mode, available: project.available, ...(project.unavailableReason === undefined ? {} : { unavailableReason: project.unavailableReason }), manageWorktrees: management.available, ...(management.reason === undefined ? {} : { manageWorktreesReason: management.reason }), stalePaths: this.staleSnapshot.get(project.id) ?? [], worktrees: byProject.get(project.id) ?? [] };
     });
     return { generation: this.generation, serverStartedAt: this.serverStartedAt, adapters: adapterCapabilities(this.adapters), agents, projects };
   }

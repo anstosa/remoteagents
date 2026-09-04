@@ -47,7 +47,10 @@ type AttentionState = 'working' | 'finished' | 'question';
 // Worktree is not present in the payload, absent from the real server.
 type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; projectId?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: InlineQuestion; stack?: Stack; unread?: boolean; queuedPromptCount: number; launch?: LaunchResolution };
 type Worktree = { id: string; projectId: string; label: string; customLabel?: boolean; path: string; main: boolean; detached: boolean; locked: boolean; branch?: string; sha?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; sleeping?: boolean; order: number; projectUrl?: string; pullRequest?: PullRequestSummary; stack?: Stack; launch?: LaunchResolution };
-type Project = { id: string; label: string; available: boolean; unavailableReason?: string; manageWorktrees?: boolean; manageWorktreesReason?: string; stalePaths?: string[]; worktrees: Worktree[] };
+// `mode: 'directory'` marks a non-git Project the console launches in place (like Scratch);
+// `launch` is its resolved Launch profile for the Project-level Launch button. A git
+// `repository` Project omits `launch` and launches through its worktrees.
+type Project = { id: string; label: string; mode?: 'repository' | 'directory'; available: boolean; unavailableReason?: string; manageWorktrees?: boolean; manageWorktreesReason?: string; stalePaths?: string[]; worktrees: Worktree[]; launch?: LaunchResolution };
 // one branch the Add dialog can offer: `ref` is the commit-ish that resolves it and the
 // picker's value, `remote` marks a remote-only ref git will track, and `checkedOut` marks a
 // local branch a Worktree already holds — it can base a new branch but not be checked out
@@ -5825,6 +5828,36 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
     }
     finally { setCreatingAgent(false); }
   };
+  // launch an agent in place in a non-git directory Project — a Scratch-like session, so the
+  // opened agent has no worktree; shares the Scratch `creatingAgent` lock and opener
+  const launchProjectDirectory = async (project: Project, choice?: LaunchChoice) => {
+    if (creatingAgent) return;
+    setLaunchErrorMessage('');
+    setLauncherOpen(false);
+    setCreatingAgent(true);
+    showOperationFeedback({ tone: 'pending', message: `Starting ${project.label}…`, detail: 'Creating a new session in the project directory and waiting for it to become ready.' });
+    try {
+      const response = await request(`/api/projects/${encodeURIComponent(project.id)}/launch`, choice === undefined ? { method: 'POST' } : launchRequestInit(choice));
+      if (!response.ok) {
+        const message = await launchError(response);
+        setLaunchErrorMessage(message);
+        return showOperationFeedback({ tone: 'error', message: `${project.label} could not start`, detail: message });
+      }
+      const payload = await response.json() as { agentId?: unknown };
+      if (typeof payload.agentId !== 'string') {
+        const message = 'The agent started but could not be opened.';
+        setLaunchErrorMessage(message);
+        return showOperationFeedback({ tone: 'error', message: `${project.label} could not be opened`, detail: message });
+      }
+      launched(payload.agentId);
+      showOperationFeedback({ tone: 'success', message: `${project.label} started`, detail: 'The new session is ready and its output is connecting.' });
+    } catch {
+      const message = 'Unable to reach the console while launching the agent.';
+      setLaunchErrorMessage(message);
+      showOperationFeedback({ tone: 'error', message: `${project.label} could not start`, detail: message });
+    }
+    finally { setCreatingAgent(false); }
+  };
   useLayoutEffect(() => {
     const measure = () => {
       const tabs = tabsRef.current; const plus = plusRef.current;
@@ -6053,7 +6086,7 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
     // launch one inactive worktree
     else action = <LaunchSplitButton label={worktree.label} resolution={worktree.launch} compact disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onLaunch={choice => void launchWorktree(worktree, choice)} />;
     return <div key={worktree.id} className="launcher-row"><span className="launcher-row-label">{launcherRowLabel(worktree, project)}</span><button type="button" className={`launcher-icon launcher-pin${worktree.pinned ? ' pinned' : ''}`} aria-pressed={worktree.pinned} aria-label={`${worktree.pinned ? 'Unpin' : 'Pin'} ${worktree.label}`} title={worktree.pinned ? 'Unpin worktree' : 'Pin worktree'} onClick={() => void togglePin(worktree)}><LauncherRowIcon name="pin" /></button><button type="button" className="launcher-icon launcher-rename" disabled={creatingAgent} aria-label={`Rename ${worktree.label}`} title="Rename worktree" onClick={() => setRenameWorktreeId(worktree.id)}><LauncherRowIcon name="rename" /></button><button type="button" className="launcher-icon launcher-remove" disabled={creatingAgent || openAgent !== undefined || removeReason !== undefined} aria-label={`Remove ${worktree.label}`} title={openAgent === undefined ? removeReason ?? 'Remove worktree' : 'Turn off the open agent before removing this worktree'} onClick={() => setRemoveWorktreeId(worktree.id)}><LauncherRowIcon name="trash" /></button>{action}</div>;
-  })}<button type="button" className="launcher-new-worktree" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setNewWorktreeProjectId(project.id)}>+ New worktree…</button></div>)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
+  })}{project.mode === 'directory' && <div className="launcher-row"><span className="launcher-row-label">{project.label}</span><LaunchSplitButton label={project.label} resolution={project.launch} compact disabled={creatingAgent} onLaunch={choice => void launchProjectDirectory(project, choice)} /></div>}<button type="button" className="launcher-new-worktree" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setNewWorktreeProjectId(project.id)}>+ New worktree…</button></div>)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
   const consoleClass = `console${davo.enabled && voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
   return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} {...(activeWorktree === undefined ? {} : { pinned: activeWorktree.pinned, onTogglePin: () => void togglePin(activeWorktree), onRenameWorktree: () => setRenameWorktreeId(activeWorktree.id), worktreeLabel: activeWorktree.label })} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} onRename={() => setRenameWorktreeId(item.worktree!.id)} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
