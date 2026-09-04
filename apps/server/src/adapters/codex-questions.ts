@@ -1,21 +1,15 @@
-import { createHash } from 'node:crypto';
+import { inlineQuestionId } from './inline-questions.js';
 import type { InlineQuestion } from './types.js';
 
 /**
  * The Codex inline-question logic, moved server-side (chunk 1 commit 5). An
- * Inline question reaches the console two ways: the agent draws a numbered choice
- * list on its pane (parsed here), or OMX writes a structured question file
- * (`omx-questions.ts`, ADR 0005). Both are normalised to one {@link InlineQuestion}
- * with the same id rule; the console renders it and answers it through the
- * Adapter's `selectOption`.
+ * Inline question reaches the console three ways: the agent draws a numbered
+ * choice list on its pane (parsed here), OMX writes a structured question file
+ * (`omx-questions.ts`, ADR 0005), or a Claude Agent reports one through its pane
+ * (`claude-questions.ts`, ADR 0006). All are normalised to one {@link InlineQuestion}
+ * with the same id rule (`inline-questions.ts`); the console renders it and
+ * answers it through the Adapter's `selectOption`.
  */
-
-// A stable id both transports agree on: the operator answers the question they
-// saw, and a re-parse at answer time refuses a stale id. Text plus choices is
-// the identity — the same NUL-joined hash the socket fingerprints use.
-export function inlineQuestionId(text: string, choices: readonly string[]): string {
-  return createHash('sha256').update([text, ...choices].join('\0')).digest('base64url').slice(0, 22);
-}
 
 // one numbered (or checkbox) choice row: leading selection caret, optional
 // `[ ]`/`[x]` box, the displayed number, then the label

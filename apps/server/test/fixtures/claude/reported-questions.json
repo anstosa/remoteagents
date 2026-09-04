@@ -1,0 +1,840 @@
+[
+  {
+    "name": "single-wide",
+    "payload": {
+      "session_id": "00000000-0000-4000-8000-000000000000",
+      "transcript_path": "/home/user/.claude/projects/-example/00000000-0000-4000-8000-000000000000.jsonl",
+      "cwd": "/example/repo",
+      "prompt_id": "11111111-1111-4111-8111-111111111111",
+      "permission_mode": "auto",
+      "effort": {
+        "level": "xhigh"
+      },
+      "hook_event_name": "PreToolUse",
+      "tool_name": "AskUserQuestion",
+      "tool_input": {
+        "questions": [
+          {
+            "question": "Which environment should I deploy this build to, given that the staging database was refreshed this morning and production is under load?",
+            "header": "Deploy target",
+            "options": [
+              {
+                "label": "Staging",
+                "description": "Rehearse against the refreshed staging data first"
+              },
+              {
+                "label": "Production",
+                "description": "Ship straight to live traffic"
+              },
+              {
+                "label": "Neither, hold the build until the smoke tests finish and then ask me again later today",
+                "description": "Wait for the pipeline"
+              }
+            ],
+            "multiSelect": false
+          }
+        ]
+      },
+      "tool_use_id": "toolu_00000000000000000000000"
+    },
+    "lines": [
+      "bash-5.2$ claude --settings '/tmp/claude-1000/claude-question-probe/out-20260903-203608/hooks.json' 'Read the file /tmp/",
+      "claude-1000/claude-question-probe/out-20260903-203608/spec-single.json and then call the AskUserQuestion tool exactly on",
+      "ce, passing the JSON in that file as the tool input, unchanged. Do not use any other tool, do not add commentary, and do",
+      " not ask anything else. After I answer, reply with only the word finished spelled backwards.'",
+      "\u001b[38;5;174m ▐\u001b[48;5;16m▛███▛█\u001b[39m\u001b[49m   \u001b[1mClaude\u001b[0m \u001b[1mCode\u001b[0m \u001b[38;5;241mv2.1.260\u001b[39m",
+      "\u001b[38;5;174m▝▜\u001b[48;5;16m█████\u001b[49m█▀\u001b[39m  \u001b[38;5;241mOpus\u001b[39m \u001b[38;5;241m4.8\u001b[39m \u001b[38;5;241mwith\u001b[39m \u001b[38;5;241mxhigh\u001b[39m \u001b[38;5;241meffort\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241mClaude\u001b[39m \u001b[38;5;241mMax\u001b[39m",
+      "\u001b[38;5;174m \u001b[39m \u001b[38;5;174m▝▝\u001b[39m \u001b[38;5;174m▝▝\u001b[39m    \u001b[38;5;241m/tachi/code/remoteagents\u001b[39m",
+      "",
+      "",
+      "\u001b[38;5;248m\u001b[48;5;255m❯ \u001b[38;5;16mRead the file /tmp/claude-1000/claude-question-probe/out-20260903-203608/spec-single.json and then call the \u001b[39m",
+      "  \u001b[38;5;16mAskUserQuestion tool exactly once, passing the JSON in that file as the tool input, unchanged. Do not use any other \u001b[39m",
+      "  \u001b[38;5;16mtool, do not add commentary, and do not ask anything else. After I answer, reply with only the word finished spelled \u001b[39m",
+      "  \u001b[38;5;16mbackwards.\u001b[39m",
+      "",
+      "\u001b[49m  \u001b[38;5;241mRead \u001b[1m1\u001b[0m\u001b[38;5;241m file (ctrl+o to expand)\u001b[39m",
+      "\u001b[38;5;241m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "\u001b[38;5;231m\u001b[48;5;105m ☐ Deploy target \u001b[39m\u001b[49m",
+      "",
+      "\u001b[2m│\u001b[0m \u001b[1m\u001b[38;5;16mWhich environment should I deploy this build to, given that the staging database was refreshed this morning and \u001b[0m",
+      "\u001b[2m│\u001b[0m \u001b[1m\u001b[38;5;16mproduction is under load?\u001b[0m",
+      "",
+      "\u001b[38;5;105m❯\u001b[39m \u001b[38;5;241m1.\u001b[39m \u001b[38;5;105mStaging\u001b[39m",
+      "     \u001b[38;5;241mRehearse against the refreshed staging data first\u001b[39m",
+      "  \u001b[38;5;241m2.\u001b[39m Production",
+      "     \u001b[38;5;241mShip straight to live traffic\u001b[39m",
+      "  \u001b[38;5;241m3.\u001b[39m Neither, hold the build until the smoke tests finish and then ask me again later today",
+      "     \u001b[38;5;241mWait for the pipeline\u001b[39m",
+      "  \u001b[38;5;241m4. Type\u001b[39m \u001b[38;5;241msomething.\u001b[39m",
+      "\u001b[38;5;241m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "\u001b[39m  5. Chat about this",
+      "",
+      "\u001b[38;5;241mEnter to select · ↑/↓ to navigate · Esc to cancel\u001b[39m",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "question": {
+      "text": "Which environment should I deploy this build to, given that the staging database was refreshed this morning and production is under load?",
+      "choices": [
+        "Staging",
+        "Production",
+        "Neither, hold the build until the smoke tests finish and then ask me again later today"
+      ],
+      "source": "structured"
+    }
+  },
+  {
+    "name": "single-narrow",
+    "payload": {
+      "session_id": "00000000-0000-4000-8000-000000000000",
+      "transcript_path": "/home/user/.claude/projects/-example/00000000-0000-4000-8000-000000000000.jsonl",
+      "cwd": "/example/repo",
+      "prompt_id": "11111111-1111-4111-8111-111111111111",
+      "permission_mode": "auto",
+      "effort": {
+        "level": "xhigh"
+      },
+      "hook_event_name": "PreToolUse",
+      "tool_name": "AskUserQuestion",
+      "tool_input": {
+        "questions": [
+          {
+            "question": "Which environment should I deploy this build to, given that the staging database was refreshed this morning and production is under load?",
+            "header": "Deploy target",
+            "options": [
+              {
+                "label": "Staging",
+                "description": "Rehearse against the refreshed staging data first"
+              },
+              {
+                "label": "Production",
+                "description": "Ship straight to live traffic"
+              },
+              {
+                "label": "Neither, hold the build until the smoke tests finish and then ask me again later today",
+                "description": "Wait for the pipeline"
+              }
+            ],
+            "multiSelect": false
+          }
+        ]
+      },
+      "tool_use_id": "toolu_00000000000000000000000"
+    },
+    "lines": [
+      "bash-5.2$ claude --settings '/tmp/claude-1000/claude-questio",
+      "n-probe/out-20260903-203608/hooks.json' 'Read the file /tmp/",
+      "claude-1000/claude-question-probe/out-20260903-203608/spec-s",
+      "ingle.json and then call the AskUserQuestion tool exactly on",
+      "ce, passing the JSON in that file as the tool input, unchang",
+      "ed. Do not use any other tool, do not add commentary, and do",
+      " not ask anything else. After I answer, reply with only the",
+      "word finished spelled backwards.'",
+      "\u001b[38;5;174m ▐\u001b[48;5;16m▛███▛█\u001b[39m\u001b[49m   \u001b[1mClaude\u001b[0m \u001b[1mCode\u001b[0m \u001b[38;5;241mv2.1.260\u001b[39m",
+      "\u001b[38;5;174m▝▜\u001b[48;5;16m█████\u001b[49m█▀\u001b[39m  \u001b[38;5;241mOpus\u001b[39m \u001b[38;5;241m4.8\u001b[39m \u001b[38;5;241mwith\u001b[39m \u001b[38;5;241mxhigh\u001b[39m \u001b[38;5;241meffort\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241mClaude\u001b[39m \u001b[38;5;241mMax\u001b[39m",
+      "\u001b[38;5;174m \u001b[39m \u001b[38;5;174m▝▝\u001b[39m \u001b[38;5;174m▝▝\u001b[39m    \u001b[38;5;241m/tachi/code/remoteagents\u001b[39m",
+      "",
+      "",
+      "\u001b[38;5;248m\u001b[48;5;255m❯ \u001b[38;5;16mRead the file /tmp/claude-1000/claude-question-probe/out-2",
+      "0260903-203608/spec-single.json and then call the \u001b[39m",
+      "  \u001b[38;5;16mAskUserQuestion tool exactly once, passing the JSON in tha",
+      "t file as the tool input, unchanged. Do not use any other \u001b[39m",
+      "  \u001b[38;5;16mtool, do not add commentary, and do not ask anything else.",
+      "\u001b[38;5;174m\u001b[49m ▐\u001b[48;5;16m▛███▛█\u001b[39m\u001b[49m   \u001b[1mClaude\u001b[0m \u001b[1mCode\u001b[0m \u001b[38;5;241mv2.1.260\u001b[39m",
+      "\u001b[38;5;174m▝▜\u001b[48;5;16m█████\u001b[49m█▀\u001b[39m  \u001b[38;5;241mOpus\u001b[39m \u001b[38;5;241m4.8\u001b[39m \u001b[38;5;241mwith\u001b[39m \u001b[38;5;241mxhigh\u001b[39m \u001b[38;5;241meffort\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241mClaude\u001b[39m \u001b[38;5;241mMax\u001b[39m",
+      "\u001b[38;5;174m \u001b[39m \u001b[38;5;174m▝▝\u001b[39m \u001b[38;5;174m▝▝\u001b[39m    \u001b[38;5;241m/tachi/code/remoteagents\u001b[39m",
+      "",
+      "",
+      "\u001b[38;5;248m\u001b[48;5;255m❯ \u001b[38;5;16mRead the file /tmp/claude-1000/claude-question-probe/out-\u001b[39m",
+      "  \u001b[38;5;16m20260903-203608/spec-single.json and then call the \u001b[39m",
+      "  \u001b[38;5;16mAskUserQuestion tool exactly once, passing the JSON in \u001b[39m",
+      "  \u001b[38;5;16mthat file as the tool input, unchanged. Do not use any \u001b[39m",
+      "  \u001b[38;5;16mother tool, do not add commentary, and do not ask \u001b[39m",
+      "  \u001b[38;5;16manything else. After I answer, reply with only the word \u001b[39m",
+      "  \u001b[38;5;16mfinished spelled backwards.\u001b[39m",
+      "",
+      "\u001b[49m  \u001b[38;5;241mRead\u001b[39m \u001b[1m\u001b[38;5;241m1\u001b[0m\u001b[38;5;241m file\u001b[39m \u001b[38;5;241m(ctrl+o\u001b[39m \u001b[38;5;241mto\u001b[39m \u001b[38;5;241mexpand)\u001b[39m",
+      "\u001b[38;5;241m────────────────────────────────────────────────────────────",
+      "\u001b[38;5;231m\u001b[48;5;105m ☐ Deploy target \u001b[39m\u001b[49m",
+      "",
+      "\u001b[2m│\u001b[0m \u001b[1m\u001b[38;5;16mWhich\u001b[0m \u001b[1m\u001b[38;5;16menvironment\u001b[0m \u001b[1m\u001b[38;5;16mshould\u001b[0m \u001b[1m\u001b[38;5;16mI\u001b[0m \u001b[1m\u001b[38;5;16mdeploy\u001b[0m \u001b[1m\u001b[38;5;16mthis\u001b[0m \u001b[1m\u001b[38;5;16mbuild\u001b[0m \u001b[1m\u001b[38;5;16mto,\u001b[0m \u001b[1m\u001b[38;5;16mgiven\u001b[0m",
+      "\u001b[2m│\u001b[0m \u001b[1m\u001b[38;5;16mthat\u001b[0m \u001b[1m\u001b[38;5;16mthe\u001b[0m \u001b[1m\u001b[38;5;16mstaging\u001b[0m \u001b[1m\u001b[38;5;16mdatabase\u001b[0m \u001b[1m\u001b[38;5;16mwas\u001b[0m \u001b[1m\u001b[38;5;16mrefreshed\u001b[0m \u001b[1m\u001b[38;5;16mthis\u001b[0m \u001b[1m\u001b[38;5;16mmorning\u001b[0m \u001b[1m\u001b[38;5;16mand\u001b[0m",
+      "\u001b[2m│\u001b[0m \u001b[1m\u001b[38;5;16mproduction\u001b[0m \u001b[1m\u001b[38;5;16mis\u001b[0m \u001b[1m\u001b[38;5;16munder\u001b[0m \u001b[1m\u001b[38;5;16mload?\u001b[0m",
+      "",
+      "\u001b[38;5;105m❯\u001b[39m \u001b[38;5;241m1.\u001b[39m \u001b[38;5;105mStaging\u001b[39m",
+      "     \u001b[38;5;241mRehearse\u001b[39m \u001b[38;5;241magainst\u001b[39m \u001b[38;5;241mthe\u001b[39m \u001b[38;5;241mrefreshed\u001b[39m \u001b[38;5;241mstaging\u001b[39m \u001b[38;5;241mdata\u001b[39m \u001b[38;5;241mfirst\u001b[39m",
+      "  \u001b[38;5;241m2.\u001b[39m Production",
+      "     \u001b[38;5;241mShip\u001b[39m \u001b[38;5;241mstraight\u001b[39m \u001b[38;5;241mto\u001b[39m \u001b[38;5;241mlive\u001b[39m \u001b[38;5;241mtraffic\u001b[39m",
+      "  \u001b[38;5;241m3.\u001b[39m Neither, hold the build until the smoke tests finish",
+      "     and then ask me again later today",
+      "     \u001b[38;5;241mWait\u001b[39m \u001b[38;5;241mfor\u001b[39m \u001b[38;5;241mthe\u001b[39m \u001b[38;5;241mpipeline\u001b[39m",
+      "  \u001b[38;5;241m4.\u001b[39m \u001b[38;5;241mType\u001b[39m \u001b[38;5;241msomething.\u001b[39m",
+      "\u001b[38;5;241m────────────────────────────────────────────────────────────",
+      "\u001b[39m  5. Chat about this",
+      "",
+      "\u001b[38;5;241mEnter\u001b[39m \u001b[38;5;241mto\u001b[39m \u001b[38;5;241mselect\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241m↑/↓\u001b[39m \u001b[38;5;241mto\u001b[39m \u001b[38;5;241mnavigate\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241mEsc\u001b[39m \u001b[38;5;241mto\u001b[39m \u001b[38;5;241mcancel\u001b[39m",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "question": {
+      "text": "Which environment should I deploy this build to, given that the staging database was refreshed this morning and production is under load?",
+      "choices": [
+        "Staging",
+        "Production",
+        "Neither, hold the build until the smoke tests finish and then ask me again later today"
+      ],
+      "source": "structured"
+    }
+  },
+  {
+    "name": "single-caret-on-2",
+    "payload": {
+      "session_id": "00000000-0000-4000-8000-000000000000",
+      "transcript_path": "/home/user/.claude/projects/-example/00000000-0000-4000-8000-000000000000.jsonl",
+      "cwd": "/example/repo",
+      "prompt_id": "11111111-1111-4111-8111-111111111111",
+      "permission_mode": "auto",
+      "effort": {
+        "level": "xhigh"
+      },
+      "hook_event_name": "PreToolUse",
+      "tool_name": "AskUserQuestion",
+      "tool_input": {
+        "questions": [
+          {
+            "question": "Which environment should I deploy this build to, given that the staging database was refreshed this morning and production is under load?",
+            "header": "Deploy target",
+            "options": [
+              {
+                "label": "Staging",
+                "description": "Rehearse against the refreshed staging data first"
+              },
+              {
+                "label": "Production",
+                "description": "Ship straight to live traffic"
+              },
+              {
+                "label": "Neither, hold the build until the smoke tests finish and then ask me again later today",
+                "description": "Wait for the pipeline"
+              }
+            ],
+            "multiSelect": false
+          }
+        ]
+      },
+      "tool_use_id": "toolu_00000000000000000000000"
+    },
+    "lines": [
+      "bash-5.2$ claude --settings '/tmp/claude-1000/claude-question-probe/out-20260903-203608/hooks.json' 'Read the file /tmp/",
+      "claude-1000/claude-question-probe/out-20260903-203608/spec-single.json and then call the AskUserQuestion tool exactly on",
+      "ce, passing the JSON in that file as the tool input, unchanged. Do not use any other tool, do not add commentary, and do",
+      " not ask anything else. After I answer, reply with only the word finished spelled backwards.'",
+      "\u001b[38;5;174m ▐\u001b[48;5;16m▛███▛█\u001b[39m\u001b[49m   \u001b[1mClaude\u001b[0m \u001b[1mCode\u001b[0m \u001b[38;5;241mv2.1.260\u001b[39m",
+      "\u001b[38;5;174m▝▜\u001b[48;5;16m█████\u001b[49m█▀\u001b[39m  \u001b[38;5;241mOpus\u001b[39m \u001b[38;5;241m4.8\u001b[39m \u001b[38;5;241mwith\u001b[39m \u001b[38;5;241mxhigh\u001b[39m \u001b[38;5;241meffort\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241mClaude\u001b[39m \u001b[38;5;241mMax\u001b[39m",
+      "\u001b[38;5;174m \u001b[39m \u001b[38;5;174m▝▝\u001b[39m \u001b[38;5;174m▝▝\u001b[39m    \u001b[38;5;241m/tachi/code/remoteagents\u001b[39m",
+      "",
+      "\u001b[38;5;174m ▐\u001b[48;5;16m▛███▛█\u001b[39m\u001b[49m   \u001b[1mClaude\u001b[0m \u001b[1mCode\u001b[0m \u001b[38;5;241mv2.1.260\u001b[39m",
+      "\u001b[38;5;174m▝▜\u001b[48;5;16m█████\u001b[49m█▀\u001b[39m  \u001b[38;5;241mOpus\u001b[39m \u001b[38;5;241m4.8\u001b[39m \u001b[38;5;241mwith\u001b[39m \u001b[38;5;241mxhigh\u001b[39m \u001b[38;5;241meffort\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241mClaude\u001b[39m \u001b[38;5;241mMax\u001b[39m",
+      "\u001b[38;5;174m \u001b[39m \u001b[38;5;174m▝▝\u001b[39m \u001b[38;5;174m▝▝\u001b[39m    \u001b[38;5;241m/tachi/code/remoteagents\u001b[39m",
+      "",
+      "",
+      "\u001b[38;5;248m\u001b[48;5;255m❯ \u001b[38;5;16mRead the file /tmp/claude-1000/claude-question-probe/out-20260903-203608/spec-single.json and then call the \u001b[39m",
+      "  \u001b[38;5;16mAskUserQuestion tool exactly once, passing the JSON in that file as the tool input, unchanged. Do not use any other \u001b[39m",
+      "  \u001b[38;5;16mtool, do not add commentary, and do not ask anything else. After I answer, reply with only the word finished spelled \u001b[39m",
+      "  \u001b[38;5;16mbackwards.\u001b[39m",
+      "",
+      "\u001b[49m  \u001b[38;5;241mRead\u001b[39m \u001b[1m\u001b[38;5;241m1\u001b[0m\u001b[38;5;241m file\u001b[39m \u001b[38;5;241m(ctrl+o\u001b[39m \u001b[38;5;241mto\u001b[39m \u001b[38;5;241mexpand)\u001b[39m",
+      "\u001b[38;5;241m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "\u001b[38;5;231m\u001b[48;5;105m ☐ Deploy target \u001b[39m\u001b[49m",
+      "",
+      "\u001b[2m│\u001b[0m \u001b[1m\u001b[38;5;16mWhich\u001b[0m \u001b[1m\u001b[38;5;16menvironment\u001b[0m \u001b[1m\u001b[38;5;16mshould\u001b[0m \u001b[1m\u001b[38;5;16mI\u001b[0m \u001b[1m\u001b[38;5;16mdeploy\u001b[0m \u001b[1m\u001b[38;5;16mthis\u001b[0m \u001b[1m\u001b[38;5;16mbuild\u001b[0m \u001b[1m\u001b[38;5;16mto,\u001b[0m \u001b[1m\u001b[38;5;16mgiven\u001b[0m \u001b[1m\u001b[38;5;16mthat\u001b[0m \u001b[1m\u001b[38;5;16mthe\u001b[0m \u001b[1m\u001b[38;5;16mstaging\u001b[0m \u001b[1m\u001b[38;5;16mdatabase\u001b[0m \u001b[1m\u001b[38;5;16mwas\u001b[0m \u001b[1m\u001b[38;5;16mrefreshed\u001b[0m \u001b[1m\u001b[38;5;16mthis\u001b[0m \u001b[1m\u001b[38;5;16mmorning\u001b[0m \u001b[1m\u001b[38;5;16mand\u001b[0m",
+      "\u001b[2m│\u001b[0m \u001b[1m\u001b[38;5;16mproduction\u001b[0m \u001b[1m\u001b[38;5;16mis\u001b[0m \u001b[1m\u001b[38;5;16munder\u001b[0m \u001b[1m\u001b[38;5;16mload?\u001b[0m",
+      "",
+      "  \u001b[38;5;241m1.\u001b[39m Staging",
+      "     \u001b[38;5;241mRehearse\u001b[39m \u001b[38;5;241magainst\u001b[39m \u001b[38;5;241mthe\u001b[39m \u001b[38;5;241mrefreshed\u001b[39m \u001b[38;5;241mstaging\u001b[39m \u001b[38;5;241mdata\u001b[39m \u001b[38;5;241mfirst\u001b[39m",
+      "\u001b[38;5;105m❯\u001b[39m \u001b[38;5;241m2.\u001b[39m \u001b[38;5;105mProduction\u001b[39m",
+      "     \u001b[38;5;241mShip\u001b[39m \u001b[38;5;241mstraight\u001b[39m \u001b[38;5;241mto\u001b[39m \u001b[38;5;241mlive\u001b[39m \u001b[38;5;241mtraffic\u001b[39m",
+      "  \u001b[38;5;241m3.\u001b[39m Neither, hold the build until the smoke tests finish and then ask me again later today",
+      "     \u001b[38;5;241mWait\u001b[39m \u001b[38;5;241mfor\u001b[39m \u001b[38;5;241mthe\u001b[39m \u001b[38;5;241mpipeline\u001b[39m",
+      "  \u001b[38;5;241m4.\u001b[39m \u001b[38;5;241mType\u001b[39m \u001b[38;5;241msomething.\u001b[39m",
+      "\u001b[38;5;241m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "\u001b[39m  5. Chat about this",
+      "",
+      "\u001b[38;5;241mEnter\u001b[39m \u001b[38;5;241mto\u001b[39m \u001b[38;5;241mselect\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241m↑/↓\u001b[39m \u001b[38;5;241mto\u001b[39m \u001b[38;5;241mnavigate\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241mEsc\u001b[39m \u001b[38;5;241mto\u001b[39m \u001b[38;5;241mcancel\u001b[39m",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "question": {
+      "text": "Which environment should I deploy this build to, given that the staging database was refreshed this morning and production is under load?",
+      "choices": [
+        "Staging",
+        "Production",
+        "Neither, hold the build until the smoke tests finish and then ask me again later today"
+      ],
+      "source": "structured"
+    }
+  },
+  {
+    "name": "single-answered",
+    "payload": {
+      "session_id": "00000000-0000-4000-8000-000000000000",
+      "transcript_path": "/home/user/.claude/projects/-example/00000000-0000-4000-8000-000000000000.jsonl",
+      "cwd": "/example/repo",
+      "prompt_id": "11111111-1111-4111-8111-111111111111",
+      "permission_mode": "auto",
+      "effort": {
+        "level": "xhigh"
+      },
+      "hook_event_name": "PreToolUse",
+      "tool_name": "AskUserQuestion",
+      "tool_input": {
+        "questions": [
+          {
+            "question": "Which environment should I deploy this build to, given that the staging database was refreshed this morning and production is under load?",
+            "header": "Deploy target",
+            "options": [
+              {
+                "label": "Staging",
+                "description": "Rehearse against the refreshed staging data first"
+              },
+              {
+                "label": "Production",
+                "description": "Ship straight to live traffic"
+              },
+              {
+                "label": "Neither, hold the build until the smoke tests finish and then ask me again later today",
+                "description": "Wait for the pipeline"
+              }
+            ],
+            "multiSelect": false
+          }
+        ]
+      },
+      "tool_use_id": "toolu_00000000000000000000000"
+    },
+    "lines": [
+      "bash-5.2$ claude --settings '/tmp/claude-1000/claude-question-probe/out-20260903-203608/hooks.json' 'Read the file /tmp/",
+      "claude-1000/claude-question-probe/out-20260903-203608/spec-single.json and then call the AskUserQuestion tool exactly on",
+      "ce, passing the JSON in that file as the tool input, unchanged. Do not use any other tool, do not add commentary, and do",
+      " not ask anything else. After I answer, reply with only the word finished spelled backwards.'",
+      "\u001b[38;5;174m ▐\u001b[48;5;16m▛███▛█\u001b[39m\u001b[49m   \u001b[1mClaude\u001b[0m \u001b[1mCode\u001b[0m \u001b[38;5;241mv2.1.260\u001b[39m",
+      "\u001b[38;5;174m▝▜\u001b[48;5;16m█████\u001b[49m█▀\u001b[39m  \u001b[38;5;241mOpus\u001b[39m \u001b[38;5;241m4.8\u001b[39m \u001b[38;5;241mwith\u001b[39m \u001b[38;5;241mxhigh\u001b[39m \u001b[38;5;241meffort\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241mClaude\u001b[39m \u001b[38;5;241mMax\u001b[39m",
+      "\u001b[38;5;174m \u001b[39m \u001b[38;5;174m▝▝\u001b[39m \u001b[38;5;174m▝▝\u001b[39m    \u001b[38;5;241m/tachi/code/remoteagents\u001b[39m",
+      "",
+      "\u001b[38;5;174m ▐\u001b[48;5;16m▛███▛█\u001b[39m\u001b[49m   \u001b[1mClaude\u001b[0m \u001b[1mCode\u001b[0m \u001b[38;5;241mv2.1.260\u001b[39m",
+      "\u001b[38;5;174m▝▜\u001b[48;5;16m█████\u001b[49m█▀\u001b[39m  \u001b[38;5;241mOpus\u001b[39m \u001b[38;5;241m4.8\u001b[39m \u001b[38;5;241mwith\u001b[39m \u001b[38;5;241mxhigh\u001b[39m \u001b[38;5;241meffort\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241mClaude\u001b[39m \u001b[38;5;241mMax\u001b[39m",
+      "\u001b[38;5;174m \u001b[39m \u001b[38;5;174m▝▝\u001b[39m \u001b[38;5;174m▝▝\u001b[39m    \u001b[38;5;241m/tachi/code/remoteagents\u001b[39m",
+      "",
+      "",
+      "\u001b[38;5;248m\u001b[48;5;255m❯ \u001b[38;5;16mRead the file /tmp/claude-1000/claude-question-probe/out-20260903-203608/spec-single.json and then call the \u001b[39m",
+      "  \u001b[38;5;16mAskUserQuestion tool exactly once, passing the JSON in that file as the tool input, unchanged. Do not use any other \u001b[39m",
+      "  \u001b[38;5;16mtool, do not add commentary, and do not ask anything else. After I answer, reply with only the word finished spelled \u001b[39m",
+      "  \u001b[38;5;16mbackwards.\u001b[39m",
+      "",
+      "\u001b[49m  \u001b[38;5;241mRead\u001b[39m \u001b[1m\u001b[38;5;241m1\u001b[0m\u001b[38;5;241m file\u001b[39m \u001b[38;5;241m(ctrl+o\u001b[39m \u001b[38;5;241mto\u001b[39m \u001b[38;5;241mexpand)\u001b[39m",
+      "",
+      "\u001b[38;5;241m● \u001b[39mUser answered Claude's questions:",
+      "\u001b[38;5;241m  ⎿  · Which environment should I deploy this build to, given that the staging database was refreshed this morning and \u001b[39m",
+      "     \u001b[38;5;241mproduction is under load? → Production\u001b[39m",
+      "",
+      "\u001b[38;5;16m●\u001b[39m dehsinif",
+      "",
+      "\u001b[38;5;241m✻\u001b[39m \u001b[38;5;241mWorked for 7s · done 8:36 PM\u001b[39m",
+      "",
+      "\u001b[38;5;246m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "\u001b[39m❯ ",
+      "\u001b[38;5;246m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "\u001b[39m  \u001b[1m\u001b[90m26.1k/200k\u001b[0m \u001b[1m\u001b[90m(13%)\u001b[0m                                                                                   \u001b[38;5;241m◉\u001b[39m \u001b[38;5;241mxhigh\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241m/effort\u001b[39m",
+      "  \u001b[38;5;241m--\u001b[39m \u001b[38;5;241mINSERT\u001b[39m \u001b[38;5;241m--\u001b[39m \u001b[38;5;137m⏵⏵\u001b[39m \u001b[38;5;137mauto\u001b[39m \u001b[38;5;137mmode\u001b[39m \u001b[38;5;137mon\u001b[38;5;241m (shift+tab\u001b[39m \u001b[38;5;241mto\u001b[39m \u001b[38;5;241mcycle)\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241m←\u001b[39m \u001b[38;5;241mfor\u001b[39m \u001b[38;5;241magents\u001b[39m",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "question": null
+  },
+  {
+    "name": "cancel-after",
+    "payload": {
+      "session_id": "00000000-0000-4000-8000-000000000000",
+      "transcript_path": "/home/user/.claude/projects/-example/00000000-0000-4000-8000-000000000000.jsonl",
+      "cwd": "/example/repo",
+      "prompt_id": "11111111-1111-4111-8111-111111111111",
+      "permission_mode": "auto",
+      "effort": {
+        "level": "xhigh"
+      },
+      "hook_event_name": "PreToolUse",
+      "tool_name": "AskUserQuestion",
+      "tool_input": {
+        "questions": [
+          {
+            "question": "Which environment should I deploy this build to, given that the staging database was refreshed this morning and production is under load?",
+            "header": "Deploy target",
+            "options": [
+              {
+                "label": "Staging",
+                "description": "Rehearse against the refreshed staging data first"
+              },
+              {
+                "label": "Production",
+                "description": "Ship straight to live traffic"
+              },
+              {
+                "label": "Neither, hold the build until the smoke tests finish and then ask me again later today",
+                "description": "Wait for the pipeline"
+              }
+            ],
+            "multiSelect": false
+          }
+        ]
+      },
+      "tool_use_id": "toolu_00000000000000000000000"
+    },
+    "lines": [
+      "bash-5.2$ claude --settings '/tmp/claude-1000/claude-question-probe/out-probe2-20260903-205005/hooks.json' 'Read the fil",
+      "e /tmp/claude-1000/claude-question-probe/out-probe2-20260903-205005/spec-two.json and then call the AskUserQuestion tool",
+      " exactly once, passing the JSON in that file as the tool input, unchanged. Do not use any other tool, do not add comment",
+      "ary, and do not ask anything else. After I answer, reply with only the word finished spelled backwards.'",
+      "\u001b[38;5;174m ▐\u001b[48;5;16m▛███▛█\u001b[39m\u001b[49m   \u001b[1mClaude\u001b[0m \u001b[1mCode\u001b[0m \u001b[38;5;241mv2.1.260\u001b[39m",
+      "\u001b[38;5;174m▝▜\u001b[48;5;16m█████\u001b[49m█▀\u001b[39m  \u001b[38;5;241mOpus\u001b[39m \u001b[38;5;241m4.8\u001b[39m \u001b[38;5;241mwith\u001b[39m \u001b[38;5;241mxhigh\u001b[39m \u001b[38;5;241meffort\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241mClaude\u001b[39m \u001b[38;5;241mMax\u001b[39m",
+      "\u001b[38;5;174m \u001b[39m \u001b[38;5;174m▝▝\u001b[39m \u001b[38;5;174m▝▝\u001b[39m    \u001b[38;5;241m/tachi/code/remoteagents\u001b[39m",
+      "",
+      "",
+      "\u001b[38;5;248m\u001b[48;5;255m❯ \u001b[38;5;16mRead the file /tmp/claude-1000/claude-question-probe/out-probe2-20260903-205005/spec-two.json and then call the \u001b[39m",
+      "  \u001b[38;5;16mAskUserQuestion tool exactly once, passing the JSON in that file as the tool input, unchanged. Do not use any other \u001b[39m",
+      "  \u001b[38;5;16mtool, do not add commentary, and do not ask anything else. After I answer, reply with only the word finished spelled \u001b[39m",
+      "  \u001b[38;5;16mbackwards.\u001b[39m",
+      "",
+      "\u001b[49m  \u001b[38;5;241mRead \u001b[1m1\u001b[0m\u001b[38;5;241m file (ctrl+o to expand)\u001b[39m",
+      "",
+      "\u001b[38;5;241m● \u001b[39mUser answered Claude's questions:",
+      "\u001b[38;5;241m  ⎿  · Which region should host the deploy? → us-east\u001b[39m",
+      "     \u001b[38;5;241m· How should the rollout proceed? → All at once\u001b[39m",
+      "",
+      "\u001b[38;5;16m●\u001b[39m dehsinif",
+      "",
+      "\u001b[38;5;241m✻\u001b[39m \u001b[38;5;241mBrewed for 7s · done 8:50 PM\u001b[39m",
+      "",
+      "\u001b[38;5;248m\u001b[48;5;255m❯ \u001b[38;5;16mRead the file /tmp/claude-1000/claude-question-probe/out-probe2-20260903-205005/spec-single.json and then call the \u001b[39m",
+      "  \u001b[38;5;16mAskUserQuestion tool exactly once, passing the JSON in that file as the tool input, unchanged. Do not use any other \u001b[39m",
+      "  \u001b[38;5;16mtool, do not add commentary, and do not ask anything else. After I answer, reply with only the word finished spelled \u001b[39m",
+      "  \u001b[38;5;16mbackwards.\u001b[39m",
+      "\u001b[49m",
+      "  \u001b[38;5;241mRead \u001b[1m1\u001b[0m\u001b[38;5;241m file (ctrl+o to expand)\u001b[39m",
+      "",
+      "\u001b[38;5;241m● \u001b[39mUser declined to answer questions",
+      "\u001b[38;5;241m  ⎿  · Which environment should I deploy this build to, given that the staging database was refreshed this morning and \u001b[39m",
+      "     \u001b[38;5;241mproduction is under load? (Staging / Production / Neither, hold the build until the smoke tests finish and then ask",
+      "\u001b[39m     \u001b[38;5;241mme again later today)\u001b[39m",
+      "",
+      "\u001b[38;5;241m✻\u001b[39m \u001b[38;5;241mCogitated for 6s · done 8:50 PM\u001b[39m",
+      "",
+      "\u001b[38;5;246m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "\u001b[39m❯ ",
+      "\u001b[38;5;246m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "\u001b[39m  \u001b[1m\u001b[90m26.3k/200k (13%)\u001b[0m                                                                                   \u001b[38;5;241m◉ xhigh · /effort\u001b[39m",
+      "  \u001b[38;5;241m-- INSERT --\u001b[39m \u001b[38;5;137m⏵⏵ auto mode on\u001b[38;5;241m (shift+tab to cycle) · ← for agents\u001b[39m",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "question": null
+  },
+  {
+    "name": "other-focused",
+    "payload": {
+      "session_id": "00000000-0000-4000-8000-000000000000",
+      "transcript_path": "/home/user/.claude/projects/-example/00000000-0000-4000-8000-000000000000.jsonl",
+      "cwd": "/example/repo",
+      "prompt_id": "11111111-1111-4111-8111-111111111111",
+      "permission_mode": "auto",
+      "effort": {
+        "level": "xhigh"
+      },
+      "hook_event_name": "PreToolUse",
+      "tool_name": "AskUserQuestion",
+      "tool_input": {
+        "questions": [
+          {
+            "question": "What should this release be called?",
+            "header": "Name",
+            "options": [
+              {
+                "label": "Aurora",
+                "description": "The default"
+              },
+              {
+                "label": "Borealis",
+                "description": "The alternative"
+              }
+            ],
+            "multiSelect": false
+          }
+        ]
+      },
+      "tool_use_id": "toolu_00000000000000000000000"
+    },
+    "lines": [
+      "bash-5.2$ claude --settings '/tmp/claude-1000/claude-question-probe/out-probe2-20260903-205005/hooks.json' 'Read the fil",
+      "e /tmp/claude-1000/claude-question-probe/out-probe2-20260903-205005/spec-two.json and then call the AskUserQuestion tool",
+      " exactly once, passing the JSON in that file as the tool input, unchanged. Do not use any other tool, do not add comment",
+      "ary, and do not ask anything else. After I answer, reply with only the word finished spelled backwards.'",
+      "\u001b[38;5;174m ▐\u001b[48;5;16m▛███▛█\u001b[39m\u001b[49m   \u001b[1mClaude\u001b[0m \u001b[1mCode\u001b[0m \u001b[38;5;241mv2.1.260\u001b[39m",
+      "\u001b[38;5;174m▝▜\u001b[48;5;16m█████\u001b[49m█▀\u001b[39m  \u001b[38;5;241mOpus\u001b[39m \u001b[38;5;241m4.8\u001b[39m \u001b[38;5;241mwith\u001b[39m \u001b[38;5;241mxhigh\u001b[39m \u001b[38;5;241meffort\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241mClaude\u001b[39m \u001b[38;5;241mMax\u001b[39m",
+      "\u001b[38;5;174m \u001b[39m \u001b[38;5;174m▝▝\u001b[39m \u001b[38;5;174m▝▝\u001b[39m    \u001b[38;5;241m/tachi/code/remoteagents\u001b[39m",
+      "",
+      "",
+      "\u001b[38;5;248m\u001b[48;5;255m❯ \u001b[38;5;16mRead the file /tmp/claude-1000/claude-question-probe/out-probe2-20260903-205005/spec-two.json and then call the \u001b[39m",
+      "  \u001b[38;5;16mAskUserQuestion tool exactly once, passing the JSON in that file as the tool input, unchanged. Do not use any other \u001b[39m",
+      "  \u001b[38;5;16mtool, do not add commentary, and do not ask anything else. After I answer, reply with only the word finished spelled \u001b[39m",
+      "  \u001b[38;5;16mbackwards.\u001b[39m",
+      "",
+      "\u001b[49m  \u001b[38;5;241mRead \u001b[1m1\u001b[0m\u001b[38;5;241m file (ctrl+o to expand)\u001b[39m",
+      "",
+      "\u001b[38;5;241m● \u001b[39mUser answered Claude's questions:",
+      "\u001b[38;5;241m  ⎿  · Which region should host the deploy? → us-east\u001b[39m",
+      "     \u001b[38;5;241m· How should the rollout proceed? → All at once\u001b[39m",
+      "",
+      "\u001b[38;5;16m●\u001b[39m dehsinif",
+      "",
+      "\u001b[38;5;241m✻\u001b[39m \u001b[38;5;241mBrewed for 7s · done 8:50 PM\u001b[39m",
+      "",
+      "\u001b[38;5;248m\u001b[48;5;255m❯ \u001b[38;5;16mRead the file /tmp/claude-1000/claude-question-probe/out-probe2-20260903-205005/spec-single.json and then call the \u001b[39m",
+      "  \u001b[38;5;16mAskUserQuestion tool exactly once, passing the JSON in that file as the tool input, unchanged. Do not use any other \u001b[39m",
+      "  \u001b[38;5;16mtool, do not add commentary, and do not ask anything else. After I answer, reply with only the word finished spelled \u001b[39m",
+      "  \u001b[38;5;16mbackwards.\u001b[39m",
+      "\u001b[49m",
+      "  \u001b[38;5;241mRead \u001b[1m1\u001b[0m\u001b[38;5;241m file (ctrl+o to expand)\u001b[39m",
+      "",
+      "\u001b[38;5;241m● \u001b[39mUser declined to answer questions",
+      "\u001b[38;5;241m  ⎿  · Which environment should I deploy this build to, given that the staging database was refreshed this morning and \u001b[39m",
+      "     \u001b[38;5;241mproduction is under load? (Staging / Production / Neither, hold the build until the smoke tests finish and then ask",
+      "\u001b[39m     \u001b[38;5;241mme again later today)\u001b[39m",
+      "",
+      "\u001b[38;5;241m✻\u001b[39m \u001b[38;5;241mCogitated for 6s · done 8:50 PM\u001b[39m",
+      "",
+      "\u001b[38;5;248m\u001b[48;5;255m❯ \u001b[38;5;16mRead the file /tmp/claude-1000/claude-question-probe/out-probe2-20260903-205005/spec-other.json and then call the \u001b[39m",
+      "  \u001b[38;5;16mAskUserQuestion tool exactly once, passing the JSON in that file as the tool input, unchanged. Do not use any other \u001b[39m",
+      "  \u001b[38;5;16mtool, do not add commentary, and do not ask anything else. After I answer, reply with only the word finished spelled \u001b[39m",
+      "  \u001b[38;5;16mbackwards.\u001b[39m",
+      "\u001b[49m",
+      "  \u001b[38;5;241mRead \u001b[1m1\u001b[0m\u001b[38;5;241m file (ctrl+o to expand)\u001b[39m",
+      "\u001b[38;5;241m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "\u001b[38;5;231m\u001b[48;5;105m ☐ Name \u001b[39m\u001b[49m",
+      "",
+      "\u001b[1m\u001b[38;5;16mWhat should this release be called?\u001b[0m",
+      "",
+      "  \u001b[38;5;241m1.\u001b[39m Aurora",
+      "     \u001b[38;5;241mThe default\u001b[39m",
+      "  \u001b[38;5;241m2.\u001b[39m Borealis",
+      "     \u001b[38;5;241mThe alternative\u001b[39m",
+      "\u001b[38;5;105m❯\u001b[39m \u001b[38;5;241m3.\u001b[39m \u001b[2mType something.\u001b[0m",
+      "\u001b[38;5;241m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "\u001b[39m  4. Chat about this",
+      "",
+      "\u001b[38;5;241mEnter\u001b[39m \u001b[38;5;241mto\u001b[39m \u001b[38;5;241mselect\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241m↑/↓\u001b[39m \u001b[38;5;241mto\u001b[39m \u001b[38;5;241mnavigate\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241mctrl+g\u001b[39m \u001b[38;5;241mto edit in Nvim · Esc to cancel\u001b[39m",
+      ""
+    ],
+    "question": {
+      "text": "What should this release be called?",
+      "choices": [
+        "Aurora",
+        "Borealis"
+      ],
+      "source": "structured"
+    }
+  },
+  {
+    "name": "multi-open",
+    "payload": {
+      "session_id": "00000000-0000-4000-8000-000000000000",
+      "transcript_path": "/home/user/.claude/projects/-example/00000000-0000-4000-8000-000000000000.jsonl",
+      "cwd": "/example/repo",
+      "prompt_id": "11111111-1111-4111-8111-111111111111",
+      "permission_mode": "auto",
+      "effort": {
+        "level": "xhigh"
+      },
+      "hook_event_name": "PreToolUse",
+      "tool_name": "AskUserQuestion",
+      "tool_input": {
+        "questions": [
+          {
+            "question": "Which checks should run before the deploy?",
+            "header": "Checks",
+            "options": [
+              {
+                "label": "Lint",
+                "description": "Static analysis"
+              },
+              {
+                "label": "Unit tests",
+                "description": "The fast suite"
+              },
+              {
+                "label": "End-to-end",
+                "description": "The browser suite"
+              }
+            ],
+            "multiSelect": true
+          }
+        ]
+      },
+      "tool_use_id": "toolu_00000000000000000000000"
+    },
+    "lines": [
+      "bash-5.2$ claude --settings '/tmp/claude-1000/claude-question-probe/out-probe2-20260903-205005/hooks.json' 'Read the fil",
+      "e /tmp/claude-1000/claude-question-probe/out-probe2-20260903-205005/spec-two.json and then call the AskUserQuestion tool",
+      " exactly once, passing the JSON in that file as the tool input, unchanged. Do not use any other tool, do not add comment",
+      "ary, and do not ask anything else. After I answer, reply with only the word finished spelled backwards.'",
+      "\u001b[38;5;174m ▐\u001b[48;5;16m▛███▛█\u001b[39m\u001b[49m   \u001b[1mClaude\u001b[0m \u001b[1mCode\u001b[0m \u001b[38;5;241mv2.1.260\u001b[39m",
+      "\u001b[38;5;174m▝▜\u001b[48;5;16m█████\u001b[49m█▀\u001b[39m  \u001b[38;5;241mOpus\u001b[39m \u001b[38;5;241m4.8\u001b[39m \u001b[38;5;241mwith\u001b[39m \u001b[38;5;241mxhigh\u001b[39m \u001b[38;5;241meffort\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241mClaude\u001b[39m \u001b[38;5;241mMax\u001b[39m",
+      "\u001b[38;5;174m \u001b[39m \u001b[38;5;174m▝▝\u001b[39m \u001b[38;5;174m▝▝\u001b[39m    \u001b[38;5;241m/tachi/code/remoteagents\u001b[39m",
+      "",
+      "",
+      "\u001b[38;5;248m\u001b[48;5;255m❯ \u001b[38;5;16mRead the file /tmp/claude-1000/claude-question-probe/out-probe2-20260903-205005/spec-two.json and then call the \u001b[39m",
+      "  \u001b[38;5;16mAskUserQuestion tool exactly once, passing the JSON in that file as the tool input, unchanged. Do not use any other \u001b[39m",
+      "  \u001b[38;5;16mtool, do not add commentary, and do not ask anything else. After I answer, reply with only the word finished spelled \u001b[39m",
+      "  \u001b[38;5;16mbackwards.\u001b[39m",
+      "",
+      "\u001b[49m  \u001b[38;5;241mRead \u001b[1m1\u001b[0m\u001b[38;5;241m file (ctrl+o to expand)\u001b[39m",
+      "",
+      "\u001b[38;5;241m● \u001b[39mUser answered Claude's questions:",
+      "\u001b[38;5;241m  ⎿  · Which region should host the deploy? → us-east\u001b[39m",
+      "     \u001b[38;5;241m· How should the rollout proceed? → All at once\u001b[39m",
+      "",
+      "\u001b[38;5;16m●\u001b[39m dehsinif",
+      "",
+      "\u001b[38;5;241m✻\u001b[39m \u001b[38;5;241mBrewed for 7s · done 8:50 PM\u001b[39m",
+      "",
+      "\u001b[38;5;248m\u001b[48;5;255m❯ \u001b[38;5;16mRead the file /tmp/claude-1000/claude-question-probe/out-probe2-20260903-205005/spec-single.json and then call the \u001b[39m",
+      "  \u001b[38;5;16mAskUserQuestion tool exactly once, passing the JSON in that file as the tool input, unchanged. Do not use any other \u001b[39m",
+      "  \u001b[38;5;16mtool, do not add commentary, and do not ask anything else. After I answer, reply with only the word finished spelled \u001b[39m",
+      "  \u001b[38;5;16mbackwards.\u001b[39m",
+      "\u001b[49m",
+      "  \u001b[38;5;241mRead \u001b[1m1\u001b[0m\u001b[38;5;241m file (ctrl+o to expand)\u001b[39m",
+      "",
+      "\u001b[38;5;241m● \u001b[39mUser declined to answer questions",
+      "\u001b[38;5;241m  ⎿  · Which environment should I deploy this build to, given that the staging database was refreshed this morning and \u001b[39m",
+      "     \u001b[38;5;241mproduction is under load? (Staging / Production / Neither, hold the build until the smoke tests finish and then ask",
+      "\u001b[39m     \u001b[38;5;241mme again later today)\u001b[39m",
+      "",
+      "\u001b[38;5;241m✻\u001b[39m \u001b[38;5;241mCogitated for 6s · done 8:50 PM\u001b[39m",
+      "",
+      "\u001b[38;5;248m\u001b[48;5;255m❯ \u001b[38;5;16mRead the file /tmp/claude-1000/claude-question-probe/out-probe2-20260903-205005/spec-other.json and then call the \u001b[39m",
+      "  \u001b[38;5;16mAskUserQuestion tool exactly once, passing the JSON in that file as the tool input, unchanged. Do not use any other \u001b[39m",
+      "  \u001b[38;5;16mtool, do not add commentary, and do not ask anything else. After I answer, reply with only the word finished spelled \u001b[39m",
+      "  \u001b[38;5;16mbackwards.\u001b[39m",
+      "\u001b[49m",
+      "  \u001b[38;5;241mRead \u001b[1m1\u001b[0m\u001b[38;5;241m file (ctrl+o to expand)\u001b[39m",
+      "",
+      "\u001b[38;5;241m● \u001b[39mUser declined to answer questions",
+      "\u001b[38;5;241m  ⎿  · What should this release be called? (Aurora / Borealis)\u001b[39m",
+      "",
+      "\u001b[38;5;241m✻\u001b[39m \u001b[38;5;241mCogitated for 4s · done 8:50 PM\u001b[39m",
+      "",
+      "\u001b[38;5;248m\u001b[48;5;255m❯ \u001b[38;5;16mCorona\u001b[39m",
+      "",
+      "\u001b[38;5;16m\u001b[49m●\u001b[39m dehsinif",
+      "",
+      "\u001b[38;5;241m✻\u001b[39m \u001b[38;5;241mSautéed for 1s · done 8:50 PM\u001b[39m",
+      "",
+      "\u001b[38;5;248m\u001b[48;5;255m❯ \u001b[38;5;16mRead the file /tmp/claude-1000/claude-question-probe/out-probe2-20260903-205005/spec-multi.json and then call the \u001b[39m",
+      "  \u001b[38;5;16mAskUserQuestion tool exactly once, passing the JSON in that file as the tool input, unchanged. Do not use any other \u001b[39m",
+      "  \u001b[38;5;16mtool, do not add commentary, and do not ask anything else. After I answer, reply with only the word finished spelled \u001b[39m",
+      "  \u001b[38;5;16mbackwards.\u001b[39m",
+      "\u001b[49m",
+      "  \u001b[38;5;241mRead \u001b[1m1\u001b[0m\u001b[38;5;241m file (ctrl+o to expand)\u001b[39m",
+      "\u001b[38;5;241m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "← \u001b[38;5;231m\u001b[48;5;105m ☐ Checks \u001b[39m\u001b[49m ✔ Submit  →",
+      "",
+      "\u001b[1m\u001b[38;5;16mWhich checks should run before the deploy?\u001b[0m",
+      "",
+      "\u001b[38;5;105m❯\u001b[39m \u001b[38;5;241m1.\u001b[39m [ ] \u001b[38;5;105mLint\u001b[39m",
+      "  \u001b[38;5;241mStatic analysis\u001b[39m",
+      "  \u001b[38;5;241m2.\u001b[39m [ ] Unit tests",
+      "  \u001b[38;5;241mThe fast suite\u001b[39m",
+      "  \u001b[38;5;241m3.\u001b[39m [ ] End-to-end",
+      "  \u001b[38;5;241mThe browser suite\u001b[39m",
+      "  \u001b[38;5;241m4. \u001b[39m[ ] \u001b[38;5;241mType\u001b[39m \u001b[38;5;241msomething\u001b[39m",
+      "     \u001b[1mSubmit\u001b[0m",
+      "\u001b[38;5;241m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "\u001b[39m  5. Chat about this",
+      "",
+      "\u001b[38;5;241mEnter to select · ↑/↓ to navigate · Esc to cancel\u001b[39m",
+      "",
+      ""
+    ],
+    "question": null
+  },
+  {
+    "name": "two-q1",
+    "payload": {
+      "session_id": "00000000-0000-4000-8000-000000000000",
+      "transcript_path": "/home/user/.claude/projects/-example/00000000-0000-4000-8000-000000000000.jsonl",
+      "cwd": "/example/repo",
+      "prompt_id": "11111111-1111-4111-8111-111111111111",
+      "permission_mode": "auto",
+      "effort": {
+        "level": "xhigh"
+      },
+      "hook_event_name": "PreToolUse",
+      "tool_name": "AskUserQuestion",
+      "tool_input": {
+        "questions": [
+          {
+            "question": "Which region should host the deploy?",
+            "header": "Region",
+            "options": [
+              {
+                "label": "us-east",
+                "description": "Virginia"
+              },
+              {
+                "label": "eu-west",
+                "description": "Ireland"
+              }
+            ],
+            "multiSelect": false
+          },
+          {
+            "question": "How should the rollout proceed?",
+            "header": "Rollout",
+            "options": [
+              {
+                "label": "Canary",
+                "description": "One host first"
+              },
+              {
+                "label": "All at once",
+                "description": "Every host together"
+              }
+            ],
+            "multiSelect": false
+          }
+        ]
+      },
+      "tool_use_id": "toolu_00000000000000000000000"
+    },
+    "lines": [
+      "bash-5.2$ claude --settings '/tmp/claude-1000/claude-question-probe/out-probe2-20260903-205005/hooks.json' 'Read the fil",
+      "e /tmp/claude-1000/claude-question-probe/out-probe2-20260903-205005/spec-two.json and then call the AskUserQuestion tool",
+      " exactly once, passing the JSON in that file as the tool input, unchanged. Do not use any other tool, do not add comment",
+      "ary, and do not ask anything else. After I answer, reply with only the word finished spelled backwards.'",
+      "\u001b[38;5;174m ▐\u001b[48;5;16m▛███▛█\u001b[39m\u001b[49m   \u001b[1mClaude\u001b[0m \u001b[1mCode\u001b[0m \u001b[38;5;241mv2.1.260\u001b[39m",
+      "\u001b[38;5;174m▝▜\u001b[48;5;16m█████\u001b[49m█▀\u001b[39m  \u001b[38;5;241mOpus\u001b[39m \u001b[38;5;241m4.8\u001b[39m \u001b[38;5;241mwith\u001b[39m \u001b[38;5;241mxhigh\u001b[39m \u001b[38;5;241meffort\u001b[39m \u001b[38;5;241m·\u001b[39m \u001b[38;5;241mClaude\u001b[39m \u001b[38;5;241mMax\u001b[39m",
+      "\u001b[38;5;174m \u001b[39m \u001b[38;5;174m▝▝\u001b[39m \u001b[38;5;174m▝▝\u001b[39m    \u001b[38;5;241m/tachi/code/remoteagents\u001b[39m",
+      "",
+      "",
+      "\u001b[38;5;248m\u001b[48;5;255m❯ \u001b[38;5;16mRead the file /tmp/claude-1000/claude-question-probe/out-probe2-20260903-205005/spec-two.json and then call the \u001b[39m",
+      "  \u001b[38;5;16mAskUserQuestion tool exactly once, passing the JSON in that file as the tool input, unchanged. Do not use any other \u001b[39m",
+      "  \u001b[38;5;16mtool, do not add commentary, and do not ask anything else. After I answer, reply with only the word finished spelled \u001b[39m",
+      "  \u001b[38;5;16mbackwards.\u001b[39m",
+      "",
+      "\u001b[49m  \u001b[38;5;241mRead \u001b[1m1\u001b[0m\u001b[38;5;241m file (ctrl+o to expand)\u001b[39m",
+      "\u001b[38;5;241m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "← \u001b[38;5;231m\u001b[48;5;105m ☐ Region \u001b[39m\u001b[49m ☐ Rollout  ✔ Submit  →",
+      "",
+      "\u001b[1m\u001b[38;5;16mWhich region should host the deploy?\u001b[0m",
+      "",
+      "\u001b[38;5;105m❯\u001b[39m \u001b[38;5;241m1.\u001b[39m \u001b[38;5;105mus-east\u001b[39m",
+      "     \u001b[38;5;241mVirginia\u001b[39m",
+      "  \u001b[38;5;241m2.\u001b[39m eu-west",
+      "     \u001b[38;5;241mIreland\u001b[39m",
+      "  \u001b[38;5;241m3. Type something.\u001b[39m",
+      "\u001b[38;5;241m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "\u001b[39m  4. Chat about this",
+      "",
+      "\u001b[38;5;241mEnter to select · Tab/Arrow keys to navigate · Esc to cancel",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "question": null
+  },
+  {
+    "name": "text-kind",
+    "payload": {
+      "hook_event_name": "PreToolUse",
+      "tool_name": "AskUserQuestion",
+      "tool_input": {
+        "questions": [
+          {
+            "question": "What should this be called?",
+            "header": "Name"
+          }
+        ]
+      }
+    },
+    "lines": [
+      " ☐ Name",
+      "What should this be called?",
+      "❯ 1. Type something."
+    ],
+    "question": null
+  }
+]

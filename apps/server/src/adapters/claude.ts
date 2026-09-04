@@ -2,6 +2,7 @@ import { basename } from 'node:path';
 import { claudeConfigDir, claudeConversationTitle, validClaudeSessionId } from './claude-conversations.js';
 import { claudeSkillDirectories, claudeSlash } from './claude-commands.js';
 import { claudeFiles, claudeHooksFileName } from './claude-hooks.js';
+import { reportedClaudeQuestion } from './claude-questions.js';
 import type { Adapter, TmuxKey } from './types.js';
 
 // The packaged CLI entry a `node …` invocation of Claude Code runs.
@@ -32,9 +33,11 @@ const conflictingArgs = ['--settings', '--bare', '--safe-mode', '-c', '--continu
  * 'reported'`), so the title carries no signal and `inferState` is always
  * `undefined`. Every launch injects the console-owned `hooks.json` through
  * `--settings`, leaving `~/.claude` untouched. There are no `turns` (fullscreen
- * viewport), no inline `questions` in v1 (the operator answers in the pane), no
- * `panes`, and `conversations` has no `discover` (the transcript fd is not held
- * open) — only a reported `@rac_session` id, titled from the transcript.
+ * viewport) and no `panes`, and `conversations` has no `discover` (the transcript
+ * fd is not held open) — only a reported `@rac_session` id, titled from the
+ * transcript. `AskUserQuestion` renders as an Inline question through the reported
+ * hook payload (ADR 0006): the dialog draws options in payload order with the
+ * highlight on the first, so `selectOption` navigates it by Down-key count.
  */
 export const claudeAdapter: Adapter = {
   kind: 'claude',
@@ -64,6 +67,11 @@ export const claudeAdapter: Adapter = {
     skillDirectories: claudeSkillDirectories,
     slash: claudeSlash,
     skillInvocation: (name) => `/${name}`,
+  },
+  questions: {
+    // the Agent reports the question payload on its own pane; the matcher confirms
+    // the dialog is live against the capture and answers it on the same pane
+    reported: reportedClaudeQuestion,
   },
   conversations: {
     validId: validClaudeSessionId,

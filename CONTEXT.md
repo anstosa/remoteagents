@@ -85,8 +85,8 @@ One prompt and the Agent's complete response to it. What prompt history records;
 _Avoid_: Exchange, round, message pair
 
 **Inline question**:
-A question the Agent is asking that the console can answer on the operator's behalf by choosing one of its options, whether the Agent wrote it as a file or only drew it on the pane.
-_Avoid_: Choice list, structured question, parsed question (those name where it came from, not what it is)
+A question the Agent is asking that the console can answer on the operator's behalf by choosing one of its options, whether the Agent wrote it as a file, reported it through its pane (Claude's `AskUserQuestion` payload, ADR 0006), or only drew it on the pane.
+_Avoid_: Choice list, structured question, parsed question, reported question (those name where it came from, not what it is)
 
 ### Operator state
 

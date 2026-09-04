@@ -24,7 +24,7 @@ describe('TmuxAdapter capture', () => {
 
   it('reports the tmux session name used to distinguish internal command panes', async () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
-    run.mockResolvedValueOnce({ code: 0, stdout: "%1\t$1\trac-stack-owen-a1b2c3\t123\t/home/ubuntu/owen\tbash\tstack\t\texec /bin/bash -lc 'echo ready'\t\t\t\t1\n", stderr: '' });
+    run.mockResolvedValueOnce({ code: 0, stdout: "%1\t$1\trac-stack-owen-a1b2c3\t123\t/home/ubuntu/owen\tbash\tstack\t\texec /bin/bash -lc 'echo ready'\t\t\t\t\t1\n", stderr: '' });
 
     await expect(new TmuxAdapter().listPanes(socket)).resolves.toEqual([{
       paneId: '%1',
@@ -39,7 +39,17 @@ describe('TmuxAdapter capture', () => {
       socket
     }]);
 
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_console_managed}']);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_question}\t#{@rac_console_managed}']);
+  });
+
+  it('reads the reported Inline question payload from its pane option', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValueOnce({ code: 0, stdout: '%2\t$1\tmain\t99\t/w\tnode\tclaude\t\t\tquestion\t\t\tZXlKaGIgcGF5bG9hZA==\t\n', stderr: '' });
+
+    await expect(new TmuxAdapter().listPanes(socket)).resolves.toEqual([{
+      paneId: '%2', sessionId: '$1', sessionName: 'main', pid: 99, path: '/w', command: 'node', title: 'claude',
+      reportedAttention: 'question', reportedQuestion: 'ZXlKaGIgcGF5bG9hZA==', socket,
+    }]);
   });
 
   it('labels one exact server-owned pane', async () => {
@@ -55,7 +65,7 @@ describe('TmuxAdapter capture', () => {
 
     await expect(new TmuxAdapter().unsetReportedState(socket, '%1')).resolves.toBe(true);
 
-    for (const option of ['@rac_attention', '@rac_session', '@rac_sandboxed']) {
+    for (const option of ['@rac_attention', '@rac_session', '@rac_sandboxed', '@rac_question']) {
       expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'set-option', '-p', '-t', '%1', '-u', option]);
     }
     // never touches the server-owned display label

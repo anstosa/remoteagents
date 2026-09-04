@@ -612,6 +612,11 @@ export class PromptService {
     return typeof this.discovery.paneProcessId === 'function' ? this.discovery.paneProcessId(agentId) : undefined;
   }
 
+  // the raw reported Inline question payload one pane carries, when discovery exposes it
+  private reportedQuestionPayload(agentId: string): string | undefined {
+    return typeof this.discovery.reportedQuestionPayload === 'function' ? this.discovery.reportedQuestionPayload(agentId) : undefined;
+  }
+
   // the pane's unique working directory, when the discovery service exposes it: the
   // Adapter's privilege-free fallback for a sandboxed pane whose descriptors a
   // confined service cannot readlink
@@ -748,6 +753,14 @@ export class PromptService {
     const adapter = this.resolveAdapter(first.agent.kind); if (adapter?.questions === undefined) return false;
     const workspace = this.workspaceFor(first.agent.workspace);
     let question = await adapter.questions.pending?.(workspace, first.agent.paneId);
+    // a reported question is re-derived from a fresh payload and capture: a payload
+    // cleared by PostToolUse, a cancelled dialog, or one that advanced since the tap
+    // yields a different id or nothing, and the id check below refuses it
+    if (question === undefined && adapter.questions.reported !== undefined) {
+      const payload = this.reportedQuestionPayload(agentId);
+      const capture = payload === undefined ? undefined : await this.tmux.capture(first.socket, first.agent.paneId).catch(() => undefined);
+      question = capture === undefined ? undefined : adapter.questions.reported(payload!, capture);
+    }
     if (question === undefined && adapter.questions.parse !== undefined) {
       const capture = await this.tmux.capture(first.socket, first.agent.paneId).catch(() => undefined);
       question = capture === undefined ? undefined : adapter.questions.parse(capture);

@@ -12,7 +12,7 @@ import { projectIdOf, worktreeMatchesWorkspace, worktreePathOf, worktreeWireId }
 import { gitCommonDir, listWorktrees, type WorktreeEntry } from '../git/worktrees.js';
 import { worktreeManagementAvailability } from '../worktrees/management.js';
 import type { WorktreeLaunchStore } from '../worktrees/store.js';
-import type { Adapter, AdapterConfigs, AttentionState, Conversation } from '../adapters/types.js';
+import type { Adapter, AdapterConfigs, AttentionState, Conversation, InlineQuestion } from '../adapters/types.js';
 import type { Agent, Dashboard, DashboardProject, DashboardWorktree, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, Project, SocketRef, Worktree } from '../domain/models.js';
 import { classifyReviewPath } from '../git/change-classification.js';
 import { isUpdateAdvisorLabel } from '../update-advisor.js';
@@ -308,6 +308,9 @@ export class DiscoveryService {
   private paneCwds = new Map<string, string>();
   // reported @rac_attention per agent id, so the dashboard re-resolves with the question
   private paneReported = new Map<string, AttentionState>();
+  // the base64 reported Inline question payload (`@rac_question`) per agent id, kept
+  // server-side so the dashboard and answer path can re-derive it; never published
+  private paneQuestionPayloads = new Map<string, string>();
   private readonly serverStartedAt = Date.now();
   private refreshedAt = 0;
   private refreshInFlight?: Promise<Agent[]>;
@@ -367,11 +370,12 @@ export class DiscoveryService {
     const panePids = new Map<string, number>();
     const paneCwds = new Map<string, string>();
     const paneReported = new Map<string, AttentionState>();
+    const paneQuestionPayloads = new Map<string, string>();
     const agents: Agent[] = (await Promise.all(panes.filter(pane => !paneExcluded(pane)).map(async (pane): Promise<Agent | undefined> => {
       const recognized = await this.processes.recognizeAgent(pane.pid);
       if (recognized === undefined) {
         // a pane whose agent is gone must not keep a stale report; nothing else clears it
-        if (pane.reportedAttention !== undefined || pane.reportedSession !== undefined || pane.reportedSandboxed !== undefined) void this.tmux.unsetReportedState(pane.socket, pane.paneId).catch(() => {});
+        if (pane.reportedAttention !== undefined || pane.reportedSession !== undefined || pane.reportedSandboxed !== undefined || pane.reportedQuestion !== undefined) void this.tmux.unsetReportedState(pane.socket, pane.paneId).catch(() => {});
         return undefined;
       }
       const workspace = await workspaceRoot(pane.path);
@@ -380,6 +384,7 @@ export class DiscoveryService {
       paneCwds.set(id, pane.path);
       const reported = parseReportedAttention(pane.reportedAttention);
       if (reported !== undefined) paneReported.set(id, reported);
+      if (pane.reportedQuestion !== undefined && pane.reportedQuestion.length > 0) paneQuestionPayloads.set(id, pane.reportedQuestion);
       const attention = resolveAttention({ kind: recognized.kind, title: pane.title, reported, hasQuestion: false });
       const conversationId = pane.reportedSession !== undefined && pane.reportedSession.length > 0 ? pane.reportedSession : undefined;
       return { id, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, workspace, title: pane.title, kind: recognized.kind, attention, ...(pane.reportedSandboxed === '1' ? { sandboxed: true } : {}), ...(conversationId === undefined ? {} : { conversationId }), ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }) };
@@ -388,6 +393,7 @@ export class DiscoveryService {
     this.panePids = panePids;
     this.paneCwds = paneCwds;
     this.paneReported = paneReported;
+    this.paneQuestionPayloads = paneQuestionPayloads;
     this.refreshedAt = Date.now();
     this.generation++;
     return agents;
@@ -410,6 +416,11 @@ export class DiscoveryService {
   // the OS pid backing one discovered pane, for the Adapter's rollout reads
   paneProcessId(id: string): number | undefined {
     return this.panePids.get(id);
+  }
+
+  // the raw reported Inline question payload one pane carries, for the answer path
+  reportedQuestionPayload(id: string): string | undefined {
+    return this.paneQuestionPayloads.get(id);
   }
 
   // the pane's working directory, for the Adapter's privilege-free rollout match —
@@ -576,6 +587,22 @@ export class DiscoveryService {
   }
 
   // enrich one discovered dashboard
+  // the Inline question one agent is asking: OMX's structured file (`pending`), else
+  // the Claude payload it reported on its pane (`reported`), confirmed live against a
+  // fresh capture. One capture per dashboard build per agent that holds a payload.
+  private async agentQuestion(agent: Agent, workspace: string): Promise<InlineQuestion | undefined> {
+    const questions = adapterFor(agent.kind)?.questions;
+    if (questions === undefined) return undefined;
+    const pending = await questions.pending?.(workspace, agent.paneId);
+    if (pending !== undefined || questions.reported === undefined) return pending;
+    const payload = this.paneQuestionPayloads.get(agent.id);
+    if (payload === undefined) return undefined;
+    const socket = this.socketSnapshot.find(candidate => candidate.fingerprint === agent.socketFingerprint);
+    if (socket === undefined) return undefined;
+    const capture = await this.tmux.capture(socket, agent.paneId).catch(() => undefined);
+    return capture === undefined ? undefined : questions.reported(payload, capture);
+  }
+
   private async buildDashboard(force = false): Promise<Dashboard> {
     const discovered = await this.refresh(force);
     let worktrees = await this.worktrees(force);
@@ -610,7 +637,7 @@ export class DiscoveryService {
       const workspace = worktree?.identity ?? agent.workspace;
       const [meta, question] = await Promise.all([
         metadataFor(workspace),
-        adapterFor(agent.kind)?.questions?.pending?.(workspace, agent.paneId) ?? Promise.resolve(undefined)
+        this.agentQuestion(agent, workspace)
       ]);
       const branch = meta.branch ?? agent.branch;
       const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, branch);

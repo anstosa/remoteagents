@@ -23,8 +23,8 @@ describe('adapterCapabilities', () => {
     expect(adapterCapabilities({}).codex?.program).toBeUndefined();
   });
 
-  it('derives Claude capabilities: reported state, bookmarks and commands, no turns or inline questions', () => {
+  it('derives Claude capabilities: reported state, bookmarks, commands and inline questions, no turns', () => {
     const claude = adapterCapabilities({ claude: { program: '/usr/local/bin/claude', args: [], env: {}, launchable: true } }).claude;
-    expect(claude).toMatchObject({ launchable: true, program: '/usr/local/bin/claude', stateSource: 'reported', bookmarks: true, commands: true, turnCapture: false, inlineQuestions: false, sandbox: false });
+    expect(claude).toMatchObject({ launchable: true, program: '/usr/local/bin/claude', stateSource: 'reported', bookmarks: true, commands: true, turnCapture: false, inlineQuestions: true, sandbox: false });
   });
 });

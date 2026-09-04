@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { maxPromptAttachmentBytes, PromptService } from '../src/prompts/service.js';
 import { codexAdapter } from '../src/adapters/codex.js';
-import { inlineQuestionId } from '../src/adapters/codex-questions.js';
+import { inlineQuestionId } from '../src/adapters/inline-questions.js';
 import { QueuedPromptService } from '../src/prompts/queue.js';
 import { SavedPromptService } from '../src/saved-prompts/service.js';
 import { stated } from './helpers/agent.js';
@@ -933,6 +933,33 @@ it('confirms a numbered choice with the Adapter option-select keys on the discov
   expect(sent).toEqual([['%1', 'Down', 'Down', 'Enter']]);
   // a stale id (the agent moved past this question) is refused
   await expect(service.answerQuestion(agent.id, 'a-stale-question-id000', 2)).resolves.toBe(false);
+});
+
+it('answers a Claude reported question by re-deriving it from a fresh payload and capture', async () => {
+  const sent: string[][] = [];
+  const claudeAgent = { id: 'socket:%1', paneId: '%1', workspace: '/tmp', kind: 'claude' as const, title: '' };
+  const payload = Buffer.from(JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: 'Deploy where?', options: [{ label: 'Staging' }, { label: 'Production' }], multiSelect: false }] } })).toString('base64');
+  const capture = [' ☐ Target', '│ Deploy where?', '❯ 1. Staging', '  2. Production', '  3. Type something.'].join('\n');
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: claudeAgent, socket }), reportedQuestionPayload: () => payload };
+  const tmux = { capture: async () => capture, sendKeys: async (_s: unknown, pane: string, keys: string[]) => { sent.push([pane, ...keys]); return true; } };
+  const service = new PromptService(discovery as never, tmux as never);
+  const id = inlineQuestionId('Deploy where?', ['Staging', 'Production']);
+  // Claude highlights the first option, so index 1 (Production) is one Down then Enter
+  await expect(service.answerQuestion(claudeAgent.id, id, 1)).resolves.toBe(true);
+  expect(sent).toEqual([['%1', 'Down', 'Enter']]);
+  // a stale id, or an index past the choices, is refused
+  await expect(service.answerQuestion(claudeAgent.id, 'a-stale-question-id000', 1)).resolves.toBe(false);
+  await expect(service.answerQuestion(claudeAgent.id, id, 5)).resolves.toBe(false);
+});
+
+it('refuses a Claude reported answer once the payload is cleared', async () => {
+  const claudeAgent = { id: 'socket:%1', paneId: '%1', workspace: '/tmp', kind: 'claude' as const, title: '' };
+  const id = inlineQuestionId('Deploy where?', ['Staging', 'Production']);
+  // PostToolUse cleared @rac_question: no payload, so nothing is re-derived
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent: claudeAgent, socket }), reportedQuestionPayload: () => undefined };
+  const tmux = { capture: async () => 'irrelevant', sendKeys: async () => true };
+  const service = new PromptService(discovery as never, tmux as never);
+  await expect(service.answerQuestion(claudeAgent.id, id, 0)).resolves.toBe(false);
 });
 
 it('dismisses composer autocomplete before queuing a skill or plugin prompt',async()=>{const pasted:string[]=[];const discovery={worktreesNow:()=>[],target:async()=>({agent,socket})};const tmux={pastePrompt:async(_s:unknown,_p:string,_b:string,p:string)=>{pasted.push(p);return true},sendKeys:async()=>true};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'Use $my-plugin')).resolves.toBe(true);await expect(service.submit(agent.id,'/skill already resolved ')).resolves.toBe(true);expect(pasted).toEqual(['Use $my-plugin ','/skill already resolved '])});it('does not queue a stale target',async()=>{let count=0;const discovery={worktreesNow:()=>[],target:async()=>++count===1?{agent,socket}:undefined};const tmux={pastePrompt:async()=>true,sendKeys:async()=>true};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'synthetic')).resolves.toBe(false)});it('sends Ctrl-C only to the discovered agent pane',async()=>{const calls:string[][]=[];const discovery={worktreesNow:()=>[],target:async()=>({agent:stated({...agent,title:'⠋ Working'}),socket})};const tmux={sendKeys:async(_s:unknown,p:string,keys:string[])=>{if(keys.includes('C-c'))calls.push(['interrupt',p]);return true}};const service=new PromptService(discovery as never,tmux as never);await expect(service.cancel(agent.id)).resolves.toBe('ok');expect(calls).toEqual([['interrupt','%1']])});it('kills only the discovered pane when deleting an agent',async()=>{const calls:string[][]=[];const discovery={worktreesNow:()=>[],target:async()=>({agent,socket})};const tmux={close:async(_s:unknown,p:string)=>{calls.push(['close',p]);return true}};const service=new PromptService(discovery as never,tmux as never);await expect(service.close(agent.id)).resolves.toBe(true);expect(calls).toEqual([['close','%1']])})});

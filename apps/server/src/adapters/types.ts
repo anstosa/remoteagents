@@ -25,6 +25,10 @@ export type SubmissionDraftState = 'visible' | 'cleared' | 'unknown';
 export type Submission = { text: string; keys: TmuxKey[]; idleKeys?: TmuxKey[] };
 export type Conversation = { id: string; title?: string };
 export type Turn = { prompt?: string; text: string; rows?: number };
+// `source` is the web's dismissal-strategy discriminator, not the transport: a
+// `parsed` question the client may optimistically dismiss, a `structured` one (OMX's
+// file, Claude's reported payload) is server-published and waits for the server to
+// stop reporting it. Not the same as the CONTEXT.md "Inline question" provenance.
 export type InlineQuestion = { id: string; text: string; choices: string[]; source: 'structured' | 'parsed'; targetPaneId?: string };
 export type PromptCommand = { name: string; description?: string };
 
@@ -127,6 +131,14 @@ export interface Adapter {
   readonly questions?: {
     parse?(capture: string): InlineQuestion | undefined;
     pending?(workspace: string, paneId: string): Promise<InlineQuestion | undefined>;
+    /**
+     * The Inline question an Agent reported on its own pane (`@rac_question`),
+     * confirmed live against the pane's capture (ADR 0006). Pure: the base64 hook
+     * payload and the capture in, one question out — `undefined` when the payload
+     * is unrenderable (multiSelect, no options, several questions) or its dialog is
+     * no longer on screen (cancelled or already answered).
+     */
+    reported?(payload: string, capture: string): InlineQuestion | undefined;
   };
   readonly commands?: {
     /** prefer the runtime's effective command catalog when supported */

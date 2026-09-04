@@ -26,6 +26,14 @@ async function attention(args: string[], env: Record<string, string>): Promise<v
   await run('/bin/sh', [script, ...args], { env: { PATH: '/usr/bin:/bin', ...env } });
 }
 
+// invoke the reporter with a hook body piped on stdin (the --payload path)
+function attentionWithStdin(args: string[], env: Record<string, string>, stdin: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = execFile('/bin/sh', [script, ...args], { env: { PATH: '/usr/bin:/bin', ...env } }, error => error ? reject(error) : resolve());
+    child.stdin!.end(stdin);
+  });
+}
+
 describe('rac-attention', () => {
   it('sets @rac_attention and @rac_session in one tmux invocation', async () => {
     const tmux = await stubTmux();
@@ -51,6 +59,48 @@ describe('rac-attention', () => {
     const calls = await tmux.calls();
     expect(calls[0]).toContain('@rac_attention question');
     expect(calls[0]).toContain('@rac_session explicit');
+  });
+
+  it('stores the base64 hook body and the state in one invocation with --payload', async () => {
+    const tmux = await stubTmux();
+    const body = '{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[]}}';
+    await attentionWithStdin(['question', '--payload'], { RAC_TMUX_BIN: tmux.bin, TMUX_PANE: '%3' }, body);
+    const calls = await tmux.calls();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('set-option -p -t %3 @rac_attention question');
+    expect(calls[0]).toContain(`set-option -p -t %3 @rac_question ${Buffer.from(body).toString('base64')}`);
+  });
+
+  it('clears @rac_question on a working/finished report without --payload', async () => {
+    const tmux = await stubTmux();
+    await attention(['working'], { RAC_TMUX_BIN: tmux.bin, TMUX_PANE: '%3', CLAUDE_CODE_SESSION_ID: 'sid' });
+    const calls = await tmux.calls();
+    expect(calls[0]).toContain('@rac_attention working');
+    // @rac_question is written, but with no base64 value following it
+    expect(calls[0]).toContain('@rac_question');
+    expect(calls[0]).not.toMatch(/@rac_question\s+[A-Za-z0-9+/=]/u);
+  });
+
+  it('leaves @rac_question untouched on a bare question report without --payload', async () => {
+    // AskUserQuestion also fires a sibling question hook (Elicitation/PermissionRequest/
+    // Notification) with no --payload; it must not wipe the payload the --payload hook wrote
+    const tmux = await stubTmux();
+    await attention(['question'], { RAC_TMUX_BIN: tmux.bin, TMUX_PANE: '%3' });
+    const calls = await tmux.calls();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('@rac_attention question');
+    expect(calls[0]).not.toContain('@rac_question');
+  });
+
+  it('drops a payload over 64 KiB but still reports the state', async () => {
+    const tmux = await stubTmux();
+    const oversize = 'x'.repeat(65_537);
+    await attentionWithStdin(['question', '--payload'], { RAC_TMUX_BIN: tmux.bin, TMUX_PANE: '%3' }, oversize);
+    const calls = await tmux.calls();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('@rac_attention question');
+    // the oversize body never reaches @rac_question
+    expect(calls[0]).not.toMatch(/@rac_question\s+[A-Za-z0-9+/=]/u);
   });
 
   it('does nothing outside a tmux pane', async () => {

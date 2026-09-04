@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { inlineQuestionId } from '../../src/adapters/codex-questions.js';
+import { inlineQuestionId } from '../../src/adapters/inline-questions.js';
 
 describe('inlineQuestionId', () => {
   it('is a stable 22-char base64url hash of the text and choices', () => {

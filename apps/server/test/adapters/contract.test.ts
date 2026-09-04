@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { adapters as adaptersUnderTest } from '../../src/adapters/registry.js';
-import { inlineQuestionId } from '../../src/adapters/codex-questions.js';
+import { inlineQuestionId } from '../../src/adapters/inline-questions.js';
 import { agentKinds, type AttentionState, type Submission, type SubmissionMode, type TmuxKey } from '../../src/adapters/types.js';
 
 const fixturesRoot = fileURLToPath(new URL('../fixtures/', import.meta.url));
@@ -25,6 +25,12 @@ type QuestionFixture = {
   name: string;
   lines: string[];
   question: { text: string; choices: string[]; source: 'structured' | 'parsed' } | null;
+};
+type ReportedQuestionFixture = {
+  name: string;
+  payload: unknown;   // a verbatim PreToolUse hook body; the test base64-encodes it
+  lines: string[];    // a raw capture-pane -e -p snapshot
+  question: { text: string; choices: string[]; source: 'structured' } | null;
 };
 
 // The generic key rules every Adapter must obey (spec §"Generic key rules").
@@ -116,6 +122,15 @@ describe('Adapter contract suite', () => {
         const parsed = questions.parse!(c.lines.join('\n'));
         if (c.question === null) { expect(parsed, `${c.name} · none`).toBeUndefined(); continue; }
         expect(parsed, `${c.name} · shape`).toEqual({ ...c.question, id: inlineQuestionId(c.question.text, c.question.choices) });
+      }
+    });
+
+    if (questions?.reported && has(adapter.kind, 'reported-questions.json')) it('confirms reported questions against raw pane captures', () => {
+      for (const c of load<ReportedQuestionFixture[]>(adapter.kind, 'reported-questions.json')) {
+        const payload = Buffer.from(JSON.stringify(c.payload)).toString('base64');
+        const result = questions.reported!(payload, c.lines.join('\n'));
+        if (c.question === null) { expect(result, `${c.name} · none`).toBeUndefined(); continue; }
+        expect(result, `${c.name} · shape`).toEqual({ ...c.question, id: inlineQuestionId(c.question.text, c.question.choices) });
       }
     });
 

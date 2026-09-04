@@ -1,7 +1,7 @@
 import type { AdapterCapability, AgentKind, AttentionState, InlineQuestion } from '../adapters/types.js';
 
 export type SocketRef = { fingerprint: string; path: string; device: number; inode: number };
-export type Pane = { paneId: string; sessionId: string; sessionName?: string; pid: number; path: string; title: string; displayLabel?: string; command: string; startCommand?: string; reportedAttention?: string; reportedSession?: string; reportedSandboxed?: string; consoleManaged?: boolean; socket: SocketRef };
+export type Pane = { paneId: string; sessionId: string; sessionName?: string; pid: number; path: string; title: string; displayLabel?: string; command: string; startCommand?: string; reportedAttention?: string; reportedSession?: string; reportedSandboxed?: string; reportedQuestion?: string; consoleManaged?: boolean; socket: SocketRef };
 export type PullRequestIssues = { mergeConflicts?: boolean; failingChecks?: boolean; unresolvedComments?: boolean };
 export type PullRequestCheckStatus = 'passed' | 'pending' | 'failed';
 export type PullRequestSummary = { number: number; title: string; status: 'draft' | 'open' | 'merged'; url: string; baseBranch?: string; checks?: PullRequestCheckStatus; issues?: PullRequestIssues };

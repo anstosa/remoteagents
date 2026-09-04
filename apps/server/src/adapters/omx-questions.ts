@@ -1,6 +1,6 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { inlineQuestionId } from './codex-questions.js';
+import { inlineQuestionId } from './inline-questions.js';
 import type { InlineQuestion } from './types.js';
 
 /**

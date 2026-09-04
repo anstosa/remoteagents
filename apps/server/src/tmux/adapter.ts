@@ -107,18 +107,18 @@ export class TmuxAdapter {
 
   // read pane identity and console-owned launch metadata
   async listPanes(socket: SocketRef): Promise<Pane[]> {
-    const out = await run(this.binary, ['-S', socket.path, 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_console_managed}']);
+    const out = await run(this.binary, ['-S', socket.path, 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_question}\t#{@rac_console_managed}']);
     if (out.code !== 0) return [];
     return out.stdout.trim().split('\n').filter(Boolean).flatMap((line) => {
-      const [id, session, name, pid, path, command, title, displayLabel, startCommand, attention, sessionRef, sandboxed, consoleManaged] = line.split('\t');
-      return paneId.test(id) && sessionId.test(session) && name && /^\d+$/.test(pid) && path ? [{ paneId: id, sessionId: session, sessionName: name, pid: Number(pid), path, command: command ?? '', title: title ?? '', ...(displayLabel ? { displayLabel } : {}), ...(startCommand ? { startCommand } : {}), ...(attention ? { reportedAttention: attention } : {}), ...(sessionRef ? { reportedSession: sessionRef } : {}), ...(sandboxed ? { reportedSandboxed: sandboxed } : {}), ...(consoleManaged === '1' ? { consoleManaged: true } : {}), socket }] : [];
+      const [id, session, name, pid, path, command, title, displayLabel, startCommand, attention, sessionRef, sandboxed, question, consoleManaged] = line.split('\t');
+      return paneId.test(id) && sessionId.test(session) && name && /^\d+$/.test(pid) && path ? [{ paneId: id, sessionId: session, sessionName: name, pid: Number(pid), path, command: command ?? '', title: title ?? '', ...(displayLabel ? { displayLabel } : {}), ...(startCommand ? { startCommand } : {}), ...(attention ? { reportedAttention: attention } : {}), ...(sessionRef ? { reportedSession: sessionRef } : {}), ...(sandboxed ? { reportedSandboxed: sandboxed } : {}), ...(question ? { reportedQuestion: question } : {}), ...(consoleManaged === '1' ? { consoleManaged: true } : {}), socket }] : [];
     });
   }
 
   // clear the console-owned reported-state options once a pane's agent is gone
   async unsetReportedState(socket: SocketRef, pane: string): Promise<boolean> {
     if (!paneId.test(pane)) return false;
-    const results = await Promise.all(['@rac_attention', '@rac_session', '@rac_sandboxed'].map(
+    const results = await Promise.all(['@rac_attention', '@rac_session', '@rac_sandboxed', '@rac_question'].map(
       option => run(this.binary, ['-S', socket.path, 'set-option', '-p', '-t', pane, '-u', option])
     ));
     return results.every(result => result.code === 0);

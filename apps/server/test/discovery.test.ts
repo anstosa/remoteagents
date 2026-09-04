@@ -5,7 +5,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { addUntrackedLineStats, DiscoveryService, gitComparisonSummary, gitStatusSummary, gitUpstreamSummary, ProcSocketFinder } from '../src/discovery/service.js';
-import { inlineQuestionId } from '../src/adapters/codex-questions.js';
+import { inlineQuestionId } from '../src/adapters/inline-questions.js';
 import { pendingOmxQuestion } from '../src/adapters/omx-questions.js';
 import type { SocketRef } from '../src/domain/models.js';
 import type { WorktreeEntry } from '../src/git/worktrees.js';
@@ -629,6 +629,53 @@ describe('DiscoveryService dashboard', () => {
 
       // the title infers 'finished', but the pending question outranks it
       expect(dashboard.agents[0]).toMatchObject({ kind: 'omx', attention: 'question', question: { id: inlineQuestionId('Deploy?', ['Yes', 'No']), text: 'Deploy?', choices: ['Yes', 'No'], source: 'structured', targetPaneId: '%9' } });
+    } finally { await rm(workspace, { recursive: true, force: true }); }
+  });
+
+  it('attaches a Claude Agent reported question by confirming its payload against a fresh capture', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'rac-claude-question-'));
+    try {
+      const payload = Buffer.from(JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: 'Deploy where?', header: 'Target', options: [{ label: 'Staging' }, { label: 'Production' }], multiSelect: false }] } })).toString('base64');
+      const dialog = [' ☐ Target', '│ Deploy where?', '❯ 1. Staging', '  2. Production', '  3. Type something.'].join('\n');
+      const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+      const finder = { find: async () => [socket] };
+      const tmux = {
+        listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 321, path: workspace, title: '', reportedAttention: 'question', reportedQuestion: payload }],
+        capture: async () => dialog,
+      };
+      const processes = { recognizeAgent: async (pid: number) => ({ kind: 'claude' as const, pid, wrapped: false }) };
+      const service = new DiscoveryService(finder, tmux as never, processes);
+
+      const dashboard = await service.dashboard();
+
+      expect(dashboard.agents[0]).toMatchObject({ kind: 'claude', attention: 'question', question: { id: inlineQuestionId('Deploy where?', ['Staging', 'Production']), text: 'Deploy where?', choices: ['Staging', 'Production'], source: 'structured' } });
+      // the raw payload stays server-side, never anywhere in the published dashboard
+      expect(JSON.stringify(dashboard)).not.toContain(payload);
+      expect(service.reportedQuestionPayload('socket:%1')).toBe(payload);
+    } finally { await rm(workspace, { recursive: true, force: true }); }
+  });
+
+  it('attaches no reported question when the pane capture shows an already-answered dialog', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'rac-claude-stale-'));
+    try {
+      const payload = Buffer.from(JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: 'Deploy where?', header: 'Target', options: [{ label: 'Staging' }, { label: 'Production' }], multiSelect: false }] } })).toString('base64');
+      // the payload lingers (an answer fires no clearing hook synchronously), but the
+      // capture shows the answered summary — the text repeats, yet no numbered row remains
+      const answered = ['● User answered Claude\'s questions:', '  ⎿  · Deploy where? → Production', '', '❯ '].join('\n');
+      const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+      const finder = { find: async () => [socket] };
+      const tmux = {
+        listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 321, path: workspace, title: '', reportedQuestion: payload }],
+        capture: async () => answered,
+      };
+      const processes = { recognizeAgent: async (pid: number) => ({ kind: 'claude' as const, pid, wrapped: false }) };
+      const service = new DiscoveryService(finder, tmux as never, processes);
+
+      const dashboard = await service.dashboard();
+
+      // the capture-confirmation drops the phantom question even though the payload is present
+      expect(dashboard.agents[0]).not.toHaveProperty('question');
+      expect(service.reportedQuestionPayload('socket:%1')).toBe(payload);
     } finally { await rm(workspace, { recursive: true, force: true }); }
   });
 });

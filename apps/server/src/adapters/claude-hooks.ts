@@ -18,14 +18,18 @@ type HookEntry = { matcher?: string; hooks: CommandHandler[] };
 
 // One reporter invocation for a state: the tmux binary baked in (omitted under the
 // bridge, where the host's PATH tmux is used) and the script named by its host path.
-function report(context: AdapterFileContext, state: AttentionState): CommandHandler {
+// `--payload` (AskUserQuestion only) carries the hook's stdin as the reported
+// Inline question the console renders (ADR 0006).
+function report(context: AdapterFileContext, state: AttentionState, payload = false): CommandHandler {
   const prefix = context.tmuxBin === undefined ? '' : `RAC_TMUX_BIN=${context.tmuxBin} `;
-  return { type: 'command', timeout: 5, command: `${prefix}${context.repoRoot}/scripts/hooks/rac-attention ${state}` };
+  return { type: 'command', timeout: 5, command: `${prefix}${context.repoRoot}/scripts/hooks/rac-attention ${state}${payload ? ' --payload' : ''}` };
 }
 
 // The event → state mapping (ADR 0001). `SessionStart` also registers the session
 // id, which every invocation carries from `$CLAUDE_CODE_SESSION_ID`. `SessionEnd`
 // deliberately reports nothing (Claude fires it on `/clear` and `/resume`).
+// `PreToolUse` splits by tool (ADR 0006): AskUserQuestion sends its payload so the
+// question renders as an Inline question, while ExitPlanMode only reports the state.
 export function claudeHooksSettings(context: AdapterFileContext): { hooks: Record<string, HookEntry[]> } {
   const working = [{ hooks: [report(context, 'working')] }];
   const finished = [{ hooks: [report(context, 'finished')] }];
@@ -34,7 +38,10 @@ export function claudeHooksSettings(context: AdapterFileContext): { hooks: Recor
     hooks: {
       SessionStart: finished,
       UserPromptSubmit: working,
-      PreToolUse: [{ matcher: 'AskUserQuestion|ExitPlanMode', hooks: [report(context, 'question')] }],
+      PreToolUse: [
+        { matcher: 'AskUserQuestion', hooks: [report(context, 'question', true)] },
+        { matcher: 'ExitPlanMode', hooks: [report(context, 'question')] },
+      ],
       Elicitation: question,
       PermissionRequest: question,
       PostToolUse: working,

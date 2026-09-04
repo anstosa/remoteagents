@@ -194,6 +194,17 @@ Bookmarks), add the same script as an optional dotfile hook in your own
 binary resolves (`$RAC_TMUX_BIN`, else `tmux` on `PATH`), so it stays harmless in
 shared dotfiles on hosts without the console.
 
+To also render Claude's `AskUserQuestion` dialog as an Inline question (numbered
+choice buttons the console answers with one tap), add a `PreToolUse` hook matching
+`AskUserQuestion` that passes `--payload` — the flag makes `rac-attention` store the
+hook's stdin (the question body) in the `@rac_question` pane option the console
+reads (ADR 0006). A payload over 64 KiB is dropped, and any later report without
+`--payload` clears it:
+
+```json
+{ "hooks": { "PreToolUse": [ { "matcher": "AskUserQuestion", "hooks": [ { "type": "command", "timeout": 5, "command": "/absolute/path/to/remoteagents/scripts/hooks/rac-attention question --payload" } ] } ] } }
+```
+
 **Known limitations.** A directory Claude has never opened shows its trust dialog
 on first launch — the console never pre-accepts it, so UI-created worktrees hit it
 once. A hookless session (see above) reads as *finished* and has no Bookmarks. Any

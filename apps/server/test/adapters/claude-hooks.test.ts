@@ -26,8 +26,11 @@ describe('claude hooks settings', () => {
     const state = (entry: { hooks: { command: string }[] }) => entry.hooks[0]!.command.split(' ').pop();
     expect(state(hooks.SessionStart[0]!)).toBe('finished');
     expect(state(hooks.UserPromptSubmit[0]!)).toBe('working');
-    expect(hooks.PreToolUse[0]!.matcher).toBe('AskUserQuestion|ExitPlanMode');
-    expect(state(hooks.PreToolUse[0]!)).toBe('question');
+    // AskUserQuestion carries its payload; ExitPlanMode only reports the state (ADR 0006)
+    expect(hooks.PreToolUse.map(entry => [entry.matcher, state(entry), entry.hooks[0]!.command.endsWith('--payload')])).toEqual([
+      ['AskUserQuestion', '--payload', true],
+      ['ExitPlanMode', 'question', false],
+    ]);
     expect(state(hooks.Elicitation[0]!)).toBe('question');
     expect(state(hooks.PermissionRequest[0]!)).toBe('question');
     expect(state(hooks.PostToolUse[0]!)).toBe('working');

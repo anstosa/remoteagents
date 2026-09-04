@@ -4,17 +4,24 @@
 #
 #   @rac_attention  working | finished | question
 #   @rac_session    the agent's current session id (when known)
+#   @rac_question   the base64 hook payload of a reported Inline question (ADR 0006)
 #
 # The console injects this script into Claude Code through per-launch hooks, and
 # it is documented as an optional dotfile hook for sessions the console did not
 # start. It never blocks the agent: it exits 0 in every case, doing nothing unless
 # it is running inside a tmux pane and a tmux binary resolves.
 #
-# Usage: rac-attention <working|finished|question> [--session <id>] [ignored...]
+# Usage: rac-attention <working|finished|question> [--session <id>] [--payload] [ignored...]
 #
-# The session defaults to $CLAUDE_CODE_SESSION_ID. Extra arguments are ignored, so
-# a hook that appends its own JSON argv (as Codex does) is harmless. tmux is
-# resolved from $RAC_TMUX_BIN, else the first `tmux` on PATH.
+# The session defaults to $CLAUDE_CODE_SESSION_ID. With --payload, the hook's stdin
+# (a PreToolUse JSON body) is base64-encoded into @rac_question so the console can
+# render the question the Agent is asking. A working/finished report (no --payload)
+# clears @rac_question, dropping a stale question once the Agent moves on; a bare
+# question report leaves @rac_question intact, so a sibling question hook Claude fires
+# alongside the AskUserQuestion PreToolUse hook cannot wipe the payload it just wrote.
+# A payload over 64 KiB is dropped (the state is still reported). Extra arguments are
+# ignored, so a hook that appends its own JSON argv (as Codex does) is harmless. tmux
+# is resolved from $RAC_TMUX_BIN, else the first `tmux` on PATH.
 
 state=$1
 [ -n "$state" ] || exit 0
@@ -25,11 +32,13 @@ esac
 shift 2>/dev/null || true
 
 session=${CLAUDE_CODE_SESSION_ID:-}
-# read an explicit --session <id>; ignore every other extra argument
+payload_flag=
+# read an explicit --session <id> and the --payload flag; ignore every other extra argument
 while [ "$#" -gt 0 ]; do
   case $1 in
     --session) session=${2:-}; shift 2 2>/dev/null || shift ;;
     --session=*) session=${1#--session=}; shift ;;
+    --payload) payload_flag=1; shift ;;
     *) shift ;;
   esac
 done
@@ -45,11 +54,31 @@ else
 fi
 [ -n "$tmux_bin" ] || exit 0
 
-# one tmux invocation sets @rac_attention, plus @rac_session when an id is known
-if [ -n "$session" ]; then
-  "$tmux_bin" set-option -p -t "$TMUX_PANE" @rac_attention "$state" \; \
-              set-option -p -t "$TMUX_PANE" @rac_session "$session"
-else
-  "$tmux_bin" set-option -p -t "$TMUX_PANE" @rac_attention "$state"
+# @rac_question carries the reported payload (base64, newlines stripped so the
+# list-panes line stays tab-safe), empty unless --payload supplied a small-enough
+# hook body. An oversize payload (over 64 KiB) is dropped; the state still reports.
+question=
+if [ -n "$payload_flag" ]; then
+  raw=$(cat)
+  if [ "$(printf %s "$raw" | wc -c | tr -d ' ')" -le 65536 ]; then
+    question=$(printf %s "$raw" | base64 | tr -d '\n')
+  fi
 fi
+
+# one tmux invocation sets @rac_attention, plus @rac_session when known. @rac_question
+# is written only by a --payload report (the reported question); a working/finished
+# report clears it (dropping a stale question once the Agent moves on), while a bare
+# question report leaves it untouched — so a sibling question hook (Elicitation,
+# PermissionRequest, Notification) that Claude fires alongside the AskUserQuestion
+# PreToolUse hook cannot wipe the payload that hook just wrote.
+set -- set-option -p -t "$TMUX_PANE" @rac_attention "$state"
+if [ -n "$payload_flag" ]; then
+  set -- "$@" \; set-option -p -t "$TMUX_PANE" @rac_question "$question"
+elif [ "$state" != question ]; then
+  set -- "$@" \; set-option -p -t "$TMUX_PANE" @rac_question ""
+fi
+if [ -n "$session" ]; then
+  set -- "$@" \; set-option -p -t "$TMUX_PANE" @rac_session "$session"
+fi
+"$tmux_bin" "$@"
 exit 0

@@ -24,7 +24,17 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "AskUserQuestion|ExitPlanMode",
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "RAC_TMUX_BIN=/usr/bin/tmux /srv/remoteagents/scripts/hooks/rac-attention question --payload"
+          }
+        ]
+      },
+      {
+        "matcher": "ExitPlanMode",
         "hooks": [
           {
             "type": "command",

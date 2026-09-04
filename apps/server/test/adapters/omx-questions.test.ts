@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { inlineQuestionId } from '../../src/adapters/codex-questions.js';
+import { inlineQuestionId } from '../../src/adapters/inline-questions.js';
 import { pendingOmxQuestion } from '../../src/adapters/omx-questions.js';
 
 describe('pendingOmxQuestion', () => {
