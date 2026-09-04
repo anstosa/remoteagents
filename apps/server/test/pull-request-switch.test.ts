@@ -16,7 +16,7 @@ const headSha = 'a'.repeat(40);
 const choices = [{ number: 7, title: 'Draft work', branch: 'feature/draft', headSha, headOnOrigin: true, draft: true, url: 'https://github.com/octo/repo/pull/7' }];
 
 const commonRepositoryResult = { code: 0, stdout: '/repositories/project/.git\n' };
-const cleanCommand = async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('--git-common-dir') ? commonRepositoryResult.stdout : args.includes('status') ? '' : 'refs/remotes/origin/feature/current\n' });
+const cleanCommand = async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('--git-common-dir') ? commonRepositoryResult.stdout : args.includes('status') ? '' : args.includes('refs/heads') ? '' : 'refs/remotes/origin/feature/current\n' });
 
 // simulate one branch changing after pane input
 function switchingCommand(initialBranch = 'feature/current') {
@@ -116,7 +116,7 @@ describe('pull request switching', () => {
     const tmux = { suspend: async () => true, input: async () => true };
     const service = new PullRequestSwitchService(config, discovery as never, tmux as never, pulls as never, cleanCommand);
 
-    await expect(service.available(agent.id)).resolves.toEqual({ enabled: true, pullRequests: [{ ...choices[0], checkoutBranch: 'feature/draft', checkedOut: true, openIn: { agentId: 'agent-2', worktreeId: 'delta', worktreeName: 'Delta' } }], otherPullRequests: [] });
+    await expect(service.available(agent.id)).resolves.toEqual({ enabled: true, pullRequests: [{ ...choices[0], checkoutBranch: 'feature/draft', checkedOut: true, openIn: { agentId: 'agent-2', worktreeId: 'delta', worktreeName: 'Delta' } }], otherPullRequests: [], branches: [], pullRequestsSupported: true });
     await expect(service.switch(agent.id, 7)).resolves.toBe(false);
   });
 
@@ -134,7 +134,7 @@ describe('pull request switching', () => {
     const tmux = { suspend: async () => { /* detect unintended suspension */ suspended = true; return true; } };
     const service = new PullRequestSwitchService(config, discovery as never, tmux as never, pulls as never, command);
 
-    await expect(service.available(currentAgent.id)).resolves.toEqual({ enabled: true, pullRequests: [{ ...choices[0], checkoutBranch: 'feature/draft', checkedOut: true, openIn: { agentId: 'agent-1', worktreeId: worktree.id, worktreeName: 'Cora' } }], otherPullRequests: [] });
+    await expect(service.available(currentAgent.id)).resolves.toEqual({ enabled: true, pullRequests: [{ ...choices[0], checkoutBranch: 'feature/draft', checkedOut: true, openIn: { agentId: 'agent-1', worktreeId: worktree.id, worktreeName: 'Cora' } }], otherPullRequests: [], branches: [], pullRequestsSupported: true });
     await expect(service.switch(currentAgent.id, 7)).resolves.toBe(false);
     expect(suspended).toBe(false);
   });
@@ -212,7 +212,77 @@ describe('pull request switching', () => {
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
     const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, cleanCommand);
 
-    await expect(service.available(agent.id)).resolves.toEqual({ enabled: true, pullRequests: [{ ...choices[0], checkoutBranch: 'feature/draft', checkedOut: true, openIn: { worktreeId: 'delta', worktreeName: 'Delta' } }], otherPullRequests: [] });
+    await expect(service.available(agent.id)).resolves.toEqual({ enabled: true, pullRequests: [{ ...choices[0], checkoutBranch: 'feature/draft', checkedOut: true, openIn: { worktreeId: 'delta', worktreeName: 'Delta' } }], otherPullRequests: [], branches: [], pullRequestsSupported: true });
+  });
+
+  // list one clean local-branch payload alongside the pull requests
+  function branchListingCommand(branches: string, current = 'feature/current') {
+    return async (_binary: string, args: string[]) => {
+      // share one fake repository identity
+      if (args.includes('--git-common-dir')) return commonRepositoryResult;
+      // expose clean working state
+      if (args.includes('status')) return { code: 0, stdout: '' };
+      // enumerate the requested local branches
+      if (args.includes('refs/heads') && args.includes('--format=%(refname:short)')) return { code: 0, stdout: branches };
+      // keep the worktree switchable through a remote-tracked HEAD
+      if (args.includes('--contains=HEAD')) return { code: 0, stdout: 'refs/remotes/origin/feature/current\n' };
+      // expose the current branch
+      if (args.includes('symbolic-ref')) return { code: 0, stdout: `${current}\n` };
+      return { code: 0, stdout: '' };
+    };
+  }
+
+  it('lists local branches annotated with the worktree that holds each', async () => {
+    const deltaView = { id: 'delta', projectId: 'cora', label: 'Delta', path: '/worktrees/delta', available: true, pinned: false, main: false, detached: false, locked: false, order: 1, branch: 'feature/draft' };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [{ id: 'cora', label: 'Cora', available: true, worktrees: [deltaView] }] }) };
+    const pulls = { supports: async () => true, open: async () => ({ own: [], others: [] }) };
+    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, branchListingCommand('feature/current\nfeature/draft\nfeature/solo\n'));
+
+    const availability = await service.available(agent.id);
+    expect(availability?.branches).toEqual([
+      { branch: 'feature/draft', checkedOut: true, openIn: { worktreeId: 'delta', worktreeName: 'Delta' } },
+      { branch: 'feature/solo', checkedOut: false }
+    ]);
+    expect(availability?.pullRequestsSupported).toBe(true);
+  });
+
+  it('excludes the current branch and branches already shown as pull requests', async () => {
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+    const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
+    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, branchListingCommand('feature/current\nfeature/draft\nfeature/solo\n'));
+
+    const availability = await service.available(agent.id);
+    // feature/current is the target branch; feature/draft is pull request #7
+    expect(availability?.branches).toEqual([{ branch: 'feature/solo', checkedOut: false }]);
+  });
+
+  it('caps the local-branch list for repositories with very many branches', async () => {
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+    const pulls = { supports: async () => true, open: async () => ({ own: [], others: [] }) };
+    const listing = Array.from({ length: 250 }, (_value, index) => `feature/branch-${index}`).join('\n');
+    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, branchListingCommand(listing));
+
+    const availability = await service.available(agent.id);
+    expect(availability?.branches).toHaveLength(200);
+  });
+
+  it('returns local branches with pull requests unsupported when there is no GitHub origin', async () => {
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+    // fail closed if the GitHub-only path is ever queried
+    const pulls = { supports: async () => false, open: async () => { throw new Error('GitHub must not be queried without a supported origin'); } };
+    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, branchListingCommand('feature/current\nfeature/solo\n'));
+
+    await expect(service.available(agent.id)).resolves.toEqual({ enabled: true, pullRequests: [], otherPullRequests: [], branches: [{ branch: 'feature/solo', checkedOut: false }], pullRequestsSupported: false });
+  });
+
+  it('returns undefined when the target worktree is not a git checkout', async () => {
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+    const pulls = { supports: async () => false, open: async () => { throw new Error('unused'); } };
+    // reject an unreadable repository identity before any listing
+    const command = async (_binary: string, args: string[]) => args.includes('--git-common-dir') ? { code: 128, stdout: '' } : { code: 0, stdout: '' };
+    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, command);
+
+    await expect(service.available(agent.id)).resolves.toBeUndefined();
   });
 
   it('ignores matching branch names from another repository', async () => {
