@@ -75,8 +75,11 @@ export class LaunchService {
     return this.discoveredWorktrees().find(candidate => candidate.id === worktreeId);
   }
 
-  // the Codex binary the update advisor spawns (RAC_CODEX_BIN, else adapters.codex.program)
+  // the Codex binary in the environment where the update advisor actually runs
   codexProgram(): string | undefined {
+    const hostProgram = process.env.RAC_HOST_CODEX_BIN?.trim();
+    // host tmux cannot execute a container-only RAC_CODEX_BIN path
+    if (this.hostSocket !== undefined) return hostProgram || this.config.adapters.codex?.program;
     return resolveCodexProgram(this.config);
   }
 
@@ -249,8 +252,7 @@ export class LaunchService {
     // report unavailable when no Codex binary is configured
     if (program === undefined) return false;
     // the advisor launches the codex kind, so it gets the same pre-launch repair —
-    // but only when its program is the configured one (RAC_CODEX_BIN may override
-    // it with a different binary the setup was never configured alongside)
+    // but only when its resolved program is the configured one
     const configured = this.config.adapters.codex;
     const command = composeLaunch(program, updateAdvisorArgs, [], {}, {}, program === configured?.program ? configured.setup : undefined);
     return await this.launchScratch(repository, updateAdvisorPendingLabel(targetSha), command, this.agentHome());

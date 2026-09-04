@@ -112,6 +112,7 @@ assumptions:
 | `HOST_TMUX_BIN` | Host tmux executable or wrapper mounted into the container | `/usr/bin/tmux` |
 | `HOST_TMUX_DIR` | Host tmux socket directory | `$HOME/.local/state/tmux/tmux-$HOST_UID` |
 | `HOST_UID` | UID owning the host tmux server | `1000` |
+| `RAC_HOST_CODEX_BIN` | Host-visible Codex executable used by the update advisor | `adapters.codex.program` |
 | `RAC_HOST_INTERACTIVE_SHELL` | Absolute zsh or bash path executed by the host tmux server | `/usr/bin/zsh` |
 | `RAC_HOST_PATH` | Complete PATH exported before host agent and stack commands | `/usr/local/bin:/usr/bin:/bin` |
 | `RAC_INTERACTIVE_SHELL` | Absolute zsh or bash path for container-managed sessions | `/usr/bin/zsh` |
@@ -163,6 +164,9 @@ host and console launches select the same account. Keep `RAC_CODEX_BIN` pointed
 at the Codex executable inside the container, as shown in
 `compose.override.example.yaml`, when adapter launch commands use host-only
 wrapper paths.
+Set `RAC_HOST_CODEX_BIN` to the corresponding host-visible executable for the
+dedicated update advisor; container paths such as `/usr/local/bin/codex` are not
+automatically visible to host tmux.
 
 ## Operations
 

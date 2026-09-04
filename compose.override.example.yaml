@@ -10,6 +10,8 @@ services:
       RAC_HOST_REPOSITORY: ${RAC_HOST_REPOSITORY:-${PWD}}
       # keep container-only account services off host-only adapter paths
       RAC_CODEX_BIN: /usr/local/bin/codex
+      # optionally override the host-tmux advisor's configured adapter path
+      RAC_HOST_CODEX_BIN: ${RAC_HOST_CODEX_BIN:-}
       RAC_HOST_INTERACTIVE_SHELL: ${RAC_HOST_INTERACTIVE_SHELL:-/usr/bin/zsh}
       RAC_HOST_PATH: ${RAC_HOST_PATH:-/usr/local/bin:/usr/bin:/bin}
     volumes:

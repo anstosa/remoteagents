@@ -56,10 +56,11 @@ The agent programs come from the config file's `adapters` block (see
 [Adapters](setup.md#adapters)); use absolute paths and update them when a CLI is
 reinstalled elsewhere. Host-specific lifecycle shims — such as the OMX-on-ZFS
 session-pointer cleanup on `adapters.omx` — belong in the adapter entry's
-`setup`/`teardown` commands rather than a wrapper script. `RAC_CODEX_BIN` selects the Codex executable the review
-tour, ChatGPT account management, and the update advisor spawn; when it is unset
-those default to `adapters.codex.program`. With neither set, those Codex-only
-features report unavailable rather than spawning a bare `codex`.
+`setup`/`teardown` commands rather than a wrapper script. `RAC_CODEX_BIN` selects
+the Codex executable that review tours and ChatGPT account management spawn;
+when it is unset they default to `adapters.codex.program`. Native deployments
+also run the update advisor in this same environment. With neither set, those
+Codex-only features report unavailable rather than spawning a bare `codex`.
 
 Container-only variables (`RAC_HOST_PROC`, `RAC_HOST_TMUX_DIR`,
 `RAC_HOST_TMUX_SOURCE`, and `RAC_HOST_UID`) must be omitted. The native server

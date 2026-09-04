@@ -90,8 +90,8 @@ export function parseDavoSettings(value: unknown): DavoSettings | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
-// the Codex binary the out-of-band services (review tour, accounts, update advisor)
-// spawn: an explicit RAC_CODEX_BIN override, else the configured adapters.codex program.
+// the Codex binary container-local or direct out-of-band services spawn: an explicit
+// RAC_CODEX_BIN override, else the configured adapters.codex program
 export function resolveCodexProgram(config: Pick<ValidatedConfig, 'adapters'>, env: NodeJS.ProcessEnv = process.env): string | undefined {
   return env.RAC_CODEX_BIN ?? config.adapters.codex?.program;
 }

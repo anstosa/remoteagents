@@ -31,11 +31,13 @@ describe('portable deployment', () => {
     expect(ignore).toContain('config/cloudflared.yml');
     expect(ignore).toContain('config/remote-agent-console.docker.json');
     expect(environment).toContain('RAC_GITHUB_TOKEN=');
+    expect(environment).toContain('RAC_HOST_CODEX_BIN=');
     expect(example).toContain('${HOME}/.codex:/home/node/.codex:rw');
     expect(example).not.toContain('.codex/auth.json:/home/node/.codex/auth.json');
     expect(example).toContain('${HOME}/.config/gh:/home/node/.config/gh:ro');
     expect(example).not.toContain('.config/gh/hosts.yml:/home/node/.config/gh/hosts.yml');
     expect(example).toContain('${HOST_TMUX_BIN:-/usr/bin/tmux}:/host-tools/tmux:ro');
+    expect(example).toContain('RAC_HOST_CODEX_BIN: ${RAC_HOST_CODEX_BIN:-}');
     expect(example).toContain('RAC_HOST_INTERACTIVE_SHELL:');
     expect(example).toContain('/absolute/path/to/project:/worktrees/project:rw');
   });

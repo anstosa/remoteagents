@@ -150,9 +150,11 @@ before starting the agent. Set `RAC_HOST_PATH` to a complete PATH when host
 commands require executables outside the host shell's normal startup
 environment.
 
-When `adapters.codex` is configured it also becomes the Codex binary the review
-tour, ChatGPT account management, and the update advisor use; `RAC_CODEX_BIN`
-overrides it. With neither set, those Codex-only features report unavailable
+When `adapters.codex` is configured it also becomes the Codex binary that
+container-local or direct review tours and ChatGPT account management use;
+`RAC_CODEX_BIN` overrides it. A host-tmux update advisor instead uses
+`RAC_HOST_CODEX_BIN`, falling back to the host-side `adapters.codex.program`.
+With neither applicable value set, the Codex-only feature reports unavailable
 rather than spawning a bare `codex` from `PATH`. The **Global settings** flyout
 shows the ChatGPT accounts section only when `adapters.codex` is configured.
 

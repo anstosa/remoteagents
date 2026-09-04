@@ -21,7 +21,9 @@ const codexProgram = '/usr/local/bin/codex';
 const codex = { adapters: { codex: { program: codexProgram, args: [] as string[], env: {}, launchable: true } }, projects: [] } as never;
 const cora = (over: Partial<Worktree> = {}) => testWorktree({ id: 'cora', projectId: 'proj', label: 'Cora', path: '/worktrees/cora', hostPath: '/home/ubuntu/cora', pinned: false, ...over });
 
+const codexBin = process.env.RAC_CODEX_BIN;
 const hostTmuxDirectory = process.env.RAC_HOST_TMUX_DIR;
+const hostCodexBin = process.env.RAC_HOST_CODEX_BIN;
 const hostInteractiveShell = process.env.RAC_HOST_INTERACTIVE_SHELL;
 const hostPath = process.env.RAC_HOST_PATH;
 const adapterFilesDir = process.env.RAC_ADAPTER_FILES_DIR;
@@ -30,8 +32,13 @@ const tempDirs: string[] = [];
 beforeEach(() => { run.mockResolvedValue({ code: 0, stdout: '', stderr: '' }); });
 afterEach(async () => {
   run.mockReset();
+  // restore process-wide launch overrides
+  if (codexBin === undefined) delete process.env.RAC_CODEX_BIN;
+  else process.env.RAC_CODEX_BIN = codexBin;
   if (hostTmuxDirectory === undefined) delete process.env.RAC_HOST_TMUX_DIR;
   else process.env.RAC_HOST_TMUX_DIR = hostTmuxDirectory;
+  if (hostCodexBin === undefined) delete process.env.RAC_HOST_CODEX_BIN;
+  else process.env.RAC_HOST_CODEX_BIN = hostCodexBin;
   if (hostInteractiveShell === undefined) delete process.env.RAC_HOST_INTERACTIVE_SHELL;
   else process.env.RAC_HOST_INTERACTIVE_SHELL = hostInteractiveShell;
   if (hostPath === undefined) delete process.env.RAC_HOST_PATH;
@@ -140,6 +147,8 @@ describe('LaunchService', () => {
 
   it('launches a dedicated update advisor in the fixed repository', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    process.env.RAC_CODEX_BIN = '/container/bin/codex';
+    process.env.RAC_HOST_CODEX_BIN = '/host/bin/codex';
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
     const service = new LaunchService({ adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true } }, projects: [{ hostPath: '/home/ubuntu/remoteagents' }] } as never);
 
@@ -147,7 +156,8 @@ describe('LaunchService', () => {
 
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['new-session', '-c', '/home/ubuntu/remoteagents']));
     const command = (run.mock.calls[0]?.[1] as string[]).join(' ');
-    expect(command).toContain('/usr/local/bin/codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen');
+    expect(command).toContain('/host/bin/codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen');
+    expect(command).not.toContain('/container/bin/codex');
     expect(command).toContain("export HOME='/home/ubuntu'");
     expect(command).not.toContain("export HOME='/home/ubuntu/remoteagents'");
     expect(command).not.toContain('--sandbox read-only');
@@ -155,43 +165,32 @@ describe('LaunchService', () => {
     expect(run).toHaveBeenLastCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', expect.stringMatching(/^rac-[\w-]+$/u), '@rac_display_label', 'Update Advisor Starting v4 2222222']);
   });
 
-  it('gives the update advisor the configured codex setup, but not when RAC_CODEX_BIN overrides the program', async () => {
-    const savedBin = process.env.RAC_CODEX_BIN;
+  it('gives the host update advisor the configured codex setup, but not when RAC_HOST_CODEX_BIN overrides the program', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
     const config = { adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true, setup: 'rm -f .omx/state/session.json' } }, projects: [{ hostPath: '/home/ubuntu/remoteagents' }] };
-    try {
-      // the advisor is a codex-kind launch, so it gets the pre-launch repair
-      delete process.env.RAC_CODEX_BIN;
-      const service = new LaunchService(config as never);
-      await expect(service.launchUpdateAdvisor('/home/ubuntu/remoteagents', '2'.repeat(40))).resolves.toBe(true);
-      // the setup string is carried into the launch (single-quote-escaped by the shell bootstrap)
-      expect((run.mock.calls[0]?.[1] as string[]).join(' ')).toContain('rm -f .omx/state/session.json');
+    // the configured host program gets its matching pre-launch repair
+    process.env.RAC_HOST_CODEX_BIN = '   ';
+    const service = new LaunchService(config as never);
+    await expect(service.launchUpdateAdvisor('/home/ubuntu/remoteagents', '2'.repeat(40))).resolves.toBe(true);
+    expect((run.mock.calls[0]?.[1] as string[]).join(' ')).toContain('rm -f .omx/state/session.json');
 
-      // an override points the advisor at a different binary the setup was never configured alongside
-      run.mockClear();
-      process.env.RAC_CODEX_BIN = '/opt/other/codex';
-      const overridden = new LaunchService(config as never);
-      await expect(overridden.launchUpdateAdvisor('/home/ubuntu/remoteagents', '2'.repeat(40))).resolves.toBe(true);
-      const command = (run.mock.calls[0]?.[1] as string[]).join(' ');
-      expect(command).toContain('/opt/other/codex --dangerously-bypass-approvals-and-sandbox');
-      expect(command).not.toContain('rm -f .omx/state/session.json');
-    } finally {
-      if (savedBin === undefined) delete process.env.RAC_CODEX_BIN; else process.env.RAC_CODEX_BIN = savedBin;
-    }
+    // a host override must not inherit setup for a different program
+    run.mockClear();
+    process.env.RAC_HOST_CODEX_BIN = '/opt/other/codex';
+    const overridden = new LaunchService(config as never);
+    await expect(overridden.launchUpdateAdvisor('/home/ubuntu/remoteagents', '2'.repeat(40))).resolves.toBe(true);
+    const command = (run.mock.calls[0]?.[1] as string[]).join(' ');
+    expect(command).toContain('/opt/other/codex --dangerously-bypass-approvals-and-sandbox');
+    expect(command).not.toContain('rm -f .omx/state/session.json');
   });
 
   it('refuses to launch the update advisor when no Codex binary is configured', async () => {
-    const savedBin = process.env.RAC_CODEX_BIN;
     delete process.env.RAC_CODEX_BIN;
-    try {
-      // no adapters.codex and no RAC_CODEX_BIN means the advisor's Codex binary is unresolved
-      const service = new LaunchService({ adapters: {}, projects: [] } as never);
-      await expect(service.launchUpdateAdvisor('/home/ubuntu/remoteagents', '2'.repeat(40))).resolves.toBe(false);
-      expect(run).not.toHaveBeenCalled();
-    } finally {
-      if (savedBin !== undefined) process.env.RAC_CODEX_BIN = savedBin;
-    }
+    // no adapters.codex and no RAC_CODEX_BIN means the direct advisor binary is unresolved
+    const service = new LaunchService({ adapters: {}, projects: [] } as never);
+    await expect(service.launchUpdateAdvisor('/home/ubuntu/remoteagents', '2'.repeat(40))).resolves.toBe(false);
+    expect(run).not.toHaveBeenCalled();
   });
 
   it('restores an explicitly configured host PATH before starting a host pane', () => {
