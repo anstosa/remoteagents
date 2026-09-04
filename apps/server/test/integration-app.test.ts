@@ -36,7 +36,7 @@ describe('application integration surfaces', () => {
       remoteServers: [],
       trustedProxyIps: new Set(['127.0.0.1']),
       pollIntervalMs: 500,
-      newAgentCommand: 'codex',
+      adapters: {},
       integrations: { enabled: true, mcp: { readEnabled: true, writeEnabled: true, dangerousEnabled: false }, realtime: { enabled: true, name: 'Davo', context: '', writeToolsEnabled: true }, multiInstance: { enabled: false } },
       projects: []
     };

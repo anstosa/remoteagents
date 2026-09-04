@@ -63,11 +63,11 @@ Each entry is `{ program, args?, env?, setup?, teardown?, updates? }`. `program`
 shell); `args` (≤64) and `env` (names `^[A-Za-z_][A-Za-z0-9_]*$`) are the
 operator's additions. Values are never shell-expanded — the console shell-quotes
 them — so there are no placeholders, and `env` is not a place for secrets.
-Configuring zero adapters is valid: the console then only observes hand-started
-agents. Adding a kind whose program is missing or not executable does not stop
-the server; that kind shows as unavailable in **Global settings → Agents** with
-the reason, and every other kind still launches. `pnpm config:check` reports the
-same non-fatal warning.
+Configuring zero adapters — an empty or omitted block — is valid: the console
+then only observes hand-started agents. Adding a kind whose program is missing
+or not executable does not stop the server; that kind shows as unavailable in
+**Global settings → Agents** with the reason, and every other kind still
+launches. `pnpm config:check` reports the same non-fatal warning.
 
 `setup` and `teardown` are optional shell-interpreted lifecycle commands for
 host- or operator-specific shims. `setup` runs in the launched pane through the

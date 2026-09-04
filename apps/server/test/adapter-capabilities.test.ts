@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { adapterCapabilities } from '../src/adapters/registry.js';
 
 describe('adapterCapabilities', () => {
-  it('keeps Codex launchable with no program in the legacy configuration', () => {
-    const codex = adapterCapabilities(undefined).codex;
-    expect(codex).toMatchObject({ launchable: true, stateSource: 'title', bookmarks: true });
+  it('publishes intrinsic Codex capabilities unlaunchable in an observe-only configuration', () => {
+    const codex = adapterCapabilities({}).codex;
+    expect(codex).toMatchObject({ launchable: false, stateSource: 'title', bookmarks: true });
     expect(codex?.program).toBeUndefined();
     expect(codex?.unavailableReason).toBeUndefined();
   });

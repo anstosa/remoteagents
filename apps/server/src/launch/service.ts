@@ -38,7 +38,7 @@ export function composeCommand(program: string, args: string[]): string {
 // with the Adapter's environment overlaid by the operator's, rendered as a
 // shell-quoted assignment prefix. The program, args, and env are all quoted, so
 // nothing in them expands. A configured `setup` command is the one deliberately
-// raw part — operator-trust shell (like the legacy `command`) — run in the
+// raw part — operator-trust shell (like a Project's stack commands) — run in the
 // launched pane before the program, in the launch cwd. It is wrapped in its own
 // `eval '<setup>'` so it is a single command whose exit status gates the program
 // through `&&`: a non-zero setup stops the agent from ever starting, and a
@@ -82,7 +82,7 @@ export class LaunchService {
 
   private adapterFilesPromise: Promise<RenderedAdapterFiles> | undefined;
   // This kind's rendered console-owned files for `LaunchInput.files`, or `undefined`
-  // when the kind declares none (Codex, and every legacy launch) — which keeps the
+  // when the kind declares none (Codex) — which keeps the
   // launch hot path off the filesystem. Only a *successful* render is memoized; a
   // transient failure is logged, degrades this launch to no files (it omits
   // `--settings`) rather than failing, and clears the memo so the next launch retries.
@@ -98,9 +98,7 @@ export class LaunchService {
 
   // the launchable kinds in registry (resolution) order for the current configuration
   private launchableKinds(): AgentKind[] {
-    // the legacy configuration launches only Codex, through the per-worktree command
-    if (this.config.adapters === undefined) return ['codex'];
-    return agentKinds.filter(kind => (this.config.adapters?.[kind]?.launchable ?? false) && adapterFor(kind) !== undefined);
+    return agentKinds.filter(kind => (this.config.adapters[kind]?.launchable ?? false) && adapterFor(kind) !== undefined);
   }
 
   // expose the effective server default, falling back when its configured kind is unavailable
@@ -150,28 +148,26 @@ export class LaunchService {
     return resolutions;
   }
 
-  // Compose the inner shell command for a launch of `kind`: with a configured adapter
-  // the console composes [program, …adapter args, …operator args]; otherwise it falls
-  // back to the caller's legacy composition, which receives the Adapter's mode args.
-  private composeKindLaunch(kind: AgentKind, input: LaunchInput, legacy: (adapterArgs: string[]) => string | undefined): string | undefined {
+  // Compose the inner shell command for a launch of `kind`: [program, …adapter args,
+  // …operator args] from the kind's configured entry. A kind with no entry cannot launch.
+  private composeKindLaunch(kind: AgentKind, input: LaunchInput): string | undefined {
     const adapter = adapterFor(kind);
-    if (adapter === undefined) return undefined;
+    const configured = this.config.adapters[kind];
+    if (adapter === undefined || configured === undefined) return undefined;
     const spec = adapter.launch(input);
-    const configured = this.config.adapters?.[kind];
-    return configured === undefined ? legacy(spec.args) : composeLaunch(configured.program, spec.args, configured.args, spec.env, configured.env, configured.setup);
+    return composeLaunch(configured.program, spec.args, configured.args, spec.env, configured.env, configured.setup);
   }
 
-  // the inner command for a worktree launch; a Project has no per-checkout launch command,
-  // so a kind with no configured Adapter simply cannot launch (legacy returns undefined)
+  // the inner command for a worktree launch
   private async worktreeCommand(worktree: Worktree, kind: AgentKind, input: LaunchRequest): Promise<string | undefined> {
     const files = await this.adapterFiles(kind);
-    return this.composeKindLaunch(kind, { mode: input.mode, ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }), cwd: worktree.identity, sandboxed: input.sandboxed, ...(files === undefined ? {} : { files }) }, () => undefined);
+    return this.composeKindLaunch(kind, { mode: input.mode, ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }), cwd: worktree.identity, sandboxed: input.sandboxed, ...(files === undefined ? {} : { files }) });
   }
 
-  // the inner command for a scratch launch; the legacy path launches newAgentCommand
+  // the inner command for a scratch launch
   private async scratchCommand(kind: AgentKind, cwd: string): Promise<string | undefined> {
     const files = await this.adapterFiles(kind);
-    return this.composeKindLaunch(kind, { mode: 'fresh', cwd, sandboxed: false, ...(files === undefined ? {} : { files }) }, adapterArgs => composeCommand(this.config.newAgentCommand, adapterArgs));
+    return this.composeKindLaunch(kind, { mode: 'fresh', cwd, sandboxed: false, ...(files === undefined ? {} : { files }) });
   }
 
   // resolve the authenticated account home independently from the launch directory
@@ -252,7 +248,7 @@ export class LaunchService {
     // the advisor launches the codex kind, so it gets the same pre-launch repair —
     // but only when its program is the configured one (RAC_CODEX_BIN may override
     // it with a different binary the setup was never configured alongside)
-    const configured = this.config.adapters?.codex;
+    const configured = this.config.adapters.codex;
     const command = composeLaunch(program, updateAdvisorArgs, [], {}, {}, program === configured?.program ? configured.setup : undefined);
     return await this.launchScratch(repository, updateAdvisorPendingLabel(targetSha), command, this.agentHome());
   }
@@ -302,14 +298,10 @@ export class LaunchService {
     return await this.launchWorktree(worktreeId, { mode: 'resume', conversationId: threadId, ...(kind === undefined ? {} : { kind }) });
   }
 
-  // expose exact-resume support before destructive lifecycle work: a configured
-  // adapter resumes through the Adapter; the legacy path needs a command or template
+  // expose exact-resume support before destructive lifecycle work: a known Worktree
+  // resumes through any launchable Adapter
   canResumeConversation(worktreeId: string): boolean {
-    const worktree = this.worktreeById(worktreeId);
-    if (worktree === undefined) return false;
-    // a configured Adapter resumes through the Adapter; the legacy path had a per-worktree
-    // command or template, which Projects retired, so only a configured Adapter can resume
-    return this.config.adapters !== undefined && this.launchableKinds().length > 0;
+    return this.worktreeById(worktreeId) !== undefined && this.launchableKinds().length > 0;
   }
 
   // start one worktree in the requested mode, composing its command from the Adapter

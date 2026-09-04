@@ -16,7 +16,7 @@ export function testConfig(overrides: Partial<ValidatedConfig> = {}): ValidatedC
     publicOrigin: new URL('https://agents.example.com'),
     trustedProxyIps: new Set(['127.0.0.1']),
     pollIntervalMs: 500,
-    newAgentCommand: 'codex',
+    adapters: {},
     projects: [],
     ...overrides,
   };

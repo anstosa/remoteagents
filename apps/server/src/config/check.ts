@@ -73,10 +73,10 @@ export async function checkMain({ args, env, cwd, out, err }: CliContext): Promi
     const warnings: string[] = [];
     const config = await validateConfig(input, { warn: message => warnings.push(message), checkExecutables: !composeMode });
     const mode = config.projects.length === 0 ? 'scratch-only' : `${config.projects.length} project${config.projects.length === 1 ? '' : 's'}`;
-    const configured = config.adapters === undefined ? undefined : Object.keys(config.adapters);
-    const adapters = configured === undefined ? 'legacy (no adapters block)' : configured.length === 0 ? 'observe-only (no adapters configured)' : configured.join(', ');
+    const configured = Object.keys(config.adapters);
+    const adapters = configured.length === 0 ? 'observe-only (no adapters configured)' : configured.join(', ');
     out(`Configuration valid: ${path}\nOrigin: ${config.publicOrigin.origin}\nMode: ${mode}\nAdapters: ${adapters}${composeMode ? ' (Compose mounts verified)' : ''}\n`);
-    // non-executable programs and ignored legacy keys warn without failing the check
+    // non-executable or crossed programs warn without failing the check
     for (const warning of warnings) err(`Warning: ${warning}\n`);
     return 0;
   } catch (error) {

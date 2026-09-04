@@ -6,7 +6,7 @@ import type { ValidatedConfig } from '../src/config/schema.js';
 import { ServerAdminService } from '../src/server-admin/service.js';
 import { testProject } from './helpers/config.js';
 
-const config: ValidatedConfig = { name: 'Framework', remoteServers: [], listen: { host: '127.0.0.1', port: 8787 }, publicOrigin: new URL('https://framework.example.com'), trustedProxyIps: new Set(['127.0.0.1']), pollIntervalMs: 500, newAgentCommand: 'codex', projects: [] };
+const config: ValidatedConfig = { name: 'Framework', remoteServers: [], listen: { host: '127.0.0.1', port: 8787 }, publicOrigin: new URL('https://framework.example.com'), trustedProxyIps: new Set(['127.0.0.1']), pollIntervalMs: 500, projects: [] };
 const baseSha = '1'.repeat(40);
 const targetSha = '2'.repeat(40);
 

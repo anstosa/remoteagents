@@ -146,7 +146,6 @@ describe('configuration safety', () => {
     const config = await validateConfig(scratch);
     expect(config.projects).toEqual([]);
     expect(config.listen.host).toBe('127.0.0.1');
-    expect(config.newAgentCommand).toBe('codex');
     expect(config.name).toBe('Remote Agents');
     expect(config.defaultAgent).toBeUndefined();
     expect(config.integrations).toEqual({ enabled: false, mcp: { readEnabled: true, writeEnabled: false, dangerousEnabled: false }, realtime: { enabled: false, name: 'Davo', context: defaultDavoContext, writeToolsEnabled: false }, multiInstance: { enabled: false } });
@@ -207,9 +206,9 @@ describe('adapter configuration', () => {
     await expect(validateConfig({ ...scratch, adapters: { codex: { program: 'codex' } } })).rejects.toThrow('absolute');
     await expect(validateConfig({ ...scratch, adapters: { codex: { program: process.execPath, extra: true } } })).rejects.toThrow(/[Uu]nrecognized/);
   });
-  it('treats an empty adapters block as observe-only and keeps the legacy default absent', async () => {
+  it('treats an empty or omitted adapters block as observe-only', async () => {
     expect((await validateConfig({ ...scratch, adapters: {} })).adapters).toEqual({});
-    expect((await validateConfig(scratch)).adapters).toBeUndefined();
+    expect((await validateConfig(scratch)).adapters).toEqual({});
   });
   it('accepts setup and teardown lifecycle commands and carries them onto the launch config', async () => {
     const lifecycle = { setup: 'rm -f .omx/state/session.json', teardown: 'rm -f .omx/state/session.json' };

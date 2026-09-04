@@ -115,7 +115,7 @@ describe('LaunchService', () => {
   it('marks home-launched agents as Scratch without replacing their tmux title', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
-    const service = new LaunchService({ newAgentCommand: 'codex', projects: [] } as never);
+    const service = new LaunchService(codex);
 
     await expect(service.launchHome()).resolves.toBe(true);
 
@@ -127,7 +127,7 @@ describe('LaunchService', () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
     // a project hostPath makes the account home distinct from the scratch directory
-    const config = { newAgentCommand: 'codex', scratchDirectory: '/srv/scratch', projects: [{ hostPath: '/host/home/code' }] };
+    const config = { adapters: { codex: { program: codexProgram, args: [], env: {}, launchable: true } }, scratchDirectory: '/srv/scratch', projects: [{ hostPath: '/host/home/code' }] };
     const service = new LaunchService(config as never);
 
     await expect(service.launchHome()).resolves.toBe(true);
@@ -186,7 +186,7 @@ describe('LaunchService', () => {
     delete process.env.RAC_CODEX_BIN;
     try {
       // no adapters.codex and no RAC_CODEX_BIN means the advisor's Codex binary is unresolved
-      const service = new LaunchService({ projects: [] } as never);
+      const service = new LaunchService({ adapters: {}, projects: [] } as never);
       await expect(service.launchUpdateAdvisor('/home/ubuntu/remoteagents', '2'.repeat(40))).resolves.toBe(false);
       expect(run).not.toHaveBeenCalled();
     } finally {

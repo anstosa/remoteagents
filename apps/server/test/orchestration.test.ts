@@ -14,7 +14,6 @@ const config: ValidatedConfig = {
   publicOrigin: new URL('https://agents.example.com'),
   trustedProxyIps: new Set(),
   pollIntervalMs: 500,
-  newAgentCommand: 'codex',
   projects: []
 };
 const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };

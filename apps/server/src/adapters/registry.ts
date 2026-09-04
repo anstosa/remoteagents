@@ -36,17 +36,15 @@ export function paneExcluded(pane: Pane): boolean {
 /**
  * The capability record the Dashboard publishes per registered kind (ADR 0002).
  * Every capability but launchability is intrinsic to the Adapter. Launchability is
- * config-gated: with an `adapters` block a kind is launchable only when its program
- * is configured and executable (`unavailableReason`/`program` carry the details).
- * The legacy configuration (no `adapters` block at all) keeps Codex launchable
- * through its per-worktree `command`, exactly as chunk 1 did.
+ * config-gated: a kind is launchable only when its program is configured and
+ * executable (`unavailableReason`/`program` carry the details); an observe-only
+ * console (empty `adapters`) recognises every kind and launches none.
  */
-export function adapterCapabilities(configs?: AdapterConfigs): Partial<Record<AgentKind, AdapterCapability>> {
-  const legacy = configs === undefined;
+export function adapterCapabilities(configs: AdapterConfigs): Partial<Record<AgentKind, AdapterCapability>> {
   return Object.fromEntries(adapters.map((adapter) => {
-    const configured = configs?.[adapter.kind];
+    const configured = configs[adapter.kind];
     return [adapter.kind, {
-      launchable: legacy ? true : (configured?.launchable ?? false),
+      launchable: configured?.launchable ?? false,
       ...(configured?.unavailableReason === undefined ? {} : { unavailableReason: configured.unavailableReason }),
       ...(configured?.program === undefined ? {} : { program: configured.program }),
       stateSource: adapter.stateSource,

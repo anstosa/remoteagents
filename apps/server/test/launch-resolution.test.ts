@@ -17,7 +17,6 @@ vi.mock('../src/adapters/registry.js', () => ({
 const { LaunchService } = await import('../src/launch/service.js');
 
 const twoKinds = (claudeLaunchable = true, defaultAgent?: 'codex' | 'claude') => ({
-  newAgentCommand: 'codex',
   ...(defaultAgent === undefined ? {} : { defaultAgent }),
   adapters: {
     codex: { program: '/bin/codex', args: [], env: {}, launchable: true },

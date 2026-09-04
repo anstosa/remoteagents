@@ -332,7 +332,7 @@ describe('DiscoveryService dashboard', () => {
 
     // reported 'question' wins over the title's inferred 'finished'
     expect(dashboard.agents[0]).toMatchObject({ kind: 'codex', attention: 'question', sandboxed: true, conversationId: 'abc-123' });
-    expect(dashboard.adapters).toMatchObject({ codex: { launchable: true, stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: true, commands: true, sandbox: false } });
+    expect(dashboard.adapters).toMatchObject({ codex: { launchable: false, stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: true, commands: true, sandbox: false } });
   });
 
   it('clears stale @rac_* only on a non-agent pane that still carries a report', async () => {

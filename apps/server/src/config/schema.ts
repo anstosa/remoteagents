@@ -33,7 +33,7 @@ const adapterUpdates = z.object({ current: command, latest: command, run: comman
 // aborts the launch on failure; `teardown` runs best-effort after the console stops an
 // agent of this kind, in the stopped agent's workspace.
 const adapterEntry = z.object({ program: adapterProgram, args: z.array(adapterArgument).max(64).optional(), env: z.record(adapterEnvName, adapterArgument).optional(), setup: command.optional(), teardown: command.optional(), updates: adapterUpdates.optional() }).strict();
-// keyed by kind, one strict entry each; an omitted block is the legacy configuration
+// keyed by kind, one strict entry each; an omitted block is observe-only (nothing launches)
 const adaptersSchema = z.object({ codex: adapterEntry.optional(), omx: adapterEntry.optional(), claude: adapterEntry.optional(), pi: adapterEntry.optional(), opencode: adapterEntry.optional() }).strict();
 // constrain icons to bundled artwork
 const instanceIcon = z.enum(instanceIconNames);
@@ -56,14 +56,13 @@ const sourceSchema = z.object({
   remoteServers: z.array(remoteServer).max(20).default([]),
   proxy: z.object({ trustedSourceIps: z.array(z.string()).default(['127.0.0.1', '::1']) }).strict().default({}),
   tmux: z.object({ pollIntervalMs: z.number().int().min(250).max(10000).default(500) }).strict().default({}),
-  newAgentCommand: command.default('codex'),
   defaultAgent: z.enum(agentKinds).optional(),
   // where a Scratch (home) agent launches. An absolute path; defaults to the launch
   // account home (`$HOME`, or the host account home derived under the Docker bridge).
   // The account home the shell exports stays independent of it (launch/service.ts
   // agentHome), so this only moves the working directory, not HOME.
   scratchDirectory: z.string().min(1).max(4096).startsWith('/', 'scratchDirectory must be an absolute path').refine(value => !value.includes('\0'), 'NUL is forbidden').optional(),
-  adapters: adaptersSchema.optional(),
+  adapters: adaptersSchema.default({}),
   integrations: integrationFeatures,
   // a repository the console manages; its checkouts are discovered from git, never
   // declared. `path` is any checkout (a bare repository included); `hostPath` maps the
@@ -76,9 +75,9 @@ export type ConfigInput = z.input<typeof sourceSchema>;
 export type RemoteServer = { url: URL };
 export type IntegrationConfig = z.output<typeof integrationFeatures>;
 export type DavoSettings = z.output<typeof davoSettingsSchema>;
-export type ValidatedConfig = { listen: { host: string; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; newAgentCommand: string; defaultAgent?: AgentKind; scratchDirectory?: string; adapters?: AdapterConfigs; integrations?: IntegrationConfig; projects: Project[] };
-// how validation surfaces non-fatal facts: `warn` collects boot warnings (ignored
-// legacy keys, non-executable programs); `checkExecutables` runs the boot X_OK probe
+export type ValidatedConfig = { listen: { host: string; port: number }; name: string; icon?: InstanceIcon; publicOrigin: URL; remoteServers: RemoteServer[]; trustedProxyIps: Set<string>; pollIntervalMs: number; defaultAgent?: AgentKind; scratchDirectory?: string; adapters: AdapterConfigs; integrations?: IntegrationConfig; projects: Project[] };
+// how validation surfaces non-fatal facts: `warn` collects boot warnings (non-executable
+// programs, a crossed OMX/Codex program); `checkExecutables` runs the boot X_OK probe
 // and is skipped under the host bridge, where `program` is a host path the container
 // cannot stat. Defaults: no-op warnings, probe on unless the host bridge is configured.
 export type ValidateConfigOptions = { warn?: (message: string) => void; checkExecutables?: boolean };
@@ -94,7 +93,7 @@ export function parseDavoSettings(value: unknown): DavoSettings | undefined {
 // the Codex binary the out-of-band services (review tour, accounts, update advisor)
 // spawn: an explicit RAC_CODEX_BIN override, else the configured adapters.codex program.
 export function resolveCodexProgram(config: Pick<ValidatedConfig, 'adapters'>, env: NodeJS.ProcessEnv = process.env): string | undefined {
-  return env.RAC_CODEX_BIN ?? config.adapters?.codex?.program;
+  return env.RAC_CODEX_BIN ?? config.adapters.codex?.program;
 }
 
 // require one canonical browser origin
@@ -234,11 +233,6 @@ function warnCrossedPrograms(parsed: ParsedAdapters, warn: (message: string) => 
   if (parsed.codex !== undefined && omxProgramName.test(basename(parsed.codex.program))) warn('adapters.codex.program looks like OMX; configure it under adapters.omx so it is recognised, badged and torn down as OMX');
   if (parsed.omx !== undefined && codexProgramName.test(basename(parsed.omx.program))) warn('adapters.omx.program looks like plain Codex; configure it under adapters.codex so it is recognised, badged and torn down as Codex');
 }
-// warn once per legacy agent key that `adapters.codex` overrides and the console now ignores
-function warnLegacyAgentKeys(input: unknown, warn: (message: string) => void): void {
-  const raw = input !== null && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {};
-  if (raw.newAgentCommand !== undefined) warn('adapters.codex is configured; ignoring legacy `newAgentCommand`');
-}
 // validate and canonicalize console configuration
 export async function validateConfig(input: unknown, options: ValidateConfigOptions = {}): Promise<ValidatedConfig> {
   refuseLegacyWorktrees(input);
@@ -246,10 +240,7 @@ export async function validateConfig(input: unknown, options: ValidateConfigOpti
   const warn = options.warn ?? (() => {});
   // the host bridge cannot stat host program paths from inside the container
   const checkExecutables = options.checkExecutables ?? process.env.RAC_HOST_TMUX_DIR === undefined;
-  const adapters = parsed.adapters === undefined ? undefined : await resolveAdapters(parsed.adapters, checkExecutables, warn);
-  // `adapters.codex` wins everywhere and retires the legacy agent keys
-  const adaptersLaunchCodex = adapters?.codex !== undefined;
-  if (adaptersLaunchCodex) warnLegacyAgentKeys(input, warn);
+  const adapters = await resolveAdapters(parsed.adapters, checkExecutables, warn);
   if (isIP(parsed.listen.host) === 0) throw new Error('listener host must be an IP address literal');
   if (wildcard.has(parsed.listen.host)) throw new Error('listener must bind to a specific address, not a wildcard');
   if (parsed.proxy.trustedSourceIps.some((ip) => !loopback.has(ip))) throw new Error('only loopback proxy sources are permitted');
@@ -273,5 +264,5 @@ export async function validateConfig(input: unknown, options: ValidateConfigOpti
     else { if (identities.has(project.identity)) throw new Error('duplicate project identity'); identities.add(project.identity); }
     projects.push(project);
   }
-  return { listen: { host: parsed.listen.host, port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, newAgentCommand: parsed.newAgentCommand, ...(parsed.defaultAgent === undefined ? {} : { defaultAgent: parsed.defaultAgent }), ...(parsed.scratchDirectory === undefined ? {} : { scratchDirectory: resolve(parsed.scratchDirectory) }), ...(adapters === undefined ? {} : { adapters }), integrations: parsed.integrations, projects };
+  return { listen: { host: parsed.listen.host, port: parsed.listen.port }, name: parsed.name, ...(parsed.icon === undefined ? {} : { icon: parsed.icon }), publicOrigin, remoteServers, trustedProxyIps: new Set(parsed.proxy.trustedSourceIps), pollIntervalMs: parsed.tmux.pollIntervalMs, ...(parsed.defaultAgent === undefined ? {} : { defaultAgent: parsed.defaultAgent }), ...(parsed.scratchDirectory === undefined ? {} : { scratchDirectory: resolve(parsed.scratchDirectory) }), adapters, integrations: parsed.integrations, projects };
 }

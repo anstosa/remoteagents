@@ -214,7 +214,7 @@ export interface Adapter {
 /** Trusted shell commands used to inspect and update one configured agent CLI. */
 export type AdapterUpdateCommands = { current: string; latest: string; run: string };
 export type AdapterLaunchConfig = { program: string; args: string[]; env: Record<string, string>; launchable: boolean; unavailableReason?: string; setup?: string; teardown?: string; updates?: AdapterUpdateCommands };
-/** The configured adapters, keyed by kind; absent entirely in the legacy (pre-`adapters`) configuration. */
+/** The configured adapters, keyed by kind; empty for an observe-only console. */
 export type AdapterConfigs = Partial<Record<AgentKind, AdapterLaunchConfig>>;
 
 /**
