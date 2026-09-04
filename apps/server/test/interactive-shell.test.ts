@@ -45,4 +45,32 @@ describe('interactive agent shell', () => {
     expect(bootstrap).toContain('PROMPT_COMMAND="__rac_start_agent${PROMPT_COMMAND:+;$PROMPT_COMMAND}"');
     expect(bootstrap).toContain("exec '/usr/local/bin/bash' --noprofile --rcfile");
   });
+
+  it('supports a configured fish shell, loading its config and starting the agent as a job', () => {
+    process.env.RAC_INTERACTIVE_SHELL = '/usr/bin/fish';
+
+    const command = "cd -- '/home/ubuntu/dave' && eval 'detach && new task-1'";
+    const bootstrap = interactiveShellBootstrap(command, '$HOME');
+
+    expect(interactiveShellPath()).toBe('/usr/bin/fish');
+    // fish loads its own config via `-i`; the hook rides along on `-C`
+    expect(bootstrap).toContain("exec '/usr/bin/fish' -i -C '");
+    expect(bootstrap).toContain('--on-event fish_prompt');
+    // the agent runs through the reader (real job control), not inside the event handler
+    expect(bootstrap).toContain('commandline -r -- __rac_run');
+    expect(bootstrap).toContain('commandline -f execute');
+    // the POSIX command travels in the environment and is unset before the agent inherits it
+    expect(bootstrap).toContain('cmd=$RAC_AGENT_COMMAND; unset RAC_AGENT_COMMAND; eval "$cmd"');
+    expect(bootstrap).toContain(`set -gx RAC_AGENT_COMMAND 'cd -- '\\''/home/ubuntu/dave'\\'' && eval '\\''detach && new task-1'\\'''`);
+    // no HOME override when home is the inherited `$HOME` sentinel
+    expect(bootstrap.startsWith('set -gx RAC_AGENT_COMMAND')).toBe(true);
+  });
+
+  it('sets the host home before fish loads the operator configuration', () => {
+    process.env.RAC_INTERACTIVE_SHELL = '/usr/bin/fish';
+
+    const bootstrap = interactiveShellBootstrap('codex', '/home/ubuntu');
+
+    expect(bootstrap.startsWith("set -gx HOME '/home/ubuntu'\n")).toBe(true);
+  });
 });

@@ -145,11 +145,13 @@ workspace for `teardown`.
 
 The program is launched from an interactive zsh shell by default. Set
 `RAC_INTERACTIVE_SHELL` for container or direct sessions and
-`RAC_HOST_INTERACTIVE_SHELL` for host-tmux sessions. Absolute zsh and bash paths
-are supported; each loads the operator's normal `.zshenv`/`.zshrc` or `.bashrc`
-before starting the agent. Set `RAC_HOST_PATH` to a complete PATH when host
-commands require executables outside the host shell's normal startup
-environment.
+`RAC_HOST_INTERACTIVE_SHELL` for host-tmux sessions. Absolute zsh, bash, and
+fish paths are supported; each loads the operator's normal configuration
+(`.zshenv`/`.zshrc`, `.bashrc`, or `config.fish`) before starting the agent. The
+agent command itself always runs as POSIX shell, so operator `setup`/`teardown`
+and `newTask` snippets stay in POSIX syntax regardless of the interactive shell.
+Set `RAC_HOST_PATH` to a complete PATH when host commands require executables
+outside the host shell's normal startup environment.
 
 When `adapters.codex` is configured it also becomes the Codex binary that
 container-local or direct review tours and ChatGPT account management use;

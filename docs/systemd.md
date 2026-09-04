@@ -43,10 +43,10 @@ RAC_TMUX_BIN=/home/user/.local/share/mise/installs/tmux/3.7b/tmux
 
 Sessions the console launches run inside an interactive shell so the
 operator's normal configuration is loaded before the agent starts. The shell
-defaults to `/usr/bin/zsh` and must be an absolute path to zsh or bash; other
-shells such as fish are not supported. If zsh is not installed, set
-`RAC_INTERACTIVE_SHELL` in `.env` or launches fail silently: the tmux session
-exits immediately and the API reports that Codex did not become ready.
+defaults to `/usr/bin/zsh` and must be an absolute path to zsh, bash, or fish.
+If zsh is not installed, set `RAC_INTERACTIVE_SHELL` in `.env` or launches fail
+silently: the tmux session exits immediately and the API reports that Codex did
+not become ready.
 
 ```bash
 RAC_INTERACTIVE_SHELL=/usr/bin/bash

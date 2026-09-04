@@ -148,9 +148,9 @@ assumptions:
 | `HOST_TMUX_DIR` | Host tmux socket directory | `$HOME/.local/state/tmux/tmux-$HOST_UID` |
 | `HOST_UID` | UID owning the host tmux server | `1000` |
 | `RAC_HOST_CODEX_BIN` | Host-visible Codex executable used by the update advisor | `adapters.codex.program` |
-| `RAC_HOST_INTERACTIVE_SHELL` | Absolute zsh or bash path executed by the host tmux server | `/usr/bin/zsh` |
+| `RAC_HOST_INTERACTIVE_SHELL` | Absolute zsh, bash, or fish path executed by the host tmux server | `/usr/bin/zsh` |
 | `RAC_HOST_PATH` | Complete PATH exported before host agent and stack commands | `/usr/local/bin:/usr/bin:/bin` |
-| `RAC_INTERACTIVE_SHELL` | Absolute zsh or bash path for container-managed sessions | `/usr/bin/zsh` |
+| `RAC_INTERACTIVE_SHELL` | Absolute zsh, bash, or fish path for container-managed sessions | `/usr/bin/zsh` |
 
 The mounted tmux client must run inside the container and speak the same
 protocol as the host server. On hosts whose tmux binary needs incompatible
