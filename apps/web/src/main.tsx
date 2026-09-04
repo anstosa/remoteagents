@@ -4260,7 +4260,13 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
         scheduleOverlayRender();
         setVisibleFrame(activeFrame);
         revealConnectedOutput(ws, renderedConnectionVersion);
-        requestAnimationFrame(() => { previousTerminal.reset(); syncScrollState(); });
+        // Clear the frame that just went hidden on the next paint. Several of
+        // these can queue while requestAnimationFrame is paused (a backgrounded
+        // window keeps swapping buffers through timer-based write callbacks); by
+        // the time they run the swap may have ping-ponged this terminal back to
+        // active, so never reset the one that is now visible or its content
+        // vanishes with no further frame to redraw it.
+        requestAnimationFrame(() => { if (previousTerminal !== terminal) previousTerminal.reset(); syncScrollState(); });
         if (snapshot !== renderedSnapshot) pendingRender = true;
         flushSelectedOutput();
       });
