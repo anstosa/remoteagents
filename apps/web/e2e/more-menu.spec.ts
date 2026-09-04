@@ -148,18 +148,12 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
   await expect.poll(async () => Math.abs((await attachMenuItem.boundingBox())!.y - stableItemBefore!.y)).toBeLessThanOrEqual(1);
   await expect(pullRequest).not.toContainText('Open');
   const pullRequestActions = pullRequest.locator('xpath=../..').locator('.switch-pr-actions');
-  const statusIcon = pullRequestActions.locator('.switch-pr-status-icon');
-  await expect(statusIcon).toHaveCSS('mask-image', /github-favicon\.svg/);
-  await expect(statusIcon).toHaveCSS('background-color', 'rgb(166, 227, 161)');
-  await expect(statusIcon).toHaveAttribute('title', 'Open pull request on GitHub');
   await expect(pullRequestActions.getByRole('img', { name: 'CI checks failed' })).toBeVisible();
   await expect(pullRequestActions.getByRole('img', { name: 'Merge conflicts' })).toBeVisible();
   await expect(pullRequestActions.getByRole('img', { name: 'Unresolved review comments' })).toBeVisible();
   await expect(pullRequest.locator('.switch-pr-copy strong')).toHaveCSS('color', 'rgb(166, 227, 161)');
   const draft = menu.getByRole('link', { name: '#2568: Prompt actions experiment', exact: true });
   await expect(draft).not.toContainText('Draft');
-  const draftIcon = draft.locator('xpath=../..').locator('.switch-pr-status-icon');
-  await expect(draftIcon).toHaveCSS('background-color', 'rgb(147, 153, 178)');
   await expect(draft.locator('.switch-pr-copy strong')).toHaveCSS('color', 'rgb(147, 153, 178)');
   const checkout = pullRequest.locator('xpath=../..').getByRole('button', { name: 'Checkout' });
   await expect(pullRequest).toHaveAttribute('href', 'https://github.example.com/pull/2567');
@@ -179,14 +173,11 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
   const positions = await page.locator('.switch-pr-option').first().evaluate(element => {
     const title = element.querySelector(':scope > .switch-pr-main')!.getBoundingClientRect();
     const actions = element.querySelector('.switch-pr-actions')!.getBoundingClientRect();
-    const statusIcon = element.querySelector('.switch-pr-status-icon')!.getBoundingClientRect();
-    const firstButton = element.querySelector('.switch-pr-action')!.getBoundingClientRect();
-    return { titleBottom: title.bottom, titleRight: title.right, actionsTop: actions.top, actionsLeft: actions.left, statusRight: statusIcon.right, firstButtonLeft: firstButton.left };
+    return { titleBottom: title.bottom, titleRight: title.right, actionsTop: actions.top, actionsLeft: actions.left };
   });
   // the actions sit inline to the right of the title, not stacked below it
   expect(positions.actionsLeft).toBeGreaterThanOrEqual(positions.titleRight - 1);
   expect(positions.actionsTop).toBeLessThan(positions.titleBottom);
-  expect(positions.firstButtonLeft).toBeGreaterThanOrEqual(positions.statusRight);
   const [github] = await Promise.all([page.waitForEvent('popup'), pullRequest.click()]);
   await expect(github).toHaveURL('https://github.example.com/pull/2567');
   await github.close();

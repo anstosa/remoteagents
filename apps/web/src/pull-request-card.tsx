@@ -10,8 +10,8 @@ type DisplayIssueName = Exclude<IssueName, 'failingChecks'>;
 const issueLabels: Record<IssueName, string> = { mergeConflicts: 'Merge conflicts', failingChecks: 'Failing checks', unresolvedComments: 'Unresolved review comments' };
 const checkLabels: Record<PullRequestCheckStatus, string> = { passed: 'CI checks passed', pending: 'CI checks running', failed: 'CI checks failed' };
 
-export function PullRequestStatusIcon({ status, className = '', label }: { status: PullRequestSummary['status']; className?: string; label?: string }) {
-  return <i className={`pull-request-status-icon status-${status}${className ? ` ${className}` : ''}`} {...(label === undefined ? { 'aria-hidden': true } : { role: 'img', 'aria-label': label, title: label })} />;
+export function PullRequestStatusIcon({ status, className = '' }: { status: PullRequestSummary['status']; className?: string }) {
+  return <i className={`pull-request-status-icon status-${status}${className ? ` ${className}` : ''}`} aria-hidden="true" />;
 }
 
 function CheckStatusIcon({ status }: { status: PullRequestCheckStatus }) {

@@ -1105,7 +1105,6 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .switch-pr-main { flex: 1 1 11rem; min-width: 0; }
 .more-menu .switch-pr-main > a.switch-pr { display: inline-block; max-width: 100%; min-width: 0; border-radius: var(--control-radius); color: var(--text); line-height: 1.25; overflow-wrap: anywhere; text-align: left; text-decoration: none; white-space: normal; }
 .more-menu .switch-pr-main > a.switch-pr:focus-visible { outline: 2px solid var(--sky); outline-offset: 2px; }
-.switch-pr-status-icon { flex: 0 0 1rem; width: 1rem; height: 1rem; }
 .switch-pr-copy { display: grid; min-width: 0; gap: .18rem; }
 .switch-pr-copy strong.status-draft { color: var(--overlay-2); }
 .switch-pr-copy strong.status-open { color: var(--green); }

@@ -12,7 +12,7 @@ import { preserveOutputLongPressSelection } from './output-touch.js';
 import { FlyoutPortal } from './flyout-portal.js';
 import { NoteMarkdown } from './note-markdown.js';
 import { ProjectOpen } from './project-open.js';
-import { PullRequestCard, PullRequestIndicators, PullRequestStatusIcon, type PullRequestSummary } from './pull-request-card.js';
+import { PullRequestCard, PullRequestIndicators, type PullRequestSummary } from './pull-request-card.js';
 import { isStackOperationLog, type StackAction, type StackOperationLog } from './stack-operations.js';
 import { SyntaxHighlightedCode } from './syntax-highlight.js';
 import { isPromptKeyboardTarget, useShiftArrowTabCycling } from './tab-navigation.js';
@@ -4530,7 +4530,7 @@ function SwitchPullRequestOption({ pullRequest, currentWorktreeId, enabled, load
     if (pullRequest.checkedOut) return void onMove(pullRequest.number);
     void onSwitch(pullRequest.number);
   };
-  return <div className="switch-pr-option"><div className="switch-pr-main"><a className="switch-pr" href={pullRequest.url} target="_blank" rel="noreferrer" title={`Open ${label} in GitHub`} aria-label={label}><span className="switch-pr-copy"><span><strong className={`status-${status}`}>#{pullRequest.number}</strong><span>: {pullRequest.title}</span></span></span></a></div><span className="switch-pr-actions"><PullRequestStatusIcon status={status} className="switch-pr-status-icon" label={`${status === 'draft' ? 'Draft' : 'Open'} pull request on GitHub`} /><PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} /><button className="switch-pr-action switch-pr-checkout outline-button" disabled={loading || refreshFailed || operationPending || !enabled || pullRequest.checkedOut && (openIn === undefined || checkedOutHere)} title={checkoutReason} onClick={checkout}>{movingPr === pullRequest.number ? <><span className="spinner" />Moving…</> : switchingPr === pullRequest.number ? <><span className="spinner" />Checking out…</> : 'Checkout'}</button></span>{pullRequest.checkedOut && <div className="switch-pr-owner"><SwitchOpenInLine openIn={openIn} here={checkedOutHere} operationPending={operationPending} onSelectTarget={onSelectTarget} /></div>}</div>;
+  return <div className="switch-pr-option"><div className="switch-pr-main"><a className="switch-pr" href={pullRequest.url} target="_blank" rel="noreferrer" title={`Open ${label} in GitHub`} aria-label={label}><span className="switch-pr-copy"><span><strong className={`status-${status}`}>#{pullRequest.number}</strong><span>: {pullRequest.title}</span></span></span></a></div><span className="switch-pr-actions"><PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} /><button className="switch-pr-action switch-pr-checkout outline-button" disabled={loading || refreshFailed || operationPending || !enabled || pullRequest.checkedOut && (openIn === undefined || checkedOutHere)} title={checkoutReason} onClick={checkout}>{movingPr === pullRequest.number ? <><span className="spinner" />Moving…</> : switchingPr === pullRequest.number ? <><span className="spinner" />Checking out…</> : 'Checkout'}</button></span>{pullRequest.checkedOut && <div className="switch-pr-owner"><SwitchOpenInLine openIn={openIn} here={checkedOutHere} operationPending={operationPending} onSelectTarget={onSelectTarget} /></div>}</div>;
 }
 
 // explain one unavailable branch switch target
