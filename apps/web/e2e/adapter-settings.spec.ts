@@ -1,8 +1,9 @@
 import { expect, test } from '@playwright/test';
 
 // stub a controlled console whose dashboard carries the given adapter capabilities
-async function openSettings(page: import('@playwright/test').Page, adapters: unknown, options: { defaultAgent?: string; davo?: { enabled: boolean; available: boolean; name: string; context: string }; onDefaultAgent?: (kind: string) => void; onDavo?: (settings: { enabled: boolean; name: string; context: string }) => void } = {}) {
+async function openSettings(page: import('@playwright/test').Page, adapters: unknown, options: { defaultAgent?: string; davo?: { enabled: boolean; available: boolean; name: string; context: string }; onDefaultAgent?: (kind: string) => void; onDavo?: (settings: { enabled: boolean; name: string; context: string }) => void; agentUpdates?: Array<{ kind: string; currentVersion?: string; latestVersion?: string; updateAvailable: boolean; error?: string }>; onAgentUpdate?: (kind: string) => { kind: string; currentVersion?: string; latestVersion?: string; updateAvailable: boolean; error?: string }; open?: boolean } = {}) {
   const davo = options.davo ?? { enabled: false, available: true, name: 'Davo', context: 'Existing Davo persona.' };
+  let agentUpdates = options.agentUpdates ?? [];
   await page.addInitScript(() => {
     class MockWebSocket {
       static readonly CONNECTING = 0;
@@ -28,6 +29,16 @@ async function openSettings(page: import('@playwright/test').Page, adapters: unk
       options.onDefaultAgent?.(payload.kind);
       return route.fulfill({ json: { defaultAgent: payload.kind } });
     }
+    // publish and mutate agent versions
+    if (url.pathname === '/api/agents/updates' && route.request().method() === 'GET') return route.fulfill({ json: { agents: agentUpdates } });
+    const agentUpdate = /^\/api\/agents\/([^/]+)\/update$/u.exec(url.pathname);
+    // execute one mocked update
+    if (agentUpdate !== null && route.request().method() === 'POST') {
+      const kind = decodeURIComponent(agentUpdate[1]!);
+      const updated = options.onAgentUpdate?.(kind) ?? { kind, currentVersion: '1.0.0', latestVersion: '1.0.0', updateAvailable: false };
+      agentUpdates = [...agentUpdates.filter(status => status.kind !== kind), updated];
+      return route.fulfill({ json: { agent: updated } });
+    }
     // persist one voice settings update
     if (url.pathname === '/api/server/davo' && route.request().method() === 'PATCH') {
       const payload = route.request().postDataJSON() as { enabled: boolean; name: string; context: string };
@@ -47,7 +58,8 @@ async function openSettings(page: import('@playwright/test').Page, adapters: unk
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
   await page.goto('/');
-  await page.getByRole('button', { name: 'Global settings' }).click();
+  // open settings unless the caller needs to inspect the aggregate indicator first
+  if (options.open !== false) await page.getByRole('button', { name: 'Global settings' }).click();
   return page.getByRole('dialog', { name: 'Settings' });
 }
 
@@ -111,6 +123,37 @@ test('changes the server default agent without closing settings', async ({ page 
   await expect(codex.locator('.client-settings-agent-star')).toHaveText('☆');
   await expect(settingsPage.getByRole('combobox', { name: 'Default agent' })).toHaveCount(0);
   await expect(settingsPage).toBeVisible();
+});
+
+test('shows agent versions, updates one agent, and aggregates availability on settings', async ({ page }) => {
+  const adapters = {
+    codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: false, commands: true, sandbox: false },
+    omx: { program: '/usr/local/bin/omx', launchable: true, stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: false, commands: true, sandbox: false }
+  };
+  const settingsPage = await openSettings(page, adapters, {
+    defaultAgent: 'omx',
+    open: false,
+    agentUpdates: [
+      { kind: 'codex', currentVersion: '0.152.1', latestVersion: '0.153.2', updateAvailable: true },
+      { kind: 'omx', currentVersion: '0.21.3', latestVersion: '0.21.3', updateAvailable: false }
+    ],
+    onAgentUpdate: kind => ({ kind, currentVersion: '0.153.2', latestVersion: '0.153.2', updateAvailable: false })
+  });
+  const trigger = page.getByRole('button', { name: /Global settings/u });
+  await expect(trigger.locator('.server-switcher-settings-update-dot')).toBeVisible();
+  await trigger.click();
+  await expect(settingsPage.getByRole('radio', { name: 'Codex' }).locator('.client-settings-agent-version')).toHaveText('v0.152.1 → v0.153.2');
+  await expect(settingsPage.getByRole('radio', { name: 'OMX' }).locator('.client-settings-agent-version')).toHaveText('v0.21.3');
+  await settingsPage.getByRole('button', { name: 'Update Codex to 0.153.2' }).click();
+  await expect(settingsPage.getByRole('radio', { name: 'Codex' }).locator('.client-settings-agent-version')).toHaveText('v0.153.2');
+  await expect(settingsPage.getByRole('button', { name: /Update Codex/u })).toHaveCount(0);
+  await expect(trigger.locator('.server-switcher-settings-update-dot')).toHaveCount(0);
+});
+
+test('reports agent version check failures', async ({ page }) => {
+  const adapters = { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: false, commands: true, sandbox: false } };
+  const settingsPage = await openSettings(page, adapters, { agentUpdates: [{ kind: 'codex', updateAvailable: false, error: 'Version check failed' }] });
+  await expect(settingsPage.getByRole('alert')).toHaveText('Version check failed');
 });
 
 test('enables Davo and saves a configurable name and context', async ({ page }) => {

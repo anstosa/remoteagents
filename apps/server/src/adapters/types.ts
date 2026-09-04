@@ -211,7 +211,9 @@ export interface Adapter {
  * `setup` runs in the launched pane before the program (a failure aborts the
  * launch); `teardown` runs best-effort in the agent's workspace after a stop.
  */
-export type AdapterLaunchConfig = { program: string; args: string[]; env: Record<string, string>; launchable: boolean; unavailableReason?: string; setup?: string; teardown?: string };
+/** Trusted shell commands used to inspect and update one configured agent CLI. */
+export type AdapterUpdateCommands = { current: string; latest: string; run: string };
+export type AdapterLaunchConfig = { program: string; args: string[]; env: Record<string, string>; launchable: boolean; unavailableReason?: string; setup?: string; teardown?: string; updates?: AdapterUpdateCommands };
 /** The configured adapters, keyed by kind; absent entirely in the legacy (pre-`adapters`) configuration. */
 export type AdapterConfigs = Partial<Record<AgentKind, AdapterLaunchConfig>>;
 

@@ -8,7 +8,25 @@
   "scratchDirectory": "/home/me",
   "defaultAgent": "codex",
   "adapters": {
-    "codex": { "program": "/usr/local/bin/codex" }
+    "codex": {
+      "program": "/usr/local/bin/codex",
+      "args": ["-c", "check_for_update_on_startup=false"],
+      "updates": {
+        "current": "/usr/local/bin/codex --version | awk '{print $2}'",
+        "latest": "npm view @openai/codex version",
+        "run": "/usr/local/bin/codex update"
+      }
+    },
+    "omx": {
+      "program": "/usr/local/bin/omx",
+      "args": ["-c", "check_for_update_on_startup=false"],
+      "env": { "OMX_AUTO_UPDATE": "0" },
+      "updates": {
+        "current": "/usr/local/bin/omx version | sed -n '1s/^oh-my-codex v//p'",
+        "latest": "npm view oh-my-codex version",
+        "run": "/usr/local/bin/omx update --stable"
+      }
+    }
   },
   "projects": [
     {

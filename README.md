@@ -108,7 +108,8 @@ each launch as `[program, …adapter.launch(input).args, …operator args]` with
 operator's environment and runs it through the operator's interactive shell. An
 entry may also carry `setup`/`teardown` lifecycle commands, run before each
 launch (aborting it on failure) and best-effort after each console-driven
-stop. See
+stop, plus `updates` commands that move version checks and explicit upgrades
+into Global settings. See
 [ADR 0002](docs/adr/0002-adapters-describe-the-console-acts.md) for why adapters
 describe and the console acts; the [`docs/adr/`](docs/adr) directory records the
 other architecture decisions.
@@ -215,8 +216,25 @@ deployment can run plain Codex in some worktrees and OMX in others.
     { "url": "https://other-agents.example.com" }
   ],
   "adapters": {
-    "codex": { "program": "/usr/local/bin/codex" },
-    "omx": { "program": "/absolute/path/to/omx" }
+    "codex": {
+      "program": "/usr/local/bin/codex",
+      "args": ["-c", "check_for_update_on_startup=false"],
+      "updates": {
+        "current": "/usr/local/bin/codex --version | awk '{print $2}'",
+        "latest": "npm view @openai/codex version",
+        "run": "/usr/local/bin/codex update"
+      }
+    },
+    "omx": {
+      "program": "/absolute/path/to/omx",
+      "args": ["-c", "check_for_update_on_startup=false"],
+      "env": { "OMX_AUTO_UPDATE": "0" },
+      "updates": {
+        "current": "/absolute/path/to/omx version | sed -n '1s/^oh-my-codex v//p'",
+        "latest": "npm view oh-my-codex version",
+        "run": "/absolute/path/to/omx update --stable"
+      }
+    }
   },
   "projects": [
     {

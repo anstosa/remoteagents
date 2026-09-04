@@ -629,6 +629,7 @@ const ServerStatusContext = createContext<Readonly<Record<string, InstanceAttent
 const VoiceTriggerContext = createContext<{ open: () => void; active: boolean; visible: boolean; name: string } | undefined>(undefined);
 type ServerUpdateState = 'queued' | 'running' | 'complete' | 'failed';
 type ServerUpdateAvailability = { available: boolean };
+type AgentUpdateStatus = { kind: AgentKind; currentVersion?: string; latestVersion?: string; updateAvailable: boolean; error?: string };
 type ServerUpdateCommit = { sha: string; subject: string; author: string; authoredAt: string };
 type ServerUpdateAdvisoryReason = { kind: 'config' | 'compose' | 'runtime' | 'dependency' | 'state' | 'other'; paths: string[] };
 type ServerUpdatePreview = { available: boolean; rebuildRetryAvailable: boolean; baseSha: string; targetSha: string; fastForwardable: boolean; commitCount: number; commits: ServerUpdateCommit[]; commitsTruncated: boolean; filesTruncated: boolean; advisory: { required: boolean; reasons: ServerUpdateAdvisoryReason[] } };
@@ -641,6 +642,8 @@ type ClientSettings = {
   renameClient: (name: string) => Promise<string | undefined>;
   renameServer: (name: string) => Promise<string | undefined>;
   setDefaultAgent: (kind: AgentKind) => Promise<string | undefined>;
+  agentUpdates: () => Promise<{ agents?: AgentUpdateStatus[]; error?: string }>;
+  updateAgent: (kind: AgentKind) => Promise<{ agent?: AgentUpdateStatus; error?: string }>;
   updateDavo: (settings: Pick<DavoSettings, 'enabled' | 'name' | 'context'>) => Promise<string | undefined>;
   codexAccounts: () => Promise<{ accounts?: CodexAccount[]; error?: string }>;
   switchCodexAccount: (id: string) => Promise<{ account?: CodexAccount; restarts?: CodexAccountRestart[]; error?: string }>;
@@ -653,6 +656,14 @@ const ClientSettingsContext = createContext<ClientSettings | undefined>(undefine
 const legacyDavoSettings: DavoSettings = { enabled: true, available: true, name: 'Davo', context: '' };
 // validate one agent kind returned by the settings API
 const isAgentKind = (value: unknown): value is AgentKind => (agentKinds as readonly unknown[]).includes(value);
+// validate one configured agent update status
+const isAgentUpdateStatus = (value: unknown): value is AgentUpdateStatus => value !== null
+  && typeof value === 'object'
+  && isAgentKind((value as AgentUpdateStatus).kind)
+  && ((value as AgentUpdateStatus).currentVersion === undefined || typeof (value as AgentUpdateStatus).currentVersion === 'string')
+  && ((value as AgentUpdateStatus).latestVersion === undefined || typeof (value as AgentUpdateStatus).latestVersion === 'string')
+  && typeof (value as AgentUpdateStatus).updateAvailable === 'boolean'
+  && ((value as AgentUpdateStatus).error === undefined || typeof (value as AgentUpdateStatus).error === 'string');
 // validate one public voice settings response
 const isDavoSettings = (value: unknown): value is DavoSettings => value !== null
   && typeof value === 'object'
@@ -1141,6 +1152,9 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const [error, setError] = useState('');
   const [defaultAgentPending, setDefaultAgentPending] = useState(false);
   const [defaultAgentError, setDefaultAgentError] = useState('');
+  const [agentUpdateStatuses, setAgentUpdateStatuses] = useState<AgentUpdateStatus[]>([]);
+  const [updatingAgent, setUpdatingAgent] = useState<AgentKind>();
+  const [agentUpdateError, setAgentUpdateError] = useState('');
   const [davoEnabled, setDavoEnabled] = useState(settings.davo.enabled);
   const [davoDraft, setDavoDraft] = useState(() => ({ name: settings.davo.name, context: settings.davo.context }));
   const [davoPending, setDavoPending] = useState(false);
@@ -1159,6 +1173,26 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const accountLoginRequest = useRef(0);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
+  // keep the aggregate settings indicator current while the console is open
+  useEffect(() => {
+    let active = true;
+    // refresh the cached server-side comparisons
+    const refresh = async () => {
+      const result = await settings.agentUpdates();
+      // ignore responses after unmount
+      if (!active) return;
+      // retain the last good snapshot after request failure
+      if (result.agents === undefined) {
+        setAgentUpdateError(result.error ?? 'Unable to check agent versions.');
+        return;
+      }
+      setAgentUpdateStatuses(result.agents);
+      setAgentUpdateError(result.agents.find(status => status.error !== undefined)?.error ?? '');
+    };
+    void refresh();
+    const interval = window.setInterval(() => { void refresh(); }, 15 * 60_000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, [settings]);
   // move focus into the page and restore the trigger on close
   useEffect(() => {
     // skip focus work while the page is closed
@@ -1223,6 +1257,23 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     const restarted = result.restarts?.filter(item => item.status === 'restarted').length ?? 0;
     const failed = result.restarts?.filter(item => item.status === 'failed').length ?? 0;
     setAccountMessage(`Switched to ${codexAccountEmail(account)}. Restarted ${restarted} idle ${restarted === 1 ? 'worktree' : 'worktrees'}${failed === 0 ? '.' : `; ${failed} failed.`}`);
+  };
+  // run one configured agent update without closing settings
+  const updateAgent = async (kind: AgentKind) => {
+    // ignore duplicate update clicks
+    if (updatingAgent !== undefined) return;
+    setUpdatingAgent(kind);
+    setAgentUpdateError('');
+    const result = await settings.updateAgent(kind);
+    setUpdatingAgent(undefined);
+    // retain the available update after failure
+    if (result.agent === undefined) {
+      setAgentUpdateError(result.error ?? 'Unable to update the agent.');
+      return;
+    }
+    const updated = result.agent;
+    setAgentUpdateStatuses(current => [...current.filter(status => status.kind !== kind), updated]);
+    setAgentUpdateError(updated.error ?? '');
   };
   // redeem one available reset credit
   const useAccountReset = async (account: CodexAccount) => {
@@ -1424,7 +1475,19 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     return <div key={account.id} className="chatgpt-account-option"><button className="chatgpt-account-select" type="button" role="radio" aria-checked={account.active} disabled={account.active || busy} onClick={() => void switchAccount(account)}><span className="chatgpt-account-check" aria-hidden="true">{switchingAccountId === account.id ? <span className="spinner" /> : account.active ? '✓' : ''}</span><span className="chatgpt-account-copy"><strong>{email}{inlinePlan}</strong>{details.map((window, index) => <CodexLimitUsage key={`${account.id}:${index}`} window={window} now={accountClock} />)}{account.resetCount !== undefined && account.resetCount > 0 && <small>{account.resetCount} {account.resetCount === 1 ? 'reset' : 'resets'} available</small>}{account.error !== undefined && <small className="chatgpt-account-error">{account.error}</small>}</span></button>{atLimit && account.resetCount !== undefined && account.resetCount > 0 && <button className="chatgpt-account-reset" type="button" aria-label={`Use reset for ${email}`} disabled={busy} onClick={() => void useAccountReset(account)}>{resettingAccountId === account.id ? <><span className="spinner" />Using reset…</> : 'Use reset'}</button>}{account.error !== undefined && <button className="chatgpt-account-relogin" type="button" aria-label={`Re-login to ${email}`} disabled={busy} onClick={() => void beginAccountLogin(account)}>Re-login</button>}</div>;
   });
   // let each configured agent select the server-wide launch fallback
-  const agentsSetting = configuredAdapters.length === 0 ? null : <div className="client-settings-setting client-settings-agents" role="radiogroup" aria-label="Agents"><header><small>AGENTS</small>{defaultAgentPending && <span className="spinner" role="status" aria-label="Saving default agent" />}</header><div className="client-settings-agent-list">{configuredAdapters.map(([kind, capability]) => { const selected = kind === settings.defaultAgent; let availability = capability.unavailableReason ?? 'Unavailable'; /* label launchable agents by default state */ if (capability.launchable) availability = selected ? 'Default' : 'Available'; return <button key={kind} type="button" className={`client-settings-agent${selected ? ' selected' : ''}${capability.launchable ? '' : ' unavailable'}`} role="radio" aria-checked={selected} aria-label={agentKindLabel[kind]} disabled={selected || !capability.launchable || defaultAgentPending} onClick={() => void selectDefaultAgent(kind)}><span className="client-settings-agent-star" aria-hidden="true">{selected ? '★' : '☆'}</span><span className="client-settings-agent-glyph" aria-hidden="true">{agentKindGlyph[kind]}</span><span className="client-settings-agent-copy"><strong>{agentKindLabel[kind]}</strong><span className="client-settings-agent-availability">{availability}</span><span className="client-settings-agent-program">{capability.program}</span></span></button>; })}</div>{defaultAgentError && <span className="client-settings-agent-error" role="alert">{defaultAgentError}</span>}</div>;
+  const agentsSetting = configuredAdapters.length === 0 ? null : <div className="client-settings-setting client-settings-agents" role="radiogroup" aria-label="Agents"><header><small>AGENTS</small>{defaultAgentPending && <span className="spinner" role="status" aria-label="Saving default agent" />}</header><div className="client-settings-agent-list">{configuredAdapters.map(([kind, capability]) => {
+    const selected = kind === settings.defaultAgent;
+    const updateStatus = agentUpdateStatuses.find(status => status.kind === kind);
+    const version = updateStatus?.currentVersion;
+    const currentVersionLabel = version === undefined ? undefined : version.startsWith('v') ? version : `v${version}`;
+    const latest = updateStatus?.latestVersion;
+    const latestVersionLabel = latest === undefined ? undefined : latest.startsWith('v') ? latest : `v${latest}`;
+    const versionLabel = updateStatus?.updateAvailable && currentVersionLabel !== undefined && latestVersionLabel !== undefined ? `${currentVersionLabel} → ${latestVersionLabel}` : currentVersionLabel;
+    let availability = capability.unavailableReason ?? 'Unavailable';
+    // label launchable agents by default state
+    if (capability.launchable) availability = selected ? 'Default' : 'Available';
+    return <div className="client-settings-agent-row" key={kind}><button type="button" className={`client-settings-agent${selected ? ' selected' : ''}${capability.launchable ? '' : ' unavailable'}`} role="radio" aria-checked={selected} aria-label={agentKindLabel[kind]} disabled={selected || !capability.launchable || defaultAgentPending} onClick={() => void selectDefaultAgent(kind)}><span className="client-settings-agent-star" aria-hidden="true">{selected ? '★' : '☆'}</span><span className="client-settings-agent-glyph" aria-hidden="true">{agentKindGlyph[kind]}</span><span className="client-settings-agent-copy"><strong>{agentKindLabel[kind]}{versionLabel !== undefined && <span className="client-settings-agent-version">{versionLabel}</span>}</strong><span className="client-settings-agent-availability">{availability}</span><span className="client-settings-agent-program">{capability.program}</span></span></button>{updateStatus?.updateAvailable && <button className="client-settings-agent-update" type="button" aria-label={`Update ${agentKindLabel[kind]} to ${updateStatus.latestVersion ?? 'latest'}`} disabled={updatingAgent !== undefined} onClick={() => void updateAgent(kind)}>{updatingAgent === kind ? <><span className="spinner" />Updating…</> : 'Update'}</button>}</div>;
+  })}</div>{(defaultAgentError || agentUpdateError) && <span className="client-settings-agent-error" role="alert">{defaultAgentError || agentUpdateError}</span>}</div>;
   // keep the preview and reserved controls in one stable row
   const terminalFontSetting = <div className="client-settings-setting client-settings-terminal-font" role="group" aria-label="Terminal font"><header><small>TERMINAL FONT</small></header><div className="client-settings-terminal-control"><span className="client-settings-terminal-preview" aria-label="Terminal font preview" style={{ fontSize: `${terminalFontSize}px` }}>Aa ~/agent $</span><div className="client-settings-stepper"><button className={`client-settings-font-reset${terminalFontIsDefault ? ' reserved' : ''}`} type="button" aria-label="Reset terminal font" aria-hidden={terminalFontIsDefault} tabIndex={terminalFontIsDefault ? -1 : undefined} disabled={terminalFontIsDefault} onClick={() => resetTerminalFontSize()}>Reset</button><button type="button" aria-label="Smaller terminal font" disabled={terminalFontSize <= minTerminalFontSize} onClick={() => stepTerminalFontSize(-1)}>−</button><strong aria-live="polite">{terminalFontSize}px</strong><button type="button" aria-label="Larger terminal font" disabled={terminalFontSize >= maxTerminalFontSize} onClick={() => stepTerminalFontSize(1)}>+</button></div></div></div>;
   // switch the persisted browser theme
@@ -1482,7 +1545,8 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     setOpen(current => !current);
     setError('');
   };
-  return <span className="server-switcher-settings-wrap"><button ref={triggerRef} type="button" className="server-switcher-button server-switcher-settings" aria-label="Global settings" aria-haspopup="dialog" aria-controls="global-settings-page" aria-expanded={open} onClick={toggleSettings}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63a1.7 1.7 0 0 0 1-1.55V3h4v.08A1.7 1.7 0 0 0 15 4.63a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9a1.7 1.7 0 0 0 1.55 1H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z" /></svg></button>{settingsPage}{renameDialog}{accountLoginDialog}</span>;
+  const updatesAvailable = agentUpdateStatuses.some(status => status.updateAvailable);
+  return <span className="server-switcher-settings-wrap"><button ref={triggerRef} type="button" className="server-switcher-button server-switcher-settings" aria-label={updatesAvailable ? 'Global settings — agent updates available' : 'Global settings'} aria-haspopup="dialog" aria-controls="global-settings-page" aria-expanded={open} onClick={toggleSettings}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63a1.7 1.7 0 0 0 1-1.55V3h4v.08A1.7 1.7 0 0 0 15 4.63a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9a1.7 1.7 0 0 0 1.55 1H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z" /></svg>{updatesAvailable && <span className="server-switcher-settings-update-dot" aria-hidden="true" />}</button>{settingsPage}{renameDialog}{accountLoginDialog}</span>;
 }
 
 // render native links for remote server handoff
@@ -6045,6 +6109,26 @@ function App() {
     setSessionInfo(current => current === undefined ? current : { ...current, defaultAgent });
     return undefined;
   }, []);
+  // load configured agent version comparisons
+  const agentUpdates = useCallback(async (): Promise<{ agents?: AgentUpdateStatus[]; error?: string }> => {
+    const response = await request('/api/agents/updates');
+    const payload = await response.json().catch(() => undefined) as { agents?: unknown; error?: unknown } | undefined;
+    // surface request failures without discarding prior UI state
+    if (!response.ok) return { error: typeof payload?.error === 'string' ? payload.error : 'Unable to check agent versions.' };
+    // require a complete typed status list
+    if (!Array.isArray(payload?.agents) || !payload.agents.every(isAgentUpdateStatus)) return { error: 'Unable to check agent versions.' };
+    return { agents: payload.agents };
+  }, []);
+  // execute one configured agent update
+  const updateAgent = useCallback(async (kind: AgentKind): Promise<{ agent?: AgentUpdateStatus; error?: string }> => {
+    const response = await request(`/api/agents/${encodeURIComponent(kind)}/update`, { method: 'POST' });
+    const payload = await response.json().catch(() => undefined) as { agent?: unknown; error?: unknown } | undefined;
+    // surface command and concurrency failures
+    if (!response.ok) return { error: typeof payload?.error === 'string' ? payload.error : 'Unable to update the agent.' };
+    // require the refreshed version comparison
+    if (!isAgentUpdateStatus(payload?.agent)) return { error: 'Unable to update the agent.' };
+    return { agent: payload.agent };
+  }, []);
   // persist the server-wide voice identity and feature gate
   const updateDavo = useCallback(async (settings: Pick<DavoSettings, 'enabled' | 'name' | 'context'>): Promise<string | undefined> => {
     const response = await request('/api/server/davo', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings) });
@@ -6334,7 +6418,7 @@ function App() {
           ? <ControlScreen session={sessionInfo} claimed={applySession} />
           : <Login initialError={error} done={applySession} />;
   // expose settings without a manual server update bypass
-  const clientSettings = useMemo<ClientSettings | undefined>(() => state === 'ready' && sessionInfo?.deviceName !== undefined ? { deviceName: sessionInfo.deviceName, serverName: serverInfo.name, serverUrl: serverInfo.url, defaultAgent: sessionInfo.defaultAgent, davo: sessionInfo.davo ?? legacyDavoSettings, renameClient, renameServer, setDefaultAgent, updateDavo, codexAccounts, switchCodexAccount, resetCodexAccount, startCodexAccountLogin, codexAccountLoginStatus, cancelCodexAccountLogin } : undefined, [cancelCodexAccountLogin, codexAccountLoginStatus, codexAccounts, renameClient, renameServer, resetCodexAccount, serverInfo.name, serverInfo.url, sessionInfo?.davo, sessionInfo?.defaultAgent, sessionInfo?.deviceName, setDefaultAgent, startCodexAccountLogin, state, switchCodexAccount, updateDavo]);
+  const clientSettings = useMemo<ClientSettings | undefined>(() => state === 'ready' && sessionInfo?.deviceName !== undefined ? { deviceName: sessionInfo.deviceName, serverName: serverInfo.name, serverUrl: serverInfo.url, defaultAgent: sessionInfo.defaultAgent, davo: sessionInfo.davo ?? legacyDavoSettings, renameClient, renameServer, setDefaultAgent, agentUpdates, updateAgent, updateDavo, codexAccounts, switchCodexAccount, resetCodexAccount, startCodexAccountLogin, codexAccountLoginStatus, cancelCodexAccountLogin } : undefined, [agentUpdates, cancelCodexAccountLogin, codexAccountLoginStatus, codexAccounts, renameClient, renameServer, resetCodexAccount, serverInfo.name, serverInfo.url, sessionInfo?.davo, sessionInfo?.defaultAgent, sessionInfo?.deviceName, setDefaultAgent, startCodexAccountLogin, state, switchCodexAccount, updateAgent, updateDavo]);
   return <ServerContext.Provider value={serverInfo}><ServerStatusContext.Provider value={serverStatuses}><ClientSettingsContext.Provider value={clientSettings}>{screen}<ServerUpdateDialog open={serverUpdateOpen} minimized={serverUpdateMinimized} onMinimize={minimizeServerUpdate} onClose={closeServerUpdate} />{reconnecting && <ReconnectingOverlay />}</ClientSettingsContext.Provider></ServerStatusContext.Provider></ServerContext.Provider>;
 }
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');

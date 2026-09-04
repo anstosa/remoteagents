@@ -219,6 +219,13 @@ describe('adapter configuration', () => {
     await expect(validateConfig({ ...scratch, adapters: { codex: { program: process.execPath, setup: 'rm\0-f' } } })).rejects.toThrow('NUL');
     await expect(validateConfig({ ...scratch, adapters: { codex: { program: process.execPath, teardown: 'x'.repeat(32_001) } } })).rejects.toThrow();
   });
+  it('accepts a complete agent update command contract and rejects partial or unknown fields', async () => {
+    const updates = { current: 'codex --version', latest: 'npm view @openai/codex version', run: 'codex update' };
+    const config = await validateConfig({ ...scratch, adapters: { codex: { program: process.execPath, updates } } });
+    expect(config.adapters?.codex?.updates).toEqual(updates);
+    await expect(validateConfig({ ...scratch, adapters: { codex: { program: process.execPath, updates: { current: 'codex --version', latest: 'latest' } } } })).rejects.toThrow();
+    await expect(validateConfig({ ...scratch, adapters: { codex: { program: process.execPath, updates: { ...updates, extra: 'no' } } } })).rejects.toThrow(/[Uu]nrecognized/);
+  });
 });
 
 describe('claude adapter configuration', () => {

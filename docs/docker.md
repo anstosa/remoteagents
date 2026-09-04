@@ -159,7 +159,10 @@ runtime provides project ports through another stable name.
 Use **Global settings → Add account** after startup. The named `codex-home`
 volume preserves container-local account files between rebuilds. Host-tmux
 deployments should use the complete host Codex-home bind from the override so
-host and console launches select the same account.
+host and console launches select the same account. Keep `RAC_CODEX_BIN` pointed
+at the Codex executable inside the container, as shown in
+`compose.override.example.yaml`, when adapter launch commands use host-only
+wrapper paths.
 
 ## Operations
 

@@ -58,7 +58,7 @@ global:
 }
 ```
 
-Each entry is `{ program, args?, env?, setup?, teardown? }`. `program` must be an
+Each entry is `{ program, args?, env?, setup?, teardown?, updates? }`. `program` must be an
 **absolute path to a real executable** (not a version-manager shim that needs a
 shell); `args` (≤64) and `env` (names `^[A-Za-z_][A-Za-z0-9_]*$`) are the
 operator's additions. Values are never shell-expanded — the console shell-quotes
@@ -80,6 +80,20 @@ never blocks the stop. Unlike `setup`, `teardown` runs through the tmux server's
 `sh` with the server's environment, not your login shell, so it does not see
 profile-only `PATH` entries — keep it to absolute paths and plain commands. On
 Restart both fire, so make the commands idempotent.
+
+`updates` is an optional all-or-nothing object with three trusted shell commands:
+`current` prints the installed version, `latest` prints the newest upstream
+version, and `run` performs the update. The first non-empty output line from each
+version command is compared exactly. Global settings shows the installed version
+beside the agent, offers **Update** when the two values differ, and aggregates any
+available agent update into a purple dot on the settings gear. Checks are cached
+for 15 minutes; failed checks do not expose shell output to the browser.
+
+Use adapter launch settings to disable each CLI's own startup updater once this
+surface is configured. Codex accepts
+`"args": ["-c", "check_for_update_on_startup=false"]`; OMX should receive the
+same Codex argument plus `"env": { "OMX_AUTO_UPDATE": "0" }`. The explicit
+`updates.run` command remains available even though launch-time checks are off.
 
 ### OMX
 
