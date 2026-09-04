@@ -507,6 +507,25 @@ describe('LaunchService', () => {
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['new-session', '-d', '-s', 'owen', '-c', '/home/ubuntu/owen']));
   });
 
+  // keep modal shells outside worktree launches
+  it('does not reuse a labeled update-advisor shell for a worktree launch', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const worktree = cora({ id: 'remoteagents', label: 'Remote Agents', path: '/workspace', hostPath: '/home/ubuntu/remoteagents' });
+    const panes = {
+      listPanes: vi.fn().mockResolvedValue([{ paneId: '%4', sessionId: '$1', sessionName: 'rac-advisor', pid: 123, path: worktree.hostPath, command: 'zsh', title: '', displayLabel: 'Update Advisor Starting v4 abc1234', socket }]),
+      pastePrompt: vi.fn(),
+      enter: vi.fn()
+    };
+    // expose the configured worktree
+    const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree]);
+
+    await expect(service.resume(worktree.id)).resolves.toBe(true);
+
+    expect(panes.pastePrompt).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['new-session', '-d', '-s', 'remoteagents', '-c', '/home/ubuntu/remoteagents']));
+  });
+
   it('composes [program, …adapter args, …operator args] with the merged env as a shell-quoted prefix', () => {
     // program and args quoted only when unsafe; adapter args precede operator args
     expect(composeLaunch('/usr/local/bin/codex', ['resume', '--last'], ['--model', 'o3'])).toBe('/usr/local/bin/codex resume --last --model o3');

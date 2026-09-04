@@ -178,11 +178,14 @@ export class LaunchService {
     const hostPath = project?.hostPath;
     return hostPath === undefined ? process.env.HOME ?? '/' : dirname(hostPath);
   }
+  // find one unlabeled worktree shell that no modal or scratch flow owns
   private async existingPane(worktree: Worktree): Promise<{ socket: SocketRef; pane: Pane } | undefined> {
     const sockets = await this.finder.find();
     // list every socket concurrently; the first match in discovery order still wins
     const listed = await Promise.all(sockets.map(async socket => ({ socket, panes: await this.panes.listPanes(socket) })));
     for (const { socket, panes } of listed) for (const pane of panes) {
+      // preserve labeled scratch and modal panes
+      if (pane.displayLabel !== undefined) continue;
       if (pane.sessionName?.startsWith('rac-stack-')) continue;
       if (pane.command !== this.hostShellName) continue;
       // reuse a shell only when its git toplevel is exactly this worktree, never a
