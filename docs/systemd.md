@@ -7,7 +7,7 @@ credentials, and worktrees without container bind mounts or host-path aliases.
 ## Prerequisites
 
 Install Node.js 22 or newer, pnpm, tmux, Codex, and the C/C++ toolchain needed
-by `node-pty`. Then install and build the application:
+by the native `argon2` dependency. Then install and build the application:
 
 ```bash
 pnpm install --frozen-lockfile

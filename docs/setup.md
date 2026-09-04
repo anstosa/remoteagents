@@ -6,7 +6,7 @@ This is a **single trusted operator** console: terminal and prompt access execut
 
 ## Prerequisites
 
-Linux with `/proc`, tmux, Node 22+ (Node 24 is supported), pnpm, a C/C++ build toolchain for `node-pty`, and an existing agent CLI (Codex by default). Configure each CLI the console launches under [`adapters`](#adapters).
+Linux with `/proc`, tmux, Node 22+ (Node 24 is supported), pnpm, a C/C++ build toolchain for the native `argon2` dependency, and an existing agent CLI (Codex by default). Configure each CLI the console launches under [`adapters`](#adapters).
 
 ```bash
 pnpm install

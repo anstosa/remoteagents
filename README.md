@@ -120,7 +120,7 @@ other architecture decisions.
 - Node.js 22+ and pnpm
 - tmux
 - An installed and authenticated Codex CLI
-- A C/C++ build toolchain for `node-pty` when running outside Docker
+- A C/C++ build toolchain for the native `argon2` dependency when running outside Docker
 - An HTTPS reverse proxy or tunnel for access beyond the local machine
 
 Docker Compose is the recommended deployment because it packages Node, Codex,
