@@ -620,3 +620,183 @@ test('shows the GitHub error instead of an empty pull request state', async ({ p
   await expect(menu.getByRole('alert', { name: 'GitHub could not load pull requests (503): temporary outage.' })).toBeVisible();
   await expect(menu.getByRole('status', { name: 'No open pull requests.' })).toHaveCount(0);
 });
+
+// check out an open-nowhere local branch, and refuse one detached in an unknown worktree
+test('checks out a local branch from the Branches section', async ({ page }) => {
+  let checkedOut: unknown;
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready' }], projects: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
+    // one switchable branch and one checked out in an unresolved worktree
+    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [], otherPullRequests: [], pullRequestsSupported: true, branches: [
+      { branch: 'feature/solo', checkedOut: false },
+      { branch: 'feature/detached', checkedOut: true }
+    ] } });
+    // record the branch checkout
+    if (url.pathname === '/api/agents/agent-1/switch-branch' && request.method() === 'POST') { checkedOut = request.postDataJSON(); return route.fulfill({ status: 202 }); }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'More options' }).click();
+  const menu = page.locator('.more-menu');
+  await expect(menu.getByRole('button', { name: 'Branches', exact: true })).toBeVisible();
+  const solo = menu.locator('.switch-branch-option', { hasText: 'feature/solo' });
+  await expect(solo.locator('.switch-branch-name')).toHaveText('feature/solo');
+  const detached = menu.locator('.switch-branch-option', { hasText: 'feature/detached' }).getByRole('button', { name: 'Checkout' });
+  await expect(detached).toBeDisabled();
+  await expect(detached).toHaveAttribute('title', 'Already open in another worktree');
+  await solo.getByRole('button', { name: 'Checkout' }).click();
+  await expect.poll(() => checkedOut).toEqual({ branch: 'feature/solo' });
+  await expect(menu).toBeHidden();
+});
+
+// move a branch out of another worktree and into the current one
+test('moves a branch open in another worktree into the current worktree', async ({ page }) => {
+  let finishMove!: () => void;
+  let moved: unknown;
+  const moveFinished = new Promise<void>(resolve => { finishMove = resolve; });
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [
+      { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' },
+      { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/delta', worktreeId: 'delta', worktreeLabel: 'Delta', worktreeOrder: 1, title: 'Ready' }
+    ], projects: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (/^\/api\/agents\/agent-[12]\/saved-prompts$/u.test(url.pathname) && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
+    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [], otherPullRequests: [], pullRequestsSupported: true, branches: [
+      { branch: 'feature/delta', checkedOut: true, openIn: { agentId: 'agent-2', worktreeId: 'delta', worktreeName: 'Delta' } }
+    ] } });
+    if (url.pathname === '/api/agents/agent-1/move-branch' && request.method() === 'POST') { moved = request.postDataJSON(); await moveFinished; return route.fulfill({ status: 202 }); }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'More options' }).click();
+  const menu = page.locator('.more-menu');
+  const option = menu.locator('.switch-branch-option', { hasText: 'feature/delta' });
+  await expect(option.getByText('Already open in Delta', { exact: true })).toBeVisible();
+  const checkout = option.getByRole('button', { name: 'Checkout' });
+  await expect(checkout).toBeEnabled();
+  await expect(checkout).toHaveAttribute('title', 'Move feature/delta here');
+  await checkout.click();
+  await expect.poll(() => moved).toEqual({ branch: 'feature/delta' });
+  await expect(option.getByRole('button', { name: 'Moving…' })).toBeDisabled();
+  finishMove();
+
+  await expect(menu).toBeHidden();
+  await expect(page.getByText('Branch moved here', { exact: true })).toBeVisible();
+});
+
+// keep branch checkout gated behind a clean, pushed destination
+test('gates branch checkout on a clean, pushed destination', async ({ page }) => {
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' }], projects: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
+    // a dirty working copy disables every checkout
+    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: false, pullRequests: [], otherPullRequests: [], pullRequestsSupported: true, branches: [
+      { branch: 'feature/clean', checkedOut: false }
+    ] } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'More options' }).click();
+  const menu = page.locator('.more-menu');
+  const checkout = menu.locator('.switch-branch-option', { hasText: 'feature/clean' }).getByRole('button', { name: 'Checkout' });
+  await expect(checkout).toBeDisabled();
+  await expect(checkout).toHaveAttribute('title', 'Working copy must be clean and pushed');
+});
+
+// show the empty branch state and mark pull requests unavailable without a GitHub origin
+test('shows the empty branch state and pull requests unavailable without a GitHub origin', async ({ page }) => {
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready' }], projects: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
+    // a git checkout without a GitHub origin: no branches, no pull request support
+    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [], otherPullRequests: [], pullRequestsSupported: false, branches: [] } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'More options' }).click();
+  const menu = page.locator('.more-menu');
+  await expect(menu.getByRole('status', { name: 'Pull requests unavailable.', exact: true })).toBeVisible();
+  await expect(menu.getByRole('status', { name: 'No other local branches.', exact: true })).toBeVisible();
+});
+
+// surface a rejected branch checkout with the server reason
+test('shows the server reason when branch checkout fails', async ({ page }) => {
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' }], projects: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
+    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [], otherPullRequests: [], pullRequestsSupported: true, branches: [{ branch: 'feature/rejected', checkedOut: false }] } });
+    // reject the checkout with an actionable reason
+    if (url.pathname === '/api/agents/agent-1/switch-branch' && request.method() === 'POST') return route.fulfill({ status: 409, json: { error: 'The branch changed before checkout.' } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'More options' }).click();
+  const menu = page.locator('.more-menu');
+  await menu.locator('.switch-branch-option', { hasText: 'feature/rejected' }).getByRole('button', { name: 'Checkout' }).click();
+
+  await expect(page.getByRole('alert')).toContainText('Branch could not be checked out');
+  await expect(page.getByRole('alert')).toContainText('The branch changed before checkout.');
+});
+
+// keep a failed branch move from reporting a false success
+test('shows the server reason and no success when a branch move fails', async ({ page }) => {
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [
+      { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' },
+      { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/delta', worktreeId: 'delta', worktreeLabel: 'Delta', worktreeOrder: 1, title: 'Ready' }
+    ], projects: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (/^\/api\/agents\/agent-[12]\/saved-prompts$/u.test(url.pathname) && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
+    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ json: { enabled: true, pullRequests: [], otherPullRequests: [], pullRequestsSupported: true, branches: [
+      { branch: 'feature/delta', checkedOut: true, openIn: { agentId: 'agent-2', worktreeId: 'delta', worktreeName: 'Delta' } }
+    ] } });
+    // the move needs manual recovery
+    if (url.pathname === '/api/agents/agent-1/move-branch' && request.method() === 'POST') return route.fulfill({ status: 409, json: { error: 'The branch move needs manual recovery.', recoveryRequired: true } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'More options' }).click();
+  const menu = page.locator('.more-menu');
+  await menu.locator('.switch-branch-option', { hasText: 'feature/delta' }).getByRole('button', { name: 'Checkout' }).click();
+
+  await expect(page.getByRole('alert')).toContainText('Branch could not be moved');
+  await expect(page.getByRole('alert')).toContainText('The branch move needs manual recovery.');
+  // a rejected move must not claim success or dismiss the menu
+  await expect(page.getByText('Branch moved here', { exact: true })).toHaveCount(0);
+  await expect(menu).toBeVisible();
+});

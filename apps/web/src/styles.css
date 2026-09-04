@@ -1109,6 +1109,8 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .switch-pr-copy strong.status-draft { color: var(--overlay-2); }
 .switch-pr-copy strong.status-open { color: var(--green); }
 .switch-pr-open-in { color: var(--blue); font: 650 .64rem/1.2 var(--font-mono); letter-spacing: normal; }
+.more-menu .switch-branch-option > .switch-branch { display: block; width: 100%; min-width: 0; padding: .65rem .9rem; color: var(--text); line-height: 1.25; overflow-wrap: anywhere; text-align: left; }
+.switch-branch-name { color: var(--text); font: 700 .72rem/1.25 var(--font-mono); letter-spacing: normal; overflow-wrap: anywhere; }
 .switch-pr-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; padding: .05rem .9rem .65rem; }
 .switch-pr-actions > .pull-request-issues { gap: .2rem; padding: 0; }
 .more-menu .switch-pr-actions > .switch-pr-action { display: inline-flex; width: auto; min-height: 1.85rem; align-items: center; justify-content: center; gap: .35rem; padding: .3rem .55rem; border: 1px solid var(--surface-2); border-radius: calc(var(--control-radius) - .05rem); background: transparent; box-shadow: none; color: var(--subtext-0); font-size: .68rem; font-weight: 700; line-height: 1; text-decoration: none; white-space: nowrap; }
