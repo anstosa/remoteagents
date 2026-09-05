@@ -616,10 +616,34 @@ describe('pull request switching', () => {
     await expect(service.available(agent.id)).resolves.toMatchObject({ enabled: true });
   });
 
-  it('keeps switching disabled when a clean HEAD is not present on any remote branch', async () => {
+  it('enables switching from a clean branch that is not yet pushed', async () => {
     const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
-    const command = async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('--git-common-dir') ? commonRepositoryResult.stdout : '' });
+    const command = async (_binary: string, args: string[]) => {
+      // share one fake repository identity
+      if (args.includes('--git-common-dir')) return commonRepositoryResult;
+      // clean tree on a named branch whose commits are not on any origin ref
+      if (args.includes('status')) return { code: 0, stdout: '' };
+      if (args.includes('symbolic-ref')) return { code: 0, stdout: 'refs/heads/feature/unpushed\n' };
+      if (args.includes('--contains=HEAD')) return { code: 0, stdout: '' };
+      if (args.includes('--format=%(upstream:track)')) return { code: 0, stdout: '[ahead 1]\n' };
+      return { code: 0, stdout: '' };
+    };
+    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, command);
+
+    await expect(service.available(agent.id)).resolves.toMatchObject({ enabled: true });
+  });
+
+  it('keeps switching disabled when the working tree is dirty', async () => {
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+    const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
+    const command = async (_binary: string, args: string[]) => {
+      // share one fake repository identity
+      if (args.includes('--git-common-dir')) return commonRepositoryResult;
+      // uncommitted changes must still block the switch
+      if (args.includes('status')) return { code: 0, stdout: ' M tracked.txt\n' };
+      return { code: 0, stdout: '' };
+    };
     const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, command);
 
     await expect(service.available(agent.id)).resolves.toMatchObject({ enabled: false });

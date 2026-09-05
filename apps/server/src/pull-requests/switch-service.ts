@@ -4,7 +4,7 @@ import type { ValidatedConfig } from '../config/schema.js';
 import type { DiscoveryService } from '../discovery/service.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { run } from '../tmux/command.js';
-import { cleanAndPushedOrDetached, type GitCommand } from '../git/worktree-state.js';
+import { cleanWorkingTree, type GitCommand } from '../git/worktree-state.js';
 import { worktreeById, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
 import { PullRequestService, type PullRequestChoice } from './service.js';
 import type { Worktree } from '../domain/models.js';
@@ -72,7 +72,7 @@ export class PullRequestSwitchService {
     // load slow remote metadata before taking the readiness snapshot
     const pullRequests = pullRequestsSupported ? await this.pullRequests.open(worktree.identity) : { own: [], others: [] };
     // reflect git changes completed while GitHub was loading
-    const enabled = await this.cleanAndPushed(worktree);
+    const enabled = await this.switchReady(worktree);
     // apply worktree availability around each checkout branch
     const switchable = (choices: PullRequestChoice[]): SwitchablePullRequest[] => choices.map(pullRequest => {
       const branch = pullRequest.headOnOrigin ? pullRequest.branch : this.pullRequestBranch(pullRequest);
@@ -205,8 +205,9 @@ export class PullRequestSwitchService {
     return this.discovery.worktreesNow().find(worktree => worktreeMatchesWorkspace(worktree, workspace));
   }
 
-  private async cleanAndPushed(worktree: Worktree): Promise<boolean> {
-    return await cleanAndPushedOrDetached(worktree.identity, this.command);
+  // switch/move readiness: a clean working tree, whether or not the branch is pushed
+  private async switchReady(worktree: Worktree): Promise<boolean> {
+    return await cleanWorkingTree(worktree.identity, this.command);
   }
 
   // resolve one linked-worktree repository identity
@@ -288,7 +289,7 @@ export class PullRequestSwitchService {
     // close the source branch race after suspension
     if (sourceBranch.code !== 0 || sourceBranch.stdout.trim() !== checkoutBranch) return 'unavailable';
     // close the destination readiness race after suspension
-    if (!await this.cleanAndPushed(targetWorktree)) return 'unavailable';
+    if (!await this.switchReady(targetWorktree)) return 'unavailable';
     const targetHead = await this.gitHead(targetWorktree.identity);
     // preserve an exact destination rollback point
     if (targetHead === undefined) return 'unavailable';
