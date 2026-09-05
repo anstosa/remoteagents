@@ -32,6 +32,29 @@ describe('agent updates', () => {
     expect(runner).toHaveBeenCalledTimes(2);
   });
 
+  // compare semantic precedence and equivalent forms
+  it.each([
+    { current: '0.10.0', latest: '0.9.0', updateAvailable: false },
+    { current: 'v1.2.3', latest: '1.2.3', updateAvailable: false },
+    { current: '1.2.3+installed', latest: '1.2.3+registry', updateAvailable: false },
+    { current: '1.2.3-rc.1', latest: '1.2.3', updateAvailable: true }
+  ])('compares $current with $latest using semver precedence', async ({ current, latest, updateAvailable }) => {
+    const runner = vi.fn<AgentUpdateRunner>(async command => ({ code: 0, output: command === 'current' ? current : latest }));
+    const service = new AgentUpdateService(configured(), '/home/test', runner);
+    expect(await service.statuses()).toEqual([{ kind: 'codex', currentVersion: current, latestVersion: latest, updateAvailable }]);
+  });
+
+  // suppress every failed version response
+  it.each([
+    { failure: 'both outputs are present but one is invalid', current: { code: 0, output: 'development' }, latest: { code: 0, output: '1.2.3' } },
+    { failure: 'the invalid current output accompanies a failed latest command', current: { code: 0, output: 'development' }, latest: { code: 1, output: 'registry error' } },
+    { failure: 'the invalid latest output accompanies a failed current command', current: { code: 1, output: 'binary error' }, latest: { code: 0, output: 'development' } }
+  ])('omits version output when $failure', async ({ current, latest }) => {
+    const runner = vi.fn<AgentUpdateRunner>(async command => command === 'current' ? current : latest);
+    const service = new AgentUpdateService(configured(), '/home/test', runner);
+    expect(await service.statuses()).toEqual([{ kind: 'codex', updateAvailable: false, error: 'Version check failed' }]);
+  });
+
   it('runs the update once and refreshes the installed version', async () => {
     let current = '0.152.1';
     const runner = vi.fn<AgentUpdateRunner>(async command => {

@@ -84,10 +84,11 @@ Restart both fire, so make the commands idempotent.
 `updates` is an optional all-or-nothing object with three trusted shell commands:
 `current` prints the installed version, `latest` prints the newest upstream
 version, and `run` performs the update. The first non-empty output line from each
-version command is compared exactly. Global settings shows the installed version
-beside the agent, offers **Update** when the two values differ, and aggregates any
-available agent update into a purple dot on the settings gear. Checks are cached
-for 15 minutes; failed checks do not expose shell output to the browser.
+version command must be a valid semantic version. Global settings shows the
+installed version, offers **Update** only when the upstream version has greater
+semantic precedence, and aggregates any available agent update into a purple dot
+on the settings gear. Checks are cached for 15 minutes; invalid or failed checks
+do not expose shell output to the browser.
 
 Use adapter launch settings to disable each CLI's own startup updater once this
 surface is configured. Codex accepts

@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, open, readFile, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { gt, valid } from 'semver';
 import type { AgentKind } from '../adapters/types.js';
 import { agentKinds } from '../adapters/types.js';
 import type { ValidatedConfig } from '../config/schema.js';
@@ -28,6 +29,15 @@ export function normalizedVersion(output: string): string | undefined {
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, '');
   const line = plain.split(/\r?\n/gu).map(value => value.trim()).find(Boolean);
   return line === undefined ? undefined : line.slice(0, 120);
+}
+
+// compare valid semantic versions
+function semanticUpdateAvailable(current: string, latest: string): boolean | undefined {
+  const currentVersion = valid(current);
+  const latestVersion = valid(latest);
+  // reject invalid command output
+  if (currentVersion === null || latestVersion === null) return undefined;
+  return gt(latestVersion, currentVersion);
 }
 
 // read only the newest bounded command output
@@ -117,10 +127,11 @@ export class AgentUpdateService {
     ]);
     const currentVersion = current.code === 0 ? normalizedVersion(current.output) : undefined;
     const latestVersion = latest.code === 0 ? normalizedVersion(latest.output) : undefined;
-    const failed = currentVersion === undefined || latestVersion === undefined;
+    const updateAvailable = currentVersion === undefined || latestVersion === undefined ? undefined : semanticUpdateAvailable(currentVersion, latestVersion);
+    const failed = updateAvailable === undefined;
     const status: AgentUpdateStatus = failed
-      ? { kind, ...(currentVersion === undefined ? {} : { currentVersion }), ...(latestVersion === undefined ? {} : { latestVersion }), updateAvailable: false, error: 'Version check failed' }
-      : { kind, currentVersion, latestVersion, updateAvailable: currentVersion !== latestVersion };
+      ? { kind, updateAvailable: false, error: 'Version check failed' }
+      : { kind, currentVersion, latestVersion, updateAvailable };
     this.cache.set(kind, { status, expiresAt: Date.now() + (failed ? failedCacheTtlMs : cacheTtlMs) });
     return status;
   }
