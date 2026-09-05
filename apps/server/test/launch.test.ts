@@ -416,6 +416,23 @@ describe('LaunchService', () => {
     expect(created).toEqual(['new-session', '-d', '-s', 'owen', '-c', '/worktrees/owen', '/usr/bin/zsh', '-l']);
   });
 
+  it('suffixes a local worktree launch past a session name an unrelated tmux session already holds', async () => {
+    delete process.env.RAC_HOST_TMUX_DIR;
+    const root = await mkdtemp(join(tmpdir(), 'rac-launch-'));
+    tempDirs.push(root);
+    // a stray, non-console session already holds the worktree's base name on the shared
+    // default socket; the runner path must step around it, not collide on new-session
+    run.mockImplementation(async (_binary: string, args: string[]) => args.includes('list-sessions') ? { code: 0, stdout: 'owen\n', stderr: '' } : { code: 0, stdout: '', stderr: '' });
+    const worktree = testWorktree({ id: 'owen', projectId: 'proj', path: '/worktrees/owen', identity: '/worktrees/owen', main: false });
+    const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree], root);
+
+    await expect(service.launch(worktree.id)).resolves.toBe(true);
+
+    // launched under a suffixed name via the node runner, never the taken base name
+    const created = run.mock.calls.find(call => (call[1] as string[]).includes('new-session'))?.[1] as string[];
+    expect(created.slice(0, 5)).toEqual(['new-session', '-d', '-s', 'owen-2', process.execPath]);
+  });
+
   it('preserves ordinary worktree names and removes tmux target separators', () => {
     expect(worktreeSessionName('/home/ubuntu/owen')).toBe('owen');
     expect(worktreeSessionName('/home/ubuntu/feature:demo')).toBe('feature-demo');

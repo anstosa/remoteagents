@@ -64,11 +64,12 @@ export const scratchLabel = '~ Scratch';
 const updateAdvisorArgs = ['--dangerously-bypass-approvals-and-sandbox', '--no-alt-screen'];
 
 export class LaunchService {
-  private pending = new Set<string>(); private readonly root = `/tmp/remote-agent-console-${process.getuid?.() ?? 0}`; private readonly tmux = process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux'; private readonly hostSocket = process.env.RAC_HOST_TMUX_DIR === undefined ? undefined : join(process.env.RAC_HOST_TMUX_DIR, 'default');
+  private pending = new Set<string>(); private readonly tmux = process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux'; private readonly hostSocket = process.env.RAC_HOST_TMUX_DIR === undefined ? undefined : join(process.env.RAC_HOST_TMUX_DIR, 'default');
   private readonly localShell = interactiveShellPath();
   private readonly hostShell = hostInteractiveShellPath();
   private readonly hostShellName = interactiveShellName(this.hostShell);
-  constructor(private readonly config: ValidatedConfig, private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly panes: TmuxAdapter = new TmuxAdapter(), private readonly paneRoot: (path: string) => Promise<string> = workspaceRoot, private readonly worktreeStore: WorktreeLaunchStore = new WorktreeLaunchStore(), private readonly discoveredWorktrees: () => Worktree[] = () => []) {}
+  // `root` (where launch descriptors are written for the local runner path) is a test seam
+  constructor(private readonly config: ValidatedConfig, private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly panes: TmuxAdapter = new TmuxAdapter(), private readonly paneRoot: (path: string) => Promise<string> = workspaceRoot, private readonly worktreeStore: WorktreeLaunchStore = new WorktreeLaunchStore(), private readonly discoveredWorktrees: () => Worktree[] = () => [], private readonly root = `/tmp/remote-agent-console-${process.getuid?.() ?? 0}`) {}
 
   // one discovered Worktree by its wire id `<projectId>:<realpath>`
   private worktreeById(worktreeId: string): Worktree | undefined {
@@ -335,18 +336,22 @@ export class LaunchService {
   // start one worktree in the requested mode, composing its command from the Adapter
   private async launchWorktree(worktreeId: string, input: { mode: LaunchMode; conversationId?: string; sandboxed?: boolean; kind?: AgentKind }): Promise<boolean> {
     const worktree = this.worktreeById(worktreeId);
+    // Every refusal below logs its reason. The web only ever sees a bare "couldn't
+    // start", so without this the operator has nothing to diagnose from — the cause
+    // never leaves this method (see the sibling logs in dispatchWorktreeLaunch).
+    if (worktree === undefined) { console.warn(`[launch] no worktree matches id ${worktreeId}`); return false; }
     // serialize each worktree launch
-    if (!worktree || this.pending.has(worktreeId)) return false;
+    if (this.pending.has(worktreeId)) { console.warn(`[launch] ${worktree.identity}: a launch is already in progress`); return false; }
     this.pending.add(worktreeId);
     try {
-      // refuse an unconfigured or unlaunchable kind
       const kind = await this.resolveLaunchKind(worktreeId, input.kind);
-      if (kind === undefined) return false;
+      // refuse an unconfigured or unlaunchable kind
+      if (kind === undefined) { console.warn(`[launch] ${worktree.identity}: no launchable agent kind (check adapters.*.launchable and the agent binary)`); return false; }
       const id = randomBytes(18).toString('base64url');
       const sandboxed = input.sandboxed === true;
       const command = await this.worktreeCommand(worktree, kind, { mode: input.mode, ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }), sandboxed });
       // a worktree with no launch command (and no override) cannot start
-      if (command === undefined) return false;
+      if (command === undefined) { console.warn(`[launch] ${worktree.identity}: agent kind ${kind} produced no launch command`); return false; }
       const launched = await this.dispatchWorktreeLaunch(worktree, command, id, sandboxed);
       // record the kind so it resolves first next time — for this Worktree and for its
       // Project (which seeds a fresh Worktree); storage failure never fails a live launch
@@ -367,10 +372,12 @@ export class LaunchService {
     // send through the shell context
     if (existing !== undefined) {
       const buffer = `rac-launch-${id}`;
-      return await this.panes.pastePrompt(existing.socket, existing.pane.paneId, buffer, command)
+      const reused = await this.panes.pastePrompt(existing.socket, existing.pane.paneId, buffer, command)
         && await this.panes.enter(existing.socket, existing.pane.paneId)
         && await this.markConsoleManaged(existing.socket.path, existing.pane.paneId)
         && await this.markSandboxed(existing.socket.path, existing.pane.paneId, sandboxed);
+      if (!reused) console.error(`[launch] ${worktree.identity}: could not send the launch into reused shell ${existing.pane.paneId}`);
+      return reused;
     }
     const session = worktreeSessionName(worktreeHostRoot(worktree));
     // launch host-mounted worktrees on the host socket
@@ -379,8 +386,12 @@ export class LaunchService {
       // keep credentials and CLI state rooted in the authenticated account
       const home = this.agentHome(worktree.projectId);
       const tail = ['-c', hostWorktree.identity, this.hostShell, '-lc', interactiveShellBootstrap(hostCommand(expandCommand(command, hostWorktree), home), home, this.hostShell)];
-      return await startNamedReplacementSession(this.tmux, this.hostSocket, session, session, tail)
-        && await this.markConsoleManaged(this.hostSocket, session)
+      // the host socket is RAC's own, so displacing a same-named session in place is safe
+      if (!await startNamedReplacementSession(this.tmux, this.hostSocket, session, session, tail)) {
+        console.error(`[launch] ${worktree.identity}: tmux could not start host session '${session}'`);
+        return false;
+      }
+      return await this.markConsoleManaged(this.hostSocket, session)
         && await this.markSandboxed(this.hostSocket, session, sandboxed);
     }
     await mkdir(this.root, { recursive: true, mode: 0o700 });
@@ -390,14 +401,20 @@ export class LaunchService {
     await handle.writeFile(JSON.stringify(payload));
     await handle.close();
     const runner = new URL('./runner.js', import.meta.url).pathname;
-    const created = await run(this.tmux, ['new-session', '-d', '-s', session, process.execPath, runner, descriptor]);
+    // Unlike the host socket, the default socket is shared with the operator's own tmux,
+    // so a same-named session is just as likely theirs. Suffix past a taken name
+    // (`-2`/`-3`, as startWorktreeShell does) rather than a bare new-session that fails —
+    // that collision is what surfaced as a silent "couldn't start".
+    const name = await this.availableSessionName(session);
+    const created = await run(this.tmux, ['new-session', '-d', '-s', name, process.execPath, runner, descriptor]);
     // remove rejected launch descriptors
     if (created.code !== 0) {
+      console.error(`[launch] ${worktree.identity}: tmux new-session '${name}' failed (code ${created.code})${created.stderr.trim() === '' ? '' : `: ${created.stderr.trim()}`}`);
       await unlink(descriptor).catch(() => {});
       return false;
     }
-    return await this.markConsoleManaged(undefined, session)
-      && await this.markSandboxed(undefined, session, sandboxed);
+    return await this.markConsoleManaged(undefined, name)
+      && await this.markSandboxed(undefined, name, sandboxed);
   }
 
   // Start the Worktree's own idle interactive shell — a login shell in the checkout, no
