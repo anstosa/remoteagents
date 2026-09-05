@@ -8,6 +8,8 @@ services:
       RAC_HOST_UID: ${HOST_UID:-1000}
       RAC_TMUX_BIN: /host-tools/tmux
       RAC_HOST_REPOSITORY: ${RAC_HOST_REPOSITORY:-${PWD}}
+      # map stack status files back to the host checkout
+      RAC_HOST_WORKSPACE: ${RAC_HOST_WORKSPACE:-${PWD}}
       # keep container-only account services off host-only adapter paths
       RAC_CODEX_BIN: /usr/local/bin/codex
       # optionally override the host-tmux advisor's configured adapter path
