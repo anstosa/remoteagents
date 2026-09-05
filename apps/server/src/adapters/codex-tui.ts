@@ -92,7 +92,12 @@ export const codexSubmission: Adapter['submission'] = {
     : { text: queueReadyPrompt(prompt), keys: ['Tab'], idleKeys: ['Enter'] },
   observeDraft: codexDraftState,
   interrupt: ['C-c'],
-  selectOption: (index) => [...Array.from({ length: index }, () => 'Down' as const), 'Enter'],
+  // navigate from the live highlight rather than assuming the first option
+  selectOption: (index, selectedIndex = 0) => {
+    const offset = index - selectedIndex;
+    // move only the distance to the requested row before confirming
+    return [...Array.from({ length: Math.abs(offset) }, () => offset < 0 ? 'Up' as const : 'Down' as const), 'Enter'];
+  },
 };
 
 export const codexTurns: NonNullable<Adapter['turns']> = {

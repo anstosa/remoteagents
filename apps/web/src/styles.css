@@ -1274,6 +1274,10 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 /* one section per project in the + launcher: a header, its Worktree rows, then New worktree… */
 .launcher-project { margin-top: .35rem; }
 .launcher-project-header { display: flex; min-height: 2.4rem; align-items: center; justify-content: space-between; gap: .5rem; padding: .3rem .45rem; color: var(--mauve); font-size: .74rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+/* give the project name all space left by the compact action */
+.launcher-project-header > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* override full-width menu buttons only for the right-aligned prune action */
+.launcher-project-header .launcher-prune { flex: none; width: auto; margin-left: auto; }
 .launcher-new-worktree { display: flex; align-items: center; margin-top: .1rem; padding: .3rem .45rem !important; border-radius: calc(var(--control-radius) - .1rem); background: transparent; color: var(--lavender); font-size: .7rem; letter-spacing: 0; text-transform: none; cursor: pointer; }
 .launcher-new-worktree:not(:disabled):hover { background: color-mix(in srgb, var(--lavender) 16%, transparent); }
 .launcher-new-worktree:disabled { opacity: .45; cursor: not-allowed; }

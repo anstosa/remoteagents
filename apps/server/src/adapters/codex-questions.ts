@@ -18,19 +18,21 @@ const questionChoiceLine = /^([›❯>]\s*)?(?:\[([ xX])\]\s*)?(\d+)[.)]\s+(.+)$
 const agentMessageLines = (message: string) => message.replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '').split('\n').map(line => line.trim()).filter(Boolean);
 
 /**
- * Detect a numbered choice list the agent drew on its pane. Ported verbatim from
+ * detect a numbered choice list the agent drew on its pane, adapted from
  * the web's `questionFromAgentMessage`: scan the latest output for a run of two
  * or more sequential numbered choices and the question that introduced them.
  * `choices` are the labels only; the console renders position + 1 as the number
- * and answers by position, so a Codex menu is navigated by Down key count.
+ * and answers by position relative to the freshly captured selection caret.
  */
 export function parseChoiceQuestion(message: string): InlineQuestion | undefined {
   const lines = agentMessageLines(message);
-  let detected: { text: string; choices: string[] } | undefined;
+  let detected: { text: string; choices: string[]; selectedIndex?: number } | undefined;
   // inspect the latest output
   for (let start = Math.max(0, lines.length - 40); start < lines.length; start += 1) {
     const choices: string[] = [];
     let interactive = false;
+    let selectedIndex: number | undefined;
+    let caretCount = 0;
     let end = start;
     let expectedNumber: number | undefined;
     let wrappedLines = 0;
@@ -45,6 +47,11 @@ export function parseChoiceQuestion(message: string): InlineQuestion | undefined
         // stop at another numbered block
         if (expectedNumber !== undefined && number !== expectedNumber) break;
         interactive ||= match[1] !== undefined || match[2] !== undefined;
+        // track the keyboard cursor separately from checked or current values
+        if (match[1] !== undefined) {
+          selectedIndex = choices.length;
+          caretCount += 1;
+        }
         choices.push(match[4]!);
         expectedNumber = number + 1;
         wrappedLines = 0;
@@ -57,6 +64,8 @@ export function parseChoiceQuestion(message: string): InlineQuestion | undefined
     }
     // require real choices
     if (choices.length < 2) continue;
+    // quoted or malformed lists must not invent a unique keyboard cursor
+    if (caretCount !== 1) selectedIndex = undefined;
     // skip starts inside this choice block
     const choiceEnd = end;
     const context = lines.slice(Math.max(0, start - 4), start).reverse();
@@ -64,10 +73,10 @@ export function parseChoiceQuestion(message: string): InlineQuestion | undefined
       ? context.find(line => !/^question \d+ of \d+$/iu.test(line))
       : context.find(line => /[?]$|^(?:question|select|choose)\b/iu.test(line));
     // retain the latest question
-    if (question) detected = { text: question.replace(/^[›❯>]\s*/u, ''), choices };
+    if (question) detected = { text: question.replace(/^[›❯>]\s*/u, ''), choices, ...(selectedIndex === undefined ? {} : { selectedIndex }) };
     start = Math.max(start, choiceEnd - 1);
   }
   return detected === undefined
     ? undefined
-    : { id: inlineQuestionId(detected.text, detected.choices), text: detected.text, choices: detected.choices, source: 'parsed' };
+    : { ...detected, id: inlineQuestionId(detected.text, detected.choices), source: 'parsed' };
 }

@@ -31,6 +31,7 @@ async function mount(page: Page, dashboard: Record<string, unknown>): Promise<La
 
 const directoryProject = () => ({ id: 'notes', label: 'Notes', mode: 'directory', available: true, manageWorktrees: false, manageWorktreesReason: noWorktreesReason, stalePaths: [], worktrees: [], launch: { kind: 'codex', origin: 'project' } });
 
+// retain scratch alongside the project-level launch target
 test('a non-git directory Project offers an in-place Launch and keeps New worktree… disabled', async ({ page }) => {
   const posts = await mount(page, { generation: 1, adapters: { codex }, agents: [], projects: [directoryProject()] });
 
@@ -39,7 +40,7 @@ test('a non-git directory Project offers an in-place Launch and keeps New worktr
 
   // the Project section shows its label and a Project-level Launch row (its single launch target)
   await expect(launcher.locator('.launcher-project-header > span')).toHaveText('Notes');
-  await expect(launcher.locator('.launcher-project .launcher-row-label')).toHaveText(['~ Scratch', 'Notes']);
+  await expect(launcher.locator('.launcher-row-label')).toHaveText(['~ Scratch', 'Notes']);
 
   // "New worktree…" stays disabled, explaining there are no worktrees to manage
   const newWorktree = launcher.getByRole('button', { name: '+ New worktree…' });

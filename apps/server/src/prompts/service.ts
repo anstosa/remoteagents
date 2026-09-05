@@ -769,7 +769,8 @@ export class PromptService {
     // an OMX question is answered on its renderer pane, a parsed list on the agent's own
     const targetPane = question.targetPaneId ?? first.agent.paneId;
     const second = await this.discovery.target(agentId); if (!second || second.socket.fingerprint !== first.socket.fingerprint || second.agent.paneId !== first.agent.paneId) return false;
-    return await this.tmux.sendKeys(second.socket, targetPane, adapter.submission.selectOption(index));
+    // use the freshly captured cursor rather than the browser's earlier snapshot
+    return await this.tmux.sendKeys(second.socket, targetPane, adapter.submission.selectOption(index, question.selectedIndex));
   }
 
   // interrupt a working Agent; a stray interrupt on a finished pane is refused so

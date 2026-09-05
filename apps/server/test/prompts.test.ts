@@ -928,11 +928,37 @@ it('confirms a numbered choice with the Adapter option-select keys on the discov
   const tmux = { capture: async () => capture, sendKeys: async (_s: unknown, pane: string, keys: string[]) => { sent.push([pane, ...keys]); return true; } };
   const service = new PromptService(discovery as never, tmux as never);
   const id = inlineQuestionId('Which environment?', ['Staging', 'Production', 'Cancel']);
-  // Codex selects the first option by default, so index 2 moves down twice then confirms
+  // preserve first-row fallback when the numbered list has no visible cursor
   await expect(service.answerQuestion(agent.id, id, 2)).resolves.toBe(true);
   expect(sent).toEqual([['%1', 'Down', 'Down', 'Enter']]);
   // a stale id (the agent moved past this question) is refused
   await expect(service.answerQuestion(agent.id, 'a-stale-question-id000', 2)).resolves.toBe(false);
+});
+
+// read the cursor again at answer time rather than assuming the first option
+it('answers a Codex menu relative to its fresh highlight without changing its question id', async () => {
+  const sent: string[][] = [];
+  let capture = 'Select Model and Effort\n  1. First model\n› 2. Second model\n  3. Third model';
+  // resolve the same agent before and after the capture
+  const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
+  const tmux = {
+    // provide the latest menu cursor
+    capture: async () => capture,
+    // record only the answer keys sent to the discovered pane
+    sendKeys: async (_s: unknown, pane: string, keys: string[]) => { sent.push([pane, ...keys]); return true; }
+  };
+  const service = new PromptService(discovery as never, tmux as never);
+  const id = inlineQuestionId('Select Model and Effort', ['First model', 'Second model', 'Third model']);
+  await expect(service.answerQuestion(agent.id, id, 0)).resolves.toBe(true);
+  expect(sent).toEqual([['%1', 'Up', 'Enter']]);
+  // a terminal cursor move preserves the question but changes the required keys
+  capture = 'Select Model and Effort\n  1. First model\n  2. Second model\n› 3. Third model';
+  await expect(service.answerQuestion(agent.id, id, 1)).resolves.toBe(true);
+  expect(sent[1]).toEqual(['%1', 'Up', 'Enter']);
+  // cursor-aware answering still rejects stale or out-of-range clicks
+  await expect(service.answerQuestion(agent.id, 'stale-question', 0)).resolves.toBe(false);
+  await expect(service.answerQuestion(agent.id, id, 3)).resolves.toBe(false);
+  expect(sent).toHaveLength(2);
 });
 
 it('answers a Claude reported question by re-deriving it from a fresh payload and capture', async () => {

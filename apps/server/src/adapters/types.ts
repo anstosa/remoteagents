@@ -29,7 +29,8 @@ export type Turn = { prompt?: string; text: string; rows?: number };
 // `parsed` question the client may optimistically dismiss, a `structured` one (OMX's
 // file, Claude's reported payload) is server-published and waits for the server to
 // stop reporting it. Not the same as the CONTEXT.md "Inline question" provenance.
-export type InlineQuestion = { id: string; text: string; choices: string[]; source: 'structured' | 'parsed'; targetPaneId?: string };
+// selectedIndex is the live zero-based keyboard cursor, not part of the question id
+export type InlineQuestion = { id: string; text: string; choices: string[]; source: 'structured' | 'parsed'; targetPaneId?: string; selectedIndex?: number };
 export type PromptCommand = { name: string; description?: string };
 
 export type LaunchMode = 'fresh' | 'continue' | 'resume';
@@ -120,7 +121,8 @@ export interface Adapter {
     /** Observe durable acceptance; absence keeps this adapter on best-effort tmux delivery. */
     observeDraft?(capture: string, prompt: string): SubmissionDraftState;
     readonly interrupt: TmuxKey[];
-    selectOption(index: number): TmuxKey[];
+    /** navigate from the freshly observed cursor when the question provides one */
+    selectOption(index: number, selectedIndex?: number): TmuxKey[];
   };
   readonly turns?: {
     latestCompleted(capture: string): Turn | undefined;
