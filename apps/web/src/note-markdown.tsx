@@ -49,6 +49,9 @@ const inlineMarkdown = (text: string, key: string): ReactNode[] => {
   return content;
 };
 
+// preserve source lines inside one paragraph
+const inlineMarkdownLines = (lines: string[], key: string): ReactNode[] => lines.map((line, index) => <Fragment key={`${key}-line-${index}`}>{index > 0 && <br />}{inlineMarkdown(line, `${key}-line-${index}`)}</Fragment>);
+
 const startsBlock = (line: string) => /^(?:\s*$|#{1,6}\s+|```|>\s?|[-*+]\s+|\d+[.)]\s+|(?:-{3,}|\*{3,}|_{3,})\s*$)/u.test(line);
 
 type TableColumn = { start: number; end?: number };
@@ -170,6 +173,7 @@ const renderList = (list: ParsedList, key: string): ReactNode => {
   return list.ordered ? <ol key={key} start={list.start}>{items}</ol> : <ul key={key}>{items}</ul>;
 };
 
+// render note markdown blocks
 function MarkdownBlocks({ text }: { text: string }) {
   const lines = text.replace(/\r\n?/gu, '\n').split('\n');
   const blocks: ReactNode[] = [];
@@ -216,7 +220,7 @@ function MarkdownBlocks({ text }: { text: string }) {
     const paragraph = [line.trim()];
     index += 1;
     while (index < lines.length && !startsBlock(lines[index]!)) paragraph.push(lines[index++]!.trim());
-    blocks.push(<p key={`paragraph-${index}`}>{inlineMarkdown(paragraph.join(' '), `paragraph-${index}`)}</p>);
+    blocks.push(<p key={`paragraph-${index}`}>{inlineMarkdownLines(paragraph, `paragraph-${index}`)}</p>);
   }
   return <>{blocks}</>;
 }
