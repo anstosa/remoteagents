@@ -264,8 +264,13 @@ within a tick — no config edit or restart.
   `{taskId}` for an 8-character URL-safe random ID, and is enabled only when the
   Worktree is clean and fully pushed. `push` overrides the default
   **Commit/Push** action (which queues `review, commit, and push`).
-- `port` + `hostname` (both or neither) provide the default preview URL,
-  `https://<hostname>` proxied to `127.0.0.1:<port>`.
+- Preview configuration selects one of two mutually exclusive modes. `port` +
+  `hostname` (both or neither) provide `https://<hostname>` proxied to
+  `127.0.0.1:<port>`. Alternatively, `externalUrl` names an existing canonical
+  HTTPS origin such as `https://app.example.com`; Remote Agents opens or embeds
+  that origin directly and does not proxy it. Omit all three fields for no
+  preview. Direct previews require the external site to permit framing; their
+  mobile control changes viewport size only, without user-agent emulation.
 - `worktreeOverrides` — optional runtime settings for individual discovered
   checkouts. Each entry's `path` resolves relative to the configured Project
   `path` (or may be absolute); symlinks resolve to the checkout's real path.
@@ -274,8 +279,12 @@ within a tick — no config edit or restart.
   Omitted fields inherit the Project defaults. `commands` replaces the **entire**
   command set rather than merging actions, so UI-only worktrees do not inherit
   full-stack migration commands. Use `commands: {}` for no stack controls.
-  Set both `hostname` and `port` to override the preview; set both to `null` to
-  disable it. Commands still run in the selected worktree's own directory.
+  With no preview fields, an override inherits the entire Project preview mode.
+  Set `externalUrl` to an HTTPS origin to replace it with a direct preview, or
+  set `hostname` and `port` to replace it with a proxied preview. Set
+  `externalUrl` to `null`, or both `hostname` and `port` to `null`, to disable
+  it. Direct and proxied fields cannot be mixed. Commands still run in the
+  selected worktree's own directory.
 
 For example, add these entries to a Project to give a sibling checkout an
 independent UI stack and keep a research checkout stack-free:
@@ -359,6 +368,12 @@ Removing a Worktree kills its idle shell, removes the checkout, and deletes its
 console records (pin, last-used kind, queued prompts, prompt history, sleeping
 tab). It never touches the Project-scoped bookmarks and notes its siblings share.
 
+The active agent's **More → Branches** list also offers **Delete**. Its confirm
+reloads the same safety facts before deletion: a checked-out branch is blocked
+(and reports any uncommitted changes), while a branch that is neither pushed nor
+merged requires **Delete unpushed work**. The hourly Cleanup list includes merged
+local branches that are no longer checked out and revalidates them before deleting.
+
 ### Pruning stale Worktrees
 
 A checkout whose directory is gone (git calls it *prunable*) is hidden rather
@@ -427,14 +442,14 @@ The default server listener is `127.0.0.1:8787`; `/healthz` is loopback-only and
 The console can be installed as a browser app. Select **Enable alerts** in the
 console to grant notification access; mobile browsers require that permission
 request to come from a tap. Alerts cover agent questions and completed prompts,
-completed guided reviews, stale runtime cleanup, configured agent updates, and
+completed guided reviews, cleanup targets, configured agent updates, and
 Remote Agent Console commits waiting on `origin/main`. Agent-update alerts open
 global settings; console-update alerts open the reviewed update screen. Voice input is
 shown only in browsers that implement the Web Speech API; microphone access is
 restricted by the console's permissions policy and is never required to use
 the prompt field.
 
-Agent questions, completed prompts, guided reviews, and runtime cleanup are also
+Agent questions, completed prompts, guided reviews, and cleanup targets are also
 sent through server push, so they can arrive while the console is suspended.
 Agent and Remote Agent Console update alerts depend on the browser's periodic
 authenticated checks. For iOS, install the console to the Home Screen and use

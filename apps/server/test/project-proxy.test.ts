@@ -192,9 +192,9 @@ describe('project browser proxy', () => {
     const upstreamPort = await listen(upstream);
     const main = testWorktree({ projectId: 'proj', path: '/worktrees/main', projectUrl: 'https://project.example.com', projectPort: upstreamPort });
     const branch = testWorktree({ projectId: 'proj', path: '/worktrees/branch', main: false, branch: 'feature', projectUrl: 'https://project.example.com', projectPort: upstreamPort });
-    // a record without a loopback port claims no hostname
-    const incomplete = testWorktree({ projectId: 'other', path: '/worktrees/other', projectUrl: 'https://other.example.com' });
-    let records = [main, branch, incomplete];
+    // a direct external preview has no loopback proxy target
+    const external = testWorktree({ projectId: 'other', path: '/worktrees/other', projectUrl: 'https://other.example.com' });
+    let records = [main, branch, external];
     const projectProxy = new ProjectProxy(() => records, 'https://agents.example.com');
     const proxy = createServer((incoming, response) => {
       // reject unmatched virtual hosts

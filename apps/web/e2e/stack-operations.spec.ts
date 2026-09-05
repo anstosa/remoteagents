@@ -74,6 +74,29 @@ test('hides the browser split control while the stack is stopped', async ({ page
   await expect(root.locator('.project-open-group')).not.toHaveClass(/has-browser-control/u);
 });
 
+test('keeps direct project controls visible independently of managed stack state', async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="prompt-actions"><div id="direct-root"></div><div id="unavailable-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderDirectProjectOpenControls, renderUnavailableDirectProjectOpenControls } = await import('/e2e/project-open-fixture.tsx');
+    renderDirectProjectOpenControls(document.querySelector<HTMLElement>('#direct-root')!);
+    renderUnavailableDirectProjectOpenControls(document.querySelector<HTMLElement>('#unavailable-root')!);
+  });
+
+  const direct = page.locator('#direct-root');
+  await expect(direct.getByRole('link', { name: 'Open' })).toHaveAttribute('href', 'https://external-preview.example/map/');
+  const directSplit = direct.getByRole('button', { name: 'Open project in split view' });
+  await expect(directSplit).toBeEnabled();
+  await expect(direct.getByRole('button', { name: 'Stack controls' })).toHaveCount(0);
+  await directSplit.click();
+  await expect(direct).toHaveAttribute('data-browser', 'open');
+
+  const unavailable = page.locator('#unavailable-root');
+  await expect(unavailable.getByRole('link', { name: 'Open' })).toHaveAttribute('aria-disabled', 'true');
+  await expect(unavailable.getByRole('button', { name: 'Open project in split view' })).toBeDisabled();
+  await expect(unavailable.getByRole('button', { name: 'Stack controls' })).toBeVisible();
+});
+
 test('shows stack controls when the worktree has commands but no project URL', async ({ page }) => {
   await page.goto('/');
   await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="prompt-actions"><div id="control-root"></div></div>');
@@ -91,4 +114,27 @@ test('shows stack controls when the worktree has commands but no project URL', a
   await toggle.click();
   await page.getByRole('button', { name: 'Restart stack', exact: true }).click();
   await expect(root).toHaveAttribute('data-action', 'restart');
+});
+
+test('shows accessible running, stopped, and unknown states on stack-only controls', async ({ page }) => {
+  // render every published running state
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="prompt-actions"><div id="control-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderStackOnlyStatuses } = await import('/e2e/project-open-fixture.tsx');
+    renderStackOnlyStatuses(document.querySelector<HTMLElement>('#control-root')!);
+  });
+
+  const running = page.getByRole('button', { name: 'Stack controls: running' });
+  const stopped = page.getByRole('button', { name: 'Stack controls: stopped' });
+  const unknown = page.getByRole('button', { name: 'Stack controls: unknown' });
+  await expect(running.locator('.status.live > i')).toBeVisible();
+  await expect(stopped.locator('.status.disconnected > i')).toBeVisible();
+  await expect(unknown.locator('.status.inactive > i')).toBeVisible();
+  // compare rendered state colors
+  const statusColors = await Promise.all([running, stopped, unknown].map(control => control.locator('.status > i').evaluate(element => getComputedStyle(element).backgroundColor)));
+  expect(new Set(statusColors).size).toBe(3);
+  await expect(running).toHaveAttribute('title', 'Stack controls · running');
+  await expect(stopped).toHaveAttribute('title', 'Stack controls · stopped');
+  await expect(unknown).toHaveAttribute('title', 'Stack controls · unknown');
 });

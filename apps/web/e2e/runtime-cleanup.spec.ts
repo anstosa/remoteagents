@@ -1,14 +1,15 @@
 import { expect, test } from '@playwright/test';
 
-test('reviews hourly runtime cleanup targets from the alert and glowing cleanup button', async ({ page }) => {
+test('reviews hourly cleanup targets from the alert and glowing cleanup button', async ({ page }) => {
   test.setTimeout(45_000);
-  let cleanupPending = 4;
+  let cleanupPending = 5;
   let submittedIds: string[] | undefined;
   const targets = [
     { id: 'worker-1', kind: 'orphan-worker', label: 'Orphan OMX worker', detail: 'worker-2 in tmux session feature-team' },
     { id: 'agent-1', kind: 'stale-agent', label: 'Stale Codex agent', detail: 'old-agent at /worktrees/removed' },
     { id: 'pane-1', kind: 'hud-pane', label: 'HUD watcher', detail: 'hud in tmux session monitoring' },
-    { id: 'process-1', kind: 'hud-process', label: 'Detached HUD watcher', detail: 'Host process 4321: omx hud --watch' }
+    { id: 'process-1', kind: 'hud-process', label: 'Detached HUD watcher', detail: 'Host process 4321: omx hud --watch' },
+    { id: 'branch-1', kind: 'merged-branch', label: 'feature/done', detail: 'Merged branch in Project' }
   ];
 
   await page.addInitScript(() => {
@@ -41,25 +42,27 @@ test('reviews hourly runtime cleanup targets from the alert and glowing cleanup 
   });
 
   await page.goto('/#cleanup');
-  const dialog = page.getByRole('dialog', { name: 'Runtime cleanup' });
+  const dialog = page.getByRole('dialog', { name: 'Cleanup', exact: true });
   await expect(dialog).toBeVisible();
   await expect.poll(async () => await page.evaluate(() => (window as unknown as { __testNotifications: Array<{ title: string; options?: NotificationOptions }> }).__testNotifications)).toEqual([
-    expect.objectContaining({ title: 'Runtime cleanup available', options: expect.objectContaining({ tag: 'runtime-cleanup', data: expect.objectContaining({ url: '/#cleanup' }) }) })
+    expect.objectContaining({ title: 'Cleanup available', options: expect.objectContaining({ body: '5 cleanup targets are ready.', tag: 'runtime-cleanup', data: expect.objectContaining({ url: '/#cleanup' }) }) })
   ]);
 
-  const cleanupButton = page.getByRole('button', { name: 'Review 4 cleanup targets' });
+  const cleanupButton = page.getByRole('button', { name: 'Review 5 cleanup targets' });
   await expect(cleanupButton).toBeVisible();
   await expect(cleanupButton).toHaveClass(/cleanup-toggle/);
   await expect(cleanupButton.locator('svg.broom-icon')).toBeVisible();
   await expect(cleanupButton.locator('svg.broom-icon')).toHaveCSS('fill', 'rgb(249, 226, 175)');
-  await expect(cleanupButton.locator('.cleanup-count')).toHaveText('4');
+  await expect(cleanupButton.locator('.cleanup-count')).toHaveText('5');
   await expect(dialog.getByText('Orphaned worker')).toBeVisible();
   await expect(dialog.getByText('Stale agent')).toBeVisible();
   await expect(dialog.getByText('HUD watcher window')).toBeVisible();
   await expect(dialog.getByText('HUD watcher', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Merged branch', { exact: true })).toBeVisible();
   const checks = dialog.getByRole('checkbox');
-  await expect(checks).toHaveCount(4);
-  for (let index = 0; index < 4; index += 1) await expect(checks.nth(index)).toBeChecked();
+  await expect(checks).toHaveCount(5);
+  // select every discovered target initially
+  for (let index = 0; index < 5; index += 1) await expect(checks.nth(index)).toBeChecked();
 
   await page.getByRole('button', { name: 'Close cleanup' }).click();
   await expect(dialog).toHaveCount(0);
@@ -67,7 +70,8 @@ test('reviews hourly runtime cleanup targets from the alert and glowing cleanup 
   await cleanupButton.click();
   await expect(dialog).toBeVisible();
 
-  for (let index = 0; index < 4; index += 1) await checks.nth(index).uncheck();
+  // clear all cleanup selections
+  for (let index = 0; index < 5; index += 1) await checks.nth(index).uncheck();
   await expect(dialog.getByRole('button', { name: 'Dismiss all' })).toBeVisible();
   await checks.nth(1).check();
   await checks.nth(3).check();

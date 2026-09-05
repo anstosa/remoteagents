@@ -1125,6 +1125,8 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .more-menu .switch-pr-actions > .switch-pr-checkout { color: var(--green); }
 .more-menu .switch-pr-actions > .switch-pr-action:hover { border-color: var(--blue); background: var(--surface-1); color: var(--blue); }
 .more-menu .switch-pr-actions > .switch-pr-checkout:not(:disabled):hover { border-color: var(--green); color: var(--green); }
+.more-menu .switch-pr-actions > .switch-branch-delete { width: 1.85rem; padding: 0; color: var(--red); }
+.more-menu .switch-pr-actions > .switch-branch-delete:not(:disabled):hover { border-color: var(--red); color: var(--red); }
 
 .more-menu-divider { height: 1px; margin: .25rem .35rem; border: 0; background: color-mix(in srgb, var(--surface-2) 72%, transparent); }
 .attachment-input { display: none; }

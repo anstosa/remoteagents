@@ -1,5 +1,114 @@
 import { expect, test } from '@playwright/test';
 
+// verify direct external preview routing
+test('loads direct external previews without managed proxy endpoints', async ({ page }) => {
+  const directUrl = 'https://external-preview.example/map/?site=portable';
+  const projectRequests: string[] = [];
+  const requestPaths: string[] = [];
+  // record every requested endpoint
+  page.on('request', request => { requestPaths.push(new URL(request.url()).pathname); });
+  await page.setViewportSize({ width: 1400, height: 850 });
+  await page.addInitScript(() => {
+    class MockWebSocket {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSED = 3;
+      readyState = MockWebSocket.CONNECTING;
+      onopen: ((event: Event) => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      private outputSent = false;
+      // open the simulated socket
+      constructor(readonly url: string | URL) { window.setTimeout(() => { this.readyState = MockWebSocket.OPEN; this.onopen?.(new Event('open')); }); }
+      // publish one direct project link
+      send(value: string) {
+        const request: { type?: unknown } = JSON.parse(value);
+        // ignore non-output sockets and later requests
+        if (this.outputSent || !String(this.url).includes('/ws/logs/') || request.type !== 'viewport') return;
+        this.outputSent = true;
+        window.setTimeout(() => this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ v: 1, type: 'reset', text: 'Admin https://external-preview.example/admin' }) })));
+      }
+      // close the simulated socket
+      close() { this.readyState = MockWebSocket.CLOSED; this.onclose?.(new CloseEvent('close')); }
+    }
+    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
+  });
+  // serve the portable external target
+  await page.context().route('https://external-preview.example/**', async route => {
+    projectRequests.push(route.request().url());
+    await route.fulfill({ contentType: 'text/html', body: '<main>Direct external preview</main><script>parent.postMessage({ type: "rac-browser-location", url: "https://external-preview.example/forged" }, "*")</script>' });
+  });
+  // serve one direct-preview dashboard
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    // publish an authenticated session
+    if (path === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    // publish the direct project target
+    if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-direct', sessionId: 'socket:$1', workspace: '/worktrees/external-preview', worktreeId: 'external-preview', worktreeLabel: 'External preview', worktreeOrder: 0, title: 'Ready', projectUrl: directUrl, projectProxied: false, stack: { actions: ['start', 'stop', 'restart'], running: true, tunnel: true } }], projects: [] } });
+    // serve the required log ticket
+    if (path === '/api/agents/agent-direct/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    // serve empty agent collections
+    if (path === '/api/agents/agent-direct/saved-prompts' || path === '/api/agents/agent-direct/prompt-history' || path === '/api/agents/agent-direct/queued-prompts') return route.fulfill({ json: { prompts: [] } });
+    // serve empty worktree notes
+    if (path === '/api/worktrees/external-preview/notes') return route.fulfill({ json: { notes: [] } });
+    // serve an unavailable push key
+    if (path === '/api/push/public-key') return route.fulfill({ json: {} });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  const controls = page.getByRole('group', { name: 'Project controls' });
+  await expect(controls.getByRole('link', { name: 'Open' })).toHaveAttribute('href', directUrl);
+  const split = controls.getByRole('button', { name: 'Open project in split view' });
+  await expect(split).toBeVisible();
+  const adminLink = page.getByRole('link', { name: 'Open https://external-preview.example/admin' });
+  await expect(adminLink).toBeVisible();
+  const closedPopupPromise = page.waitForEvent('popup');
+  await adminLink.click();
+  const closedPopup = await closedPopupPromise;
+  await expect(closedPopup).toHaveURL('https://external-preview.example/admin');
+  await closedPopup.close();
+  await split.click();
+
+  const browser = page.getByRole('dialog', { name: 'Browser' });
+  const frame = browser.locator('iframe[title="Project browser"]');
+  await expect(frame).toHaveAttribute('src', directUrl);
+  await expect(page.frameLocator('iframe[title="Project browser"]').getByText('Direct external preview')).toBeVisible();
+  const address = browser.getByRole('textbox', { name: 'Browser address' });
+  await expect(address).toHaveValue(directUrl);
+  const home = browser.getByRole('button', { name: 'Go to project home' });
+  await expect(home).toBeDisabled();
+  await address.fill('https://external-preview.example/map/details?site=portable');
+  await address.press('Enter');
+  await expect(frame).toHaveAttribute('src', 'https://external-preview.example/map/details?site=portable');
+  await expect(home).toBeEnabled();
+  await home.click();
+  await expect(frame).toHaveAttribute('src', directUrl);
+  await expect(address).toHaveValue(directUrl);
+  const viewport = browser.getByRole('button', { name: 'Use mobile viewport' });
+  const requestCountBeforeResize = projectRequests.length;
+  await viewport.click();
+  await expect(browser.locator('.browser-frame-shell')).toHaveClass(/mobile/u);
+  expect(projectRequests).toHaveLength(requestCountBeforeResize);
+  await expect(frame).toHaveAttribute('src', directUrl);
+  const refresh = browser.getByRole('button', { name: 'Refresh browser' });
+  await expect(refresh).toBeEnabled();
+  await refresh.click();
+  await expect.poll(() => projectRequests.length).toBeGreaterThan(requestCountBeforeResize);
+  await expect(frame).toHaveAttribute('src', directUrl);
+  expect(projectRequests.map(request => new URL(request).pathname).some(path => path.startsWith('/__rac/'))).toBe(false);
+  expect(requestPaths.filter(path => path.includes('/__rac/browser-') || /browser.*device.*token/u.test(path))).toEqual([]);
+  let splitPopupOpened = false;
+  // detect a duplicate top-level navigation
+  page.once('popup', popup => { splitPopupOpened = true; void popup.close(); });
+  await adminLink.click();
+  await expect(frame).toHaveAttribute('src', 'https://external-preview.example/admin');
+  await expect(address).toHaveValue('https://external-preview.example/admin');
+  await expect(page.frameLocator('iframe[title="Project browser"]').getByText('Direct external preview')).toBeVisible();
+  expect(splitPopupOpened).toBe(false);
+});
+
 // verify retained browser navigation
 test('opens the configured project in desktop and mobile split views', async ({ page }) => {
   test.setTimeout(75_000);

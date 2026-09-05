@@ -186,16 +186,16 @@ describe('DiscoveryService dashboard', () => {
     const finder = socketFinder();
     const tmux = paneLister([{ paneId: '%1', sessionId: '$0', pid: 123, path: '/host/ferry', title: 'Ferry' }]);
     const processes = processInspector({ codex: true });
-    const project = testProject({ id: 'ferry', label: 'Ferry FYI', path: '/worktrees/ferry', hostPath: '/host/ferry', newTask: 'new {taskId}', push: { label: 'Commit/Push', prompt: '$push' }, projectUrl: 'https://default.example.com', projectPort: 3000, worktreeOverrides: [{ path: '/worktrees/ferry', projectUrl: 'https://ferry.agents.example.com', projectPort: 4000 }] });
+    const project = testProject({ id: 'ferry', label: 'Ferry FYI', path: '/worktrees/ferry', hostPath: '/host/ferry', newTask: 'new {taskId}', push: { label: 'Commit/Push', prompt: '$push' }, projectUrl: 'https://default.example.com', projectPort: 3000, worktreeOverrides: [{ path: '/worktrees/ferry', projectUrl: 'https://ferry.external.example.com' }] });
     const service = new DiscoveryService(finder, tmux as never, processes, undefined, undefined, [project], undefined, listImpl({ '/worktrees/ferry': [entry('/worktrees/ferry', 'main')] }));
 
     const dashboard = await service.dashboard();
 
     expect(dashboard.agents).toHaveLength(1);
     // the pane's host path matches the Main worktree's hostPath, not its console path
-    expect(dashboard.agents[0]).toMatchObject({ workspace: '/worktrees/ferry', projectId: 'ferry', worktreeId: 'ferry:/worktrees/ferry', newTaskConfigured: true, push: { label: 'Commit/Push', prompt: '$push' }, projectUrl: 'https://ferry.agents.example.com' });
+    expect(dashboard.agents[0]).toMatchObject({ workspace: '/worktrees/ferry', projectId: 'ferry', worktreeId: 'ferry:/worktrees/ferry', newTaskConfigured: true, push: { label: 'Commit/Push', prompt: '$push' }, projectUrl: 'https://ferry.external.example.com', projectProxied: false });
     // the Worktree is carried under its Project; an active Worktree omits idle git metadata
-    expect(dashboard.projects[0]?.worktrees).toMatchObject([{ id: 'ferry:/worktrees/ferry', main: true, pinned: true }]);
+    expect(dashboard.projects[0]?.worktrees).toMatchObject([{ id: 'ferry:/worktrees/ferry', main: true, pinned: true, projectUrl: 'https://ferry.external.example.com', projectProxied: false }]);
   });
 
   it('prefers a valid reported @rac_session over the conversation the fd-walk finds, and reads its title', async () => {
@@ -556,7 +556,7 @@ describe('DiscoveryService dashboard', () => {
   it('publishes distinct worktree previews and replacement commands without inventing checkouts', async () => {
     const commands = { start: 'full up', stop: 'full stop', migrate: 'full migrate' };
     const project = testProject({
-      id: 'app', path: '/repo', commands, projectUrl: 'https://main.example.com', projectPort: 3000,
+      id: 'app', path: '/repo', commands, projectUrl: 'https://main.external.example.com',
       worktreeOverrides: [
         { path: '/repo/feature', commands: { start: 'ui up' }, projectUrl: 'https://feature.example.com', projectPort: 4000 },
         { path: '/repo/readonly', commands: {} },
@@ -569,15 +569,19 @@ describe('DiscoveryService dashboard', () => {
     const dashboard = await service.dashboard();
     const worktrees = service.worktreesNow();
     expect(worktrees).toHaveLength(4);
-    expect(worktrees.find(worktree => worktree.path === '/repo')).toMatchObject({ commands, projectUrl: 'https://main.example.com', projectPort: 3000 });
+    expect(worktrees.find(worktree => worktree.path === '/repo')).toMatchObject({ commands, projectUrl: 'https://main.external.example.com' });
+    expect(worktrees.find(worktree => worktree.path === '/repo')).not.toHaveProperty('projectPort');
     expect(worktrees.find(worktree => worktree.path === '/repo/feature')).toMatchObject({ commands: { start: 'ui up' }, projectUrl: 'https://feature.example.com', projectPort: 4000 });
     expect(worktrees.find(worktree => worktree.path === '/repo/feature')?.commands).not.toHaveProperty('migrate');
     expect(worktrees.find(worktree => worktree.path === '/repo/readonly')?.commands).toEqual({});
     expect(worktrees.find(worktree => worktree.path === '/repo/readonly')).not.toHaveProperty('projectUrl');
     expect(worktrees.find(worktree => worktree.path === '/repo/readonly')).not.toHaveProperty('projectPort');
-    expect(worktrees.find(worktree => worktree.path === '/repo/feature-extra')).toMatchObject({ commands, projectUrl: 'https://main.example.com' });
+    expect(worktrees.find(worktree => worktree.path === '/repo/feature-extra')).toMatchObject({ commands, projectUrl: 'https://main.external.example.com' });
     expect(dashboard.projects[0]?.worktrees.find(worktree => worktree.path === '/repo/feature')?.projectUrl).toBe('https://feature.example.com');
+    expect(dashboard.projects[0]?.worktrees.find(worktree => worktree.path === '/repo/feature')?.projectProxied).toBe(true);
+    expect(dashboard.projects[0]?.worktrees.find(worktree => worktree.path === '/repo')?.projectProxied).toBe(false);
     expect(dashboard.projects[0]?.worktrees.find(worktree => worktree.path === '/repo/readonly')?.projectUrl).toBeUndefined();
+    expect(dashboard.projects[0]?.worktrees.find(worktree => worktree.path === '/repo/readonly')?.projectProxied).toBeUndefined();
   });
 
   // configured paths outrank branch names and detached status without inventing checkouts

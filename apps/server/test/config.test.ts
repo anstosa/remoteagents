@@ -52,11 +52,40 @@ describe('project configuration', () => {
     expect(config.projects[0]?.projectUrl).toBe('https://main.example.com');
   });
 
+  // resolve direct preview inheritance and complete mode replacement
+  it('canonicalizes direct external previews and worktree preview modes', async () => {
+    const repo = await gitRepo();
+    const config = await validateConfig(await withProject(repo, {
+      externalUrl: 'https://Preview.Example.com:443/',
+      worktreeOverrides: [
+        { path: '../inherited' },
+        { path: '../direct', externalUrl: 'https://direct.example.com' },
+        { path: '../proxied', hostname: 'proxy.example.com', port: 4041 },
+        { path: '../disabled-direct', externalUrl: null },
+        { path: '../disabled-proxy', hostname: null, port: null }
+      ]
+    }));
+
+    expect(config.projects[0]).toMatchObject({ projectUrl: 'https://preview.example.com' });
+    expect(config.projects[0]).not.toHaveProperty('projectPort');
+    expect(config.projects[0]?.worktreeOverrides).toEqual([
+      { path: join(repo, '..', 'inherited'), projectUrl: 'https://preview.example.com' },
+      { path: join(repo, '..', 'direct'), projectUrl: 'https://direct.example.com' },
+      { path: join(repo, '..', 'proxied'), projectUrl: 'https://proxy.example.com', projectPort: 4041 },
+      { path: join(repo, '..', 'disabled-direct') },
+      { path: join(repo, '..', 'disabled-proxy') }
+    ]);
+  });
+
   // reject ambiguous or unsafe checkout settings
   it.each([
     { path: '' }, { path: 'bad\0path' }, { path: '.', port: 4000 },
     { path: '.', hostname: 'feature.example.com' }, { path: '.', port: null },
     { path: '.', port: 4000, hostname: null }, { path: '.', port: null, hostname: 'feature.example.com' },
+    { path: '.', externalUrl: 'https://direct.example.com', port: 4000, hostname: 'feature.example.com' },
+    { path: '.', externalUrl: null, port: null, hostname: null },
+    { path: '.', externalUrl: 'http://direct.example.com' },
+    { path: '.', externalUrl: 'https://direct.example.com/path' },
     { path: '.', port: 0, hostname: 'feature.example.com' },
     { path: '.', port: 4000, hostname: 'https://feature.example.com' },
     { path: '.', commands: { start: 'bad\0command' } }, { path: '.', commands: { unknown: 'run' } },
@@ -187,6 +216,19 @@ describe('project configuration', () => {
     expect(config.projects[0]?.projectUrl).toBe('https://a.example.com');
     expect(config.projects[0]?.projectPort).toBe(4041);
     await expect(validateConfig(await withProject(repo, { port: 4041 }))).rejects.toThrow('both port and hostname');
+  });
+
+  // reject ambiguous and non-canonical direct project previews
+  it.each([
+    { externalUrl: 'https://direct.example.com', hostname: 'proxy.example.com', port: 4041 },
+    { externalUrl: 'http://direct.example.com' },
+    { externalUrl: 'https://user:secret@direct.example.com' },
+    { externalUrl: 'https://direct.example.com/path' },
+    { externalUrl: 'https://direct.example.com?mode=preview' },
+    { externalUrl: 'https://direct.example.com#preview' }
+  ])('rejects invalid project preview %j', async preview => {
+    const repo = await gitRepo();
+    await expect(validateConfig(await withProject(repo, preview))).rejects.toThrow();
   });
 
   it('accepts project-level push, stack commands, new task and hostPath', async () => {

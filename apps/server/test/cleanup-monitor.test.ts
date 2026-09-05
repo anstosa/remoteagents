@@ -16,7 +16,7 @@ describe('CleanupMonitor', () => {
     monitor.start();
     await vi.waitFor(() => expect(scans).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(1));
-    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'cleanup', tag: 'runtime-cleanup', url: '/#cleanup' }));
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'cleanup', title: 'Cleanup available', body: '1 cleanup target is ready.', tag: 'runtime-cleanup', url: '/#cleanup' }));
 
     await vi.advanceTimersByTimeAsync(60 * 60 * 1_000);
     await vi.waitFor(() => expect(scans).toHaveBeenCalledTimes(2));

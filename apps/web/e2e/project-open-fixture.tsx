@@ -31,9 +31,41 @@ export const renderStoppedProjectOpenControls = (root: HTMLElement) => {
   }));
 };
 
+// render an available direct project without stack commands
+export const renderDirectProjectOpenControls = (root: HTMLElement) => {
+  createRoot(root).render(createElement(ProjectOpen, {
+    url: 'https://external-preview.example/map/',
+    projectProxied: false,
+    stack: { actions: [], tunnel: true },
+    onBrowserToggle: () => { root.dataset.browser = 'open'; }
+  }));
+};
+
+// render a direct project with explicit failed health
+export const renderUnavailableDirectProjectOpenControls = (root: HTMLElement) => {
+  createRoot(root).render(createElement(ProjectOpen, {
+    url: 'https://external-preview.example/map/',
+    projectProxied: false,
+    stack: { actions: ['start'], running: false, tunnel: false },
+    onBrowserToggle: () => { root.dataset.browser = 'open'; },
+    onStackAction: () => {}
+  }));
+};
+
 export const renderStackOnlyControls = (root: HTMLElement) => {
   createRoot(root).render(createElement(ProjectOpen, {
     stack: { actions: ['start', 'stop', 'build', 'restart'], running: true },
     onStackAction: action => { root.dataset.action = action; }
   }));
+};
+
+export const renderStackOnlyStatuses = (root: HTMLElement) => {
+  // keep status fixtures static
+  const ignoreStackAction = () => {};
+  // render each stack-only status
+  createRoot(root).render(createElement('div', {},
+    createElement(ProjectOpen, { stack: { actions: ['start'], running: true }, onStackAction: ignoreStackAction }),
+    createElement(ProjectOpen, { stack: { actions: ['start'], running: false }, onStackAction: ignoreStackAction }),
+    createElement(ProjectOpen, { stack: { actions: ['start'] }, onStackAction: ignoreStackAction })
+  ));
 };

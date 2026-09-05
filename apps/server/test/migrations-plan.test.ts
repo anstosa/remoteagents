@@ -207,10 +207,10 @@ describe('planMigration — config mapping', () => {
 
   // retain new-schema override fields while removing retired agent keys
   it('preserves existing project worktree overrides during a config-only migration', () => {
-    const worktreeOverrides = [{ path: '/repo-wt', commands: {}, hostname: null, port: null }];
-    const raw = { newAgentCommand: 'codex', projects: [{ id: 'p', path: '/p', command: 'legacy', worktreeOverrides }] };
+    const worktreeOverrides = [{ path: '/repo-wt', commands: {}, externalUrl: 'https://worktree.example.com' }];
+    const raw = { newAgentCommand: 'codex', projects: [{ id: 'p', path: '/p', command: 'legacy', externalUrl: 'https://project.example.com', worktreeOverrides }] };
     const plan = planMigration(raw, facts([]));
-    expect(plan.newConfig.projects).toEqual([{ id: 'p', path: '/p', worktreeOverrides }]);
+    expect(plan.newConfig.projects).toEqual([{ id: 'p', path: '/p', externalUrl: 'https://project.example.com', worktreeOverrides }]);
   });
 });
 

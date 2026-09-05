@@ -35,8 +35,8 @@ export class CleanupMonitor {
       if (targets.length === 0) return;
       await this.push.notify({
         kind: 'cleanup',
-        title: 'Runtime cleanup available',
-        body: `${targets.length} stale runtime ${targets.length === 1 ? 'target is' : 'targets are'} ready to clean up.`,
+        title: 'Cleanup available',
+        body: `${targets.length} cleanup ${targets.length === 1 ? 'target is' : 'targets are'} ready.`,
         tag: 'runtime-cleanup',
         url: '/#cleanup'
       });

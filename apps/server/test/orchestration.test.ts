@@ -5,8 +5,8 @@ import type { Agent, Worktree } from '../src/domain/models.js';
 import { stated } from './helpers/agent.js';
 import { OrchestrationService, type OrchestrationDependencies } from '../src/orchestration/service.js';
 
-const cora: Worktree = { id: 'cora', projectId: 'proj', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: true, main: true, detached: false, locked: false, commands: { build: 'docker compose build' } };
-const dave: Worktree = { id: 'dave', projectId: 'proj', label: 'Dave', path: '/worktrees/dave', identity: '/worktrees/dave', available: true, pinned: false, main: false, detached: false, locked: false };
+const cora: Worktree = { id: 'cora', projectId: 'proj', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: true, main: true, detached: false, locked: false, commands: { build: 'docker compose build' }, projectUrl: 'https://cora.external.example.com' };
+const dave: Worktree = { id: 'dave', projectId: 'proj', label: 'Dave', path: '/worktrees/dave', identity: '/worktrees/dave', available: true, pinned: false, main: false, detached: false, locked: false, projectUrl: 'https://dave.example.com', projectPort: 4000 };
 const config: ValidatedConfig = {
   name: 'Remote Agents',
   remoteServers: [{ url: new URL('https://remote.example.com') }],
@@ -17,7 +17,7 @@ const config: ValidatedConfig = {
   projects: []
 };
 const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
-const activeAgent: Agent = stated({ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.identity, branch: 'feature/cora', title: 'Ready', projectId: cora.projectId, worktreeId: cora.id, gitStatus: { files: 2, staged: 0, unstaged: 2, untracked: 0, conflicted: 0 } });
+const activeAgent: Agent = stated({ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.identity, branch: 'feature/cora', title: 'Ready', projectId: cora.projectId, worktreeId: cora.id, projectUrl: cora.projectUrl, projectProxied: false, gitStatus: { files: 2, staged: 0, unstaged: 2, untracked: 0, conflicted: 0 } });
 
 // build one fully structural dependency set
 function dependencies(overrides: Partial<OrchestrationDependencies> = {}): OrchestrationDependencies {
@@ -96,11 +96,12 @@ describe('OrchestrationService', () => {
     const service = new OrchestrationService(dependencies());
 
     await expect(service.listInstances()).resolves.toMatchObject({ ok: true, version: 'v1', value: [{ local: true, name: 'Remote Agents' }, { local: false, name: 'Remote' }] });
+    await expect(service.listAgents()).resolves.toMatchObject({ ok: true, value: [{ id: 'agent-cora', projectUrl: 'https://cora.external.example.com', projectProxied: false }] });
     await expect(service.listWorktrees()).resolves.toMatchObject({
       ok: true,
       value: [
-        { id: 'cora', active: true, agentIds: ['agent-cora'], branch: 'feature/cora', order: 0 },
-        { id: 'dave', active: false, agentIds: [], branch: 'main', order: 1 }
+        { id: 'cora', active: true, agentIds: ['agent-cora'], branch: 'feature/cora', order: 0, projectUrl: 'https://cora.external.example.com', projectProxied: false },
+        { id: 'dave', active: false, agentIds: [], branch: 'main', order: 1, projectUrl: 'https://dave.example.com', projectProxied: true }
       ]
     });
   });

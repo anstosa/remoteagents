@@ -73,6 +73,54 @@ describe('GET /api/worktrees/:id/removal', () => {
   });
 });
 
+describe('guarded branch deletion API', () => {
+  it('returns fresh branch facts from the worktree repository', async () => {
+    const facts = { branch: 'feature/done', checkedOut: false, dirtyCount: 0, pushed: true, merged: true, defaultBranch: false };
+    const worktreeManagement = { branchRemoval: async () => ({ ok: true, facts }) } as never;
+    const server = await app({ discovery: discoveryStub(), worktreeManagement, ...(await stores()) });
+    try {
+      const response = await server.inject({ method: 'GET', url: `/api/worktrees/${encodeURIComponent(linked.id)}/branch-removal?branch=${encodeURIComponent(facts.branch)}`, headers: readHeaders });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(facts);
+    } finally { await server.close(); }
+  });
+
+  it('passes explicit loss acknowledgement and refreshes cleanup after deletion', async () => {
+    const deletions: Array<{ projectId: string; branch: string; discardUnpushed: boolean }> = [];
+    let scans = 0;
+    let refreshes = 0;
+    const worktreeManagement = {
+      // record the guarded delete contract
+      deleteBranchGuarded: async (projectId: string, branch: string, discardUnpushed: boolean) => {
+        deletions.push({ projectId, branch, discardUnpushed });
+        return { ok: true };
+      }
+    } as never;
+    const cleanup = { pending: () => [], scan: async () => { scans += 1; return []; }, cleanup: async () => [] } as never;
+    const updates = { setLoader: () => {}, refresh: async () => { refreshes += 1; }, close: () => {} } as never;
+    const server = await app({ discovery: discoveryStub(), worktreeManagement, cleanup, dashboardUpdates: updates, ...(await stores()) });
+    try {
+      const response = await server.inject({ method: 'DELETE', url: `/api/worktrees/${encodeURIComponent(linked.id)}/branch`, headers: mutationHeaders, payload: { branch: 'feature/risky', discardUnpushed: true } });
+      expect(response.statusCode).toBe(204);
+      expect(deletions).toEqual([{ projectId: 'proj', branch: 'feature/risky', discardUnpushed: true }]);
+      expect(scans).toBe(1);
+      expect(refreshes).toBe(1);
+    } finally { await server.close(); }
+  });
+
+  it('rejects malformed input and preserves service guard failures', async () => {
+    const worktreeManagement = { deleteBranchGuarded: async () => ({ ok: false, status: 409, error: 'the branch is checked out; remove its worktree first' }) } as never;
+    const server = await app({ discovery: discoveryStub(), worktreeManagement, ...(await stores()) });
+    try {
+      const malformed = await server.inject({ method: 'DELETE', url: `/api/worktrees/${encodeURIComponent(linked.id)}/branch`, headers: mutationHeaders, payload: { branch: 'feature', discardUnpushed: 'yes' } });
+      expect(malformed.statusCode).toBe(400);
+      const refused = await server.inject({ method: 'DELETE', url: `/api/worktrees/${encodeURIComponent(linked.id)}/branch`, headers: mutationHeaders, payload: { branch: 'feature' } });
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json()).toEqual({ error: 'the branch is checked out; remove its worktree first' });
+    } finally { await server.close(); }
+  });
+});
+
 describe('DELETE /api/worktrees/:id', () => {
   it('refuses main, locked, a running agent, and a dirty tree without discard — with no side effects', async () => {
     const killed: string[] = [];

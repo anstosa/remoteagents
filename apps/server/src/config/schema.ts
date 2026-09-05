@@ -20,10 +20,12 @@ const stackCommands = z.object({ start: command.optional(), stop: command.option
 // share preview validation across defaults and checkout overrides
 const previewPort = z.number().int().min(1).max(65535);
 const previewHostname = z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/);
+const previewExternalUrl = z.string();
 // overrides select discovered checkouts rather than declaring new ones
 const worktreeOverride = z.object({
   path: z.string().min(1).max(4096).refine(value => !value.includes('\0'), 'NUL is forbidden'),
   commands: stackCommands.optional(),
+  externalUrl: previewExternalUrl.nullable().optional(),
   port: previewPort.nullable().optional(),
   hostname: previewHostname.nullable().optional()
 }).strict();
@@ -79,7 +81,7 @@ const sourceSchema = z.object({
   // Main worktree's container path to the host under Docker; `worktreesDirectory` is
   // where Add creates new checkouts (default `../<basename>-worktrees`, resolved
   // against the Main worktree). Scratch-only first runs omit `projects`.
-  projects: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/).refine(value => value !== 'agent' && value !== 'scratch', 'project id `agent` and `scratch` are reserved'), label: z.string().max(120).optional(), path: z.string().min(1), hostPath: z.string().startsWith('/').optional(), worktreeOrder: z.array(z.string().min(1).max(4096).refine(value => !value.includes('\0'), 'NUL is forbidden')).max(2000).optional(), worktreeOverrides: z.array(worktreeOverride).max(2000).optional(), worktreesDirectory: z.string().min(1).max(4096).refine(value => !value.includes('\0'), 'NUL is forbidden').optional(), port: previewPort.optional(), hostname: previewHostname.optional(), commands: stackCommands.optional(), newTask: command.optional(), push: pushAction }).strict()).max(100).default([])
+  projects: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/).refine(value => value !== 'agent' && value !== 'scratch', 'project id `agent` and `scratch` are reserved'), label: z.string().max(120).optional(), path: z.string().min(1), hostPath: z.string().startsWith('/').optional(), worktreeOrder: z.array(z.string().min(1).max(4096).refine(value => !value.includes('\0'), 'NUL is forbidden')).max(2000).optional(), worktreeOverrides: z.array(worktreeOverride).max(2000).optional(), worktreesDirectory: z.string().min(1).max(4096).refine(value => !value.includes('\0'), 'NUL is forbidden').optional(), externalUrl: previewExternalUrl.optional(), port: previewPort.optional(), hostname: previewHostname.optional(), commands: stackCommands.optional(), newTask: command.optional(), push: pushAction }).strict()).max(100).default([])
 }).strict();
 export type ConfigInput = z.input<typeof sourceSchema>;
 export type RemoteServer = { url: URL };
@@ -123,30 +125,46 @@ function validateNewTask(template: string): void {
   if (/\{(?!taskId\})/.test(template)) throw new Error('unknown new task placeholder');
 }
 type ParsedProject = z.output<typeof sourceSchema>['projects'][number];
+type ParsedPreview = { externalUrl?: string | null; hostname?: string | null; port?: number | null };
+type ResolvedPreview = Pick<Project, 'projectUrl' | 'projectPort'>;
+// resolve one inherited, direct, proxied, or disabled preview mode
+function resolvePreview(raw: ParsedPreview, label: string, inherited: ResolvedPreview = {}): ResolvedPreview {
+  const hasExternalUrl = raw.externalUrl !== undefined;
+  const hasHostname = raw.hostname !== undefined;
+  const hasPort = raw.port !== undefined;
+  // reject mixed direct and proxied modes
+  if (hasExternalUrl && (hasHostname || hasPort)) throw new Error(`${label} must define externalUrl or hostname and port, not both`);
+  // resolve an explicit direct mode or disablement
+  if (raw.externalUrl !== undefined) return raw.externalUrl === null ? {} : { projectUrl: canonicalOrigin(raw.externalUrl, `${label} externalUrl`).origin };
+  // inherit the entire preview mode when no fields are present
+  if (!hasHostname && !hasPort) return inherited;
+  // reject partial proxied modes
+  if (!hasHostname || !hasPort) throw new Error(`${label} must define both port and hostname`);
+  // resolve an explicit proxied disablement
+  if (raw.hostname === null && raw.port === null) return {};
+  // reject mixed null and concrete proxy fields
+  if (raw.hostname === null || raw.port === null) throw new Error(`${label} must define both port and hostname or set both to null`);
+  return { projectUrl: `https://${raw.hostname}`, projectPort: raw.port };
+}
 // resolve complete settings once for exact checkout matching during discovery
-async function resolveWorktreeOverrides(raw: ParsedProject): Promise<WorktreeOverride[] | undefined> {
+async function resolveWorktreeOverrides(raw: ParsedProject, projectPreview: ResolvedPreview): Promise<WorktreeOverride[] | undefined> {
   // preserve configurations without checkout overrides
   if (raw.worktreeOverrides === undefined) return undefined;
   const overrides: WorktreeOverride[] = [];
   const paths = new Set<string>();
   // canonicalize each selector and preserve explicit disablement
   for (const override of raw.worktreeOverrides) {
-    // previews must be wholly inherited, replaced, or disabled
-    if ((override.port === undefined) !== (override.hostname === undefined) || (override.port === null) !== (override.hostname === null)) {
-      throw new Error(`project ${raw.id} worktree override ${override.path} must define both port and hostname or set both to null`);
-    }
     const absolute = resolve(raw.path, override.path);
     const path = await realpath(absolute).catch(() => absolute);
     // aliases must not create conflicting settings for one checkout
     if (paths.has(path)) throw new Error(`project ${raw.id} has duplicate worktree override path ${path}`);
     paths.add(path);
     const commands = override.commands ?? raw.commands;
-    const hostname = override.hostname === undefined ? raw.hostname : override.hostname;
-    const port = override.port === undefined ? raw.port : override.port;
+    const preview = resolvePreview(override, `project ${raw.id} worktree override ${override.path}`, projectPreview);
     overrides.push({
       path,
       ...(commands === undefined ? {} : { commands }),
-      ...(hostname == null || port == null ? {} : { projectUrl: `https://${hostname}`, projectPort: port })
+      ...preview
     });
   }
   return overrides;
@@ -168,9 +186,9 @@ function resolveWorktreesDirectory(configured: string | undefined, mainWorktree:
 // failing the whole boot (ADR 0003).
 async function resolveProject(raw: ParsedProject): Promise<Project> {
   if (raw.newTask !== undefined) validateNewTask(raw.newTask);
-  if ((raw.port === undefined) !== (raw.hostname === undefined)) throw new Error(`project ${raw.id} must define both port and hostname`);
   const label = raw.label ?? raw.id;
-  const worktreeOverrides = await resolveWorktreeOverrides(raw);
+  const preview = resolvePreview(raw, `project ${raw.id}`);
+  const worktreeOverrides = await resolveWorktreeOverrides(raw, preview);
   // canonical checkout paths keep ordering independent of labels and branches
   const worktreeOrder = raw.worktreeOrder === undefined ? undefined : await Promise.all(raw.worktreeOrder.map(async path => {
     const absolute = resolve(raw.path, path);
@@ -182,7 +200,7 @@ async function resolveProject(raw: ParsedProject): Promise<Project> {
     ...(raw.commands === undefined ? {} : { commands: raw.commands as StackCommands }),
     ...(raw.newTask === undefined ? {} : { newTask: raw.newTask }),
     ...(raw.hostPath === undefined ? {} : { hostPath: resolve(raw.hostPath) }),
-    ...(raw.hostname === undefined ? {} : { projectUrl: `https://${raw.hostname}`, projectPort: raw.port })
+    ...preview
   };
   const canonical = await realpath(raw.path).catch(() => undefined);
   // a path that does not resolve is unavailable: there is no directory to launch into

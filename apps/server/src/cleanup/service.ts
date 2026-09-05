@@ -7,7 +7,8 @@ import type { AgentKind, PaneScan } from '../adapters/types.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 
 type DiscoverySnapshot = { refresh(force?: boolean): Promise<Agent[]> };
-type CleanupAction = { target: CleanupTarget; socket?: SocketRef; paneId?: string; pid?: number };
+type BranchCleanup = { mergedBranches(): Promise<Array<{ projectId: string; projectLabel: string; branch: string }>>; deleteMergedBranch(projectId: string, branch: string): Promise<boolean> };
+type CleanupAction = { target: CleanupTarget; socket?: SocketRef; paneId?: string; pid?: number; branch?: { projectId: string; name: string } };
 
 const opaqueId = (kind: CleanupTargetKind, identity: string) => `cleanup-${createHash('sha256').update(`${kind}\0${identity}`).digest('base64url').slice(0, 24)}`;
 const paneIdentity = (pane: Pane) => `${pane.socket.fingerprint}:${pane.paneId}`;
@@ -17,11 +18,13 @@ export class CleanupService {
   private current = new Map<string, CleanupAction>();
   private scanInFlight?: Promise<CleanupTarget[]>;
 
+  // configure runtime and branch cleanup dependencies
   constructor(
     private readonly discovery: DiscoverySnapshot,
     private readonly finder: SocketFinder = new ProcSocketFinder(),
     private readonly tmux: Pick<TmuxAdapter, 'listPanes' | 'close' | 'terminateHostProcess'> = new TmuxAdapter(),
-    private readonly processInspector: ProcessInspector & HostProcessInspector = new ProcInspector()
+    private readonly processInspector: ProcessInspector & HostProcessInspector = new ProcInspector(),
+    private readonly branchCleanup?: BranchCleanup
   ) {}
 
   pending(): CleanupTarget[] {
@@ -55,10 +58,11 @@ export class CleanupService {
   }
 
   private async discover(): Promise<CleanupTarget[]> {
-    const [sockets, agents, processes] = await Promise.all([
+    const [sockets, agents, processes, mergedBranches] = await Promise.all([
       this.finder.find(),
       this.discovery.refresh(true),
-      this.processInspector.listProcesses()
+      this.processInspector.listProcesses(),
+      this.branchCleanup?.mergedBranches().catch(() => []) ?? Promise.resolve([])
     ]);
     const panes = (await Promise.all(sockets.map(socket => this.tmux.listPanes(socket)))).flat();
     const recognized = await Promise.all(panes.map(pane => this.processInspector.recognizeAgent(pane.pid)));
@@ -114,6 +118,14 @@ export class CleanupService {
       }
     }
 
+    // add merged, inactive local branches as safe cleanup targets
+    for (const branch of mergedBranches) {
+      candidates.push({
+        target: this.target('merged-branch', `${branch.projectId}:${branch.branch}`, branch.branch, `Merged branch in ${branch.projectLabel}`),
+        branch: { projectId: branch.projectId, name: branch.branch }
+      });
+    }
+
     const next = new Map(candidates.map(candidate => [candidate.target.id, candidate]));
     for (const id of this.dismissed) if (!next.has(id)) this.dismissed.delete(id);
     this.current = next;
@@ -125,6 +137,12 @@ export class CleanupService {
   }
 
   private async execute(action: CleanupAction): Promise<boolean> {
+    // route merged branches through the guarded branch cleaner
+    if (action.branch !== undefined) {
+      // reject an impossible provider mismatch
+      if (this.branchCleanup === undefined) return false;
+      return await this.branchCleanup.deleteMergedBranch(action.branch.projectId, action.branch.name);
+    }
     if (action.socket === undefined) return false;
     if (action.paneId !== undefined) return await this.tmux.close(action.socket, action.paneId);
     if (action.pid !== undefined) return await this.tmux.terminateHostProcess(action.socket, action.pid);

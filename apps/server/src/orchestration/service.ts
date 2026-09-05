@@ -172,7 +172,7 @@ function agentStatus(agent: DashboardPayload['agents'][number]): AgentStatusV1 {
     ...(agent.gitPrStatus === undefined ? {} : { gitPrStatus: agent.gitPrStatus }),
     ...(agent.gitUpstream === undefined ? {} : { gitUpstream: agent.gitUpstream }),
     ...(agent.pullRequest === undefined ? {} : { pullRequest: agent.pullRequest }),
-    ...(agent.projectUrl === undefined ? {} : { projectUrl: agent.projectUrl }),
+    ...(agent.projectUrl === undefined ? {} : { projectUrl: agent.projectUrl, projectProxied: agent.projectProxied ?? true }),
     ...(agent.question === undefined ? {} : { question: { id: agent.question.id, text: agent.question.text, choices: [...agent.question.choices] } }),
     attention: agentAttentionState(agent),
     unread: agent.unread
@@ -230,7 +230,7 @@ export class OrchestrationService {
         active: agents.length > 0,
         order: view?.order ?? 0,
         agentIds: agents.map(agent => agent.id),
-        ...(worktree.projectUrl === undefined ? {} : { projectUrl: worktree.projectUrl }),
+        ...(worktree.projectUrl === undefined ? {} : { projectUrl: worktree.projectUrl, projectProxied: worktree.projectPort !== undefined }),
         ...(primary?.branch === undefined ? {} : { branch: primary.branch }),
         ...(primary?.gitStatus === undefined ? {} : { gitStatus: primary.gitStatus }),
         ...(primary?.gitPrStatus === undefined ? {} : { gitPrStatus: primary.gitPrStatus }),

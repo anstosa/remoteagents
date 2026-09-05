@@ -37,6 +37,7 @@ export type AgentStatusV1 = {
   gitUpstream?: GitUpstreamSummary;
   pullRequest?: PullRequestSummary;
   projectUrl?: string;
+  projectProxied?: boolean;
   question?: { id: string; text: string; choices: string[] };
   attention: AgentAttentionState;
   unread: boolean;
@@ -59,6 +60,7 @@ export type WorktreeStatusV1 = {
   order: number;
   agentIds: string[];
   projectUrl?: string;
+  projectProxied?: boolean;
   branch?: string;
   gitStatus?: GitStatusSummary;
   gitPrStatus?: GitComparisonSummary;

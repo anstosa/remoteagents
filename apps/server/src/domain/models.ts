@@ -15,7 +15,7 @@ export type GitStatusChange = { code: string; path: string; originalPath?: strin
 export type GitStatusSummary = { files: number; staged: number; unstaged: number; untracked: number; conflicted: number; changes?: GitStatusChange[] };
 export type GitComparisonSummary = { base: string; files: number; changes?: GitStatusChange[] };
 export type GitUpstreamSummary = { upstream: string; ahead: number; behind: number };
-export type Agent = { id: string; paneId: string; sessionId: string; socketFingerprint: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind: AgentKind; attention: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; projectId?: string; worktreeId?: string; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; pullRequest?: PullRequestSummary; question?: InlineQuestion };
+export type Agent = { id: string; paneId: string; sessionId: string; socketFingerprint: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind: AgentKind; attention: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; projectId?: string; worktreeId?: string; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion };
 /**
  * A configured directory the console manages (config `projects[]`). A `repository`
  * Project's identity is the realpath of its common git directory, so two entries
@@ -40,7 +40,7 @@ export type Project = { id: string; label: string; path: string; identity: strin
  * are copied on so worktree-scoped services keep reading them from the worktree.
  */
 export type Worktree = { id: string; projectId: string; label: string; customLabel?: boolean; path: string; identity: string; hostPath?: string; available: boolean; pinned: boolean; main: boolean; detached: boolean; locked: boolean; lockedReason?: string; branch?: string; sha?: string; commands?: StackCommands; newTask?: string; push?: PromptAction; projectUrl?: string; projectPort?: number };
-export type CleanupTargetKind = 'orphan-worker' | 'stale-agent' | 'hud-pane' | 'hud-process';
+export type CleanupTargetKind = 'orphan-worker' | 'stale-agent' | 'hud-pane' | 'hud-process' | 'merged-branch';
 export type CleanupTarget = { id: string; kind: CleanupTargetKind; label: string; detail: string };
 /**
  * One Worktree on the wire. Carries the git identity fields the web renders (label,
@@ -48,7 +48,7 @@ export type CleanupTarget = { id: string; kind: CleanupTargetKind; label: string
  * with no live Agent — the same idle git metadata the flat list used to carry. Active
  * Worktrees omit the metadata (their Agent carries it).
  */
-export type DashboardWorktree = { id: string; projectId: string; label: string; customLabel?: boolean; path: string; available: boolean; pinned: boolean; main: boolean; detached: boolean; locked: boolean; order: number; branch?: string; sha?: string; projectUrl?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; pullRequest?: PullRequestSummary };
+export type DashboardWorktree = { id: string; projectId: string; label: string; customLabel?: boolean; path: string; available: boolean; pinned: boolean; main: boolean; detached: boolean; locked: boolean; order: number; branch?: string; sha?: string; projectUrl?: string; projectProxied?: boolean; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; pullRequest?: PullRequestSummary };
 // `manageWorktrees` (with a reason when false) gates the Add/Remove/Prune controls: a
 // Project whose checkout is missing, which is a non-git `directory` Project, or which the
 // Docker bridge does not mount at its host path, cannot have Worktrees created or removed

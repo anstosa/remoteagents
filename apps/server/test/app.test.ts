@@ -334,7 +334,7 @@ describe('server administration API', () => {
 describe('project browser security boundary', () => {
   // keep independent previews inside the explicit origin allowlist
   it('limits iframe sources to configured project origins', async () => {
-    const app = await buildApp({ ...config, projects: [testProject({ projectUrl: 'https://project.example.com', worktreeOverrides: [
+    const app = await buildApp({ ...config, projects: [testProject({ projectUrl: 'https://external.example.com', worktreeOverrides: [
       { path: '/repo-feature', projectUrl: 'https://feature.example.com', projectPort: 4000 },
       { path: '/repo-shared', projectUrl: 'https://project.example.com', projectPort: 3000 },
       { path: '/repo-readonly', commands: {} }
@@ -343,7 +343,7 @@ describe('project browser security boundary', () => {
       const response = await app.inject({ method: 'GET', url: '/', headers: { host: 'agents.example.com' } });
       // permit effective worktree previews without widening the origin allowlist
       const sources = String(response.headers['content-security-policy']).match(/(?:^|;)\s*frame-src\s+([^;]+)/u)?.[1]?.trim().split(/\s+/u);
-      expect(new Set(sources)).toEqual(new Set(["'self'", 'https://project.example.com', 'https://feature.example.com']));
+      expect(new Set(sources)).toEqual(new Set(["'self'", 'https://external.example.com', 'https://feature.example.com', 'https://project.example.com']));
     } finally { await app.close(); }
   });
 });

@@ -21,11 +21,11 @@ describe('server administration', () => {
   it('renames the persisted server without changing other configuration', async () => {
     root = await mkdtemp(join(tmpdir(), 'rac-server-admin-'));
     const configPath = join(root, 'config.json');
-    await writeFile(configPath, JSON.stringify({ name: 'Framework', publicOrigin: 'https://framework.example.com', projects: [{ id: 'remoteagents' }] }));
+    await writeFile(configPath, JSON.stringify({ name: 'Framework', publicOrigin: 'https://framework.example.com', projects: [{ id: 'remoteagents', externalUrl: 'https://app.example.com' }] }));
     const service = new ServerAdminService(config, { configWritePath: configPath, statusDirectory: root });
 
     expect(await service.renameServer('  Garage Server  ')).toBe('Garage Server');
-    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ name: 'Garage Server', publicOrigin: 'https://framework.example.com', projects: [{ id: 'remoteagents' }] });
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ name: 'Garage Server', publicOrigin: 'https://framework.example.com', projects: [{ id: 'remoteagents', externalUrl: 'https://app.example.com' }] });
     expect(await service.renameServer('   ')).toBeUndefined();
   });
 

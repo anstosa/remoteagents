@@ -113,6 +113,34 @@ describe('runtime cleanup', () => {
     expect(shell).toEqual([]);
   });
 
+  it('lists merged branches and revalidates them through the branch cleaner', async () => {
+    let branches = [{ projectId: 'proj', projectLabel: 'Project', branch: 'feature/done' }];
+    const deleted: string[] = [];
+    const branchCleanup = {
+      // return current merged branches
+      mergedBranches: async () => branches,
+      // record and remove one revalidated branch
+      deleteMergedBranch: async (projectId: string, branch: string) => {
+        deleted.push(`${projectId}:${branch}`);
+        branches = [];
+        return true;
+      }
+    };
+    const service = new CleanupService(
+      { refresh: async () => [] },
+      { find: async () => [] },
+      { listPanes: async () => [], close: async () => true, terminateHostProcess: async () => true },
+      { recognizeAgent: async () => undefined, listProcesses: async () => [] },
+      branchCleanup
+    );
+
+    const targets = await service.scan();
+
+    expect(targets).toEqual([expect.objectContaining({ kind: 'merged-branch', label: 'feature/done', detail: 'Merged branch in Project' })]);
+    await expect(service.cleanup([targets[0]!.id])).resolves.toEqual([]);
+    expect(deleted).toEqual(['proj:feature/done']);
+  });
+
   it('rejects duplicate, unknown, and malformed target selections', async () => {
     const service = new CleanupService(
       { refresh: async () => [] },

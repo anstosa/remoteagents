@@ -48,6 +48,10 @@ export type RemovalFacts = {
 export type RemovalResult = { ok: true; facts: RemovalFacts } | { ok: false; status: number; error: string };
 export type RemoveOutcome = { ok: true } | { ok: false; status: number; error: string };
 export type BranchDeleteOutcome = { ok: true } | { ok: false; error: string };
+export type BranchRemovalFacts = { branch: string; checkedOut: boolean; dirtyCount: number; pushed: boolean; merged: boolean; defaultBranch: boolean };
+export type BranchRemovalResult = { ok: true; facts: BranchRemovalFacts } | { ok: false; status: number; error: string };
+export type GuardedBranchDeleteResult = { ok: true } | { ok: false; status: number; error: string };
+export type MergedBranch = { projectId: string; projectLabel: string; branch: string };
 export type PruneOutcome = { ok: true } | { ok: false; status: number; error: string };
 
 /**
@@ -244,6 +248,81 @@ export class WorktreeManagementService {
     });
   }
 
+  // list merged local branches that are neither the default nor checked out
+  async mergedBranches(): Promise<MergedBranch[]> {
+    const byProject = await Promise.all(this.projects().map(async project => {
+      const availability = worktreeManagementAvailability(project);
+      // skip unmanaged repositories
+      if (!availability.available) return [];
+      const defaultBranch = await this.defaultBranch(project.path);
+      // require one protected merge target
+      if (defaultBranch === undefined) return [];
+      const merged = new Map<string, MergedBranch>();
+      // accept merges visible on either remote or local default
+      for (const ref of [`origin/${defaultBranch}`, defaultBranch]) {
+        const listed = await this.git(['-C', project.path, 'for-each-ref', `--merged=${ref}`, '--format=%(refname:short)\t%(worktreepath)', 'refs/heads']);
+        // tolerate a missing remote default
+        if (listed.code !== 0) continue;
+        // collect only deletable branch refs
+        for (const line of listed.stdout.split('\n')) {
+          const [branch = '', worktreePath = ''] = line.split('\t');
+          // protect the default and every active checkout
+          if (branch === '' || branch === defaultBranch || worktreePath !== '') continue;
+          merged.set(branch, { projectId: project.id, projectLabel: project.label, branch });
+        }
+      }
+      return [...merged.values()];
+    }));
+    return byProject.flat().sort((left, right) => left.projectLabel.localeCompare(right.projectLabel) || left.branch.localeCompare(right.branch));
+  }
+
+  // read fresh loss-prevention facts for one local branch
+  async branchRemoval(projectId: string, branch: string): Promise<BranchRemovalResult> {
+    const project = this.project(projectId);
+    // require one managed repository
+    if (project === undefined) return { ok: false, status: 404, error: 'project unavailable' };
+    const availability = worktreeManagementAvailability(project);
+    // preserve the project management boundary
+    if (!availability.available) return { ok: false, status: 409, error: availability.reason! };
+    return await this.branchRemovalFacts(project, branch);
+  }
+
+  // delete one branch only after rechecking checkout and remote safety
+  async deleteBranchGuarded(projectId: string, branch: string, discardUnpushed: boolean): Promise<GuardedBranchDeleteResult> {
+    const project = this.project(projectId);
+    // require one managed repository
+    if (project === undefined) return { ok: false, status: 404, error: 'project unavailable' };
+    const availability = worktreeManagementAvailability(project);
+    // preserve the project management boundary
+    if (!availability.available) return { ok: false, status: 409, error: availability.reason! };
+    return await this.serialize(project.id, async () => {
+      const result = await this.branchRemovalFacts(project, branch);
+      // retain lookup and validation failures
+      if (!result.ok) return result;
+      const facts = result.facts;
+      // never remove the protected default branch
+      if (facts.defaultBranch) return { ok: false as const, status: 409, error: 'the default branch cannot be deleted' };
+      // a checked-out branch may own uncommitted work
+      if (facts.checkedOut) return { ok: false as const, status: 409, error: facts.dirtyCount > 0 ? 'the branch is checked out with uncommitted changes; remove its worktree first' : 'the branch is checked out; remove its worktree first' };
+      // require explicit acknowledgement when no recoverable copy is proven
+      if (!facts.pushed && !facts.merged && !discardUnpushed) return { ok: false as const, status: 409, error: 'the branch is neither pushed nor merged; confirm deleting unpushed work' };
+      return await this.forceDeleteBranch(project, branch);
+    });
+  }
+
+  // delete a cleanup candidate only while it remains safely merged
+  async deleteMergedBranch(projectId: string, branch: string): Promise<boolean> {
+    const project = this.project(projectId);
+    // reject stale project identities
+    if (project === undefined || !worktreeManagementAvailability(project).available) return false;
+    return await this.serialize(project.id, async () => {
+      const result = await this.branchRemovalFacts(project, branch);
+      // revalidate the complete cleanup contract
+      if (!result.ok || result.facts.defaultBranch || result.facts.checkedOut || !result.facts.merged) return false;
+      return (await this.forceDeleteBranch(project, branch)).ok;
+    });
+  }
+
   // run `git worktree prune`, clearing git's prunable entries. The console's own orphaned
   // records are deleted by the caller (they are outside git). Serialized per Project.
   async prune(projectId: string): Promise<PruneOutcome> {
@@ -263,10 +342,10 @@ export class WorktreeManagementService {
     return status.code !== 0 ? 0 : status.stdout.split('\n').filter(line => line.trim() !== '').length;
   }
 
-  // whether HEAD is safely on the remote: contained in an `origin/*` ref, or the branch's
-  // upstream is gone (deleted on the remote, as after a squash-merge)
-  private async pushed(path: string, branch?: string): Promise<boolean> {
-    const contained = await this.git(['-C', path, 'branch', '-r', '--contains', 'HEAD', '--list', 'origin/*']);
+  // whether one ref is safely on the remote: contained in an `origin/*` ref, or the
+  // branch's upstream is gone (deleted on the remote, as after a squash-merge)
+  private async pushed(path: string, branch?: string, ref = 'HEAD'): Promise<boolean> {
+    const contained = await this.git(['-C', path, 'branch', '-r', '--contains', ref, '--list', 'origin/*']);
     if (contained.code === 0 && contained.stdout.split('\n').some(line => line.trim() !== '' && !line.includes('->'))) return true;
     // a branch whose upstream was deleted on the remote (e.g. after a squash-merge) was still
     // pushed; git marks it `[gone]` in the upstream track field. `@{upstream}` itself no longer
@@ -276,16 +355,15 @@ export class WorktreeManagementService {
     return track.code === 0 && track.stdout.includes('[gone]');
   }
 
-  // whether HEAD is an ancestor of the Project's default branch, i.e. the worktree's work is
-  // already merged — true if it is contained in either the remote default (`origin/<default>`)
-  // or the local one (merged locally but not yet pushed still means nothing is lost)
-  private async merged(path: string, mainPath: string): Promise<boolean> {
+  // whether one ref is an ancestor of the Project's default branch — true when either the
+  // remote or local default contains it
+  private async merged(path: string, mainPath: string, candidateRef = 'HEAD'): Promise<boolean> {
     const branch = await this.defaultBranch(mainPath);
     if (branch === undefined) return false;
-    for (const ref of [`origin/${branch}`, branch]) {
+    for (const targetRef of [`origin/${branch}`, branch]) {
       // code 0 = contained; code 1 = ref resolved but HEAD not merged there; other = missing
       // ref. A missing-or-unmerged remote default still checks the local one before giving up.
-      if ((await this.git(['-C', path, 'merge-base', '--is-ancestor', 'HEAD', ref])).code === 0) return true;
+      if ((await this.git(['-C', path, 'merge-base', '--is-ancestor', candidateRef, targetRef])).code === 0) return true;
     }
     return false;
   }
@@ -297,6 +375,35 @@ export class WorktreeManagementService {
     if (match === null) return undefined;
     const ahead = Number(match[1]); const behind = Number(match[2]);
     return Number.isSafeInteger(ahead) && Number.isSafeInteger(behind) ? { ahead, behind } : undefined;
+  }
+
+  // resolve branch facts from refs rather than whichever checkout owns HEAD
+  private async branchRemovalFacts(project: Project, branch: string): Promise<BranchRemovalResult> {
+    const branchIssue = invalidBranchReason(branch);
+    // reject flag-shaped and malformed refs before git sees them
+    if (branchIssue !== undefined || !await this.refFormatValid(branch)) return { ok: false, status: 409, error: branchIssue ?? `\`${branch}\` is not a valid branch name` };
+    // require the local branch to still exist
+    if (!await this.branchExists(project.path, branch)) return { ok: false, status: 404, error: 'branch unavailable' };
+    const defaultBranch = await this.defaultBranch(project.path);
+    // require one protected merge target
+    if (defaultBranch === undefined) return { ok: false, status: 409, error: 'the default branch could not be resolved' };
+    const checkout = await this.git(['-C', project.path, 'for-each-ref', '--format=%(worktreepath)', `refs/heads/${branch}`]);
+    // refuse uncertain checkout ownership
+    if (checkout.code !== 0) return { ok: false, status: 409, error: (checkout.stderr.trim() || 'branch checkout state could not be read') };
+    const worktreePath = checkout.stdout.trim();
+    const checkedOut = worktreePath !== '';
+    const [dirtyCount, pushed, merged] = await Promise.all([
+      checkedOut ? this.dirtyCount(worktreePath) : Promise.resolve(0),
+      this.pushed(project.path, branch, `refs/heads/${branch}`),
+      this.merged(project.path, project.path, `refs/heads/${branch}`)
+    ]);
+    return { ok: true, facts: { branch, checkedOut, dirtyCount, pushed, merged, defaultBranch: branch === defaultBranch } };
+  }
+
+  // force-delete only after a caller has completed its safety checks
+  private async forceDeleteBranch(project: Project, branch: string): Promise<GuardedBranchDeleteResult> {
+    const deleted = await this.git(['-C', project.path, 'branch', '-D', branch]);
+    return deleted.code !== 0 ? { ok: false, status: 409, error: (deleted.stderr.trim() || 'git branch delete failed') } : { ok: true };
   }
 
   private async refFormatValid(branch: string): Promise<boolean> {
