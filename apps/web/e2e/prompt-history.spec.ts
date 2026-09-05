@@ -113,6 +113,8 @@ test('shows worktree prompt history and cycles it from the composer', async ({ p
   await expect(historyMenu.getByRole('region', { name: 'Answer for First prompt' }).locator('.prompt-history-answer-text')).toHaveText('First late answer');
 
   const composer = page.getByRole('textbox', { name: 'Prompt' });
+  // dismiss through the click-blocking backdrop
+  await page.locator('.flyout-backdrop').click({ position: { x: 4, y: 4 } });
   await composer.click();
   await expect(historyMenu).toBeHidden();
   await composer.fill('Current draft');

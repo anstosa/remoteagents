@@ -87,12 +87,13 @@ test('saves the newest response with at least fifty words and only highlights cu
   await expect(notesButton).not.toHaveClass(/latest-response-available/u);
   await notesButton.click();
   await expect(saveLatest).toBeDisabled();
-  await notesButton.click();
+  // dismiss through the click-blocking backdrop
+  await page.locator('.flyout-backdrop').click({ position: { x: 4, y: 4 } });
 
   historyAnswer = fiftyWordResponse;
   await notesButton.click();
   await expect(saveLatest).toBeEnabled();
-  await notesButton.click();
+  await page.locator('.flyout-backdrop').click({ position: { x: 4, y: 4 } });
 
   historyAnswer = firstResponse;
   await notesButton.click();
@@ -124,14 +125,14 @@ test('saves the newest response with at least fifty words and only highlights cu
   await page.getByRole('button', { name: 'Close note' }).click();
   await notesButton.click();
   await expect(page.getByRole('button', { name: 'Release checklist', exact: true })).toBeVisible();
-  await notesButton.click();
+  await page.locator('.flyout-backdrop').click({ position: { x: 4, y: 4 } });
 
   await emit('Same completed response refreshed', firstResponse, true);
   await expect(notesButton).not.toHaveClass(/latest-response-available/u);
   await notesButton.click();
   await expect(saveLatest).toBeVisible();
   await expect(saveLatest).toBeDisabled();
-  await notesButton.click();
+  await page.locator('.flyout-backdrop').click({ position: { x: 4, y: 4 } });
 
   const secondResponse = `${firstResponse}\n- New completion`;
   await emit('A different long response complete', secondResponse, true);

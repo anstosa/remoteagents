@@ -362,6 +362,8 @@ html.software-keyboard-open .tabs { display: none; }
 .cleanup-toggle .broom-icon { fill: currentColor; stroke: none; }
 .cleanup-count { background: var(--yellow); color: var(--crust); }
 .cleanup-empty-view { position: relative; }
+/* keep empty-state navigation out of the tab bar */
+.cleanup-empty-view > .output-server-switcher { position: static; justify-self: start; margin: .375rem .375rem 0; }
 .cleanup-standalone { position: absolute; right: var(--edge); bottom: var(--edge); margin: 0; }
 .response-files-control { position: relative; z-index: 4; }
 .response-files-toggle { overflow: visible; }
@@ -429,7 +431,7 @@ html.software-keyboard-open .tabs { display: none; }
 .note-pane.expanded { width: 100%; height: 100%; border: 0; }
 .note-pane header { display: flex; min-width: 0; min-height: 2.8rem; align-items: center; gap: .55rem; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; padding: .4rem .55rem; border-bottom: 1px solid var(--surface-1); color: var(--yellow); scrollbar-width: thin; -webkit-overflow-scrolling: touch; }
 .note-pane header > :not(strong) { flex-shrink: 0; }
-.note-pane header strong { flex: 0 1 auto; min-width: 0; overflow: hidden; font-size: .78rem; text-overflow: ellipsis; white-space: nowrap; }
+.note-pane header strong { flex: 0 1 auto; min-width: 4rem; overflow: hidden; font-size: .78rem; text-overflow: ellipsis; white-space: nowrap; }
 .note-pane header .note-title-form { display: flex; flex: 1 1 auto; min-width: 8rem; align-items: center; gap: .35rem; margin-right: auto; }
 .note-title-form input { width: 100%; min-width: 5rem; height: 2rem; border-color: color-mix(in srgb, var(--yellow) 52%, var(--surface-1)); padding: .3rem .45rem; background: var(--mantle); color: var(--text); font-size: .78rem; }
 .note-save-status { color: var(--subtext-0); font-size: .68rem; }

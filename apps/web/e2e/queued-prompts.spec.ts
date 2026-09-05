@@ -105,10 +105,13 @@ test('manages waiting prompts from the clock control connected to Queue', async 
   await page.getByRole('button', { name: 'Save queued prompt: Edited queued prompt' }).click();
   await expect(page.getByRole('button', { name: 'Queued prompts (1)' })).toBeVisible();
   await expect(copies).toHaveCount(1);
+  // dismiss through the click-blocking backdrop
+  await page.locator('.flyout-backdrop').click({ position: { x: 4, y: 4 } });
   await page.getByRole('button', { name: 'Saved prompts (1)' }).click();
   await expect(page.getByLabel('Saved prompts', { exact: true })).toContainText('Edited queued prompt');
   expect(requested).toContain('POST /api/agents/agent-1/queued-prompts/queued-prompt-002/save');
 
+  await page.locator('.flyout-backdrop').click({ position: { x: 4, y: 4 } });
   await page.getByRole('textbox', { name: 'Prompt' }).fill('Third queued prompt');
   await queue.click();
   const updatedClock = page.getByRole('button', { name: 'Queued prompts (2)' });
