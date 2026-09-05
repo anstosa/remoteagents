@@ -98,8 +98,8 @@ describe('worktree stack commands', () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     delete process.env.RAC_HOST_WORKSPACE;
     checkoutRoot = await mkdtemp(join(tmpdir(), 'rac-checkout-'));
-    const cora = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', path: '/worktrees/cora', hostPath: '/host/cora', commands: { build: 'make build' } });
-    const dana = testWorktree({ id: 'proj:/worktrees/dana', projectId: 'proj', path: '/worktrees/dana', main: false, branch: 'dana', commands: { build: 'make build' } });
+    const cora = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', path: '/worktrees/cora', hostPath: '/host/cora', commands: { build: 'make build', migrate: 'make migrate' } });
+    const dana = testWorktree({ id: 'proj:/worktrees/dana', projectId: 'proj', path: '/worktrees/dana', main: false, branch: 'dana', commands: { build: 'make ui' } });
     const projectConfig = testConfig({ projects: [testProject({ id: 'proj', path: checkoutRoot, hostPath: '/host/checkout' })] });
     const live = new Set<string>();
     const scripts = new Map<string, string>();
@@ -132,6 +132,12 @@ describe('worktree stack commands', () => {
     const danaLog = logName(scripts.get(danaSession) ?? '', 'proj', dana.path);
     expect(scripts.get(coraSession)).toContain("cd -- '/host/cora'");
     expect(scripts.get(danaSession)).toContain("cd -- '/worktrees/dana'");
+    // select each checkout's command set rather than the project default
+    expect(scripts.get(coraSession)).toContain('make build');
+    expect(scripts.get(danaSession)).toContain('make ui');
+    expect(service.actions(cora)).toEqual(['build', 'migrate']);
+    expect(service.actions(dana)).toEqual(['build']);
+    await expect(service.start(dana.id, 'migrate')).resolves.toBe(false);
     expect(coraLog).toBeDefined();
     expect(danaLog).toBeDefined();
     expect(coraLog).not.toBe(danaLog);

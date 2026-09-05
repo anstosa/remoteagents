@@ -543,6 +543,8 @@ export class DiscoveryService {
         const generatedLabel = main ? project.label : entry.branch !== undefined ? `${project.label} · ${entry.branch}` : `${project.label} · ${sha ?? path.split('/').pop() ?? path}`;
         const customLabel = labels[id];
         const label = customLabel ?? generatedLabel;
+        // use exact checkout settings without leaking defaults into disabled stacks
+        const stack = project.worktreeOverrides?.find(override => override.path === path) ?? project;
         usable.push({
           id, projectId: project.id, label, ...(customLabel === undefined ? {} : { customLabel: true }), path, identity: path,
           ...(main && project.hostPath !== undefined ? { hostPath: project.hostPath } : {}),
@@ -550,10 +552,10 @@ export class DiscoveryService {
           ...(entry.locked && entry.lockedReason !== undefined ? { lockedReason: entry.lockedReason } : {}),
           ...(entry.branch === undefined ? {} : { branch: entry.branch }),
           ...(entry.detached && sha !== undefined ? { sha } : {}),
-          ...(project.commands === undefined ? {} : { commands: project.commands }),
+          ...(stack.commands === undefined ? {} : { commands: stack.commands }),
           ...(project.newTask === undefined ? {} : { newTask: project.newTask }),
           push: project.push,
-          ...(project.projectUrl === undefined ? {} : { projectUrl: project.projectUrl, ...(project.projectPort === undefined ? {} : { projectPort: project.projectPort }) })
+          ...(stack.projectUrl === undefined ? {} : { projectUrl: stack.projectUrl, ...(stack.projectPort === undefined ? {} : { projectPort: stack.projectPort }) })
         });
       }
       // explicit checkout order first, then the existing main/branch/detached defaults

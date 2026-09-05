@@ -216,9 +216,7 @@ export class ProjectProxy {
   private readonly parentOrigin: string;
   private readonly upstreamHost: string;
 
-  // resolve loopback targets from the live Worktree records. Each carries its Project's
-  // URL/port today (one preview per Project, served by whichever Worktree's stack is
-  // up); a later per-Worktree port is an additive key on the same records
+  // resolve loopback targets from each worktree's effective preview settings
   constructor(private readonly worktrees: () => ReadonlyArray<PreviewRecord>, parentOrigin: string, upstreamHost = '127.0.0.1') {
     // restrict proxy destinations to local host gateways
     if (!allowedUpstreamHosts.has(upstreamHost)) throw new Error('invalid project proxy host');

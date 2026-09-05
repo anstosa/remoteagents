@@ -40,7 +40,20 @@ function hostValidationInput(input: unknown, mounts: ComposeMount[]): unknown {
       // preserve malformed entries for schema validation
       if (project === null || typeof project !== 'object' || Array.isArray(project)) return project;
       const entry = project as Record<string, unknown>;
-      return typeof entry.path === 'string' ? { ...entry, path: mountedPath(entry.path, mounts) } : entry;
+      const projectPath = entry.path;
+      // preserve invalid project paths for schema validation
+      if (typeof projectPath !== 'string') return entry;
+      // resolve selectors in the container namespace before mapping separate mounts
+      const worktreeOverrides = Array.isArray(entry.worktreeOverrides) ? entry.worktreeOverrides.map(override => {
+        // preserve invalid override shapes for schema validation
+        if (override === null || typeof override !== 'object' || Array.isArray(override)) return override;
+        const settings = override as Record<string, unknown>;
+        const path = settings.path;
+        // normalization must not conceal invalid raw selectors
+        if (typeof path !== 'string' || path.length === 0 || path.length > 4096 || path.includes('\0')) return override;
+        return { ...settings, path: mountedPath(resolve(projectPath, path), mounts) };
+      }) : entry.worktreeOverrides;
+      return { ...entry, path: mountedPath(projectPath, mounts), ...(worktreeOverrides === undefined ? {} : { worktreeOverrides }) };
     })
   };
 }

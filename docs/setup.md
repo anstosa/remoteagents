@@ -258,13 +258,49 @@ within a tick — no config edit or restart.
   Listed checkouts appear first in launch rows and tabs, independent of labels
   or branches. Missing paths are ignored. Unlisted checkouts retain the default
   Main-first, branch-name order, with detached checkouts last.
-- `commands` (`start`/`stop`/`build`/`restart`/`migrate`/`status`), `newTask`
-  and `push` are Project-wide. `newTask` adds a **New Task** action, uses
+- `commands` (`start`/`stop`/`build`/`restart`/`migrate`/`status`) provides default
+  stack commands; `newTask` and `push` are Project-wide. `newTask` adds a **New Task** action, uses
   `{taskId}` for an 8-character URL-safe random ID, and is enabled only when the
   Worktree is clean and fully pushed. `push` overrides the default
   **Commit/Push** action (which queues `review, commit, and push`).
-- `port` + `hostname` (both or neither) publish one preview URL per Project,
+- `port` + `hostname` (both or neither) provide the default preview URL,
   `https://<hostname>` proxied to `127.0.0.1:<port>`.
+- `worktreeOverrides` — optional runtime settings for individual discovered
+  checkouts. Each entry's `path` resolves relative to the configured Project
+  `path` (or may be absolute); symlinks resolve to the checkout's real path.
+  Duplicate resolved selectors are rejected. Entries do not create or discover
+  checkouts and do not change Project grouping, labels, or saved state.
+  Omitted fields inherit the Project defaults. `commands` replaces the **entire**
+  command set rather than merging actions, so UI-only worktrees do not inherit
+  full-stack migration commands. Use `commands: {}` for no stack controls.
+  Set both `hostname` and `port` to override the preview; set both to `null` to
+  disable it. Commands still run in the selected worktree's own directory.
+
+For example, add these entries to a Project to give a sibling checkout an
+independent UI stack and keep a research checkout stack-free:
+
+```json
+{
+  "worktreeOverrides": [
+    {
+      "path": "../example-feature",
+      "hostname": "feature.example.com",
+      "port": 4000,
+      "commands": {
+        "start": "docker compose up -d ui",
+        "stop": "docker compose stop ui",
+        "status": "test -n \"$(docker compose ps --status running --services ui)\""
+      }
+    },
+    { "path": "../example-research", "hostname": null, "port": null, "commands": {} }
+  ]
+}
+```
+
+The legacy `worktrees[]` migration preserves differing stack settings in these
+overrides. Already-migrated installations can restore them from the saved
+`.pre-projects.bak` configuration without rerunning the data migration. Keep
+installation-specific hostnames and commands in the ignored local configuration.
 
 The console launches an agent in a Worktree by Adapter kind (see
 [Adapters](#adapters)); a Project never names a program. Every `git worktree

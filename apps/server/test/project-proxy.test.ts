@@ -182,9 +182,7 @@ describe('project browser proxy', () => {
     expect(failed.messages).toContainEqual({ type: 'rac-browser-device-error', properties: ['userAgent'] });
   });
 
-  // the map is built from live Worktree records, each carrying its Project's URL/port —
-  // two branches running stacks concurrently share the one preview, and a later
-  // per-Worktree port is an additive key on the same records
+  // preserve shared previews when worktrees inherit the same project default
   it('serves one Project preview from the Worktree records of concurrently running branches', async () => {
     const upstream = createServer((_request, response) => {
       response.setHeader('content-type', 'text/plain');
@@ -221,5 +219,35 @@ describe('project browser proxy', () => {
     // picked up without rebuilding the proxy
     records = [];
     expect((await request(proxyPort, '/')).status).toBe(404);
+  });
+
+  // route sibling checkout hostnames to their own loopback ports
+  it('serves independent previews for worktrees in one project', async () => {
+    // identify the main upstream
+    const main = createServer((_incoming, response) => { response.end('main stack'); });
+    // identify the sibling upstream
+    const feature = createServer((_incoming, response) => { response.end('feature stack'); });
+    servers.push(main, feature);
+    const mainPort = await listen(main);
+    const featurePort = await listen(feature);
+    let records = [
+      testWorktree({ path: '/repo', projectUrl: 'https://main.example.com', projectPort: mainPort }),
+      testWorktree({ path: '/repo-feature', projectUrl: 'https://feature.example.com', projectPort: featurePort }),
+      testWorktree({ path: '/repo-readonly' })
+    ];
+    const projectProxy = new ProjectProxy(() => records, 'https://agents.example.com');
+    // expose only configured preview hosts
+    const proxy = createServer((incoming, response) => {
+      // reject disabled and unconfigured previews
+      if (!projectProxy.handle(incoming, response)) { response.writeHead(404); response.end(); }
+    });
+    servers.push(proxy);
+    const proxyPort = await listen(proxy);
+    expect((await request(proxyPort, '/', { headers: { host: 'main.example.com' } })).body).toBe('main stack');
+    expect((await request(proxyPort, '/', { headers: { host: 'feature.example.com' } })).body).toBe('feature stack');
+    expect((await request(proxyPort, '/', { headers: { host: 'readonly.example.com' } })).status).toBe(404);
+    records = [records[0]!];
+    expect((await request(proxyPort, '/', { headers: { host: 'feature.example.com' } })).status).toBe(404);
+    expect((await request(proxyPort, '/', { headers: { host: 'main.example.com' } })).body).toBe('main stack');
   });
 });

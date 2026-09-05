@@ -181,11 +181,12 @@ describe('DiscoveryService dashboard', () => {
     }
   });
 
+  // publish the selected checkout preview on active bridged agents
   it('associates a host tmux path with the discovered Main worktree by its host path', async () => {
     const finder = socketFinder();
     const tmux = paneLister([{ paneId: '%1', sessionId: '$0', pid: 123, path: '/host/ferry', title: 'Ferry' }]);
     const processes = processInspector({ codex: true });
-    const project = testProject({ id: 'ferry', label: 'Ferry FYI', path: '/worktrees/ferry', hostPath: '/host/ferry', newTask: 'new {taskId}', push: { label: 'Commit/Push', prompt: '$push' }, projectUrl: 'https://ferry.agents.example.com', projectPort: 4000 });
+    const project = testProject({ id: 'ferry', label: 'Ferry FYI', path: '/worktrees/ferry', hostPath: '/host/ferry', newTask: 'new {taskId}', push: { label: 'Commit/Push', prompt: '$push' }, projectUrl: 'https://default.example.com', projectPort: 3000, worktreeOverrides: [{ path: '/worktrees/ferry', projectUrl: 'https://ferry.agents.example.com', projectPort: 4000 }] });
     const service = new DiscoveryService(finder, tmux as never, processes, undefined, undefined, [project], undefined, listImpl({ '/worktrees/ferry': [entry('/worktrees/ferry', 'main')] }));
 
     const dashboard = await service.dashboard();
@@ -549,6 +550,34 @@ describe('DiscoveryService dashboard', () => {
       { id: 'app:/repo/held', label: 'App · held', customLabel: false, main: false, detached: false, locked: true, pinned: false, order: 2 },
       { id: 'app:/repo/wt-detached', label: 'App · abcdef1', customLabel: false, main: false, detached: true, locked: false, pinned: true, order: 3 }
     ]);
+  });
+
+  // checkout runtime settings stay separate from project grouping and discovery
+  it('publishes distinct worktree previews and replacement commands without inventing checkouts', async () => {
+    const commands = { start: 'full up', stop: 'full stop', migrate: 'full migrate' };
+    const project = testProject({
+      id: 'app', path: '/repo', commands, projectUrl: 'https://main.example.com', projectPort: 3000,
+      worktreeOverrides: [
+        { path: '/repo/feature', commands: { start: 'ui up' }, projectUrl: 'https://feature.example.com', projectPort: 4000 },
+        { path: '/repo/readonly', commands: {} },
+        { path: '/repo/missing', commands: { start: 'missing up' } }
+      ]
+    });
+    const service = new DiscoveryService(socketFinder(), paneLister([]) as never, processInspector({ codex: false }), undefined, undefined, [project], undefined, listImpl({ '/repo': [
+      entry('/repo', 'main'), entry('/repo/feature', 'feature'), entry('/repo/readonly'), entry('/repo/feature-extra', 'unconfigured')
+    ] }));
+    const dashboard = await service.dashboard();
+    const worktrees = service.worktreesNow();
+    expect(worktrees).toHaveLength(4);
+    expect(worktrees.find(worktree => worktree.path === '/repo')).toMatchObject({ commands, projectUrl: 'https://main.example.com', projectPort: 3000 });
+    expect(worktrees.find(worktree => worktree.path === '/repo/feature')).toMatchObject({ commands: { start: 'ui up' }, projectUrl: 'https://feature.example.com', projectPort: 4000 });
+    expect(worktrees.find(worktree => worktree.path === '/repo/feature')?.commands).not.toHaveProperty('migrate');
+    expect(worktrees.find(worktree => worktree.path === '/repo/readonly')?.commands).toEqual({});
+    expect(worktrees.find(worktree => worktree.path === '/repo/readonly')).not.toHaveProperty('projectUrl');
+    expect(worktrees.find(worktree => worktree.path === '/repo/readonly')).not.toHaveProperty('projectPort');
+    expect(worktrees.find(worktree => worktree.path === '/repo/feature-extra')).toMatchObject({ commands, projectUrl: 'https://main.example.com' });
+    expect(dashboard.projects[0]?.worktrees.find(worktree => worktree.path === '/repo/feature')?.projectUrl).toBe('https://feature.example.com');
+    expect(dashboard.projects[0]?.worktrees.find(worktree => worktree.path === '/repo/readonly')?.projectUrl).toBeUndefined();
   });
 
   // configured paths outrank branch names and detached status without inventing checkouts

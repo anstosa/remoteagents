@@ -29,6 +29,51 @@ async function gitRepo(name = 'work'): Promise<string> {
 const withProject = async (path: string, extra: Record<string, unknown> = {}) => ({ publicOrigin: 'https://agents.example.com', projects: [{ id: 'a', path, ...extra }] });
 
 describe('project configuration', () => {
+  // resolve independent stack settings without merging command sets
+  it('canonicalizes worktree overrides and resolves inherited or disabled settings', async () => {
+    const repo = await gitRepo();
+    const alias = join(repo, '..', 'alias');
+    await symlink(repo, alias);
+    const commands = { start: 'full up', stop: 'full stop', migrate: 'full migrate' };
+    const config = await validateConfig(await withProject(repo, {
+      port: 3000, hostname: 'main.example.com', commands,
+      worktreeOverrides: [
+        { path: '../alias', port: 4000, hostname: 'main-override.example.com' },
+        { path: '../feature', commands: { start: 'ui up' } },
+        { path: '../readonly', port: null, hostname: null, commands: {} }
+      ]
+    }));
+    expect(config.projects[0]?.worktreeOverrides).toEqual([
+      { path: repo, projectPort: 4000, projectUrl: 'https://main-override.example.com', commands },
+      { path: join(repo, '..', 'feature'), projectPort: 3000, projectUrl: 'https://main.example.com', commands: { start: 'ui up' } },
+      { path: join(repo, '..', 'readonly'), commands: {} }
+    ]);
+    expect(config.projects[0]?.commands).toEqual(commands);
+    expect(config.projects[0]?.projectUrl).toBe('https://main.example.com');
+  });
+
+  // reject ambiguous or unsafe checkout settings
+  it.each([
+    { path: '' }, { path: 'bad\0path' }, { path: '.', port: 4000 },
+    { path: '.', hostname: 'feature.example.com' }, { path: '.', port: null },
+    { path: '.', port: 4000, hostname: null }, { path: '.', port: null, hostname: 'feature.example.com' },
+    { path: '.', port: 0, hostname: 'feature.example.com' },
+    { path: '.', port: 4000, hostname: 'https://feature.example.com' },
+    { path: '.', commands: { start: 'bad\0command' } }, { path: '.', commands: { unknown: 'run' } },
+    { path: '.', unknown: true }
+  ])('rejects invalid worktree override %j', async override => {
+    // invalid settings fail before checkout resolution
+    await expect(validateConfig(await withProject('/unused-project', { worktreeOverrides: [override] }))).rejects.toThrow();
+  });
+
+  // aliases cannot select conflicting runtime settings
+  it('rejects duplicate canonical worktree override paths', async () => {
+    const repo = await gitRepo();
+    const alias = join(repo, '..', 'alias');
+    await symlink(repo, alias);
+    await expect(validateConfig(await withProject(repo, { worktreeOverrides: [{ path: '.' }, { path: '../alias' }] }))).rejects.toThrow('duplicate worktree override path');
+  });
+
   // preserve operator order while resolving checkout aliases
   it('resolves worktreeOrder paths relative to the configured checkout', async () => {
     const repo = await gitRepo();

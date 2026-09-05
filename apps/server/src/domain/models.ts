@@ -8,6 +8,8 @@ export type PullRequestSummary = { number: number; title: string; status: 'draft
 export const stackActions = ['start', 'stop', 'build', 'restart', 'migrate'] as const;
 export type StackAction = typeof stackActions[number];
 export type StackCommands = Partial<Record<StackAction | 'status', string>>;
+// canonical checkout settings with project defaults already resolved
+export type WorktreeOverride = { path: string; commands?: StackCommands; projectUrl?: string; projectPort?: number };
 export type PromptAction = { label: string; prompt: string };
 export type GitStatusChange = { code: string; path: string; originalPath?: string; additions?: number; deletions?: number; category?: 'implementation' | 'test' | 'doc' };
 export type GitStatusSummary = { files: number; staged: number; unstaged: number; untracked: number; conflicted: number; changes?: GitStatusChange[] };
@@ -22,11 +24,11 @@ export type Agent = { id: string; paneId: string; sessionId: string; socketFinge
  * exists but is not a git checkout: it has no Worktrees and an agent launches directly
  * in it, like Scratch, so its identity is just its own realpath'd path. `path` is
  * unavailable only when it is missing at boot, which loads the Project as
- * `available: false` rather than failing to boot. Stack commands, the new-task and push
- * actions, the Worktrees directory and the preview URL are all Project-wide; discovered
- * Worktrees denormalise them for convenience.
+ * `available: false` rather than failing to boot. stack commands and preview settings
+ * are defaults; canonical worktree overrides replace them for individual checkouts.
+ * discovered worktrees denormalise the resolved settings for convenience.
  */
-export type Project = { id: string; label: string; path: string; identity: string; mode: 'repository' | 'directory'; hostPath?: string; worktreeOrder?: string[]; worktreesDirectory: string; available: boolean; unavailableReason?: string; commands?: StackCommands; newTask?: string; push: PromptAction; projectUrl?: string; projectPort?: number };
+export type Project = { id: string; label: string; path: string; identity: string; mode: 'repository' | 'directory'; hostPath?: string; worktreeOrder?: string[]; worktreeOverrides?: WorktreeOverride[]; worktreesDirectory: string; available: boolean; unavailableReason?: string; commands?: StackCommands; newTask?: string; push: PromptAction; projectUrl?: string; projectPort?: number };
 /**
  * One checkout of a Project as `git worktree list` reports it, keyed by the wire id
  * `<projectId>:<realpath>` (ADR 0003). `identity` equals the checkout's realpath
@@ -34,8 +36,8 @@ export type Project = { id: string; label: string; path: string; identity: strin
  * Docker main Worktree also matches its `hostPath`. `main`/`detached`/`locked` come
  * from git; a Stale worktree (git's `prunable`) is excluded by discovery, never carried
  * here. `pinned` and `customLabel` identify the operator's per-Worktree choices from
- * `.data`. The Project-wide `commands`/`newTask`/`push`/`projectUrl`/`projectPort` are copied on
- * so the worktree-scoped services keep reading them from the Worktree.
+ * `.data`. resolved stack commands and preview settings, plus project-wide newTask/push,
+ * are copied on so worktree-scoped services keep reading them from the worktree.
  */
 export type Worktree = { id: string; projectId: string; label: string; customLabel?: boolean; path: string; identity: string; hostPath?: string; available: boolean; pinned: boolean; main: boolean; detached: boolean; locked: boolean; lockedReason?: string; branch?: string; sha?: string; commands?: StackCommands; newTask?: string; push?: PromptAction; projectUrl?: string; projectPort?: number };
 export type CleanupTargetKind = 'orphan-worker' | 'stale-agent' | 'hud-pane' | 'hud-process';

@@ -332,12 +332,18 @@ describe('server administration API', () => {
 });
 
 describe('project browser security boundary', () => {
+  // keep independent previews inside the explicit origin allowlist
   it('limits iframe sources to configured project origins', async () => {
-    const app = await buildApp({ ...config, projects: [testProject({ projectUrl: 'https://project.example.com' })] }, { auth: new AuthService('$argon2id$unused', Buffer.alloc(32, 13).toString('base64url')) });
+    const app = await buildApp({ ...config, projects: [testProject({ projectUrl: 'https://project.example.com', worktreeOverrides: [
+      { path: '/repo-feature', projectUrl: 'https://feature.example.com', projectPort: 4000 },
+      { path: '/repo-shared', projectUrl: 'https://project.example.com', projectPort: 3000 },
+      { path: '/repo-readonly', commands: {} }
+    ] })] }, { auth: new AuthService('$argon2id$unused', Buffer.alloc(32, 13).toString('base64url')) });
     try {
       const response = await app.inject({ method: 'GET', url: '/', headers: { host: 'agents.example.com' } });
-      expect(response.headers['content-security-policy']).toContain("frame-src 'self' https://project.example.com");
-      expect(response.headers['content-security-policy']).not.toContain('evil.example.com');
+      // permit effective worktree previews without widening the origin allowlist
+      const sources = String(response.headers['content-security-policy']).match(/(?:^|;)\s*frame-src\s+([^;]+)/u)?.[1]?.trim().split(/\s+/u);
+      expect(new Set(sources)).toEqual(new Set(["'self'", 'https://project.example.com', 'https://feature.example.com']));
     } finally { await app.close(); }
   });
 });

@@ -243,14 +243,49 @@ function stripRetiredKeys(entry: unknown): unknown {
   return out;
 }
 
-// the Project entry for one merge group — the first entry wins every field (ADR 0003),
-// carrying only the keys the new schema keeps; saveKey/command/resumeCommand/launch/pinned drop
+// the Project defaults for one merge group come from the first entry (ADR 0003), carrying
+// only the keys the new schema keeps; saveKey/command/resumeCommand/launch/pinned drop
 function projectEntry(entry: LegacyWorktree): Json {
   const project: Json = { id: entry.id, path: entry.path };
   for (const key of ['label', 'hostPath', 'port', 'hostname', 'commands', 'newTask', 'push'] as const) {
     if (entry[key] !== undefined) project[key] = entry[key];
   }
   return project;
+}
+
+// choose the checkout identity discovery will use, with a stable path fallback
+function canonicalEntryPath(entry: LegacyWorktree, facts: EntryFacts): string {
+  return facts.toplevel ?? facts.realpath ?? resolve(typeof entry.path === 'string' ? entry.path : String(entry.id));
+}
+
+// compare command maps by action rather than object key order; absent and empty both disable controls
+function sameCommands(left: unknown, right: unknown): boolean {
+  const normalizedLeft = left === undefined ? {} : left;
+  const normalizedRight = right === undefined ? {} : right;
+  // preserve invalid legacy values for schema validation
+  if (!isObject(normalizedLeft) || !isObject(normalizedRight)) return Object.is(normalizedLeft, normalizedRight);
+  const keys = new Set([...Object.keys(normalizedLeft), ...Object.keys(normalizedRight)]);
+  // compare every configured action
+  for (const key of keys) {
+    // require an override on the first mismatch
+    if (normalizedLeft[key] !== normalizedRight[key]) return false;
+  }
+  return true;
+}
+
+// preserve one merged member's settings when they differ from the first entry's defaults
+function worktreeOverride(defaults: LegacyWorktree, member: { entry: LegacyWorktree; facts: EntryFacts }): Json | undefined {
+  const override: Json = { path: canonicalEntryPath(member.entry, member.facts) };
+  // commands replace the whole inherited map; empty explicitly disables inherited controls
+  if (!sameCommands(defaults.commands, member.entry.commands)) override.commands = member.entry.commands === undefined ? {} : member.entry.commands;
+  const previewDiffers = defaults.hostname !== member.entry.hostname || defaults.port !== member.entry.port;
+  // preview fields remain a pair; null/null explicitly disables the inherited preview
+  if (previewDiffers) {
+    override.hostname = member.entry.hostname ?? null;
+    override.port = member.entry.port ?? null;
+  }
+  // omit a path-only record when every setting inherits unchanged
+  return Object.keys(override).length === 1 ? undefined : override;
 }
 
 /**
@@ -283,16 +318,28 @@ export function planMigration(raw: unknown, facts: ResolvedFacts): MigrationPlan
     groups.push({ projectId: String(entry.id), project: projectEntry(entry), members: [{ entry, facts: entryFacts }] });
   });
 
-  const projects = groups.map(group => group.project);
+  // keep first-entry settings as project defaults and preserve only differing merged members
+  const projects = groups.map(group => {
+    const defaults = group.members[0]!.entry;
+    const worktreeOverrides: Json[] = [];
+    // compare every later checkout with the project defaults
+    for (const member of group.members.slice(1)) {
+      const override = worktreeOverride(defaults, member);
+      // omit members whose settings already inherit exactly
+      if (override !== undefined) worktreeOverrides.push(override);
+    }
+    return worktreeOverrides.length === 0 ? group.project : { ...group.project, worktreeOverrides };
+  });
   for (const group of groups) {
     const mergedFrom = group.members.map(member => String(member.entry.id));
     projectsCreated.push({ id: group.projectId, mergedFrom });
-    if (mergedFrom.length > 1) warnings.push(`merged worktree entries ${mergedFrom.join(', ')} into project ${group.projectId} (they share one git repository; the first entry's settings win)`);
+    // report every repository merge and the resulting default source
+    if (mergedFrom.length > 1) warnings.push(`merged worktree entries ${mergedFrom.join(', ')} into project ${group.projectId} (they share one git repository; the first entry's settings become project defaults)`);
     // every member's data re-keys onto this Project; each keeps its own checkout realpath
     for (const { entry, facts: entryFacts } of group.members) {
       const oldId = String(entry.id);
       const noteKey = typeof entry.saveKey === 'string' ? entry.saveKey : oldId;
-      const realpath = entryFacts.toplevel ?? entryFacts.realpath ?? resolve(typeof entry.path === 'string' ? entry.path : oldId);
+      const realpath = canonicalEntryPath(entry, entryFacts);
       if (entryFacts.toplevel === undefined) warnings.push(`worktree ${oldId}: path is not a resolvable git checkout; its data is keyed by ${realpath} and can be cleared with Prune`);
       const worktreeKey = worktreeWireId(group.projectId, realpath);
       // notes and bookmarks are Project-scoped: saveKey ?? id → <projectId>; a saveKey shared across repositories warns

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { validateConfig } from '../src/config/schema.js';
 import {
   DataFileError,
   isLegacyConfig,
@@ -91,6 +92,66 @@ describe('planMigration — config mapping', () => {
     expect(plan.keyMaps.notes).toEqual({ main: 'main', wt: 'main' });
   });
 
+  // preserve distinct stack and preview settings after a repository merge
+  it('preserves each merged worktree stack and preview settings as canonical-path overrides', () => {
+    const fullStack = { start: 'docker compose up -d', stop: 'docker compose down', status: 'docker compose ps' };
+    const uiStack = { start: 'docker compose up -d web', stop: 'docker compose stop web', status: 'docker compose ps web' };
+    const raw = {
+      worktrees: [
+        { id: 'main', path: '/host/main', hostname: 'main.example.com', port: 80, commands: fullStack, command: 'codex' },
+        { id: 'ui', path: '/host/ui', hostname: 'ui.example.com', port: 1080, commands: uiStack, command: 'codex' },
+        { id: 'readonly', path: '/host/readonly', command: 'codex' }
+      ]
+    };
+    const entries = [
+      { realpath: '/repo/main', toplevel: '/repo/main', commonDir: '/repo/common.git', main: true },
+      { realpath: '/repo/ui', toplevel: '/repo/ui', commonDir: '/repo/common.git', main: false },
+      { realpath: '/repo/readonly', toplevel: '/repo/readonly', commonDir: '/repo/common.git', main: false }
+    ];
+    const plan = planMigration(raw, facts(entries));
+    expect(plan.newConfig.projects).toEqual([{
+      id: 'main',
+      path: '/host/main',
+      hostname: 'main.example.com',
+      port: 80,
+      commands: fullStack,
+      worktreeOverrides: [
+        { path: '/repo/ui', hostname: 'ui.example.com', port: 1080, commands: uiStack },
+        { path: '/repo/readonly', hostname: null, port: null, commands: {} }
+      ]
+    }]);
+  });
+
+  // retain malformed legacy commands for the output schema to reject
+  it('does not turn null legacy commands into a valid disabled stack', async () => {
+    const commands = { start: 'make start' };
+    const raw = {
+      publicOrigin: 'https://agents.example.com',
+      worktrees: [
+        { id: 'main', path: '/repo', commands, command: 'codex' },
+        { id: 'wt', path: '/repo-wt', commands: null, command: 'codex' }
+      ]
+    };
+    const plan = planMigration(raw, facts([mainAt('/repo'), { realpath: '/repo-wt', toplevel: '/repo-wt', commonDir: '/repo/.git', main: false }]));
+    expect(plan.newConfig.projects).toEqual([{
+      id: 'main', path: '/repo', commands, worktreeOverrides: [{ path: '/repo-wt', commands: null }]
+    }]);
+    await expect(validateConfig(plan.newConfig, { checkExecutables: false })).rejects.toThrow();
+  });
+
+  // omit override records that would only repeat inherited behavior
+  it('does not emit redundant overrides when merged worktree settings match project defaults', () => {
+    const commands = { start: 'make start', status: 'make status' };
+    const raw = {
+      worktrees: [
+        { id: 'main', path: '/repo', hostname: 'repo.example.com', port: 3000, commands, command: 'codex' },
+        { id: 'wt', path: '/repo-wt', hostname: 'repo.example.com', port: 3000, commands: { status: 'make status', start: 'make start' }, command: 'codex' }
+      ]
+    };
+    const plan = planMigration(raw, facts([mainAt('/repo'), { realpath: '/repo-wt', toplevel: '/repo-wt', commonDir: '/repo/.git', main: false }]));
+    expect(plan.newConfig.projects).toEqual([{ id: 'main', path: '/repo', hostname: 'repo.example.com', port: 3000, commands }]);
+  });
+
   it('sends a save key that spans repositories to the first project with a warning', () => {
     const raw = { worktrees: [{ id: 'a', path: '/repo-a', saveKey: 'shared', command: 'codex' }, { id: 'b', path: '/repo-b', saveKey: 'shared', command: 'codex' }] };
     const plan = planMigration(raw, facts([{ realpath: '/repo-a', toplevel: '/repo-a', commonDir: '/repo-a/.git', main: true }, { realpath: '/repo-b', toplevel: '/repo-b', commonDir: '/repo-b/.git', main: true }]));
@@ -142,6 +203,14 @@ describe('planMigration — config mapping', () => {
     // the operator's projects[] survives with its new-schema fields, stray legacy keys stripped
     expect(plan.newConfig.projects).toEqual([{ id: 'p', path: '/p', worktreesDirectory: '/wt' }]);
     expect(plan.newConfig.adapters).toEqual({ codex: { program: '/usr/bin/codex' } });
+  });
+
+  // retain new-schema override fields while removing retired agent keys
+  it('preserves existing project worktree overrides during a config-only migration', () => {
+    const worktreeOverrides = [{ path: '/repo-wt', commands: {}, hostname: null, port: null }];
+    const raw = { newAgentCommand: 'codex', projects: [{ id: 'p', path: '/p', command: 'legacy', worktreeOverrides }] };
+    const plan = planMigration(raw, facts([]));
+    expect(plan.newConfig.projects).toEqual([{ id: 'p', path: '/p', worktreeOverrides }]);
   });
 });
 
