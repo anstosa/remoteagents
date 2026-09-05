@@ -2,6 +2,11 @@ import type { Agent } from './domain/models.js';
 import type { AttentionState } from './adapters/types.js';
 
 export type AgentAttentionState = AttentionState;
+export type AgentNotificationContext = {
+  projectName: string;
+  worktreeName: string;
+  multipleWorktrees: boolean;
+};
 export type AgentNotification = {
   kind: 'question' | 'finished';
   title: string;
@@ -17,7 +22,15 @@ export type CleanupNotification = {
   tag: 'runtime-cleanup';
   url: '/#cleanup';
 };
-export type PushMessage = AgentNotification | CleanupNotification;
+export type ReviewNotification = {
+  kind: 'review';
+  title: string;
+  body: string;
+  tag: string;
+  url: string;
+  worktreeId: string;
+};
+export type PushMessage = AgentNotification | CleanupNotification | ReviewNotification;
 
 type NotificationDelivery = (notification: AgentNotification) => void | Promise<void>;
 
@@ -31,20 +44,31 @@ export function agentAttentionState(agent: Pick<Agent, 'attention'>): AgentAtten
 
 export const agentNotificationTag = (agent: Pick<Agent, 'id' | 'worktreeId'>) => agent.worktreeId === undefined ? `agent-status-${agent.id}` : `worktree-status-${agent.worktreeId}`;
 
-export function agentNotification(previous: AgentAttentionState | undefined, current: AgentAttentionState, agent: Agent): AgentNotification | undefined {
+// build one review-ready push payload
+export function reviewNotification(agentId: string, worktreeId: string, projectName: string, worktreeName: string): ReviewNotification {
+  return { kind: 'review', title: `Review ready in ${projectName}`, body: `${worktreeName} is ready for review`, tag: `review-ready-${worktreeId}`, url: `/#agent=${encodeURIComponent(agentId)}`, worktreeId };
+}
+
+// build one agent-state push payload
+export function agentNotification(previous: AgentAttentionState | undefined, current: AgentAttentionState, agent: Agent, context?: AgentNotificationContext): AgentNotification | undefined {
   if (previous === undefined || previous === current) return undefined;
-  const label = agent.displayLabel ?? agent.title;
+  const fallbackName = agent.displayLabel ?? agent.workspace.split('/').filter(Boolean).at(-1) ?? agent.title;
+  const projectName = context?.projectName ?? fallbackName;
+  const worktreeName = context?.worktreeName ?? fallbackName;
   const shared = { tag: agentNotificationTag(agent), url: `/#agent=${encodeURIComponent(agent.id)}`, ...(agent.worktreeId === undefined ? {} : { worktreeId: agent.worktreeId }) };
   if (current === 'question') {
+    const body = agent.question === undefined
+      ? `${worktreeName}: has a question`
+      : `${context?.multipleWorktrees === true ? `${worktreeName}: ` : ''}${agent.question.text}`;
     return {
       ...shared,
       kind: 'question',
-      title: 'Agent has a question',
-      body: agent.question === undefined ? `${label} is waiting for your response.` : `${label}: ${agent.question.text}`
+      title: `Question in ${projectName}`,
+      body
     };
   }
   if (previous === 'working' && current === 'finished') {
-    return { ...shared, kind: 'finished', title: 'Agent finished', body: `${label} is ready for another prompt.` };
+    return { ...shared, kind: 'finished', title: `Done working in ${projectName}`, body: `${worktreeName} is ready for a new prompt` };
   }
   return undefined;
 }
@@ -56,7 +80,7 @@ export class AgentNotificationCoordinator {
 
   constructor(private readonly deliver: NotificationDelivery, private readonly completionDelayMs = 2_000) {}
 
-  observe(agent: Agent, hasQueuedPrompt = false): void {
+  observe(agent: Agent, hasQueuedPrompt = false, context?: AgentNotificationContext): void {
     const key = attentionKey(agent);
     const current = agentAttentionState(agent);
     const previous = this.states.get(key);
@@ -72,7 +96,7 @@ export class AgentNotificationCoordinator {
       this.cancelCompletion(key);
       this.unread.delete(key);
     }
-    const notification = agentNotification(previous, current, agent);
+    const notification = agentNotification(previous, current, agent, context);
     if (notification === undefined) return;
     if (notification.kind === 'question') {
       this.deliverSafely(notification);

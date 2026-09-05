@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Agent } from '../src/domain/models.js';
 import { resolveAttention } from '../src/adapters/attention.js';
-import { AgentNotificationCoordinator, agentAttentionState, agentNotification, type AgentNotification } from '../src/notifications.js';
+import { AgentNotificationCoordinator, agentAttentionState, agentNotification, reviewNotification, type AgentNotification, type AgentNotificationContext } from '../src/notifications.js';
 
 // Resolve attention from the title exactly as DiscoveryService would, so the
 // coordinator reads the same resolved state the wire carries.
@@ -21,6 +21,7 @@ const agent = (overrides: Partial<Agent> = {}): Agent => {
     ...overrides
   };
 };
+const context: AgentNotificationContext = { projectName: 'Remote Agents', worktreeName: 'Eric', multipleWorktrees: true };
 
 describe('agent notifications', () => {
   afterEach(() => vi.useRealTimers());
@@ -29,18 +30,18 @@ describe('agent notifications', () => {
     const questioning = agent({ title: '⠋ Working', question: { id: 'question-1', text: 'Deploy now?', choices: ['Yes', 'No'], source: 'structured', targetPaneId: '%2' } });
 
     expect(agentAttentionState(questioning)).toBe('question');
-    expect(agentNotification('working', 'question', questioning)).toEqual({
+    expect(agentNotification('working', 'question', questioning, context)).toEqual({
       kind: 'question',
-      title: 'Agent has a question',
+      title: 'Question in Remote Agents',
       body: 'Eric: Deploy now?',
       tag: 'worktree-status-eric',
       url: '/#agent=socket%3A%251',
       worktreeId: 'eric'
     });
-    expect(agentNotification('working', 'finished', agent())).toEqual({
+    expect(agentNotification('working', 'finished', agent(), context)).toEqual({
       kind: 'finished',
-      title: 'Agent finished',
-      body: 'Eric is ready for another prompt.',
+      title: 'Done working in Remote Agents',
+      body: 'Eric is ready for a new prompt',
       tag: 'worktree-status-eric',
       url: '/#agent=socket%3A%251',
       worktreeId: 'eric'
@@ -51,8 +52,25 @@ describe('agent notifications', () => {
     const questioning = agent({ title: 'Action required | Approve command' });
 
     expect(agentAttentionState(questioning)).toBe('question');
-    expect(agentNotification('working', 'question', questioning)?.body).toBe('Eric is waiting for your response.');
+    expect(agentNotification('working', 'question', questioning, context)?.body).toBe('Eric: has a question');
     expect(agentNotification('question', 'finished', agent())).toBeUndefined();
+  });
+
+  it('omits the worktree name from a single-worktree question', () => {
+    const questioning = agent({ question: { id: 'question-1', text: 'Deploy now?', choices: ['Yes', 'No'], source: 'structured', targetPaneId: '%2' } });
+
+    expect(agentNotification('working', 'question', questioning, { ...context, multipleWorktrees: false })?.body).toBe('Deploy now?');
+  });
+
+  it('builds a project-scoped guided review notification', () => {
+    expect(reviewNotification('agent-1', 'eric', 'Remote Agents', 'Eric')).toEqual({
+      kind: 'review',
+      title: 'Review ready in Remote Agents',
+      body: 'Eric is ready for review',
+      tag: 'review-ready-eric',
+      url: '/#agent=agent-1',
+      worktreeId: 'eric'
+    });
   });
 
   it('suppresses completion when another queued prompt starts during the grace period', async () => {

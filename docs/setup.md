@@ -426,16 +426,19 @@ The default server listener is `127.0.0.1:8787`; `/healthz` is loopback-only and
 
 The console can be installed as a browser app. Select **Enable alerts** in the
 console to grant notification access; mobile browsers require that permission
-request to come from a tap. Alerts are raised when the open console detects an
-agent changing from working to ready. Voice input is
+request to come from a tap. Alerts cover agent questions and completed prompts,
+completed guided reviews, stale runtime cleanup, configured agent updates, and
+Remote Agent Console commits waiting on `origin/main`. Agent-update alerts open
+global settings; console-update alerts open the reviewed update screen. Voice input is
 shown only in browsers that implement the Web Speech API; microphone access is
 restricted by the console's permissions policy and is never required to use
 the prompt field.
 
-Browser notifications are not server push notifications: when mobile operating
-systems suspend or terminate the console, it cannot poll tmux for changes. For
-iOS, install the console to the Home Screen and use iOS 16.4 or later before
-enabling alerts.
+Agent questions, completed prompts, guided reviews, and runtime cleanup are also
+sent through server push, so they can arrive while the console is suspended.
+Agent and Remote Agent Console update alerts depend on the browser's periodic
+authenticated checks. For iOS, install the console to the Home Screen and use
+iOS 16.4 or later before enabling alerts.
 
 If a worktree has a GitHub `origin` remote and the host has GitHub CLI
 credentials (or `RAC_GITHUB_TOKEN`), the console can show a link to its open

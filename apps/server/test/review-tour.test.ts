@@ -52,8 +52,9 @@ describe('review tour jobs', () => {
     const result = deferred<ReviewTour>();
     const service = { prepare: async () => prepared(), generate: async () => await result.promise } as unknown as ReviewTourService;
     const saved: Array<{ worktreeId: string; branch: string; tour: ReviewTour }> = [];
+    const completed: string[] = [];
     const store = { save: async (worktreeId: string, branch: string, tour: ReviewTour) => { saved.push({ worktreeId, branch, tour }); return { worktreeId, branch, savedAt: new Date().toISOString(), tour }; } };
-    const jobs = new ReviewTourJobs(service, store as never);
+    const jobs = new ReviewTourJobs(service, store as never, review => { completed.push(`${review.agentId}:${review.worktreeId}:${review.tour.title}`); });
     try {
       const started = await jobs.start('owner-a', 'agent-cora', { scope: 'working', includeTests: false, includeDocs: false });
       expect(started.kind).toBe('pending');
@@ -64,6 +65,7 @@ describe('review tour jobs', () => {
       await viWait();
       expect(jobs.get('owner-a', started.job.id)?.state.kind).toBe('ready');
       expect(saved).toMatchObject([{ worktreeId: 'cora', branch: 'feature/review-tour' }]);
+      expect(completed).toEqual(['agent-cora:cora:Tour']);
     } finally { jobs.close(); }
   });
 

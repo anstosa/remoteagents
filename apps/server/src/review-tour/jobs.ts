@@ -13,6 +13,7 @@ export type StoredReviewJob = { id: string; owner: string; agentId: string; work
 export type StartedReviewJob = { id: string; expiresAt: string; retryAfterMs: number };
 type ReviewJobStart = { kind: 'empty'; snapshot: PublicReviewSnapshot } | { kind: 'pending'; job: StartedReviewJob };
 type IdempotentStart = { agentId: string; input: ReviewTourInput; promise: Promise<ReviewJobStart>; expiry?: NodeJS.Timeout };
+export type CompletedReviewJob = { agentId: string; worktreeId: string; prepared: PreparedReviewTour; tour: ReviewTour };
 
 export class ReviewTourJobs {
   private readonly jobs = new Map<string, StoredReviewJob>();
@@ -20,7 +21,7 @@ export class ReviewTourJobs {
   private readonly persistenceVersions = new Map<string, number>();
   private readonly idempotentStarts = new Map<string, IdempotentStart>();
 
-  constructor(private readonly service: ReviewTourService, private readonly store?: ReviewTourStore, private readonly onStored?: () => void | Promise<void>) {}
+  constructor(private readonly service: ReviewTourService, private readonly store?: ReviewTourStore, private readonly onStored?: (review: CompletedReviewJob) => void | Promise<void>) {}
 
   // start one latest-wins generation
   async start(owner: string, agentId: string, input: ReviewTourInput, requestId?: string): Promise<ReviewJobStart> {
@@ -97,7 +98,7 @@ export class ReviewTourJobs {
       if (retained !== job || retained.state.kind !== 'pending') return;
       retained.state = { kind: 'ready', tour };
       // publish the new footer state
-      await this.onStored?.();
+      await this.onStored?.({ agentId: job.agentId, worktreeId: job.worktreeId, prepared, tour });
     } catch (error) {
       const current = this.jobs.get(job.id);
       // ignore cancelled or removed jobs

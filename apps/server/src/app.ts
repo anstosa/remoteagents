@@ -27,7 +27,7 @@ import { PullRequestSwitchService } from './pull-requests/switch-service.js';
 import { NewTaskService } from './new-task/service.js';
 import { WorktreeManagementService } from './worktrees/management.js';
 import { SavedPromptService } from './saved-prompts/service.js';
-import { agentAttentionState, AgentNotificationCoordinator } from './notifications.js';
+import { agentAttentionState, AgentNotificationCoordinator, reviewNotification, type AgentNotificationContext } from './notifications.js';
 import { stackActions, type Agent, type StackAction, type Worktree } from './domain/models.js';
 import { CommandCatalogService } from './commands/service.js';
 import { LatestViewportScheduler, PaneViewportCoordinator } from './logs/viewport-scheduler.js';
@@ -92,7 +92,17 @@ export function logFrame(last: string, value: string, refreshMetadata = false): 
 }
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, promptHistory, queuedPrompts, savedPrompts, undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new BookmarkService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config); const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, () => dashboardUpdates.refresh().then(() => undefined)); const reviewTourCapability = await reviewTours.capability();
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, promptHistory, queuedPrompts, savedPrompts, undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new BookmarkService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
+  const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, async review => {
+    const worktree = review.prepared.resolved.worktree;
+    const projectName = config.projects.find(project => project.id === worktree.projectId)?.label ?? worktree.label;
+    // refresh dashboard state and push independently
+    await Promise.all([
+      dashboardUpdates.refresh().then(() => undefined).catch(() => undefined),
+      push.notify(reviewNotification(review.agentId, review.worktreeId, projectName, worktree.label)).then(() => undefined).catch(() => undefined)
+    ]);
+  });
+  const reviewTourCapability = await reviewTours.capability();
   const accounts = deps.accounts ?? new CodexAccountService({ ...(codexProgram === undefined ? {} : { codexProgram }) });
   // tolerate narrow launch doubles while deriving the production launch account home
   const launchHome = typeof launch.agentHome === 'function' ? launch.agentHome() : process.env.HOME ?? '/';
@@ -248,6 +258,17 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), agent.workspace);
     return worktree === undefined ? `agent:${agent.id}` : worktree.id;
   };
+  // resolve project and worktree names for one agent alert
+  const notificationContextForAgent = (agent: Agent, projects: DashboardPayload['projects']): AgentNotificationContext => {
+    const project = projects.find(candidate => candidate.id === agent.projectId);
+    const worktree = project?.worktrees.find(candidate => candidate.id === agent.worktreeId);
+    const fallbackName = agent.displayLabel ?? agent.workspace.split('/').filter(Boolean).at(-1) ?? agent.title;
+    return {
+      projectName: project?.label ?? fallbackName,
+      worktreeName: worktree?.label ?? fallbackName,
+      multipleWorktrees: (project?.worktrees.length ?? 0) > 1
+    };
+  };
   // count prompts before dispatch starts
   const queuedPromptCounts = async (agents: Agent[]) => new Map(await Promise.all(agents.map(async agent => {
     // suppress false completion alerts on storage errors
@@ -259,7 +280,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const queuedCounts = await queuedPromptCounts(discovered.agents);
     await Promise.all(discovered.agents.map(agent => prompts.observe(agent).catch(() => undefined)));
     // suppress completions while more work waits
-    for (const agent of discovered.agents) notifications.observe(agent, (queuedCounts.get(agent.id) ?? 0) > 0);
+    for (const agent of discovered.agents) notifications.observe(agent, (queuedCounts.get(agent.id) ?? 0) > 0, notificationContextForAgent(agent, discovered.projects));
     notifications.retain(discovered.agents);
     const worktrees = discovery.worktreesNow();
     const controls = new Map(await Promise.all(worktrees.map(async worktree => [worktree.id, { actions: stackCommands.actions(worktree), ...await stackCommands.state(worktree) }] as const)));
@@ -279,7 +300,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const discovered = await discovery.dashboard();
     const queuedCounts = await queuedPromptCounts(discovered.agents);
     // update completion and question state for every agent
-    for (const agent of discovered.agents) notifications.observe(agent, (queuedCounts.get(agent.id) ?? 0) > 0);
+    for (const agent of discovered.agents) notifications.observe(agent, (queuedCounts.get(agent.id) ?? 0) > 0, notificationContextForAgent(agent, discovered.projects));
     notifications.retain(discovered.agents);
     return instanceAttention({ agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent) })) });
   };
@@ -590,9 +611,11 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // check whether origin main is ahead of local main
   app.get('/api/server/update-available', async (request, reply) => {
     controlled(request);
-    const available = await serverAdmin.updateAvailable();
+    const preview = await serverAdmin.updatePreview();
     // require the configured host bridge
-    return available === undefined ? reply.code(503).send({ error: 'Server update checks are unavailable on this deployment.' }) : { available };
+    return preview === undefined
+      ? reply.code(503).send({ error: 'Server update checks are unavailable on this deployment.' })
+      : { available: preview.available || preview.rebuildRetryAvailable, commitCount: preview.commitCount, targetSha: preview.targetSha };
   });
   // preview the exact fetched update range
   app.get('/api/server/update-preview', async (request, reply) => {

@@ -562,6 +562,13 @@ const decodeAttachment = (attachment: SavedPromptAttachment): File => {
 
 const agentNotificationTag = (agent: Pick<Agent, 'id' | 'worktreeId'>) => agent.worktreeId === undefined ? `agent-status-${agent.id}` : `worktree-status-${agent.worktreeId}`;
 const reviewNotificationTag = (worktreeId: string) => `review-ready-${worktreeId}`;
+// resolve user-facing names for one agent alert
+const agentNotificationNames = (agent: Agent, projects: Project[]) => {
+  const project = projects.find(candidate => candidate.id === agent.projectId);
+  const worktree = project?.worktrees.find(candidate => candidate.id === agent.worktreeId);
+  const fallbackName = agent.worktreeLabel ?? agent.displayLabel ?? agent.workspace.split('/').filter(Boolean).at(-1) ?? agent.title;
+  return { projectName: project?.label ?? fallbackName, worktreeName: worktree?.label ?? fallbackName, multipleWorktrees: (project?.worktrees.length ?? 0) > 1 };
+};
 const pageFocused = () => document.visibilityState === 'visible' && document.hasFocus();
 const notificationSoundPaths = { finished: '/notification-success.wav', question: '/notification-warning.wav' } as const;
 const recentNotificationSounds = new Map<string, number>();
@@ -632,7 +639,7 @@ const ServerContext = createContext<ServerInfo | undefined>(undefined);
 const ServerStatusContext = createContext<Readonly<Record<string, InstanceAttention>>>({});
 const VoiceTriggerContext = createContext<{ open: () => void; active: boolean; visible: boolean; name: string } | undefined>(undefined);
 type ServerUpdateState = 'queued' | 'running' | 'complete' | 'failed';
-type ServerUpdateAvailability = { available: boolean };
+type ServerUpdateAvailability = { available: boolean; commitCount?: number; targetSha?: string };
 type AgentUpdateStatus = { kind: AgentKind; currentVersion?: string; latestVersion?: string; updateAvailable: boolean; error?: string };
 type ServerUpdateCommit = { sha: string; subject: string; author: string; authoredAt: string };
 type ServerUpdateAdvisoryReason = { kind: 'config' | 'compose' | 'runtime' | 'dependency' | 'state' | 'other'; paths: string[] };
@@ -684,7 +691,36 @@ const serverHostLabel = (url: string): string => {
   }
 };
 // validate one upstream availability response
-const isServerUpdateAvailability = (value: unknown): value is ServerUpdateAvailability => value !== null && typeof value === 'object' && typeof (value as ServerUpdateAvailability).available === 'boolean';
+const isServerUpdateAvailability = (value: unknown): value is ServerUpdateAvailability => {
+  const candidate = value as Partial<ServerUpdateAvailability> | null;
+  const commitCount = candidate?.commitCount;
+  const targetSha = candidate?.targetSha;
+  return candidate !== null
+    && typeof candidate === 'object'
+    && typeof candidate.available === 'boolean'
+    && (commitCount === undefined || Number.isSafeInteger(commitCount) && commitCount >= 0)
+    && (targetSha === undefined || /^[0-9a-f]{40}$/u.test(targetSha));
+};
+const announcedAgentUpdates = new Map<AgentKind, string>();
+// announce each newly discovered agent version once
+const announceAgentUpdates = (statuses: AgentUpdateStatus[]) => {
+  // inspect every configured updater
+  for (const status of statuses) {
+    const current = status.currentVersion;
+    const latest = status.latestVersion;
+    // clear obsolete notifications and fingerprints
+    if (!status.updateAvailable || current === undefined || latest === undefined) {
+      announcedAgentUpdates.delete(status.kind);
+      void dismissNotification(`agent-update-${status.kind}`);
+      continue;
+    }
+    const fingerprint = `${current}->${latest}`;
+    // suppress repeat polling alerts
+    if (announcedAgentUpdates.get(status.kind) === fingerprint) continue;
+    announcedAgentUpdates.set(status.kind, fingerprint);
+    void showNotification('system', `${agentKindLabel[status.kind]} update available`, `${current} -> ${latest}`, `agent-update-${status.kind}`, '/#settings');
+  }
+};
 // validate one bounded upstream commit
 const isServerUpdateCommit = (value: unknown): value is ServerUpdateCommit => value !== null
   && typeof value === 'object'
@@ -1192,11 +1228,22 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
       }
       setAgentUpdateStatuses(result.agents);
       setAgentUpdateError(result.agents.find(status => status.error !== undefined)?.error ?? '');
+      announceAgentUpdates(result.agents);
     };
     void refresh();
     const interval = window.setInterval(() => { void refresh(); }, 15 * 60_000);
     return () => { active = false; window.clearInterval(interval); };
   }, [settings]);
+  // open settings from an update notification
+  useEffect(() => {
+    const openFromHash = () => {
+      // accept only the dedicated settings destination
+      if (location.hash === '#settings') setOpen(true);
+    };
+    openFromHash();
+    window.addEventListener('hashchange', openFromHash);
+    return () => window.removeEventListener('hashchange', openFromHash);
+  }, []);
   // move focus into the page and restore the trigger on close
   useEffect(() => {
     // skip focus work while the page is closed
@@ -1278,6 +1325,11 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     const updated = result.agent;
     setAgentUpdateStatuses(current => [...current.filter(status => status.kind !== kind), updated]);
     setAgentUpdateError(updated.error ?? '');
+    // remove the completed update alert
+    if (!updated.updateAvailable) {
+      announcedAgentUpdates.delete(kind);
+      void dismissNotification(`agent-update-${kind}`);
+    }
   };
   // redeem one available reset credit
   const useAccountReset = async (account: CodexAccount) => {
@@ -1508,10 +1560,16 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const davoSection = <section className="client-settings-section client-settings-davo" aria-labelledby="settings-davo-title"><header><div><small>VOICE</small><h2 id="settings-davo-title">{davoTitle}</h2></div><label className="client-settings-davo-toggle"><input aria-label={`Enable ${davoTitle}`} role="switch" type="checkbox" checked={davoEnabled} disabled={davoPending || !settings.davo.available && !davoEnabled} onChange={event => void toggleDavo(event)} /><span className="client-settings-switch-state">{davoStateLabel}</span><span className="client-settings-switch-track" aria-hidden="true" /></label></header>{davoEnabled && <form className="client-settings-davo-form" onSubmit={event => void saveDavo(event)}><label>Name<input aria-label="Davo name" type="text" value={davoDraft.name} maxLength={80} disabled={davoPending} onChange={event => setDavoDraft(current => ({ ...current, name: event.target.value }))} /></label><label>Context<textarea aria-label="Davo context" value={davoDraft.context} maxLength={16_000} disabled={davoPending} onChange={event => setDavoDraft(current => ({ ...current, context: event.target.value }))} /></label><footer>{davoError && <span className="client-settings-davo-error" role="alert">{davoError}</span>}{!davoError && davoMessage && <span className="client-settings-davo-message" role="status">{davoMessage}</span>}<button type="submit" disabled={davoPending || !davoDraft.name.trim()}>{davoPending ? <><span className="spinner" />Saving…</> : 'Save'}</button></footer></form>}{!davoEnabled && davoError && <span className="client-settings-davo-error" role="alert">{davoError}</span>}</section>;
   // the Codex accounts section renders only when adapters.codex is configured
   const accountsSection = !codexConfigured ? null : <section className="client-settings-section client-settings-accounts" aria-labelledby="settings-accounts-title"><header><small>CHATGPT</small><h2 id="settings-accounts-title">Accounts</h2><button className="chatgpt-account-add" type="button" disabled={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined} onClick={() => void beginAccountLogin()}>+ Add account</button></header><div className="client-settings-account-list" role="radiogroup" aria-label="ChatGPT accounts">{accountsLoading && accounts.length === 0 ? <div className="chatgpt-account-loading" role="status"><span className="spinner" />Loading ChatGPT accounts…</div> : accountRows}</div>{accountMessage && <span className="chatgpt-account-message" role="status">{accountMessage}</span>}</section>;
+  // close the settings page and consume its notification route
+  const closeSettings = () => {
+    setOpen(false);
+    // remove only the settings hash
+    if (location.hash === '#settings') history.replaceState(null, '', `${location.pathname}${location.search}`);
+  };
   // contain keyboard focus inside the settings page
   const pageKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
     // close the page on escape while no child dialog is active
-    if (event.key === 'Escape' && dialog === undefined) { setOpen(false); return; }
+    if (event.key === 'Escape' && dialog === undefined) { closeSettings(); return; }
     // retain ordinary keys and child-dialog input
     if (event.key !== 'Tab' || dialog !== undefined || pageRef.current === null) return;
     const controls = Array.from(pageRef.current.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])')).filter(control => control.offsetParent !== null);
@@ -1527,7 +1585,7 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     event.preventDefault();
     controls.at(next)?.focus();
   };
-  const settingsPage = !open ? null : createPortal(<div ref={pageRef} id="global-settings-page" className="client-settings-page" role="dialog" aria-modal="true" aria-labelledby="global-settings-title" aria-busy={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined || defaultAgentPending || davoPending} tabIndex={-1} onKeyDown={pageKey}><header className="client-settings-page-header"><div className="client-settings-page-heading"><small>REMOTE AGENT CONSOLE</small><h1 id="global-settings-title">Settings</h1></div><button className="client-settings-page-close" type="button" aria-label="Back to console" title="Back to console" onClick={() => setOpen(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6M9 12h10" /></svg><span>Back to console</span></button></header><div className="client-settings-page-content"><section className="client-settings-section client-settings-console" aria-label="Console settings">{settingsRows}</section>{davoSection}{accountsSection}</div></div>, document.body);
+  const settingsPage = !open ? null : createPortal(<div ref={pageRef} id="global-settings-page" className="client-settings-page" role="dialog" aria-modal="true" aria-labelledby="global-settings-title" aria-busy={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined || defaultAgentPending || davoPending} tabIndex={-1} onKeyDown={pageKey}><header className="client-settings-page-header"><div className="client-settings-page-heading"><small>REMOTE AGENT CONSOLE</small><h1 id="global-settings-title">Settings</h1></div><button className="client-settings-page-close" type="button" aria-label="Back to console" title="Back to console" onClick={closeSettings}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6M9 12h10" /></svg><span>Back to console</span></button></header><div className="client-settings-page-content"><section className="client-settings-section client-settings-console" aria-label="Console settings">{settingsRows}</section>{davoSection}{accountsSection}</div></div>, document.body);
   const renameTarget = dialog === 'client' || dialog === 'server' ? dialog : undefined;
   const renameDialog = renameTarget === undefined ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-rename-title" onKeyDown={event => { /* close on escape */ if (event.key === 'Escape') closeDialog(); }}><div><header><div><small>GLOBAL SETTINGS</small><h2 id="settings-rename-title">Rename {renameTarget === 'client' ? 'Client' : 'Server'}</h2></div><button type="button" aria-label={`Close rename ${renameTarget}`} disabled={pending} onClick={closeDialog}>×</button></header><form onSubmit={event => void submitRename(event)}><label>{renameTarget === 'client' ? 'Client' : 'Server'} name<input autoFocus type="text" value={name} maxLength={renameTarget === 'client' ? 64 : 80} autoComplete="nickname" onChange={event => setName(event.target.value)} /></label>{error && <span className="auth-error" role="alert">{error}</span>}<footer><button type="button" disabled={pending} onClick={closeDialog}>Cancel</button><button type="submit" disabled={pending || !name.trim()}>{pending ? <><span className="spinner" />Renaming…</> : 'Save'}</button></footer></form></div></div>, document.body);
   let accountLoginContent: ReactNode;
@@ -1546,7 +1604,9 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const toggleSettings = () => {
     // clear stale operation messages on a new open
     if (!open) setAccountMessage('');
-    setOpen(current => !current);
+    // consume notification routes when closing
+    if (open) closeSettings();
+    else setOpen(true);
     setError('');
   };
   const updatesAvailable = agentUpdateStatuses.some(status => status.updateAvailable);
@@ -5199,7 +5259,7 @@ function NotificationControl() {
     if (!supported || permission !== 'default' || !publicKey || !('serviceWorker' in navigator)) return;
     const next = await Notification.requestPermission();
     setPermission(next);
-    if (next === 'granted') { await syncSubscription(); await showNotification('system', 'Alerts enabled', 'You will be notified when agents and guided reviews are ready.', 'rac-alerts-enabled'); }
+    if (next === 'granted') { await syncSubscription(); await showNotification('system', 'Alerts enabled', 'You will be notified when agents need attention and reviews or updates are ready.', 'rac-alerts-enabled'); }
   };
   if (!supported || !publicKey || permission === 'granted') return null;
   if (permission === 'denied') return <span className="notification-status" title="Enable notifications for this site in your browser settings">Alerts blocked</span>;
@@ -5785,7 +5845,7 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
       const state = agentState(agent);
       const previous = agentStates.current.get(agent.id);
       const tag = agentNotificationTag(agent);
-      const label = agent.displayLabel ?? agent.title;
+      const names = agentNotificationNames(agent, data.projects);
       const focused = selectedItemKey.current === `agent-${agent.id}` && pageFocused();
       const hasQueuedPrompt = agent.queuedPromptCount > 0;
       observed.add(agent.id);
@@ -5796,9 +5856,11 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
         pendingCompletions.current.delete(agent.id);
       }
       if (previous !== undefined && previous !== 'action-required' && state === 'action-required') {
-        const body = agent.question === undefined ? `${label} is waiting for your response.` : `${label}: ${agent.question.text}`;
+        const body = agent.question === undefined
+          ? `${names.worktreeName}: has a question`
+          : `${names.multipleWorktrees ? `${names.worktreeName}: ` : ''}${agent.question.text}`;
         if (focused) dismissAgentNotifications(agent);
-        else void showNotification('question', 'Agent has a question', body, tag, `/#agent=${encodeURIComponent(agent.id)}`, agent.worktreeId);
+        else void showNotification('question', `Question in ${names.projectName}`, body, tag, `/#agent=${encodeURIComponent(agent.id)}`, agent.worktreeId);
       }
       if (previous === 'working' && state === 'prompt-done' && !hasQueuedPrompt) {
         const delay = 2_000;
@@ -5807,7 +5869,7 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
       } else if (state === 'prompt-done' && !hasQueuedPrompt && pendingCompletion !== undefined && Date.now() >= pendingCompletion.due) {
         window.clearTimeout(pendingCompletion.timer);
         pendingCompletions.current.delete(agent.id);
-        void showNotification('finished', 'Agent finished', `${label} is ready for another prompt.`, tag, `/#agent=${encodeURIComponent(agent.id)}`, agent.worktreeId);
+        void showNotification('finished', `Done working in ${names.projectName}`, `${names.worktreeName} is ready for a new prompt`, tag, `/#agent=${encodeURIComponent(agent.id)}`, agent.worktreeId);
       }
       if (previous === 'action-required' && state === 'working') void dismissNotification(tag);
       next.set(agent.id, state);
@@ -6175,13 +6237,15 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
     window.requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('.review-tour-toggle')?.focus());
   };
   // announce a newly generated review
-  const notifyReviewReady = (tour: ReviewTour) => {
+  const notifyReviewReady = () => {
     // require the matching active review
     if (reviewLaunch === undefined) return;
     const agent = data.agents.find(candidate => candidate.id === reviewLaunch.agentId);
-    const label = worktrees.find(worktree => worktree.id === reviewLaunch.worktreeId)?.label ?? agent?.worktreeLabel ?? (agent === undefined ? reviewLaunch.worktreeId : agentLabel(agent));
-    const scope = tour.scope === 'working' ? 'working changes' : 'pull request';
-    void showNotification('system', 'Guided review ready', `${label}'s ${scope} guided review is ready.`, reviewNotificationTag(reviewLaunch.worktreeId), `/#agent=${encodeURIComponent(reviewLaunch.agentId)}`, reviewLaunch.worktreeId);
+    const worktree = worktrees.find(candidate => candidate.id === reviewLaunch.worktreeId);
+    const project = data.projects.find(candidate => candidate.id === worktree?.projectId);
+    const worktreeName = worktree?.label ?? agent?.worktreeLabel ?? (agent === undefined ? reviewLaunch.worktreeId : agentLabel(agent));
+    const projectName = project?.label ?? worktreeName;
+    void showNotification('system', `Review ready in ${projectName}`, `${worktreeName} is ready for review`, reviewNotificationTag(reviewLaunch.worktreeId), `/#agent=${encodeURIComponent(reviewLaunch.agentId)}`, reviewLaunch.worktreeId);
   };
   // open and acknowledge the local review
   const openLocalReview = () => {
@@ -6243,7 +6307,7 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
     return <div key={worktree.id} className="launcher-row"><span className="launcher-row-label">{launcherRowLabel(worktree, project)}</span><button type="button" className={`launcher-icon launcher-pin${worktree.pinned ? ' pinned' : ''}`} aria-pressed={worktree.pinned} aria-label={`${worktree.pinned ? 'Unpin' : 'Pin'} ${worktree.label}`} title={worktree.pinned ? 'Unpin worktree' : 'Pin worktree'} onClick={() => void togglePin(worktree)}><LauncherRowIcon name="pin" /></button><button type="button" className="launcher-icon launcher-rename" disabled={creatingAgent} aria-label={`Rename ${worktree.label}`} title="Rename worktree" onClick={() => setRenameWorktreeId(worktree.id)}><LauncherRowIcon name="rename" /></button><button type="button" className="launcher-icon launcher-remove" disabled={creatingAgent || openAgent !== undefined || removeReason !== undefined} aria-label={`Remove ${worktree.label}`} title={openAgent === undefined ? removeReason ?? 'Remove worktree' : 'Turn off the open agent before removing this worktree'} onClick={() => setRemoveWorktreeId(worktree.id)}><LauncherRowIcon name="trash" /></button>{action}</div>;
   })}{project.mode === 'directory' && <div className="launcher-row"><span className="launcher-row-label">{project.label}</span><LaunchSplitButton label={project.label} resolution={project.launch} compact disabled={creatingAgent} onLaunch={choice => void launchProjectDirectory(project, choice)} /></div>}<button type="button" className="launcher-new-worktree" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setNewWorktreeProjectId(project.id)}><LauncherLabelIcon name="add" /><span>New worktree…</span></button></div>)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav>{visibleOperationFeedback && <OperationFeedbackBanner feedback={visibleOperationFeedback} onDismiss={() => setOperationFeedback(undefined)} />}{updateError && <p className="launch-error launch-error-global" role="alert">{updateError}</p>}{launchErrorMessage && visibleOperationFeedback?.tone !== 'error' && <p className="launch-error launch-error-global" role="alert">{launchErrorMessage}</p>}</>;
   const consoleClass = `console${davo.enabled && voiceOpen ? ' voice-visible' : ''}`;
-  if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
+  if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view"><ServerSwitcher className="output-server-switcher" />{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
   return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} {...(activeWorktree === undefined ? {} : { pinned: activeWorktree.pinned, onTogglePin: () => void togglePin(activeWorktree), onRenameWorktree: () => setRenameWorktreeId(activeWorktree.id), worktreeLabel: activeWorktree.label })} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} onRename={() => setRenameWorktreeId(item.worktree!.id)} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
 }
 
@@ -6258,6 +6322,7 @@ function App() {
   const [serverUpdateAvailable, setServerUpdateAvailable] = useState(false);
   const [serverUpdateOpen, setServerUpdateOpen] = useState(false);
   const [serverUpdateMinimized, setServerUpdateMinimized] = useState(false);
+  const announcedServerUpdateTarget = useRef<string | undefined>(undefined);
   const [reconnecting, setReconnecting] = useState(!consoleReachable);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const applySession = useCallback((current: SessionInfo) => {
@@ -6349,7 +6414,19 @@ function App() {
   const closeServerUpdate = useCallback(() => {
     setServerUpdateOpen(false);
     setServerUpdateMinimized(false);
+    // remove only the server-update hash
+    if (location.hash === '#server-update') history.replaceState(null, '', `${location.pathname}${location.search}`);
   }, []);
+  // open the update review from its notification route
+  useEffect(() => {
+    const openFromHash = () => {
+      // wait for authenticated controls
+      if (state === 'ready' && location.hash === '#server-update') openServerUpdate();
+    };
+    openFromHash();
+    window.addEventListener('hashchange', openFromHash);
+    return () => window.removeEventListener('hashchange', openFromHash);
+  }, [openServerUpdate, state]);
   // load every configured Codex account and its limits
   const codexAccounts = useCallback(async (): Promise<{ accounts?: CodexAccount[]; error?: string }> => {
     const response = await request('/api/codex/accounts');
@@ -6557,8 +6634,21 @@ function App() {
       // retry unavailable checks later
       if (!response.ok || closed) return;
       const payload: unknown = await response.json().catch(() => undefined);
-      // latch a discovered upstream update
-      if (isServerUpdateAvailability(payload) && payload.available) setServerUpdateAvailable(true);
+      // reject malformed availability data
+      if (!isServerUpdateAvailability(payload)) return;
+      // latch a discovered upstream update or rebuild retry
+      if (payload.available) setServerUpdateAvailable(true);
+      // notify only for commits missing from local main
+      if (!payload.available || payload.commitCount === undefined || payload.commitCount === 0) {
+        announcedServerUpdateTarget.current = undefined;
+        void dismissNotification('rac-update');
+        return;
+      }
+      const target = payload.targetSha ?? `count:${payload.commitCount}`;
+      // suppress repeat polling alerts
+      if (announcedServerUpdateTarget.current === target) return;
+      announcedServerUpdateTarget.current = target;
+      void showNotification('system', 'Remote Agent Console update available', `${payload.commitCount} ${payload.commitCount === 1 ? 'commit' : 'commits'} upstream`, 'rac-update', '/#server-update');
     };
     const stopPolling = pollWhileVisible(checkForServerUpdate, 300_000, true, 1_800_000);
     return () => {

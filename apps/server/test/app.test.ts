@@ -126,7 +126,7 @@ describe('server administration API', () => {
       expect(update.json()).toMatchObject({ state: 'queued' });
       expect(startUpdate).toHaveBeenCalledWith(targetSha);
       expect(status.json()).toMatchObject({ state: 'running' });
-      expect(availability.json()).toEqual({ available: true });
+      expect(availability.json()).toEqual({ available: true, commitCount: 1, targetSha });
       expect(updatePreview.json()).toEqual(reviewedPreview);
       expect(unacknowledgedUpdate.statusCode).toBe(409);
     } finally {
