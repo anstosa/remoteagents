@@ -22,6 +22,20 @@ const deployQuestion = {
   choices: ['Staging', 'Production', 'Cancel'],
   source: 'parsed'
 };
+const modelQuestion = {
+  id: 'question-model',
+  text: 'Select Model and Effort',
+  choices: [
+    'gpt-6-astra (current)  Our most capable model for complex, demanding work.',
+    'gpt-5.6-sol            Reliable agentic workhorse for everyday tasks.',
+    'gpt-5.6-terra          Balanced agentic coding model for everyday work.',
+    'gpt-5.6-luna           Fast and affordable agentic coding model.',
+    'gpt-5.5                Proven previous-generation model for coding and general work.',
+    'gpt-5.4-mini           Small, fast, and cost-efficient model for simpler coding tasks.',
+    'gpt-5.3-codex-spark    Ultra-fast coding model.'
+  ],
+  source: 'parsed'
+};
 
 test('renders inline questions from the metadata payload and answers through one endpoint', async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });
@@ -186,6 +200,19 @@ test('renders inline questions from the metadata payload and answers through one
   await emit(cheapFrame());
   await expect(page.getByText('Agent question')).toHaveCount(0);
 
+  // extracted controls must not shrink their source viewport
+  const liveLog = page.getByLabel('Live log');
+  const normalLogHeight = await liveLog.evaluate(element => element.getBoundingClientRect().height);
+  await emit(cheapFrame(modelQuestion));
+  await expect(page.getByRole('region', { name: 'Agent question' })).toContainText('Select Model and Effort');
+  await expect(choices).toHaveCount(7);
+  const modelLogHeight = await liveLog.evaluate(element => element.getBoundingClientRect().height);
+  expect(modelLogHeight).toBeGreaterThanOrEqual(normalLogHeight);
+  selectedIndex = undefined;
+  await choices.nth(1).click();
+  await expect.poll(() => selectedIndex).toBe(1);
+  expect(selectedQuestionId).toBe(modelQuestion.id);
+
   // a new question (a different id) arriving on a cheap frame — no metadata, so it
   // must ride the frame itself — is shown promptly and answered on its own id
   await emit(cheapFrame(deployQuestion));
@@ -195,6 +222,6 @@ test('renders inline questions from the metadata payload and answers through one
   await choices.nth(2).click();
   await expect.poll(() => selectedIndex).toBe(2);
   expect(selectedQuestionId).toBe(deployQuestion.id);
-  await expect.poll(() => answerCount).toBe(2);
+  await expect.poll(() => answerCount).toBe(3);
   await expect(page.getByText('Agent question')).toHaveCount(0);
 });

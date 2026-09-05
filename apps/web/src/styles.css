@@ -226,7 +226,7 @@ textarea { min-height: 7rem; resize: vertical; font-family: var(--font-mono); }
 html.software-keyboard-open .tabs { display: none; }
 .panel { position: relative; min-width: 0; min-height: 0; outline-offset: 4px; touch-action: pan-y; }
 .agent-view, .worktree-view { width: 100%; height: 100%; min-width: 0; min-height: 0; display: grid; gap: 1rem; overflow: visible; }
-.agent-view { grid-template-rows: minmax(0, 1fr) auto; gap: 0; }
+.agent-view { position: relative; grid-template-rows: minmax(0, 1fr) auto; gap: 0; }
 .agent-view > .pull-request-card { margin-top: .375rem; }
 .agent-view > .upstream-rebase-banner + .pull-request-card { margin-top: 0; }
 .agent-view > .prompt, .worktree-view > .prompt { margin: .375rem .375rem .375rem; }
@@ -752,6 +752,8 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .tabs .update-ready { gap: .4rem; border: 1px solid color-mix(in srgb, var(--blue) 70%, var(--lavender)); background: color-mix(in srgb, var(--mantle) 92%, var(--blue)); color: var(--text); box-shadow: none; font-weight: 700; }
 .tabs .update-ready:not(:disabled):hover { background: color-mix(in srgb, var(--blue) 22%, var(--mantle)); filter: none; }
 .tabs .update-ready span { padding: .15rem .3rem; border-radius: var(--control-radius); background: var(--blue); color: var(--crust); }
+/* keep extracted controls from resizing their source terminal */
+.agent-view > .question-prompt { position: absolute; inset: auto 0 0; z-index: var(--layer-popover); max-height: calc(100% - .75rem); overflow-y: auto; overscroll-behavior: contain; border: 1px solid color-mix(in srgb, var(--lavender) 55%, var(--surface-1)); border-radius: var(--control-radius); padding: .65rem; background: color-mix(in srgb, var(--mantle) 96%, var(--base)); box-shadow: 0 -.45rem 1.5rem color-mix(in srgb, var(--crust) 70%, transparent), inset 0 1px color-mix(in srgb, var(--text) 8%, transparent); }
 .question-prompt { gap: .65rem; }
 .question-heading { display: flex; align-items: flex-start; gap: .65rem; }
 .question-copy { display: flex; min-width: 0; flex: 1 1 auto; flex-direction: column; gap: .25rem; color: var(--text); }
