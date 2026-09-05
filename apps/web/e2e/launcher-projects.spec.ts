@@ -70,7 +70,7 @@ test('launcher lists per-project sections and pins a worktree', async ({ page })
   expect(projectStyle.height).toBe(projectStyle.worktreeHeight);
   expect(projectStyle.color).toBe(projectStyle.purple);
   // rows sit under that header, so Main uses its branch while a custom linked name stays exact
-  await expect(launcher.locator('.launcher-row-label')).toHaveText(['~ Scratch', 'main', '🥔 Dave']);
+  await expect(launcher.locator('.launcher-row-label')).toHaveText(['Scratch', 'main', '🥔 Dave']);
   // New worktree… closes the section, below the last row
   await expect(launcher.locator('.launcher-project > :last-child')).toHaveClass(/launcher-new-worktree/u);
   // the pinned Main worktree offers an Unpin toggle; the idle feature offers a Pin toggle.

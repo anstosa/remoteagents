@@ -129,7 +129,7 @@ test('the launcher offers Scratch and each worktree the same split button', asyn
   const posts = await mount(page, { generation: 1, adapters: { codex, claude }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'claude', origin: 'worktree' })] }], scratchLaunch: { kind: 'codex', origin: 'scratch' } });
   await page.getByRole('button', { name: 'Launch agent' }).click();
   const launcher = page.locator('.launcher-menu');
-  await expect(launcher.getByText('~ Scratch')).toBeVisible();
+  await expect(launcher.getByText('Scratch', { exact: true })).toBeVisible();
   // each worktree row carries its own resolved-kind split button
   const worktreeRow = launcher.locator('.launcher-row').filter({ hasText: 'Cora' });
   const rowLaunch = worktreeRow.getByRole('button', { name: 'Launch Claude' });

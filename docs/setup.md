@@ -252,6 +252,12 @@ within a tick — no config edit or restart.
 - `worktreesDirectory` — where the console will create new Worktrees; the
   default is a `../<basename>-worktrees` sibling of the Main worktree, and a
   relative path resolves against it. Absolute paths are allowed.
+- `worktreeOrder` — optional checkout paths in display order, for example
+  `[".", "../review", "../research"]`. Relative paths resolve against the
+  configured Project `path`; symlinks resolve to the checkout's real path.
+  Listed checkouts appear first in launch rows and tabs, independent of labels
+  or branches. Missing paths are ignored. Unlisted checkouts retain the default
+  Main-first, branch-name order, with detached checkouts last.
 - `commands` (`start`/`stop`/`build`/`restart`/`migrate`/`status`), `newTask`
   and `push` are Project-wide. `newTask` adds a **New Task** action, uses
   `{taskId}` for an 8-character URL-safe random ID, and is enabled only when the

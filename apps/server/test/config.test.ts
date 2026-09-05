@@ -29,6 +29,21 @@ async function gitRepo(name = 'work'): Promise<string> {
 const withProject = async (path: string, extra: Record<string, unknown> = {}) => ({ publicOrigin: 'https://agents.example.com', projects: [{ id: 'a', path, ...extra }] });
 
 describe('project configuration', () => {
+  // preserve operator order while resolving checkout aliases
+  it('resolves worktreeOrder paths relative to the configured checkout', async () => {
+    const repo = await gitRepo();
+    const alias = join(repo, '..', 'alias');
+    await symlink(repo, alias);
+    const config = await validateConfig(await withProject(repo, { worktreeOrder: ['../alias', '../future', repo] }));
+    expect(config.projects[0]?.worktreeOrder).toEqual([repo, join(repo, '..', 'future'), repo]);
+  });
+
+  // reject invalid ordering entries at the config boundary
+  it.each([{ order: [''] }, { order: ['bad\0path'] }, { order: [1] }, { order: 'not-an-array' }])('rejects invalid worktreeOrder $order', async ({ order }) => {
+    const repo = await gitRepo();
+    await expect(validateConfig(await withProject(repo, { worktreeOrder: order }))).rejects.toThrow();
+  });
+
   it('canonicalizes an available project and derives its identity from the common git dir', async () => {
     const repo = await gitRepo();
     const config = await validateConfig(await withProject(repo));

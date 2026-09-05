@@ -43,9 +43,9 @@ test('creates a worktree for a new branch with the default base pre-filled', asy
   const launcher = page.getByRole('group', { name: 'Agent launcher' });
 
   // the manageable project offers New worktree…; the bridge-unmounted one has it disabled
-  const manageable = launcher.getByRole('group', { name: 'Repo' }).getByRole('button', { name: '+ New worktree…' });
+  const manageable = launcher.getByRole('group', { name: 'Repo' }).getByRole('button', { name: 'New worktree…' });
   await expect(manageable).toBeEnabled();
-  const blocked = launcher.getByRole('group', { name: 'Mounted Elsewhere' }).getByRole('button', { name: '+ New worktree…' });
+  const blocked = launcher.getByRole('group', { name: 'Mounted Elsewhere' }).getByRole('button', { name: 'New worktree…' });
   await expect(blocked).toBeDisabled();
   await expect(blocked).toHaveAttribute('title', /does not mount this project/u);
 
@@ -74,7 +74,7 @@ test('bases a new branch on a chosen branch, sending the ref that resolves it', 
   await stub(page, body => { created = body; });
   await page.goto('/');
   await page.locator('.new-agent-tab').click();
-  await page.getByRole('group', { name: 'Agent launcher' }).getByRole('group', { name: 'Repo' }).getByRole('button', { name: '+ New worktree…' }).click();
+  await page.getByRole('group', { name: 'Agent launcher' }).getByRole('group', { name: 'Repo' }).getByRole('button', { name: 'New worktree…' }).click();
   const dialog = page.getByRole('dialog', { name: 'New worktree' });
 
   await dialog.getByLabel('Branch name').fill('feature/login');
@@ -90,7 +90,7 @@ test('checks out an existing branch, hiding checked-out ones and marking remote-
   await page.goto('/');
   await page.locator('.new-agent-tab').click();
   const launcher = page.getByRole('group', { name: 'Agent launcher' });
-  await launcher.getByRole('group', { name: 'Repo' }).getByRole('button', { name: '+ New worktree…' }).click();
+  await launcher.getByRole('group', { name: 'Repo' }).getByRole('button', { name: 'New worktree…' }).click();
   const dialog = page.getByRole('dialog', { name: 'New worktree' });
 
   await dialog.getByRole('tab', { name: 'Existing branch' }).click();

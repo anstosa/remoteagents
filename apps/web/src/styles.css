@@ -1267,6 +1267,12 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .launcher-row { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; padding: .3rem .45rem; border-radius: calc(var(--control-radius) - .1rem); }
 .launcher-row:hover { background: color-mix(in srgb, var(--surface-0) 70%, transparent); }
 .launcher-row-label { flex: 1; min-width: 0; overflow: hidden; color: var(--text); font-size: .74rem; text-overflow: ellipsis; white-space: nowrap; }
+/* label symbols occupy one emoji cell followed by a normal monospace space */
+.launcher-symbol-label { display: flex; align-items: center; gap: 1ch; }
+.launcher-label-icon { display: inline-block; position: relative; flex: 0 0 auto; height: 1em; line-height: 1; }
+/* measure the platform emoji font rather than guessing its character width */
+.launcher-label-icon::before { content: '🥔'; visibility: hidden; }
+.launcher-label-icon svg { position: absolute; inset: 0; width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .launcher-menu .launch-compact { width: auto !important; min-height: 1.8rem; justify-content: center !important; gap: .35rem; padding: .25rem .45rem !important; border: 1px solid color-mix(in srgb, var(--lavender) 54%, transparent) !important; border-radius: var(--control-radius); background: linear-gradient(135deg, var(--mauve), var(--blue)); color: var(--crust); font-size: .64rem; box-shadow: none; }
 .launcher-menu .launch-compact:disabled { opacity: .45; }
 .launcher-menu .launch-compact:not(.launch-primary):not(:disabled):hover { filter: brightness(1.08); }
@@ -1281,7 +1287,7 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .launcher-project-header > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* override full-width menu buttons only for the right-aligned prune action */
 .launcher-project-header .launcher-prune { flex: none; width: auto; margin-left: auto; }
-.launcher-new-worktree { display: flex; align-items: center; margin-top: .1rem; padding: .3rem .45rem !important; border-radius: calc(var(--control-radius) - .1rem); background: transparent; color: var(--lavender); font-size: .7rem; letter-spacing: 0; text-transform: none; cursor: pointer; }
+.launcher-new-worktree { display: flex; align-items: center; gap: 1ch; margin-top: .1rem; padding: .3rem .45rem !important; border-radius: calc(var(--control-radius) - .1rem); background: transparent; color: var(--lavender); font-size: .74rem; letter-spacing: 0; text-transform: none; cursor: pointer; }
 .launcher-new-worktree:not(:disabled):hover { background: color-mix(in srgb, var(--lavender) 16%, transparent); }
 .launcher-new-worktree:disabled { opacity: .45; cursor: not-allowed; }
 

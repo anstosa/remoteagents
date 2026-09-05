@@ -26,7 +26,7 @@ export type Agent = { id: string; paneId: string; sessionId: string; socketFinge
  * actions, the Worktrees directory and the preview URL are all Project-wide; discovered
  * Worktrees denormalise them for convenience.
  */
-export type Project = { id: string; label: string; path: string; identity: string; mode: 'repository' | 'directory'; hostPath?: string; worktreesDirectory: string; available: boolean; unavailableReason?: string; commands?: StackCommands; newTask?: string; push: PromptAction; projectUrl?: string; projectPort?: number };
+export type Project = { id: string; label: string; path: string; identity: string; mode: 'repository' | 'directory'; hostPath?: string; worktreeOrder?: string[]; worktreesDirectory: string; available: boolean; unavailableReason?: string; commands?: StackCommands; newTask?: string; push: PromptAction; projectUrl?: string; projectPort?: number };
 /**
  * One checkout of a Project as `git worktree list` reports it, keyed by the wire id
  * `<projectId>:<realpath>` (ADR 0003). `identity` equals the checkout's realpath

@@ -556,9 +556,15 @@ export class DiscoveryService {
           ...(project.projectUrl === undefined ? {} : { projectUrl: project.projectUrl, ...(project.projectPort === undefined ? {} : { projectPort: project.projectPort }) })
         });
       }
-      // Main first, then Linked ordered by branch with detached checkouts last
+      // explicit checkout order first, then the existing main/branch/detached defaults
       usable.sort((left, right) => {
+        const leftOrder = project.worktreeOrder?.indexOf(left.path) ?? -1;
+        const rightOrder = project.worktreeOrder?.indexOf(right.path) ?? -1;
+        // unlisted checkouts follow every configured checkout
+        if (leftOrder !== rightOrder) return (leftOrder < 0 ? Infinity : leftOrder) - (rightOrder < 0 ? Infinity : rightOrder);
+        // keep the main checkout first within the unlisted group
         if (left.main !== right.main) return left.main ? -1 : 1;
+        // keep detached checkouts after named branches within the unlisted group
         if (left.detached !== right.detached) return left.detached ? 1 : -1;
         return (left.branch ?? left.sha ?? '').localeCompare(right.branch ?? right.sha ?? '');
       });
@@ -629,7 +635,7 @@ export class DiscoveryService {
       return value;
     };
     const worktreeFor = (workspace: string) => worktrees.find(candidate => worktreeMatchesWorkspace(candidate, workspace));
-    // the stable tab order: config → Main first → Linked by branch, as discovery sorted them
+    // the stable tab order follows configured checkout order and discovery defaults
     const orderOf = new Map(worktrees.map((worktree, index) => [worktree.id, index] as const));
     const agents = await Promise.all(discovered.map(async (agent) => {
       // keep modal advisors outside configured worktree identity

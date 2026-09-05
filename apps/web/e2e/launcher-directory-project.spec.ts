@@ -40,10 +40,10 @@ test('a non-git directory Project offers an in-place Launch and keeps New worktr
 
   // the Project section shows its label and a Project-level Launch row (its single launch target)
   await expect(launcher.locator('.launcher-project-header > span')).toHaveText('Notes');
-  await expect(launcher.locator('.launcher-row-label')).toHaveText(['~ Scratch', 'Notes']);
+  await expect(launcher.locator('.launcher-row-label')).toHaveText(['Scratch', 'Notes']);
 
   // "New worktree…" stays disabled, explaining there are no worktrees to manage
-  const newWorktree = launcher.getByRole('button', { name: '+ New worktree…' });
+  const newWorktree = launcher.getByRole('button', { name: 'New worktree…' });
   await expect(newWorktree).toBeDisabled();
   await expect(newWorktree).toHaveAttribute('title', noWorktreesReason);
 

@@ -551,6 +551,19 @@ describe('DiscoveryService dashboard', () => {
     ]);
   });
 
+  // configured paths outrank branch names and detached status without inventing checkouts
+  it('applies project worktree order and retains default sorting for unlisted checkouts', async () => {
+    const project = testProject({ id: 'app', path: '/repo', worktreeOrder: ['/repo', '/repo/owen', '/repo/dave', '/repo/eric', '/repo/alex', '/repo/missing'] });
+    const service = new DiscoveryService(socketFinder(), paneLister([]) as never, processInspector({ codex: false }), undefined, undefined, [project], undefined, listImpl({ '/repo': [
+      entry('/repo', 'main'), entry('/repo/alex'), entry('/repo/dave', 'aaa'), entry('/repo/eric', 'bbb'), entry('/repo/owen', 'zzz'),
+      entry('/repo/zulu', 'zulu'), entry('/repo/alpha', 'alpha'), entry('/repo/detached')
+    ] }));
+    const worktrees = (await service.dashboard()).projects[0]!.worktrees;
+    // both launch rows and tab indices follow the same configured sequence
+    expect(worktrees.map(worktree => worktree.path)).toEqual(['/repo', '/repo/owen', '/repo/dave', '/repo/eric', '/repo/alex', '/repo/alpha', '/repo/zulu', '/repo/detached']);
+    expect(worktrees.map(worktree => worktree.order)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+  });
+
   it('reports Prune-eligible stale paths: git prunable entries plus records git lists nowhere', async () => {
     const finder = socketFinder();
     const tmux = paneLister([]);
