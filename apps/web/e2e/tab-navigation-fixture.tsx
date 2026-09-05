@@ -9,7 +9,10 @@ function TabNavigationFixture() {
   useShiftArrowTabCycling(active, tabs.length, setActive);
 
   return createElement('div', {},
-    createElement('input', { 'aria-label': 'Prompt', defaultValue: 'copy this text' }),
+    createElement('section', { className: 'prompt' },
+      createElement('input', { 'aria-label': 'Prompt', defaultValue: 'copy this text' }),
+      createElement('button', { type: 'button' }, 'Prompt action')
+    ),
     createElement('div', { role: 'tablist', 'aria-label': 'Agents' },
       tabs.map((tab, index) => createElement('button', {
         key: tab,

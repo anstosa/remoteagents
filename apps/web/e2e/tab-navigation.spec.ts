@@ -39,6 +39,22 @@ test('Shift+Arrow edits the selection instead of changing tabs when the prompt i
   await expect(prompt).toHaveJSProperty('selectionEnd', 5);
 });
 
+test('Shift+Arrow does not change tabs from prompt-area controls', async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<div id="root"></div>');
+  await page.evaluate(async () => {
+    const { renderTabNavigation } = await import('/e2e/tab-navigation-fixture.tsx');
+    renderTabNavigation(document.querySelector<HTMLElement>('#root')!);
+  });
+
+  const action = page.getByRole('button', { name: 'Prompt action' });
+  await action.focus();
+  await page.keyboard.press('Shift+ArrowRight');
+
+  await expect(action).toBeFocused();
+  await expect(page.getByRole('tab', { name: 'Alpha' })).toHaveAttribute('aria-selected', 'true');
+});
+
 test('modified Shift+Arrow shortcuts do not change tabs', async ({ page }) => {
   await page.goto('/');
   await page.setContent('<div id="root"></div>');
