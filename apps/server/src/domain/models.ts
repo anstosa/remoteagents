@@ -7,7 +7,9 @@ export type PullRequestCheckStatus = 'passed' | 'pending' | 'failed';
 export type PullRequestSummary = { number: number; title: string; status: 'draft' | 'open' | 'merged'; url: string; baseBranch?: string; checks?: PullRequestCheckStatus; issues?: PullRequestIssues };
 export const stackActions = ['start', 'stop', 'build', 'restart', 'migrate'] as const;
 export type StackAction = typeof stackActions[number];
-export type StackCommands = Partial<Record<StackAction | 'status', string>>;
+// `status` (a health probe) and `setup` (a run-once, worktree-creation hook) are commands
+// but not operator actions, so they live here yet are absent from `stackActions`.
+export type StackCommands = Partial<Record<StackAction | 'status' | 'setup', string>>;
 // canonical checkout settings with project defaults already resolved
 export type WorktreeOverride = { path: string; commands?: StackCommands; projectUrl?: string; projectPort?: number };
 export type PromptAction = { label: string; prompt: string };
@@ -57,6 +59,8 @@ export type DashboardWorktree = { id: string; projectId: string; label: string; 
 // web renders a Project-level Launch button for it). `stalePaths` are the checkouts an
 // explicit Prune would clear (git's prunable entries plus console records whose path git
 // lists nowhere, ADR 0003); the Project header shows their count as `N stale · Prune` and
-// the confirm lists them by path. Empty when nothing is stale.
-export type DashboardProject = { id: string; label: string; mode: 'repository' | 'directory'; available: boolean; unavailableReason?: string; manageWorktrees: boolean; manageWorktreesReason?: string; stalePaths: string[]; worktrees: DashboardWorktree[] };
+// the confirm lists them by path. Empty when nothing is stale. `setup` is true only when
+// the Project configures a `commands.setup`: the web shows a "running setup" notice while a
+// new Worktree is being created, without ever receiving the (shell) command itself.
+export type DashboardProject = { id: string; label: string; mode: 'repository' | 'directory'; available: boolean; unavailableReason?: string; manageWorktrees: boolean; manageWorktreesReason?: string; stalePaths: string[]; setup?: boolean; worktrees: DashboardWorktree[] };
 export type Dashboard = { generation: number; serverStartedAt?: number; adapters: Partial<Record<AgentKind, AdapterCapability>>; agents: Agent[]; projects: DashboardProject[] };

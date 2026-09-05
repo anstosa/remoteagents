@@ -52,7 +52,7 @@ type Worktree = { id: string; projectId: string; label: string; customLabel?: bo
 // `mode: 'directory'` marks a non-git Project the console launches in place (like Scratch);
 // `launch` is its resolved Launch profile for the Project-level Launch button. A git
 // `repository` Project omits `launch` and launches through its worktrees.
-type Project = { id: string; label: string; mode?: 'repository' | 'directory'; available: boolean; unavailableReason?: string; manageWorktrees?: boolean; manageWorktreesReason?: string; stalePaths?: string[]; worktrees: Worktree[]; launch?: LaunchResolution };
+type Project = { id: string; label: string; mode?: 'repository' | 'directory'; available: boolean; unavailableReason?: string; manageWorktrees?: boolean; manageWorktreesReason?: string; stalePaths?: string[]; setup?: boolean; worktrees: Worktree[]; launch?: LaunchResolution };
 // one branch the Add dialog can offer: `ref` is the commit-ish that resolves it and the
 // picker's value, `remote` marks a remote-only ref git will track, and `checkedOut` marks a
 // local branch a Worktree already holds — it can base a new branch but not be checked out
@@ -5382,7 +5382,7 @@ function ToastRegion({ feedback, onDismissFeedback, updateError, launchErrorMess
 }
 
 // what a successful worktree creation hands back to the launcher
-type WorktreeCreated = { worktreeId: string; agentId?: string; launchError?: string };
+type WorktreeCreated = { worktreeId: string; agentId?: string; launchError?: string; setupError?: string };
 
 // Password managers offer to fill a lone text field in a dialog, reading a branch name as a
 // username; `autoComplete="off"` alone does not stop them, so opt out per vendor as well.
@@ -5513,6 +5513,7 @@ function NewWorktreeDialog({ project, request, onClose, onCreated }: { project: 
       ? <div className="new-worktree-fields"><label>Branch name<input aria-label="Branch name" type="text" name="worktree-branch-name" value={newBranch} onChange={event => setNewBranch(event.target.value)} placeholder="feature/login" autoFocus {...noAutofill} /></label><BranchSelect label="Base" options={baseOptions} value={base} failed={branchesFailed} empty="No branches are available as a base." onChange={setBase} /></div>
       : <div className="new-worktree-fields"><BranchSelect label="Branch" options={existingOptions} value={existingRef} failed={branchesFailed} empty="No branches are available to check out." onChange={setExistingRef} /></div>}
     <label className="new-worktree-launch"><input type="checkbox" checked={launchAgent} onChange={event => setLaunchAgent(event.target.checked)} />Launch agent in the new worktree</label>
+    {pending && project.setup && <p className="new-worktree-status" role="status">Running the setup command in the new worktree — this can take a minute.</p>}
     {error && <p className="new-worktree-error" role="alert">{error}</p>}
     <footer className="new-worktree-actions"><button type="button" className="outline-button" disabled={pending} onClick={onClose}>Cancel</button><button type="button" disabled={pending || (mode === 'existing' && (existingOptions === undefined || noExisting))} onClick={() => void submit()}>{pending ? <><span className="spinner" />Creating…</> : 'Create worktree'}</button></footer>
   </div></div>, document.body);
@@ -6255,7 +6256,9 @@ function DashboardView({ onUnauthorized, onInactive, updateControl, updateError 
     await refresh();
     if (result.agentId !== undefined) setActivateAgentId(result.agentId);
     else setActivateWorktreeId(result.worktreeId);
-    if (result.launchError !== undefined) showOperationFeedback({ tone: 'error', message: 'Worktree created, agent did not start', detail: result.launchError });
+    // a failed setup gates the launch, so it is the reason no agent started — report it first
+    if (result.setupError !== undefined) showOperationFeedback({ tone: 'error', message: 'Worktree created, setup failed', detail: result.setupError });
+    else if (result.launchError !== undefined) showOperationFeedback({ tone: 'error', message: 'Worktree created, agent did not start', detail: result.launchError });
     else showOperationFeedback({ tone: 'success', message: 'Worktree created', detail: result.agentId === undefined ? 'The new worktree is ready.' : 'The new agent session is ready and its output is connecting.' });
   };
   // a worktree just removed from a tab or the launcher: close everything and refresh

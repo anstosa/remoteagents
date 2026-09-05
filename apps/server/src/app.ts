@@ -1412,10 +1412,11 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (!result.ok) return reply.code(result.status).send({ error: result.error });
     return { branches: result.branches, ...(result.defaultBranch === undefined ? {} : { defaultBranch: result.defaultBranch }) };
   });
-  // create a Worktree for a new or existing branch, pin it, give it an idle shell, and —
-  // unless the operator opted out — launch the Project's last-used kind in it. The created
-  // Worktree stands even when the agent launch fails, so the response is a 201 carrying the
-  // new Worktree id plus either the started agent or the launch error, never a 504.
+  // create a Worktree for a new or existing branch, pin it, run the Project's configured
+  // `commands.setup` to prepare the fresh checkout, give it an idle shell, and — unless the
+  // operator opted out — launch the Project's last-used kind in it. The created Worktree
+  // stands even when setup or the agent launch fails, so the response is a 201 carrying the
+  // new Worktree id plus the started agent, a launch error, and/or a setup error, never a 504.
   app.post('/api/projects/:id/worktrees', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
     controlled(request, true);
     const projectId = (request.params as { id: string }).id;
@@ -1435,26 +1436,39 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const worktreeId = worktree?.id ?? worktreeWireId(projectId, outcome.path);
     // a created checkout keeps its tab from the start
     await worktreeStore.setPinned(worktreeId, true).catch(() => {});
-    // Give the Worktree its idle shell so it has a tab even without an agent; then, unless
-    // the operator opted out, launch the Project's last-used kind — the launch path adopts
-    // that idle shell once it is up, else starts the agent's own session. The creation
-    // stands regardless: any failure past this point is a launchError, never a non-201.
+    // Prepare the fresh checkout, then give it its idle shell so it has a tab even without an
+    // agent; then, unless the operator opted out, launch the Project's last-used kind — the
+    // launch path adopts that idle shell once it is up, else starts the agent's own session.
+    // Setup runs once here (a no-op when unconfigured) and blocks until it finishes; a setup
+    // failure never fails the creation but does gate the launch, so no agent starts into a
+    // half-prepared worktree. The creation stands regardless: any failure past this point is a
+    // setupError and/or launchError, never a non-201.
     let agentId: string | undefined;
     let launchError: string | undefined;
+    let setupError: string | undefined;
     if (worktree === undefined) {
       launchError = 'The worktree was created, but it could not be resolved to launch an agent.';
-    } else if (launchAgent === false) {
-      if (!await launch.startWorktreeShell(worktree)) launchError = 'The worktree was created, but its shell could not be started.';
     } else {
-      await launch.startWorktreeShell(worktree);
-      const before = new Set((await discovery.dashboard()).agents.map(agent => agent.id));
-      // report the agent when it appears, but never fail the creation on a slow launch
-      if (await launch.launch(worktreeId)) agentId = (await waitForAgent(before, worktreeId))?.id;
-      else launchError = 'The worktree was created, but the agent could not be started.';
+      const setup = await stackCommands.runSetup(worktree);
+      if (!setup.ok) {
+        setupError = 'The worktree was created, but its setup command failed.';
+        // the operator sees a generic banner; the host log (kept only on failure) carries the output
+        if (setup.log !== undefined) console.error(`[worktrees] setup failed for ${worktreeId}; see ${setup.log}`);
+      }
+      if (launchAgent === false || !setup.ok) {
+        // a prepared or opted-out worktree still gets its idle shell, and thus a tab
+        if (!await launch.startWorktreeShell(worktree)) launchError = 'The worktree was created, but its shell could not be started.';
+      } else {
+        await launch.startWorktreeShell(worktree);
+        const before = new Set((await discovery.dashboard()).agents.map(agent => agent.id));
+        // report the agent when it appears, but never fail the creation on a slow launch
+        if (await launch.launch(worktreeId)) agentId = (await waitForAgent(before, worktreeId))?.id;
+        else launchError = 'The worktree was created, but the agent could not be started.';
+      }
     }
     discovery.invalidateWorktrees();
     await dashboardUpdates.refresh().catch(() => undefined);
-    return reply.code(201).send({ worktreeId, ...(agentId === undefined ? {} : { agentId }), ...(launchError === undefined ? {} : { launchError }) });
+    return reply.code(201).send({ worktreeId, ...(agentId === undefined ? {} : { agentId }), ...(launchError === undefined ? {} : { launchError }), ...(setupError === undefined ? {} : { setupError }) });
   });
   // the runtime blockers that refuse a Remove, named for the 409: a live Agent in the
   // Worktree, or a running stack operation there. `fresh` forces a live pane scan before a

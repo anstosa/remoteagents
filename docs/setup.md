@@ -233,7 +233,7 @@ within a tick — no config edit or restart.
       "label": "Example",
       "path": "/home/me/code/example",
       "worktreesDirectory": "../example-worktrees",
-      "commands": { "start": "docker compose up -d", "status": "test -n running" },
+      "commands": { "setup": "pnpm install", "start": "docker compose up -d", "status": "test -n running" },
       "newTask": "detach && new {taskId}",
       "push": { "label": "Finish and PR", "prompt": "$finish" },
       "port": 3000,
@@ -259,11 +259,20 @@ within a tick — no config edit or restart.
   Listed checkouts appear first in launch rows and tabs, independent of labels
   or branches. Missing paths are ignored. Unlisted checkouts retain the default
   Main-first, branch-name order, with detached checkouts last.
-- `commands` (`start`/`stop`/`build`/`restart`/`migrate`/`status`) provides default
-  stack commands; `newTask` and `push` are Project-wide. `newTask` adds a **New Task** action, uses
+- `commands` (`start`/`stop`/`build`/`restart`/`migrate`/`status`/`setup`) provides
+  default stack commands; `newTask` and `push` are Project-wide. `newTask` adds a **New Task** action, uses
   `{taskId}` for an 8-character URL-safe random ID, and is enabled only when the
   Worktree is clean and fully pushed. `push` overrides the default
   **Commit/Push** action (which queues `review, commit, and push`).
+- `commands.setup` runs **once, when the console creates a Worktree**, in the new
+  checkout and before any agent launches — the place to install dependencies or
+  link secrets so a fresh checkout can build (for example `pnpm install`). It runs
+  to completion; a non-zero exit reports a setup error and skips the agent launch
+  (the Worktree still stands with its idle shell) rather than starting an agent
+  into a half-prepared checkout. A successful run leaves nothing behind; a failed
+  run keeps its combined output under `.data/stack-logs` (its path is logged) for
+  inspection. Like the other `commands` it is operator-trust shell, so it is never
+  surfaced to the browser.
 - Preview configuration selects one of two mutually exclusive modes. `port` +
   `hostname` (both or neither) provide `https://<hostname>` proxied to
   `127.0.0.1:<port>`. Alternatively, `externalUrl` names an existing canonical
@@ -339,12 +348,15 @@ worktree…** control that opens a dialog with two modes:
 
 The checkout is created under the Project's `worktreesDirectory` at a leaf named
 for the branch (`/` flattened to `-`); you never type a path. The console pins
-the new Worktree so it keeps its tab, gives it an idle shell, and — unless you
-clear **Launch agent** — launches the Project's last-used kind in it. The
-Worktree is created even if that launch fails; the launch error is reported and
-the tab stands. Refusals (an existing branch name, an unresolvable base, a branch
-already checked out elsewhere, or a target path that exists) are reported before
-git runs.
+the new Worktree so it keeps its tab, runs the Project's [`commands.setup`](#projects)
+(when configured) to prepare the checkout, gives it an idle shell, and — unless
+you clear **Launch agent** — launches the Project's last-used kind in it. Setup
+runs to completion before the agent starts and gates it: the dialog shows that it
+is preparing the Worktree while it runs, and a setup failure leaves the Worktree
+standing with its idle shell but launches no agent. The Worktree is created even
+if setup or that launch fails; the error is reported and the tab stands. Refusals
+(an existing branch name, an unresolvable base, a branch already checked out
+elsewhere, or a target path that exists) are reported before git runs.
 
 ### Removing Worktrees
 

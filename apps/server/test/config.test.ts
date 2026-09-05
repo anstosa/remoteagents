@@ -233,10 +233,11 @@ describe('project configuration', () => {
 
   it('accepts project-level push, stack commands, new task and hostPath', async () => {
     const repo = await gitRepo();
-    const config = await validateConfig(await withProject(repo, { push: { label: 'Finish and PR', prompt: '$finish' }, commands: { start: 'up' }, newTask: 'detach && new {taskId}', hostPath: '/host/repo' }));
+    const config = await validateConfig(await withProject(repo, { push: { label: 'Finish and PR', prompt: '$finish' }, commands: { start: 'up', setup: 'pnpm install' }, newTask: 'detach && new {taskId}', hostPath: '/host/repo' }));
     const project = config.projects[0]!;
     expect(project.push).toEqual({ label: 'Finish and PR', prompt: '$finish' });
-    expect(project.commands).toEqual({ start: 'up' });
+    // `setup` is a run-once worktree-creation hook: a valid command, but never a stack action
+    expect(project.commands).toEqual({ start: 'up', setup: 'pnpm install' });
     expect(project.newTask).toBe('detach && new {taskId}');
     expect(project.hostPath).toBe('/host/repo');
     await expect(validateConfig(await withProject(repo, { newTask: 'new {unknown}' }))).rejects.toThrow('unknown new task placeholder');

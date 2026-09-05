@@ -33,7 +33,8 @@
       "id": "example",
       "label": "Example",
       "path": "/home/me/code/example",
-      "worktreesDirectory": "../example.worktrees"
+      "worktreesDirectory": "../example.worktrees",
+      "commands": { "setup": "pnpm install" }
     }
   ]
 }

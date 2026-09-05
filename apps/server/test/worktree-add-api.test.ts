@@ -122,6 +122,40 @@ describe('POST /api/projects/:id/worktrees', () => {
     } finally { await server.close(); }
   });
 
+  it('runs setup before the shell and agent, then launches when setup succeeds', async () => {
+    const events: string[] = [];
+    const worktreeManagement = { add: async () => ({ ok: true, path: '/repo/wts/feat' }) } as never;
+    const launch = { startWorktreeShell: async () => { events.push('shell'); return true; }, launch: async () => { events.push('launch'); return true; } } as never;
+    const worktreeCommands = { runSetup: async () => { events.push('setup'); return { ok: true }; } } as never;
+    const server = await app({ discovery: discoveryStub(), worktreeManagement, launch, worktreeCommands, worktreeStore: await store() });
+    try {
+      const response = await server.inject({ method: 'POST', url: '/api/projects/proj/worktrees', headers: mutationHeaders, payload: { mode: 'new', branch: 'feat', base: 'main' } });
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({ worktreeId: 'proj:/repo/wts/feat', agentId: 'agent-new' });
+      // setup is prepared first, then the idle shell, then the agent
+      expect(events).toEqual(['setup', 'shell', 'launch']);
+    } finally { await server.close(); }
+  });
+
+  it('gates the launch on a setup failure but still creates and pins the worktree', async () => {
+    const launched: string[] = [];
+    const shells: string[] = [];
+    const worktreeStore = await store();
+    const worktreeManagement = { add: async () => ({ ok: true, path: '/repo/wts/feat' }) } as never;
+    const launch = { startWorktreeShell: async (w: { id: string }) => { shells.push(w.id); return true; }, launch: async (id: string) => { launched.push(id); return true; } } as never;
+    const worktreeCommands = { runSetup: async () => ({ ok: false, log: '/repo/wts/feat/.data/stack-logs/setup.log' }) } as never;
+    const server = await app({ discovery: discoveryStub(), worktreeManagement, launch, worktreeCommands, worktreeStore });
+    try {
+      const response = await server.inject({ method: 'POST', url: '/api/projects/proj/worktrees', headers: mutationHeaders, payload: { mode: 'new', branch: 'feat', base: 'main' } });
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toMatchObject({ worktreeId: 'proj:/repo/wts/feat', setupError: expect.stringContaining('setup command failed') });
+      // no agent is launched into a half-prepared worktree, but it still gets its idle shell and stays pinned
+      expect(launched).toEqual([]);
+      expect(shells).toEqual(['proj:/repo/wts/feat']);
+      expect(await worktreeStore.pins()).toEqual({ 'proj:/repo/wts/feat': true });
+    } finally { await server.close(); }
+  });
+
   it('propagates a service refusal and rejects an invalid body before adding', async () => {
     const added: unknown[] = [];
     const worktreeManagement = { add: async (_id: string, input: unknown) => { added.push(input); return { ok: false, status: 409, error: 'branch `feat` already exists' }; } } as never;

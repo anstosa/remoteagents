@@ -6,7 +6,7 @@ const dashboard = {
   generation: 1,
   agents: [],
   projects: [
-    { id: 'repo', label: 'Repo', available: true, manageWorktrees: true, worktrees: [
+    { id: 'repo', label: 'Repo', available: true, manageWorktrees: true, setup: true, worktrees: [
       { id: 'repo:/repo', projectId: 'repo', label: 'Repo', path: '/repo', main: true, detached: false, locked: false, available: true, pinned: true, order: 0, branch: 'main' }
     ] },
     { id: 'ro', label: 'Mounted Elsewhere', available: true, manageWorktrees: false, manageWorktreesReason: 'the container does not mount this project at its host path, so git cannot manage its worktrees', worktrees: [
@@ -82,6 +82,46 @@ test('bases a new branch on a chosen branch, sending the ref that resolves it', 
   await dialog.getByRole('button', { name: 'Create worktree' }).click();
 
   await expect.poll(() => created).toEqual({ mode: 'new', branch: 'feature/login', base: 'origin/hotfix', launch: true });
+});
+
+test('explains that setup is running while a create blocks on it', async ({ page }) => {
+  await stub(page, () => {});
+  // the create blocks on setup, so delay the response to observe the pending state
+  await page.route('**/api/projects/repo/worktrees', async route => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    await new Promise(resolve => setTimeout(resolve, 500));
+    return route.fulfill({ status: 201, json: { worktreeId: 'repo:/repo/wts/feature-login' } });
+  });
+  await page.goto('/');
+  await page.locator('.new-agent-tab').click();
+  await page.getByRole('group', { name: 'Agent launcher' }).getByRole('group', { name: 'Repo' }).getByRole('button', { name: 'New worktree…' }).click();
+  const dialog = page.getByRole('dialog', { name: 'New worktree' });
+
+  await dialog.getByLabel('Branch name').fill('feature/login');
+  await dialog.getByRole('button', { name: 'Create worktree' }).click();
+  // while the blocking create runs, the dialog tells the operator setup is running
+  await expect(dialog.getByText(/Running the setup command/u)).toBeVisible();
+  // once it resolves, the dialog closes
+  await expect(dialog).toBeHidden();
+});
+
+test('surfaces a setup failure returned alongside the created worktree', async ({ page }) => {
+  await stub(page, () => {});
+  await page.route('**/api/projects/repo/worktrees', async route => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    return route.fulfill({ status: 201, json: { worktreeId: 'repo:/repo/wts/feature-login', setupError: 'setup command exited with status 1' } });
+  });
+  await page.goto('/');
+  await page.locator('.new-agent-tab').click();
+  await page.getByRole('group', { name: 'Agent launcher' }).getByRole('group', { name: 'Repo' }).getByRole('button', { name: 'New worktree…' }).click();
+  const dialog = page.getByRole('dialog', { name: 'New worktree' });
+
+  await dialog.getByLabel('Branch name').fill('feature/login');
+  await dialog.getByRole('button', { name: 'Create worktree' }).click();
+  // the worktree stands, but a banner reports that setup failed (so no agent started)
+  await expect(dialog).toBeHidden();
+  await expect(page.getByText('Worktree created, setup failed')).toBeVisible();
+  await expect(page.getByText('setup command exited with status 1')).toBeVisible();
 });
 
 test('checks out an existing branch, hiding checked-out ones and marking remote-only ones', async ({ page }) => {

@@ -17,6 +17,9 @@ type Command = (binary: string, args: string[]) => Promise<{ code: number; stdou
 type StackOperation = { action: StackAction; session: string; startedAt: string; completedAt?: string; logFile?: string };
 export type StackOperationLog = { action: StackAction; active: boolean; startedAt: string; completedAt?: string; output: string };
 const maxStackLogBytes = 128 * 1024;
+// a worktree `setup` runs once at creation and may install dependencies, so the creation
+// flow waits far longer on it than on a status probe before giving up
+const defaultSetupTiming = { timeoutMs: 5 * 60_000, pollMs: 250 };
 
 // prepend an explicitly configured host executable path
 const hostPathExport = () => {
@@ -58,12 +61,56 @@ export class WorktreeCommandService {
   private readonly tunnelCache = new Map<string, { value: boolean; expiresAt: number }>();
   private readonly tunnelRefreshes = new Map<string, Promise<void>>();
 
-  constructor(config: ValidatedConfig, private readonly discovery: DiscoveryService, private readonly command: Command = run, private readonly checkout: string = serverCheckout()) {
+  constructor(config: ValidatedConfig, private readonly discovery: DiscoveryService, private readonly command: Command = run, private readonly checkout: string = serverCheckout(), private readonly setupTiming: { timeoutMs: number; pollMs: number } = defaultSetupTiming) {
     // status and log files live under the server's own checkout (see server-checkout.ts)
     this.hostWorkspace = serverCheckoutOnHost(config.projects, process.env.RAC_HOST_WORKSPACE, checkout);
   }
 
   actions(worktree: Worktree): StackAction[] { return stackActions.filter(action => worktree.commands?.[action] !== undefined); }
+
+  // Run a Worktree's configured `commands.setup` once, when the console creates the
+  // Worktree, before any agent launches — the operator's chance to install dependencies or
+  // link secrets so the fresh checkout can build. It runs detached on the host tmux socket
+  // like a stack command (worktree host root, `/bin/bash -lc`, host PATH), streaming its
+  // combined output to a log under `.data/stack-logs`, and this call blocks until the
+  // command finishes: the exit status (a failed `cd` included) is written to a marker under
+  // `.data/stack-status` that the console-side loop polls, bounded by a timeout so a hung
+  // setup can never wedge creation. A successful run's log is discarded; only a failed run
+  // keeps its log, so the store stays bounded and the returned `log` (present on failure)
+  // points the host operator at the output. A Worktree with no `setup`, or a deployment with
+  // no host tmux socket, is a no-op success so the creation flow never gates a launch it
+  // cannot prepare. Never throws; a launch failure, timeout, or non-zero exit reports
+  // `ok: false`.
+  async runSetup(worktree: Worktree): Promise<{ ok: boolean; log?: string }> {
+    const command = worktree.commands?.setup;
+    if (command === undefined || this.socket === undefined || this.hostWorkspace === undefined) return { ok: true };
+    const token = `${worktreeToken(worktree)}-${randomBytes(9).toString('hex')}`;
+    const logFile = join(this.checkout, '.data', 'stack-logs', `setup-${token}.log`);
+    const hostLogFile = join(this.hostWorkspace, '.data', 'stack-logs', `setup-${token}.log`);
+    const markerFile = join(this.checkout, '.data', 'stack-status', `setup-${token}.exit`);
+    const hostMarkerFile = join(this.hostWorkspace, '.data', 'stack-status', `setup-${token}.exit`);
+    const directory = worktreeHostRoot(worktree);
+    try {
+      await mkdir(dirname(logFile), { recursive: true, mode: 0o700 });
+      await mkdir(dirname(markerFile), { recursive: true, mode: 0o700 });
+      // capture combined output to the log and the setup exit code (or a failed cd) to the marker
+      const script = `${hostPathExport()}{ cd -- ${quote(directory)} && { ${command}; }; } > ${quote(hostLogFile)} 2>&1; printf '%s' "$?" > ${quote(hostMarkerFile)}`;
+      const launched = (await this.command(this.tmuxBinary, ['-S', this.socket, 'new-session', '-d', '-s', `rac-setup-${token}`, '-c', directory, '/bin/bash', '-lc', script])).code === 0;
+      if (!launched) return { ok: false, log: logFile };
+      const deadline = Date.now() + this.setupTiming.timeoutMs;
+      while (Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, this.setupTiming.pollMs));
+        const marker = await readFile(markerFile, 'utf8').catch(() => undefined);
+        if (marker === undefined) continue;
+        // a successful setup's output has no further use; keep only a failed run's log
+        if (marker.trim() === '0') { await unlink(logFile).catch(() => {}); return { ok: true }; }
+        return { ok: false, log: logFile };
+      }
+      // a setup that never finished within the budget is a failure, not a silent hang
+      return { ok: false, log: logFile };
+    } catch { return { ok: false, log: logFile }; }
+    finally { await unlink(markerFile).catch(() => {}); }
+  }
 
   // whether an operator-triggered stack operation is running for this Worktree — a Remove
   // blocker, so nothing is pulled out from under a build/migrate/etc. Only the exclusive

@@ -16,7 +16,9 @@ const loopback = new Set(['127.0.0.1', '::1']);
 // wildcard binds expose every interface; require an explicit address instead
 const wildcard = new Set(['0.0.0.0', '::']);
 const command = z.string().min(1).max(32_000).refine((v) => !v.includes('\0'), 'NUL is forbidden');
-const stackCommands = z.object({ start: command.optional(), stop: command.optional(), build: command.optional(), restart: command.optional(), migrate: command.optional(), status: command.optional() }).strict();
+// `status` is a probe and `setup` is a creation-time hook (run once when the console adds
+// a Worktree), so neither is an operator-invokable stack action — see `stackActions`.
+const stackCommands = z.object({ start: command.optional(), stop: command.optional(), build: command.optional(), restart: command.optional(), migrate: command.optional(), status: command.optional(), setup: command.optional() }).strict();
 // share preview validation across defaults and checkout overrides
 const previewPort = z.number().int().min(1).max(65535);
 const previewHostname = z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/);

@@ -202,7 +202,9 @@ user's tmux socket and Codex configuration without Docker bind mounts.
 The `projects` array may be empty or omitted for scratch-only use. Each Project
 is a git repository with a stable ID, canonical path, and label; its Worktrees
 are discovered from `git worktree list`. Optional fields expose project links,
-stack actions, new-task flows, and customized prompt actions. Agents launch by
+stack actions, new-task flows, and customized prompt actions, plus a
+`commands.setup` that prepares each freshly created Worktree (for example
+`pnpm install`) before its agent launches. Agents launch by
 Adapter kind — `codex`, `omx`, `claude`, and later `pi` and `opencode` —
 configured once under `adapters`; Codex and OMX are separate kinds, so a
 deployment can run plain Codex in some worktrees and OMX in others.

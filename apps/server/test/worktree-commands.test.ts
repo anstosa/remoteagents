@@ -217,3 +217,87 @@ describe('worktree stack commands', () => {
     await expect(service.sessionRunning(worktree)).resolves.toBe(false);
   });
 });
+
+describe('worktree setup command', () => {
+  type FakeCommand = (binary: string, args: string[]) => Promise<{ code: number; stdout: string }>;
+  const fastTiming = { timeoutMs: 2_000, pollMs: 10 };
+  // a fake host tmux that runs the setup script by writing its exit marker through the mount,
+  // like the concurrency/status tests: the host path maps to the console-side checkout
+  const runningSetup = (exit: string) => {
+    const launched: string[] = [];
+    const scripts: string[] = [];
+    const command: FakeCommand = async (_binary, args) => {
+      if (!args.includes('new-session')) return { code: 1, stdout: '' };
+      const script = args.at(-1) ?? '';
+      launched.push(args[args.indexOf('-s') + 1] ?? '');
+      scripts.push(script);
+      const hostMarker = /> '([^']+\.exit)'/u.exec(script)?.[1];
+      if (hostMarker !== undefined) await writeFile(join(checkoutRoot!, hostMarker.slice('/host/checkout/'.length)), exit);
+      return { code: 0, stdout: '' };
+    };
+    return { command, launched, scripts };
+  };
+  const setupService = (worktree: ReturnType<typeof testWorktree>, command: FakeCommand, timing = fastTiming) => {
+    const projectConfig = testConfig({ projects: [testProject({ id: 'proj', path: checkoutRoot!, hostPath: '/host/checkout' })] });
+    return new WorktreeCommandService(projectConfig, { worktreesNow: () => [worktree] } as never, command, checkoutRoot!, timing);
+  };
+
+  it('runs the setup command in the worktree and reports success on a zero exit', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    delete process.env.RAC_HOST_WORKSPACE;
+    checkoutRoot = await mkdtemp(join(tmpdir(), 'rac-checkout-'));
+    const cora = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', path: '/worktrees/cora', hostPath: '/host/cora', commands: { setup: 'pnpm install' } });
+    const { command, launched, scripts } = runningSetup('0');
+    const service = setupService(cora, command);
+    const result = await service.runSetup(cora);
+    // a successful run reports ok and keeps no log
+    expect(result).toEqual({ ok: true });
+    // it runs in the worktree host root and captures output to a host-side log
+    expect(launched[0]).toMatch(/^rac-setup-proj-[0-9a-f]{12}-[0-9a-f]{18}$/);
+    expect(scripts[0]).toContain("cd -- '/host/cora'");
+    expect(scripts[0]).toContain("> '/host/checkout/.data/stack-logs/setup-");
+    expect(scripts[0]).toContain('pnpm install');
+  });
+
+  it('reports failure on a non-zero setup exit', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    delete process.env.RAC_HOST_WORKSPACE;
+    checkoutRoot = await mkdtemp(join(tmpdir(), 'rac-checkout-'));
+    const cora = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', path: '/worktrees/cora', hostPath: '/host/cora', commands: { setup: 'exit 1' } });
+    const { command } = runningSetup('1');
+    // a failed run keeps its log and points at it for host-side inspection
+    const result = await setupService(cora, command).runSetup(cora);
+    expect(result.ok).toBe(false);
+    expect(result.log).toContain('/.data/stack-logs/setup-');
+  });
+
+  it('is a no-op success when no setup command is configured', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    checkoutRoot = await mkdtemp(join(tmpdir(), 'rac-checkout-'));
+    const cora = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', path: '/worktrees/cora', hostPath: '/host/cora', commands: { build: 'make' } });
+    let sessions = 0;
+    const service = setupService(cora, async (_binary, args) => { if (args.includes('new-session')) sessions += 1; return { code: 1, stdout: '' }; });
+    await expect(service.runSetup(cora)).resolves.toEqual({ ok: true });
+    expect(sessions).toBe(0);
+  });
+
+  it('is a no-op success without the host tmux socket', async () => {
+    delete process.env.RAC_HOST_TMUX_DIR;
+    checkoutRoot = await mkdtemp(join(tmpdir(), 'rac-checkout-'));
+    const cora = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', path: '/worktrees/cora', hostPath: '/host/cora', commands: { setup: 'pnpm install' } });
+    let sessions = 0;
+    const service = setupService(cora, async (_binary, args) => { if (args.includes('new-session')) sessions += 1; return { code: 1, stdout: '' }; });
+    await expect(service.runSetup(cora)).resolves.toEqual({ ok: true });
+    expect(sessions).toBe(0);
+  });
+
+  it('reports failure when the setup command never finishes within the budget', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    delete process.env.RAC_HOST_WORKSPACE;
+    checkoutRoot = await mkdtemp(join(tmpdir(), 'rac-checkout-'));
+    const cora = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', path: '/worktrees/cora', hostPath: '/host/cora', commands: { setup: 'sleep 999' } });
+    // it launches but never writes a marker, so the bounded poll gives up
+    const service = setupService(cora, async () => ({ code: 0, stdout: '' }), { timeoutMs: 120, pollMs: 10 });
+    await expect(service.runSetup(cora)).resolves.toMatchObject({ ok: false });
+  });
+});

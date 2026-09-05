@@ -1317,6 +1317,7 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .new-worktree-launch { display: flex; align-items: center; gap: .45rem; color: var(--text); font-size: .76rem; }
 .new-worktree-loading, .new-worktree-empty { display: flex; align-items: center; gap: .4rem; color: var(--subtext-0); font-size: .76rem; }
 .new-worktree-error { margin: 0; color: var(--red); font-size: .74rem; }
+.new-worktree-status { margin: 0; color: var(--subtext-0); font-size: .74rem; }
 .new-worktree-actions { display: flex; justify-content: flex-end; gap: .5rem; }
 
 /* the launcher's per-Project Prune control */
