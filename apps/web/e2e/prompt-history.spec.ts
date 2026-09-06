@@ -68,7 +68,8 @@ test('shows worktree prompt history and cycles it from the composer', async ({ p
 
   await page.goto('/');
   await page.addStyleTag({ content: '.prompt-history-list { max-height: 5rem; } .prompt-history-list button { min-height: 4rem; }' });
-  await expect(page.getByRole('button', { name: 'Last prompt', exact: true })).toContainText('Second prompt');
+  // the recent-prompt text button is gone; history is reached from the composer-row icon
+  await expect(page.getByRole('button', { name: 'Last prompt', exact: true })).toHaveCount(0);
   const historyToggle = page.getByRole('button', { name: 'Prompt history (2)' });
   await expect(historyToggle).toBeVisible();
   await historyToggle.click();
@@ -137,9 +138,13 @@ test('shows worktree prompt history and cycles it from the composer', async ({ p
   await page.getByRole('button', { name: 'Queue', exact: true }).click();
   const updatedHistoryToggle = page.getByRole('button', { name: 'Prompt history (3)' });
   await expect(updatedHistoryToggle).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Last prompt', exact: true })).toContainText('Third prompt');
   await updatedHistoryToggle.click();
   await expect(historyMenu.locator('.prompt-history-prompt').first()).toContainText('First prompt');
   await expect(historyMenu.locator('.prompt-history-prompt').last()).toContainText('Third prompt');
   await expect.poll(() => historyMenu.locator('.prompt-history-list').evaluate(element => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))).toBeLessThanOrEqual(1);
+
+  // Escape closes the history popup
+  await page.keyboard.press('Escape');
+  await expect(historyMenu).toBeHidden();
+  await expect(updatedHistoryToggle).toHaveAttribute('aria-expanded', 'false');
 });

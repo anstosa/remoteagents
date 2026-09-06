@@ -272,14 +272,10 @@ html.software-keyboard-open .tabs { display: none; }
 .log-cached-treatment > span { position: absolute; top: .65rem; left: 50%; max-width: calc(100% - 25rem); overflow: hidden; border: 1px solid color-mix(in srgb, var(--yellow) 62%, var(--surface-1)); border-radius: var(--control-radius); padding: .28rem .5rem; background: color-mix(in srgb, var(--crust) 88%, transparent); box-shadow: 0 .35rem 1rem color-mix(in srgb, var(--crust) 55%, transparent); color: var(--yellow); font: 750 .62rem var(--font-mono); letter-spacing: .07em; text-overflow: ellipsis; text-transform: uppercase; transform: translateX(-50%); white-space: nowrap; }
 @media (max-width: 760px) { .log-cached-treatment > span { top: 3.1rem; max-width: calc(100% - 2rem); } }
 .log-footer { position: absolute; right: 0; bottom: 0; left: 0; z-index: 20; display: grid; pointer-events: none; }
-.log-topbar { position: relative; z-index: 60; display: flex; min-width: 0; min-height: 2.6rem; align-items: center; gap: .75rem; padding: 0 .375rem; pointer-events: auto; background: color-mix(in srgb, var(--crust) 78%, transparent); border-top: 1px solid color-mix(in srgb, var(--surface-1) 78%, transparent); backdrop-filter: blur(8px); }
-.log-topbar.expanded { align-items: center; }
-.toolbar-prompt-group { display: flex; flex: 1; min-width: 0; align-items: center; gap: .45rem; }
-.toolbar-prompt { flex: 1; min-width: 0; overflow: hidden; border: 0; padding: .25rem 0; background: transparent; color: var(--subtext-0); box-shadow: none; font: 400 .72rem/1.35 var(--font-mono); text-align: left; }
-.toolbar-prompt-text { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.toolbar-prompt:hover { color: var(--text); filter: none; }
+/* the status chip and prompt-history control portal into these slots in the bottom composer row */
+.prompt-status-slot, .prompt-history-slot { display: contents; }
 .prompt-history-anchor { display: inline-flex; flex: none; }
-.prompt-history-toggle { display: grid; flex: 0 0 1.8rem; width: 1.8rem; height: 1.8rem; place-items: center; border: 1px solid var(--surface-1); border-radius: var(--control-radius); padding: 0; background: transparent; color: var(--subtext-0); box-shadow: none; }
+.prompt-history-toggle { display: grid; flex: 0 0 var(--standard-control-size); width: var(--standard-control-size); height: var(--standard-control-size); place-items: center; border: 1px solid var(--prompt-control-border, var(--surface-1)); border-radius: var(--control-radius); padding: 0; background: var(--prompt-control-background, transparent); color: var(--prompt-control-foreground, var(--subtext-0)); box-shadow: none; }
 .prompt-history-toggle:hover, .prompt-history-toggle.active { border-color: var(--lavender); color: var(--lavender); }
 .prompt-history-toggle svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .prompt-history-menu { display: grid; width: min(34rem, calc(100vw - 1rem)); max-height: min(32rem, calc(100vh - 1rem)); grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
@@ -339,6 +335,22 @@ html.software-keyboard-open .tabs { display: none; }
 .git-status-summary.conflicted .git-worktree-state { color: var(--red); }
 .git-status-summary.unavailable .git-worktree-state { color: var(--overlay-0); }
 @media (pointer: coarse) { .git-status-summary { min-height: calc(2.6rem - 1px); } }
+/* the git status chip now lives at the left of the bottom composer row, not a right-aligned toolbar */
+.git-status-dot { display: none; flex: none; width: .5rem; height: .5rem; border-radius: 999px; background: currentColor; }
+.prompt-actions .git-status-wrap { margin-left: 0; max-width: 40%; }
+.prompt-actions .git-status-wrap.expanded { flex: 0 1 auto; max-width: 40%; }
+.prompt-actions .git-status-summary { justify-content: flex-start; border: 0; background: transparent; text-align: left; }
+/* on mobile the crowded row collapses the chip to a status dot that opens the same flyout */
+@media (max-width: 600px) {
+  .prompt-actions .git-branch, .prompt-actions .git-status-separator, .prompt-actions .git-worktree-state { display: none; }
+  .prompt-actions .git-status-wrap { flex: 0 0 auto; max-width: none; }
+  .prompt-actions .git-status-summary { width: auto; }
+  .prompt-actions .git-status-dot { display: block; }
+  .prompt-actions .git-status-summary.clean .git-status-dot { color: var(--green); }
+  .prompt-actions .git-status-summary.dirty .git-status-dot { color: var(--yellow); }
+  .prompt-actions .git-status-summary.conflicted .git-status-dot { color: var(--red); }
+  .prompt-actions .git-status-summary.unavailable .git-status-dot { color: var(--overlay-0); }
+}
 .log-status { --log-status-color: var(--yellow); position: absolute; top: calc(.75rem + var(--standard-control-size)); left: .375rem; z-index: 40; display: inline-flex; height: 2rem; flex: none; align-items: center; padding: 0 .58rem; border: 1px solid color-mix(in srgb, var(--log-status-color) 78%, white); border-radius: 999px; background: var(--log-status-color); color: var(--crust); box-shadow: 0 .5rem 1.1rem #000000b8, inset 0 1px color-mix(in srgb, var(--text) 32%, transparent); font: 800 .75rem var(--font-mono); letter-spacing: .04em; pointer-events: none; }
 .log-control { z-index: 20; padding: .3rem .5rem; border-color: var(--surface-1); background: color-mix(in srgb, var(--mantle) 88%, transparent); color: var(--subtext-0); font-size: .7rem; font-weight: 700; box-shadow: none; opacity: .82; }
 .log-control:hover { color: var(--text); opacity: 1; }

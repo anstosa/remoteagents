@@ -57,10 +57,9 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
         const style = getComputedStyle(document.querySelector<HTMLElement>('.log')!);
         return { top: style.borderTopWidth, bottom: style.borderBottomWidth };
       })(),
-      outputFooter: bounds('.log-topbar'),
       gitSummary: bounds('.git-status-summary'),
-      gitBranch: bounds('.git-branch'),
-      gitBranchFlexGrow: getComputedStyle(document.querySelector<HTMLElement>('.git-branch')!).flexGrow,
+      gitBranchDisplay: getComputedStyle(document.querySelector<HTMLElement>('.git-branch')!).display,
+      gitDotDisplay: getComputedStyle(document.querySelector<HTMLElement>('.git-status-dot')!).display,
       logStatus: bounds('.log-status'),
       serverSwitcher: bounds('.output-server-switcher'),
       serverSettings: bounds('.output-server-switcher .server-switcher-settings'),
@@ -86,10 +85,10 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   expect(Math.abs(layout.output.left)).toBeLessThanOrEqual(1);
   expect(Math.abs(layout.output.width - layout.viewportWidth)).toBeLessThanOrEqual(1);
   expect(layout.outputBorder).toEqual({ top: '0px', bottom: '1px' });
-  expect(Math.abs(layout.outputFooter.top - layout.output.bottom)).toBeLessThanOrEqual(1);
-  expect(layout.gitBranchFlexGrow).toBe('1');
-  expect(layout.gitSummary.width).toBeGreaterThan(layout.gitBranch.width);
-  expect(layout.outputFooter.right - layout.gitSummary.right).toBeLessThanOrEqual(8);
+  // on a narrow viewport the git status chip collapses to a dot in the composer row
+  expect(layout.gitBranchDisplay).toBe('none');
+  expect(layout.gitDotDisplay).toBe('block');
+  expect(layout.gitSummary.right).toBeLessThanOrEqual(layout.viewportWidth);
   expect(layout.logStatusStyle.position).toBe('absolute');
   expect(layout.logStatusStyle.boxShadow).not.toBe('none');
   expect(layout.logStatusStyle.backgroundColor).toBe('rgb(249, 226, 175)');
@@ -105,9 +104,9 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   expect(Math.abs(layout.serverSwitcher.left - layout.prompt.left)).toBeLessThanOrEqual(1);
   expect(layout.serverSwitcher.right).toBeLessThanOrEqual(layout.prompt.right);
   expect(layout.serverSwitcher.width).toBeLessThan(layout.prompt.width);
-  expect(Math.abs(layout.tabs.top - layout.outputFooter.bottom)).toBeLessThanOrEqual(1);
-  await expect(page.locator('.log > .log-topbar')).toHaveCount(0);
-  await expect(page.locator('.log + .log-topbar')).toHaveCount(1);
+  // the upper toolbar is gone: tabs sit directly under the output, and no .log-topbar exists
+  expect(Math.abs(layout.tabs.top - layout.output.bottom)).toBeLessThanOrEqual(1);
+  await expect(page.locator('.log-topbar')).toHaveCount(0);
   expect(layout.pullRequest.top).toBeGreaterThanOrEqual(layout.tabs.bottom);
   expect(layout.pullRequest.bottom).toBeLessThanOrEqual(layout.prompt.top);
   expect(layout.controls.every(control => control.left >= 0 && control.right <= layout.viewportWidth)).toBe(true);

@@ -86,8 +86,8 @@ test('saves prompts per agent and consumes a saved prompt back into the composer
   })).toBe(true);
 
   await prompt.fill('Summarize the release risks.');
-  await expect(saveGroup.locator('+ .queue-prompt-group .queue')).toHaveAttribute('aria-label', 'Queue');
-  await expect(saveGroup.locator('+ .queue-prompt-group .queue')).toHaveText('');
+  await expect(saveGroup.locator('+ .prompt-history-slot + .queue-prompt-group .queue')).toHaveAttribute('aria-label', 'Queue');
+  await expect(saveGroup.locator('+ .prompt-history-slot + .queue-prompt-group .queue')).toHaveText('');
   await prompt.press('Control+s');
 
   const confirmed = saveGroup.getByRole('button', { name: 'Saved', exact: true });

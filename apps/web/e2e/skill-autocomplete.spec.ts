@@ -27,12 +27,6 @@ test('includes repo-local skills in prompt autocomplete', async ({ page }) => {
   const option = page.getByRole('option', { name: /\$push/u });
   await expect(option).toBeVisible();
 
-  const layers = await page.evaluate(() => ({
-    commandMenu: Number.parseInt(getComputedStyle(document.querySelector('.command-menu')!).zIndex, 10),
-    branchToolbar: Number.parseInt(getComputedStyle(document.querySelector('.log-topbar')!).zIndex, 10),
-  }));
-  expect(layers.commandMenu).toBeGreaterThan(layers.branchToolbar);
-
   await option.click();
   await expect(prompt).toHaveValue('$push');
 });

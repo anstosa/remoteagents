@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test.use({ hasTouch: true });
 
-test('opens prompt history from the last prompt while git status expands independently', async ({ page }) => {
+test('opens prompt history from the composer row while git status expands independently, with no last-prompt text', async ({ page }) => {
   const longPrompt = 'Review every changed service and explain the deployment risk before making any edits. '.repeat(8);
   const overflowChanges = Array.from({ length: 47 }, (_, index) => ({ code: ' M', path: `apps/server/src/generated-${index}.ts`, additions: 1, deletions: 0 }));
   await page.setViewportSize({ width: 428, height: 952 });
@@ -51,39 +51,32 @@ test('opens prompt history from the last prompt while git status expands indepen
 
   await page.goto('/');
   await expect(page.getByText('Last prompt:', { exact: false })).toHaveCount(0);
-  const toolbar = page.locator('.log-topbar');
-  const prompt = page.getByRole('button', { name: 'Last prompt', exact: true });
+  // the recent-prompt text and the upper toolbar are gone; history lives in the composer row
+  await expect(page.getByRole('button', { name: 'Last prompt', exact: true })).toHaveCount(0);
+  await expect(page.locator('.toolbar-prompt')).toHaveCount(0);
+  await expect(page.locator('.log-topbar')).toHaveCount(0);
+  const history = page.getByRole('button', { name: 'Prompt history (1)' });
   const git = page.getByRole('button', { name: /^Git status:/u });
-  await expect(prompt).toHaveAttribute('title', longPrompt);
-  await expect(git).toBeVisible();
-  const promptText = prompt.locator('.toolbar-prompt-text');
-  await expect(promptText).toHaveCSS('font-weight', '400');
-  await expect(promptText).toHaveCSS('text-overflow', 'ellipsis');
-  await expect(promptText).toHaveCSS('white-space', 'nowrap');
-  expect(await promptText.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
-  const collapsedHeight = await toolbar.evaluate(element => element.getBoundingClientRect().height);
-  const workspaceTabHeight = await page.locator('.tabs button[role="tab"]').first().evaluate(element => element.getBoundingClientRect().height);
-  expect(collapsedHeight).toBeCloseTo(workspaceTabHeight, 0);
-
-  await prompt.click();
-  await expect(prompt).toHaveAttribute('aria-expanded', 'true');
-  const history = page.getByLabel('Prompt history', { exact: true });
   await expect(history).toBeVisible();
-  await expect(history).toContainText(longPrompt);
   await expect(git).toBeVisible();
-  expect(await toolbar.evaluate(element => element.getBoundingClientRect().height)).toBeCloseTo(collapsedHeight, 0);
+
+  await history.click();
+  await expect(history).toHaveAttribute('aria-expanded', 'true');
+  const historyPanel = page.getByLabel('Prompt history', { exact: true });
+  await expect(historyPanel).toBeVisible();
+  await expect(historyPanel).toContainText(longPrompt);
+  await expect(git).toBeVisible();
 
   // dismiss through the click-blocking backdrop
   await page.mouse.click(4, 4);
-  await expect(prompt).toHaveAttribute('aria-expanded', 'false');
-  await expect(history).toBeHidden();
+  await expect(history).toHaveAttribute('aria-expanded', 'false');
+  await expect(historyPanel).toBeHidden();
   await page.setViewportSize({ width: 428, height: 420 });
   const collapsedGit = page.getByRole('button', { name: /^Git status:/u });
   await collapsedGit.tap();
   const expandedGit = page.getByRole('button', { name: /^Git status:/u });
   const changedFiles = page.getByRole('region', { name: 'Changed files' });
   await expect(expandedGit).toHaveAttribute('aria-expanded', 'true');
-  await expect(prompt).toBeVisible();
   await expect(page.getByRole('button', { name: 'Prompt history (1)' })).toBeVisible();
   const gitView = changedFiles.getByRole('group', { name: 'Git change view' });
   const workingView = gitView.getByRole('button', { name: 'Working' });
@@ -155,7 +148,7 @@ test('opens prompt history from the last prompt while git status expands indepen
   // dismiss through the click-blocking backdrop
   await page.touchscreen.tap(4, 4);
   await expect(changedFiles).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Last prompt', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Prompt history (1)' })).toBeVisible();
   await page.getByRole('button', { name: 'Prompt history (1)' }).click();
   await expect(page.getByLabel('Prompt history', { exact: true })).toContainText(longPrompt);
 });
