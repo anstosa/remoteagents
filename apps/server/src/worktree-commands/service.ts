@@ -50,7 +50,12 @@ const readLogTail = async (path: string): Promise<string> => {
 };
 
 export class WorktreeCommandService {
-  private readonly socket = process.env.RAC_HOST_TMUX_DIR === undefined ? undefined : join(process.env.RAC_HOST_TMUX_DIR, 'default');
+  // the host tmux socket when the console runs in a container and reaches tmux through a
+  // mounted socket dir; undefined in a native (systemd/dev) deployment, where tmux runs as
+  // the same user and stack sessions live on its default socket. Like launch/service.ts, an
+  // undefined socket means "run on tmux's default socket", not "disable stack commands".
+  private readonly hostSocket = process.env.RAC_HOST_TMUX_DIR === undefined ? undefined : join(process.env.RAC_HOST_TMUX_DIR, 'default');
+  private readonly socketArgs = this.hostSocket === undefined ? [] : ['-S', this.hostSocket];
   private readonly tmuxBinary = process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux';
   private readonly hostWorkspace: string | undefined;
   private readonly statusCache = new Map<string, { value: boolean; expiresAt: number }>();
@@ -62,28 +67,39 @@ export class WorktreeCommandService {
   private readonly tunnelRefreshes = new Map<string, Promise<void>>();
 
   constructor(config: ValidatedConfig, private readonly discovery: DiscoveryService, private readonly command: Command = run, private readonly checkout: string = serverCheckout(), private readonly setupTiming: { timeoutMs: number; pollMs: number } = defaultSetupTiming) {
-    // status and log files live under the server's own checkout (see server-checkout.ts)
-    this.hostWorkspace = serverCheckoutOnHost(config.projects, process.env.RAC_HOST_WORKSPACE, checkout);
+    // status and log files live under the server's own checkout (see server-checkout.ts). A
+    // native deployment runs commands on its own host, so that checkout is already the host
+    // view; only a bridged one translates through the Project declared at the checkout.
+    this.hostWorkspace = this.hostSocket === undefined ? checkout : serverCheckoutOnHost(config.projects, process.env.RAC_HOST_WORKSPACE, checkout);
   }
 
   actions(worktree: Worktree): StackAction[] { return stackActions.filter(action => worktree.commands?.[action] !== undefined); }
 
+  // one entry point for every tmux call: prepend the socket selector (empty on the default
+  // socket) and never let a spawn failure escape into a request handler — a tmux that cannot
+  // run is reported as a failed command (code -1), so probes and Remove-blocker checks fail
+  // safe rather than 500 the request
+  private async tmux(args: string[]): Promise<{ code: number; stdout: string; stderr?: string }> {
+    return await this.command(this.tmuxBinary, [...this.socketArgs, ...args]).catch(() => ({ code: -1, stdout: '' }));
+  }
+
   // Run a Worktree's configured `commands.setup` once, when the console creates the
   // Worktree, before any agent launches — the operator's chance to install dependencies or
-  // link secrets so the fresh checkout can build. It runs detached on the host tmux socket
-  // like a stack command (worktree host root, `/bin/bash -lc`, host PATH), streaming its
+  // link secrets so the fresh checkout can build. It runs detached on tmux (the host socket
+  // when bridged, else the default socket) like a stack command (worktree host root,
+  // `/bin/bash -lc`, host PATH), streaming its
   // combined output to a log under `.data/stack-logs`, and this call blocks until the
   // command finishes: the exit status (a failed `cd` included) is written to a marker under
   // `.data/stack-status` that the console-side loop polls, bounded by a timeout so a hung
   // setup can never wedge creation. A successful run's log is discarded; only a failed run
   // keeps its log, so the store stays bounded and the returned `log` (present on failure)
-  // points the host operator at the output. A Worktree with no `setup`, or a deployment with
-  // no host tmux socket, is a no-op success so the creation flow never gates a launch it
-  // cannot prepare. Never throws; a launch failure, timeout, or non-zero exit reports
-  // `ok: false`.
+  // points the host operator at the output. A Worktree with no `setup`, or a deployment whose
+  // server checkout resolves to no host path, is a no-op success so the creation flow never
+  // gates a launch it cannot prepare. Never throws; a launch failure, timeout, or non-zero
+  // exit reports `ok: false`.
   async runSetup(worktree: Worktree): Promise<{ ok: boolean; log?: string }> {
     const command = worktree.commands?.setup;
-    if (command === undefined || this.socket === undefined || this.hostWorkspace === undefined) return { ok: true };
+    if (command === undefined || this.hostWorkspace === undefined) return { ok: true };
     const token = `${worktreeToken(worktree)}-${randomBytes(9).toString('hex')}`;
     const logFile = join(this.checkout, '.data', 'stack-logs', `setup-${token}.log`);
     const hostLogFile = join(this.hostWorkspace, '.data', 'stack-logs', `setup-${token}.log`);
@@ -95,7 +111,7 @@ export class WorktreeCommandService {
       await mkdir(dirname(markerFile), { recursive: true, mode: 0o700 });
       // capture combined output to the log and the setup exit code (or a failed cd) to the marker
       const script = `${hostPathExport()}{ cd -- ${quote(directory)} && { ${command}; }; } > ${quote(hostLogFile)} 2>&1; printf '%s' "$?" > ${quote(hostMarkerFile)}`;
-      const launched = (await this.command(this.tmuxBinary, ['-S', this.socket, 'new-session', '-d', '-s', `rac-setup-${token}`, '-c', directory, '/bin/bash', '-lc', script])).code === 0;
+      const launched = (await this.tmux(['new-session', '-d', '-s', `rac-setup-${token}`, '-c', directory, '/bin/bash', '-lc', script])).code === 0;
       if (!launched) return { ok: false, log: logFile };
       const deadline = Date.now() + this.setupTiming.timeoutMs;
       while (Date.now() < deadline) {
@@ -116,10 +132,9 @@ export class WorktreeCommandService {
   // blocker, so nothing is pulled out from under a build/migrate/etc. Only the exclusive
   // operation session counts; the transient `rac-stack-<token>-<hex>` status probes that fire
   // on every dashboard build are not operations, so they never spuriously block Remove.
-  // Without the host tmux socket no stack session can exist, so there is nothing to block.
+  // The session list comes from the host tmux socket when bridged, else tmux's default socket.
   async sessionRunning(worktree: Worktree): Promise<boolean> {
-    if (this.socket === undefined) return false;
-    const listed = await this.command(this.tmuxBinary, ['-S', this.socket, 'list-sessions', '-F', '#{session_name}']);
+    const listed = await this.tmux(['list-sessions', '-F', '#{session_name}']);
     if (listed.code !== 0) return false;
     const prefix = `rac-stack-${worktreeToken(worktree)}-`;
     return listed.stdout.split('\n').some(name => { const trimmed = name.trim(); return trimmed.startsWith(prefix) && trimmed.endsWith('-exclusive'); });
@@ -181,7 +196,7 @@ export class WorktreeCommandService {
 
   async running(worktree: Worktree): Promise<boolean | undefined> {
     const command = worktree.commands?.status;
-    if (command === undefined || this.socket === undefined || this.hostWorkspace === undefined) return undefined;
+    if (command === undefined || this.hostWorkspace === undefined) return undefined;
     const cached = this.statusCache.get(worktree.id);
     if (cached === undefined || cached.expiresAt <= Date.now()) void this.refreshStatus(worktree, command);
     return cached?.value;
@@ -240,7 +255,7 @@ export class WorktreeCommandService {
   // detect completion while retaining the finished log
   private async operationActive(operation: StackOperation): Promise<boolean> {
     // reuse a settled completion
-    if (operation.completedAt !== undefined || this.socket === undefined) return false;
+    if (operation.completedAt !== undefined) return false;
     const status = await this.sessionStatus(operation.session);
     // retain active state when tmux cannot answer reliably
     if (status === 'unknown') return true;
@@ -258,9 +273,7 @@ export class WorktreeCommandService {
 
   // distinguish a missing session from a broken tmux probe
   private async sessionStatus(session: string): Promise<'active'|'absent'|'unknown'> {
-    // reject unavailable host tmux access
-    if (this.socket === undefined) return 'unknown';
-    const result = await this.command(this.tmuxBinary, ['-S', this.socket, 'has-session', '-t', `=${session}`]);
+    const result = await this.tmux(['has-session', '-t', `=${session}`]);
     // recognize an existing session
     if (result.code === 0) return 'active';
     // preserve injected command compatibility and explicit absence
@@ -276,8 +289,6 @@ export class WorktreeCommandService {
   private async detachedSession(worktree: Worktree, command: string, action: StackAction): Promise<StackOperation | undefined>;
   // launch a detached command with optional durable output
   private async detachedSession(worktree: Worktree, command: string, action?: StackAction): Promise<string | StackOperation | undefined> {
-    // require the host tmux socket
-    if (this.socket === undefined) return undefined;
     const session = action === undefined ? `rac-stack-${worktreeToken(worktree)}-${randomBytes(9).toString('hex')}` : this.operationSession(worktree);
     const directory = worktreeHostRoot(worktree);
     let logFile: string | undefined;
@@ -291,7 +302,7 @@ export class WorktreeCommandService {
     }
     const invocation = hostLogFile === undefined ? command : `{ ${command}; } > ${quote(hostLogFile)} 2>&1`;
     const script = `${hostPathExport()}cd -- ${quote(directory)} && ${invocation}`;
-    const launched = (await this.command(this.tmuxBinary, ['-S', this.socket, 'new-session', '-d', '-s', session, '-c', directory, '/bin/bash', '-lc', script])).code === 0;
+    const launched = (await this.tmux(['new-session', '-d', '-s', session, '-c', directory, '/bin/bash', '-lc', script])).code === 0;
     // return simple status probes without operation metadata
     if (!launched || action === undefined) return launched ? session : undefined;
     return { action, session, startedAt: new Date().toISOString(), ...(logFile === undefined ? {} : { logFile }) };

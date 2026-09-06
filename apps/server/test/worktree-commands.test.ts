@@ -211,10 +211,18 @@ describe('worktree stack commands', () => {
     }
   });
 
-  it('reports no stack session without the host tmux socket', async () => {
+  it("probes tmux's default socket for a stack session in native mode", async () => {
     delete process.env.RAC_HOST_TMUX_DIR;
-    const service = new WorktreeCommandService(config, discovery as never, async () => ({ code: 0, stdout: 'rac-stack-proj-anything\n' }));
-    await expect(service.sessionRunning(worktree)).resolves.toBe(false);
+    const calls: string[][] = [];
+    const command = async (_binary: string, args: string[]) => {
+      calls.push(args);
+      return args.includes('list-sessions') ? { code: 0, stdout: `${stackSession('proj', worktree.path)}\n` } : { code: 1, stdout: '' };
+    };
+    const service = new WorktreeCommandService(config, discovery as never, command);
+    // a native deployment reaches tmux directly, so its exclusive operation session is found
+    await expect(service.sessionRunning(worktree)).resolves.toBe(true);
+    // and every tmux call targets the default socket: no '-S' selector
+    expect(calls.every(args => !args.includes('-S'))).toBe(true);
   });
 });
 
@@ -281,14 +289,26 @@ describe('worktree setup command', () => {
     expect(sessions).toBe(0);
   });
 
-  it('is a no-op success without the host tmux socket', async () => {
+  it("runs the setup command on tmux's default socket in native mode", async () => {
     delete process.env.RAC_HOST_TMUX_DIR;
+    delete process.env.RAC_HOST_WORKSPACE;
     checkoutRoot = await mkdtemp(join(tmpdir(), 'rac-checkout-'));
-    const cora = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', path: '/worktrees/cora', hostPath: '/host/cora', commands: { setup: 'pnpm install' } });
-    let sessions = 0;
-    const service = setupService(cora, async (_binary, args) => { if (args.includes('new-session')) sessions += 1; return { code: 1, stdout: '' }; });
-    await expect(service.runSetup(cora)).resolves.toEqual({ ok: true });
-    expect(sessions).toBe(0);
+    // a native worktree has no separate host path: the console and tmux share a filesystem
+    const cora = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', path: '/worktrees/cora', commands: { setup: 'pnpm install' } });
+    const launches: string[][] = [];
+    const command: FakeCommand = async (_binary, args) => {
+      if (!args.includes('new-session')) return { code: 1, stdout: '' };
+      launches.push(args);
+      // native mode writes the marker to a real console-side path, not a mounted host path
+      const marker = /> '([^']+\.exit)'/u.exec(args.at(-1) ?? '')?.[1];
+      if (marker !== undefined) await writeFile(marker, '0');
+      return { code: 0, stdout: '' };
+    };
+    await expect(setupService(cora, command).runSetup(cora)).resolves.toEqual({ ok: true });
+    // it launched once, on the default socket (no '-S'), and ran in the worktree
+    expect(launches).toHaveLength(1);
+    expect(launches[0]!.includes('-S')).toBe(false);
+    expect(launches[0]!.at(-1)).toContain("cd -- '/worktrees/cora'");
   });
 
   it('reports failure when the setup command never finishes within the budget', async () => {
