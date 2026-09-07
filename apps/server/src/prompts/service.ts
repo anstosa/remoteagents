@@ -112,6 +112,26 @@ export class PromptService {
     }
   }
 
+  // Paste and submit a new-conversation reset command (`/clear`, `/new`) through the
+  // Adapter's own submission path, without the history and completion tracking a real
+  // prompt gets. The Run primitive drives the settle polling itself over the Adapter's
+  // `newConversation.settled` rule (Scheduled prompts); this call only lands the command.
+  async submitReset(agentId: string, command: string): Promise<boolean> {
+    const first = await this.discovery.target(agentId);
+    if (first === undefined) return false;
+    const adapter = this.resolveAdapter(first.agent.kind);
+    if (adapter === undefined) return false;
+    const composed = adapter.submission.prepare(command, 'prompt');
+    const buffer = `rac-${randomBytes(18).toString('base64url')}`;
+    if (!await this.tmux.pastePrompt(first.socket, first.agent.paneId, buffer, composed.text)) return false;
+    // re-read so the submit keys reflect send-time state and the pane is still the same one
+    const submitTarget = await this.discovery.target(agentId, true);
+    if (submitTarget === undefined || submitTarget.socket.fingerprint !== first.socket.fingerprint || submitTarget.agent.paneId !== first.agent.paneId) return false;
+    // an idle pane takes the Adapter's idle keys (Codex submits `/new` with Enter, not Tab)
+    const keys = agentAttentionState(submitTarget.agent) === 'finished' ? composed.idleKeys ?? composed.keys : composed.keys;
+    return await this.tmux.sendKeys(submitTarget.socket, submitTarget.agent.paneId, keys);
+  }
+
   // submit one server-owned advisor prompt directly
   async submitUpdateAdvisor(agentId: string, targetSha: string, prompt: string): Promise<boolean> {
     // require one exact pending advisor and valid generated prompt

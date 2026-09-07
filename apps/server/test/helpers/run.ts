@@ -9,10 +9,92 @@ import type { Agent, Dashboard, SocketRef, Worktree } from '../../src/domain/mod
 /** A `launchPollDelay` that never waits, so the sixty-second poll runs at full speed in tests. */
 export const zeroPollDelay = async (): Promise<void> => {};
 
-/** A launch service whose `launch` succeeds unless `refuse` is set; records the kinds it saw. */
-export function launchFake(options: { refuse?: boolean } = {}): { launch: (worktreeId: string, kind?: string) => Promise<boolean>; kinds: Array<string | undefined> } {
+/**
+ * A launch service whose launch methods succeed unless `refuse` is set, recording the kinds they
+ * saw. It covers the three Run targets — a Worktree (`launch`), a directory Project
+ * (`launchProjectDirectory`) and Scratch (`launchHome`) — and reports every kind launchable unless
+ * `unlaunchable` is set, so the Run primitive's launchability precondition can be exercised.
+ */
+export type LaunchVia = 'worktree' | 'project' | 'home';
+export function launchFake(options: { refuse?: boolean; unlaunchable?: boolean } = {}): {
+  launch: (worktreeId: string, kind?: string) => Promise<boolean>;
+  launchProjectDirectory: (projectId: string, kind?: string) => Promise<boolean>;
+  launchHome: (kind?: string) => Promise<boolean>;
+  isLaunchableKind: (kind: string) => boolean;
+  kinds: Array<string | undefined>;
+  // which launch method fired, so a test can tell the three target dispatches apart
+  calls: Array<{ via: LaunchVia; kind?: string }>;
+} {
   const kinds: Array<string | undefined> = [];
-  return { launch: async (_worktreeId, kind) => { kinds.push(kind); return !options.refuse; }, kinds };
+  const calls: Array<{ via: LaunchVia; kind?: string }> = [];
+  const record = (via: LaunchVia, kind?: string) => { kinds.push(kind); calls.push(kind === undefined ? { via } : { via, kind }); return !options.refuse; };
+  return {
+    launch: async (_worktreeId, kind) => record('worktree', kind),
+    launchProjectDirectory: async (_projectId, kind) => record('project', kind),
+    launchHome: async kind => record('home', kind),
+    isLaunchableKind: () => !options.unlaunchable,
+    kinds,
+    calls,
+  };
+}
+
+/**
+ * A stateful world for a reuse Run: one remembered agent the Run resets in place. `discovery.target`
+ * returns the pre-reset `agent` until the reset command lands (a `/`-prefixed paste submitted with a
+ * key), then `afterReset(readIndex)` for each later read, so the Adapter's `settled` rule observes
+ * the change (Codex's title spin, Claude's new conversation id). The tmux reflects the live composer
+ * draft like {@link recordingTmux}, so a Codex note submit settles after the reset; `pasted` records
+ * the reset command then the note, in order. Drives the reuse-a-pane Run tickets (Scheduled prompts).
+ */
+export function reuseWorld(params: { worktree: Worktree; socket: SocketRef; agent: Agent; afterReset: (readIndex: number) => Agent; capture?: () => string; vanishAfterReset?: boolean }): {
+  discovery: {
+    invalidateWorktrees: () => void;
+    worktreesNow: () => Worktree[];
+    worktrees: () => Promise<Worktree[]>;
+    dashboard: () => Promise<Dashboard>;
+    target: (id: string) => Promise<{ agent: Agent; socket: SocketRef } | undefined>;
+  };
+  tmux: {
+    capture: () => Promise<string>;
+    pastePrompt: (socket: SocketRef, pane: string, buffer: string, text: string) => Promise<boolean>;
+    sendKeys: (socket: SocketRef, pane: string, keys: readonly unknown[]) => Promise<boolean>;
+    close: (socket: SocketRef, pane: string) => Promise<boolean>;
+    label: () => Promise<boolean>;
+    pasted: string[];
+    closed: string[];
+    // the keys each submit sent, so a test can assert the reset used the Adapter's idle key
+    sentKeys: unknown[][];
+  };
+} {
+  const { worktree, socket, agent } = params;
+  const pasted: string[] = [];
+  const closed: string[] = [];
+  const sentKeys: unknown[][] = [];
+  let draft = '';
+  let reset = false;
+  let lastPasteWasReset = false;
+  let readIndex = 0;
+  const tmux = {
+    capture: async () => (params.capture ? params.capture() : `› ${draft}`),
+    pastePrompt: async (_socket: SocketRef, _pane: string, _buffer: string, text: string) => { draft = text; pasted.push(text); lastPasteWasReset = text.trim().startsWith('/'); return true; },
+    // the Enter after a reset command flips the world into the fresh conversation; any other
+    // submit clears the composer, so the note's own submit reads as accepted
+    sendKeys: async (_socket: SocketRef, _pane: string, keys: readonly unknown[]) => { sentKeys.push([...keys]); if (lastPasteWasReset && !reset) reset = true; else draft = ''; lastPasteWasReset = false; return true; },
+    close: async (_socket: SocketRef, pane: string) => { closed.push(pane); return true; },
+    label: async () => true,
+    pasted,
+    closed,
+    sentKeys,
+  };
+  const discovery = {
+    invalidateWorktrees: () => {},
+    worktreesNow: () => [worktree],
+    worktrees: async () => [worktree],
+    dashboard: async () => ({ generation: 1, adapters: {}, agents: [agent], projects: [] }),
+    // once reset, an optional `vanishAfterReset` drops the pane so the settle loop reads it as lost
+    target: async (id: string) => (id !== agent.id || (reset && params.vanishAfterReset) ? undefined : { agent: reset ? params.afterReset(readIndex++) : agent, socket }),
+  };
+  return { discovery, tmux };
 }
 
 /**

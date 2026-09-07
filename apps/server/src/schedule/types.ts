@@ -10,7 +10,12 @@ export type ScheduleTarget = { worktreeId: string } | { projectId: string } | { 
 export const scheduleRunStatuses = ['launched', 'skipped', 'failed'] as const;
 export type ScheduleRunStatus = typeof scheduleRunStatuses[number];
 
-/** The outcome of the most recent Run; `at` is the due instant (or the request time for Run now). */
+/**
+ * The outcome of the most recent Run; `at` is the due instant (or the request time for Run now).
+ * `agentId` is the pane the Run used or created — and the *sole* handle a Schedule keeps to its own
+ * pane, so "one pane per Schedule" and every reuse decision key on it. A skip or failure that carries
+ * an `agentId` keeps the pane reusable; one that drops it makes the next Run launch fresh.
+ */
 export type ScheduleLastRun = { at: string; status: ScheduleRunStatus; detail?: string; agentId?: string };
 
 /**

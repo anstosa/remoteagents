@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { type Schedule, validSchedule } from '../schedule/types.js';
+import { type Schedule, type ScheduleLastRun, validSchedule } from '../schedule/types.js';
 
 export type WorktreeNote = { id: string; text: string; title?: string; schedule?: Schedule };
 type StoredNotes = Record<string, WorktreeNote[]>;
@@ -91,6 +91,18 @@ export class WorktreeNoteService {
       const note = stored[worktreeId]?.find(candidate => candidate.id === noteId);
       if (note === undefined) return undefined;
       note.schedule = schedule;
+      return { ...note };
+    });
+  }
+
+  // record the outcome of one Run on a note's Schedule; a note without a Schedule is left
+  // untouched (undefined), since only a scheduled note has a `lastRun` to write
+  async recordLastRun(worktreeId: string, noteId: string, lastRun: ScheduleLastRun): Promise<WorktreeNote | undefined> {
+    if (!validWorktreeId(worktreeId) || !validNoteId(noteId)) return undefined;
+    return await this.mutate(stored => {
+      const note = stored[worktreeId]?.find(candidate => candidate.id === noteId);
+      if (note === undefined || note.schedule === undefined) return undefined;
+      note.schedule = { ...note.schedule, lastRun };
       return { ...note };
     });
   }

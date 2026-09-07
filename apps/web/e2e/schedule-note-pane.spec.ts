@@ -93,6 +93,79 @@ test('sets and removes a note Schedule from the pane against a stateful notes st
   await expect(page.locator('.note-schedule-badge')).toHaveCount(0);
 });
 
+test('runs a Schedule now, shows the launched footnote with Open agent, against a stateful stub', async ({ page }) => {
+  test.setTimeout(60_000);
+  const runs: string[] = [];
+  const worktree = { id: 'wt-main', projectId: 'atlas', label: 'main', path: '/worktrees/atlas', main: true, detached: false, locked: false, available: true, pinned: true, order: 0, branch: 'main', launch: { kind: 'claude' } };
+  const notes: StoredNote[] = [{ id: 'note-identifier-001', text: 'Draft the weekly report', title: 'Weekly', schedule: { cron: '0 9 * * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true }, nextRun: '2026-09-07T09:00:00-07:00' }];
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/atlas', worktreeId: 'wt-main', worktreeLabel: 'main', projectId: 'atlas', kind: 'claude', title: 'Ready' }], projects: [{ id: 'atlas', label: 'atlas', mode: 'repository', available: true, worktrees: [worktree] }] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
+    if (url.pathname === '/api/schedule/preview') return route.fulfill({ json: { next: ['2026-09-07T09:00:00-07:00'] } });
+    if (url.pathname === '/api/worktrees/wt-main/notes' && request.method() === 'GET') return route.fulfill({ json: { notes } });
+    const runMatch = /^\/api\/worktrees\/wt-main\/notes\/([^/]+)\/schedule\/run$/u.exec(url.pathname);
+    if (runMatch && request.method() === 'POST') {
+      runs.push(runMatch[1]);
+      const note = notes.find(candidate => candidate.id === runMatch[1])!;
+      note.schedule = { ...note.schedule!, lastRun: { at: new Date().toISOString(), status: 'launched', agentId: 'agent-1' } } as ScheduleBody;
+      return route.fulfill({ json: { ...note } });
+    }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Notes' }).click();
+  await page.locator('.note-choice').filter({ hasText: 'Weekly' }).click();
+  const editor = page.getByRole('group', { name: 'Schedule', exact: true });
+  await expect(editor.locator('.schedule-last')).toContainText('Not run yet');
+
+  // Run now → the run route is called and the launched footnote appears with an Open agent link
+  await editor.getByRole('button', { name: /Run now/ }).click();
+  await expect.poll(() => runs).toEqual(['note-identifier-001']);
+  await expect(editor.locator('.schedule-last')).toContainText('launched');
+  const openAgent = editor.getByRole('link', { name: 'Open agent' });
+  await expect(openAgent).toBeVisible();
+  await expect(openAgent).toHaveAttribute('href', '#agent=agent-1');
+});
+
+test('reddens the failed footnote and fly-out badge, and hides Open agent for a departed pane', async ({ page }) => {
+  test.setTimeout(60_000);
+  const worktree = { id: 'wt-main', projectId: 'atlas', label: 'main', path: '/worktrees/atlas', main: true, detached: false, locked: false, available: true, pinned: true, order: 0, branch: 'main', launch: { kind: 'claude' } };
+  // a scheduled note whose last Run failed on an agent that is no longer on the dashboard
+  const notes: StoredNote[] = [{ id: 'note-identifier-001', text: 'Draft the weekly report', title: 'Weekly', schedule: { cron: '0 9 * * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true, lastRun: { at: new Date().toISOString(), status: 'failed', detail: 'reset did not settle', agentId: 'gone-agent' } } as ScheduleBody, nextRun: '2026-09-07T09:00:00-07:00' }];
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/atlas', worktreeId: 'wt-main', worktreeLabel: 'main', projectId: 'atlas', kind: 'claude', title: 'Ready' }], projects: [{ id: 'atlas', label: 'atlas', mode: 'repository', available: true, worktrees: [worktree] }] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
+    if (url.pathname === '/api/schedule/preview') return route.fulfill({ json: { next: ['2026-09-07T09:00:00-07:00'] } });
+    if (url.pathname === '/api/worktrees/wt-main/notes' && request.method() === 'GET') return route.fulfill({ json: { notes } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Notes' }).click();
+  // the fly-out badge is red (not merely dim) for an enabled Schedule whose last Run failed
+  await expect(page.locator('.note-schedule-badge.bad')).toHaveCount(1);
+  await expect(page.locator('.note-schedule-badge.paused')).toHaveCount(0);
+
+  await page.locator('.note-choice').filter({ hasText: 'Weekly' }).click();
+  const editor = page.getByRole('group', { name: 'Schedule', exact: true });
+  const footnote = editor.locator('.schedule-last');
+  await expect(footnote).toContainText('failed, reset did not settle');
+  await expect(footnote).toHaveClass(/bad/);
+  // the pane the Run used is gone, so no Open agent link is offered
+  await expect(editor.getByRole('link', { name: 'Open agent' })).toHaveCount(0);
+});
+
 test('picks the Adapter and target from the pane and records each write', async ({ page }) => {
   test.setTimeout(60_000);
   const notes: StoredNote[] = [];

@@ -32,8 +32,9 @@ async function stores(): Promise<{ notes: WorktreeNoteService; queued: QueuedPro
   return { notes, queued: new QueuedPromptService(join(root, 'queue.json')), noteId: created!.id };
 }
 
-async function runApp(deps: Record<string, unknown>) {
-  return await buildApp(testConfig({ publicOrigin: new URL(`https://${host}`), projects: [testProject({ id: 'proj' })] }), { auth, control, dashboardUpdates, launchPollDelay: zeroPollDelay, ...deps } as never);
+async function runApp({ queued, ...deps }: Record<string, unknown>) {
+  // pass the per-test queue under the key buildApp reads, so tests never share the default file
+  return await buildApp(testConfig({ publicOrigin: new URL(`https://${host}`), projects: [testProject({ id: 'proj' })] }), { auth, control, dashboardUpdates, launchPollDelay: zeroPollDelay, queuedPrompts: queued, ...deps } as never);
 }
 
 const run = (noteId: string, worktreeId = 'wt-main', kind = 'codex') =>

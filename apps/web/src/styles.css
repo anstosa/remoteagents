@@ -420,6 +420,7 @@ html.software-keyboard-open .tabs { display: none; }
 .note-menu-name { display: block; min-width: 0; width: max-content; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .note-schedule-badge { display: inline-flex; flex-shrink: 0; align-items: center; color: var(--yellow); }
 .note-schedule-badge.paused { color: var(--subtext-0); }
+.note-schedule-badge.bad { color: var(--red); }
 .note-schedule-badge svg { width: .9rem; height: .9rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .note-menu-actions { display: grid; grid-auto-flow: column; grid-auto-columns: 2.4rem; align-content: stretch; border-left: 1px solid var(--surface-1); }
 .notes-menu .note-menu-actions button { display: grid; width: 2.4rem; min-height: 2.6rem; padding: 0; place-items: center; border: 0; border-radius: 0; background: transparent; }
@@ -535,6 +536,11 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
 .schedule-foot { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .1rem; }
 .schedule-remove { min-height: 1.9rem; padding: .2rem .55rem; border: 1px solid color-mix(in srgb, var(--red) 55%, var(--surface-1)); border-radius: var(--control-radius); background: transparent; color: var(--red); font: inherit; font-size: .66rem; cursor: pointer; }
 .schedule-remove:disabled { opacity: .6; cursor: default; }
+.schedule-run-now { display: inline-flex; align-items: center; justify-content: center; min-width: 4.4rem; min-height: 1.9rem; padding: .2rem .55rem; border: 1px solid color-mix(in srgb, var(--yellow) 55%, var(--surface-1)); border-radius: var(--control-radius); background: transparent; color: var(--yellow); font: inherit; font-size: .66rem; font-weight: 700; cursor: pointer; }
+.schedule-run-now:disabled { opacity: .6; cursor: default; }
+.schedule-run-now .spinner { width: .72rem; height: .72rem; border-width: 1.5px; }
+.schedule-open-agent { color: var(--blue); text-decoration: none; }
+.schedule-open-agent:hover { text-decoration: underline; }
 .schedule-unscheduled .schedule-create { display: inline-flex; align-items: center; gap: .35rem; min-height: 2rem; padding: .25rem .55rem; border: 1px solid color-mix(in srgb, var(--yellow) 55%, var(--surface-1)); border-radius: var(--control-radius); background: transparent; color: var(--yellow); font: inherit; font-weight: 700; cursor: pointer; }
 .schedule-hint { margin: 0; font-size: .64rem; color: var(--subtext-0); }
 .schedule-hint b, .schedule-unscheduled b { color: var(--subtext-1); }

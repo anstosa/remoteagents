@@ -13,7 +13,7 @@ import { DeviceService } from './auth/devices.js';
 import { TicketStore, type TicketKind } from './auth/tickets.js';
 import { DiscoveryService } from './discovery/service.js';
 import { adapterFor } from './adapters/registry.js';
-import { agentKinds, codexFamily, sameConversation, type AgentKind, type ConversationSummary, type PaneSnapshot } from './adapters/types.js';
+import { agentKinds, codexFamily, sameConversation, type Adapter, type AgentKind, type ConversationSummary, type PaneSnapshot, type ResetSettling } from './adapters/types.js';
 import { TmuxAdapter } from './tmux/adapter.js';
 import { maxPromptAttachments, maxPromptAttachmentBytes, PromptService, type PromptAttachment } from './prompts/service.js';
 import { validPrompt } from './prompts/validation.js';
@@ -29,14 +29,14 @@ import { NewTaskService } from './new-task/service.js';
 import { WorktreeManagementService } from './worktrees/management.js';
 import { SavedPromptService } from './saved-prompts/service.js';
 import { agentAttentionState, AgentNotificationCoordinator, reviewNotification, type AgentNotificationContext } from './notifications.js';
-import { stackActions, type Agent, type StackAction, type Worktree } from './domain/models.js';
+import { stackActions, type Agent, type SocketRef, type StackAction, type Worktree } from './domain/models.js';
 import { CommandCatalogService } from './commands/service.js';
 import { LatestViewportScheduler, PaneViewportCoordinator } from './logs/viewport-scheduler.js';
 import { boundedViewport } from './logs/viewport.js';
 import { DashboardUpdates, type DashboardPayload } from './dashboard/updates.js';
 import { WorktreeNoteService, type WorktreeNote } from './notes/service.js';
 import { cronError, previewRuns, scheduleNextRun } from './schedule/cron.js';
-import { type Schedule, validScheduleTarget } from './schedule/types.js';
+import { type Schedule, type ScheduleLastRun, type ScheduleTarget, validScheduleTarget } from './schedule/types.js';
 import { CleanupService } from './cleanup/service.js';
 import { PromptHistoryService } from './prompt-history/service.js';
 import { ProjectProxy } from './project-proxy.js';
@@ -69,7 +69,7 @@ import { isUpdateAdvisorForTarget, isUpdateAdvisorLabel, updateAdvisorLabel, upd
 import { isFullGitSha } from './git/revision.js';
 import { AgentUpdateService, type AgentUpdateServiceLike } from './agent-updates/service.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; conversationNamePollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; consoleNamed?: ConsoleNamedConversationService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'> };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; conversationNamePollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; prompts?: PromptService; notes?: WorktreeNoteService; consoleNamed?: ConsoleNamedConversationService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'> };
 // derive one stable opaque scratch persistence group
 const scratchSaveKey = (workspace: string) => `scratch_${createHash('sha256').update(workspace).digest('base64url').slice(0, 40)}`;
 // bound full history scans
@@ -101,7 +101,7 @@ export function logFrame(last: string, value: string, refreshMetadata = false): 
 }
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, promptHistory, queuedPrompts, savedPrompts, undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const consoleNamed = deps.consoleNamed ?? new ConsoleNamedConversationService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = deps.prompts ?? new PromptService(discovery, tmux, promptHistory, queuedPrompts, savedPrompts, undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const consoleNamed = deps.consoleNamed ?? new ConsoleNamedConversationService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
   const temporaryPreviews = deps.temporaryPreviews ?? new TemporaryPreviewService();
   // freeze the checkout identity serving this process
   const deployedRevision = serverAdmin.revision();
@@ -765,6 +765,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.put('/api/worktrees/:id/notes/:noteId/schedule', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const schedule = buildSchedule(body(request)); if (typeof schedule === 'string') return reply.code(400).send({ error: schedule }); const note = await notes.setSchedule(saveKey, noteId, schedule); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
   // remove one note's Schedule, keeping the note
   app.delete('/api/worktrees/:id/notes/:noteId/schedule', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const note = await notes.removeSchedule(saveKey, noteId); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
+  // run one worktree note's Schedule now, exactly as the scheduler will
+  app.post('/api/worktrees/:id/notes/:noteId/schedule/run', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); return await runScheduleNow(saveKey, noteId, reply); });
   // list one live agent's notes
   app.get('/api/agents/:id/notes', async (request, reply) => {
     controlled(request);
@@ -841,6 +843,14 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
     const note = await notes.removeSchedule(persistence.saveKey, noteId);
     return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note);
+  });
+  // run one live agent note's Schedule now, exactly as the scheduler will
+  app.post('/api/agents/:id/notes/:noteId/schedule/run', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const persistence = await agentPersistence(id);
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    return await runScheduleNow(persistence.saveKey, noteId, reply);
   });
   // preview a cron expression's next three instants in the console's own zone
   app.get('/api/schedule/preview', async (request, reply) => {
@@ -1267,6 +1277,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const renamesInFlight = new Set<string>();
   // wait for slow agent startup, shared with the Run primitive (launch/wait.ts)
   const waitForAgent = createAgentWaiter(discovery, launchPollDelay);
+  // the pane snapshot an Adapter's `newConversation` rules read, from one discovered agent
+  // (Scheduled prompts) — the single builder the readiness poll and the reset settle loop share
+  const runSnapshot = (agent: Agent): PaneSnapshot => ({ title: agent.title, attention: agentAttentionState(agent), ...(agent.conversationId === undefined ? {} : { conversationId: agent.conversationId }) });
   // wait for a freshly launched pane to become ready for its first prompt, reading the
   // launching Adapter's `ready` rule over the pane's snapshot and capture (Scheduled
   // prompts). A kind without a new-conversation capability takes its first prompt at once.
@@ -1282,8 +1295,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       // a pane that vanished before it settled is a launch that did not survive
       if (target === undefined) return { state: 'blocked', reason: 'the agent closed before it was ready' };
       const capture = await tmux.capture(target.socket, target.agent.paneId).catch(() => undefined) ?? '';
-      const snapshot: PaneSnapshot = { title: target.agent.title, attention: target.agent.attention, ...(target.agent.conversationId === undefined ? {} : { conversationId: target.agent.conversationId }) };
-      const readiness = ready(snapshot, capture);
+      const readiness = ready(runSnapshot(target.agent), capture);
       // ready to paste, or blocked on something only the operator can clear
       if (readiness.state === 'ready') return { state: 'ready' };
       if (readiness.state === 'blocked') return { state: 'blocked', reason: readiness.reason };
@@ -1291,6 +1303,182 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       if (attempt + 1 < launchPollAttempts) await launchPollDelay();
     }
     return { state: 'timed-out' };
+  };
+  // ── The Run primitive (Scheduled prompts) ─────────────────────────────────────────
+  // One server operation performs every Run — Run now on a Schedule, Launch and run on an idle
+  // worktree tab, and (later) the scheduler tick. It reuses the Schedule's own idle pane by
+  // resetting the conversation through the Adapter's new-conversation command, and launches a
+  // fresh agent otherwise; the Note's text is then submitted through the normal prompt path. The
+  // caller owns recording `lastRun` and mapping the outcome to HTTP — this returns what happened.
+  type RunFailureReason = 'launch-refused' | 'no-agent' | 'not-ready-blocked' | 'not-ready-timeout' | 'delivery-failed' | 'reset-lost';
+  type RunOutcome =
+    | { status: 'launched'; agentId: string }
+    | { status: 'skipped'; detail: string; agentId?: string }
+    | { status: 'failed'; detail: string; reason: RunFailureReason; agentId?: string };
+  // A reset settles within ~2 s (Claude) / ~1.5 s (Codex); poll a little past that so the
+  // Adapter's own budget, not this cap, ends the wait. The injectable poll delay paces it in tests.
+  const resetSettleAttempts = 20;
+  // how to launch, match and reuse each Schedule target, mirroring the launcher rows; undefined
+  // when the target no longer resolves (a removed Worktree, an unavailable directory Project)
+  type RunPlan = { matches: (workspace: string) => boolean; launch: () => Promise<boolean>; waitForNewAgent: (before: Set<string>) => Promise<Agent | undefined> };
+  const resolveRunPlan = (target: ScheduleTarget, kind: AgentKind | undefined): RunPlan | undefined => {
+    if ('worktreeId' in target) {
+      const worktree = configuredWorktree(target.worktreeId);
+      if (worktree === undefined) return undefined;
+      return {
+        matches: workspace => worktreeMatchesWorkspace(worktree, workspace),
+        launch: async () => { const ok = await launch.launch(target.worktreeId, kind); if (ok) sleepingWorktrees.delete(target.worktreeId); return ok; },
+        waitForNewAgent: before => waitForAgent(before, target.worktreeId),
+      };
+    }
+    if ('projectId' in target) {
+      const project = config.projects.find(candidate => candidate.id === target.projectId);
+      // only an available directory Project launches in place (a repository Project runs through its Worktrees)
+      if (project === undefined || !project.available || project.mode !== 'directory') return undefined;
+      return {
+        // a bridged Project launches at its host path but is discovered at its console path, so match either
+        matches: workspace => workspace === project.path || (project.hostPath !== undefined && workspace === project.hostPath),
+        launch: () => launch.launchProjectDirectory(target.projectId, kind),
+        waitForNewAgent: before => waitForAgent(before, undefined, project.label),
+      };
+    }
+    const directory = config.scratchDirectory ?? launchHome;
+    return {
+      matches: workspace => workspace === directory,
+      launch: () => launch.launchHome(kind),
+      waitForNewAgent: before => waitForAgent(before),
+    };
+  };
+  // reuse the Schedule's own idle pane: reset the conversation, wait for the Adapter's settle
+  // rule, then submit the Note's text with the reset instant so Codex completion anchors on the
+  // fresh thread. Attention working/question and a non-empty composer are skipped, not forced.
+  const runReuse = async (prior: { agent: Agent; socket: SocketRef }, capability: NonNullable<Adapter['newConversation']>, text: string): Promise<RunOutcome> => {
+    const agentId = prior.agent.id;
+    const attention = agentAttentionState(prior.agent);
+    if (attention === 'working') return { status: 'skipped', detail: 'previous run still working', agentId };
+    if (attention === 'question') return { status: 'skipped', detail: 'previous run is asking a question', agentId };
+    // a draft or an open dialog in the composer would merge the reset into a prompt: skip instead.
+    // A pane we cannot read is skipped too rather than pasted into blind.
+    const capture = await tmux.capture(prior.socket, prior.agent.paneId).catch(() => undefined);
+    if (capture === undefined) return { status: 'skipped', detail: 'could not read the pane', agentId };
+    if (!capability.composerEmpty(capture)) return { status: 'skipped', detail: 'composer has unsent text', agentId };
+    const before = runSnapshot(prior.agent);
+    const resetAt = Date.now();
+    // paste the reset command through the normal submission path
+    if (!await prompts.submitReset(agentId, capability.command)) return { status: 'failed', detail: 'reset did not settle', reason: 'reset-lost', agentId };
+    const observed: PaneSnapshot[] = [];
+    const start = Date.now();
+    let settling: ResetSettling = 'pending';
+    for (let attempt = 0; attempt < resetSettleAttempts; attempt += 1) {
+      await launchPollDelay();
+      const current = await discovery.target(agentId, true);
+      // a pane that vanished under the reset is a lost reset
+      if (current === undefined) { settling = 'lost'; break; }
+      observed.push(runSnapshot(current.agent));
+      settling = capability.settled(before, observed, Date.now() - start);
+      if (settling !== 'pending') break;
+    }
+    // a lost or never-settled reset leaves the pane alone (it is the Schedule's own)
+    if (settling !== 'settled') return { status: 'failed', detail: 'reset did not settle', reason: 'reset-lost', agentId };
+    // submit the note through the prompt service exactly as a typed prompt, carrying the reset instant
+    if (!await prompts.submit(agentId, text, [], resetAt)) return { status: 'failed', detail: 'the note could not be delivered', reason: 'delivery-failed', agentId };
+    return { status: 'launched', agentId };
+  };
+  // launch a fresh agent for the target, wait for it and its readiness, then submit the note; a
+  // blocked or slow readiness closes the pane this Run created rather than leaving it behind
+  const notReadyDetail = `agent did not become ready in ${launchReadyTimeoutSeconds} s`;
+  const runFresh = async (plan: RunPlan, text: string): Promise<RunOutcome> => {
+    const before = new Set((await discovery.dashboard()).agents.map(agent => agent.id));
+    // a refused launch (an unconfigured or unlaunchable kind, or a busy worktree) pastes nothing
+    if (!await plan.launch()) return { status: 'failed', detail: 'launch refused', reason: 'launch-refused' };
+    const agent = await plan.waitForNewAgent(before);
+    if (agent === undefined) return { status: 'failed', detail: notReadyDetail, reason: 'no-agent' };
+    const readiness = await waitForReadiness(agent);
+    if (readiness.state !== 'ready') {
+      await prompts.close(agent.id).catch(() => undefined);
+      return readiness.state === 'blocked'
+        ? { status: 'failed', detail: readiness.reason, reason: 'not-ready-blocked', agentId: agent.id }
+        : { status: 'failed', detail: notReadyDetail, reason: 'not-ready-timeout', agentId: agent.id };
+    }
+    if (!await prompts.submit(agent.id, text)) return { status: 'failed', detail: 'the note could not be delivered', reason: 'delivery-failed', agentId: agent.id };
+    return { status: 'launched', agentId: agent.id };
+  };
+  const runOnce = async (input: { text: string; kind: AgentKind | undefined; target: ScheduleTarget; previousAgentId?: string }): Promise<RunOutcome> => {
+    // preconditions — a failure records `skipped` with the reason and pastes nothing
+    if (!input.text.trim()) return { status: 'skipped', detail: 'note is empty' };
+    const plan = resolveRunPlan(input.target, input.kind);
+    if (plan === undefined) return { status: 'skipped', detail: 'target is gone' };
+    // whether the kind can launch is checked at Run time, since configuration can change
+    if (input.kind !== undefined && !launch.isLaunchableKind(input.kind)) return { status: 'skipped', detail: `${input.kind} is not available` };
+    // reuse the Schedule's own pane when the remembered agent is still a live agent of the same
+    // kind whose workspace is the target; a kind without a reset capability launches fresh
+    const capability = input.kind === undefined ? undefined : adapterFor(input.kind)?.newConversation;
+    if (input.previousAgentId !== undefined && capability !== undefined) {
+      const prior = await discovery.target(input.previousAgentId, true);
+      // a live previous agent of another kind or workspace was retargeted: leave it alone, launch fresh
+      if (prior !== undefined && prior.agent.kind === input.kind && plan.matches(prior.agent.workspace)) return await runReuse(prior, capability, input.text);
+    }
+    return await runFresh(plan, input.text);
+  };
+  const performRun = async (input: { text: string; kind: AgentKind | undefined; target: ScheduleTarget; previousAgentId?: string }): Promise<RunOutcome> => {
+    const outcome = await runOnce(input);
+    // every outcome refreshes the dashboard, even a precondition skip that changed nothing
+    await dashboardUpdates.refresh().catch(() => undefined);
+    return outcome;
+  };
+  // map a non-launched Run outcome to the launch routes' HTTP contract, so Launch and run keeps
+  // its 409 / 504 / 502 responses now that it runs through the shared primitive
+  const runFailureReply = (outcome: Extract<RunOutcome, { status: 'failed' | 'skipped' }>): { code: number; error: string } => {
+    if (outcome.status === 'skipped') return { code: 409, error: outcome.detail };
+    switch (outcome.reason) {
+      case 'launch-refused': return { code: 409, error: 'Could not start the worktree agent.' };
+      case 'no-agent': return { code: 504, error: `The worktree session started, but the agent did not become ready within ${launchReadyTimeoutSeconds} seconds.` };
+      case 'not-ready-blocked': return { code: 409, error: `The agent started but is not ready: ${outcome.detail}.` };
+      case 'not-ready-timeout': return { code: 504, error: `The agent started but did not become ready within ${launchReadyTimeoutSeconds} seconds.` };
+      case 'delivery-failed': return { code: 502, error: 'The agent started but the note could not be delivered.' };
+      // Launch and run never reuses a pane (no previous agent), so a lost reset cannot reach here;
+      // the case is kept only to keep the switch exhaustive over RunFailureReason.
+      case 'reset-lost': return { code: 409, error: 'The previous run could not be reset.' };
+    }
+  };
+  // Run one Note's Schedule once at the due (or Run-now) instant `at`, and record the outcome on
+  // its `lastRun`. One Run per Schedule at a time — the flight guard is shared by Run now and (later)
+  // the scheduler tick, so a scheduled tick and a manual Run cannot reset the one pane at once. An
+  // unexpected error from a dependency still records a `failed` run, so "every run is recorded" holds
+  // even for infrastructure failures. Returns the updated Note, or why nothing ran (Scheduled prompts).
+  const scheduleRunsInFlight = new Set<string>();
+  const recordedScheduleRun = async (saveKey: string, noteId: string, at: string): Promise<{ note: WorktreeNote } | 'in-flight' | 'gone'> => {
+    const note = (await notes.list(saveKey))?.find(candidate => candidate.id === noteId);
+    // gone: an unknown Note or a Note without a Schedule to run
+    if (note === undefined || note.schedule === undefined) return 'gone';
+    const flightKey = `${saveKey}:${noteId}`;
+    if (scheduleRunsInFlight.has(flightKey)) return 'in-flight';
+    scheduleRunsInFlight.add(flightKey);
+    try {
+      const schedule = note.schedule;
+      let lastRun: ScheduleLastRun;
+      try {
+        const outcome = await performRun({ text: note.text, kind: schedule.kind, target: schedule.target, ...(schedule.lastRun?.agentId === undefined ? {} : { previousAgentId: schedule.lastRun.agentId }) });
+        lastRun = { at, status: outcome.status, ...(outcome.status === 'launched' ? {} : { detail: outcome.detail }), ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }) };
+      } catch (error) {
+        // an unexpected dependency failure is still an outcome the operator should see, not a lost run
+        console.warn(`[schedule] run errored for ${flightKey}:`, error);
+        lastRun = { at, status: 'failed', detail: 'run error' };
+      }
+      const updated = await notes.recordLastRun(saveKey, noteId, lastRun);
+      // the Schedule may have been removed mid-run; the outcome is then dropped
+      return updated === undefined ? 'gone' : { note: updated };
+    } finally {
+      scheduleRunsInFlight.delete(flightKey);
+    }
+  };
+  // Run now on a Schedule: run it synchronously exactly as the scheduler will and return the decorated
+  // Note; a second Run now while one is in flight is refused with a conflict.
+  const runScheduleNow = async (saveKey: string, noteId: string, reply: FastifyReply): Promise<unknown> => {
+    const result = await recordedScheduleRun(saveKey, noteId, new Date().toISOString());
+    if (result === 'gone') return reply.code(404).send({ error: 'schedule unavailable' });
+    if (result === 'in-flight') return reply.code(409).send({ error: 'A run of this schedule is already in progress.' });
+    return decorateNote(result.note);
   };
   // launch and pre-prompt one dedicated update advisor
   const launchUpdateAdvisor = async (targetSha: string): Promise<string | undefined> => {
@@ -1616,12 +1804,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (!agent) return reply.code(504).send({ error: `The worktree session started, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
     return reply.code(201).send({ agentId: agent.id });
   });
-  // launch a fresh agent for a Worktree and run one Note through it — the fresh-launch half
-  // of the Run primitive (Scheduled prompts). Launch the way /launch does, wait for the pane,
-  // wait until the Adapter says it can take a first prompt, then paste the Note's saved text.
-  // A refused launch is 409 and a pane that never appears is 504, exactly like /launch; a
-  // readiness that blocks (Claude's untrusted-directory safety check) or times out closes the
-  // pane the Run created and returns the Adapter's reason, so nothing half-started is left behind.
+  // Launch and run one Note on an idle Worktree tab — the fresh-launch entry into the Run
+  // primitive (Scheduled prompts). It records nothing on the Note and returns the new agent id
+  // so the web can switch to its tab; the primitive keeps the 409 / 504 / 502 contract /launch
+  // uses (a blocked or slow readiness closes the pane it created), mapped from the outcome.
   app.post('/api/worktrees/:id/notes/:noteId/run', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
     controlled(request, true);
     const { id, noteId } = request.params as { id: string; noteId: string };
@@ -1634,24 +1820,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
     // never launch an agent for an empty note
     if (!note.text.trim()) return reply.code(400).send({ error: 'note is empty' });
-    const before = new Set((await discovery.dashboard()).agents.map(agent => agent.id));
-    // require a successful launch handoff (refuses an unconfigured or unlaunchable kind)
-    if (!await launch.launch(id, kind.kind)) return reply.code(409).send({ error: 'Could not start the worktree agent.' });
-    sleepingWorktrees.delete(id);
-    const agent = await waitForAgent(before, id);
-    // report a true timeout
-    if (!agent) return reply.code(504).send({ error: `The worktree session started, but the agent did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
-    const readiness = await waitForReadiness(agent);
-    // close the pane this Run created rather than leaving a blocked or slow launch behind
-    if (readiness.state !== 'ready') {
-      await prompts.close(agent.id).catch(() => undefined);
-      return readiness.state === 'blocked'
-        ? reply.code(409).send({ error: `The agent started but is not ready: ${readiness.reason}.` })
-        : reply.code(504).send({ error: `The agent started but did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
-    }
-    // paste the Note only after the Adapter reports ready, through the normal prompt path
-    if (!await prompts.submit(agent.id, note.text)) return reply.code(502).send({ error: 'The agent started but the note could not be delivered.' });
-    return reply.code(201).send({ agentId: agent.id });
+    const outcome = await performRun({ text: note.text, kind: kind.kind, target: { worktreeId: id } });
+    if (outcome.status === 'launched') return reply.code(201).send({ agentId: outcome.agentId });
+    const failure = runFailureReply(outcome);
+    return reply.code(failure.code).send({ error: failure.error });
   });
   // launch an agent in place in a non-git `directory` Project (it has no Worktrees). The
   // new session is labeled with the Project, so it is matched back by display label.

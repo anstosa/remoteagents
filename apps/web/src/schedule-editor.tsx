@@ -139,6 +139,10 @@ export const describeCadence = (edit: ScheduleEdit): string => {
 // parses or never matches a date (a valid, matchable 5-field expression always has a next instant).
 export const scheduleInvalid = (note: { schedule?: unknown; nextRun?: string }) => note.schedule !== undefined && note.nextRun === undefined;
 
+// A last Run that failed or was skipped needs attention — the single definition the note-pane
+// footnote and the fly-out badge both read, so the two never drift apart.
+export const lastRunNeedsAttention = (lastRun?: ScheduleLastRun): boolean => lastRun !== undefined && lastRun.status !== 'launched';
+
 type ScheduleEditorProps = {
   schedule?: Schedule;
   nextRun?: string;
@@ -149,6 +153,12 @@ type ScheduleEditorProps = {
   targetOptions: ScheduleTargetOption[];
   onSet: (body: ScheduleSetBody) => void | Promise<void>;
   onRemove: () => void | Promise<void>;
+  // Run the Schedule now, exactly as the scheduler will; absent when the pane cannot run it
+  onRunNow?: () => void | Promise<void>;
+  // a Run now is in flight (the server runs it synchronously), so the controls show progress
+  running?: boolean;
+  // the last Run's agent id, only while it is still on the dashboard, so "Open agent" links to it
+  openAgentId?: string;
   // the server owns the clock and the parser, so the preview returns both the next instants and,
   // for an unparseable expression, the parser's message the raw-cron field shows inline
   preview: (cron: string) => Promise<{ next: string[]; error?: string }>;
@@ -162,7 +172,7 @@ const KindMark = ({ kind }: { kind: AgentKind }) => <span className={`schedule-k
 // lines. Every change applies immediately by emitting the full set body. The Adapter and
 // target slots open pickers built from the launcher rows; the Adapter follows the target's
 // resolved kind until the operator pins one, and a target that has vanished reads red.
-export function ScheduleEditor({ schedule, nextRun, prefill, runsOnText, adapterOptions, targetOptions, onSet, onRemove, preview, busy = false, now = Date.now }: ScheduleEditorProps) {
+export function ScheduleEditor({ schedule, nextRun, prefill, runsOnText, adapterOptions, targetOptions, onSet, onRemove, onRunNow, running = false, openAgentId, preview, busy = false, now = Date.now }: ScheduleEditorProps) {
   const [openSlot, setOpenSlot] = useState<'cadence' | 'time' | 'kind' | 'target' | null>(null);
   const [previewRuns, setPreviewRuns] = useState<string[]>([]);
   const [cronDraft, setCronDraft] = useState(() => schedule?.cron ?? defaultScheduleCron);
@@ -307,10 +317,11 @@ export function ScheduleEditor({ schedule, nextRun, prefill, runsOnText, adapter
       <div className="schedule-meta">
         {gone && <p className="schedule-skip-note" role="alert">Runs are skipped until you pick another target.</p>}
         <p className={`schedule-next${enabled ? '' : ' paused'}${gone && enabled && nextRun !== undefined ? ' skip' : ''}`}>{nextRun === undefined ? 'Won’t run — invalid cron' : !enabled ? <>Paused · would next run <b>{formatInstant(nextRun)}</b></> : gone ? <>Next <b>{formatInstant(nextRun)}</b> · will be skipped</> : <>Next <b>{formatInstant(nextRun)}</b></>}</p>
-        <p className={`schedule-last${lastRun && lastRun.status !== 'launched' ? ' bad' : ''}`}>{lastRun === undefined ? 'Not run yet' : <>Last run {relativeAge(lastRun.at, now())} · <b>{lastRun.status}</b>{lastRun.detail ? `, ${lastRun.detail}` : ''}</>}</p>
+        <p className={`schedule-last${lastRunNeedsAttention(lastRun) ? ' bad' : ''}`}>{lastRun === undefined ? 'Not run yet' : <>Last run {relativeAge(lastRun.at, now())} · <b>{lastRun.status}</b>{lastRun.detail ? `, ${lastRun.detail}` : ''}{openAgentId !== undefined && <> · <a className="schedule-open-agent" href={`#agent=${encodeURIComponent(openAgentId)}`}>Open agent</a></>}</>}</p>
       </div>
       <div className="schedule-foot">
-        <button type="button" className="schedule-remove" disabled={busy} onClick={() => void onRemove()}>Remove schedule</button>
+        {onRunNow !== undefined && <button type="button" className="schedule-run-now" disabled={busy || running || gone || invalid} onClick={() => void onRunNow()}>{running ? <span className="spinner" /> : '▷ Run now'}</button>}
+        <button type="button" className="schedule-remove" disabled={busy || running} onClick={() => void onRemove()}>Remove schedule</button>
       </div>
       {openSlot === 'cadence' && (
         <div className="schedule-popover" role="dialog" aria-label="Cadence">

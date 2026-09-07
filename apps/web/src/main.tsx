@@ -24,7 +24,7 @@ import { useViewportFlyout } from './viewport-flyout.js';
 import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
 import { VoiceDialog, type VoiceWorktree } from './voice/voice-dialog.js';
 import { AdaptersContext, agentKindGlyph, agentKindLabel, agentKinds, configuredKinds, defaultSandboxed, LaunchMenu, LaunchSplitButton, LaunchTabBadge, launchRequestInit, originCopy, sandboxCopy, type AdapterCapabilities, type AgentKind, type LaunchResolution, type LaunchChoice } from './launch-profile.js';
-import { ScheduleEditor, scheduleInvalid, type Schedule, type ScheduleAdapterOption, type ScheduleSetBody, type ScheduleTarget, type ScheduleTargetOption } from './schedule-editor.js';
+import { ScheduleEditor, lastRunNeedsAttention, scheduleInvalid, type Schedule, type ScheduleAdapterOption, type ScheduleSetBody, type ScheduleTarget, type ScheduleTargetOption } from './schedule-editor.js';
 import './styles.css';
 
 // the fields the web reads off the server's inline-question payload; the server
@@ -177,7 +177,7 @@ const isQueuedPrompt = (value: unknown): value is QueuedPrompt => value !== null
 type WorktreeNote = { id: string; text: string; title?: string; schedule?: Schedule; nextRun?: string };
 // the Adapter and target a new Schedule pre-fills with, plus the launcher rows the note pane's
 // Adapter and target pickers offer, all resolved from the dashboard for the active tab's context
-type SchedulePrefill = { kind: AgentKind; target: ScheduleTarget; runsOnText: string; adapters: ScheduleAdapterOption[]; targets: ScheduleTargetOption[] };
+type SchedulePrefill = { kind: AgentKind; target: ScheduleTarget; runsOnText: string; adapters: ScheduleAdapterOption[]; targets: ScheduleTargetOption[]; liveAgentIds: string[] };
 type AssistantFile = { path: string; size: number };
 type AssistantPreviewImage = { mediaType: 'image/gif'|'image/jpeg'|'image/png'|'image/webp'; base64: string };
 type AssistantFilePreview = AssistantFile & { truncated: boolean } & ({ binary: true; image?: AssistantPreviewImage } | { binary: false; content: string });
@@ -2911,6 +2911,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   const [dirtyCount, setDirtyCount] = useState(0);
   const [saveStatus, setSaveStatus] = useState<'saved'|'saving'|'error'>('saved');
   const [scheduleBusy, setScheduleBusy] = useState(false);
+  const [scheduleRunning, setScheduleRunning] = useState(false);
   const resourceBase = persistenceResourceBase(worktreeId, agentId);
   const noteViewId = worktreeId ?? (agentId === undefined ? undefined : `agent:${agentId}`);
   const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen, { placement: 'left', boundarySelector: '.log', boundaryRootSelector: '.agent-view, .worktree-view', contentSized: true });
@@ -3468,6 +3469,22 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     } catch { setSaveStatus('error'); }
     finally { setScheduleBusy(false); }
   };
+  // Run the open note's Schedule now — synchronously on the server, exactly as the scheduler
+  // will — and merge the recorded lastRun back into the note. A conflicting in-flight Run (409)
+  // or any failure surfaces through the pane's save-status alert.
+  const runScheduleNow = async () => {
+    const note = activeNoteRef.current;
+    if (resourceBase === undefined || note === undefined || scheduleBusy || scheduleRunning) return;
+    setScheduleRunning(true);
+    try {
+      const response = await request(`${resourceBase}/notes/${encodeURIComponent(note.id)}/schedule/run`, { method: 'POST' });
+      if (!response.ok) throw new Error('schedule run failed');
+      const saved: unknown = await response.json();
+      if (!isWorktreeNote(saved)) throw new Error('invalid schedule response');
+      mergeScheduleUpdate(note.id, saved);
+    } catch { setSaveStatus('error'); }
+    finally { setScheduleRunning(false); }
+  };
   // the server owns the clock, the zone and the parser, so the next-runs preview and the
   // raw-cron field's validity are both fetched, never computed here
   const previewSchedule = async (cron: string): Promise<{ next: string[]; error?: string }> => {
@@ -3503,11 +3520,13 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
           // save or cancel from the keyboard
           if (event.key === 'Escape') { event.preventDefault(); setMenuRenameDraft(undefined); }
         }}><input aria-label="Note name" value={menuRenameDraft.title} maxLength={120} autoFocus disabled={menuRenamingId !== undefined} onChange={event => setMenuRenameDraft({ id: note.id, title: event.target.value })} /><button className="log-control note-menu-rename-save" type="submit" disabled={noteMenuBusy || !menuRenameDraft.title.trim()} aria-label="Save note name" title="Save note name">{menuRenamingId === note.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>}</button><button className="log-control note-menu-rename-cancel" type="button" disabled={noteMenuBusy} aria-label="Cancel note rename" title="Cancel" onClick={() => setMenuRenameDraft(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><button className="log-control note-choice" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} title={(note.title ?? note.text) || 'Blank note'} onClick={() => open(note)}>{note.schedule !== undefined && (() => {
-          // dim the clock when the schedule is paused or its stored cron won't run (no server nextRun)
+          // dim the clock when the schedule is paused or its stored cron won't run (no server nextRun);
+          // red when an enabled schedule's last Run failed or was skipped (a paused one stays dim)
           const invalid = scheduleInvalid(note);
           const dim = !note.schedule.enabled || invalid;
-          const badgeLabel = invalid ? 'Schedule invalid' : note.schedule.enabled ? 'Scheduled' : 'Schedule paused';
-          return <span className={`note-schedule-badge${dim ? ' paused' : ''}`} aria-label={badgeLabel} title={badgeLabel}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg></span>;
+          const failed = !dim && lastRunNeedsAttention(note.schedule.lastRun);
+          const badgeLabel = invalid ? 'Schedule invalid' : !note.schedule.enabled ? 'Schedule paused' : failed ? 'Last run needs attention' : 'Scheduled';
+          return <span className={`note-schedule-badge${dim ? ' paused' : failed ? ' bad' : ''}`} aria-label={badgeLabel} title={badgeLabel}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg></span>;
         })()}<span className="note-menu-name">{label}</span></button><span className="note-menu-actions"><button className="log-control note-menu-run" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined || !note.text.trim() || (!launchAndRunMode && agentId === undefined)} aria-label={launchAndRunMode ? `Launch and run note: ${label}` : `Run note: ${label}`} title={launchAndRunMode ? 'Launch and run note' : 'Run note'} onClick={() => void runNote(note)}>{menuRunningId === note.id ? <span className="spinner" /> : launchAndRunMode ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v11l9-5.5L7 4Z" /><path d="M4 20h16" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>}</button><button className="log-control note-menu-rename" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Rename note: ${label}`} title="Rename note" onClick={() => setMenuRenameDraft({ id: note.id, title: Array.from(note.title ?? label).slice(0, 120).join('') })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button><button className="log-control note-menu-delete" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Delete note: ${label}`} title="Delete note" onClick={() => void removeFromMenu(note)}>{menuDeletingId === note.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg>}</button></span></>}</div>;
       })}
       <button className="log-control new-note" disabled={noteMenuBusy || menuRenameDraft !== undefined} onClick={() => void create()}>+ New note</button>
@@ -3539,7 +3558,10 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   // the note-pane Schedule editor (variant C): always shown under the toolbar when a prefill resolves.
   // Keyed on the note id so switching notes remounts it — the editor holds per-note session state
   // (whether the Adapter kind is still following the target), which must not leak across notes.
-  const scheduleArea = schedulePrefill === undefined ? null : <div className="schedule-area"><ScheduleEditor key={activeNote?.id} schedule={activeNote?.schedule} nextRun={activeNote?.nextRun} prefill={{ kind: schedulePrefill.kind, target: schedulePrefill.target }} runsOnText={schedulePrefill.runsOnText} adapterOptions={schedulePrefill.adapters} targetOptions={schedulePrefill.targets} onSet={payload => void applySchedule(payload)} onRemove={() => void removeSchedule()} preview={previewSchedule} busy={scheduleBusy} /></div>;
+  // "Open agent" links to the last Run's pane, but only while that agent is still on the dashboard
+  const lastRunAgentId = activeNote?.schedule?.lastRun?.agentId;
+  const openAgentId = lastRunAgentId !== undefined && schedulePrefill?.liveAgentIds.includes(lastRunAgentId) ? lastRunAgentId : undefined;
+  const scheduleArea = schedulePrefill === undefined ? null : <div className="schedule-area"><ScheduleEditor key={activeNote?.id} schedule={activeNote?.schedule} nextRun={activeNote?.nextRun} prefill={{ kind: schedulePrefill.kind, target: schedulePrefill.target }} runsOnText={schedulePrefill.runsOnText} adapterOptions={schedulePrefill.adapters} targetOptions={schedulePrefill.targets} onSet={payload => void applySchedule(payload)} onRemove={() => void removeSchedule()} onRunNow={() => void runScheduleNow()} running={scheduleRunning} {...(openAgentId === undefined ? {} : { openAgentId })} preview={previewSchedule} busy={scheduleBusy} /></div>;
   const pane = activeNote === undefined ? null : <><section className={`note-pane${expanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onKeyDown={event => { if (event.key === 'Escape' && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><div className="note-pane-head"><header className="note-toolbar" role="toolbar" aria-label="Note actions">{renaming ? <form className="note-title-form" onSubmit={event => { event.preventDefault(); void saveTitle(); }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); setRenaming(false); } }}><input ref={titleEditorRef} aria-label="Note name" value={titleDraft} maxLength={120} disabled={renamePending} onChange={event => setTitleDraft(event.target.value)} /><button type="submit" disabled={renamePending || !titleDraft.trim()} aria-label="Save note name" title="Save note name"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={renamePending} aria-label="Cancel note rename" title="Cancel" onClick={() => setRenaming(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><strong title={activeNote.title ?? 'Note'}>{activeNote.title ?? 'Note'}</strong><button className="note-rename" type="button" disabled={deleting || renamePending} aria-label="Rename note" title="Rename note" onClick={() => { setTitleDraft(activeNote.title ?? ''); setRenaming(true); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button></>}{saveStatus === 'error' && <span className="note-save-status error" role="alert" aria-live="assertive">Unable to save</span>}{actionStatus && <span className={`note-action-status${copyState === 'error' || sendState === 'error' ? ' error' : ''}`} role={copyState === 'error' || sendState === 'error' ? 'alert' : 'status'}>{actionStatus}</span>}<button className={`note-copy${copyState === 'copied' ? ' copied' : ''}`} type="button" disabled={deleting} aria-label={copyState === 'copied' ? 'Note copied' : 'Copy note'} title={copyState === 'copied' ? 'Copied' : 'Copy note'} onClick={() => void copy()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={copyState === 'copied' ? 'm5 12 4 4L19 6' : 'M9 9h10v10H9zM5 15H4V5h10v1'} /></svg></button>{launchAndRunMode ? <button className="note-send note-launch-run" type="button" disabled={deleting || menuRunningId !== undefined || !draft.trim()} aria-label="Launch and run note" title={launchRunLabel === undefined ? 'Launch an agent and run this note' : `Launch and run (${launchRunLabel})`} onClick={() => { const note = activeNoteRef.current; if (note !== undefined) void runNote(note); }}>{menuRunningId !== undefined ? <span className="spinner" /> : 'Launch and run'}</button> : <button className="note-send" type="button" disabled={agentId === undefined || deleting || promptPending || !draft.trim()} aria-label="Send note as prompt" title={agentId === undefined ? 'Launch an agent to send this note' : 'Send note as prompt'} onClick={() => void send()}>{sendState === 'sending' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button>}<button className="note-delete" type="button" disabled={deleting || sendState === 'sending'} aria-label="Delete note" title="Delete note" onClick={remove}>{deleting ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button><button className="note-expand" type="button" disabled={deleting || sendState === 'sending'} aria-label={expanded ? 'Restore note' : 'Expand note'} title={expanded ? 'Restore note' : 'Expand note'} aria-pressed={expanded} onClick={toggleExpanded}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="note-close" type="button" disabled={deleting || sendState === 'sending'} aria-label="Close note" title="Close note" onClick={close}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{scheduleArea}</div>{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}</>;
   return { active: activeNote !== undefined, expanded: activeNote !== undefined && expanded, appendToActive, canAppendToActive, canCreate: !loading, control, createWithText: create, pane };
 }
@@ -7008,7 +7030,8 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
         targets.push({ target: { worktreeId: worktree.id }, label: worktree.label, ...(worktree.main ? { sublabel: 'main worktree', main: true } : {}), group: project.label, available: worktree.available, ...(worktree.available ? {} : { unavailableReason: 'Worktree unavailable' }), kind: fallbackKind(worktree.launch?.kind ?? project.launch?.kind), origin: originFor(worktree.launch ?? project.launch) });
       }
     }
-    const rows = { adapters, targets };
+    // the live agents, so the note pane shows "Open agent" only while the Run's pane is still up
+    const rows = { adapters, targets, liveAgentIds: data.agents.map(agent => agent.id) };
     const project = context.projectId === undefined ? undefined : data.projects.find(candidate => candidate.id === context.projectId);
     if (project !== undefined && project.mode === 'directory') return { target: { projectId: project.id }, kind: fallbackKind(project.launch?.kind), runsOnText: `${project.label} · directory`, ...rows };
     if (project !== undefined) {
