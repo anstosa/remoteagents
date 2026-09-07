@@ -37,6 +37,9 @@ import { WorktreeNoteService } from './notes/service.js';
 import { CleanupService } from './cleanup/service.js';
 import { PromptHistoryService } from './prompt-history/service.js';
 import { ProjectProxy } from './project-proxy.js';
+import { TemporaryPreviewAccess, temporaryPreviewCookie } from './temporary-previews/access.js';
+import { TemporaryPreviewProxy } from './temporary-previews/proxy.js';
+import { TemporaryPreviewService } from './temporary-previews/service.js';
 import { CodexExecReviewTourGenerator } from './review-tour/generator.js';
 import { ReviewTourService } from './review-tour/service.js';
 import { ReviewTourJobs } from './review-tour/jobs.js';
@@ -63,7 +66,7 @@ import { isUpdateAdvisorForTarget, isUpdateAdvisorLabel, updateAdvisorLabel, upd
 import { isFullGitSha } from './git/revision.js';
 import { AgentUpdateService, type AgentUpdateServiceLike } from './agent-updates/service.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; bookmarks?: BookmarkService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; bookmarks?: BookmarkService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'> };
 // derive one stable opaque scratch persistence group
 const scratchSaveKey = (workspace: string) => `scratch_${createHash('sha256').update(workspace).digest('base64url').slice(0, 40)}`;
 // bound full history scans
@@ -93,6 +96,7 @@ export function logFrame(last: string, value: string, refreshMetadata = false): 
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
   const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, promptHistory, queuedPrompts, savedPrompts, undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new BookmarkService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
+  const temporaryPreviews = deps.temporaryPreviews ?? new TemporaryPreviewService();
   // freeze the checkout identity serving this process
   const deployedRevision = serverAdmin.revision();
   const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, async review => {
@@ -139,6 +143,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const instanceStatusSecret = process.env.RAC_INSTANCE_STATUS_SECRET ?? process.env.RAC_SESSION_SECRET ?? '';
   const instanceStatusPoller = deps.instanceStatusPoller ?? new RemoteInstanceStatusPoller(instanceStatusSecret);
   const projectProxy = new ProjectProxy(() => discovery.worktreesNow(), config.publicOrigin.origin, process.env.RAC_PROJECT_PROXY_HOST);
+  const temporaryPreviewProxy = new TemporaryPreviewProxy();
+  const temporaryPreviewAccess = new TemporaryPreviewAccess();
   const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 65_536 }); const webRoot = fileURLToPath(new URL('../../web/dist', import.meta.url));
   // The UI version is the hashed app bundle: match the module script specifically so
   // other head scripts (e.g. the pre-paint /theme-init.js) can precede it in the HTML.
@@ -180,6 +186,31 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   function browser(request: FastifyRequest, mutation = false): void { if (request.headers.host !== expectedHost) throw forbidden(); if (mutation && request.headers.origin !== config.publicOrigin.origin) throw forbidden(); }
   function session(request: FastifyRequest, mutation = false): Session { browser(request, mutation); const s = auth.get(auth.unsign(request.cookies[cookieName])); if (!s) throw unauthorized(); if (mutation && !auth.csrf(s, request.headers['x-csrf-token'] as string | undefined)) throw forbidden(); return s; }
   function controlled(request: FastifyRequest, mutation = false): Session { const s = session(request, mutation); if (!control.connect(s.id)) throw inactiveClient(); return s; }
+  // serve one authenticated expiring preview
+  const temporaryPreview = async (request: FastifyRequest<{ Params: { token: string } }>, reply: FastifyReply) => {
+    browser(request);
+    const token = request.params.token;
+    const browserSession = auth.get(auth.unsign(request.cookies[cookieName]));
+    const granted = temporaryPreviewAccess.allows(request.cookies['rac-preview'], token);
+    // require either the RAC session or one path-scoped asset grant
+    if (browserSession === undefined && !granted) return reply.code(401).send({ error: 'unauthorized' });
+    const target = await temporaryPreviews.resolve(token);
+    // hide missing, expired, and invalid registrations alike
+    if (target === undefined) return reply.code(404).send({ error: 'temporary preview unavailable' });
+    const prefix = `/preview/${token}`;
+    const rawUrl = request.raw.url ?? `${prefix}/`;
+    const expiresAt = Date.parse(target.expiresAt);
+    const accessCookie = browserSession !== undefined && !granted ? temporaryPreviewCookie(temporaryPreviewAccess.issue(token, expiresAt), token, expiresAt, secureOrigin) : undefined;
+    // canonicalize the preview root before proxying
+    if (rawUrl === prefix || rawUrl.startsWith(`${prefix}?`)) {
+      // retain the scoped grant across the redirect
+      if (accessCookie !== undefined) reply.header('Set-Cookie', accessCookie);
+      return reply.redirect(`${prefix}/${rawUrl.slice(prefix.length)}`);
+    }
+    const upstreamPath = rawUrl.slice(prefix.length) || '/';
+    reply.hijack();
+    temporaryPreviewProxy.handle(request.raw, reply.raw, target, upstreamPath, prefix, accessCookie);
+  };
   type PublishedServer = { name: string; url: string; icon?: InstanceStatus['icon'] };
   type PublishedServerNavigation = PublishedServer & { remotes: PublishedServer[] };
   // publish configured navigation before peer checks
@@ -431,6 +462,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (!isInstanceIcon(icon)) return reply.code(404).send({ error: 'icon unavailable' });
     return reply.type('image/svg+xml').send(instanceIconSvg(icon));
   });
+  app.get('/preview/:token', temporaryPreview);
+  app.get('/preview/:token/*', temporaryPreview);
   app.get('/', async (request, reply) => { browser(request); return reply.sendFile('index.html'); });
   app.get('/api/ui-version', async (request) => { browser(request); return { version: await uiVersion() }; });
   app.get('/api/auth/session', async (request) => { const s = session(request); return await sessionState(s, control.connect(s.id)); });

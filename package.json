@@ -11,6 +11,7 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm --filter @rac/server test",
     "test:coverage": "pnpm --filter @rac/server test:coverage",
+    "preview:share": "node scripts/share-preview.mjs",
     "start": "pnpm --filter @rac/server start"
   }
 }

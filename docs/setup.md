@@ -295,6 +295,30 @@ within a tick — no config edit or restart.
   it. Direct and proxied fields cannot be mixed. Commands still run in the
   selected worktree's own directory.
 
+### Temporary previews
+
+Agents can share short-lived static pages and downloads without exposing a host
+port or changing the Cloudflare Tunnel. Start the temporary server on loopback,
+then register its port from the Remote Agents checkout:
+
+```bash
+python3 -m http.server 8899 --bind 127.0.0.1 --directory /tmp/result
+pnpm preview:share 8899 --ttl 4h
+```
+
+The helper verifies that the loopback listener is live, writes a private
+registration under `<RAC_TEMP_PREVIEWS_DIR ?? .data/temp-previews>`, and prints
+an expiring URL under the configured `publicOrigin`. The viewer must already be
+signed in to Remote Agents. Preview content receives a sandboxed browser origin,
+and RAC session cookies, authorization headers, CSRF tokens, and upstream
+cookies are not exposed to the temporary server.
+
+Temporary previews are path-prefixed. Use relative links and asset URLs in
+generated HTML. They are intended for static review artifacts and downloads,
+not development servers that require root-relative assets or WebSockets. The
+default lifetime is four hours; `--ttl` accepts minutes, hours, or days up to
+seven days, such as `30m`, `4h`, or `1d`.
+
 For example, add these entries to a Project to give a sibling checkout an
 independent UI stack and keep a research checkout stack-free:
 

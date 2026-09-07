@@ -22,6 +22,7 @@ services:
       RAC_SAVED_PROMPTS_FILE: /workspace/.data/saved-prompts.json
       RAC_PROMPT_HISTORY_FILE: /workspace/.data/prompt-history.json
       RAC_QUEUED_PROMPTS_FILE: /workspace/.data/queued-prompts.json
+      RAC_TEMP_PREVIEWS_DIR: /workspace/.data/temp-previews
       RAC_NOTES_FILE: /workspace/.data/notes.json
       RAC_BOOKMARKS_FILE: /workspace/.data/bookmarks.json
       RAC_REVIEW_TOURS_FILE: /workspace/.data/review-tours.json
