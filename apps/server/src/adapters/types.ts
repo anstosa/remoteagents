@@ -119,6 +119,22 @@ export type CompletionEvent =
  */
 export type CompletionBaseline = { rollout: string; ordinal: number };
 
+/**
+ * A pane snapshot the console feeds an Adapter's `newConversation` while it drives a
+ * Run: the pane title, the Attention state the console derived, and the conversation
+ * id the pane reported through `@rac_session` (undefined until one is reported).
+ * `settled` reads a sequence of these taken after a reset command; `ready` reads one
+ * taken while polling a fresh launch.
+ */
+export type PaneSnapshot = { title: string; attention: AttentionState; conversationId?: string };
+/** How a new-conversation reset is progressing over the snapshots seen since the command. */
+export type ResetSettling = 'pending' | 'settled' | 'lost';
+/** Whether a freshly launched pane can take its first prompt yet. */
+export type LaunchReadiness =
+  | { state: 'pending' }
+  | { state: 'ready' }
+  | { state: 'blocked'; reason: string };
+
 export interface Adapter {
   readonly kind: AgentKind;
   readonly stateSource: 'reported' | 'title' | 'both';
@@ -236,6 +252,32 @@ export interface Adapter {
   readonly completion?: {
     baseline(pane: { pid: number; cwd?: string }): Promise<CompletionBaseline | undefined>;
     since(baseline: CompletionBaseline): Promise<CompletionEvent | undefined>;
+  };
+  /**
+   * How a Run resets an existing pane to a fresh conversation and how it knows a
+   * freshly launched pane is ready for its first prompt (Scheduled prompts). Pure
+   * descriptions over captures and pane snapshots (ADR 0002); the console performs
+   * the paste, the keys and the polling. A kind that omits this capability launches
+   * a fresh agent for every Run.
+   *
+   * - `command` — the reset text (`/clear` for Claude, `/new` for Codex and OMX,
+   *   which shares Codex's object by reference). Submitted through the normal
+   *   `submission.prepare` path, so Codex's trailing space and idle Enter apply.
+   * - `composerEmpty(capture)` — whether the composer holds no draft and no open
+   *   dialog, so the reset command will be run rather than merged into a prompt.
+   * - `settled(before, observed, elapsedMs)` — reads the pane snapshots seen since
+   *   the command (`before` is the snapshot taken just before it) to say whether the
+   *   reset took (`settled`), is still in flight (`pending`), or was swallowed
+   *   (`lost`). `elapsedMs` is the time since the command was submitted.
+   * - `ready(snapshot, capture)` — whether a fresh launch can take its first prompt
+   *   yet, or is `blocked` for a reason the operator must clear (Claude's
+   *   untrusted-directory safety check).
+   */
+  readonly newConversation?: {
+    readonly command: string;
+    composerEmpty(capture: string): boolean;
+    settled(before: PaneSnapshot, observed: readonly PaneSnapshot[], elapsedMs: number): ResetSettling;
+    ready(snapshot: PaneSnapshot, capture: string): LaunchReadiness;
   };
   /**
    * Console-owned files this Adapter needs on disk (hook settings, sandbox policy).

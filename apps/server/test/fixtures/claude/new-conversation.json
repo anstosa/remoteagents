@@ -1,0 +1,136 @@
+{
+  "_note": "Signals the console reads to reset a Claude pane to a fresh conversation and to know a fresh launch is ready. From the settle probe (docs/research/new-conversation-settle-probe.md): /clear fires a new reported id in ~100 ms; a fresh launch reports its id at ~2 s; an untrusted directory shows the Quick safety check dialog and never reports one.",
+  "command": "/clear",
+  "composerEmpty": [
+    {
+      "name": "an idle empty composer",
+      "empty": true,
+      "lines": [
+        "╭───────────────────╮",
+        "│ ❯                  │",
+        "╰───────────────────╯",
+        "  ? for shortcuts"
+      ]
+    },
+    {
+      "name": "a draft in the composer",
+      "empty": false,
+      "lines": [
+        "╭───────────────────╮",
+        "│ ❯ fix the flaky test │",
+        "╰───────────────────╯"
+      ]
+    },
+    {
+      "name": "an open AskUserQuestion dialog",
+      "empty": false,
+      "lines": [
+        "│ Which environment should I deploy to?",
+        "",
+        "❯ 1. Staging",
+        "  2. Production",
+        "  3. Cancel",
+        "",
+        "Enter to select · ↑/↓ to navigate · Esc to cancel"
+      ]
+    },
+    {
+      "name": "an empty composer below a transcript echo (the last caret row is the composer)",
+      "empty": true,
+      "lines": [
+        "❯ summarise the repo",
+        "",
+        "● Done.",
+        "",
+        "╭───────────────────╮",
+        "│ ❯                  │",
+        "╰───────────────────╯"
+      ]
+    }
+  ],
+  "settled": [
+    {
+      "name": "the reported id changed",
+      "before": { "title": "✳ Alpha backwards", "attention": "finished", "conversationId": "e6548e60-0000-4000-8000-000000000001" },
+      "observed": [
+        { "title": "✳ Claude Code", "attention": "finished", "conversationId": "2d930c73-0000-4000-8000-000000000002" }
+      ],
+      "elapsedMs": 120,
+      "result": "settled"
+    },
+    {
+      "name": "the command merged, no id change, exactly at the 2 s budget",
+      "before": { "title": "✳ Claude Code", "attention": "finished", "conversationId": "2d930c73-0000-4000-8000-000000000002" },
+      "observed": [
+        { "title": "✳ Claude Code", "attention": "finished", "conversationId": "2d930c73-0000-4000-8000-000000000002" }
+      ],
+      "elapsedMs": 2000,
+      "result": "lost"
+    },
+    {
+      "name": "still waiting inside the budget",
+      "before": { "title": "✳ Claude Code", "attention": "finished", "conversationId": "2d930c73-0000-4000-8000-000000000002" },
+      "observed": [
+        { "title": "✳ Claude Code", "attention": "finished", "conversationId": "2d930c73-0000-4000-8000-000000000002" }
+      ],
+      "elapsedMs": 500,
+      "result": "pending"
+    },
+    {
+      "name": "an observed snapshot without an id is not a change",
+      "before": { "title": "✳ Claude Code", "attention": "finished", "conversationId": "2d930c73-0000-4000-8000-000000000002" },
+      "observed": [
+        { "title": "✳ Claude Code", "attention": "finished" }
+      ],
+      "elapsedMs": 500,
+      "result": "pending"
+    },
+    {
+      "name": "a reported id is not a change when before never captured one",
+      "before": { "title": "✳ Claude Code", "attention": "finished" },
+      "observed": [
+        { "title": "✳ Claude Code", "attention": "finished", "conversationId": "2d930c73-0000-4000-8000-000000000002" }
+      ],
+      "elapsedMs": 2100,
+      "result": "lost"
+    }
+  ],
+  "ready": [
+    {
+      "name": "the fresh launch reported its id",
+      "snapshot": { "title": "✳ Claude Code", "attention": "finished", "conversationId": "c91cf614-0000-4000-8000-000000000003" },
+      "lines": [
+        " ▐▛███▛█   Claude Code v2.1.260",
+        "  Opus 4.8 with xhigh effort · Claude Max",
+        "  /tachi/code/remoteagents",
+        "",
+        "❯ "
+      ],
+      "result": { "state": "ready" }
+    },
+    {
+      "name": "an untrusted directory blocks on the safety check",
+      "snapshot": { "title": "✳ Claude Code", "attention": "finished" },
+      "lines": [
+        "Quick safety check: Is this a project you created or one you trust?",
+        "",
+        "❯ No, exit",
+        "  Yes, I trust this folder",
+        "",
+        "Enter to confirm · Esc to cancel"
+      ],
+      "result": { "state": "blocked", "reason": "untrusted directory: safety check" }
+    },
+    {
+      "name": "no id reported yet",
+      "snapshot": { "title": "✳ Claude Code", "attention": "finished" },
+      "lines": [
+        " ▐▛███▛█   Claude Code v2.1.260",
+        "  /tachi/code/remoteagents",
+        "",
+        "❯ "
+      ],
+      "result": { "state": "pending" }
+    }
+  ]
+}

@@ -24,6 +24,13 @@ Each `<kind>/` directory holds:
   pinned exactly (in addition to the generic key rules the suite always asserts).
 - **`conversations.json`** *(optional; only for kinds with `conversations`)* —
   `{ valid, invalid }` conversation ids fed to `validId()`.
+- **`new-conversation.json`** *(optional; only for kinds with `newConversation`)* —
+  the reset `command` (also asserted to be an entry in that kind's slash catalog) and
+  three case lists: `composerEmpty` (`{ lines, empty }` — empty composer, draft, open
+  dialog), `settled` (`{ before, observed, elapsedMs, result }` snapshot sequences),
+  and `ready` (`{ snapshot, lines, result }` fresh-launch snapshots). The captures and
+  timings come from the settle probe
+  (`docs/research/new-conversation-settle-probe.md`).
 - **`hooks.json`** *(optional; only for kinds with a `files` capability)* — the
   golden render of that kind's console-owned settings file, pinned by the kind's
   own hooks test (not the shared contract suite).
@@ -56,10 +63,11 @@ first argument after the entry as OMX's own dispatcher does: absent, `launch`,
 launches, and the notify-fallback watcher it spawns beside Codex are `noMatch`. The `(probed)` entries are verbatim `/proc` captures
 of OMX 0.21.0 launched console-style (`--direct`, `--direct resume --last`,
 `hud --watch`), with only the home directory renamed. `titles.json`,
-`prompts.json`, `submission.json`, `conversations.json` and `questions.json`
-mirror Codex's because OMX runs the Codex TUI and the Adapter shares those
-objects by reference; a drift between the two directories means the sharing
-broke.
+`prompts.json`, `submission.json`, `conversations.json`, `questions.json` and
+`new-conversation.json` mirror Codex's because OMX runs the Codex TUI and the
+Adapter shares those objects by reference; a drift between the two directories
+means the sharing broke (the suite asserts the new-conversation directories are
+identical).
 
 ## Claude
 
@@ -71,4 +79,6 @@ no Attention signal. Prompts submit with paste + Enter in both modes (never Tab)
 and `submission.json` pins the `Escape`/`C-c` interrupt and the option-select
 sequences. `conversations.json` covers the session-UUID `validId`. `hooks.json` is
 the golden render of the injected `--settings` file, pinned by
-`../adapters/claude-hooks.test.ts`.
+`../adapters/claude-hooks.test.ts`. `new-conversation.json` pins the `/clear`
+reset: the empty `❯ ` composer, a fresh session's reported id, and the
+untrusted-directory safety-check block.

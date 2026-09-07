@@ -4,6 +4,10 @@ import { parseChoiceQuestion } from './codex-questions.js';
 import { codexConversationName, codexConversationSummaries, codexHome, codexRolloutBaseline, codexTurnSince, discoverCodexConversation, validCodexThreadId } from './codex-conversations.js';
 import type { Adapter, AttentionState, PromptCommand } from './types.js';
 
+// The new-conversation reset lives in its own module; both the Codex and OMX Adapters
+// carry it by reference through this shared TUI module (ADR 0005).
+export { codexNewConversation } from './codex-new-conversation.js';
+
 /**
  * What the Codex TUI does, independent of who launched it. The Codex Adapter and
  * the OMX Adapter (ADR 0005) both carry these very objects — OMX launches this same

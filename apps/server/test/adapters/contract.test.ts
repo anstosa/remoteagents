@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { adapters as adaptersUnderTest } from '../../src/adapters/registry.js';
+import { adapters as adaptersUnderTest, adapterFor } from '../../src/adapters/registry.js';
 import { inlineQuestionId } from '../../src/adapters/inline-questions.js';
-import { agentKinds, type AttentionState, type Submission, type SubmissionMode, type TmuxKey } from '../../src/adapters/types.js';
+import { agentKinds, type AttentionState, type LaunchReadiness, type PaneSnapshot, type ResetSettling, type Submission, type SubmissionMode, type TmuxKey } from '../../src/adapters/types.js';
 
 const fixturesRoot = fileURLToPath(new URL('../fixtures/', import.meta.url));
 const has = (kind: string, file: string) => existsSync(join(fixturesRoot, kind, file));
@@ -37,6 +37,12 @@ type ConversationsFixture = {
   invalid: string[];
   // the pinned rename descriptor for this kind: the pasted text and keys for `/rename <name>`
   rename?: { name: string; text: string; keys: TmuxKey[] };
+};
+type NewConversationFixture = {
+  command: string;
+  composerEmpty: { name: string; lines: string[]; empty: boolean }[];
+  settled: { name: string; before: PaneSnapshot; observed: PaneSnapshot[]; elapsedMs: number; result: ResetSettling }[];
+  ready: { name: string; snapshot: PaneSnapshot; lines: string[]; result: LaunchReadiness }[];
 };
 
 // The generic key rules every Adapter must obey (spec §"Generic key rules").
@@ -165,5 +171,31 @@ describe('Adapter contract suite', () => {
         if (conversations.list !== undefined) expect(conversations.readName, `${adapter.kind} readName`).not.toBeUndefined();
       });
     }
+
+    const newConversation = adapter.newConversation;
+    // every kind that declares the capability must carry its fixtures (the assertion),
+    // and its reset command must be a real entry in its own slash catalog; a kind that
+    // omits the capability (Pi, OpenCode) is skipped and the suite stays green
+    if (newConversation) it('drives the new-conversation reset and fresh-launch readiness', () => {
+      expect(has(adapter.kind, 'new-conversation.json'), `missing new-conversation fixtures for ${adapter.kind}`).toBe(true);
+      const fixture = load<NewConversationFixture>(adapter.kind, 'new-conversation.json');
+      expect(newConversation.command, `${adapter.kind} command`).toBe(fixture.command);
+      expect(adapter.commands?.slash().map(command => command.name), `${adapter.kind} command in slash catalog`).toContain(newConversation.command);
+      // each member must actually be exercised — an empty case list would pass vacuously
+      expect(fixture.composerEmpty.length, `${adapter.kind} composerEmpty cases`).toBeGreaterThan(0);
+      expect(fixture.settled.length, `${adapter.kind} settled cases`).toBeGreaterThan(0);
+      expect(fixture.ready.length, `${adapter.kind} ready cases`).toBeGreaterThan(0);
+      for (const c of fixture.composerEmpty) expect(newConversation.composerEmpty(c.lines.join('\n')), `${c.name} · composerEmpty`).toBe(c.empty);
+      for (const c of fixture.settled) expect(newConversation.settled(c.before, c.observed, c.elapsedMs), `${c.name} · settled`).toBe(c.result);
+      for (const c of fixture.ready) expect(newConversation.ready(c.snapshot, c.lines.join('\n')), `${c.name} · ready`).toEqual(c.result);
+    });
+  });
+
+  // OMX runs the Codex TUI and carries its new-conversation object *by reference* (ADR
+  // 0005): the same object, not an equal one. The identity check is the real invariant;
+  // the fixture-directory equality guards the on-disk captures from drifting apart.
+  it('OMX shares Codex\'s new-conversation object and fixtures', () => {
+    expect(adapterFor('omx')?.newConversation).toBe(adapterFor('codex')?.newConversation);
+    expect(load('omx', 'new-conversation.json')).toEqual(load('codex', 'new-conversation.json'));
   });
 });

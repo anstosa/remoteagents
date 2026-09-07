@@ -1,3 +1,6 @@
+// the shared capture normaliser: drop ANSI, box-drawing and bar glyphs to spaces,
+// collapse whitespace, so a wrapped or box-framed line matches its plain string
+import { normalizeLine as normalize } from './capture-text.js';
 import { inlineQuestionId } from './inline-questions.js';
 import type { InlineQuestion } from './types.js';
 
@@ -32,18 +35,6 @@ const reviewStep: Renderable = { text: 'Ready to submit your answers?', choices:
 type ReportedOption = { label?: unknown };
 type ReportedQuestion = { question?: unknown; options?: unknown; multiSelect?: unknown };
 type ReportedPayload = { hook_event_name?: unknown; tool_name?: unknown; tool_input?: { questions?: unknown } };
-
-// normalise pane text and payload strings the same way: drop ANSI, turn box-drawing
-// and bar glyphs into spaces (a wrapped question is drawn under a `│ ` prefix), then
-// collapse all whitespace so a wrapped line or a caret-prefixed row matches its string
-function normalize(text: string): string {
-  return text
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/gu, '')  // OSC (e.g. hyperlinks)
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '')            // CSI (colours, cursor)
-    .replace(/[─-╿|]/gu, ' ')                  // box-drawing and the ascii bar
-    .replace(/\s+/gu, ' ')
-    .trim();
-}
 
 const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
 

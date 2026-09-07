@@ -2,6 +2,7 @@ import { basename } from 'node:path';
 import { claudeConfigDir, claudeConversationName, claudeConversationSummaries, validClaudeSessionId } from './claude-conversations.js';
 import { claudeSkillDirectories, claudeSlash } from './claude-commands.js';
 import { claudeFiles, claudeHooksFileName } from './claude-hooks.js';
+import { claudeNewConversation } from './claude-new-conversation.js';
 import { reportedClaudeQuestion } from './claude-questions.js';
 import type { Adapter, TmuxKey } from './types.js';
 
@@ -90,5 +91,6 @@ export const claudeAdapter: Adapter = {
     rename: (name) => ({ text: `/rename ${name}`, keys: ['Enter'] }),
     readName: (id, cwd) => claudeConversationName(id, cwd),
   },
+  newConversation: claudeNewConversation,
   files: claudeFiles,
 };

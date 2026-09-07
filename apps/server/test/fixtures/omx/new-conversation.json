@@ -1,0 +1,132 @@
+{
+  "_note": "Signals the console reads to reset a Codex pane to a fresh conversation and to know a fresh launch is ready. From the settle probe (docs/research/new-conversation-settle-probe.md): /new spins the title for ~0.75 s then idles and the paste is accepted either way (never lost); a fresh launch shows `model: loading` and a startup spinner until it loads. OMX shares this object by reference (ADR 0005), so omx/new-conversation.json must stay identical.",
+  "command": "/new",
+  "composerEmpty": [
+    {
+      "name": "the empty-composer placeholder",
+      "empty": true,
+      "lines": [
+        "─ Worked for 2s",
+        "",
+        "› Ask Codex to do anything"
+      ]
+    },
+    {
+      "name": "a bare composer after a turn",
+      "empty": true,
+      "lines": [
+        "• It is currently 3pm.",
+        "",
+        "─ Worked for 2s",
+        "› "
+      ]
+    },
+    {
+      "name": "a draft in the composer",
+      "empty": false,
+      "lines": [
+        "› deploy the service now"
+      ]
+    },
+    {
+      "name": "an open interactive choice list",
+      "empty": false,
+      "lines": [
+        "Which plan should I follow?",
+        "",
+        "❯ 1. Approve the plan",
+        "  2. Revise the plan",
+        "  3. Reject",
+        "",
+        "  Press enter to confirm",
+        "› "
+      ]
+    }
+  ],
+  "settled": [
+    {
+      "name": "the title spun and returned to idle",
+      "before": { "title": "remoteagents", "attention": "finished" },
+      "observed": [
+        { "title": "⠋ remoteagents", "attention": "working" },
+        { "title": "remoteagents", "attention": "finished" }
+      ],
+      "elapsedMs": 780,
+      "result": "settled"
+    },
+    {
+      "name": "settled after 1.5 s regardless of a spin",
+      "before": { "title": "remoteagents", "attention": "finished" },
+      "observed": [
+        { "title": "remoteagents", "attention": "finished" }
+      ],
+      "elapsedMs": 1500,
+      "result": "settled"
+    },
+    {
+      "name": "still spinning inside the budget",
+      "before": { "title": "remoteagents", "attention": "finished" },
+      "observed": [
+        { "title": "⠋ remoteagents", "attention": "working" }
+      ],
+      "elapsedMs": 300,
+      "result": "pending"
+    },
+    {
+      "name": "idle the whole time inside the budget does not settle without a spin",
+      "before": { "title": "remoteagents", "attention": "finished" },
+      "observed": [
+        { "title": "remoteagents", "attention": "finished" }
+      ],
+      "elapsedMs": 300,
+      "result": "pending"
+    }
+  ],
+  "ready": [
+    {
+      "name": "the header filled in",
+      "snapshot": { "title": "remoteagents", "attention": "finished" },
+      "lines": [
+        "  >_ OpenAI Codex (v0.150.0)",
+        "  model: gpt-5-codex   /model to change",
+        "",
+        "› Ask Codex to do anything"
+      ],
+      "result": { "state": "ready" }
+    },
+    {
+      "name": "ready on the filled header even while the title is still the host name",
+      "_note": "The probe gives 'no loading in the header' and 'the title left the shell title' as interchangeable loaded signals; a pure ready has no cwd to compare the title against, so it keys on the header. Here the title is still the shell's host name yet the header has filled — ready.",
+      "snapshot": { "title": "voyager", "attention": "finished" },
+      "lines": [
+        "  >_ OpenAI Codex (v0.150.0)",
+        "  model: gpt-5-codex   /model to change",
+        "",
+        "› Ask Codex to do anything"
+      ],
+      "result": { "state": "ready" }
+    },
+    {
+      "name": "the header still says loading",
+      "snapshot": { "title": "voyager", "attention": "finished" },
+      "lines": [
+        "  >_ OpenAI Codex (v0.150.0)",
+        "  model: loading",
+        "",
+        "› "
+      ],
+      "result": { "state": "pending" }
+    },
+    {
+      "name": "the startup spinner is still up",
+      "snapshot": { "title": "⠙ remoteagents", "attention": "working" },
+      "lines": [
+        "  >_ OpenAI Codex (v0.150.0)",
+        "  model: gpt-5-codex",
+        "",
+        "› Ask Codex to do anything"
+      ],
+      "result": { "state": "pending" }
+    }
+  ]
+}
