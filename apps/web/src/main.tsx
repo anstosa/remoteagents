@@ -1822,7 +1822,7 @@ function MobileTerminalKeys({ id }: { id: string }) {
 }
 
 // render the agent prompt controls
-function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting, restarting, clearing, deactivating, sleeping, swapping, swapped, onCancel, onDelete, onRestart, onRestartAs, onClear, onDeactivate, onSleep, onSwap, onSelectTarget, onPromptFocus, onOperationFeedback, projectUrl, projectProxied, browserOpen, onBrowserToggle, question, worktreeId, newTaskConfigured, stack, review, pinned, onTogglePin, onRenameWorktree, statusSlotRef, historySlotRef }: { id: string; history: PromptHistoryEntry[]; onHistoryChanged: () => Promise<void>; canCancel: boolean; cancelling: boolean; deleting: boolean; restarting: boolean; clearing: boolean; deactivating: boolean; sleeping: boolean; swapping: boolean; swapped: boolean; onCancel: () => void; onDelete?: () => void; onRestart?: () => void; onRestartAs?: RestartAs; onClear?: () => void; onDeactivate?: () => void; onSleep?: () => void; onSwap: () => void; onSelectTarget: (target: DashboardTarget) => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; projectUrl?: string; projectProxied?: boolean; browserOpen?: boolean; onBrowserToggle?: () => void; question?: ChoiceQuestion; worktreeId?: string; newTaskConfigured?: boolean; stack?: Stack; review?: ReviewButtonState; pinned?: boolean; onTogglePin?: () => void; onRenameWorktree?: () => void; statusSlotRef?: (element: HTMLSpanElement | null) => void; historySlotRef?: (element: HTMLSpanElement | null) => void }) {
+function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting, restarting, clearing, deactivating, sleeping, swapping, swapped, onCancel, onDelete, onRestart, onRestartAs, onClear, onDeactivate, onSleep, onSwap, onPromptFocus, onOperationFeedback, projectUrl, projectProxied, browserOpen, onBrowserToggle, question, worktreeId, newTaskConfigured, stack, review, pinned, onTogglePin, onRenameWorktree, statusSlotRef, historySlotRef }: { id: string; history: PromptHistoryEntry[]; onHistoryChanged: () => Promise<void>; canCancel: boolean; cancelling: boolean; deleting: boolean; restarting: boolean; clearing: boolean; deactivating: boolean; sleeping: boolean; swapping: boolean; swapped: boolean; onCancel: () => void; onDelete?: () => void; onRestart?: () => void; onRestartAs?: RestartAs; onClear?: () => void; onDeactivate?: () => void; onSleep?: () => void; onSwap: () => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; projectUrl?: string; projectProxied?: boolean; browserOpen?: boolean; onBrowserToggle?: () => void; question?: ChoiceQuestion; worktreeId?: string; newTaskConfigured?: boolean; stack?: Stack; review?: ReviewButtonState; pinned?: boolean; onTogglePin?: () => void; onRenameWorktree?: () => void; statusSlotRef?: (element: HTMLSpanElement | null) => void; historySlotRef?: (element: HTMLSpanElement | null) => void }) {
   const [value, setValue] = usePromptDraft(id);
   const [commandToken, setCommandToken] = useState<CommandToken>();
   const [activeCommand, setActiveCommand] = useState(0);
@@ -2400,14 +2400,14 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
   const questionNotesId = `question-notes-${id}`;
   const questionNotes = questionNotesOpen ? <div className="question-notes" id={questionNotesId}><textarea aria-label="Answer notes" maxLength={32_000} placeholder="Add notes for the agent…" value={value} onFocus={() => { /* leave terminal input */ exitTerminalInput.get(id)?.(); onPromptFocus(); }} onChange={event => { /* update note draft */ setValue(event.target.value); }} /><div className="question-notes-actions"><button type="button" disabled={pending || !value.trim()} aria-label="Submit notes" onClick={() => { /* submit note draft */ void submit(); }}>{pending ? <><span className="spinner" />Submitting</> : 'Submit notes'}</button></div></div> : null;
   // render numbered answers
-  if (question && answerMode) return <section className="prompt question-prompt" aria-label="Agent question" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}><div className="question-heading"><div className="question-copy"><strong>Agent question</strong><span>{question.text}</span></div><div className="question-tools"><button type="button" className="question-notes-toggle" aria-controls={questionNotesId} aria-expanded={questionNotesOpen} onClick={() => { /* toggle answer notes */ setNotesQuestionId(questionNotesOpen ? undefined : question.id); }}>{questionNotesOpen ? 'Hide notes' : 'Add notes'}</button>{questionModeToggle}</div></div><div className="question-choices">{question.choices.map(choice => <button key={`${choice.answerIndex}-${choice.label}`} className="question-choice" disabled={pending} onClick={() => void answer(choice.answerIndex)}><b aria-hidden="true">{choice.number}</b><span>{choice.label}</span></button>)}</div>{questionNotes}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}<div className="prompt-actions">{stop}{swapped && swap}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}<More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onSelectTarget={onSelectTarget} onOperationFeedback={onOperationFeedback} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} /></div></section>;
+  if (question && answerMode) return <section className="prompt question-prompt" aria-label="Agent question" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}><div className="question-heading"><div className="question-copy"><strong>Agent question</strong><span>{question.text}</span></div><div className="question-tools"><button type="button" className="question-notes-toggle" aria-controls={questionNotesId} aria-expanded={questionNotesOpen} onClick={() => { /* toggle answer notes */ setNotesQuestionId(questionNotesOpen ? undefined : question.id); }}>{questionNotesOpen ? 'Hide notes' : 'Add notes'}</button>{questionModeToggle}</div></div><div className="question-choices">{question.choices.map(choice => <button key={`${choice.answerIndex}-${choice.label}`} className="question-choice" disabled={pending} onClick={() => void answer(choice.answerIndex)}><b aria-hidden="true">{choice.number}</b><span>{choice.label}</span></button>)}</div>{questionNotes}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}<div className="prompt-actions">{stop}{swapped && swap}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}<More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onOperationFeedback={onOperationFeedback} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} /></div></section>;
   const queueLabel = swapped ? 'Enter' : pending ? 'Queueing' : 'Queue';
   const queuePanel = queuedPromptsOpen && <FlyoutPortal onDismiss={() => setQueuedPromptsOpen(false)}><section className="queued-prompts-panel more-menu flyout-menu" ref={queuedPromptFlyoutRef} style={queuedPromptFlyoutStyle} aria-label="Queued prompts"><header><strong>Queued prompts</strong></header>{queuedPromptError && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<div className="queued-prompts-list">{queuedPrompts.map((queued, index) => { const label = queued.text || queued.attachments?.map(attachment => attachment.name).join(', ') || 'Attachments only'; const editing = queuedPromptEdit?.id === queued.id; const busy = queuedPromptAction !== undefined; return <div className={`queued-prompt-item${editing ? ' editing' : ''}`} key={queued.id}><span className="queued-prompt-order"><strong className="queued-prompt-position" aria-label={`Queue position ${index + 1}`}>{index + 1}</strong><span className="queued-prompt-order-buttons"><button type="button" disabled={busy || index === 0} aria-label={`Move queued prompt earlier: ${label}`} title="Move earlier" onClick={() => void moveQueuedPrompt(queued, 'earlier')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button type="button" disabled={busy || index === queuedPrompts.length - 1} aria-label={`Move queued prompt later: ${label}`} title="Move later" onClick={() => void moveQueuedPrompt(queued, 'later')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></span></span>{editing ? <textarea aria-label={`Edit queued prompt: ${label}`} value={queuedPromptEdit.text} maxLength={32_000} autoFocus onChange={event => setQueuedPromptEdit({ id: queued.id, text: event.target.value })} /> : <button className="queued-prompt-copy" type="button" disabled={busy} title={label} onClick={() => setQueuedPromptEdit({ id: queued.id, text: queued.text })}><span>{queued.text || 'Attachments only'}</span>{queued.attachments?.length ? <small>{queued.attachments.map(attachment => attachment.name).join(', ')}</small> : null}</button>}<span className="queued-prompt-actions">{editing ? <><button type="button" disabled={busy || !queuedPromptEdit.text.trim() && queued.attachments === undefined} aria-label={`Save queued prompt changes: ${label}`} title="Save changes" onClick={() => void saveQueuedPromptEdit(queued)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={busy} aria-label={`Stop editing queued prompt: ${label}`} title="Stop editing" onClick={() => setQueuedPromptEdit(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></> : <button type="button" disabled={busy} aria-label={`Save queued prompt: ${label}`} title="Move to saved prompts" onClick={() => void moveQueuedPromptToSaved(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'save' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5V3Zm3 0v6h8V3M8 21v-7h8v7" /></svg>}</button>}<button className="queued-prompt-cancel" type="button" disabled={busy} aria-label={`Cancel queued prompt: ${label}`} title="Cancel queued prompt" onClick={() => void cancelQueuedPrompt(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'cancel' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button></span></div>; })}</div></section></FlyoutPortal>;
   const queuedToggle = !swapped && queuedPrompts.length > 0 ? <button className={`queued-prompts-toggle icon-button${queuedPromptsOpen ? ' active' : ''}`} type="button" disabled={pending} aria-label={`Queued prompts (${queuedPrompts.length})`} aria-expanded={queuedPromptsOpen} title={`${queuedPrompts.length} queued prompt${queuedPrompts.length === 1 ? '' : 's'}`} onClick={() => setQueuedPromptsOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M4 11h10M4 16h7M18 13v6m-3-3h6" /></svg><span className="saved-prompts-count queued-prompts-count" aria-hidden="true">{queuedPrompts.length}</span></button> : null;
   // join history to the submit controls
   const historySlot = !swapped && historySlotRef !== undefined ? <span className="prompt-history-slot" ref={historySlotRef} /> : null;
   const queueControls = <><span className={`queue-prompt-group${historySlot === null ? '' : ' has-prompt-history'}${queuedToggle === null ? '' : ' has-queued-prompts'}`} ref={queuedPromptAnchorRef} role="group" aria-label="Prompt submission controls">{historySlot}<button className="queue icon-button" disabled={pending || (!swapped && !value && attachments.length === 0)} aria-label={queueLabel} title={queueLabel} onClick={() => void submit()}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button>{queuedToggle}</span>{queuePanel}</>;
-  return <section className="prompt prompt-with-action-rail" aria-label="Prompt composer" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}>{draggingAttachments && <div className="prompt-drop-overlay" role="status">Drop files to attach</div>}<div className="prompt-action-rail" aria-label="Prompt shortcuts">{statusSlotRef && <span className="prompt-status-slot" ref={statusSlotRef} />}{attachmentButton}{stop}</div><div className="prompt-content">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{savedPromptError && <p className="saved-prompt-error" role="alert">{savedPromptError}</p>}{queuedPromptError && !queuedPromptsOpen && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{swapped && swap}{questionModeToggle}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}<More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onSelectTarget={onSelectTarget} onOperationFeedback={onOperationFeedback} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} /><ProjectOpen url={projectUrl} projectProxied={projectProxied} stack={stack} browserOpen={browserOpen} onBrowserToggle={onBrowserToggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} />{saveControls}{queueControls}</div><MobileTerminalKeys id={id} /></div></section>;
+  return <section className="prompt prompt-with-action-rail" aria-label="Prompt composer" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}>{draggingAttachments && <div className="prompt-drop-overlay" role="status">Drop files to attach</div>}<div className="prompt-action-rail" aria-label="Prompt shortcuts">{statusSlotRef && <span className="prompt-status-slot" ref={statusSlotRef} />}{attachmentButton}{stop}</div><div className="prompt-content">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{savedPromptError && <p className="saved-prompt-error" role="alert">{savedPromptError}</p>}{queuedPromptError && !queuedPromptsOpen && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{swapped && swap}{questionModeToggle}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}<More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onOperationFeedback={onOperationFeedback} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} /><ProjectOpen url={projectUrl} projectProxied={projectProxied} stack={stack} browserOpen={browserOpen} onBrowserToggle={onBrowserToggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} />{saveControls}{queueControls}</div><MobileTerminalKeys id={id} /></div></section>;
 }
 
 type MobileKeyIconName = 'control'|'shift'|'tab'|'up'|'down'|'left'|'right';
@@ -3805,18 +3805,86 @@ function GitChangeGroup({ label, changes, onOpenFile }: { label: string; changes
   const totals = gitLineTotals(changes);
   return <span className="git-status-group" role="group" aria-label={`${label} files`}><span className="git-status-group-header"><strong>{label}</strong><span>{gitCountLabel(changes.length, 'file')}</span><GitLineSummary {...totals} className="git-status-group-lines" /></span><span className="git-status-file-list">{changes.map((change, index) => <button className={`git-status-file ${gitChangeState(change.code)}`} type="button" aria-label={`Preview ${change.path}`} title={`Preview ${change.path}`} key={`${change.code}:${change.path}:${index}`} onClick={() => onOpenFile(change.path)}><span className="git-status-file-code" aria-hidden="true">{change.code}</span><span className="git-status-file-path">{change.originalPath === undefined ? change.path : `${change.originalPath} → ${change.path}`}</span>{change.additions === undefined || change.deletions === undefined ? <span className="git-status-file-lines unavailable">binary</span> : <GitLineSummary additions={change.additions} deletions={change.deletions} className="git-status-file-lines" />}</button>)}</span></span>;
 }
-// render working and pull-request changes
-function GitStatus({ branch, summary, prSummary, expanded = false, onToggle, onOpenFile, onReview, reviewOpen = false, reviewUnavailable, pushAction = defaultPushAction, pushPending = false, onPush }: { branch?: string; summary?: GitStatusSummary; prSummary?: GitComparisonSummary; expanded?: boolean; onToggle?: () => void; onOpenFile: (path: string) => void; onReview?: (scope: ReviewScope) => void; reviewOpen?: boolean; reviewUnavailable?: string; pushAction?: PromptAction; pushPending?: boolean; onPush?: () => Promise<boolean> }) {
+// render working changes and repository switchers
+function GitStatus({ id, worktreeId, branch, summary, prSummary, expanded = false, onToggle, onOpenFile, onReview, reviewOpen = false, reviewUnavailable, pushAction = defaultPushAction, pushPending = false, onPush, onSelectTarget, onOperationFeedback }: { id?: string; worktreeId?: string; branch?: string; summary?: GitStatusSummary; prSummary?: GitComparisonSummary; expanded?: boolean; onToggle?: () => void; onOpenFile: (path: string) => void; onReview?: (scope: ReviewScope) => void; reviewOpen?: boolean; reviewUnavailable?: string; pushAction?: PromptAction; pushPending?: boolean; onPush?: () => Promise<boolean>; onSelectTarget?: (target: DashboardTarget) => void; onOperationFeedback?: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
   const wrapRef = useRef<HTMLSpanElement | null>(null);
   const [panelStyle, setPanelStyle] = useState<React.CSSProperties>({ visibility: 'hidden' });
+  const [tab, setTab] = useState<'working' | 'prs' | 'branches'>('working');
   const [mode, setMode] = useState<'working' | 'pr'>(prSummary === undefined ? 'working' : 'pr');
+  const [removingBranch, setRemovingBranch] = useState<SwitchableBranch>();
+  const prSwitchCacheKey = worktreeId ?? id;
+  const cachedPrSwitch = prSwitchCacheKey === undefined ? undefined : pullRequestSwitchCache.get(prSwitchCacheKey);
+  const [prSwitch, setPrSwitch] = useState<PullRequestSwitchAvailability | undefined>(cachedPrSwitch);
+  const [prSwitchLoaded, setPrSwitchLoaded] = useState(cachedPrSwitch !== undefined);
+  const [prSwitchError, setPrSwitchError] = useState<string>();
+  const [loadingPrSwitch, setLoadingPrSwitch] = useState(false);
+  const [switchingPr, setSwitchingPr] = useState<number>();
+  const [movingPr, setMovingPr] = useState<number>();
+  const [switchingBranch, setSwitchingBranch] = useState<string>();
+  const [movingBranch, setMovingBranch] = useState<string>();
+  const repositoryTabVisible = expanded && tab !== 'working';
   // default new branches to all pr changes
-  useEffect(() => { setMode(prSummary === undefined ? 'working' : 'pr'); }, [branch]);
+  useEffect(() => {
+    setTab('working');
+    setMode(prSummary === undefined ? 'working' : 'pr');
+  }, [branch]);
   // keep the selected view available
   useEffect(() => {
     // fall back when comparison disappears
     if (mode === 'pr' && prSummary === undefined) setMode('working');
   }, [mode, prSummary]);
+  // refresh repository choices while their tab is visible
+  useEffect(() => {
+    // defer remote choices until requested
+    if (!repositoryTabVisible || id === undefined) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    setLoadingPrSwitch(true);
+    void request(`/api/agents/${encodeURIComponent(id)}/switch-prs`, { signal: controller.signal }).then(async response => ({ ok: response.ok, status: response.status, payload: await response.json().catch(() => undefined) })).then(({ ok, status, payload }) => {
+      // ignore a closed repository tab
+      if (cancelled) return;
+      // expose the server failure
+      if (!ok) {
+        const error = payload !== null && typeof payload === 'object' && typeof (payload as { error?: unknown }).error === 'string' ? (payload as { error: string }).error : `Unable to load repository choices (${status}).`;
+        setPrSwitchError(error);
+        setPrSwitchLoaded(true);
+        setLoadingPrSwitch(false);
+        return;
+      }
+      const availability = payload as { enabled?: unknown; pullRequests?: unknown; otherPullRequests?: unknown; branches?: unknown; pullRequestsSupported?: unknown };
+      // validate successful availability
+      if (payload !== null && typeof payload === 'object' && typeof availability.enabled === 'boolean' && Array.isArray(availability.pullRequests) && Array.isArray(availability.otherPullRequests) && Array.isArray(availability.branches) && typeof availability.pullRequestsSupported === 'boolean') {
+        const next = {
+          enabled: availability.enabled,
+          pullRequests: switchablePullRequests(availability.pullRequests),
+          otherPullRequests: switchablePullRequests(availability.otherPullRequests),
+          branches: switchableBranches(availability.branches),
+          pullRequestsSupported: availability.pullRequestsSupported
+        };
+        // cache one workspace list
+        if (prSwitchCacheKey !== undefined) pullRequestSwitchCache.set(prSwitchCacheKey, next);
+        setPrSwitch(next);
+        setPrSwitchError(undefined);
+      } else {
+        setPrSwitchError('The console returned invalid repository data.');
+      }
+      setPrSwitchLoaded(true);
+      setLoadingPrSwitch(false);
+    }).catch(() => {
+      // retain one actionable client error
+      if (!cancelled) {
+        setPrSwitchError('Unable to load repository choices.');
+        setPrSwitchLoaded(true);
+        setLoadingPrSwitch(false);
+      }
+    });
+    // cancel stale repository responses
+    return () => {
+      cancelled = true;
+      controller.abort();
+      setLoadingPrSwitch(false);
+    };
+  }, [id, prSwitchCacheKey, repositoryTabVisible]);
   // fit the popup above the toolbar
   useLayoutEffect(() => {
     const wrap = wrapRef.current;
@@ -3885,18 +3953,136 @@ function GitStatus({ branch, summary, prSummary, expanded = false, onToggle, onO
   const emptyLabel = activeSummary?.files === 0 ? mode === 'working' ? 'No working changes' : 'No PR changes' : 'Changed-file details unavailable';
   const disabledReviewReason = reviewOpen ? undefined : reviewUnavailable ?? (activeSummary === undefined ? 'Selected changes unavailable' : undefined);
   const reviewLabel = reviewOpen ? 'Open Review' : 'Review';
+  const mutationInFlight = switchingPr !== undefined || movingPr !== undefined || switchingBranch !== undefined || movingBranch !== undefined;
+  const otherPullRequestCount = prSwitch?.otherPullRequests.length ?? 0;
+  const pullRequestReason = pullRequestStatusReason(loadingPrSwitch, prSwitchError, prSwitchLoaded, prSwitch);
+  const branchReason = branchStatusReason(loadingPrSwitch, prSwitchError, prSwitchLoaded, prSwitch);
   // queue the configured branch completion action
   const commitPush = async () => {
     // close only after the prompt was accepted
     if (await onPush?.()) onToggle?.();
   };
-  return <span ref={wrapRef} className={`git-status-wrap${expanded ? ' expanded' : ''}`}><button className={`git-status-summary ${state}`} type="button" aria-label={label} aria-expanded={expanded} title={label} onClick={onToggle}><svg className="git-branch-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2.5" /><circle cx="6" cy="19" r="2.5" /><circle cx="18" cy="7" r="2.5" /><path d="M6 7.5v9M18 9.5v1a6 6 0 0 1-6 6H6" /></svg><span className="git-status-dot" aria-hidden="true" /><span className="git-branch">{branch}</span><span className="git-status-separator" aria-hidden="true">·</span><span className="git-worktree-state">{stateLabel}</span></button>{expanded && <FlyoutPortal onDismiss={() => onToggle?.()}><div className="git-status-panel" role="region" aria-label="Changed files" style={panelStyle}><span className="git-status-panel-header"><strong>{mode === 'working' ? 'Working changes' : 'PR changes'}</strong>{panelDetails.length > 0 && <small className="git-status-details">{panelDetails.join(' · ')}</small>}</span>{changedFiles !== undefined && changedFiles.length > 0 ? <span className="git-status-files"><GitChangeGroup label="Implementation" changes={implementationChanges} onOpenFile={onOpenFile} /><GitChangeGroup label="TESTS & DOCS" changes={supportingChanges} onOpenFile={onOpenFile} /></span> : <span className="git-status-empty">{emptyLabel}</span>}<span className="git-status-panel-footer"><span className="git-status-actions"><button className="git-status-review" type="button" disabled={onReview === undefined || disabledReviewReason !== undefined} title={disabledReviewReason ?? (reviewOpen ? 'Open the current guided review' : `Start guided review of ${mode === 'working' ? 'Working' : 'All PR'} changes`)} onClick={() => onReview?.(mode)}>{reviewLabel}</button>{onPush !== undefined && <button className="git-status-push" type="button" disabled={pushPending} onClick={() => void commitPush()}>{pushPending ? <span className="spinner" /> : <MoreMenuIcon name="push" />}{pushAction.label}</button>}</span><span className="git-status-mode" role="group" aria-label="Git change view"><button type="button" aria-pressed={mode === 'working'} onClick={() => setMode('working')}>Working</button><button type="button" aria-pressed={mode === 'pr'} disabled={prSummary === undefined} title={prSummary === undefined ? 'Merge target unavailable' : `Compare with ${prSummary.base}`} onClick={() => setMode('pr')}>All PR</button></span></span></div></FlyoutPortal>}</span>;
+  // close the branch panel before navigating worktrees
+  const selectWorktree = (target: DashboardTarget) => {
+    onToggle?.();
+    onSelectTarget?.(target);
+  };
+  // check out one pull request branch
+  const switchPullRequest = async (number: number) => {
+    // prevent duplicate checkout transactions
+    if (id === undefined || mutationInFlight) return;
+    setSwitchingPr(number);
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(id)}/switch-pr`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ number }) });
+      // surface a rejected server transaction
+      if (!response.ok) {
+        onOperationFeedback?.({ tone: 'error', message: 'Pull request could not be checked out', detail: await launchError(response), worktreeId });
+        return;
+      }
+      // discard stale checkout ownership after success
+      if (prSwitchCacheKey !== undefined) pullRequestSwitchCache.delete(prSwitchCacheKey);
+      onToggle?.();
+    } catch {
+      onOperationFeedback?.({ tone: 'error', message: 'Pull request could not be checked out', detail: 'The console could not be reached. Check the worktree before trying again.', worktreeId });
+    } finally {
+      setSwitchingPr(undefined);
+    }
+  };
+  // move one occupied pull request into this worktree
+  const movePullRequest = async (number: number) => {
+    // prevent duplicate move transactions
+    if (id === undefined || mutationInFlight) return;
+    setMovingPr(number);
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(id)}/move-pr`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ number }) });
+      // surface a rejected server transaction
+      if (!response.ok) {
+        onOperationFeedback?.({ tone: 'error', message: 'Pull request could not be moved', detail: await launchError(response), worktreeId });
+        return;
+      }
+      // discard stale checkout ownership after success
+      if (prSwitchCacheKey !== undefined) pullRequestSwitchCache.delete(prSwitchCacheKey);
+      onToggle?.();
+      onOperationFeedback?.({ tone: 'success', message: 'Pull request moved here', detail: 'The source worktree was detached and its uncommitted changes were restored here.', worktreeId });
+    } catch {
+      onOperationFeedback?.({ tone: 'error', message: 'Pull request could not be moved', detail: 'The console could not be reached. Check both worktrees before trying again.', worktreeId });
+    } finally {
+      setMovingPr(undefined);
+    }
+  };
+  // check out one local branch
+  const switchBranch = async (nextBranch: string) => {
+    // prevent duplicate checkout transactions
+    if (id === undefined || mutationInFlight) return;
+    setSwitchingBranch(nextBranch);
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(id)}/switch-branch`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ branch: nextBranch }) });
+      // surface a rejected server transaction
+      if (!response.ok) {
+        onOperationFeedback?.({ tone: 'error', message: 'Branch could not be checked out', detail: await launchError(response), worktreeId });
+        return;
+      }
+      // discard stale checkout ownership after success
+      if (prSwitchCacheKey !== undefined) pullRequestSwitchCache.delete(prSwitchCacheKey);
+      onToggle?.();
+    } catch {
+      onOperationFeedback?.({ tone: 'error', message: 'Branch could not be checked out', detail: 'The console could not be reached. Check the worktree before trying again.', worktreeId });
+    } finally {
+      setSwitchingBranch(undefined);
+    }
+  };
+  // move one occupied branch into this worktree
+  const moveBranch = async (nextBranch: string) => {
+    // prevent duplicate move transactions
+    if (id === undefined || mutationInFlight) return;
+    setMovingBranch(nextBranch);
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(id)}/move-branch`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ branch: nextBranch }) });
+      // surface a rejected server transaction
+      if (!response.ok) {
+        onOperationFeedback?.({ tone: 'error', message: 'Branch could not be moved', detail: await launchError(response), worktreeId });
+        return;
+      }
+      // discard stale checkout ownership after success
+      if (prSwitchCacheKey !== undefined) pullRequestSwitchCache.delete(prSwitchCacheKey);
+      onToggle?.();
+      onOperationFeedback?.({ tone: 'success', message: 'Branch moved here', detail: 'The source worktree was detached and its uncommitted changes were restored here.', worktreeId });
+    } catch {
+      onOperationFeedback?.({ tone: 'error', message: 'Branch could not be moved', detail: 'The console could not be reached. Check both worktrees before trying again.', worktreeId });
+    } finally {
+      setMovingBranch(undefined);
+    }
+  };
+  // open fresh branch deletion safeguards
+  const reviewBranchRemoval = (nextBranch: SwitchableBranch) => {
+    onToggle?.();
+    setRemovingBranch(nextBranch);
+  };
+  // remove one deleted branch from cached and visible choices
+  const branchRemoved = () => {
+    // require the active deletion target
+    if (removingBranch === undefined) return;
+    // discard stale repository choices
+    if (prSwitchCacheKey !== undefined) pullRequestSwitchCache.delete(prSwitchCacheKey);
+    setPrSwitch(current => current === undefined ? current : { ...current, branches: current.branches.filter(candidate => candidate.branch !== removingBranch.branch) });
+    setRemovingBranch(undefined);
+    onOperationFeedback?.({ tone: 'success', message: 'Branch deleted', detail: `${removingBranch.branch} was deleted.`, worktreeId });
+  };
+  const workingPanel = <><span className="git-status-panel-header"><strong>{mode === 'working' ? 'Working changes' : 'PR changes'}</strong>{panelDetails.length > 0 && <small className="git-status-details">{panelDetails.join(' · ')}</small>}</span>{changedFiles !== undefined && changedFiles.length > 0 ? <span className="git-status-files"><GitChangeGroup label="Implementation" changes={implementationChanges} onOpenFile={onOpenFile} /><GitChangeGroup label="TESTS & DOCS" changes={supportingChanges} onOpenFile={onOpenFile} /></span> : <span className="git-status-empty">{emptyLabel}</span>}<span className="git-status-panel-footer"><span className="git-status-actions"><button className="git-status-review" type="button" disabled={onReview === undefined || disabledReviewReason !== undefined} title={disabledReviewReason ?? (reviewOpen ? 'Open the current guided review' : `Start guided review of ${mode === 'working' ? 'Working' : 'All PR'} changes`)} onClick={() => onReview?.(mode)}>{reviewLabel}</button>{onPush !== undefined && <button className="git-status-push" type="button" disabled={pushPending} onClick={() => void commitPush()}>{pushPending ? <span className="spinner" /> : <MoreMenuIcon name="push" />}{pushAction.label}</button>}</span><span className="git-status-mode" role="group" aria-label="Git change view"><button type="button" aria-pressed={mode === 'working'} onClick={() => setMode('working')}>Working</button><button type="button" aria-pressed={mode === 'pr'} disabled={prSummary === undefined} title={prSummary === undefined ? 'Merge target unavailable' : `Compare with ${prSummary.base}`} onClick={() => setMode('pr')}>All PR</button></span></span></>;
+  const pullRequestPanel = <><span className="git-status-panel-header"><strong>Pull requests</strong>{pullRequestReason !== undefined && <small className={`git-status-details${prSwitchError === undefined ? '' : ' error'}`} role={prSwitchError === undefined ? 'status' : 'alert'} aria-label={pullRequestReason}>{pullRequestReason}</small>}</span><span className="git-status-switch-list">{prSwitch?.pullRequests.map(pullRequest => <SwitchPullRequestOption key={pullRequest.number} pullRequest={pullRequest} currentWorktreeId={worktreeId} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingPr={switchingPr} movingPr={movingPr} onSwitch={switchPullRequest} onMove={movePullRequest} onSelectTarget={selectWorktree} />)}{prSwitch !== undefined && otherPullRequestCount > 0 && <details className="other-pull-requests"><summary>Pull requests by others <span>{otherPullRequestCount}</span></summary><div>{prSwitch.otherPullRequests.map(pullRequest => <SwitchPullRequestOption key={pullRequest.number} pullRequest={pullRequest} currentWorktreeId={worktreeId} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingPr={switchingPr} movingPr={movingPr} onSwitch={switchPullRequest} onMove={movePullRequest} onSelectTarget={selectWorktree} />)}</div></details>}</span></>;
+  const branchPanel = <><span className="git-status-panel-header"><strong>Branches</strong>{branchReason !== undefined && <small className={`git-status-details${prSwitchError === undefined ? '' : ' error'}`} role={prSwitchError === undefined ? 'status' : 'alert'} aria-label={branchReason}>{branchReason}</small>}</span><span className="git-status-switch-list">{prSwitch?.branches.map(candidate => <SwitchBranchOption key={candidate.branch} branch={candidate} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingBranch={switchingBranch} movingBranch={movingBranch} onSwitch={switchBranch} onMove={moveBranch} onDelete={worktreeId === undefined ? undefined : reviewBranchRemoval} onSelectTarget={selectWorktree} />)}</span></>;
+  let activePanel = workingPanel;
+  // show pull request choices
+  if (tab === 'prs') activePanel = pullRequestPanel;
+  // show local branch choices
+  if (tab === 'branches') activePanel = branchPanel;
+  return <span ref={wrapRef} className={`git-status-wrap${expanded ? ' expanded' : ''}`}><button className={`git-status-summary ${state}`} type="button" aria-label={label} aria-expanded={expanded} title={label} onClick={onToggle}><svg className="git-branch-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2.5" /><circle cx="6" cy="19" r="2.5" /><circle cx="18" cy="7" r="2.5" /><path d="M6 7.5v9M18 9.5v1a6 6 0 0 1-6 6H6" /></svg><span className="git-status-dot" aria-hidden="true" /><span className="git-branch">{branch}</span><span className="git-status-separator" aria-hidden="true">·</span><span className="git-worktree-state">{stateLabel}</span></button>{expanded && <FlyoutPortal onDismiss={() => onToggle?.()}><div className="git-status-panel" role="region" aria-label="Changed files" aria-busy={repositoryTabVisible && loadingPrSwitch} style={panelStyle}>{activePanel}<span className="git-status-tabs" role="tablist" aria-label="Branch views"><button type="button" role="tab" aria-selected={tab === 'working'} onClick={() => setTab('working')}>Working</button><button type="button" role="tab" aria-selected={tab === 'prs'} disabled={id === undefined} title={id === undefined ? 'Launch agent to load pull requests' : undefined} onClick={() => setTab('prs')}>PRs</button><button type="button" role="tab" aria-selected={tab === 'branches'} disabled={id === undefined} title={id === undefined ? 'Launch agent to load branches' : undefined} onClick={() => setTab('branches')}>Branches</button></span></div></FlyoutPortal>}{removingBranch !== undefined && worktreeId !== undefined && <RemoveBranchDialog worktreeId={worktreeId} branch={removingBranch} onClose={() => setRemovingBranch(undefined)} onDeleted={branchRemoved} />}</span>;
 }
 
-type LogProps = { id: string; worktreeId?: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; history: PromptHistoryEntry[]; refreshHistory: () => Promise<void>; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined) => void; cleanupControl?: ReactNode; browserUrl?: string; browserHomeUrl?: string; browserProxied?: boolean; browserNavigationRequest?: ProjectBrowserNavigationRequest; onBrowserNavigate?: (url: string) => boolean; onBrowserOpen?: (url: string) => boolean; onBrowserClose?: () => void; terminalMode?: boolean; embedded?: boolean; onReview?: (scope: ReviewScope) => void; reviewOpen?: boolean; reviewUnavailable?: string; pushAction?: PromptAction; processingLabel?: string; processingDetail?: string; statusSlot?: HTMLElement | null; historySlot?: HTMLElement | null };
+type LogProps = { id: string; worktreeId?: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; history: PromptHistoryEntry[]; refreshHistory: () => Promise<void>; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined) => void; cleanupControl?: ReactNode; browserUrl?: string; browserHomeUrl?: string; browserProxied?: boolean; browserNavigationRequest?: ProjectBrowserNavigationRequest; onBrowserNavigate?: (url: string) => boolean; onBrowserOpen?: (url: string) => boolean; onBrowserClose?: () => void; terminalMode?: boolean; embedded?: boolean; onReview?: (scope: ReviewScope) => void; reviewOpen?: boolean; reviewUnavailable?: string; pushAction?: PromptAction; processingLabel?: string; processingDetail?: string; statusSlot?: HTMLElement | null; historySlot?: HTMLElement | null; onSelectTarget?: (target: DashboardTarget) => void; onOperationFeedback?: (feedback: Omit<OperationFeedback, 'id'>) => void };
 
 // render reusable live agent output
-function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshHistory, onQuestion, onMetadata, cleanupControl, browserUrl, browserHomeUrl, browserProxied = true, browserNavigationRequest, onBrowserNavigate, onBrowserOpen, onBrowserClose, terminalMode = false, embedded = false, onReview, reviewOpen = false, reviewUnavailable, pushAction = defaultPushAction, processingLabel, processingDetail, statusSlot, historySlot }: LogProps) {
+function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshHistory, onQuestion, onMetadata, cleanupControl, browserUrl, browserHomeUrl, browserProxied = true, browserNavigationRequest, onBrowserNavigate, onBrowserOpen, onBrowserClose, terminalMode = false, embedded = false, onReview, reviewOpen = false, reviewUnavailable, pushAction = defaultPushAction, processingLabel, processingDetail, statusSlot, historySlot, onSelectTarget, onOperationFeedback }: LogProps) {
   const canvas = useRef<HTMLDivElement | null>(null);
   const primaryHost = useRef<HTMLDivElement | null>(null);
   const secondaryHost = useRef<HTMLDivElement | null>(null);
@@ -4657,18 +4843,16 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
       setPendingOperation(pushPendingKey, false);
     }
   };
-  const gitSection = embedded ? null : <GitStatus branch={branch} summary={gitStatus} prSummary={gitPrStatus} expanded={toolbarExpanded === 'git'} onToggle={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'git' ? undefined : 'git'); }} onOpenFile={openGitFile} onReview={scope => { setToolbarExpanded(undefined); onReview?.(scope); }} reviewOpen={reviewOpen} reviewUnavailable={reviewUnavailable} pushAction={pushAction} pushPending={pushPending} onPush={queuePush} />;
+  const gitSection = embedded ? null : <GitStatus id={id} worktreeId={worktreeId} branch={branch} summary={gitStatus} prSummary={gitPrStatus} expanded={toolbarExpanded === 'git'} onToggle={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'git' ? undefined : 'git'); }} onOpenFile={openGitFile} onReview={scope => { setToolbarExpanded(undefined); onReview?.(scope); }} reviewOpen={reviewOpen} reviewUnavailable={reviewUnavailable} pushAction={pushAction} pushPending={pushPending} onPush={queuePush} onSelectTarget={onSelectTarget} onOperationFeedback={onOperationFeedback} />;
   // distinguish retained output from live frames
   const output = <div className={`log-output${cached ? ' cached' : ''}`}>{!embedded && <ServerSwitcher className="output-server-switcher" />}<div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'}><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{cached && <div className="log-cached-treatment" aria-hidden="true"><span>Cached view · reconnecting</span></div>}{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!terminalMode && <div className="log-controls-bottom"><div className="page-controls">{!embedded && cleanupControl}{!embedded && responseFiles.control}{!embedded && worktreeBookmarks.control}{!embedded && worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><div className="page-down-controls">{scrolledUp && <button className="log-control page-arrow back-to-bottom" aria-label="Back to bottom" title="Back to bottom" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(0)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19h14M6 8l6 6 6-6" /></svg></button>}<button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div>}</div></div>;
   const browserPane = browserUrl === undefined || browserHomeUrl === undefined || onBrowserNavigate === undefined || onBrowserClose === undefined ? null : <ProjectBrowserPane url={browserUrl} homeUrl={browserHomeUrl} proxied={browserProxied} worktreeId={worktreeId} navigationRequest={browserNavigationRequest} onNavigate={onBrowserNavigate} onClose={onBrowserClose} />;
   return <section className={`log-shell${embedded ? ' embedded-log-shell' : ''}`}><div className={`log${embedded ? ' embedded-log' : ''}${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit worktreeId={worktreeId} output={output} note={embedded ? undefined : worktreeNotes.pane} browser={browserPane} /></div>{selectionActions}{!embedded && responseFiles.dialog}{!embedded && gitFilePreview.dialog}{!embedded && statusSlot && createPortal(gitSection, statusSlot)}{!embedded && historySlot && createPortal(historyToggle, historySlot)}</section>;
 }
 
-type MoreMenuIconName = 'actions'|'attachment'|'branch'|'new-task'|'pull-request'|'push'|'rename'|'swap';
+type MoreMenuIconName = 'actions'|'attachment'|'new-task'|'push'|'rename'|'swap';
 function MoreMenuIcon({ name }: { name: MoreMenuIconName }) {
-  if (name === 'pull-request') return <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5" /><circle cx="18" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><path d="M6 8.5v7M18 8.5v2.5a7 7 0 0 1-7 7H8.5M15.5 6H13" /></svg>;
-  if (name === 'branch') return <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2.5" /><circle cx="6" cy="19" r="2.5" /><circle cx="18" cy="7" r="2.5" /><path d="M6 7.5v9M18 9.5v1a6 6 0 0 1-6 6H6" /></svg>;
-  const paths: Record<Exclude<MoreMenuIconName, 'pull-request' | 'branch'>, string> = {
+  const paths: Record<MoreMenuIconName, string> = {
     actions: 'M8 5v14l11-7L8 5ZM4 5h1M4 12h1M4 19h1',
     attachment: 'm9 12 5.7-5.7a3.5 3.5 0 1 1 5 5L11 20a5 5 0 1 1-7-7l8.3-8.3',
     'new-task': 'M12 5v14M5 12h14',
@@ -4737,6 +4921,7 @@ function SwitchOpenInLine({ openIn, here, operationPending, onSelectTarget }: { 
 // render one pull request switch target
 function SwitchPullRequestOption({ pullRequest, currentWorktreeId, enabled, loading, refreshFailed, switchingPr, movingPr, onSwitch, onMove, onSelectTarget }: { pullRequest: SwitchablePullRequest; currentWorktreeId?: string; enabled: boolean; loading: boolean; refreshFailed: boolean; switchingPr?: number; movingPr?: number; onSwitch: (number: number) => void | Promise<void>; onMove: (number: number) => void | Promise<void>; onSelectTarget: (target: DashboardTarget) => void }) {
   const status = pullRequest.draft ? 'draft' : 'open';
+  const statusLabel = pullRequest.draft ? 'Draft' : 'Open';
   const label = `#${pullRequest.number}: ${pullRequest.title}`;
   const openIn = pullRequest.openIn;
   const checkedOutHere = currentWorktreeId !== undefined && openIn?.worktreeId === currentWorktreeId;
@@ -4750,7 +4935,7 @@ function SwitchPullRequestOption({ pullRequest, currentWorktreeId, enabled, load
     if (pullRequest.checkedOut) return void onMove(pullRequest.number);
     void onSwitch(pullRequest.number);
   };
-  return <div className="switch-pr-option"><div className="switch-pr-main"><a className="switch-pr" href={pullRequest.url} target="_blank" rel="noreferrer" title={`Open ${label} in GitHub`} aria-label={label}><span className="switch-pr-copy"><span><strong className={`status-${status}`}>#{pullRequest.number}</strong><span>: {pullRequest.title}</span></span></span></a></div><span className="switch-pr-actions"><PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} /><button className="switch-pr-action switch-pr-checkout outline-button" disabled={loading || refreshFailed || operationPending || !enabled || pullRequest.checkedOut && (openIn === undefined || checkedOutHere)} title={checkoutReason} onClick={checkout}>{movingPr === pullRequest.number ? <><span className="spinner" />Moving…</> : switchingPr === pullRequest.number ? <><span className="spinner" />Checking out…</> : 'Checkout'}</button></span>{pullRequest.checkedOut && <div className="switch-pr-owner"><SwitchOpenInLine openIn={openIn} here={checkedOutHere} operationPending={operationPending} onSelectTarget={onSelectTarget} /></div>}</div>;
+  return <div className="switch-pr-option" role="group" aria-label={`${label}; ${statusLabel}`}><div className="switch-pr-main"><a className="switch-pr" href={pullRequest.url} target="_blank" rel="noreferrer" title={`Open ${label} in GitHub`} aria-label={label}><span className="switch-pr-copy"><span><strong className={`status-${status}`}>#{pullRequest.number}</strong><span>: {pullRequest.title}</span></span></span></a></div><span className="switch-pr-actions"><PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} /><button className="switch-pr-action switch-pr-checkout outline-button" disabled={loading || refreshFailed || operationPending || !enabled || pullRequest.checkedOut && (openIn === undefined || checkedOutHere)} title={checkoutReason} onClick={checkout}>{movingPr === pullRequest.number ? <><span className="spinner" />Moving…</> : switchingPr === pullRequest.number ? <><span className="spinner" />Checking out…</> : 'Checkout'}</button></span>{pullRequest.checkedOut && <div className="switch-pr-owner"><SwitchOpenInLine openIn={openIn} here={checkedOutHere} operationPending={operationPending} onSelectTarget={onSelectTarget} /></div>}</div>;
 }
 
 // explain one unavailable branch switch target
@@ -4775,7 +4960,7 @@ function SwitchBranchOption({ branch, enabled, loading, refreshFailed, switching
     if (branch.checkedOut) return void onMove(branch.branch);
     void onSwitch(branch.branch);
   };
-  return <div className="switch-pr-option switch-branch-option"><div className="switch-pr-main"><strong className="switch-branch-name">{branch.branch}</strong></div><span className="switch-pr-actions">{onDelete !== undefined && <button className="switch-pr-action switch-branch-delete icon-button outline-button" disabled={loading || operationPending} aria-label={`Delete ${branch.branch}`} title={`Review deletion safeguards for ${branch.branch}`} onClick={() => onDelete(branch)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg></button>}<button className="switch-pr-action switch-pr-checkout outline-button" disabled={loading || refreshFailed || operationPending || !enabled || (branch.checkedOut && openIn === undefined)} title={checkoutReason} onClick={checkout}>{movingBranch === branch.branch ? <><span className="spinner" />Moving…</> : switchingBranch === branch.branch ? <><span className="spinner" />Checking out…</> : 'Checkout'}</button></span>{branch.checkedOut && <div className="switch-pr-owner"><SwitchOpenInLine openIn={openIn} here={false} operationPending={operationPending} onSelectTarget={onSelectTarget} /></div>}</div>;
+  return <div className="switch-pr-option switch-branch-option" role="group" aria-label={branch.branch}><div className="switch-pr-main"><strong className="switch-branch-name">{branch.branch}</strong></div><span className="switch-pr-actions">{onDelete !== undefined && <button className="switch-pr-action switch-branch-delete icon-button outline-button" disabled={loading || operationPending} aria-label={`Delete ${branch.branch}`} title={`Review deletion safeguards for ${branch.branch}`} onClick={() => onDelete(branch)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg></button>}<button className="switch-pr-action switch-pr-checkout outline-button" disabled={loading || refreshFailed || operationPending || !enabled || (branch.checkedOut && openIn === undefined)} title={checkoutReason} onClick={checkout}>{movingBranch === branch.branch ? <><span className="spinner" />Moving…</> : switchingBranch === branch.branch ? <><span className="spinner" />Checking out…</> : 'Checkout'}</button></span>{branch.checkedOut && <div className="switch-pr-owner"><SwitchOpenInLine openIn={openIn} here={false} operationPending={operationPending} onSelectTarget={onSelectTarget} /></div>}</div>;
 }
 
 // explain pull request availability
@@ -4797,8 +4982,8 @@ function pullRequestStatusReason(loading: boolean, error: string | undefined, lo
 function branchStatusReason(loading: boolean, error: string | undefined, loaded: boolean, availability: PullRequestSwitchAvailability | undefined): string | undefined {
   // prioritize active loading
   if (loading) return 'Loading branches…';
-  // let the pull request section surface the shared refresh error
-  if (error !== undefined) return undefined;
+  // expose the shared repository refresh error
+  if (error !== undefined) return error;
   // distinguish an unavailable endpoint
   if (loaded && availability === undefined) return 'Branches unavailable.';
   // explain an empty list
@@ -4865,163 +5050,76 @@ function RemoveBranchDialog({ worktreeId, branch, onClose, onDeleted }: { worktr
 }
 
 // render the agent action menu
-function More({ id, worktreeId, newTaskConfigured = false, swapDisabled = false, onSwap, onSelectTarget, onOperationFeedback, pinned, onTogglePin, onRenameWorktree }: { id?: string; worktreeId?: string; newTaskConfigured?: boolean; swapDisabled?: boolean; onSwap?: () => void; onSelectTarget: (target: DashboardTarget) => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; pinned?: boolean; onTogglePin?: () => void; onRenameWorktree?: () => void }) {
-  const [menuOpen, setMenuOpen] = useState(false); const { anchorRef, flyoutRef, style } = useViewportFlyout(menuOpen);
-  const [removingBranch, setRemovingBranch] = useState<SwitchableBranch>();
-  const prSwitchCacheKey = worktreeId ?? id;
-  const cachedPrSwitch = prSwitchCacheKey === undefined ? undefined : pullRequestSwitchCache.get(prSwitchCacheKey);
-  const [prSwitch, setPrSwitch] = useState<PullRequestSwitchAvailability | undefined>(cachedPrSwitch); const [prSwitchLoaded, setPrSwitchLoaded] = useState(cachedPrSwitch !== undefined); const [prSwitchError, setPrSwitchError] = useState<string>(); const [loadingPrSwitch, setLoadingPrSwitch] = useState(false); const [switchingPr, setSwitchingPr] = useState<number>(); const [movingPr, setMovingPr] = useState<number>(); const [switchingBranch, setSwitchingBranch] = useState<string>(); const [movingBranch, setMovingBranch] = useState<string>();
-  const [githubActionsUrl, setGithubActionsUrl] = useState<string>(); const [loadingGithubActions, setLoadingGithubActions] = useState(false);
-  const [newTask, setNewTask] = useState<NewTaskAvailability>(); const [loadingNewTask, setLoadingNewTask] = useState(false);
+function More({ id, worktreeId, newTaskConfigured = false, swapDisabled = false, onSwap, onOperationFeedback, pinned, onTogglePin, onRenameWorktree }: { id?: string; worktreeId?: string; newTaskConfigured?: boolean; swapDisabled?: boolean; onSwap?: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; pinned?: boolean; onTogglePin?: () => void; onRenameWorktree?: () => void }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const { anchorRef, flyoutRef, style } = useViewportFlyout(menuOpen);
+  const [githubActionsUrl, setGithubActionsUrl] = useState<string>();
+  const [loadingGithubActions, setLoadingGithubActions] = useState(false);
+  const [newTask, setNewTask] = useState<NewTaskAvailability>();
+  const [loadingNewTask, setLoadingNewTask] = useState(false);
   const newTaskKey = newTaskOperationKey(worktreeId ?? id ?? 'unavailable');
   const startingNewTask = usePendingOperation(newTaskKey);
   // refresh menu availability
   useEffect(() => {
+    // wait for an active agent menu
     if (!menuOpen || id === undefined) return;
     let cancelled = false;
-    setLoadingPrSwitch(true);
     setLoadingGithubActions(true);
     void request(`/api/agents/${encodeURIComponent(id)}/github-actions`).then(response => response.ok ? response.json() : undefined).then((payload: unknown) => {
+      // ignore closed menu work
       if (cancelled) return;
+      // require one safe actions url
       if (payload === null || typeof payload !== 'object' || typeof (payload as { url?: unknown }).url !== 'string') return setGithubActionsUrl(undefined);
       try {
         const url = new URL((payload as { url: string }).url);
+        // restrict links to github actions
         if (url.protocol === 'https:' && url.hostname === 'github.com' && url.pathname.endsWith('/actions')) setGithubActionsUrl(url.href);
         else setGithubActionsUrl(undefined);
       } catch { setGithubActionsUrl(undefined); }
-    }).catch(() => { if (!cancelled) setGithubActionsUrl(undefined); }).finally(() => { if (!cancelled) setLoadingGithubActions(false); });
-    void request(`/api/agents/${encodeURIComponent(id)}/switch-prs`).then(async response => ({ ok: response.ok, status: response.status, payload: await response.json().catch(() => undefined) })).then(({ ok, status, payload }) => {
-      // ignore closed menu work
-      if (cancelled) return;
-      // expose the server failure
-      if (!ok) {
-        const error = payload !== null && typeof payload === 'object' && typeof (payload as { error?: unknown }).error === 'string' ? (payload as { error: string }).error : `Unable to load pull requests (${status}).`;
-        setPrSwitchError(error);
-        setPrSwitchLoaded(true);
-        setLoadingPrSwitch(false);
-        return;
-      }
-      const availability = payload as { enabled?: unknown; pullRequests?: unknown; otherPullRequests?: unknown; branches?: unknown; pullRequestsSupported?: unknown };
-      // validate successful availability
-      if (payload !== null && typeof payload === 'object' && typeof availability.enabled === 'boolean' && Array.isArray(availability.pullRequests) && Array.isArray(availability.otherPullRequests)) {
-        const next = {
-          enabled: availability.enabled,
-          pullRequests: switchablePullRequests(availability.pullRequests),
-          otherPullRequests: switchablePullRequests(availability.otherPullRequests),
-          // tolerate older payloads that predate the branch fields
-          branches: Array.isArray(availability.branches) ? switchableBranches(availability.branches) : [],
-          pullRequestsSupported: typeof availability.pullRequestsSupported === 'boolean' ? availability.pullRequestsSupported : true
-        };
-        // cache one workspace list
-        if (prSwitchCacheKey !== undefined) pullRequestSwitchCache.set(prSwitchCacheKey, next);
-        setPrSwitch(next);
-        setPrSwitchError(undefined);
-      } else {
-        setPrSwitchError('The console returned invalid pull request data.');
-      }
-      setPrSwitchLoaded(true);
-      setLoadingPrSwitch(false);
     }).catch(() => {
-      // retain one actionable client error
-      if (!cancelled) { setPrSwitchError('Unable to load pull requests.'); setPrSwitchLoaded(true); setLoadingPrSwitch(false); }
+      // clear stale actions links
+      if (!cancelled) setGithubActionsUrl(undefined);
+    }).finally(() => {
+      // finish the active request
+      if (!cancelled) setLoadingGithubActions(false);
     });
     setLoadingNewTask(newTaskConfigured);
+    // clear disabled task availability
     if (!newTaskConfigured) setNewTask(undefined);
     if (newTaskConfigured) void request(`/api/agents/${encodeURIComponent(id)}/new-task`).then(response => response.ok ? response.json() : undefined).then((payload: unknown) => {
+      // validate the live availability
       if (cancelled || payload === null || typeof payload !== 'object' || typeof (payload as { enabled?: unknown }).enabled !== 'boolean') throw new Error('invalid new task availability');
       const availability = payload as { enabled: boolean; reason?: unknown };
       setNewTask({ enabled: availability.enabled, reason: typeof availability.reason === 'string' ? availability.reason : undefined });
-    }).catch(() => { if (!cancelled) setNewTask({ enabled: false, reason: 'Unable to check whether a new task can start.' }); }).finally(() => { if (!cancelled) setLoadingNewTask(false); });
+    }).catch(() => {
+      // preserve one actionable failure
+      if (!cancelled) setNewTask({ enabled: false, reason: 'Unable to check whether a new task can start.' });
+    }).finally(() => {
+      // finish the active request
+      if (!cancelled) setLoadingNewTask(false);
+    });
+    // cancel stale menu responses
     return () => { cancelled = true; };
-  }, [menuOpen, id, newTaskConfigured, prSwitchCacheKey]);
+  }, [menuOpen, id, newTaskConfigured]);
+  // close before changing terminal mode
   const swapToTerminal = () => { setMenuOpen(false); onSwap?.(); };
-  // one worktree mutation at a time across both the pull request and branch sections; the server enforces a single lock, so a second concurrent request would only return a spurious failure
-  const mutationInFlight = switchingPr !== undefined || movingPr !== undefined || switchingBranch !== undefined || movingBranch !== undefined;
-  // check out one pull request branch
-  const switchPullRequest = async (number: number) => {
-    // prevent duplicate checkout transactions
-    if (id === undefined || mutationInFlight) return;
-    setSwitchingPr(number);
-    try {
-      const response = await request(`/api/agents/${encodeURIComponent(id)}/switch-pr`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ number }) });
-      // surface a rejected server transaction
-      if (!response.ok) return onOperationFeedback({ tone: 'error', message: 'Pull request could not be checked out', detail: await launchError(response), worktreeId });
-      // discard stale checkout ownership after success
-      if (prSwitchCacheKey !== undefined) pullRequestSwitchCache.delete(prSwitchCacheKey);
-      setMenuOpen(false);
-    } catch {
-      onOperationFeedback({ tone: 'error', message: 'Pull request could not be checked out', detail: 'The console could not be reached. Check the worktree before trying again.', worktreeId });
-    } finally {
-      setSwitchingPr(undefined);
-    }
-  };
-  // move one occupied pull request into this worktree
-  const movePullRequest = async (number: number) => {
-    // prevent duplicate move transactions
-    if (id === undefined || mutationInFlight) return;
-    setMovingPr(number);
-    try {
-      const response = await request(`/api/agents/${encodeURIComponent(id)}/move-pr`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ number }) });
-      // surface a rejected server transaction
-      if (!response.ok) return onOperationFeedback({ tone: 'error', message: 'Pull request could not be moved', detail: await launchError(response), worktreeId });
-      // discard stale checkout ownership after success
-      if (prSwitchCacheKey !== undefined) pullRequestSwitchCache.delete(prSwitchCacheKey);
-      setMenuOpen(false);
-      onOperationFeedback({ tone: 'success', message: 'Pull request moved here', detail: 'The source worktree was detached and its uncommitted changes were restored here.', worktreeId });
-    } catch {
-      onOperationFeedback({ tone: 'error', message: 'Pull request could not be moved', detail: 'The console could not be reached. Check both worktrees before trying again.', worktreeId });
-    } finally {
-      setMovingPr(undefined);
-    }
-  };
-  // check out one local branch
-  const switchBranch = async (branch: string) => {
-    // prevent duplicate checkout transactions
-    if (id === undefined || mutationInFlight) return;
-    setSwitchingBranch(branch);
-    try {
-      const response = await request(`/api/agents/${encodeURIComponent(id)}/switch-branch`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ branch }) });
-      // surface a rejected server transaction
-      if (!response.ok) return onOperationFeedback({ tone: 'error', message: 'Branch could not be checked out', detail: await launchError(response), worktreeId });
-      // discard stale checkout ownership after success
-      if (prSwitchCacheKey !== undefined) pullRequestSwitchCache.delete(prSwitchCacheKey);
-      setMenuOpen(false);
-    } catch {
-      onOperationFeedback({ tone: 'error', message: 'Branch could not be checked out', detail: 'The console could not be reached. Check the worktree before trying again.', worktreeId });
-    } finally {
-      setSwitchingBranch(undefined);
-    }
-  };
-  // move one occupied branch into this worktree
-  const moveBranch = async (branch: string) => {
-    // prevent duplicate move transactions
-    if (id === undefined || mutationInFlight) return;
-    setMovingBranch(branch);
-    try {
-      const response = await request(`/api/agents/${encodeURIComponent(id)}/move-branch`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ branch }) });
-      // surface a rejected server transaction
-      if (!response.ok) return onOperationFeedback({ tone: 'error', message: 'Branch could not be moved', detail: await launchError(response), worktreeId });
-      // discard stale checkout ownership after success
-      if (prSwitchCacheKey !== undefined) pullRequestSwitchCache.delete(prSwitchCacheKey);
-      setMenuOpen(false);
-      onOperationFeedback({ tone: 'success', message: 'Branch moved here', detail: 'The source worktree was detached and its uncommitted changes were restored here.', worktreeId });
-    } catch {
-      onOperationFeedback({ tone: 'error', message: 'Branch could not be moved', detail: 'The console could not be reached. Check both worktrees before trying again.', worktreeId });
-    } finally {
-      setMovingBranch(undefined);
-    }
-  };
+  // clear one pending new task
   const clearNewTask = () => {
+    // release the source mapping
     if (worktreeId !== undefined && pendingNewTaskSources.get(worktreeId) === id) pendingNewTaskSources.delete(worktreeId);
     setPendingOperation(newTaskKey, false);
   };
+  // start one fresh task
   const startNewTask = async () => {
+    // serialize replacement requests
     if (id === undefined || startingNewTask || !newTask?.enabled || !beginPendingOperation(newTaskKey)) return;
+    // record the source session
     if (worktreeId !== undefined) pendingNewTaskSources.set(worktreeId, id);
     setMenuOpen(false);
     onOperationFeedback({ tone: 'pending', message: 'Starting a new task…', detail: 'Closing the current session and preparing a fresh agent. You can keep using other tabs.', worktreeId });
     try {
       const response = await request(`/api/agents/${encodeURIComponent(id)}/new-task`, { method: 'POST' });
+      // surface a rejected replacement
       if (!response.ok) {
         clearNewTask();
         setNewTask({ enabled: false, reason: 'Unable to start a new task.' });
@@ -5043,30 +5141,20 @@ function More({ id, worktreeId, newTaskConfigured = false, swapDisabled = false,
       onOperationFeedback({ tone: 'error', message: 'New task did not start', detail: 'The console could not be reached. The current agent is unchanged.', worktreeId });
     }
   };
+  // toggle one menu
   const toggleMenu = () => {
-    if (!menuOpen && id !== undefined) { setLoadingPrSwitch(true); setLoadingGithubActions(true); setLoadingNewTask(newTaskConfigured); }
+    // show fresh loading state immediately
+    if (!menuOpen && id !== undefined) {
+      setLoadingGithubActions(true);
+      setLoadingNewTask(newTaskConfigured);
+    }
     setMenuOpen(open => !open);
   };
-  const selectWorktree = (target: DashboardTarget) => { setMenuOpen(false); onSelectTarget(target); };
-  // open fresh branch deletion safeguards
-  const reviewBranchRemoval = (branch: SwitchableBranch) => { setMenuOpen(false); setRemovingBranch(branch); };
-  // remove one deleted branch from cached and visible choices
-  const branchRemoved = () => {
-    // require the active deletion target
-    if (removingBranch === undefined) return;
-    // discard stale repository choices
-    if (prSwitchCacheKey !== undefined) pullRequestSwitchCache.delete(prSwitchCacheKey);
-    setPrSwitch(current => current === undefined ? current : { ...current, branches: current.branches.filter(candidate => candidate.branch !== removingBranch.branch) });
-    setRemovingBranch(undefined);
-    onOperationFeedback({ tone: 'success', message: 'Branch deleted', detail: `${removingBranch.branch} was deleted.`, worktreeId });
-  };
+  // hide unavailable menus
   if (id === undefined) return null;
-  const otherPullRequestCount = prSwitch?.otherPullRequests.length ?? 0;
-  const pullRequestReason = pullRequestStatusReason(loadingPrSwitch, prSwitchError, prSwitchLoaded, prSwitch);
-  const branchReason = branchStatusReason(loadingPrSwitch, prSwitchError, prSwitchLoaded, prSwitch);
   const newTaskReason = !newTaskConfigured ? 'Not configured for this worktree.' : newTask === undefined ? 'Checking availability…' : newTask.enabled ? 'Start a fresh task for this worktree.' : newTask.reason ?? 'New Task is currently unavailable.';
-  // append Worktree state controls only when this agent belongs to one
-  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} onClick={toggleMenu}>⋮</button></span>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="more-menu flyout-menu pr-switch-menu" ref={flyoutRef} style={style} aria-busy={loadingPrSwitch || loadingGithubActions || loadingNewTask}><div className="pr-switch-summary"><button className="pr-switch-heading" type="button" aria-label="Pull requests" disabled>{loadingPrSwitch ? <span className="spinner" /> : <MoreMenuIcon name="pull-request" />}Pull requests</button>{pullRequestReason !== undefined && <span className={`more-menu-reason${prSwitchError === undefined ? '' : ' pr-switch-error'}`} role={prSwitchError === undefined ? 'status' : 'alert'} aria-label={pullRequestReason}>{pullRequestReason}</span>}</div>{prSwitch?.pullRequests.map(pullRequest => <SwitchPullRequestOption key={pullRequest.number} pullRequest={pullRequest} currentWorktreeId={worktreeId} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingPr={switchingPr} movingPr={movingPr} onSwitch={switchPullRequest} onMove={movePullRequest} onSelectTarget={selectWorktree} />)}{prSwitch !== undefined && otherPullRequestCount > 0 && <details className="other-pull-requests"><summary>Pull requests by others <span>{otherPullRequestCount}</span></summary><div>{prSwitch.otherPullRequests.map(pullRequest => <SwitchPullRequestOption key={pullRequest.number} pullRequest={pullRequest} currentWorktreeId={worktreeId} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingPr={switchingPr} movingPr={movingPr} onSwitch={switchPullRequest} onMove={movePullRequest} onSelectTarget={selectWorktree} />)}</div></details>}<div className="pr-switch-summary"><button className="pr-switch-heading" type="button" aria-label="Branches" disabled>{loadingPrSwitch ? <span className="spinner" /> : <MoreMenuIcon name="branch" />}Branches</button>{branchReason !== undefined && <span className="more-menu-reason" role="status" aria-label={branchReason}>{branchReason}</span>}</div>{prSwitch?.branches.map(branch => <SwitchBranchOption key={branch.branch} branch={branch} enabled={prSwitch.enabled} loading={loadingPrSwitch} refreshFailed={prSwitchError !== undefined} switchingBranch={switchingBranch} movingBranch={movingBranch} onSwitch={switchBranch} onMove={moveBranch} onDelete={worktreeId === undefined ? undefined : reviewBranchRemoval} onSelectTarget={selectWorktree} />)}<hr className="more-menu-divider" /><button disabled={onSwap === undefined || swapDisabled} onClick={swapToTerminal}><MoreMenuIcon name="swap" />Swap to terminal</button>{loadingGithubActions ? <button className="github-actions-loading" type="button" disabled><span className="spinner" />GitHub Actions</button> : githubActionsUrl === undefined ? <button type="button" disabled title="GitHub Actions unavailable"><MoreMenuIcon name="actions" />GitHub Actions</button> : <a className="more-menu-link" href={githubActionsUrl} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)}><MoreMenuIcon name="actions" />GitHub Actions</a>}<div className="new-task-option"><button disabled={!newTaskConfigured || loadingNewTask || !newTask?.enabled || startingNewTask} onClick={() => void startNewTask()}>{loadingNewTask || startingNewTask ? <><span className="spinner" />{startingNewTask ? 'Starting New Task' : 'New Task'}</> : <><MoreMenuIcon name="new-task" />New Task</>}</button><span className="more-menu-reason" role="status">{newTaskReason}</span></div>{onRenameWorktree !== undefined && <button onClick={() => { setMenuOpen(false); onRenameWorktree(); }}><MoreMenuIcon name="rename" />Rename worktree</button>}{onTogglePin !== undefined && <button className="more-pin-toggle" aria-pressed={pinned === true} onClick={() => { setMenuOpen(false); onTogglePin(); }}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6Zm3 11v5" /></svg>{pinned ? 'Unpin worktree' : 'Pin worktree'}</button>}</div></FlyoutPortal>}{removingBranch !== undefined && worktreeId !== undefined && <RemoveBranchDialog worktreeId={worktreeId} branch={removingBranch} onClose={() => setRemovingBranch(undefined)} onDeleted={branchRemoved} />}</>;
+  // append worktree state controls only when this agent belongs to one
+  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} onClick={toggleMenu}>⋮</button></span>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="more-menu flyout-menu" ref={flyoutRef} style={style} aria-busy={loadingGithubActions || loadingNewTask}><button disabled={onSwap === undefined || swapDisabled} onClick={swapToTerminal}><MoreMenuIcon name="swap" />Swap to terminal</button>{loadingGithubActions ? <button className="github-actions-loading" type="button" disabled><span className="spinner" />GitHub Actions</button> : githubActionsUrl === undefined ? <button type="button" disabled title="GitHub Actions unavailable"><MoreMenuIcon name="actions" />GitHub Actions</button> : <a className="more-menu-link" href={githubActionsUrl} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)}><MoreMenuIcon name="actions" />GitHub Actions</a>}<div className="new-task-option"><button disabled={!newTaskConfigured || loadingNewTask || !newTask?.enabled || startingNewTask} onClick={() => void startNewTask()}>{loadingNewTask || startingNewTask ? <><span className="spinner" />{startingNewTask ? 'Starting New Task' : 'New Task'}</> : <><MoreMenuIcon name="new-task" />New Task</>}</button><span className="more-menu-reason" role="status">{newTaskReason}</span></div>{onRenameWorktree !== undefined && <button onClick={() => { setMenuOpen(false); onRenameWorktree(); }}><MoreMenuIcon name="rename" />Rename worktree</button>}{onTogglePin !== undefined && <button className="more-pin-toggle" aria-pressed={pinned === true} onClick={() => { setMenuOpen(false); onTogglePin(); }}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6Zm3 11v5" /></svg>{pinned ? 'Unpin worktree' : 'Pin worktree'}</button>}</div></FlyoutPortal>}</>;
 }
 
 // render an active agent
@@ -5271,7 +5359,7 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
   };
   // reserve Remote Agents repository updates for the reviewed host update flow
   const upstreamRebase = agent.projectId === 'remoteagents' ? null : <UpstreamRebaseBanner summary={agent.gitUpstream} onRebase={queueRebase} />;
-  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} browserProxied={projectBrowser.proxied} browserNavigationRequest={projectBrowser.navigationRequest} onBrowserNavigate={projectBrowser.navigate} onBrowserOpen={projectBrowser.openUrl} onBrowserClose={projectBrowser.close} terminalMode={swapped} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} pushAction={agent.push} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} statusSlot={statusSlot} historySlot={historySlot} />{tabBar}{upstreamRebase}<PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) }); if (response.ok) await promptHistory.refresh(); return response.ok; }} /><Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} sleeping={sleeping} swapping={swapping} swapped={swapped} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onRestartAs={!active && agent.worktreeId !== undefined ? { label: displayLabel, resolution: agent.launch, onLaunch: choice => void restart(choice) } : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSleep={!active && agent.worktreeId !== undefined ? () => void sleep() : undefined} onSwap={() => void changePaneMode()} onSelectTarget={onSelectTarget} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} projectProxied={agent.projectProxied} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} stack={agent.stack} review={review} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} statusSlotRef={setStatusSlot} historySlotRef={setHistorySlot} /></article>;
+  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} browserProxied={projectBrowser.proxied} browserNavigationRequest={projectBrowser.navigationRequest} onBrowserNavigate={projectBrowser.navigate} onBrowserOpen={projectBrowser.openUrl} onBrowserClose={projectBrowser.close} terminalMode={swapped} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} pushAction={agent.push} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} statusSlot={statusSlot} historySlot={historySlot} onSelectTarget={onSelectTarget} onOperationFeedback={onOperationFeedback} />{tabBar}{upstreamRebase}<PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) }); if (response.ok) await promptHistory.refresh(); return response.ok; }} /><Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} sleeping={sleeping} swapping={swapping} swapped={swapped} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onRestartAs={!active && agent.worktreeId !== undefined ? { label: displayLabel, resolution: agent.launch, onLaunch: choice => void restart(choice) } : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSleep={!active && agent.worktreeId !== undefined ? () => void sleep() : undefined} onSwap={() => void changePaneMode()} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} projectProxied={agent.projectProxied} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} stack={agent.stack} review={review} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} statusSlotRef={setStatusSlot} historySlotRef={setHistorySlot} /></article>;
 }
 
 function launchError(response: Response): Promise<string> {

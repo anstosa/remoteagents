@@ -9,7 +9,7 @@ test('guards deletion of an unpushed and unmerged branch', async ({ page }) => {
     // provide authenticated application state
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     // provide one worktree-backed agent
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready' }], projects: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', branch: 'feature/current', gitStatus: { files: 0, staged: 0, unstaged: 0, untracked: 0, conflicted: 0 }, title: 'Ready' }], projects: [] } });
     // disable push enrollment
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     // provide agent bootstrap data
@@ -26,8 +26,9 @@ test('guards deletion of an unpushed and unmerged branch', async ({ page }) => {
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'More options' }).click();
-  const branchOption = page.locator('.switch-branch-option', { hasText: 'feature/risky' });
+  await page.getByRole('button', { name: /^Git status:/u }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('tab', { name: 'Branches', exact: true }).click();
+  const branchOption = page.getByRole('group', { name: 'feature/risky', exact: true });
   const deleteButton = branchOption.getByRole('button', { name: 'Delete feature/risky' });
   const checkoutButton = branchOption.getByRole('button', { name: 'Checkout' });
   await expect(deleteButton).toHaveCSS('color', 'rgb(243, 139, 168)');
@@ -64,7 +65,7 @@ test('blocks deletion of a checked-out branch with uncommitted changes', async (
     // provide authenticated application state
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     // provide one worktree-backed agent
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready' }], projects: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', branch: 'feature/current', gitStatus: { files: 0, staged: 0, unstaged: 0, untracked: 0, conflicted: 0 }, title: 'Ready' }], projects: [] } });
     // disable push enrollment
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     // provide agent bootstrap data
@@ -81,8 +82,9 @@ test('blocks deletion of a checked-out branch with uncommitted changes', async (
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'More options' }).click();
-  await page.locator('.switch-branch-option', { hasText: 'feature/occupied' }).getByRole('button', { name: 'Delete feature/occupied' }).click();
+  await page.getByRole('button', { name: /^Git status:/u }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('tab', { name: 'Branches', exact: true }).click();
+  await page.getByRole('group', { name: 'feature/occupied', exact: true }).getByRole('button', { name: 'Delete feature/occupied' }).click();
 
   const dialog = page.getByRole('dialog', { name: 'Delete branch' });
   await expect(dialog.getByText('2 uncommitted changes')).toBeVisible();
