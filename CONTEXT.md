@@ -96,6 +96,32 @@ _Avoid_: Exchange, round, message pair
 A question the Agent is asking that the console can answer on the operator's behalf by choosing one of its options, whether the Agent wrote it as a file, reported it through its pane (Claude's `AskUserQuestion` payload, ADR 0006), or only drew it on the pane.
 _Avoid_: Choice list, structured question, parsed question, reported question (those name where it came from, not what it is)
 
+### Panes
+
+**Capture**:
+What a pane shows and has scrolled off, read from tmux at one instant. What the console reads a Turn or an Inline question from; never what a viewer watches.
+_Avoid_: Snapshot, frame, scrape, log text
+
+**Pane stream**:
+A pane program's output delivered to the browser byte for byte as it happens. What a viewer watches; the console never parses it.
+_Avoid_: Log feed, output channel, live capture
+
+**Size claim**:
+A panel's standing request that its pane be sized to the panel's grid, yielding to any smaller terminal attached to the window. One per window, held only while the panel is shown; the panel always conforms to the size the pane actually gets.
+_Avoid_: Viewport lease, pin, resize request
+
+**Panel**:
+One of the four things a tab shows side by side: agent, note, browser, terminal.
+_Avoid_: Pane (tmux's word), split, view
+
+**Terminal**:
+A pane shown as a Panel, whichever pane it is: a Console shell, a pane split by hand in an attached tmux, or the Agent's own.
+_Avoid_: Terminal mode, swap, interactive pane
+
+**Console shell**:
+A login shell pane the console created in a Worktree, marked so a launch never adopts it. It outlives the Agent and ends only when its shell exits or the operator ends it.
+_Avoid_: Shell pane, companion pane, landing shell (the wrapper's prompt left behind when an Agent exits)
+
 ### Operator state
 
 **Console-named conversation**:
