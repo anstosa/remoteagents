@@ -14,7 +14,7 @@ export const agentKindLabel: Record<AgentKind, string> = { codex: 'Codex', omx: 
 // The capability record the Dashboard publishes per registered kind (ADR 0002). The web
 // reads presence and reasons; it never re-derives capabilities. `sandbox*` stay undefined
 // until chunk 4 arms the sandbox, so every launch is unsandboxed here.
-export type AdapterCapability = { launchable: boolean; unavailableReason?: string; program?: string; stateSource: 'reported' | 'title' | 'both'; turnCapture: boolean; bookmarks: boolean; inlineQuestions: boolean; commands: boolean; sandbox: boolean; sandboxUnavailableReason?: string };
+export type AdapterCapability = { launchable: boolean; unavailableReason?: string; program?: string; stateSource: 'reported' | 'title' | 'both'; turnCapture: boolean; inlineQuestions: boolean; commands: boolean; sandbox: boolean; sandboxUnavailableReason?: string };
 export type AdapterCapabilities = Partial<Record<AgentKind, AdapterCapability>>;
 
 export type LaunchScope = 'worktree' | 'project' | 'scratch';

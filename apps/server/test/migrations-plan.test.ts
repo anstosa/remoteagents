@@ -5,7 +5,6 @@ import {
   isLegacyConfig,
   planMigration,
   resolutionRequests,
-  rewriteBookmarks,
   rewriteListStore,
   rewriteReviewTours,
   rewriteWorktreeRecords,
@@ -264,12 +263,6 @@ describe('data-store rewrites', () => {
     expect(count).toBe(2);
     expect(value.proj).toEqual([{ id: 'n1', text: 'a' }, { id: 'n2', text: 'b' }]);
     expect(value.scratch_abc).toEqual([{ id: 'n3', text: 'c' }]);
-  });
-  it('back-fills a missing bookmark kind', () => {
-    const raw = { a: [{ id: 'b1', threadId: 't', title: 'x', createdAt: '2026-01-01T00:00:00Z' }, { id: 'b2', threadId: 't2', title: 'y', createdAt: '2026-01-01T00:00:00Z', kind: 'claude' }] };
-    const { value } = rewriteBookmarks(raw, { a: 'proj' });
-    expect((value.proj as { kind?: string }[])[0]!.kind).toBe('codex');
-    expect((value.proj as { kind?: string }[])[1]!.kind).toBe('claude');
   });
   it('keeps the newest review tour when two keys merge, whichever is encountered first', () => {
     const warnings: string[] = [];

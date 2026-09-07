@@ -460,7 +460,7 @@ export class DiscoveryService {
     return this.reportedConversationId(context) ?? (await context.adapter.discover?.(context.pane))?.id;
   }
 
-  // the pane's current conversation with its name, for bookmarking
+  // the pane's current Conversation with its name (the id resolved and its store name read)
   async conversation(id: string): Promise<Conversation | undefined> {
     const context = await this.conversationContext(id);
     if (context === undefined) return undefined;
@@ -471,8 +471,8 @@ export class DiscoveryService {
       const name = await context.adapter.readName?.(reported, context.pane.cwd);
       return { id: reported, ...(name === undefined ? {} : { title: name }) };
     }
-    // the fd-walk fallback seeds the bookmark from `discover`'s message-derived title,
-    // not the store name — no reported id means no cheap by-id `readName` read
+    // the fd-walk fallback takes `discover`'s message-derived title, not the store
+    // name — no reported id means no cheap by-id `readName` read
     return await context.adapter.discover?.(context.pane);
   }
 

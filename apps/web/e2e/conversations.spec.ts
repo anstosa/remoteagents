@@ -26,7 +26,6 @@ async function mockConsole(page: import('@playwright/test').Page, onConversation
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
     if (url.pathname === '/api/agents/agent-1/prompt-history') return route.fulfill({ json: { prompts: [] } });
     if (url.pathname === '/api/worktrees/cora/notes' && request.method() === 'GET') return route.fulfill({ json: { notes: [] } });
-    if (url.pathname === '/api/worktrees/cora/bookmarks' && request.method() === 'GET') return route.fulfill({ json: { bookmarks: [], canResume: true } });
     if (url.pathname === '/api/worktrees/cora/conversations' && request.method() === 'GET') {
       onConversations?.(url);
       return route.fulfill({ json: { conversations, canResume: true } });
@@ -111,7 +110,6 @@ async function mockResumableConsole(page: import('@playwright/test').Page, onSwi
     ], projects: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ json: { conversations: resumableConversations, canResume: true } });
-    if (url.pathname.endsWith('/bookmarks') && request.method() === 'GET') return route.fulfill({ json: { bookmarks: [], canResume: true } });
     if (url.pathname.endsWith('/notes') && request.method() === 'GET') return route.fulfill({ json: { notes: [] } });
     if (url.pathname.endsWith('/tickets')) return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname.endsWith('/saved-prompts')) return route.fulfill({ json: { prompts: [] } });
@@ -160,7 +158,7 @@ test('keeps the dialog open and shows the reason when a same-Worktree resume fai
   await page.goto('/');
   const dialog = await openDialog(page);
   await dialog.locator('.conversation-row', { hasText: 'Release plan review' }).locator('button.conversation-choice').click();
-  // the dialog stays put and surfaces the server's reason inline, as the bookmark switch does
+  // the dialog stays put and surfaces the server's reason inline on a same-Worktree resume
   await expect(dialog).toBeVisible();
   await expect(dialog.locator('.conversations-error')).toContainText('Close duplicate worktree agents');
 });
@@ -203,7 +201,6 @@ async function mockNamingConsole(page: import('@playwright/test').Page, options:
     if (url.pathname.endsWith('/saved-prompts')) return route.fulfill({ json: { prompts: [] } });
     if (url.pathname.endsWith('/prompt-history')) return route.fulfill({ json: { prompts: [] } });
     if (url.pathname.endsWith('/notes') && request.method() === 'GET') return route.fulfill({ json: { notes: [] } });
-    if (url.pathname.endsWith('/bookmarks') && request.method() === 'GET') return route.fulfill({ json: { bookmarks: [], canResume: true } });
     if (url.pathname.endsWith('/conversations') && request.method() === 'GET') {
       const listed = rows.map(row => row.current ? { ...row, consoleNamed: state.namedCurrent } : row);
       return route.fulfill({ json: { conversations: listed, canResume: true } });

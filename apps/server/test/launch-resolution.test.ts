@@ -10,7 +10,7 @@ vi.mock('../src/adapters/registry.js', () => ({
     Object.fromEntries(['codex', 'claude'].map(kind => [kind, {
       launchable: configs?.[kind]?.launchable ?? false,
       ...(configs?.[kind]?.unavailableReason === undefined ? {} : { unavailableReason: configs[kind]!.unavailableReason }),
-      stateSource: 'title', turnCapture: false, bookmarks: false, inlineQuestions: false, commands: false, sandbox: false,
+      stateSource: 'title', turnCapture: false, conversations: false, naming: false, inlineQuestions: false, commands: false, sandbox: false,
     }])),
 }));
 

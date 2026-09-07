@@ -212,8 +212,8 @@ export interface Adapter {
     rename?(name: string): ConversationRename;
     /**
      * The Conversation's current name, read from the agent's own store by id — the
-     * read-back after a console rename, and the seed name the bookmark-create route
-     * reads. The pane's `cwd` is supplied for Adapters (Claude) whose transcript is
+     * read-back after a console rename, and the name `discovery.conversation` reads
+     * for a pane. The pane's `cwd` is supplied for Adapters (Claude) whose transcript is
      * keyed by working directory; an Adapter that finds its store by id alone
      * (Codex) ignores it. `undefined` when the Conversation has no name, or on any
      * read error — an unknown id, an unknown cwd, or an unreadable/absent store.
@@ -296,7 +296,6 @@ export type AdapterCapability = {
   program?: string;
   stateSource: Adapter['stateSource'];
   turnCapture: boolean;
-  bookmarks: boolean;
   /** the Adapter lists its Named conversations (`conversations.list` present) */
   conversations: boolean;
   /** the Adapter renames a Conversation from the console (`conversations.rename` present) */

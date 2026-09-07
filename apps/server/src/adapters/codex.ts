@@ -14,7 +14,7 @@ export const codexAdapter: Adapter = {
   stateSource: 'title',
   recognizes: ({ comm, argv }) => isCodexCommand(comm, argv),
   inferState: codexInferState,
-  // Continue resumes the last conversation without a shell alias; a bookmark
+  // Continue resumes the last conversation without a shell alias; a resume
   // resumes an exact conversation by id. Fresh launches append nothing, so the
   // configured command runs unchanged.
   launch: ({ mode, conversationId }) => {

@@ -61,13 +61,12 @@ import { federationForwarder, verifyFederationRequest } from './integrations/fed
 import { IntegrationControlService } from './integrations/control/index.js';
 import { ServerAdminService } from './server-admin/service.js';
 import { CodexAccountService, safeAccountId, type AccountRateLimitWindow, type AccountSummary } from './accounts/index.js';
-import { BookmarkService } from './bookmarks/service.js';
 import { ConsoleNamedConversationService, type ConsoleNamedConversation } from './conversations/console-named-service.js';
 import { isUpdateAdvisorForTarget, isUpdateAdvisorLabel, updateAdvisorLabel, updateAdvisorPendingLabel } from './update-advisor.js';
 import { isFullGitSha } from './git/revision.js';
 import { AgentUpdateService, type AgentUpdateServiceLike } from './agent-updates/service.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; conversationNamePollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; bookmarks?: BookmarkService; consoleNamed?: ConsoleNamedConversationService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'> };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; conversationNamePollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; consoleNamed?: ConsoleNamedConversationService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'> };
 // derive one stable opaque scratch persistence group
 const scratchSaveKey = (workspace: string) => `scratch_${createHash('sha256').update(workspace).digest('base64url').slice(0, 40)}`;
 // bound full history scans
@@ -99,7 +98,7 @@ export function logFrame(last: string, value: string, refreshMetadata = false): 
 }
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, promptHistory, queuedPrompts, savedPrompts, undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new BookmarkService(); const consoleNamed = deps.consoleNamed ?? new ConsoleNamedConversationService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, promptHistory, queuedPrompts, savedPrompts, undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const consoleNamed = deps.consoleNamed ?? new ConsoleNamedConversationService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
   const temporaryPreviews = deps.temporaryPreviews ?? new TemporaryPreviewService();
   // freeze the checkout identity serving this process
   const deployedRevision = serverAdmin.revision();
@@ -682,7 +681,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return { targets };
   });
   const configuredWorktree = (id: string) => worktreeById(discovery.worktreesNow(), id);
-  // notes and bookmarks are Project-scoped: their shared key is the Worktree's projectId (ADR 0003)
+  // notes and console-named conversations are Project-scoped: their shared key is the Worktree's projectId (ADR 0003)
   const worktreeSaveKey = (id: string) => configuredWorktree(id)?.projectId;
   // resolve durable persistence for one live agent
   const agentPersistence = async (id: string) => {
@@ -793,41 +792,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const note = await notes.delete(persistence.saveKey, noteId);
     return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note;
   });
-  // list one worktree's shared chat bookmarks
-  app.get('/api/worktrees/:id/bookmarks', async (request, reply) => {
-    controlled(request);
-    const id = (request.params as { id: string }).id;
-    const agentId = (request.query as { agentId?: unknown }).agentId;
-    const saveKey = worktreeSaveKey(id);
-    // require one configured group
-    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
-    // reject malformed agent context
-    if (agentId !== undefined && (typeof agentId !== 'string' || !agentId)) return reply.code(400).send({ error: 'invalid agent' });
-    const stored = await bookmarks.list(saveKey);
-    // require one valid shared group
-    if (stored === undefined) return reply.code(400).send({ error: 'invalid bookmark group' });
-    // resolve current state only for a live agent open on this very worktree
-    const threadId = typeof agentId === 'string' ? await currentConversationOnWorktree(id, agentId) : undefined;
-    const currentBookmarkId = threadId === undefined ? undefined : stored.find(bookmark => bookmark.threadId === threadId)?.id;
-    return { bookmarks: stored, canResume: launch.canResumeConversation(id), ...(currentBookmarkId === undefined ? {} : { currentBookmarkId }) };
-  });
-  // list one live agent's chat bookmarks
-  app.get('/api/agents/:id/bookmarks', async (request, reply) => {
-    controlled(request);
-    const id = (request.params as { id: string }).id;
-    const persistence = await agentPersistence(id);
-    // require one current persistence group
-    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
-    const stored = await bookmarks.list(persistence.saveKey);
-    // require one valid shared group
-    if (stored === undefined) return reply.code(400).send({ error: 'invalid bookmark group' });
-    const threadId = await discovery.conversationId(id);
-    const currentBookmarkId = stored.find(bookmark => bookmark.threadId === threadId)?.id;
-    return { bookmarks: stored, canResume: persistence.worktree !== undefined && launch.canResumeConversation(persistence.worktree.id), ...(currentBookmarkId === undefined ? {} : { currentBookmarkId }) };
-  });
   // the current Conversation id of a live agent, but only when it is open on this very
   // Worktree — a sibling-Worktree agent, a stale agentId, or an unresolvable Conversation
-  // marks nothing current (shared by the conversations and bookmark listing routes)
+  // marks nothing current (used by the conversations listing route)
   const currentConversationOnWorktree = async (worktreeId: string, agentId: string): Promise<string | undefined> => {
     const target = await discovery.target(agentId);
     const targetWorktree = target === undefined ? undefined : configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
@@ -1020,66 +987,6 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (!agentKinds.includes(kind as AgentKind)) return reply.code(400).send({ error: 'invalid conversation' });
     const removed = await consoleNamed.remove(persistence.saveKey, kind as AgentKind, conversationId);
     return removed ? reply.code(204).send() : reply.code(404).send({ error: 'conversation record unavailable' });
-  });
-  // bookmark the current top-level Codex chat
-  app.post('/api/agents/:id/bookmarks', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
-    controlled(request, true);
-    const id = (request.params as { id: string }).id;
-    const persistence = await agentPersistence(id);
-    // require one live agent
-    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
-    const conversation = await discovery.conversation(id);
-    // require one exact pane-to-conversation mapping
-    if (conversation === undefined) return reply.code(409).send({ error: 'This agent has an ambiguous or unavailable conversation.' });
-    // `create` omits a `codex` kind on disk, so pass the kind through unconditionally
-    const bookmark = await bookmarks.create(persistence.saveKey, { threadId: conversation.id, title: conversation.title ?? `Conversation ${conversation.id.slice(0, 8)}`, createdAt: new Date().toISOString(), kind: persistence.agent.kind });
-    return bookmark === undefined ? reply.code(409).send({ error: 'This agent has an ambiguous or unavailable conversation.' }) : reply.code(201).send(bookmark);
-  });
-  // rename one shared chat bookmark
-  app.patch('/api/worktrees/:id/bookmarks/:bookmarkId', async (request, reply) => {
-    controlled(request, true);
-    const { id, bookmarkId } = request.params as { id: string; bookmarkId: string };
-    const saveKey = worktreeSaveKey(id);
-    const title = body(request).title;
-    // require one configured group
-    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
-    // require one bounded display title
-    if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid bookmark title' });
-    const renamed = await bookmarks.rename(saveKey, bookmarkId, title);
-    return renamed === undefined ? reply.code(404).send({ error: 'bookmark unavailable' }) : renamed;
-  });
-  // remove one shared chat bookmark
-  app.delete('/api/worktrees/:id/bookmarks/:bookmarkId', async (request, reply) => {
-    controlled(request, true);
-    const { id, bookmarkId } = request.params as { id: string; bookmarkId: string };
-    const saveKey = worktreeSaveKey(id);
-    // require one configured group
-    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
-    const removed = await bookmarks.remove(saveKey, bookmarkId);
-    return removed === undefined ? reply.code(404).send({ error: 'bookmark unavailable' }) : removed;
-  });
-  // rename one live agent chat bookmark
-  app.patch('/api/agents/:id/bookmarks/:bookmarkId', async (request, reply) => {
-    controlled(request, true);
-    const { id, bookmarkId } = request.params as { id: string; bookmarkId: string };
-    const persistence = await agentPersistence(id);
-    const title = body(request).title;
-    // require one current persistence group
-    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
-    // require one bounded display title
-    if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid bookmark title' });
-    const renamed = await bookmarks.rename(persistence.saveKey, bookmarkId, title);
-    return renamed === undefined ? reply.code(404).send({ error: 'bookmark unavailable' }) : renamed;
-  });
-  // delete one live agent chat bookmark
-  app.delete('/api/agents/:id/bookmarks/:bookmarkId', async (request, reply) => {
-    controlled(request, true);
-    const { id, bookmarkId } = request.params as { id: string; bookmarkId: string };
-    const persistence = await agentPersistence(id);
-    // require one current persistence group
-    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
-    const removed = await bookmarks.remove(persistence.saveKey, bookmarkId);
-    return removed === undefined ? reply.code(404).send({ error: 'bookmark unavailable' }) : removed;
   });
   // preview one configured worktree file
   app.post('/api/worktrees/:id/file-preview', async (request, reply) => {
@@ -1556,45 +1463,6 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     controlled(request, true);
     return await accounts.cancelAddAccount((request.params as { id: string }).id) ? reply.code(204).send() : reply.code(404).send({ error: 'ChatGPT login unavailable.' });
   });
-  // switch one worktree into an exact bookmarked Codex chat
-  app.post('/api/worktrees/:id/bookmarks/:bookmarkId/switch', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
-    controlled(request, true);
-    const { id, bookmarkId } = request.params as { id: string; bookmarkId: string };
-    const worktree = configuredWorktree(id);
-    // require one configured worktree
-    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
-    const bookmark = await bookmarks.get(worktree.projectId, bookmarkId);
-    // require one bookmark in the configured group
-    if (bookmark === undefined) return reply.code(404).send({ error: 'bookmark unavailable' });
-    // resume through the bookmark's own Adapter (absent kind = codex)
-    if (adapterFor(bookmark.kind ?? 'codex')?.conversations?.validId(bookmark.threadId) !== true) return reply.code(409).send({ error: 'This bookmark cannot be resumed.' });
-    // fail before any destructive handoff
-    if (!launch.canResumeConversation(worktree.id)) return reply.code(409).send({ error: 'Exact chat resume is not configured for this worktree.' });
-    const selectionMutationGeneration = prompts.mutationGeneration();
-    const current = await discovery.dashboard(true);
-    const open = current.agents.filter(agent => agent.worktreeId === worktree.id);
-    // avoid an ambiguous destructive handoff
-    if (open.length > 1) return reply.code(409).send({ error: 'Close duplicate worktree agents before switching chats.' });
-    const activeAgent = open[0];
-    // restart one existing idle agent safely, resuming through the bookmark's own Adapter
-    if (activeAgent !== undefined) {
-      const result = await restartIdleConfiguredAgent(activeAgent.id, worktree.id, prompts.mutationVersion(activeAgent.id), selectionMutationGeneration, bookmark.threadId, bookmark.kind ?? 'codex');
-      // return one successful replacement
-      if (result.status === 'restarted') return reply.code(201).send({ agentId: result.agentId });
-      // distinguish stale targets from active work
-      if (result.status === 'skipped') return reply.code(result.reason === 'unavailable' ? 404 : 409).send({ error: result.error });
-      return reply.code(result.reason === 'timed-out' ? 504 : 409).send({ error: result.error });
-    }
-    const before = new Set(current.agents.map(agent => agent.id));
-    // launch inactive worktrees directly into the bookmark, through its own Adapter
-    if (!await launch.resumeConversation(worktree.id, bookmark.threadId, bookmark.kind ?? 'codex')) return reply.code(409).send({ error: 'Could not resume the bookmarked chat.' });
-    const agent = await waitForAgent(before, worktree.id);
-    // surface slow or failed resume handoffs
-    if (agent === undefined) return reply.code(504).send({ error: `The bookmarked chat started, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
-    sleepingWorktrees.delete(worktree.id);
-    await dashboardUpdates.refresh().catch(() => undefined);
-    return reply.code(201).send({ agentId: agent.id });
-  });
   // resume a listed Conversation in its home Worktree. `:id` is the Conversation's home
   // Worktree; the body's `{ kind, id }` is one row of that Project's conversations list. A
   // shared codex-family rollout resumes under the Worktree's remembered Launch kind (ADR
@@ -1779,7 +1647,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // delete every record a Worktree leaves behind, keyed by its wire id: the pin and last-used
   // kind, the queued prompts, prompt history, saved prompts and the saved review tour, and the
   // sleeping tab — so a removed (then possibly recreated-at-the-same-path) Worktree leaves no
-  // stale trace. Project-scoped notes and bookmarks are shared and deliberately retained.
+  // stale trace. Project-scoped notes and console-named conversations are shared and deliberately retained.
   // Shared by Remove (one Worktree) and Prune (each orphaned record).
   const deleteWorktreeRecords = async (worktreeId: string): Promise<void> => {
     sleepingWorktrees.delete(worktreeId);

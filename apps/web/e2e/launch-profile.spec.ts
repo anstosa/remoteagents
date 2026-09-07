@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 
 // A configured, launchable adapter capability with the given program.
-const adapter = (program: string, extra: Record<string, unknown> = {}) => ({ launchable: true, program, stateSource: 'reported', turnCapture: false, bookmarks: true, inlineQuestions: false, commands: true, sandbox: false, ...extra });
+const adapter = (program: string, extra: Record<string, unknown> = {}) => ({ launchable: true, program, stateSource: 'reported', turnCapture: false, inlineQuestions: false, commands: true, sandbox: false, ...extra });
 const codex = adapter('/bin/codex', { stateSource: 'both', turnCapture: true });
 const claude = adapter('/bin/claude');
 

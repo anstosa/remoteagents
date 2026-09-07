@@ -66,8 +66,8 @@ async function openSettings(page: import('@playwright/test').Page, adapters: unk
 
 test('shows flat agent settings and the Codex accounts section', async ({ page }) => {
   const settingsPage = await openSettings(page, {
-    codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: false, commands: true, sandbox: false },
-    claude: { program: '/opt/claude', launchable: false, unavailableReason: '/opt/claude is not an executable file', stateSource: 'reported', turnCapture: false, bookmarks: false, inlineQuestions: false, commands: true, sandbox: false }
+    codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false },
+    claude: { program: '/opt/claude', launchable: false, unavailableReason: '/opt/claude is not an executable file', stateSource: 'reported', turnCapture: false, inlineQuestions: false, commands: true, sandbox: false }
   }, { defaultAgent: 'codex' });
   const agents = settingsPage.getByRole('radiogroup', { name: 'Agents' });
   await expect(agents).toBeVisible();
@@ -109,8 +109,8 @@ test('shows flat agent settings and the Codex accounts section', async ({ page }
 test('changes the server default agent without closing settings', async ({ page }) => {
   let selected: string | undefined;
   const settingsPage = await openSettings(page, {
-    codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: false, commands: true, sandbox: false },
-    claude: { program: '/opt/claude', launchable: true, stateSource: 'reported', turnCapture: false, bookmarks: false, inlineQuestions: false, commands: true, sandbox: false }
+    codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false },
+    claude: { program: '/opt/claude', launchable: true, stateSource: 'reported', turnCapture: false, inlineQuestions: false, commands: true, sandbox: false }
   }, { defaultAgent: 'codex', onDefaultAgent: kind => { selected = kind; } });
 
   const codex = settingsPage.getByRole('radio', { name: 'Codex' });
@@ -128,8 +128,8 @@ test('changes the server default agent without closing settings', async ({ page 
 
 test('shows agent versions, updates one agent, and aggregates availability on settings', async ({ page }) => {
   const adapters = {
-    codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: false, commands: true, sandbox: false },
-    omx: { program: '/usr/local/bin/omx', launchable: true, stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: false, commands: true, sandbox: false }
+    codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false },
+    omx: { program: '/usr/local/bin/omx', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false }
   };
   const settingsPage = await openSettings(page, adapters, {
     defaultAgent: 'omx',
@@ -164,7 +164,7 @@ test('shows agent versions, updates one agent, and aggregates availability on se
 });
 
 test('reports agent version check failures', async ({ page }) => {
-  const adapters = { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, bookmarks: true, inlineQuestions: false, commands: true, sandbox: false } };
+  const adapters = { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'title', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } };
   const settingsPage = await openSettings(page, adapters, { agentUpdates: [{ kind: 'codex', updateAvailable: false, error: 'Version check failed' }] });
   await expect(settingsPage.getByRole('alert')).toHaveText('Version check failed');
 });

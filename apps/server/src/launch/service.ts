@@ -247,8 +247,8 @@ export class LaunchService {
 
   // launch one agent directly in a non-git `directory` Project — the same in-place spawn
   // Scratch uses (a fresh session, no Worktree, no shell reuse), labeled with the Project
-  // so its tab reads as the Project and discovery keeps its notes/bookmarks under the
-  // Scratch persistence key for the directory. Only an available `directory` Project
+  // so its tab reads as the Project and discovery keeps its notes and console-named
+  // conversations under the Scratch persistence key for the directory. Only an available `directory` Project
   // launches this way: a `repository` Project launches through its Worktrees, and an
   // unavailable one has nothing to launch into. Remembers the kind under the Project scope.
   async launchProjectDirectory(projectId: string, kind?: AgentKind): Promise<boolean> {

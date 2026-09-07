@@ -12,7 +12,7 @@ const paneVariables = ['TMUX', 'TMUX_PANE'] as const;
  * itself. An Agent's reporter hook (ADR 0001) writes `@rac_attention` and
  * `@rac_session` on `$TMUX_PANE` and exits silently without it, so dropping the
  * pair with the rest of the runner's environment left every runner-started Claude
- * unable to report its state or be bookmarked. Only those two pass through; the
+ * unable to report its state or name its Conversation. Only those two pass through; the
  * console's secrets and everything else stay out. `source` is the runner's own
  * environment (a seam for tests; the runner runs under tmux, not the console).
  */

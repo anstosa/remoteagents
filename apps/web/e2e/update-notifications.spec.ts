@@ -21,7 +21,7 @@ async function serveConsole(page: Page, updates: unknown[], serverUpdate: { avai
     // restore one controlling session
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     // render settings on an empty console
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, adapters: { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'both', turnCapture: true, bookmarks: true, inlineQuestions: true, commands: true, sandbox: false } }, agents: [], projects: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, adapters: { codex: { program: '/usr/local/bin/codex', launchable: true, stateSource: 'both', turnCapture: true, inlineQuestions: true, commands: true, sandbox: false } }, agents: [], projects: [] } });
     // expose configured agent versions
     if (url.pathname === '/api/agents/updates') return route.fulfill({ json: { agents: updates } });
     // expose the upstream commit count

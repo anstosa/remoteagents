@@ -69,14 +69,13 @@ export type ResolutionRequests = { paths: string[]; programNames: string[] };
 export type ProjectCreated = { id: string; mergedFrom: string[] };
 
 /**
- * The old→new key maps for one data store, in old-config order. `notes`, `bookmarks`,
+ * The old→new key maps for one data store, in old-config order. `notes`,
  * `savedPrompts`, `queued` and `history` are array-valued stores; `reviewTours` and
  * `worktrees` are object-valued. Every map is keyed by the store's *old* key and yields
  * the *new* key; a source key absent from its map is left untouched.
  */
 export type DataKeyMaps = {
   notes: Record<string, string>;
-  bookmarks: Record<string, string>;
   savedPrompts: Record<string, string>;
   queued: Record<string, string>;
   history: Record<string, string>;
@@ -296,7 +295,7 @@ function worktreeOverride(defaults: LegacyWorktree, member: { entry: LegacyWorkt
 export function planMigration(raw: unknown, facts: ResolvedFacts): MigrationPlan {
   const errors: string[] = [];
   const warnings: string[] = [];
-  const keyMaps: DataKeyMaps = { notes: {}, bookmarks: {}, savedPrompts: {}, queued: {}, history: {}, reviewTours: {}, worktrees: {} };
+  const keyMaps: DataKeyMaps = { notes: {}, savedPrompts: {}, queued: {}, history: {}, reviewTours: {}, worktrees: {} };
   const pins: Record<string, boolean> = {};
   const labels: Record<string, string> = {};
   const projectsCreated: ProjectCreated[] = [];
@@ -342,9 +341,9 @@ export function planMigration(raw: unknown, facts: ResolvedFacts): MigrationPlan
       const realpath = canonicalEntryPath(entry, entryFacts);
       if (entryFacts.toplevel === undefined) warnings.push(`worktree ${oldId}: path is not a resolvable git checkout; its data is keyed by ${realpath} and can be cleared with Prune`);
       const worktreeKey = worktreeWireId(group.projectId, realpath);
-      // notes and bookmarks are Project-scoped: saveKey ?? id → <projectId>; a saveKey shared across repositories warns
-      if (keyMaps.notes[noteKey] !== undefined && keyMaps.notes[noteKey] !== group.projectId) warnings.push(`save key ${noteKey} spans repositories; its notes and bookmarks go to project ${keyMaps.notes[noteKey]}`);
-      else { keyMaps.notes[noteKey] = group.projectId; keyMaps.bookmarks[noteKey] = group.projectId; }
+      // notes are Project-scoped: saveKey ?? id → <projectId>; a saveKey shared across repositories warns
+      if (keyMaps.notes[noteKey] !== undefined && keyMaps.notes[noteKey] !== group.projectId) warnings.push(`save key ${noteKey} spans repositories; its notes go to project ${keyMaps.notes[noteKey]}`);
+      else keyMaps.notes[noteKey] = group.projectId;
       // saved prompts, queued prompts and history are Worktree-scoped: the live reader keys all
       // three by the Worktree wire id `<projectId>:<realpath>` (app.ts promptStorageKeyForAgent)
       keyMaps.savedPrompts[`worktree:${oldId}`] = worktreeKey;
@@ -402,7 +401,7 @@ function dedupeById(records: unknown[]): unknown[] {
 }
 
 /**
- * Rewrite one array-valued store (notes, bookmarks, saved prompts, queued prompts,
+ * Rewrite one array-valued store (notes, saved prompts, queued prompts,
  * history): re-key by `keyMap`, leave unmapped keys untouched, concatenate arrays that
  * merge onto one new key (deduped by `id`, old-config order), and optionally back-fill a
  * record field. `count` is the number of source keys re-keyed.
@@ -423,13 +422,6 @@ export function rewriteListStore(raw: unknown, keyMap: Record<string, string>, b
     out[newKey] = dedupeById([...existing, ...records]);
   }
   return { value: out, count };
-}
-
-// back-fill `kind: 'codex'` on a bookmark record that predates the kind field
-const backfillBookmarkKind = (record: unknown): unknown => (isObject(record) && record.kind === undefined ? { ...record, kind: 'codex' } : record);
-/** Rewrite `.data/bookmarks.json`, re-keying by Project and back-filling the Adapter `kind`. */
-export function rewriteBookmarks(raw: unknown, keyMap: Record<string, string>): { value: Json; count: number } {
-  return rewriteListStore(raw, keyMap, backfillBookmarkKind);
 }
 
 /**

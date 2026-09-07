@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { acquireConfig, migrationErrorLines } from './migrations/boot.js';
+import { retireBookmarks } from './conversations/retire-bookmarks.js';
 import { buildApp } from './app.js';
 import { DiscoveryService } from './discovery/service.js';
 import { TmuxAdapter } from './tmux/adapter.js';
@@ -19,7 +20,11 @@ if (existsSync(envFile)) process.loadEnvFile(envFile);
 const config = await acquireConfig().catch((error: unknown) => {
   for (const message of migrationErrorLines(error)) process.stderr.write(`Configuration invalid: ${message}\n`);
   process.exit(1);
-}); const tmux = new TmuxAdapter(); const worktreeStore = new WorktreeLaunchStore(); const discovery = new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const push = new PushService(); const worktreeManagement = new WorktreeManagementService(() => config.projects); const cleanup = new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement);
+});
+// retire any pre-existing Bookmark store once: log each saved bookmark and set the file aside
+// (Conversations replace bookmarks; ADR 0007). A missing file is a no-op, so this fires once.
+await retireBookmarks();
+const tmux = new TmuxAdapter(); const worktreeStore = new WorktreeLaunchStore(); const discovery = new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const push = new PushService(); const worktreeManagement = new WorktreeManagementService(() => config.projects); const cleanup = new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement);
 const notificationPollMs = Math.max(1_000, config.pollIntervalMs);
 const notifications = new AgentNotificationCoordinator(notification => push.notify(notification), Math.max(2_000, notificationPollMs * 2));
 const dashboardUpdates = new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews]));

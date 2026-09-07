@@ -13,7 +13,7 @@ import type { CompletionBaseline, CompletionEvent, Conversation, ConversationSum
  * `session_index.jsonl` sidecar. Roots are injectable through the same
  * environment variables the console has always used (`RAC_HOST_PROC`,
  * `CODEX_HOME`), so behaviour is unchanged from when this lived in
- * `discovery/processes.ts` and `bookmarks/service.ts`. ("Rollout" is Codex's own
+ * `discovery/processes.ts`. ("Rollout" is Codex's own
  * name for these `.jsonl` files; "Session" is reserved for tmux, per CONTEXT.md.)
  */
 
@@ -28,7 +28,7 @@ const maxCompletionScanBytes = 4 * 1024 * 1024;
 // bound the account-global session-index read to its recent tail. The sidecar is
 // append-only and last-write-wins, so the current name is at the file's end; a
 // smaller-than-cap file is read whole (a true forward read). `readName`'s callers
-// (the console read-back, the bookmark seed) target a recently active thread, whose
+// (the console read-back, the discover-time name) target a recently active thread, whose
 // line is near the tail. Above the cap the oldest threads' names fail *safe* — an
 // unread line yields `undefined` (a generic label), never a wrong name. A future
 // `list` that enumerates long-idle threads must not lean on this by-id read.
@@ -185,8 +185,8 @@ async function selectTopLevelRollout(refs: RolloutRef[]): Promise<{ id: string; 
  * only when unique among live panes) is the same privilege-free fallback
  * `codexRolloutBaseline` uses when a confined service cannot readlink the
  * pane's descriptors and the fd-walk finds nothing. Reproduces the old
- * `discovery.sessions` + `CodexBookmarkService.selectedSession` pair (now the
- * `BookmarkService` holds only persistence).
+ * `discovery.sessions` + `selectedSession` pair that resolved a pane to its
+ * exact rollout.
  */
 export async function discoverCodexConversation(pane: { pid: number; cwd?: string }): Promise<Conversation | undefined> {
   const selected = await paneRollout(pane);

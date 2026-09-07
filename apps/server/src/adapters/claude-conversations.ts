@@ -43,7 +43,7 @@ export function validClaudeSessionId(id: string): boolean {
 }
 
 // whitespace-normalize and clamp a title, so unbounded operator text never reaches
-// a Bookmark or the UI (mirrors Codex's `messageTitle`).
+// a Conversation row or the UI (mirrors Codex's `messageTitle`).
 function compactTitle(text: string): string | undefined {
   const normalized = text.replace(/\s+/gu, ' ').trim();
   if (normalized === '') return undefined;
@@ -102,7 +102,7 @@ async function sidecarCustomTitle(transcriptPath: string, id: string): Promise<s
  * The human title wins over any `ai-title` regardless of record order — Claude
  * re-emits an `ai-title` after every prompt boundary, so a renamed session's
  * transcript ends on a generated title the console must not show (the read-back
- * and bookmark bug). `undefined` on any error — an unknown id, an unknown cwd, or
+ * and renamed-session bug). `undefined` on any error — an unknown id, an unknown cwd, or
  * an unreadable/absent transcript. `cwd` locates the transcript and is required.
  */
 export async function claudeConversationName(id: string, cwd: string | undefined, env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {

@@ -32,11 +32,11 @@ describe('Codex conversation lookup', () => {
 
   it('discovers the pane top-level conversation and its title', async () => {
     const home = await codexHome();
-    const current = await writeSession(home, 'rollout-2026-08-20T12-00-00', { id: '0198c333-3333-7333-8333-333333333333', cwd: '/home/ubuntu/cora', prompt: 'Add shared worktree bookmarks with a useful title' });
+    const current = await writeSession(home, 'rollout-2026-08-20T12-00-00', { id: '0198c333-3333-7333-8333-333333333333', cwd: '/home/ubuntu/cora', prompt: 'Add a shared worktree control with a useful title' });
     process.env.CODEX_HOME = home;
     process.env.RAC_HOST_PROC = await fakeProc(123, [current]);
 
-    await expect(discoverCodexConversation({ pid: 123 })).resolves.toEqual({ id: '0198c333-3333-7333-8333-333333333333', title: 'Add shared worktree bookmarks with a useful title' });
+    await expect(discoverCodexConversation({ pid: 123 })).resolves.toEqual({ id: '0198c333-3333-7333-8333-333333333333', title: 'Add a shared worktree control with a useful title' });
   });
 
   it('ignores child threads and keeps the single top-level rollout', async () => {
@@ -51,12 +51,12 @@ describe('Codex conversation lookup', () => {
 
   it('falls back to the working-directory match when the fd-walk is blocked', async () => {
     const home = await codexHome();
-    await writeSession(home, 'rollout-2026-08-20T12-00-00', { id: '0198c666-6666-7666-8666-666666666666', cwd: '/home/ubuntu/cora', prompt: 'Bookmark me from a confined service' });
+    await writeSession(home, 'rollout-2026-08-20T12-00-00', { id: '0198c666-6666-7666-8666-666666666666', cwd: '/home/ubuntu/cora', prompt: 'Resolve me from a confined service' });
     process.env.CODEX_HOME = home;
     // no descriptors: a confined service cannot readlink the pane's fds
     process.env.RAC_HOST_PROC = await fakeProc(123, []);
 
-    await expect(discoverCodexConversation({ pid: 123, cwd: '/home/ubuntu/cora' })).resolves.toEqual({ id: '0198c666-6666-7666-8666-666666666666', title: 'Bookmark me from a confined service' });
+    await expect(discoverCodexConversation({ pid: 123, cwd: '/home/ubuntu/cora' })).resolves.toEqual({ id: '0198c666-6666-7666-8666-666666666666', title: 'Resolve me from a confined service' });
     // a non-matching directory resolves nothing rather than a stranger's conversation
     await expect(discoverCodexConversation({ pid: 123, cwd: '/home/ubuntu/other' })).resolves.toBeUndefined();
     await expect(discoverCodexConversation({ pid: 123 })).resolves.toBeUndefined();

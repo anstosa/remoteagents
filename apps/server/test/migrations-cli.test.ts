@@ -29,7 +29,7 @@ async function gitRepo(): Promise<{ root: string; repo: string }> {
 
 // data-file env pointing every store under the temp root, so no test touches the real .data
 const dataEnv = (root: string): NodeJS.ProcessEnv => ({
-  RAC_NOTES_FILE: join(root, 'notes.json'), RAC_BOOKMARKS_FILE: join(root, 'bookmarks.json'),
+  RAC_NOTES_FILE: join(root, 'notes.json'),
   RAC_SAVED_PROMPTS_FILE: join(root, 'saved.json'), RAC_QUEUED_PROMPTS_FILE: join(root, 'queued.json'),
   RAC_PROMPT_HISTORY_FILE: join(root, 'history.json'), RAC_REVIEW_TOURS_FILE: join(root, 'tours.json'),
   RAC_WORKTREES_FILE: join(root, 'worktrees.json'),

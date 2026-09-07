@@ -13,7 +13,6 @@ import {
   isLegacyConfig,
   planMigration,
   resolutionRequests,
-  rewriteBookmarks,
   rewriteListStore,
   rewriteReviewTours,
   rewriteWorktreeRecords,
@@ -35,7 +34,7 @@ export class MigrationError extends Error {
 type Store = { key: string; file: string; rewrite: (raw: unknown, plan: MigrationPlan, warnings: string[]) => { value: Record<string, unknown>; count: number }; createForWorktreeState?: boolean };
 
 /** The resolved paths of every re-keyed `.data` store; each defaults to its store's own default. */
-export type DataFilePaths = Partial<Record<'notes' | 'bookmarks' | 'savedPrompts' | 'queued' | 'history' | 'reviewTours' | 'worktrees', string>>;
+export type DataFilePaths = Partial<Record<'notes' | 'savedPrompts' | 'queued' | 'history' | 'reviewTours' | 'worktrees', string>>;
 
 export type MigrationDeps = {
   /** the config read path — `RAC_CONFIG`. */
@@ -75,7 +74,6 @@ function storePath(key: keyof DataFilePaths, envVar: string, fallback: string, d
 function stores(deps: MigrationDeps): Store[] {
   return [
     { key: 'notes', file: storePath('notes', 'RAC_NOTES_FILE', '.data/notes.json', deps), rewrite: (raw, plan) => rewriteListStore(raw, plan.keyMaps.notes) },
-    { key: 'bookmarks', file: storePath('bookmarks', 'RAC_BOOKMARKS_FILE', '.data/bookmarks.json', deps), rewrite: (raw, plan) => rewriteBookmarks(raw, plan.keyMaps.bookmarks) },
     { key: 'saved-prompts', file: storePath('savedPrompts', 'RAC_SAVED_PROMPTS_FILE', '.data/saved-prompts.json', deps), rewrite: (raw, plan) => rewriteListStore(raw, plan.keyMaps.savedPrompts) },
     { key: 'queued-prompts', file: storePath('queued', 'RAC_QUEUED_PROMPTS_FILE', '.data/queued-prompts.json', deps), rewrite: (raw, plan) => rewriteListStore(raw, plan.keyMaps.queued) },
     { key: 'prompt-history', file: storePath('history', 'RAC_PROMPT_HISTORY_FILE', '.data/prompt-history.json', deps), rewrite: (raw, plan) => rewriteListStore(raw, plan.keyMaps.history) },

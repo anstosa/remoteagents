@@ -49,7 +49,6 @@ export function adapterCapabilities(configs: AdapterConfigs): Partial<Record<Age
       ...(configured?.program === undefined ? {} : { program: configured.program }),
       stateSource: adapter.stateSource,
       turnCapture: adapter.turns !== undefined,
-      bookmarks: adapter.conversations !== undefined,
       conversations: adapter.conversations?.list !== undefined,
       naming: adapter.conversations?.rename !== undefined,
       inlineQuestions: adapter.questions !== undefined,

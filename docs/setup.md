@@ -104,11 +104,11 @@ install, not the mise shim. Codex and OMX sit side by side, so some worktrees
 can run plain Codex and others OMX: the Launch menu offers both, and the console
 remembers which one each worktree used last. The console launches OMX with
 `--direct` (OMX's direct policy, which runs the Codex TUI in the pane and manages
-no HUD panes) and forwards Continue and Bookmark resumes as `resume --last` and
+no HUD panes) and forwards Continue and Conversation resumes as `resume --last` and
 `resume <id>`; `--direct` and `--tmux` are reserved, so a copy in `args` is
 dropped with a boot warning. An OMX pane is badged OMX, the plain-Codex team
-workers OMX spawns stay hidden from the dashboard, and Bookmarks stay pinned to
-the kind they were taken under.
+workers OMX spawns stay hidden from the dashboard, and a listed Codex Conversation
+resumes under the kind the worktree last used (codex or omx).
 
 The Codex-only features — review tour, ChatGPT accounts, update advisor, the
 app-server command catalog — still read `adapters.codex`; an OMX-only
@@ -170,8 +170,8 @@ kind.
 ```
 
 With `adapters.claude` configured, launching Claude Code from the console gives
-accurate Attention state, Enter-submitted prompts, safe interrupts, and Bookmarks
-with titles. The console never touches anything under `~/.claude`: on every launch
+accurate Attention state, Enter-submitted prompts, safe interrupts, and named
+Conversations. The console never touches anything under `~/.claude`: on every launch
 and resume it passes `--settings` pointing at a console-owned file it renders at
 boot into `<RAC_ADAPTER_FILES_DIR ?? .data/adapters>/claude/hooks.json`. That file
 **only adds hooks** — Claude merges hook entries across settings levels, so your
@@ -182,9 +182,9 @@ the tmux pane options the console polls. Do not put `--settings`, `--continue`,
 `adapters.claude.args`; the console composes those itself and drops them with a
 boot warning.
 
-To get the same state and Bookmarks for Claude sessions you start **by hand**
-(the console reads a hookless session as permanently *finished* and offers it no
-Bookmarks), add the same script as an optional dotfile hook in your own
+To get the same state and Conversation naming for Claude sessions you start **by hand**
+(the console reads a hookless session as permanently *finished* and cannot name
+it), add the same script as an optional dotfile hook in your own
 `~/.claude/settings.json`, for example on `UserPromptSubmit`:
 
 ```json
@@ -208,7 +208,7 @@ reads (ADR 0006). A payload over 64 KiB is dropped, and any later report without
 
 **Known limitations.** A directory Claude has never opened shows its trust dialog
 on first launch — the console never pre-accepts it, so UI-created worktrees hit it
-once. A hookless session (see above) reads as *finished* and has no Bookmarks. Any
+once. A hookless session (see above) reads as *finished* and cannot be named from the console. Any
 text already in the input box concatenates with a console paste. Under the
 [host bridge](docker.md), set `RAC_HOST_REPOSITORY` to the host checkout path;
 without it `claude` (and `pi`) show as unavailable, because the injected file paths
@@ -402,7 +402,7 @@ is ahead of or behind its upstream:
 
 Removing a Worktree kills its idle shell, removes the checkout, and deletes its
 console records (pin, last-used kind, queued prompts, prompt history, sleeping
-tab). It never touches the Project-scoped bookmarks and notes its siblings share.
+tab). It never touches the Project-scoped notes and console-named conversations its siblings share.
 
 The active agent's **More → Branches** list also offers **Delete**. Its confirm
 reloads the same safety facts before deletion: a checked-out branch is blocked
@@ -421,15 +421,16 @@ confirm first. Under the Docker bridge a host checkout the container does not
 mount can *look* stale from inside the container — the confirm warns you, so
 prune only what you know is truly gone.
 
-### Shared bookmarks and notes
+### Shared conversations and notes
 
-Chat bookmarks, sticky notes and saved prompts belong to the **Project** and are
-shared automatically across all of its Worktrees, so related checkouts resume
-the same chats and use the same notes with no configuration. Queued prompts and
-prompt history stay per-Worktree. Scratch agents derive their own persistence
-group from the scratch workspace, so scratch agents opened in the same directory
-share entries across restarts; exact bookmark resume requires a configured
-Project (scratch agents have none).
+Console-named conversations, sticky notes and saved prompts belong to the
+**Project** and are shared automatically across all of its Worktrees, so related
+checkouts see the same named Conversations and use the same notes with no
+configuration. Queued prompts and prompt history stay per-Worktree. Scratch
+agents derive their own persistence group from the scratch workspace, so scratch
+agents opened in the same directory share entries across restarts; resuming a
+Conversation requires a configured Project (scratch agents can name and list
+their Conversations but cannot resume them).
 
 ### Migrating from `worktrees[]`
 
@@ -437,10 +438,12 @@ Upgrading from a `worktrees[]` configuration is automatic: **start the console
 once.** On the first boot it detects the legacy shape (a `worktrees` array, or a
 `command`/`newAgentCommand`/`launch`/`resumeCommand` key) and, in one eager pass
 driven by the config, rewrites the config to `projects[]` + `adapters.codex` and
-re-keys every `.data` store to the Projects model (notes and bookmarks by
-Project; saved prompts, queued prompts, history, review tours, pins and labels by
-Worktree). Distinct legacy `worktrees[]` labels are preserved as Worktree aliases
-when several entries collapse into one Project.
+re-keys every `.data` store to the Projects model (notes by Project; saved
+prompts, queued prompts, history, review tours, pins and labels by Worktree). A
+legacy `bookmarks.json` is retired on first boot instead of re-keyed — its
+entries are logged once and the file set aside as `.retired` — because
+Conversations replace bookmarks (ADR 0007). Distinct legacy `worktrees[]` labels
+are preserved as Worktree aliases when several entries collapse into one Project.
 Each rewritten file — the config included — gets a sibling `*.pre-projects.bak`
 holding the original, so the change is revertable; an existing backup is never
 overwritten. The boot log prints one report of what changed. A config already in
