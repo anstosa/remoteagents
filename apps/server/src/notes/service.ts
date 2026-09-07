@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { type Schedule, validSchedule } from '../schedule/types.js';
 
-export type WorktreeNote = { id: string; text: string; title?: string };
+export type WorktreeNote = { id: string; text: string; title?: string; schedule?: Schedule };
 type StoredNotes = Record<string, WorktreeNote[]>;
 
 const maxNotesPerWorktree = 50;
@@ -17,8 +18,8 @@ const validTitle = (value: string) => value.trim().length > 0 && value.length <=
 // validate persisted note data
 const validNote = (value: unknown): value is WorktreeNote => {
   if (value === null || typeof value !== 'object') return false;
-  const note = value as { id?: unknown; text?: unknown; title?: unknown };
-  return typeof note.id === 'string' && validNoteId(note.id) && typeof note.text === 'string' && validText(note.text) && (note.title === undefined || typeof note.title === 'string' && validTitle(note.title));
+  const note = value as { id?: unknown; text?: unknown; title?: unknown; schedule?: unknown };
+  return typeof note.id === 'string' && validNoteId(note.id) && typeof note.text === 'string' && validText(note.text) && (note.title === undefined || typeof note.title === 'string' && validTitle(note.title)) && (note.schedule === undefined || validSchedule(note.schedule));
 };
 const totalNoteLength = (stored: StoredNotes) => Object.values(stored).flat().reduce((total, note) => total + note.text.length + (note.title?.length ?? 0), 0);
 
@@ -79,6 +80,29 @@ export class WorktreeNoteService {
       const [note] = notes.splice(index, 1);
       if (notes.length === 0) delete stored[worktreeId];
       return note;
+    });
+  }
+
+  // set or replace one note's Schedule; validates the record's shape (the route validates
+  // target existence and cron parseability, which this store cannot see)
+  async setSchedule(worktreeId: string, noteId: string, schedule: Schedule): Promise<WorktreeNote | undefined> {
+    if (!validWorktreeId(worktreeId) || !validNoteId(noteId) || !validSchedule(schedule)) return undefined;
+    return await this.mutate(stored => {
+      const note = stored[worktreeId]?.find(candidate => candidate.id === noteId);
+      if (note === undefined) return undefined;
+      note.schedule = schedule;
+      return { ...note };
+    });
+  }
+
+  // remove one note's Schedule, keeping the note
+  async removeSchedule(worktreeId: string, noteId: string): Promise<WorktreeNote | undefined> {
+    if (!validWorktreeId(worktreeId) || !validNoteId(noteId)) return undefined;
+    return await this.mutate(stored => {
+      const note = stored[worktreeId]?.find(candidate => candidate.id === noteId);
+      if (note === undefined) return undefined;
+      delete note.schedule;
+      return { ...note };
     });
   }
 

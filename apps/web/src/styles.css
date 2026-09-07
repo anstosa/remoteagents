@@ -416,8 +416,11 @@ html.software-keyboard-open .tabs { display: none; }
 .notes-menu { position: absolute; z-index: var(--layer-popover); top: 0; right: calc(100% + .45rem); display: grid; width: max-content; max-width: calc(100vw - 1rem); max-height: min(22rem, 70vh, var(--flyout-available-height, 100vh)); gap: .35rem; overflow: auto; padding: .4rem; border: 1px solid color-mix(in srgb, var(--yellow) 45%, var(--surface-1)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 94%, transparent); box-shadow: 0 .8rem 2rem color-mix(in srgb, var(--crust) 80%, transparent); backdrop-filter: blur(10px); }
 .notes-menu .log-control { display: block; width: 100%; min-height: 2.6rem; overflow: hidden; padding: .55rem .65rem; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .note-row { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) auto; overflow: hidden; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: color-mix(in srgb, var(--surface-0) 52%, transparent); }
-.notes-menu .note-choice { min-width: 0; border: 0; border-radius: 0; background: transparent; }
-.note-menu-name { display: block; width: max-content; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.notes-menu .note-choice { display: flex; align-items: center; gap: .35rem; min-width: 0; border: 0; border-radius: 0; background: transparent; }
+.note-menu-name { display: block; min-width: 0; width: max-content; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.note-schedule-badge { display: inline-flex; flex-shrink: 0; align-items: center; color: var(--yellow); }
+.note-schedule-badge.paused { color: var(--subtext-0); }
+.note-schedule-badge svg { width: .9rem; height: .9rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .note-menu-actions { display: grid; grid-auto-flow: column; grid-auto-columns: 2.4rem; align-content: stretch; border-left: 1px solid var(--surface-1); }
 .notes-menu .note-menu-actions button { display: grid; width: 2.4rem; min-height: 2.6rem; padding: 0; place-items: center; border: 0; border-radius: 0; background: transparent; }
 .notes-menu .note-menu-actions button + button { border-left: 1px solid var(--surface-1); }
@@ -505,6 +508,40 @@ html.software-keyboard-open .tabs { display: none; }
 .note-pane header svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .note-pane textarea { width: 100%; min-height: 0; overflow: auto; resize: none; border: 0; border-radius: 0; padding: .8rem var(--edge); background: transparent; font-size: var(--output-font-size); line-height: 1.45; outline-offset: -2px; }
 .note-preview-interaction { display: grid; min-width: 0; min-height: 0; grid-template-rows: minmax(0, 1fr); overflow: hidden; }
+/* the note-pane head groups the toolbar and the Schedule editor into the grid's auto row */
+.note-pane-head { display: grid; min-width: 0; }
+.schedule-area { position: relative; border-bottom: 1px solid var(--surface-1); }
+.schedule-sentence { position: relative; display: grid; gap: .3rem; padding: .5rem .6rem .55rem; font-size: .72rem; line-height: 1.5; color: var(--subtext-1); }
+.schedule-line { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .4rem; }
+.schedule-slot { min-height: 1.9rem; padding: .15rem .45rem; border: 1px solid color-mix(in srgb, var(--yellow) 40%, var(--surface-1)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--surface-0) 60%, transparent); color: var(--text); font: inherit; font-weight: 600; }
+button.schedule-slot { cursor: pointer; }
+button.schedule-slot:not(:disabled):hover { border-color: var(--yellow); }
+button.schedule-slot:disabled { cursor: default; opacity: .7; }
+.schedule-slot.schedule-slot-static { display: inline-flex; align-items: center; gap: .3rem; border-style: dashed; color: var(--subtext-0); font-weight: 500; }
+.schedule-onoff { display: inline-flex; align-items: center; gap: .3rem; border-color: color-mix(in srgb, var(--green) 45%, var(--surface-1)); color: var(--green); }
+.schedule-onoff.off { border-color: var(--surface-1); color: var(--subtext-0); }
+.schedule-kind-mark { font-weight: 700; }
+.schedule-meta { display: grid; gap: .1rem; font-size: .66rem; color: var(--subtext-0); }
+.schedule-meta p { margin: 0; }
+.schedule-meta b { color: var(--text); font-weight: 600; }
+.schedule-next.paused { color: var(--subtext-0); }
+.schedule-last.bad { color: var(--red); }
+.schedule-foot { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .1rem; }
+.schedule-remove { min-height: 1.9rem; padding: .2rem .55rem; border: 1px solid color-mix(in srgb, var(--red) 55%, var(--surface-1)); border-radius: var(--control-radius); background: transparent; color: var(--red); font: inherit; font-size: .66rem; cursor: pointer; }
+.schedule-remove:disabled { opacity: .6; cursor: default; }
+.schedule-unscheduled .schedule-create { display: inline-flex; align-items: center; gap: .35rem; min-height: 2rem; padding: .25rem .55rem; border: 1px solid color-mix(in srgb, var(--yellow) 55%, var(--surface-1)); border-radius: var(--control-radius); background: transparent; color: var(--yellow); font: inherit; font-weight: 700; cursor: pointer; }
+.schedule-hint { margin: 0; font-size: .64rem; color: var(--subtext-0); }
+.schedule-hint b, .schedule-unscheduled b { color: var(--subtext-1); }
+.schedule-clock { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.schedule-popover { position: absolute; z-index: var(--layer-popover); left: .6rem; top: calc(100% - .3rem); display: grid; gap: .35rem; width: max-content; max-width: calc(100% - 1.2rem); padding: .5rem .6rem; border: 1px solid color-mix(in srgb, var(--yellow) 45%, var(--surface-1)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 96%, transparent); box-shadow: 0 .8rem 2rem color-mix(in srgb, var(--crust) 80%, transparent); backdrop-filter: blur(10px); }
+.schedule-popover-title { margin: 0; font-size: .58rem; letter-spacing: .08em; text-transform: uppercase; color: var(--subtext-0); }
+.schedule-presets { display: flex; flex-wrap: wrap; gap: .3rem; }
+.schedule-presets button { min-height: 1.9rem; padding: .2rem .5rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: transparent; color: var(--subtext-1); font: inherit; cursor: pointer; }
+.schedule-presets button[aria-pressed='true'] { border-color: var(--yellow); background: color-mix(in srgb, var(--yellow) 22%, transparent); color: var(--text); }
+.schedule-popover input[type='time'] { min-height: 2rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); padding: .25rem .45rem; background: var(--mantle); color: var(--text); font: inherit; }
+.schedule-describe { margin: 0; font-size: .64rem; color: var(--subtext-1); }
+.schedule-preview { margin: 0; font-size: .64rem; color: var(--subtext-0); }
+.schedule-preview b { color: var(--text); font-weight: 600; }
 .note-markdown { height: 100%; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: .8rem var(--edge); color: var(--text); font-size: var(--output-font-size); line-height: 1.55; outline-offset: -2px; cursor: text; scrollbar-width: thin; user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; -webkit-overflow-scrolling: touch; }
 .note-markdown > :first-child { margin-top: 0; }
 .note-markdown > :last-child { margin-bottom: 0; }

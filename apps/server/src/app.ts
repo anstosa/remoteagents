@@ -33,7 +33,9 @@ import { CommandCatalogService } from './commands/service.js';
 import { LatestViewportScheduler, PaneViewportCoordinator } from './logs/viewport-scheduler.js';
 import { boundedViewport } from './logs/viewport.js';
 import { DashboardUpdates, type DashboardPayload } from './dashboard/updates.js';
-import { WorktreeNoteService } from './notes/service.js';
+import { WorktreeNoteService, type WorktreeNote } from './notes/service.js';
+import { cronError, previewRuns, scheduleNextRun } from './schedule/cron.js';
+import { type Schedule, validScheduleTarget } from './schedule/types.js';
 import { CleanupService } from './cleanup/service.js';
 import { PromptHistoryService } from './prompt-history/service.js';
 import { ProjectProxy } from './project-proxy.js';
@@ -683,6 +685,29 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const configuredWorktree = (id: string) => worktreeById(discovery.worktreesNow(), id);
   // notes and console-named conversations are Project-scoped: their shared key is the Worktree's projectId (ADR 0003)
   const worktreeSaveKey = (id: string) => configuredWorktree(id)?.projectId;
+  // the anchor for a Schedule's displayed next-run: a restart never replays a missed instant
+  const scheduleBootAt = new Date();
+  // decorate a note with its server-computed next run, so the display and the fire agree
+  const decorateNote = (note: WorktreeNote) => note.schedule === undefined ? note : { ...note, nextRun: scheduleNextRun(note.schedule, scheduleBootAt)?.toISOString() };
+  const decorateNotes = (stored: WorktreeNote[]) => stored.map(decorateNote);
+  // validate a set-schedule body into a Schedule, or return the operator-facing reason it was refused;
+  // launchability is checked at Run time, since configuration can change — here only existence and shape
+  const buildSchedule = (raw: Record<string, unknown>): Schedule | string => {
+    if (typeof raw.cron !== 'string' || raw.cron.length > 200) return 'invalid cron expression';
+    const error = cronError(raw.cron);
+    if (error !== undefined) return error;
+    if (typeof raw.kind !== 'string' || !(agentKinds as readonly string[]).includes(raw.kind)) return 'unknown agent kind';
+    const target = raw.target;
+    if (!validScheduleTarget(target)) return 'invalid schedule target';
+    if ('worktreeId' in target && configuredWorktree(target.worktreeId) === undefined) return 'target worktree not found';
+    if ('projectId' in target) {
+      const projectId = target.projectId;
+      const project = config.projects.find(candidate => candidate.id === projectId);
+      if (project === undefined || !project.available || project.mode !== 'directory') return 'target project unavailable';
+    }
+    if (typeof raw.enabled !== 'boolean') return 'invalid enabled flag';
+    return { cron: raw.cron, kind: raw.kind as AgentKind, target, enabled: raw.enabled, updatedAt: new Date().toISOString() };
+  };
   // resolve durable persistence for one live agent
   const agentPersistence = async (id: string) => {
     const target = await discovery.target(id);
@@ -696,7 +721,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const discovered = await discovery.dashboard();
     return discovered.agents.find(agent => agent.worktreeId === id)?.branch ?? discovered.projects.flatMap(project => project.worktrees).find(worktree => worktree.id === id)?.branch;
   };
-  app.get('/api/worktrees/:id/notes', async (request, reply) => { controlled(request); const id = (request.params as { id: string }).id; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const stored = await notes.list(saveKey); return stored === undefined ? reply.code(400).send({ error: 'invalid worktree' }) : { notes: stored }; });
+  app.get('/api/worktrees/:id/notes', async (request, reply) => { controlled(request); const id = (request.params as { id: string }).id; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const stored = await notes.list(saveKey); return stored === undefined ? reply.code(400).send({ error: 'invalid worktree' }) : { notes: decorateNotes(stored) }; });
   // pin or unpin one Worktree so an idle checkout keeps (or drops) its tab; the override
   // is stored in `.data`, discovery re-reads it on the next tick
   app.post('/api/worktrees/:id/pin', async (request, reply) => {
@@ -735,6 +760,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // rename one note
   app.patch('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); const title = body(request).title; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid note title' }); const note = await notes.rename(saveKey, noteId, title); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
   app.delete('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const note = await notes.delete(saveKey, noteId); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
+  // set or replace one note's Schedule
+  app.put('/api/worktrees/:id/notes/:noteId/schedule', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const schedule = buildSchedule(body(request)); if (typeof schedule === 'string') return reply.code(400).send({ error: schedule }); const note = await notes.setSchedule(saveKey, noteId, schedule); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
+  // remove one note's Schedule, keeping the note
+  app.delete('/api/worktrees/:id/notes/:noteId/schedule', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const note = await notes.removeSchedule(saveKey, noteId); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
   // list one live agent's notes
   app.get('/api/agents/:id/notes', async (request, reply) => {
     controlled(request);
@@ -742,7 +771,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // require one current persistence group
     if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
     const stored = await notes.list(persistence.saveKey);
-    return stored === undefined ? reply.code(400).send({ error: 'invalid note group' }) : { notes: stored };
+    return stored === undefined ? reply.code(400).send({ error: 'invalid note group' }) : { notes: decorateNotes(stored) };
   });
   // create one live agent note
   app.post('/api/agents/:id/notes', async (request, reply) => {
@@ -791,6 +820,35 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
     const note = await notes.delete(persistence.saveKey, noteId);
     return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note;
+  });
+  // set or replace one live agent note's Schedule
+  app.put('/api/agents/:id/notes/:noteId/schedule', async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const persistence = await agentPersistence(id);
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    const schedule = buildSchedule(body(request));
+    if (typeof schedule === 'string') return reply.code(400).send({ error: schedule });
+    const note = await notes.setSchedule(persistence.saveKey, noteId, schedule);
+    return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note);
+  });
+  // remove one live agent note's Schedule, keeping the note
+  app.delete('/api/agents/:id/notes/:noteId/schedule', async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const persistence = await agentPersistence(id);
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    const note = await notes.removeSchedule(persistence.saveKey, noteId);
+    return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note);
+  });
+  // preview a cron expression's next three instants in the console's own zone
+  app.get('/api/schedule/preview', async (request, reply) => {
+    controlled(request);
+    const cron = (request.query as { cron?: unknown }).cron;
+    if (typeof cron !== 'string' || cron.length > 200) return reply.code(400).send({ error: 'invalid cron expression' });
+    const error = cronError(cron);
+    if (error !== undefined) return reply.code(400).send({ error });
+    return { next: (previewRuns(cron, new Date(), 3) ?? []).map(run => run.toISOString()) };
   });
   // the current Conversation id of a live agent, but only when it is open on this very
   // Worktree — a sibling-Worktree agent, a stale agentId, or an unresolvable Conversation

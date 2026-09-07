@@ -106,6 +106,18 @@ _Avoid_: Bookmark, favourite, pinned conversation (Pinned is a Worktree word)
 A prompt accepted while the Agent was busy, held durably until it can be dispatched.
 _Avoid_: Pending prompt, backlog
 
+**Note**:
+Operator text kept with a Project, or with a Scratch directory, and edited in the console. The console's only saved text: what gets sent as a prompt, given a Schedule, or simply kept.
+_Avoid_: Saved prompt (retired), sticky note, snippet
+
+**Schedule**:
+A standing instruction on a Note: when to run it, with which Adapter, and in which target (a Worktree, a directory Project, or Scratch). At most one per Note; carries the outcome of its last Run.
+_Avoid_: Cron job, timer, recurring prompt
+
+**Run**:
+One firing of a Schedule. The console starts a fresh Conversation in the Schedule's own pane, launching one when there is none, and submits the Note's text as its first prompt. Recorded on the Schedule as launched, skipped, or failed.
+_Avoid_: Execution, job, invocation
+
 **Stack commands**:
 The Project's trusted start/stop/build/restart/migrate/status commands, run in their own tmux session.
 _Avoid_: Scripts, tasks

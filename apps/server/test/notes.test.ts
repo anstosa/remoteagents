@@ -49,6 +49,36 @@ describe('worktree notes', () => {
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
+  it('sets, replaces and removes a note Schedule, and drops it when the note is deleted', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-schedule-notes-'));
+    const file = join(directory, 'notes.json');
+    try {
+      const service = new WorktreeNoteService(file);
+      const note = await service.create('cora', 'Morning triage');
+      const daily = { cron: '0 9 * * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true, updatedAt: '2026-09-06T09:00:00-07:00' } as const;
+      await expect(service.setSchedule('cora', note!.id, daily)).resolves.toMatchObject({ id: note!.id, schedule: daily });
+      // a persisted Schedule survives a fresh service reading the same file
+      await expect(new WorktreeNoteService(file).list('cora')).resolves.toMatchObject([{ id: note!.id, schedule: daily }]);
+      const paused = { ...daily, enabled: false, updatedAt: '2026-09-06T10:00:00-07:00' } as const;
+      await expect(service.setSchedule('cora', note!.id, paused)).resolves.toMatchObject({ schedule: paused });
+      await expect(service.removeSchedule('cora', note!.id)).resolves.toEqual({ id: note!.id, text: '', title: 'Morning triage' });
+      // re-create a Schedule, then confirm deleting the note removes it
+      await service.setSchedule('cora', note!.id, daily);
+      await service.delete('cora', note!.id);
+      await expect(service.list('cora')).resolves.toEqual([]);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  it('rejects a structurally invalid Schedule and an unknown note', async () => {
+    const service = new WorktreeNoteService(join(tmpdir(), `rac-schedule-bad-${Date.now()}.json`));
+    const note = await service.create('cora');
+    const daily = { cron: '0 9 * * *', kind: 'claude', target: { scratch: true }, enabled: true, updatedAt: '2026-09-06T09:00:00-07:00' } as const;
+    await expect(service.setSchedule('cora', note!.id, { ...daily, kind: 'nope' } as never)).resolves.toBeUndefined();
+    await expect(service.setSchedule('cora', note!.id, { ...daily, target: { worktreeId: '' } } as never)).resolves.toBeUndefined();
+    await expect(service.setSchedule('cora', 'note-identifier-000', daily)).resolves.toBeUndefined();
+    await expect(service.removeSchedule('cora', 'note-identifier-000')).resolves.toBeUndefined();
+  });
+
   it('enforces the aggregate note text budget', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-bounded-notes-'));
     try {
