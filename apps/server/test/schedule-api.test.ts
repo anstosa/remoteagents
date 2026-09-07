@@ -110,9 +110,16 @@ describe('worktree note Schedules', () => {
       expect(badCron.statusCode).toBe(400);
       expect(badCron.json().error).toMatch(/hour/i);
       expect((await server.inject({ method: 'PUT', url, headers: mutate, payload: { ...daily, kind: 'nope' } })).statusCode).toBe(400);
-      expect((await server.inject({ method: 'PUT', url, headers: mutate, payload: { ...daily, target: { worktreeId: 'ghost' } } })).statusCode).toBe(400);
-      expect((await server.inject({ method: 'PUT', url, headers: mutate, payload: { ...daily, target: { projectId: 'proj' } } })).statusCode).toBe(400); // repository, not a directory
-      expect((await server.inject({ method: 'PUT', url, headers: mutate, payload: { ...daily, target: { projectId: 'gone-dir' } } })).statusCode).toBe(400);
+      // an unresolvable target is refused with an operator-facing reason, not just a status
+      const ghost = await server.inject({ method: 'PUT', url, headers: mutate, payload: { ...daily, target: { worktreeId: 'ghost' } } });
+      expect(ghost.statusCode).toBe(400);
+      expect(ghost.json().error).toMatch(/worktree/i);
+      const repo = await server.inject({ method: 'PUT', url, headers: mutate, payload: { ...daily, target: { projectId: 'proj' } } }); // repository, not a directory
+      expect(repo.statusCode).toBe(400);
+      expect(repo.json().error).toMatch(/project/i);
+      const goneDir = await server.inject({ method: 'PUT', url, headers: mutate, payload: { ...daily, target: { projectId: 'gone-dir' } } });
+      expect(goneDir.statusCode).toBe(400);
+      expect(goneDir.json().error).toMatch(/project/i);
     } finally { await server.close(); }
   });
 

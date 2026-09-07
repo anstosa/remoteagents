@@ -554,6 +554,20 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
 .schedule-cron-error { margin: 0; font-size: .62rem; color: var(--red); }
 .schedule-invalid .schedule-slot { border-color: color-mix(in srgb, var(--red) 45%, var(--surface-1)); }
 .schedule-invalid-note { margin: 0; font-size: .64rem; color: var(--red); }
+/* the with/on slots: the kind mark sits inline, and a vanished target reads red */
+.schedule-slot-kind { display: inline-flex; align-items: center; gap: .3rem; }
+.schedule-slot.schedule-slot-bad { border-color: color-mix(in srgb, var(--red) 55%, var(--surface-1)); color: var(--red); }
+.schedule-skip-note { color: var(--red); }
+.schedule-next.skip { color: var(--red); }
+.schedule-next.skip b { color: var(--red); }
+/* the Adapter and target pickers: a scrollable list of launcher-style rows in the slot popover */
+.schedule-picker { gap: .15rem; width: min(20rem, calc(100vw - 2.4rem)); max-height: min(22rem, 60vh); overflow-y: auto; overscroll-behavior: contain; }
+.schedule-rows { display: grid; gap: .1rem; }
+.schedule-picker-empty { margin: .2rem .1rem; font-size: .64rem; color: var(--subtext-0); }
+.schedule-proj-head { margin: .3rem .1rem 0; font-size: .56rem; letter-spacing: .07em; text-transform: uppercase; color: var(--subtext-0); }
+.schedule-target-sym { display: inline-flex; justify-content: center; width: 1.1rem; color: var(--overlay-1); font-weight: 700; }
+.schedule-target-removed { display: flex; align-items: center; gap: .35rem; margin: 0 .1rem .1rem; font-size: .62rem; color: var(--red); }
+.schedule-target-removed .schedule-target-sym { color: var(--red); }
 .note-markdown { height: 100%; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: .8rem var(--edge); color: var(--text); font-size: var(--output-font-size); line-height: 1.55; outline-offset: -2px; cursor: text; scrollbar-width: thin; user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; -webkit-overflow-scrolling: touch; }
 .note-markdown > :first-child { margin-top: 0; }
 .note-markdown > :last-child { margin-bottom: 0; }

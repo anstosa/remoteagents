@@ -275,6 +275,93 @@ test('refuses a raw cron that never runs', async ({ page }) => {
   expect((await emitted(page)).length).toBe(priorCount);
 });
 
+// the Adapter and target pickers reuse the launcher rows; the Adapter follows the target until pinned
+test('picks a target and an Adapter, the Adapter following the target until pinned', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mount(page);
+  const editor = editorOf(page);
+  await editor.getByRole('button', { name: 'Schedule this note' }).click();
+  // created on the prefill target (wt-main → Claude); both slots read the resolved sentence
+  await expect(editor.getByRole('button', { name: 'Agent' })).toContainText('Claude');
+  await expect(editor.getByRole('button', { name: 'Target' })).toHaveText('atlas · main worktree');
+
+  // the target picker lists Scratch, both atlas worktrees (main marked) and the directory Project
+  await editor.getByRole('button', { name: 'Target' }).click();
+  const targetPop = editor.getByRole('dialog', { name: 'Target' });
+  await expect(targetPop.getByRole('radio', { name: /Scratch/ })).toBeVisible();
+  await expect(targetPop.getByRole('radio', { name: /main worktree/ })).toBeVisible();
+  await expect(targetPop.getByRole('radio', { name: /feature/ })).toBeVisible();
+  await expect(targetPop.getByRole('radio', { name: /notes.*directory/ })).toBeVisible();
+  await expect(targetPop.getByRole('radio', { name: /main worktree/ })).toHaveAttribute('aria-checked', 'true');
+  // rows are grouped under their Project heading, and an unavailable target is disabled with its reason
+  await expect(targetPop.locator('.schedule-proj-head')).toHaveText(['atlas', 'notes']);
+  await expect(targetPop.getByRole('radio', { name: /locked/ })).toBeDisabled();
+  await expect(targetPop.getByRole('radio', { name: /locked/ })).toContainText('Worktree is locked');
+
+  // pick the directory Project (→ Codex): not pinned, so the Adapter follows the target to Codex
+  await targetPop.getByRole('radio', { name: /notes.*directory/ }).click();
+  expect(await lastBody(page)).toEqual({ cron: '0 9 * * *', kind: 'codex', target: { projectId: 'notes-dir' }, enabled: true });
+  await expect(editor.getByRole('button', { name: 'Agent' })).toContainText('Codex');
+  await expect(editor.getByRole('button', { name: 'Target' })).toHaveText('notes · directory');
+
+  // the Adapter picker reuses the launcher rows: an unconfigured kind is disabled with its reason
+  await editor.getByRole('button', { name: 'Agent' }).click();
+  const agentPop = editor.getByRole('dialog', { name: 'Agent' });
+  await expect(agentPop.getByRole('radio', { name: /Pi/ })).toBeDisabled();
+  // pin the Adapter to Claude explicitly
+  await agentPop.getByRole('radio', { name: 'Claude' }).click();
+  expect(await lastBody(page)).toEqual({ cron: '0 9 * * *', kind: 'claude', target: { projectId: 'notes-dir' }, enabled: true });
+
+  // retargeting to Scratch (→ Codex) now keeps the pinned Claude
+  await editor.getByRole('button', { name: 'Target' }).click();
+  await editor.getByRole('dialog', { name: 'Target' }).getByRole('radio', { name: /Scratch/ }).click();
+  expect(await lastBody(page)).toEqual({ cron: '0 9 * * *', kind: 'claude', target: { scratch: true }, enabled: true });
+});
+
+// a Schedule whose target has disappeared is kept and shown as unable to run, then recoverable
+test('renders a Schedule with a vanished target as unable to run', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mount(page, { cron: '0 9 * * *', kind: 'claude', target: { worktreeId: 'wt-removed' }, enabled: true });
+  const editor = editorOf(page);
+  const targetSlot = editor.getByRole('button', { name: 'Target' });
+  await expect(targetSlot).toHaveText('a removed worktree');
+  await expect(targetSlot).toHaveClass(/schedule-slot-bad/);
+  await expect(editor).toContainText('Runs are skipped until you pick another target');
+  await expect(editor.locator('.schedule-next')).toContainText('will be skipped');
+
+  // the picker names the removed target and offers the live ones; picking one clears the skip state
+  await targetSlot.click();
+  const targetPop = editor.getByRole('dialog', { name: 'Target' });
+  await expect(targetPop).toContainText('This target no longer exists');
+  await targetPop.getByRole('radio', { name: /main worktree/ }).click();
+  expect(await lastBody(page)).toEqual({ cron: '0 9 * * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true });
+  await expect(editor.getByRole('button', { name: 'Target' })).toHaveText('atlas · main worktree');
+  await expect(editor).not.toContainText('will be skipped');
+});
+
+// a stored kind that differs from its target's resolved kind is treated as pinned on mount, so
+// the Adapter does not follow a later retarget (the record carries no explicit flag; it is inferred)
+test('treats a stored kind unlike the resolved kind as a pin across retargets', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  // wt-main resolves to Claude, so a stored Codex kind reads as a deliberate pin
+  await mount(page, { cron: '0 9 * * *', kind: 'codex', target: { worktreeId: 'wt-main' }, enabled: true });
+  const editor = editorOf(page);
+  await expect(editor.getByRole('button', { name: 'Agent' })).toContainText('Codex');
+  // retarget to feature (resolves to Claude): the pin holds, so the kind stays Codex
+  await editor.getByRole('button', { name: 'Target' }).click();
+  await editor.getByRole('dialog', { name: 'Target' }).getByRole('radio', { name: /feature/ }).click();
+  expect(await lastBody(page)).toEqual({ cron: '0 9 * * *', kind: 'codex', target: { worktreeId: 'wt-feature' }, enabled: true });
+});
+
+// a vanished directory-Project target reads as a project, not a worktree
+test('labels a gone directory-Project target honestly', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mount(page, { cron: '0 9 * * *', kind: 'codex', target: { projectId: 'gone-dir' }, enabled: true });
+  const editor = editorOf(page);
+  await expect(editor.getByRole('button', { name: 'Target' })).toHaveText('an unavailable project');
+  await expect(editor.locator('.schedule-next')).toContainText('will be skipped');
+});
+
 // a stored expression the server can no longer parse renders as unable to run
 test('shows a stored cron that no longer parses as invalid', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });

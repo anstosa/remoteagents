@@ -23,8 +23,8 @@ import { UpstreamRebaseBanner, type GitUpstreamSummary } from './upstream-rebase
 import { useViewportFlyout } from './viewport-flyout.js';
 import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
 import { VoiceDialog, type VoiceWorktree } from './voice/voice-dialog.js';
-import { AdaptersContext, agentKindGlyph, agentKindLabel, agentKinds, configuredKinds, LaunchMenu, LaunchSplitButton, LaunchTabBadge, launchRequestInit, type AdapterCapabilities, type AgentKind, type LaunchChoice, type LaunchResolution } from './launch-profile.js';
-import { ScheduleEditor, scheduleInvalid, type Schedule, type ScheduleSetBody, type ScheduleTarget } from './schedule-editor.js';
+import { AdaptersContext, agentKindGlyph, agentKindLabel, agentKinds, configuredKinds, defaultSandboxed, LaunchMenu, LaunchSplitButton, LaunchTabBadge, launchRequestInit, originCopy, sandboxCopy, type AdapterCapabilities, type AgentKind, type LaunchResolution, type LaunchChoice } from './launch-profile.js';
+import { ScheduleEditor, scheduleInvalid, type Schedule, type ScheduleAdapterOption, type ScheduleSetBody, type ScheduleTarget, type ScheduleTargetOption } from './schedule-editor.js';
 import './styles.css';
 
 // the fields the web reads off the server's inline-question payload; the server
@@ -175,8 +175,9 @@ const isQueuedPrompt = (value: unknown): value is QueuedPrompt => value !== null
   && typeof (value as QueuedPrompt).createdAt === 'string'
   && ((value as QueuedPrompt).attachments === undefined || Array.isArray((value as QueuedPrompt).attachments) && (value as QueuedPrompt).attachments!.every(attachment => attachment !== null && typeof attachment === 'object' && typeof attachment.name === 'string' && Number.isInteger(attachment.size) && attachment.size >= 0));
 type WorktreeNote = { id: string; text: string; title?: string; schedule?: Schedule; nextRun?: string };
-// the read-only Adapter and target a new Schedule pre-fills with (the pickers arrive in a later ticket)
-type SchedulePrefill = { kind: AgentKind; target: ScheduleTarget; runsOnText: string };
+// the Adapter and target a new Schedule pre-fills with, plus the launcher rows the note pane's
+// Adapter and target pickers offer, all resolved from the dashboard for the active tab's context
+type SchedulePrefill = { kind: AgentKind; target: ScheduleTarget; runsOnText: string; adapters: ScheduleAdapterOption[]; targets: ScheduleTargetOption[] };
 type AssistantFile = { path: string; size: number };
 type AssistantPreviewImage = { mediaType: 'image/gif'|'image/jpeg'|'image/png'|'image/webp'; base64: string };
 type AssistantFilePreview = AssistantFile & { truncated: boolean } & ({ binary: true; image?: AssistantPreviewImage } | { binary: false; content: string });
@@ -3499,8 +3500,10 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     <button type="button" disabled={agentId === undefined} onClick={() => { if (agentId !== undefined) setPromptDraft(agentId, current => appendTextBlock(current, selectionToolbar.text)); }}>Add to prompt</button>
     <button type="button" onClick={() => void copySelection(selectionToolbar.text)}>Copy</button>
   </div>, document.body);
-  // the note-pane Schedule editor (variant C): always shown under the toolbar when a prefill resolves
-  const scheduleArea = schedulePrefill === undefined ? null : <div className="schedule-area"><ScheduleEditor schedule={activeNote?.schedule} nextRun={activeNote?.nextRun} prefill={{ kind: schedulePrefill.kind, target: schedulePrefill.target }} runsOnText={schedulePrefill.runsOnText} onSet={payload => void applySchedule(payload)} onRemove={() => void removeSchedule()} preview={previewSchedule} busy={scheduleBusy} /></div>;
+  // the note-pane Schedule editor (variant C): always shown under the toolbar when a prefill resolves.
+  // Keyed on the note id so switching notes remounts it — the editor holds per-note session state
+  // (whether the Adapter kind is still following the target), which must not leak across notes.
+  const scheduleArea = schedulePrefill === undefined ? null : <div className="schedule-area"><ScheduleEditor key={activeNote?.id} schedule={activeNote?.schedule} nextRun={activeNote?.nextRun} prefill={{ kind: schedulePrefill.kind, target: schedulePrefill.target }} runsOnText={schedulePrefill.runsOnText} adapterOptions={schedulePrefill.adapters} targetOptions={schedulePrefill.targets} onSet={payload => void applySchedule(payload)} onRemove={() => void removeSchedule()} preview={previewSchedule} busy={scheduleBusy} /></div>;
   const pane = activeNote === undefined ? null : <><section className={`note-pane${expanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onKeyDown={event => { if (event.key === 'Escape' && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><div className="note-pane-head"><header className="note-toolbar" role="toolbar" aria-label="Note actions">{renaming ? <form className="note-title-form" onSubmit={event => { event.preventDefault(); void saveTitle(); }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); setRenaming(false); } }}><input ref={titleEditorRef} aria-label="Note name" value={titleDraft} maxLength={120} disabled={renamePending} onChange={event => setTitleDraft(event.target.value)} /><button type="submit" disabled={renamePending || !titleDraft.trim()} aria-label="Save note name" title="Save note name"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={renamePending} aria-label="Cancel note rename" title="Cancel" onClick={() => setRenaming(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><strong title={activeNote.title ?? 'Note'}>{activeNote.title ?? 'Note'}</strong><button className="note-rename" type="button" disabled={deleting || renamePending} aria-label="Rename note" title="Rename note" onClick={() => { setTitleDraft(activeNote.title ?? ''); setRenaming(true); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button></>}{saveStatus === 'error' && <span className="note-save-status error" role="alert" aria-live="assertive">Unable to save</span>}{actionStatus && <span className={`note-action-status${copyState === 'error' || sendState === 'error' ? ' error' : ''}`} role={copyState === 'error' || sendState === 'error' ? 'alert' : 'status'}>{actionStatus}</span>}<button className={`note-copy${copyState === 'copied' ? ' copied' : ''}`} type="button" disabled={deleting} aria-label={copyState === 'copied' ? 'Note copied' : 'Copy note'} title={copyState === 'copied' ? 'Copied' : 'Copy note'} onClick={() => void copy()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={copyState === 'copied' ? 'm5 12 4 4L19 6' : 'M9 9h10v10H9zM5 15H4V5h10v1'} /></svg></button><button className="note-send" type="button" disabled={agentId === undefined || deleting || promptPending || !draft.trim()} aria-label="Send note as prompt" title={agentId === undefined ? 'Launch an agent to send this note' : 'Send note as prompt'} onClick={() => void send()}>{sendState === 'sending' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button><button className="note-delete" type="button" disabled={deleting || sendState === 'sending'} aria-label="Delete note" title="Delete note" onClick={remove}>{deleting ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button><button className="note-expand" type="button" disabled={deleting || sendState === 'sending'} aria-label={expanded ? 'Restore note' : 'Expand note'} title={expanded ? 'Restore note' : 'Expand note'} aria-pressed={expanded} onClick={toggleExpanded}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="note-close" type="button" disabled={deleting || sendState === 'sending'} aria-label="Close note" title="Close note" onClick={close}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{scheduleArea}</div>{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}</>;
   return { active: activeNote !== undefined, expanded: activeNote !== undefined && expanded, appendToActive, canAppendToActive, canCreate: !loading, control, createWithText: create, pane };
 }
@@ -6901,17 +6904,38 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const activeWorktree = item?.agent?.worktreeId === undefined ? undefined : worktrees.find(worktree => worktree.id === item.agent!.worktreeId);
   // the Project owning the active tab's Worktree, so an idle tab gates Remove on manageability
   const activeProject = data.projects.find(project => project.id === (item?.worktree?.projectId ?? item?.agent?.projectId));
-  // the read-only Schedule pre-fill for a note pane: the Project's main worktree, the directory
-  // itself for a directory Project, or Scratch — with that target's resolved launch kind
+  // the Schedule pre-fill and the note pane's Adapter/target picker rows for a note pane: the
+  // pre-fill is the Project's main worktree, the directory itself for a directory Project, or
+  // Scratch with that target's resolved launch kind; the pickers mirror the launcher's rows so a
+  // Schedule can retarget anywhere a Launch can.
   const resolveSchedulePrefill = (context: { projectId?: string }): SchedulePrefill => {
     const fallbackKind = (kind?: AgentKind) => kind ?? configuredKinds(data.adapters)[0] ?? 'claude';
+    const originFor = (resolution?: LaunchResolution) => originCopy(resolution?.origin);
+    // the Adapter picker rows: one per configured kind, with the launcher's sandbox line and reason
+    const adapters: ScheduleAdapterOption[] = configuredKinds(data.adapters).map(kind => {
+      const capability = data.adapters?.[kind];
+      return { kind, launchable: capability?.launchable === true, detail: sandboxCopy(kind, capability, defaultSandboxed(capability)), ...(capability?.unavailableReason === undefined ? {} : { unavailableReason: capability.unavailableReason }) };
+    });
+    // the target picker rows: Scratch, then every Project's worktrees (repository) or its own
+    // directory row, grouped by Project with the main worktree marked
+    const targets: ScheduleTargetOption[] = [{ target: { scratch: true }, label: 'Scratch', available: true, kind: fallbackKind(data.scratchLaunch?.kind), origin: originFor(data.scratchLaunch) }];
+    for (const project of data.projects) {
+      if (project.mode === 'directory') {
+        targets.push({ target: { projectId: project.id }, label: project.label, sublabel: 'directory', group: project.label, available: project.available, ...(project.available ? {} : { unavailableReason: project.unavailableReason ?? 'Project unavailable' }), kind: fallbackKind(project.launch?.kind), origin: originFor(project.launch) });
+        continue;
+      }
+      for (const worktree of project.worktrees) {
+        targets.push({ target: { worktreeId: worktree.id }, label: worktree.label, ...(worktree.main ? { sublabel: 'main worktree', main: true } : {}), group: project.label, available: worktree.available, ...(worktree.available ? {} : { unavailableReason: 'Worktree unavailable' }), kind: fallbackKind(worktree.launch?.kind ?? project.launch?.kind), origin: originFor(worktree.launch ?? project.launch) });
+      }
+    }
+    const rows = { adapters, targets };
     const project = context.projectId === undefined ? undefined : data.projects.find(candidate => candidate.id === context.projectId);
-    if (project !== undefined && project.mode === 'directory') return { target: { projectId: project.id }, kind: fallbackKind(project.launch?.kind), runsOnText: `${project.label} · directory` };
+    if (project !== undefined && project.mode === 'directory') return { target: { projectId: project.id }, kind: fallbackKind(project.launch?.kind), runsOnText: `${project.label} · directory`, ...rows };
     if (project !== undefined) {
       const main = project.worktrees.find(worktree => worktree.main) ?? project.worktrees[0];
-      if (main !== undefined) return { target: { worktreeId: main.id }, kind: fallbackKind(main.launch?.kind ?? project.launch?.kind), runsOnText: `${project.label} · main worktree` };
+      if (main !== undefined) return { target: { worktreeId: main.id }, kind: fallbackKind(main.launch?.kind ?? project.launch?.kind), runsOnText: `${project.label} · main worktree`, ...rows };
     }
-    return { target: { scratch: true }, kind: fallbackKind(data.scratchLaunch?.kind), runsOnText: 'Scratch' };
+    return { target: { scratch: true }, kind: fallbackKind(data.scratchLaunch?.kind), runsOnText: 'Scratch', ...rows };
   };
   const voiceContext = { server: serverInfo.name, serverUrl: serverInfo.url, openWorktrees: otherOpenWorktrees(data.agents, activeWorktreeId, worktreeLabelById), ...(activeWorktreeId === undefined ? {} : { worktreeId: activeWorktreeId, worktree: worktrees.find(worktree => worktree.id === activeWorktreeId)?.label ?? item?.agent?.worktreeLabel ?? (item?.agent === undefined ? activeWorktreeId : agentLabel(item.agent)) }), ...(item?.agent === undefined ? {} : { agentId: item.agent.id, agent: activeWorktree?.label ?? item.agent.worktreeLabel ?? agentLabel(item.agent) }) };
   const voiceDialog = davo.enabled ? <VoiceDialog name={davo.name} open={voiceOpen} callRequest={voiceCallRequest} context={voiceContext} request={request} onClose={closeVoice} onSelectWorktree={selectVoiceWorktree} onActiveChange={setVoiceActive} /> : null;

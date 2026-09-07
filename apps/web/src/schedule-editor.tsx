@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { agentKindGlyph, agentKindLabel, type AgentKind } from './launch-profile.js';
 
 // The wire shape of a Schedule (mirrors the server's `Schedule`). `updatedAt` and
@@ -8,6 +8,31 @@ export type ScheduleRunStatus = 'launched' | 'skipped' | 'failed';
 export type ScheduleLastRun = { at: string; status: ScheduleRunStatus; detail?: string; agentId?: string };
 export type Schedule = { cron: string; kind: AgentKind; target: ScheduleTarget; enabled: boolean; updatedAt?: string; lastRun?: ScheduleLastRun };
 export type ScheduleSetBody = { cron: string; kind: AgentKind; target: ScheduleTarget; enabled: boolean };
+
+// The Adapter picker's rows, one per configured kind, precomputed by the note pane so the editor
+// stays free of dashboard logic: `detail` is the launcher's sandbox line when launchable, else the
+// disabled reason. Choosing one writes the kind and marks the choice explicit.
+export type ScheduleAdapterOption = { kind: AgentKind; launchable: boolean; detail: string; unavailableReason?: string };
+// One target row, mirroring a launcher row: its wire target, the picker label/sublabel/grouping,
+// its availability, and the launch kind it resolves to — the Adapter follows this kind on a
+// target change until the operator picks a kind explicitly. The "Runs on" sentence is derived
+// from group/sublabel/label rather than stored, so the slot text and the row text can't drift.
+export type ScheduleTargetOption = { target: ScheduleTarget; label: string; sublabel?: string; group?: string; main?: boolean; available: boolean; unavailableReason?: string; kind: AgentKind; origin?: string };
+
+// two targets name the same destination when their single discriminant matches
+const sameScheduleTarget = (a: ScheduleTarget | undefined, b: ScheduleTarget | undefined): boolean => {
+  if (a === undefined || b === undefined) return false;
+  if ('scratch' in a) return 'scratch' in b;
+  if ('worktreeId' in a) return 'worktreeId' in b && a.worktreeId === b.worktreeId;
+  return 'projectId' in b && a.projectId === b.projectId;
+};
+const targetRowKey = (target: ScheduleTarget): string => 'scratch' in target ? 'scratch' : 'worktreeId' in target ? `wt:${target.worktreeId}` : `proj:${target.projectId}`;
+// the picker's leading glyph: Scratch, a directory Project, the main worktree, or another worktree
+const targetGlyph = (option: ScheduleTargetOption): string => 'scratch' in option.target ? '~' : 'projectId' in option.target ? '▤' : option.main === true ? '⌂' : '⎇';
+// the "Runs on" statement a target reads as, e.g. "atlas · main worktree" / "Scratch"
+const targetRunsOn = (option: ScheduleTargetOption): string => option.group === undefined ? option.label : `${option.group} · ${option.sublabel ?? option.label}`;
+// what the target slot reads when a stored target has vanished, honest about its shape
+const goneTargetLabel = (target: ScheduleTarget): string => 'projectId' in target ? 'an unavailable project' : 'a removed worktree';
 
 export const defaultScheduleCron = '0 9 * * *';
 
@@ -119,6 +144,9 @@ type ScheduleEditorProps = {
   nextRun?: string;
   prefill: { kind: AgentKind; target: ScheduleTarget };
   runsOnText: string;
+  // the launcher's kind rows and the target rows, precomputed from the dashboard by the note pane
+  adapterOptions: ScheduleAdapterOption[];
+  targetOptions: ScheduleTargetOption[];
   onSet: (body: ScheduleSetBody) => void | Promise<void>;
   onRemove: () => void | Promise<void>;
   // the server owns the clock and the parser, so the preview returns both the next instants and,
@@ -131,10 +159,11 @@ type ScheduleEditorProps = {
 const KindMark = ({ kind }: { kind: AgentKind }) => <span className={`schedule-kind-mark launch-kind-${kind}`} aria-hidden="true">{agentKindGlyph[kind]}</span>;
 
 // The note-pane Schedule editor: variant C, the sentence with tappable slots, on two
-// lines. Every change applies immediately by emitting the full set body; kind and
-// target render read-only for now (their pickers arrive in a later ticket).
-export function ScheduleEditor({ schedule, nextRun, prefill, runsOnText, onSet, onRemove, preview, busy = false, now = Date.now }: ScheduleEditorProps) {
-  const [openSlot, setOpenSlot] = useState<'cadence' | 'time' | null>(null);
+// lines. Every change applies immediately by emitting the full set body. The Adapter and
+// target slots open pickers built from the launcher rows; the Adapter follows the target's
+// resolved kind until the operator pins one, and a target that has vanished reads red.
+export function ScheduleEditor({ schedule, nextRun, prefill, runsOnText, adapterOptions, targetOptions, onSet, onRemove, preview, busy = false, now = Date.now }: ScheduleEditorProps) {
+  const [openSlot, setOpenSlot] = useState<'cadence' | 'time' | 'kind' | 'target' | null>(null);
   const [previewRuns, setPreviewRuns] = useState<string[]>([]);
   const [cronDraft, setCronDraft] = useState(() => schedule?.cron ?? defaultScheduleCron);
   const [cronFieldError, setCronFieldError] = useState<string | undefined>(undefined);
@@ -148,6 +177,23 @@ export function ScheduleEditor({ schedule, nextRun, prefill, runsOnText, onSet, 
   const edit: ScheduleEdit = rawCron ? { ...derived, preset: 'cron' } : derived;
   const kind = schedule?.kind ?? prefill.kind;
   const invalid = scheduleInvalid({ schedule, nextRun });
+  // the target row the stored Schedule points at; absent → its target has disappeared (a removed
+  // Worktree, an unavailable Project), so the Schedule is kept but shown as unable to run
+  const currentTarget = schedule?.target ?? prefill.target;
+  const currentTargetOption = targetOptions.find(option => sameScheduleTarget(option.target, currentTarget));
+  const gone = schedule !== undefined && currentTargetOption === undefined;
+  const targetText = currentTargetOption === undefined ? runsOnText : targetRunsOn(currentTargetOption);
+  // the current target's resolved launch kind and why, for the follow rule and the resolved-row mark
+  const resolvedKind = currentTargetOption?.kind;
+  const resolvedOrigin = currentTargetOption?.origin;
+  // Whether the operator has pinned the kind. A stored kind that differs from its target's resolved
+  // kind was chosen deliberately; otherwise the Adapter is still following the target. Once true, a
+  // target change no longer rewrites the kind.
+  const [kindExplicit, setKindExplicit] = useState(() => {
+    if (schedule === undefined) return false;
+    const option = targetOptions.find(candidate => sameScheduleTarget(candidate.target, schedule.target));
+    return option !== undefined && schedule.kind !== option.kind;
+  });
 
   // close the open popover on an outside click or Escape
   useEffect(() => {
@@ -179,6 +225,20 @@ export function ScheduleEditor({ schedule, nextRun, prefill, runsOnText, onSet, 
 
   const apply = (next: ScheduleSetBody) => { void onSet(next); };
   const applyEdit = (nextEdit: ScheduleEdit) => { if (schedule === undefined) return; apply({ cron: editToCron(nextEdit), kind: schedule.kind, target: schedule.target, enabled: schedule.enabled }); };
+  // pick an Adapter: the choice is explicit from now on, so it survives later target changes
+  const pickKind = (nextKind: AgentKind) => {
+    if (schedule === undefined) return;
+    setKindExplicit(true);
+    setOpenSlot(null);
+    apply({ cron, kind: nextKind, target: schedule.target, enabled: schedule.enabled });
+  };
+  // pick a target: unless the operator has pinned the kind, the Adapter follows the new target's
+  // resolved launch kind, so retargeting never leaves a stale kind behind
+  const pickTarget = (option: ScheduleTargetOption) => {
+    if (schedule === undefined) return;
+    setOpenSlot(null);
+    apply({ cron, kind: kindExplicit ? schedule.kind : option.kind, target: option.target, enabled: schedule.enabled });
+  };
   // choose a cadence preset: Cron just enters raw-editing mode (the expression is unchanged until
   // the field is applied); every other preset leaves raw mode and emits its canonical expression.
   // Clear the raw field here too, since a preset whose cron equals the stored one won't change the
@@ -216,7 +276,7 @@ export function ScheduleEditor({ schedule, nextRun, prefill, runsOnText, onSet, 
       <div className="schedule-sentence schedule-unscheduled" role="group" aria-label="Schedule" ref={rootRef}>
         <p className="schedule-line">
           <span>Not scheduled.</span>
-          <button type="button" className="schedule-create" disabled={busy} onClick={() => apply({ cron: defaultScheduleCron, kind: prefill.kind, target: prefill.target, enabled: true })}>
+          <button type="button" className="schedule-create" disabled={busy} onClick={() => { setKindExplicit(false); apply({ cron: defaultScheduleCron, kind: prefill.kind, target: prefill.target, enabled: true }); }}>
             <ClockGlyph />Schedule this note
           </button>
         </p>
@@ -239,13 +299,14 @@ export function ScheduleEditor({ schedule, nextRun, prefill, runsOnText, onSet, 
       </p>
       <p className="schedule-line">
         <span>with</span>
-        <span className="schedule-slot schedule-slot-static"><KindMark kind={kind} />{agentKindLabel[kind]}</span>
+        <button type="button" className="schedule-slot schedule-slot-kind" aria-label="Agent" aria-expanded={openSlot === 'kind'} disabled={busy} onClick={() => setOpenSlot(current => current === 'kind' ? null : 'kind')}><KindMark kind={kind} />{agentKindLabel[kind]}</button>
         <span>on</span>
-        <span className="schedule-slot schedule-slot-static">{runsOnText}</span>
+        <button type="button" className={`schedule-slot${gone ? ' schedule-slot-bad' : ''}`} aria-label="Target" aria-expanded={openSlot === 'target'} disabled={busy} onClick={() => setOpenSlot(current => current === 'target' ? null : 'target')}>{gone ? goneTargetLabel(currentTarget) : targetText}</button>
       </p>
       {invalid && <p className="schedule-invalid-note" role="alert">This schedule won’t run — its cron can’t be read or never matches a date. Edit it under Cadence or remove it.</p>}
       <div className="schedule-meta">
-        <p className={`schedule-next${enabled ? '' : ' paused'}`}>{nextRun === undefined ? 'Won’t run — invalid cron' : enabled ? <>Next <b>{formatInstant(nextRun)}</b></> : <>Paused · would next run <b>{formatInstant(nextRun)}</b></>}</p>
+        {gone && <p className="schedule-skip-note" role="alert">Runs are skipped until you pick another target.</p>}
+        <p className={`schedule-next${enabled ? '' : ' paused'}${gone && enabled && nextRun !== undefined ? ' skip' : ''}`}>{nextRun === undefined ? 'Won’t run — invalid cron' : !enabled ? <>Paused · would next run <b>{formatInstant(nextRun)}</b></> : gone ? <>Next <b>{formatInstant(nextRun)}</b> · will be skipped</> : <>Next <b>{formatInstant(nextRun)}</b></>}</p>
         <p className={`schedule-last${lastRun && lastRun.status !== 'launched' ? ' bad' : ''}`}>{lastRun === undefined ? 'Not run yet' : <>Last run {relativeAge(lastRun.at, now())} · <b>{lastRun.status}</b>{lastRun.detail ? `, ${lastRun.detail}` : ''}</>}</p>
       </div>
       <div className="schedule-foot">
@@ -288,6 +349,38 @@ export function ScheduleEditor({ schedule, nextRun, prefill, runsOnText, onSet, 
           <input type="time" aria-label="Set time" value={hhmm(edit.hour, edit.minute)} step={60} onChange={event => { const [hour, minute] = event.target.value.split(':').map(Number); if (Number.isFinite(hour) && Number.isFinite(minute)) applyEdit({ ...edit, hour, minute }); }} />
           <p className="schedule-describe">{describeCadence(edit)}</p>
           {previewRuns.length > 0 && <p className="schedule-preview">Next <b>{previewRuns.map(formatInstant).join(' · ')}</b></p>}
+        </div>
+      )}
+      {openSlot === 'kind' && (
+        <div className="schedule-popover schedule-picker" role="dialog" aria-label="Agent">
+          <p className="schedule-popover-title">Agent · {targetText}</p>
+          <div className="schedule-rows" role="radiogroup" aria-label="Agent">
+            {adapterOptions.length === 0 && <p className="schedule-picker-empty">No agents configured.</p>}
+            {adapterOptions.map(option => (
+              <button key={option.kind} type="button" role="radio" aria-checked={option.kind === kind} className="launch-row" disabled={!option.launchable} title={option.unavailableReason} onClick={() => pickKind(option.kind)}>
+                <KindMark kind={option.kind} />
+                <span className="launch-row-copy"><strong>{agentKindLabel[option.kind]}{option.kind === resolvedKind && resolvedOrigin !== undefined && <em> · {resolvedOrigin}</em>}</strong><small>{option.launchable ? option.detail : option.unavailableReason ?? 'Unavailable'}</small></span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {openSlot === 'target' && (
+        <div className="schedule-popover schedule-picker" role="dialog" aria-label="Target">
+          <p className="schedule-popover-title">Target · where the Run launches</p>
+          <div className="schedule-rows" role="radiogroup" aria-label="Target">
+            {gone && <p className="schedule-target-removed" role="note"><span className="schedule-target-sym" aria-hidden="true">✕</span> This target no longer exists. Pick another below.</p>}
+            {targetOptions.map((option, index) => {
+              const heading = option.group !== undefined && option.group !== targetOptions[index - 1]?.group;
+              return <Fragment key={targetRowKey(option.target)}>
+                {heading && <p className="schedule-proj-head">{option.group}</p>}
+                <button type="button" role="radio" aria-checked={sameScheduleTarget(option.target, currentTarget)} className="launch-row" disabled={!option.available} title={option.unavailableReason} onClick={() => pickTarget(option)}>
+                  <span className="schedule-target-sym" aria-hidden="true">{targetGlyph(option)}</span>
+                  <span className="launch-row-copy"><strong>{option.label}{option.sublabel !== undefined && <em> · {option.sublabel}</em>}</strong><small>{option.available ? <><KindMark kind={option.kind} /> {agentKindLabel[option.kind]}{option.origin !== undefined ? ` · ${option.origin}` : ''}</> : option.unavailableReason ?? 'Unavailable'}</small></span>
+                </button>
+              </Fragment>;
+            })}
+          </div>
         </div>
       )}
     </div>
