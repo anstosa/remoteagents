@@ -13,7 +13,7 @@ import { DeviceService } from './auth/devices.js';
 import { TicketStore, type TicketKind } from './auth/tickets.js';
 import { DiscoveryService } from './discovery/service.js';
 import { adapterFor } from './adapters/registry.js';
-import { agentKinds, type AgentKind } from './adapters/types.js';
+import { agentKinds, type AgentKind, type ConversationSummary } from './adapters/types.js';
 import { TmuxAdapter } from './tmux/adapter.js';
 import { maxPromptAttachments, maxPromptAttachmentBytes, PromptService, type PromptAttachment } from './prompts/service.js';
 import { validPrompt } from './prompts/validation.js';
@@ -45,7 +45,7 @@ import { ReviewTourService } from './review-tour/service.js';
 import { ReviewTourJobs } from './review-tour/jobs.js';
 import { ReviewTourStore } from './review-tour/store.js';
 import { parseReviewRequestId, parseReviewTourInput, REVIEW_REQUEST_BODY_BYTES, ReviewTourError, type ReviewErrorCode, type ReviewTourInput } from './review-tour/contracts.js';
-import { configuredWorktreeForWorkspace, projectIdOf, worktreeById, worktreeMatchesWorkspace, worktreePathOf, worktreeWireId } from './workspaces/resolver.js';
+import { configuredWorktreeForWorkspace, projectIdOf, worktreeById, worktreeHostRoot, worktreeMatchesWorkspace, worktreePathOf, worktreeWireId } from './workspaces/resolver.js';
 import { WorkspaceFileService } from './workspace-files/service.js';
 import { instanceIconSvg, isInstanceIcon } from './instance-icon.js';
 import { instanceAttention, RemoteInstanceStatusPoller, validInstanceStatusRequest, type InstanceStatus } from './instance-status.js';
@@ -72,6 +72,9 @@ const scratchSaveKey = (workspace: string) => `scratch_${createHash('sha256').up
 // bound full history scans
 const logMetadataRefreshMs = 30_000;
 const body = (request: FastifyRequest): Record<string, unknown> => (request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {});
+// one Named conversation on the wire: the Adapter's summary tagged with its kind, plus the
+// server-resolved Worktree, console-named flag and whether it is the current Conversation
+type ConversationRow = ConversationSummary & { kind: AgentKind; worktreeId?: string; consoleNamed: boolean; current: boolean };
 // parse an optional launch kind from a request body; a present-but-unknown value is rejected
 const requestedKind = (request: FastifyRequest): { kind?: AgentKind; invalid?: true } => {
   const value = body(request).kind;
@@ -802,17 +805,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const stored = await bookmarks.list(saveKey);
     // require one valid shared group
     if (stored === undefined) return reply.code(400).send({ error: 'invalid bookmark group' });
-    let currentBookmarkId: string | undefined;
-    // resolve current state only for the live worktree agent
-    if (typeof agentId === 'string') {
-      const target = await discovery.target(agentId);
-      const targetWorktree = target === undefined ? undefined : configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
-      // ignore stale or mismatched agent identities
-      if (targetWorktree?.id === id) {
-        const threadId = await discovery.conversationId(agentId);
-        currentBookmarkId = stored.find(bookmark => bookmark.threadId === threadId)?.id;
-      }
-    }
+    // resolve current state only for a live agent open on this very worktree
+    const threadId = typeof agentId === 'string' ? await currentConversationOnWorktree(id, agentId) : undefined;
+    const currentBookmarkId = threadId === undefined ? undefined : stored.find(bookmark => bookmark.threadId === threadId)?.id;
     return { bookmarks: stored, canResume: launch.canResumeConversation(id), ...(currentBookmarkId === undefined ? {} : { currentBookmarkId }) };
   });
   // list one live agent's chat bookmarks
@@ -828,6 +823,75 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const threadId = await discovery.conversationId(id);
     const currentBookmarkId = stored.find(bookmark => bookmark.threadId === threadId)?.id;
     return { bookmarks: stored, canResume: persistence.worktree !== undefined && launch.canResumeConversation(persistence.worktree.id), ...(currentBookmarkId === undefined ? {} : { currentBookmarkId }) };
+  });
+  // the current Conversation id of a live agent, but only when it is open on this very
+  // Worktree — a sibling-Worktree agent, a stale agentId, or an unresolvable Conversation
+  // marks nothing current (shared by the conversations and bookmark listing routes)
+  const currentConversationOnWorktree = async (worktreeId: string, agentId: string): Promise<string | undefined> => {
+    const target = await discovery.target(agentId);
+    const targetWorktree = target === undefined ? undefined : configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
+    return targetWorktree?.id === worktreeId ? discovery.conversationId(agentId) : undefined;
+  };
+  // a Project's current Worktree directories mapped to their Worktree id: the host-visible
+  // checkout root each Conversation is started in (the cwd an Adapter's `list` scans and
+  // reports on each row), so a listed row's directory resolves back to its Worktree
+  const projectConversationScope = (projectId: string): Map<string, string> => {
+    const scope = new Map<string, string>();
+    for (const worktree of discovery.worktreesNow()) if (worktree.projectId === projectId) scope.set(worktreeHostRoot(worktree), worktree.id);
+    return scope;
+  };
+  // list the Named conversations under these directories, resolve each row's Worktree and
+  // whether it is the current one, and order the union newest-active first (consoleNamed is
+  // always false until the naming ticket adds the console-named record store)
+  const listConversations = async (directories: readonly string[], scope: Map<string, string>, currentId: string | undefined): Promise<ConversationRow[]> => {
+    const listed = await discovery.conversations(directories);
+    const rows: ConversationRow[] = listed.map(row => {
+      const worktreeId = scope.get(row.directory);
+      return {
+        kind: row.kind,
+        id: row.id,
+        name: row.name,
+        ...(row.automatic === undefined ? {} : { automatic: row.automatic }),
+        lastActiveAt: row.lastActiveAt,
+        directory: row.directory,
+        ...(worktreeId === undefined ? {} : { worktreeId }),
+        consoleNamed: false,
+        current: currentId !== undefined && row.id === currentId,
+      };
+    });
+    rows.sort((left, right) => right.lastActiveAt - left.lastActiveAt);
+    return rows;
+  };
+  // list one Worktree's Project-wide Named conversations (every kind, every Worktree of the
+  // Project); an optional live agent open on this Worktree marks the current row
+  app.get('/api/worktrees/:id/conversations', async (request, reply) => {
+    controlled(request);
+    const id = (request.params as { id: string }).id;
+    const agentId = (request.query as { agentId?: unknown }).agentId;
+    const worktree = configuredWorktree(id);
+    // require one configured Worktree
+    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    // reject malformed agent context
+    if (agentId !== undefined && (typeof agentId !== 'string' || !agentId)) return reply.code(400).send({ error: 'invalid agent' });
+    const scope = projectConversationScope(worktree.projectId);
+    // resolve the current Conversation only for a live agent open on this very Worktree
+    const currentId = typeof agentId === 'string' ? await currentConversationOnWorktree(id, agentId) : undefined;
+    const conversations = await listConversations([...scope.keys()], scope, currentId);
+    return { conversations, canResume: launch.canResumeConversation(id) };
+  });
+  // list one live agent's Named conversations: its whole Project when it belongs to a
+  // Worktree, or just its own directory for a Scratch agent (no Worktree to resume into)
+  app.get('/api/agents/:id/conversations', async (request, reply) => {
+    controlled(request);
+    const id = (request.params as { id: string }).id;
+    const persistence = await agentPersistence(id);
+    // require one current agent target
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    const scope = persistence.worktree === undefined ? new Map<string, string>() : projectConversationScope(persistence.worktree.projectId);
+    const directories = persistence.worktree === undefined ? [persistence.agent.workspace] : [...scope.keys()];
+    const currentId = await discovery.conversationId(id);
+    const conversations = await listConversations(directories, scope, currentId);
+    return { conversations, canResume: persistence.worktree !== undefined && launch.canResumeConversation(persistence.worktree.id) };
   });
   // bookmark the current top-level Codex chat
   app.post('/api/agents/:id/bookmarks', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {

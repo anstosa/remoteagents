@@ -2641,6 +2641,35 @@ const bookmarkDate = (createdAt: string) => {
   return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(date);
 };
 
+// one Named conversation the server lists (a row of GET …/conversations); `consoleNamed`
+// is always false until the naming ticket adds the console-named record store
+type ListedConversation = { kind: AgentKind; id: string; name: string; automatic?: boolean; lastActiveAt: number; directory: string; worktreeId?: string; consoleNamed: boolean; current: boolean };
+// validate one listed conversation
+const isListedConversation = (value: unknown): value is ListedConversation => value !== null
+  && typeof value === 'object'
+  && agentKinds.includes((value as ListedConversation).kind)
+  && typeof (value as ListedConversation).id === 'string'
+  && typeof (value as ListedConversation).name === 'string'
+  && ((value as ListedConversation).automatic === undefined || typeof (value as ListedConversation).automatic === 'boolean')
+  && typeof (value as ListedConversation).lastActiveAt === 'number'
+  && typeof (value as ListedConversation).directory === 'string'
+  && ((value as ListedConversation).worktreeId === undefined || typeof (value as ListedConversation).worktreeId === 'string')
+  && typeof (value as ListedConversation).consoleNamed === 'boolean'
+  && typeof (value as ListedConversation).current === 'boolean';
+
+// how long ago a Conversation was last active, phone-friendly (from the prototype)
+const relativeAge = (at: number): string => {
+  const minute = 60_000, hour = 3_600_000, day = 86_400_000;
+  const elapsed = Math.max(0, Date.now() - at);
+  if (elapsed < minute) return 'just now';
+  if (elapsed < hour) return `${Math.round(elapsed / minute)} min ago`;
+  if (elapsed < day) return `${Math.round(elapsed / hour)} h ago`;
+  const days = Math.round(elapsed / day);
+  if (days === 1) return 'yesterday';
+  if (days < 14) return `${days} d ago`;
+  return `${Math.round(days / 7)} wk ago`;
+};
+
 // resolve one configured or scratch persistence API
 function persistenceResourceBase(worktreeId?: string, agentId?: string): string | undefined {
   // prefer stable configured worktree storage
@@ -2850,6 +2879,102 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
       if (event.key === 'Escape') { event.preventDefault(); setRenameDraft(undefined); }
     }}><input aria-label="Chat name" value={renameDraft.title} maxLength={120} autoFocus disabled={renamingId !== undefined} onChange={event => setRenameDraft({ id: bookmark.id, title: event.target.value })} /><button className="log-control bookmark-rename-save" type="submit" disabled={busy || !renameDraft.title.trim()} aria-label="Save chat name" title="Save chat name">{renamingId === bookmark.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>}</button><button className="log-control bookmark-rename-cancel" type="button" disabled={busy} aria-label="Cancel chat rename" title="Cancel" onClick={() => setRenameDraft(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><button className="log-control bookmark-choice" type="button" aria-current={current ? 'true' : undefined} disabled={busy || renameDraft !== undefined || !canResume} title={canResume ? bookmark.title : resumeUnavailable} onClick={() => void switchTo(bookmark)}>{switchingId === bookmark.id ? <span className="spinner" /> : <span className="bookmark-details"><strong>{bookmark.title}</strong><small>{bookmarkDate(bookmark.createdAt)}</small></span>}</button><span className="bookmark-actions"><button className="log-control bookmark-rename" type="button" disabled={busy || renameDraft !== undefined} aria-label={`Rename saved chat: ${bookmark.title}`} title="Rename saved chat" onClick={() => setRenameDraft({ id: bookmark.id, title: bookmark.title })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button><button className="log-control bookmark-delete" type="button" disabled={busy || renameDraft !== undefined} aria-label={`Delete saved chat: ${bookmark.title}`} title="Delete saved chat" onClick={() => void remove(bookmark)}>{deletingId === bookmark.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg>}</button></span></>}</div>;
   })}</div></FlyoutPortal>}</div>;
+  return { control };
+}
+
+// list a Project's Named conversations in a fly-out and a full-screen searchable dialog.
+// Read-only for now: the fly-out offers only "All conversations" and rows are not yet
+// tappable for resume (the naming and resume tickets add the Name field and switching).
+// The list is fetched when the control opens, never polled, so the console does no
+// background scan of the agents' stores.
+function useWorktreeConversations(worktreeId?: string, agentId?: string) {
+  const [conversations, setConversations] = useState<ListedConversation[]>();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const loadGeneration = useRef(0);
+  const resourceBase = persistenceResourceBase(worktreeId, agentId);
+  const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen, { placement: 'left', boundarySelector: '.log', boundaryRootSelector: '.agent-view, .worktree-view', contentSized: true });
+
+  // reset state between contexts, discarding any in-flight load from the previous context
+  useEffect(() => {
+    loadGeneration.current += 1;
+    setConversations(undefined);
+    setMenuOpen(false);
+    setDialogOpen(false);
+    setQuery('');
+    setLoading(false);
+    setError('');
+  }, [agentId, worktreeId]);
+
+  // compute one Project's conversation list on request
+  const load = useCallback(async () => {
+    // require one persistence context
+    if (resourceBase === undefined) return undefined;
+    const generation = ++loadGeneration.current;
+    setLoading(true);
+    setError('');
+    try {
+      // pass the live agent only when listing a worktree it is open on, so `current` resolves
+      const query = worktreeId === undefined || agentId === undefined ? '' : `?agentId=${encodeURIComponent(agentId)}`;
+      const response = await request(`${resourceBase}/conversations${query}`);
+      // require a successful list response
+      if (!response.ok) throw new Error('conversation list unavailable');
+      const payload: unknown = await response.json();
+      // validate every row
+      if (payload === null || typeof payload !== 'object' || !Array.isArray((payload as { conversations?: unknown }).conversations) || !(payload as { conversations: unknown[] }).conversations.every(isListedConversation)) throw new Error('invalid conversation list');
+      const loaded = (payload as { conversations: ListedConversation[] }).conversations;
+      // ignore a superseded load
+      if (generation !== loadGeneration.current) return undefined;
+      setConversations(loaded);
+      return loaded;
+    } catch {
+      // ignore a superseded failure
+      if (generation === loadGeneration.current) setError('Unable to load conversations');
+      return undefined;
+    } finally {
+      // retain loading state for the newest request
+      if (generation === loadGeneration.current) setLoading(false);
+    }
+  }, [agentId, resourceBase, worktreeId]);
+
+  // discard any in-flight load on unmount
+  useEffect(() => () => { loadGeneration.current += 1; }, []);
+
+  // toggle the fly-out, loading the list the first time it opens
+  const toggle = async () => {
+    // close an open menu
+    if (menuOpen) return setMenuOpen(false);
+    await load();
+    setMenuOpen(true);
+  };
+  // open the full-screen dialog with a fresh list and an empty search
+  const openDialog = async () => {
+    setMenuOpen(false);
+    setQuery('');
+    setDialogOpen(true);
+    await load();
+  };
+  const closeDialog = () => setDialogOpen(false);
+
+  // hide conversations without any persistence context
+  if (resourceBase === undefined) return { control: null };
+  // the closed control counts the console-named rows, as the bookmark control did (0 until
+  // the naming ticket lands the console-named record store)
+  const consoleNamedCount = conversations?.filter(conversation => conversation.consoleNamed).length ?? 0;
+  const total = conversations?.length ?? 0;
+  const label = `Conversations (${consoleNamedCount})`;
+  const needle = query.trim().toLocaleLowerCase();
+  // search matches the Conversation name and the agent kind label
+  const matches = (conversations ?? []).filter(conversation => needle === '' || conversation.name.toLocaleLowerCase().includes(needle) || agentKindLabel[conversation.kind].toLocaleLowerCase().includes(needle));
+
+  const row = (conversation: ListedConversation) => <li key={`${conversation.kind}:${conversation.id}`} className={`conversation-row${conversation.automatic ? ' automatic' : ''}${conversation.current ? ' current' : ''}`} aria-current={conversation.current ? 'true' : undefined}><span className={`conversation-mark launch-kind-${conversation.kind}`} aria-hidden="true">{agentKindGlyph[conversation.kind]}</span><span className="conversation-copy"><strong>{conversation.name}</strong><small>{agentKindLabel[conversation.kind]} · {relativeAge(conversation.lastActiveAt)}{conversation.automatic ? ' · automatic title' : ''}</small></span>{conversation.current && <em className="conversation-pill">CURRENT</em>}</li>;
+
+  const dialog = dialogOpen && createPortal(<div className="dialog conversations-dialog" role="dialog" aria-modal="true" aria-labelledby="conversations-dialog-title" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); closeDialog(); } }} onClick={event => { if (event.target === event.currentTarget) closeDialog(); }}><div><header><div><small>NAMED CONVERSATIONS</small><h2 id="conversations-dialog-title">Conversations</h2></div><button type="button" aria-label="Close conversations" title="Close" onClick={closeDialog}>×</button></header><div className="conversations-tools"><label className="conversations-search"><span className="sr-only">Search conversations</span><input type="search" value={query} placeholder="Search by name or agent" autoFocus onChange={event => setQuery(event.target.value)} /></label>{/* a block that applies to every row is stated once here, never per row */}<p className="conversations-note">Resuming a conversation from here arrives soon — this list is read-only for now.</p></div><div className="conversations-list">{loading && conversations === undefined ? <div className="conversations-loading" role="status"><span className="spinner" />Loading…</div> : error ? <p className="conversations-error" role="alert">{error}</p> : <><p className="conversations-heading">All named conversations</p>{matches.length === 0 ? <p className="conversations-empty">{total === 0 ? 'No named conversations in this project yet.' : 'No matches.'}</p> : <ul className="conversation-rows">{matches.map(row)}</ul>}</>}</div><footer><span>{total} named</span><button type="button" onClick={closeDialog}>Close</button></footer></div></div>, document.body);
+
+  const control = <div className="conversations-control" ref={anchorRef}><button className={`log-control page-arrow conversations-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.3 7.3L4 21l1.7-5.7A8 8 0 1 1 21 12Z" /></svg>}{consoleNamedCount > 0 && <span className="saved-prompts-count conversations-count" aria-hidden="true">{consoleNamedCount}</span>}</button>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div ref={flyoutRef} className="conversations-menu" style={flyoutStyle} aria-label="Conversations">{error && <p className="conversation-error" role="alert">{error}</p>}<button className="log-control conversations-all" type="button" onClick={() => void openDialog()}><span>All conversations</span><small>{total}</small></button></div></FlyoutPortal>}{dialog}</div>;
   return { control };
 }
 
@@ -4188,6 +4313,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
   const onMetadataRef = useRef(onMetadata);
   onMetadataRef.current = onMetadata;
   const worktreeBookmarks = useWorktreeBookmarks(worktreeId, id);
+  const worktreeConversations = useWorktreeConversations(worktreeId, id);
   const worktreeNotes = useWorktreeNotes(worktreeId, id, embedded ? undefined : latestAssistantMessage, embedded ? false : latestAssistantMessageOverflows, refreshHistory, history);
   const responseFiles = useLatestAssistantFiles(id, embedded ? undefined : latestAssistantMessage);
   const gitFilePreview = useFilePreview(`/api/agents/${encodeURIComponent(id)}/file-preview`);
@@ -4923,7 +5049,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
   };
   const gitSection = embedded ? null : <GitStatus id={id} worktreeId={worktreeId} branch={branch} summary={gitStatus} prSummary={gitPrStatus} expanded={toolbarExpanded === 'git'} onToggle={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'git' ? undefined : 'git'); }} onOpenFile={openGitFile} onReview={scope => { setToolbarExpanded(undefined); onReview?.(scope); }} reviewOpen={reviewOpen} reviewUnavailable={reviewUnavailable} pushAction={pushAction} pushPending={pushPending} onPush={queuePush} onSelectTarget={onSelectTarget} onOperationFeedback={onOperationFeedback} />;
   // distinguish retained output from live frames
-  const output = <div className={`log-output${cached ? ' cached' : ''}`}>{!embedded && <ServerSwitcher className="output-server-switcher" />}<div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'}><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{cached && <div className="log-cached-treatment" aria-hidden="true"><span>Cached view · reconnecting</span></div>}{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!terminalMode && <div className="log-controls-bottom"><div className="page-controls">{!embedded && cleanupControl}{!embedded && responseFiles.control}{!embedded && worktreeBookmarks.control}{!embedded && worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><div className="page-down-controls">{scrolledUp && <button className="log-control page-arrow back-to-bottom" aria-label="Back to bottom" title="Back to bottom" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(0)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19h14M6 8l6 6 6-6" /></svg></button>}<button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div>}</div></div>;
+  const output = <div className={`log-output${cached ? ' cached' : ''}`}>{!embedded && <ServerSwitcher className="output-server-switcher" />}<div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'}><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{cached && <div className="log-cached-treatment" aria-hidden="true"><span>Cached view · reconnecting</span></div>}{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!terminalMode && <div className="log-controls-bottom"><div className="page-controls">{!embedded && cleanupControl}{!embedded && responseFiles.control}{!embedded && worktreeBookmarks.control}{!embedded && worktreeConversations.control}{!embedded && worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><div className="page-down-controls">{scrolledUp && <button className="log-control page-arrow back-to-bottom" aria-label="Back to bottom" title="Back to bottom" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(0)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19h14M6 8l6 6 6-6" /></svg></button>}<button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div>}</div></div>;
   const browserPane = browserUrl === undefined || browserHomeUrl === undefined || onBrowserNavigate === undefined || onBrowserClose === undefined ? null : <ProjectBrowserPane url={browserUrl} homeUrl={browserHomeUrl} proxied={browserProxied} worktreeId={worktreeId} navigationRequest={browserNavigationRequest} onNavigate={onBrowserNavigate} onClose={onBrowserClose} />;
   return <section className={`log-shell${embedded ? ' embedded-log-shell' : ''}`}><div className={`log${embedded ? ' embedded-log' : ''}${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit worktreeId={worktreeId} output={output} note={embedded ? undefined : worktreeNotes.pane} browser={browserPane} /></div>{selectionActions}{!embedded && responseFiles.dialog}{!embedded && gitFilePreview.dialog}{!embedded && statusSlot && createPortal(gitSection, statusSlot)}{!embedded && historySlot && createPortal(historyToggle, historySlot)}</section>;
 }
@@ -5494,6 +5620,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
   const launchKind = pendingWorktreeLaunches.get(worktree.id)?.kind ?? worktree.launch?.kind;
   const presentation = inactiveWorktreePresentation(worktree.label, launchKind, { startingNewTask, restarting, turningOff, waking, launching, sleeping });
   const worktreeBookmarks = useWorktreeBookmarks(worktree.id);
+  const worktreeConversations = useWorktreeConversations(worktree.id);
   const worktreeNotes = useWorktreeNotes(worktree.id);
   const projectBrowser = useProjectBrowser(worktree.projectUrl, worktree.id, worktree.projectProxied);
   const filePreview = useFilePreview(`/api/worktrees/${encodeURIComponent(worktree.id)}/file-preview`);
@@ -5583,7 +5710,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
     : onRemove !== undefined
       ? <AgentPowerMenu mode="idle" pending={processing} onRemove={onRemove} onRename={onRename} {...(removeDisabledReason === undefined ? {} : { removeDisabledReason })} />
       : null;
-  const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className={`log-loading inactive${sleeping ? ' sleeping' : ''}`} role={processing || sleeping ? 'status' : undefined} aria-label={presentation.ariaLabel}>{processing ? <span className="spinner" /> : sleeping ? <svg className="sleeping-agent-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg> : null}<strong>{presentation.heading}</strong><span>{presentation.detail}</span>{sleeping && !processing && <button className="wake-agent" type="button" disabled={!worktree.available} onClick={() => void start()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>}</div><span className={`status log-status ${processing ? 'connecting' : sleeping ? 'sleeping' : 'inactive'}`}>{presentation.status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeBookmarks.control}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div>;
+  const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className={`log-loading inactive${sleeping ? ' sleeping' : ''}`} role={processing || sleeping ? 'status' : undefined} aria-label={presentation.ariaLabel}>{processing ? <span className="spinner" /> : sleeping ? <svg className="sleeping-agent-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg> : null}<strong>{presentation.heading}</strong><span>{presentation.detail}</span>{sleeping && !processing && <button className="wake-agent" type="button" disabled={!worktree.available} onClick={() => void start()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>}</div><span className={`status log-status ${processing ? 'connecting' : sleeping ? 'sleeping' : 'inactive'}`}>{presentation.status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeBookmarks.control}{worktreeConversations.control}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div>;
   const browserPane = projectBrowser.url === undefined || projectBrowser.homeUrl === undefined ? null : <ProjectBrowserPane url={projectBrowser.url} homeUrl={projectBrowser.homeUrl} proxied={projectBrowser.proxied} worktreeId={worktree.id} onNavigate={projectBrowser.navigate} onClose={projectBrowser.close} />;
   // keep worktree file inspection available in either composer layout
   const gitStatus = <GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} expanded={gitExpanded} onToggle={() => { /* toggle file inspection */ setGitExpanded(value => !value); }} onOpenFile={openGitFile} reviewUnavailable="Launch agent to review" />;

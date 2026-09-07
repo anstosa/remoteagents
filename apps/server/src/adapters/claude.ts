@@ -1,5 +1,5 @@
 import { basename } from 'node:path';
-import { claudeConfigDir, claudeConversationName, validClaudeSessionId } from './claude-conversations.js';
+import { claudeConfigDir, claudeConversationName, claudeConversationSummaries, validClaudeSessionId } from './claude-conversations.js';
 import { claudeSkillDirectories, claudeSlash } from './claude-commands.js';
 import { claudeFiles, claudeHooksFileName } from './claude-hooks.js';
 import { reportedClaudeQuestion } from './claude-questions.js';
@@ -84,6 +84,8 @@ export const claudeAdapter: Adapter = {
   },
   conversations: {
     validId: validClaudeSessionId,
+    // the Named Claude conversations under the Project's Worktree directories
+    list: (directories) => claudeConversationSummaries(directories),
     // Claude renames the current Conversation with `/rename <name>`, submitted as Enter
     rename: (name) => ({ text: `/rename ${name}`, keys: ['Enter'] }),
     readName: (id, cwd) => claudeConversationName(id, cwd),

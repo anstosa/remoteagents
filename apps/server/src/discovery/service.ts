@@ -7,12 +7,12 @@ import { TmuxAdapter } from '../tmux/adapter.js';
 import { ProcInspector, type ProcessInspector } from './processes.js';
 import { PullRequestService } from '../pull-requests/service.js';
 import { parseReportedAttention, resolveAttention } from '../adapters/attention.js';
-import { adapterCapabilities, adapterFor, paneExcluded } from '../adapters/registry.js';
+import { adapterCapabilities, adapterFor, adapters, paneExcluded } from '../adapters/registry.js';
 import { projectIdOf, worktreeMatchesWorkspace, worktreePathOf, worktreeWireId } from '../workspaces/resolver.js';
 import { gitCommonDir, listWorktrees, type WorktreeEntry } from '../git/worktrees.js';
 import { worktreeManagementAvailability } from '../worktrees/management.js';
 import type { WorktreeLaunchStore } from '../worktrees/store.js';
-import type { Adapter, AdapterConfigs, AttentionState, Conversation, InlineQuestion } from '../adapters/types.js';
+import type { Adapter, AdapterConfigs, AgentKind, AttentionState, Conversation, ConversationSummary, InlineQuestion } from '../adapters/types.js';
 import type { Agent, Dashboard, DashboardProject, DashboardWorktree, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, Project, SocketRef, Worktree } from '../domain/models.js';
 import { classifyReviewPath } from '../git/change-classification.js';
 import { isUpdateAdvisorLabel } from '../update-advisor.js';
@@ -474,6 +474,18 @@ export class DiscoveryService {
     // the fd-walk fallback seeds the bookmark from `discover`'s message-derived title,
     // not the store name — no reported id means no cheap by-id `readName` read
     return await context.adapter.discover?.(context.pane);
+  }
+
+  // The Named conversations under these directories across every registered kind that
+  // lists, each row tagged with its kind. A per-kind read failure contributes no rows for
+  // that kind rather than failing the whole union — the console only reads the agents'
+  // stores, never writes them, so a locked or absent store degrades to "nothing listed".
+  async conversations(directories: readonly string[]): Promise<Array<ConversationSummary & { kind: AgentKind }>> {
+    const perKind = await Promise.all(adapters
+      .filter(adapter => adapter.conversations?.list !== undefined)
+      .map(async adapter => (await adapter.conversations!.list!(directories).catch(() => []))
+        .map(summary => ({ ...summary, kind: adapter.kind }))));
+    return perKind.flat();
   }
   // the Worktrees discovered from every available Project (bare and stale entries
   // excluded), pins folded in, cached with the 30s git-metadata window until a console

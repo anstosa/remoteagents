@@ -438,6 +438,42 @@ html.software-keyboard-open .tabs { display: none; }
 .bookmark-rename-form svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .bookmark-error, .bookmark-warning { margin: 0; padding: .35rem .5rem; color: var(--red); font: 650 .64rem/1.35 var(--font-mono); }
 .bookmark-warning { color: var(--yellow); }
+/* conversations control: a fly-out with an "All conversations" entry that opens a full-screen searchable dialog */
+.conversations-control { position: relative; z-index: 4; }
+.conversations-toggle.active { border-color: var(--sky); color: var(--sky); }
+.conversations-toggle > svg { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
+.conversations-toggle .spinner { width: 1rem; height: 1rem; }
+.conversations-menu { position: absolute; z-index: var(--layer-popover); top: 0; right: calc(100% + .45rem); display: grid; width: max-content; max-width: calc(100vw - 4.5rem); gap: .35rem; padding: .4rem; border: 1px solid color-mix(in srgb, var(--sky) 48%, var(--surface-1)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 94%, transparent); box-shadow: 0 .8rem 2rem color-mix(in srgb, var(--crust) 80%, transparent); backdrop-filter: blur(10px); }
+.conversations-menu .conversations-all { display: flex; width: 100%; min-height: 2.6rem; align-items: center; gap: .55rem; justify-content: space-between; border-color: color-mix(in srgb, var(--sky) 68%, var(--surface-1)); color: var(--sky); }
+.conversations-menu .conversations-all small { color: var(--subtext-0); font: 700 .6rem var(--font-mono); }
+.conversation-error { margin: 0; padding: .35rem .5rem; color: var(--red); font: 650 .64rem/1.35 var(--font-mono); }
+/* full-screen searchable dialog (double class beats the later base `.dialog` rules) */
+.dialog.conversations-dialog > div { display: grid; width: min(46rem, 100%); max-height: min(90vh, 52rem); min-height: min(32rem, 82vh); grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: hidden; border-color: color-mix(in srgb, var(--sky) 48%, var(--surface-1)); padding: 0; }
+.conversations-dialog > div > header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .85rem 1rem; border-bottom: 1px solid var(--surface-1); }
+.conversations-dialog > div > header small { color: var(--sky); font: 750 .6rem var(--font-mono); letter-spacing: .14em; }
+.conversations-dialog > div > header h2 { margin: .15rem 0 0; font-size: 1.08rem; }
+.conversations-dialog > div > header > button { display: grid; width: 2rem; height: 2rem; padding: 0; place-items: center; border-color: transparent; background: transparent; color: var(--subtext-0); box-shadow: none; font-size: 1.3rem; }
+.conversations-tools { display: grid; gap: .5rem; padding: .75rem 1rem; border-bottom: 1px solid var(--surface-1); }
+.conversations-search input { width: 100%; border: 1px solid var(--surface-2); border-radius: var(--control-radius); padding: .5rem .65rem; background: color-mix(in srgb, var(--surface-0) 82%, transparent); color: var(--text); font-size: .8rem; }
+.conversations-note { margin: 0; color: var(--overlay-1); font: 600 .64rem/1.4 var(--font-mono); }
+.conversations-list { min-height: 0; overflow-y: auto; padding: .5rem 1rem 1rem; }
+.conversations-heading { margin: .5rem 0 .35rem; color: var(--subtext-0); font: 750 .58rem var(--font-mono); letter-spacing: .12em; text-transform: uppercase; }
+.conversations-empty, .conversations-loading, .conversations-error { color: var(--subtext-0); font: 600 .7rem var(--font-mono); }
+.conversations-loading { display: flex; align-items: center; gap: .5rem; min-height: 6rem; }
+.conversations-error { color: var(--red); }
+.conversation-rows { display: grid; gap: .35rem; margin: 0; padding: 0; list-style: none; }
+.conversation-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .55rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); padding: .5rem .6rem; background: color-mix(in srgb, var(--surface-0) 52%, transparent); }
+.conversation-row.current { border-color: color-mix(in srgb, var(--sky) 72%, var(--surface-1)); background: color-mix(in srgb, var(--sky) 12%, var(--surface-0)); box-shadow: inset .18rem 0 var(--sky); }
+.conversation-mark { font-size: .9rem; }
+.conversation-copy { display: grid; min-width: 0; gap: .2rem; }
+.conversation-copy strong { overflow: hidden; color: var(--text); font-size: .74rem; line-height: 1.35; overflow-wrap: anywhere; }
+.conversation-row.automatic .conversation-copy strong { font-style: italic; }
+.conversation-copy small { color: var(--subtext-0); font: 600 .6rem var(--font-mono); }
+.conversation-pill { border: 1px solid color-mix(in srgb, var(--sky) 60%, var(--surface-1)); border-radius: 999px; padding: .1rem .4rem; color: var(--sky); font: 750 .52rem var(--font-mono); letter-spacing: .1em; font-style: normal; }
+.conversations-dialog > div > footer { display: flex; align-items: center; gap: .75rem; padding: .75rem 1rem; border-top: 1px solid var(--surface-1); }
+.conversations-dialog > div > footer > span { color: var(--overlay-1); font: 600 .62rem var(--font-mono); }
+.conversations-dialog > div > footer > button { min-width: 6rem; justify-content: center; margin-left: auto; }
+@media (max-width: 600px) { .dialog.conversations-dialog { padding: 0; }.dialog.conversations-dialog > div { width: 100vw; height: var(--app-height, 100dvh); min-height: 0; max-height: none; border: 0; border-radius: 0; } }
 .note-pane { position: relative; z-index: 1; display: grid; min-width: 0; min-height: 0; grid-template-rows: auto minmax(0, 1fr); border-top: 1px solid color-mix(in srgb, var(--yellow) 52%, var(--surface-1)); background: linear-gradient(160deg, color-mix(in srgb, var(--mantle) 97%, var(--yellow) 3%), var(--crust)); box-shadow: inset 0 1px color-mix(in srgb, var(--text) 4%, transparent); animation: note-pane-appear .15s ease-out; }
 .note-pane.expanded { width: 100%; height: 100%; border: 0; }
 .note-pane header { display: flex; min-width: 0; min-height: 2.8rem; align-items: center; gap: .55rem; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; padding: .4rem .55rem; border-bottom: 1px solid var(--surface-1); color: var(--yellow); scrollbar-width: thin; -webkit-overflow-scrolling: touch; }

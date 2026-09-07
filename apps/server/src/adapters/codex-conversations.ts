@@ -1,6 +1,7 @@
 import { open, readFile, readdir, readlink, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { readFileTail } from './bounded-file.js';
 import type { CompletionBaseline, CompletionEvent, Conversation } from './types.js';
 
 /**
@@ -141,28 +142,10 @@ function userMessage(payload: unknown): string | undefined {
   return messageTitle(text);
 }
 
-// read the bounded tail of one rollout as raw JSONL lines, dropping a partial leader
-async function readRolloutTail(file: string, maxBytes: number): Promise<string[]> {
-  const handle = await open(file, 'r');
-  try {
-    const info = await handle.stat();
-    const length = Math.min(info.size, maxBytes);
-    const offset = Math.max(0, info.size - length);
-    const buffer = Buffer.alloc(length);
-    const { bytesRead } = await handle.read(buffer, 0, length, offset);
-    const lines = buffer.subarray(0, bytesRead).toString('utf8').split('\n');
-    // discard a partial leading record when the read did not start at the file head
-    if (offset > 0) lines.shift();
-    return lines;
-  } finally {
-    await handle.close();
-  }
-}
-
 // find the latest useful user message in one rollout's bounded tail
 async function rolloutTitle(file: string): Promise<string | undefined> {
   let title: string | undefined;
-  for (const line of await readRolloutTail(file, maxTitleScanBytes)) {
+  for (const line of await readFileTail(file, maxTitleScanBytes)) {
     try {
       const record = JSON.parse(line) as { type?: unknown; payload?: unknown };
       // retain the newest visible user request
@@ -276,7 +259,7 @@ export async function codexConversationName(id: string): Promise<string | undefi
   // reject material before it reaches a comparison
   if (!validCodexThreadId(id)) return undefined;
   const file = join(codexHome(), 'session_index.jsonl');
-  const lines = await readRolloutTail(file, maxIndexScanBytes).catch(() => undefined);
+  const lines = await readFileTail(file, maxIndexScanBytes).catch(() => undefined);
   if (lines === undefined) return undefined;
   let name: string | undefined;
   for (const line of lines) {
@@ -338,7 +321,7 @@ export function maxOrdinalFromRecords(lines: Iterable<string>): number | undefin
 // ordinal; reads the exact file `baseline` resolved, so it never drifts to a
 // sibling pane's rollout mid-turn
 export async function codexTurnSince(baseline: CompletionBaseline): Promise<CompletionEvent | undefined> {
-  const lines = await readRolloutTail(baseline.rollout, maxCompletionScanBytes).catch(() => undefined);
+  const lines = await readFileTail(baseline.rollout, maxCompletionScanBytes).catch(() => undefined);
   return lines === undefined ? undefined : completionFromRecords(lines, baseline.ordinal);
 }
 
@@ -349,7 +332,7 @@ export async function codexTurnSince(baseline: CompletionBaseline): Promise<Comp
 export async function codexRolloutBaseline(pane: { pid: number; cwd?: string }): Promise<CompletionBaseline | undefined> {
   const selected = await paneRollout(pane);
   if (selected === undefined) return undefined;
-  const lines = await readRolloutTail(selected.file, maxCompletionScanBytes).catch(() => undefined);
+  const lines = await readFileTail(selected.file, maxCompletionScanBytes).catch(() => undefined);
   const ordinal = lines === undefined ? undefined : maxOrdinalFromRecords(lines);
   return ordinal === undefined ? undefined : { rollout: selected.file, ordinal };
 }

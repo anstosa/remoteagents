@@ -1,0 +1,116 @@
+import argon2 from 'argon2';
+import { describe, expect, it } from 'vitest';
+import { AuthService } from '../src/auth/service.js';
+import { buildApp } from '../src/app.js';
+import { stated } from './helpers/agent.js';
+import { testConfig, testWorktree } from './helpers/config.js';
+
+const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+
+// authenticate one test browser
+async function authenticatedHeaders(app: Awaited<ReturnType<typeof buildApp>>) {
+  const boot = await app.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+  const login = await app.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+  return { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+}
+
+describe('conversations listing API', () => {
+  it('lists a Project-wide union across its worktrees, resolving worktreeId, current and ordering', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    // two Linked worktrees of one Project; the host-visible checkout root is what the Adapters scan
+    const cora = testWorktree({ id: 'potato:/wt/cora', projectId: 'potato', label: 'Cora', path: '/wt/cora', identity: '/wt/cora', hostPath: '/host/cora' });
+    const owen = testWorktree({ id: 'potato:/wt/owen', projectId: 'potato', label: 'Owen', path: '/wt/owen', identity: '/wt/owen', hostPath: '/host/owen', main: false });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/host/cora', projectId: 'potato', worktreeId: cora.id, title: 'Ready' });
+    const scanned: string[][] = [];
+    const discovery = {
+      target: async (id: string) => id === agent.id ? { agent, socket } : undefined,
+      // the pane's current Conversation is the Cora row `alpha`
+      conversationId: async () => 'aaaaaaaa-2222-4333-8444-555555555555',
+      worktreesNow: () => [cora, owen],
+      // canned union across kinds; one row sits in a directory that is no longer a Worktree
+      conversations: async (directories: readonly string[]) => {
+        scanned.push([...directories]);
+        return [
+          { kind: 'claude', id: 'aaaaaaaa-2222-4333-8444-555555555555', name: 'alpha', automatic: false, lastActiveAt: 200, directory: '/host/cora' },
+          { kind: 'claude', id: 'bbbbbbbb-2222-4333-8444-555555555555', name: 'beta', automatic: true, lastActiveAt: 300, directory: '/host/owen' },
+          { kind: 'claude', id: 'cccccccc-2222-4333-8444-555555555555', name: 'gamma', automatic: false, lastActiveAt: 100, directory: '/gone/away' },
+        ];
+      },
+    };
+    const launch = { canResumeConversation: () => true };
+    const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 41).toString('base64url')), discovery: discovery as never, launch: launch as never });
+    try {
+      const headers = await authenticatedHeaders(app);
+      const listed = await app.inject({ method: 'GET', url: `/api/worktrees/${encodeURIComponent(cora.id)}/conversations?agentId=agent-1`, headers: { host: headers.host, cookie: headers.cookie } });
+
+      expect(listed.json()).toEqual({
+        canResume: true,
+        conversations: [
+          // newest-active first across kinds and worktrees
+          { kind: 'claude', id: 'bbbbbbbb-2222-4333-8444-555555555555', name: 'beta', automatic: true, lastActiveAt: 300, directory: '/host/owen', worktreeId: owen.id, consoleNamed: false, current: false },
+          { kind: 'claude', id: 'aaaaaaaa-2222-4333-8444-555555555555', name: 'alpha', automatic: false, lastActiveAt: 200, directory: '/host/cora', worktreeId: cora.id, consoleNamed: false, current: true },
+          // a directory that is no longer a Worktree carries no worktreeId
+          { kind: 'claude', id: 'cccccccc-2222-4333-8444-555555555555', name: 'gamma', automatic: false, lastActiveAt: 100, directory: '/gone/away', consoleNamed: false, current: false },
+        ],
+      });
+      // the union of the Project's current Worktree host roots was the scan input
+      expect(scanned).toEqual([['/host/cora', '/host/owen']]);
+
+      // listing a sibling Worktree with an agent that lives on cora marks nothing current
+      const otherView = await app.inject({ method: 'GET', url: `/api/worktrees/${encodeURIComponent(owen.id)}/conversations?agentId=agent-1`, headers: { host: headers.host, cookie: headers.cookie } });
+      expect(otherView.json().conversations.every((row: { current: boolean }) => row.current === false)).toBe(true);
+
+      // a malformed agent context is rejected
+      const badAgent = await app.inject({ method: 'GET', url: `/api/worktrees/${encodeURIComponent(cora.id)}/conversations?agentId=`, headers: { host: headers.host, cookie: headers.cookie } });
+      expect(badAgent.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  }, 15_000);
+
+  it('keys a Scratch agent to its one directory, with no worktreeId and no resume', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const agent = stated({ id: 'scratch-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/me', title: 'Scratch' });
+    const scanned: string[][] = [];
+    const discovery = {
+      target: async (id: string) => id === agent.id ? { agent, socket } : undefined,
+      conversationId: async () => 'dddddddd-2222-4333-8444-555555555555',
+      // no worktree matches the scratch workspace
+      worktreesNow: () => [],
+      conversations: async (directories: readonly string[]) => {
+        scanned.push([...directories]);
+        return [{ kind: 'claude', id: 'dddddddd-2222-4333-8444-555555555555', name: 'scratch chat', automatic: false, lastActiveAt: 50, directory: '/home/me' }];
+      },
+    };
+    const launch = { canResumeConversation: () => true };
+    const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 42).toString('base64url')), discovery: discovery as never, launch: launch as never });
+    try {
+      const headers = await authenticatedHeaders(app);
+      const listed = await app.inject({ method: 'GET', url: '/api/agents/scratch-1/conversations', headers: { host: headers.host, cookie: headers.cookie } });
+
+      expect(listed.json()).toEqual({
+        // Scratch has no Worktree to resume into
+        canResume: false,
+        conversations: [{ kind: 'claude', id: 'dddddddd-2222-4333-8444-555555555555', name: 'scratch chat', automatic: false, lastActiveAt: 50, directory: '/home/me', consoleNamed: false, current: true }],
+      });
+      expect(scanned).toEqual([['/home/me']]);
+    } finally {
+      await app.close();
+    }
+  }, 15_000);
+
+  it('404s an unknown worktree or agent', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const discovery = { target: async () => undefined, worktreesNow: () => [], conversations: async () => [] };
+    const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 43).toString('base64url')), discovery: discovery as never });
+    try {
+      const headers = await authenticatedHeaders(app);
+      const worktree = await app.inject({ method: 'GET', url: '/api/worktrees/nope/conversations', headers: { host: headers.host, cookie: headers.cookie } });
+      const agent = await app.inject({ method: 'GET', url: '/api/agents/nope/conversations', headers: { host: headers.host, cookie: headers.cookie } });
+      expect(worktree.statusCode).toBe(404);
+      expect(agent.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  }, 15_000);
+});
