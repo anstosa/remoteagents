@@ -80,6 +80,105 @@ test('lists named conversations in a searchable dialog on the desktop', async ({
   await expect(dialog).toBeHidden();
 });
 
+const owenId = 'dddddddd-2222-4333-8444-555555555555';
+const orphanId = 'eeeeeeee-2222-4333-8444-555555555555';
+const codexId = 'ffffffff-2222-4333-8444-555555555555';
+// a richer list: current, resumable-here, a sibling-Worktree row, an orphaned row, and an
+// unlaunchable-kind row, across two Worktrees of one Project
+const resumableConversations = [
+  { kind: 'claude', id: currentId, name: 'Diagnose the shell', automatic: false, lastActiveAt: now - 3_600_000, directory: '/worktrees/cora', worktreeId: 'cora', consoleNamed: false, current: true },
+  { kind: 'claude', id: 'bbbbbbbb-2222-4333-8444-555555555555', name: 'Release plan review', automatic: false, lastActiveAt: now - 7_200_000, directory: '/worktrees/cora', worktreeId: 'cora', consoleNamed: false, current: false },
+  { kind: 'claude', id: owenId, name: 'Owen investigation', automatic: false, lastActiveAt: now - 10_800_000, directory: '/worktrees/owen', worktreeId: 'owen', consoleNamed: false, current: false },
+  { kind: 'claude', id: orphanId, name: 'Old scratch chat', automatic: false, lastActiveAt: now - 14_400_000, directory: '/gone/away', consoleNamed: false, current: false },
+  { kind: 'codex', id: codexId, name: 'Retired codex thread', lastActiveAt: now - 18_000_000, directory: '/worktrees/cora', worktreeId: 'cora', consoleNamed: false, current: false },
+];
+
+// two agents on two Worktrees of one Project; Claude is launchable, Codex is not
+async function mockResumableConsole(page: import('@playwright/test').Page, onSwitch: (worktreeId: string, body: unknown) => void, switchError?: string) {
+  await page.route('**/api/**', route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const switchMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/conversations\/switch$/u);
+    if (switchMatch !== null && request.method() === 'POST') {
+      onSwitch(switchMatch[1]!, request.postDataJSON());
+      if (switchError !== undefined) return route.fulfill({ status: 409, json: { error: switchError } });
+      return route.fulfill({ status: 201, json: { agentId: `resumed-${switchMatch[1]}` } });
+    }
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, adapters: { claude: { launchable: true }, codex: { launchable: false } }, agents: [
+      { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' },
+      { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/owen', worktreeId: 'owen', worktreeLabel: 'Owen', worktreeOrder: 1, title: 'Ready' },
+    ], projects: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ json: { conversations: resumableConversations, canResume: true } });
+    if (url.pathname.endsWith('/bookmarks') && request.method() === 'GET') return route.fulfill({ json: { bookmarks: [], canResume: true } });
+    if (url.pathname.endsWith('/notes') && request.method() === 'GET') return route.fulfill({ json: { notes: [] } });
+    if (url.pathname.endsWith('/tickets')) return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname.endsWith('/saved-prompts')) return route.fulfill({ json: { prompts: [] } });
+    if (url.pathname.endsWith('/prompt-history')) return route.fulfill({ json: { prompts: [] } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+}
+
+// open the full-screen dialog from the active (Cora) agent's Conversations control
+async function openDialog(page: import('@playwright/test').Page) {
+  await page.getByRole('button', { name: /^Conversations/ }).click();
+  await page.locator('.conversations-menu').locator('.conversations-all').click();
+  return page.locator('.conversations-dialog');
+}
+
+test('disables rows that cannot be resumed: the current one, an orphaned one, and an unlaunchable kind', async ({ page }) => {
+  await mockResumableConsole(page, () => {});
+  await page.setViewportSize({ width: 900, height: 780 });
+  await page.goto('/');
+  const dialog = await openDialog(page);
+  const button = (name: string) => dialog.locator('.conversation-row', { hasText: name }).locator('button.conversation-choice');
+  // the current Conversation, an orphaned directory, and an unconfigured kind are inert
+  await expect(button('Diagnose the shell')).toBeDisabled();
+  await expect(button('Old scratch chat')).toBeDisabled();
+  await expect(button('Retired codex thread')).toBeDisabled();
+  // a homed Conversation of a launchable kind resumes, here or on a sibling Worktree
+  await expect(button('Release plan review')).toBeEnabled();
+  await expect(button('Owen investigation')).toBeEnabled();
+});
+
+test('resumes a same-Worktree Conversation in place and closes the dialog', async ({ page }) => {
+  const switches: Array<{ worktreeId: string; body: unknown }> = [];
+  await mockResumableConsole(page, (worktreeId, body) => switches.push({ worktreeId, body }));
+  await page.setViewportSize({ width: 900, height: 780 });
+  await page.goto('/');
+  const dialog = await openDialog(page);
+  await dialog.locator('.conversation-row', { hasText: 'Release plan review' }).locator('button.conversation-choice').click();
+  // the switch runs on the current Worktree with the row's kind and id
+  await expect.poll(() => switches).toEqual([{ worktreeId: 'cora', body: { kind: 'claude', id: 'bbbbbbbb-2222-4333-8444-555555555555' } }]);
+  await expect(dialog).toBeHidden();
+});
+
+test('keeps the dialog open and shows the reason when a same-Worktree resume fails', async ({ page }) => {
+  await mockResumableConsole(page, () => {}, 'Close duplicate worktree agents before switching chats.');
+  await page.setViewportSize({ width: 900, height: 780 });
+  await page.goto('/');
+  const dialog = await openDialog(page);
+  await dialog.locator('.conversation-row', { hasText: 'Release plan review' }).locator('button.conversation-choice').click();
+  // the dialog stays put and surfaces the server's reason inline, as the bookmark switch does
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('.conversations-error')).toContainText('Close duplicate worktree agents');
+});
+
+test('resumes a sibling-Worktree Conversation by navigating to that Worktree first', async ({ page }) => {
+  const switches: Array<{ worktreeId: string; body: unknown }> = [];
+  await mockResumableConsole(page, (worktreeId, body) => switches.push({ worktreeId, body }));
+  await page.setViewportSize({ width: 900, height: 780 });
+  await page.goto('/');
+  // Cora is the active tab to begin with
+  await expect(page.getByRole('tab', { name: /Cora/ })).toHaveAttribute('aria-selected', 'true');
+  const dialog = await openDialog(page);
+  await dialog.locator('.conversation-row', { hasText: 'Owen investigation' }).locator('button.conversation-choice').click();
+  // the console navigates to Owen's tab and switches there
+  await expect(page.getByRole('tab', { name: /Owen/ })).toHaveAttribute('aria-selected', 'true');
+  await expect.poll(() => switches).toEqual([{ worktreeId: 'owen', body: { kind: 'claude', id: owenId } }]);
+});
+
 test('opens the conversations dialog full-screen on a phone', async ({ page }) => {
   await mockConsole(page);
   await page.setViewportSize({ width: 390, height: 780 });

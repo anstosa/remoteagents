@@ -462,13 +462,18 @@ html.software-keyboard-open .tabs { display: none; }
 .conversations-loading { display: flex; align-items: center; gap: .5rem; min-height: 6rem; }
 .conversations-error { color: var(--red); }
 .conversation-rows { display: grid; gap: .35rem; margin: 0; padding: 0; list-style: none; }
-.conversation-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .55rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); padding: .5rem .6rem; background: color-mix(in srgb, var(--surface-0) 52%, transparent); }
+.conversation-row { border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: color-mix(in srgb, var(--surface-0) 52%, transparent); }
 .conversation-row.current { border-color: color-mix(in srgb, var(--sky) 72%, var(--surface-1)); background: color-mix(in srgb, var(--sky) 12%, var(--surface-0)); box-shadow: inset .18rem 0 var(--sky); }
+.conversation-choice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; width: 100%; align-items: center; gap: .55rem; border: 0; border-radius: var(--control-radius); padding: .5rem .6rem; background: transparent; text-align: left; color: inherit; cursor: pointer; }
+.conversation-choice:not(:disabled):hover { background: color-mix(in srgb, var(--surface-1) 45%, transparent); }
+.conversation-choice:disabled { cursor: default; opacity: .5; }
+.conversation-row.current .conversation-choice:disabled { opacity: 1; }
 .conversation-mark { font-size: .9rem; }
 .conversation-copy { display: grid; min-width: 0; gap: .2rem; }
 .conversation-copy strong { overflow: hidden; color: var(--text); font-size: .74rem; line-height: 1.35; overflow-wrap: anywhere; }
 .conversation-row.automatic .conversation-copy strong { font-style: italic; }
 .conversation-copy small { color: var(--subtext-0); font: 600 .6rem var(--font-mono); }
+.conversation-copy .conversation-blocked { color: var(--peach); text-transform: none; }
 .conversation-pill { border: 1px solid color-mix(in srgb, var(--sky) 60%, var(--surface-1)); border-radius: 999px; padding: .1rem .4rem; color: var(--sky); font: 750 .52rem var(--font-mono); letter-spacing: .1em; font-style: normal; }
 .conversations-dialog > div > footer { display: flex; align-items: center; gap: .75rem; padding: .75rem 1rem; border-top: 1px solid var(--surface-1); }
 .conversations-dialog > div > footer > span { color: var(--overlay-1); font: 600 .62rem var(--font-mono); }

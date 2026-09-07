@@ -173,6 +173,13 @@ export interface Adapter {
     skillInvocation(name: string): string;
   };
   readonly conversations?: {
+    /**
+     * Whether `id` is a well-formed Conversation id for this kind. The console
+     * interpolates a resumed id into the host launch command, so this MUST reject
+     * any id that is not safe to place there unquoted (both current implementations
+     * are strict anchored UUID patterns); the resume path relies on it in place of a
+     * hard-coded pattern.
+     */
     validId(id: string): boolean;
     /**
      * The pane's current Conversation. The pane's `pid` drives the `/proc`

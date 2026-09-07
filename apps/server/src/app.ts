@@ -848,6 +848,14 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // codex or omx, else codex (a Claude/Pi Worktree that also holds a Codex rollout still
   // shows that rollout as Codex).
   const codexFamily = (kind: AgentKind): boolean => kind === 'codex' || kind === 'omx';
+  // the kind a shared codex-family rollout resumes under on one Worktree: its remembered
+  // Launch kind when that is itself codex or omx, else Codex — the per-Worktree form of the
+  // attribution `listConversations` applies across the whole list
+  const rememberedCodexKind = async (worktreeId: string): Promise<AgentKind> => {
+    const remembered = await worktreeStore.launchProfiles().catch(() => ({} as Record<string, AgentKind | undefined>));
+    const kind = remembered[worktreeId];
+    return kind !== undefined && codexFamily(kind) ? kind : 'codex';
+  };
   const listConversations = async (directories: readonly string[], scope: Map<string, string>, currentId: string | undefined): Promise<ConversationRow[]> => {
     const listed = await discovery.conversations(directories);
     // read remembered kinds once, only when a codex-family row needs attributing
@@ -1469,6 +1477,61 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const agent = await waitForAgent(before, worktree.id);
     // surface slow or failed resume handoffs
     if (agent === undefined) return reply.code(504).send({ error: `The bookmarked chat started, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
+    sleepingWorktrees.delete(worktree.id);
+    await dashboardUpdates.refresh().catch(() => undefined);
+    return reply.code(201).send({ agentId: agent.id });
+  });
+  // resume a listed Conversation in its home Worktree. `:id` is the Conversation's home
+  // Worktree; the body's `{ kind, id }` is one row of that Project's conversations list. A
+  // shared codex-family rollout resumes under the Worktree's remembered Launch kind (ADR
+  // 0005 relaxed), and the id is resolved and validated through that kind's own Adapter.
+  app.post('/api/worktrees/:id/conversations/switch', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+    controlled(request, true);
+    const id = (request.params as { id: string }).id;
+    const { kind, id: conversationId } = body(request) as { kind?: unknown; id?: unknown };
+    const worktree = configuredWorktree(id);
+    // require one configured worktree
+    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    // reject a malformed switch target
+    if (typeof conversationId !== 'string' || typeof kind !== 'string' || !agentKinds.includes(kind as AgentKind)) return reply.code(400).send({ error: 'invalid conversation' });
+    const rowKind = kind as AgentKind;
+    // a shared codex-family row follows the Worktree's remembered Launch kind (codex or omx),
+    // else Codex; every other kind resumes as itself
+    const resumeKind = codexFamily(rowKind) ? await rememberedCodexKind(worktree.id) : rowKind;
+    // resume through the row's own Adapter (validId replaces the launch service's UUID check)
+    if (adapterFor(resumeKind)?.conversations?.validId(conversationId) !== true) return reply.code(409).send({ error: 'This conversation cannot be resumed.' });
+    // the resolved kind must itself be launchable, so a de-configured kind (e.g. a Worktree
+    // that last ran OMX after OMX was removed) fails here rather than after the restart path
+    // has already closed the live agent
+    if (launch.isLaunchableKind?.(resumeKind) === false) return reply.code(409).send({ error: 'This conversation cannot be resumed.' });
+    // require the Conversation to be homed in this Worktree: a scan of only this Worktree's
+    // directory lists it exactly when the agent's own picker would resume it here
+    const homeDirectory = worktreeHostRoot(worktree);
+    const homed = (await discovery.conversations([homeDirectory])).some(row => row.id === conversationId && (codexFamily(rowKind) ? codexFamily(row.kind) : row.kind === rowKind));
+    if (!homed) return reply.code(409).send({ error: 'This conversation does not belong to this worktree.' });
+    // fail before any destructive handoff
+    if (!launch.canResumeConversation(worktree.id)) return reply.code(409).send({ error: 'Exact chat resume is not configured for this worktree.' });
+    const selectionMutationGeneration = prompts.mutationGeneration();
+    const current = await discovery.dashboard(true);
+    const open = current.agents.filter(agent => agent.worktreeId === worktree.id);
+    // avoid an ambiguous destructive handoff
+    if (open.length > 1) return reply.code(409).send({ error: 'Close duplicate worktree agents before switching chats.' });
+    const activeAgent = open[0];
+    // restart one existing idle agent safely, resuming through the row's own Adapter
+    if (activeAgent !== undefined) {
+      const result = await restartIdleConfiguredAgent(activeAgent.id, worktree.id, prompts.mutationVersion(activeAgent.id), selectionMutationGeneration, conversationId, resumeKind);
+      // return one successful replacement
+      if (result.status === 'restarted') return reply.code(201).send({ agentId: result.agentId });
+      // distinguish stale targets from active work
+      if (result.status === 'skipped') return reply.code(result.reason === 'unavailable' ? 404 : 409).send({ error: result.error });
+      return reply.code(result.reason === 'timed-out' ? 504 : 409).send({ error: result.error });
+    }
+    const before = new Set(current.agents.map(agent => agent.id));
+    // launch an inactive worktree directly into the Conversation, through its own Adapter
+    if (!await launch.resumeConversation(worktree.id, conversationId, resumeKind)) return reply.code(409).send({ error: 'Could not resume the conversation.' });
+    const agent = await waitForAgent(before, worktree.id);
+    // surface slow or failed resume handoffs
+    if (agent === undefined) return reply.code(504).send({ error: `The conversation started, but the agent did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
     sleepingWorktrees.delete(worktree.id);
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(201).send({ agentId: agent.id });

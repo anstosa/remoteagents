@@ -320,11 +320,14 @@ export class LaunchService {
     return await this.launchWorktree(worktreeId, { mode: 'continue', ...(kind === undefined ? {} : { kind }) });
   }
 
-  // resume one exact bookmarked conversation by its id, through its Adapter kind
+  // resume one exact listed conversation by its id, through its Adapter kind
   async resumeConversation(worktreeId: string, threadId: string, kind?: AgentKind): Promise<boolean> {
-    // keep the host command free of shell input, whether the id is quoted or substituted
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(threadId)) return false;
-    return await this.launchWorktree(worktreeId, { mode: 'resume', conversationId: threadId, ...(kind === undefined ? {} : { kind }) });
+    // validate the id through the resuming Adapter rather than a hard-coded UUID pattern, so a
+    // kind whose ids are not UUIDs still resumes; a validated id also keeps the host command
+    // free of shell input, whether the id is quoted or substituted
+    const resumeKind = kind ?? await this.resolveLaunchKind(worktreeId);
+    if (resumeKind === undefined || adapterFor(resumeKind)?.conversations?.validId(threadId) !== true) return false;
+    return await this.launchWorktree(worktreeId, { mode: 'resume', conversationId: threadId, kind: resumeKind });
   }
 
   // expose exact-resume support before destructive lifecycle work: a known Worktree

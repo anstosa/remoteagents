@@ -2883,17 +2883,20 @@ function useWorktreeBookmarks(worktreeId?: string, agentId?: string) {
 }
 
 // list a Project's Named conversations in a fly-out and a full-screen searchable dialog.
-// Read-only for now: the fly-out offers only "All conversations" and rows are not yet
-// tappable for resume (the naming and resume tickets add the Name field and switching).
+// Tapping a dialog row resumes that Conversation in its home Worktree: a same-Worktree row
+// switches in place, a sibling-Worktree row navigates to that Worktree's tab and switches
+// there, and a row without a home Worktree or of an unlaunchable kind is listed but disabled.
 // The list is fetched when the control opens, never polled, so the console does no
 // background scan of the agents' stores.
-function useWorktreeConversations(worktreeId?: string, agentId?: string) {
+function useWorktreeConversations(worktreeId?: string, agentId?: string, resume?: { onNavigateWorktree?: (worktreeId: string) => void; onOperationFeedback?: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
+  const adapters = useContext(AdaptersContext);
   const [conversations, setConversations] = useState<ListedConversation[]>();
   const [menuOpen, setMenuOpen] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [resumingKey, setResumingKey] = useState<string>();
   const loadGeneration = useRef(0);
   const resourceBase = persistenceResourceBase(worktreeId, agentId);
   const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen, { placement: 'left', boundarySelector: '.log', boundaryRootSelector: '.agent-view, .worktree-view', contentSized: true });
@@ -2907,6 +2910,7 @@ function useWorktreeConversations(worktreeId?: string, agentId?: string) {
     setQuery('');
     setLoading(false);
     setError('');
+    setResumingKey(undefined);
   }, [agentId, worktreeId]);
 
   // compute one Project's conversation list on request
@@ -2959,6 +2963,62 @@ function useWorktreeConversations(worktreeId?: string, agentId?: string) {
   };
   const closeDialog = () => setDialogOpen(false);
 
+  // why one row cannot be resumed, or `undefined` when it can: the current Conversation, a
+  // Scratch/orphaned row with no home Worktree, or a kind whose program is not configured here
+  const resumeBlockedReason = (conversation: ListedConversation): string | undefined =>
+    conversation.current ? 'You are already in this conversation'
+      : conversation.worktreeId === undefined ? 'This conversation has no worktree to resume into'
+        : adapters?.[conversation.kind]?.launchable !== true ? `${agentKindLabel[conversation.kind]} is not configured on this server`
+          : undefined;
+
+  // resume one listed Conversation in its home Worktree. The pending handoff is keyed by the
+  // home Worktree so its tab shows the restart and the resumed agent (as the bookmark switch
+  // and the agent restart both do). A sibling-Worktree resume moves to that tab first — so the
+  // switch runs there and the dialog is gone — and surfaces a failure as a toast. A
+  // same-Worktree resume stays put and shows the reason inline, exactly as the bookmark switch
+  // does, closing only on success.
+  const doResume = async (conversation: ListedConversation) => {
+    const target = conversation.worktreeId;
+    // resume only a launchable, homed, non-current Conversation, one at a time
+    if (target === undefined || resumingKey !== undefined || resumeBlockedReason(conversation) !== undefined) return;
+    const crossWorktree = target !== worktreeId;
+    const operationKey = restartOperationKey(target);
+    // share lifecycle state with the home Worktree's tab
+    if (!beginPendingOperation(operationKey)) return;
+    // key the handoff by the home Worktree; name the source agent only when resuming in place
+    pendingWorktreeLaunches.set(target, { operationKey, ...(!crossWorktree && agentId !== undefined ? { sourceAgentId: agentId } : {}) });
+    setResumingKey(`${conversation.kind}:${conversation.id}`);
+    setError('');
+    resume?.onOperationFeedback?.({ tone: 'pending', message: `Resuming ${conversation.name}…`, detail: 'Reconnecting the conversation and waiting for the agent to become ready.', worktreeId: target });
+    // move to the Conversation's home Worktree before the switch runs there
+    if (crossWorktree) { resume?.onNavigateWorktree?.(target); setMenuOpen(false); setDialogOpen(false); }
+    try {
+      const response = await request(`/api/worktrees/${encodeURIComponent(target)}/conversations/switch`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: conversation.kind, id: conversation.id }) });
+      const payload: unknown = response.ok ? await response.json() : undefined;
+      const nextAgentId = payload !== null && typeof payload === 'object' ? (payload as { agentId?: unknown }).agentId : undefined;
+      // require the replacement identity
+      if (typeof nextAgentId !== 'string') throw new Error(response.ok ? 'The conversation opened without a replacement agent.' : await launchError(response));
+      const pending = pendingWorktreeLaunches.get(target);
+      // avoid restoring a handoff already confirmed by dashboard push
+      if (pending !== undefined) pendingWorktreeLaunches.set(target, { ...pending, agentId: nextAgentId });
+      else setPendingOperation(operationKey, false);
+      resume?.onOperationFeedback?.({ tone: 'success', message: `${conversation.name} resumed`, detail: 'The conversation reconnected and its output is loading.', worktreeId: target });
+      // a same-Worktree resume kept the dialog open through the request; close it on success
+      setMenuOpen(false);
+      setDialogOpen(false);
+    } catch (reason) {
+      pendingWorktreeLaunches.delete(target);
+      setPendingOperation(operationKey, false);
+      const message = reason instanceof Error && reason.message ? reason.message : 'Unable to resume this conversation';
+      // a same-Worktree resume still shows this dialog, so the reason lands inline; a
+      // cross-Worktree one has navigated away, so its toast carries the reason instead
+      setError(message);
+      resume?.onOperationFeedback?.({ tone: 'error', message: 'Conversation could not be resumed', detail: message, worktreeId: target });
+    } finally {
+      setResumingKey(undefined);
+    }
+  };
+
   // hide conversations without any persistence context
   if (resourceBase === undefined) return { control: null };
   // the closed control counts the console-named rows, as the bookmark control did (0 until
@@ -2970,9 +3030,16 @@ function useWorktreeConversations(worktreeId?: string, agentId?: string) {
   // search matches the Conversation name and the agent kind label
   const matches = (conversations ?? []).filter(conversation => needle === '' || conversation.name.toLocaleLowerCase().includes(needle) || agentKindLabel[conversation.kind].toLocaleLowerCase().includes(needle));
 
-  const row = (conversation: ListedConversation) => <li key={`${conversation.kind}:${conversation.id}`} className={`conversation-row${conversation.automatic ? ' automatic' : ''}${conversation.current ? ' current' : ''}`} aria-current={conversation.current ? 'true' : undefined}><span className={`conversation-mark launch-kind-${conversation.kind}`} aria-hidden="true">{agentKindGlyph[conversation.kind]}</span><span className="conversation-copy"><strong>{conversation.name}</strong><small>{agentKindLabel[conversation.kind]} · {relativeAge(conversation.lastActiveAt)}{conversation.automatic ? ' · automatic title' : ''}</small></span>{conversation.current && <em className="conversation-pill">CURRENT</em>}</li>;
+  const row = (conversation: ListedConversation) => {
+    const key = `${conversation.kind}:${conversation.id}`;
+    const blockedReason = resumeBlockedReason(conversation);
+    const resuming = resumingKey === key;
+    // a listed-but-unresumable row (current, Scratch/orphaned, or an unconfigured kind) stays
+    // inert with its reason as a hint; the working/asking/duplicate cases are stated once at top
+    return <li key={key} className={`conversation-row${conversation.automatic ? ' automatic' : ''}${conversation.current ? ' current' : ''}`} aria-current={conversation.current ? 'true' : undefined}><button className="conversation-choice" type="button" disabled={blockedReason !== undefined || resumingKey !== undefined} title={blockedReason ?? `Resume ${conversation.name}`} onClick={() => void doResume(conversation)}>{resuming ? <span className="spinner" /> : <span className={`conversation-mark launch-kind-${conversation.kind}`} aria-hidden="true">{agentKindGlyph[conversation.kind]}</span>}<span className="conversation-copy"><strong>{conversation.name}</strong><small>{agentKindLabel[conversation.kind]} · {relativeAge(conversation.lastActiveAt)}{conversation.automatic ? ' · automatic title' : ''}</small>{blockedReason !== undefined && !conversation.current && <small className="conversation-blocked">{blockedReason}</small>}</span>{conversation.current && <em className="conversation-pill">CURRENT</em>}</button></li>;
+  };
 
-  const dialog = dialogOpen && createPortal(<div className="dialog conversations-dialog" role="dialog" aria-modal="true" aria-labelledby="conversations-dialog-title" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); closeDialog(); } }} onClick={event => { if (event.target === event.currentTarget) closeDialog(); }}><div><header><div><small>NAMED CONVERSATIONS</small><h2 id="conversations-dialog-title">Conversations</h2></div><button type="button" aria-label="Close conversations" title="Close" onClick={closeDialog}>×</button></header><div className="conversations-tools"><label className="conversations-search"><span className="sr-only">Search conversations</span><input type="search" value={query} placeholder="Search by name or agent" autoFocus onChange={event => setQuery(event.target.value)} /></label>{/* a block that applies to every row is stated once here, never per row */}<p className="conversations-note">Resuming a conversation from here arrives soon — this list is read-only for now.</p></div><div className="conversations-list">{loading && conversations === undefined ? <div className="conversations-loading" role="status"><span className="spinner" />Loading…</div> : error ? <p className="conversations-error" role="alert">{error}</p> : <><p className="conversations-heading">All named conversations</p>{matches.length === 0 ? <p className="conversations-empty">{total === 0 ? 'No named conversations in this project yet.' : 'No matches.'}</p> : <ul className="conversation-rows">{matches.map(row)}</ul>}</>}</div><footer><span>{total} named</span><button type="button" onClick={closeDialog}>Close</button></footer></div></div>, document.body);
+  const dialog = dialogOpen && createPortal(<div className="dialog conversations-dialog" role="dialog" aria-modal="true" aria-labelledby="conversations-dialog-title" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); closeDialog(); } }} onClick={event => { if (event.target === event.currentTarget) closeDialog(); }}><div><header><div><small>NAMED CONVERSATIONS</small><h2 id="conversations-dialog-title">Conversations</h2></div><button type="button" aria-label="Close conversations" title="Close" onClick={closeDialog}>×</button></header><div className="conversations-tools"><label className="conversations-search"><span className="sr-only">Search conversations</span><input type="search" value={query} placeholder="Search by name or agent" autoFocus onChange={event => setQuery(event.target.value)} /></label>{/* a block that applies to every row is stated once here, never per row */}<p className="conversations-note">Tap a conversation to resume it in its home worktree. A worktree that is working, asking a question, or already running more than one agent can't be switched until it settles.</p>{/* a resume failure keeps the list; a load failure replaces it (below) */}{error && conversations !== undefined && <p className="conversations-error" role="alert">{error}</p>}</div><div className="conversations-list">{loading && conversations === undefined ? <div className="conversations-loading" role="status"><span className="spinner" />Loading…</div> : error && conversations === undefined ? <p className="conversations-error" role="alert">{error}</p> : <><p className="conversations-heading">All named conversations</p>{matches.length === 0 ? <p className="conversations-empty">{total === 0 ? 'No named conversations in this project yet.' : 'No matches.'}</p> : <ul className="conversation-rows">{matches.map(row)}</ul>}</>}</div><footer><span>{total} named</span><button type="button" onClick={closeDialog}>Close</button></footer></div></div>, document.body);
 
   const control = <div className="conversations-control" ref={anchorRef}><button className={`log-control page-arrow conversations-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.3 7.3L4 21l1.7-5.7A8 8 0 1 1 21 12Z" /></svg>}{consoleNamedCount > 0 && <span className="saved-prompts-count conversations-count" aria-hidden="true">{consoleNamedCount}</span>}</button>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div ref={flyoutRef} className="conversations-menu" style={flyoutStyle} aria-label="Conversations">{error && <p className="conversation-error" role="alert">{error}</p>}<button className="log-control conversations-all" type="button" onClick={() => void openDialog()}><span>All conversations</span><small>{total}</small></button></div></FlyoutPortal>}{dialog}</div>;
   return { control };
@@ -4282,10 +4349,10 @@ function GitStatus({ id, worktreeId, branch, summary, prSummary, expanded = fals
   return <span ref={wrapRef} className={`git-status-wrap${expanded ? ' expanded' : ''}`}><button className={`git-status-summary ${state}`} type="button" aria-label={label} aria-expanded={expanded} title={label} onClick={onToggle}><svg className="git-branch-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2.5" /><circle cx="6" cy="19" r="2.5" /><circle cx="18" cy="7" r="2.5" /><path d="M6 7.5v9M18 9.5v1a6 6 0 0 1-6 6H6" /></svg><span className="git-status-dot" aria-hidden="true" /><span className="git-branch">{branch}</span><span className="git-status-separator" aria-hidden="true">·</span><span className="git-worktree-state">{stateLabel}</span></button>{expanded && <FlyoutPortal onDismiss={() => onToggle?.()}><div className="git-status-panel" role="region" aria-label="Changed files" aria-busy={repositoryTabVisible && loadingPrSwitch} style={panelStyle}>{activePanel}<span className="git-status-tabs" role="tablist" aria-label="Branch views"><button type="button" role="tab" aria-selected={tab === 'working'} onClick={() => setTab('working')}>Working</button><button type="button" role="tab" aria-selected={tab === 'prs'} disabled={id === undefined} title={id === undefined ? 'Launch agent to load pull requests' : undefined} onClick={() => setTab('prs')}>PRs</button><button type="button" role="tab" aria-selected={tab === 'branches'} disabled={id === undefined} title={id === undefined ? 'Launch agent to load branches' : undefined} onClick={() => setTab('branches')}>Branches</button></span></div></FlyoutPortal>}{removingBranch !== undefined && worktreeId !== undefined && <RemoveBranchDialog worktreeId={worktreeId} branch={removingBranch} onClose={() => setRemovingBranch(undefined)} onDeleted={branchRemoved} />}</span>;
 }
 
-type LogProps = { id: string; worktreeId?: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; history: PromptHistoryEntry[]; refreshHistory: () => Promise<void>; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined) => void; cleanupControl?: ReactNode; browserUrl?: string; browserHomeUrl?: string; browserProxied?: boolean; browserNavigationRequest?: ProjectBrowserNavigationRequest; onBrowserNavigate?: (url: string) => boolean; onBrowserOpen?: (url: string) => boolean; onBrowserClose?: () => void; terminalMode?: boolean; embedded?: boolean; onReview?: (scope: ReviewScope) => void; reviewOpen?: boolean; reviewUnavailable?: string; pushAction?: PromptAction; processingLabel?: string; processingDetail?: string; statusSlot?: HTMLElement | null; historySlot?: HTMLElement | null; onSelectTarget?: (target: DashboardTarget) => void; onOperationFeedback?: (feedback: Omit<OperationFeedback, 'id'>) => void };
+type LogProps = { id: string; worktreeId?: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; history: PromptHistoryEntry[]; refreshHistory: () => Promise<void>; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined) => void; cleanupControl?: ReactNode; browserUrl?: string; browserHomeUrl?: string; browserProxied?: boolean; browserNavigationRequest?: ProjectBrowserNavigationRequest; onBrowserNavigate?: (url: string) => boolean; onBrowserOpen?: (url: string) => boolean; onBrowserClose?: () => void; terminalMode?: boolean; embedded?: boolean; onReview?: (scope: ReviewScope) => void; reviewOpen?: boolean; reviewUnavailable?: string; pushAction?: PromptAction; processingLabel?: string; processingDetail?: string; statusSlot?: HTMLElement | null; historySlot?: HTMLElement | null; onSelectTarget?: (target: DashboardTarget) => void; onNavigateWorktree?: (worktreeId: string) => void; onOperationFeedback?: (feedback: Omit<OperationFeedback, 'id'>) => void };
 
 // render reusable live agent output
-function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshHistory, onQuestion, onMetadata, cleanupControl, browserUrl, browserHomeUrl, browserProxied = true, browserNavigationRequest, onBrowserNavigate, onBrowserOpen, onBrowserClose, terminalMode = false, embedded = false, onReview, reviewOpen = false, reviewUnavailable, pushAction = defaultPushAction, processingLabel, processingDetail, statusSlot, historySlot, onSelectTarget, onOperationFeedback }: LogProps) {
+function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshHistory, onQuestion, onMetadata, cleanupControl, browserUrl, browserHomeUrl, browserProxied = true, browserNavigationRequest, onBrowserNavigate, onBrowserOpen, onBrowserClose, terminalMode = false, embedded = false, onReview, reviewOpen = false, reviewUnavailable, pushAction = defaultPushAction, processingLabel, processingDetail, statusSlot, historySlot, onSelectTarget, onNavigateWorktree, onOperationFeedback }: LogProps) {
   const canvas = useRef<HTMLDivElement | null>(null);
   const primaryHost = useRef<HTMLDivElement | null>(null);
   const secondaryHost = useRef<HTMLDivElement | null>(null);
@@ -4313,7 +4380,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, history, refreshH
   const onMetadataRef = useRef(onMetadata);
   onMetadataRef.current = onMetadata;
   const worktreeBookmarks = useWorktreeBookmarks(worktreeId, id);
-  const worktreeConversations = useWorktreeConversations(worktreeId, id);
+  const worktreeConversations = useWorktreeConversations(worktreeId, id, { onNavigateWorktree, onOperationFeedback });
   const worktreeNotes = useWorktreeNotes(worktreeId, id, embedded ? undefined : latestAssistantMessage, embedded ? false : latestAssistantMessageOverflows, refreshHistory, history);
   const responseFiles = useLatestAssistantFiles(id, embedded ? undefined : latestAssistantMessage);
   const gitFilePreview = useFilePreview(`/api/agents/${encodeURIComponent(id)}/file-preview`);
@@ -5362,7 +5429,7 @@ function More({ id, worktreeId, newTaskConfigured = false, swapDisabled = false,
 }
 
 // render an active agent
-function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, review, onReview, onDeleted, onSelectTarget, onPromptFocus, onOperationFeedback, pinned, onTogglePin, onRenameWorktree, worktreeLabel }: { agent: Agent; active: boolean; tabBar: ReactNode; cleanupControl?: ReactNode; reviewCapability?: ReviewTourCapability; review?: ReviewButtonState; onReview: (launch: ReviewLaunch) => void; onDeleted: () => Promise<void>; onSelectTarget: (target: DashboardTarget) => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; pinned?: boolean; onTogglePin?: () => void; onRenameWorktree?: () => void; worktreeLabel?: string }) {
+function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, review, onReview, onDeleted, onSelectTarget, onNavigateWorktree, onPromptFocus, onOperationFeedback, pinned, onTogglePin, onRenameWorktree, worktreeLabel }: { agent: Agent; active: boolean; tabBar: ReactNode; cleanupControl?: ReactNode; reviewCapability?: ReviewTourCapability; review?: ReviewButtonState; onReview: (launch: ReviewLaunch) => void; onDeleted: () => Promise<void>; onSelectTarget: (target: DashboardTarget) => void; onNavigateWorktree: (worktreeId: string) => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; pinned?: boolean; onTogglePin?: () => void; onRenameWorktree?: () => void; worktreeLabel?: string }) {
   // an Agent's Worktree label drives its feedback and power-menu copy; the server carries it on
   // the Worktree now, so it is resolved at the top level and passed in
   const displayLabel = worktreeLabel ?? agent.worktreeLabel ?? agentLabel(agent);
@@ -5563,7 +5630,7 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
   };
   // reserve Remote Agents repository updates for the reviewed host update flow
   const upstreamRebase = agent.projectId === 'remoteagents' ? null : <UpstreamRebaseBanner summary={agent.gitUpstream} onRebase={queueRebase} />;
-  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} browserProxied={projectBrowser.proxied} browserNavigationRequest={projectBrowser.navigationRequest} onBrowserNavigate={projectBrowser.navigate} onBrowserOpen={projectBrowser.openUrl} onBrowserClose={projectBrowser.close} terminalMode={swapped} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} pushAction={agent.push} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} statusSlot={statusSlot} historySlot={historySlot} onSelectTarget={onSelectTarget} onOperationFeedback={onOperationFeedback} />{tabBar}{upstreamRebase}<PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) }); if (response.ok) await promptHistory.refresh(); return response.ok; }} /><Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} sleeping={sleeping} swapping={swapping} swapped={swapped} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onRestartAs={!active && agent.worktreeId !== undefined ? { label: displayLabel, resolution: agent.launch, onLaunch: choice => void restart(choice) } : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSleep={!active && agent.worktreeId !== undefined ? () => void sleep() : undefined} onSwap={() => void changePaneMode()} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} stack={agent.stack} review={review} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} statusSlotRef={setStatusSlot} historySlotRef={setHistorySlot} /></article>;
+  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} browserProxied={projectBrowser.proxied} browserNavigationRequest={projectBrowser.navigationRequest} onBrowserNavigate={projectBrowser.navigate} onBrowserOpen={projectBrowser.openUrl} onBrowserClose={projectBrowser.close} terminalMode={swapped} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} pushAction={agent.push} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} statusSlot={statusSlot} historySlot={historySlot} onSelectTarget={onSelectTarget} onNavigateWorktree={onNavigateWorktree} onOperationFeedback={onOperationFeedback} />{tabBar}{upstreamRebase}<PullRequestCard pullRequest={agent.pullRequest} onFixup={agent.pullRequest === undefined ? undefined : async () => { const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) }); if (response.ok) await promptHistory.refresh(); return response.ok; }} /><Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} sleeping={sleeping} swapping={swapping} swapped={swapped} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onRestartAs={!active && agent.worktreeId !== undefined ? { label: displayLabel, resolution: agent.launch, onLaunch: choice => void restart(choice) } : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSleep={!active && agent.worktreeId !== undefined ? () => void sleep() : undefined} onSwap={() => void changePaneMode()} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} stack={agent.stack} review={review} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} statusSlotRef={setStatusSlot} historySlotRef={setHistorySlot} /></article>;
 }
 
 function launchError(response: Response): Promise<string> {
@@ -5595,7 +5662,7 @@ const inactiveWorktreePresentation = (label: string, kind: AgentKind | undefined
 };
 
 // render an inactive worktree
-function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOff, onOperationFeedback, onRename, onRemove, removeDisabledReason }: { worktree: Worktree; tabBar: ReactNode; cleanupControl?: ReactNode; onLaunched: (agentId: string, worktree: Worktree, operationKey: string) => void; onTurnedOff: () => Promise<void>; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; onRename: () => void; onRemove?: () => void; removeDisabledReason?: string }) {
+function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOff, onOperationFeedback, onNavigateWorktree, onRename, onRemove, removeDisabledReason }: { worktree: Worktree; tabBar: ReactNode; cleanupControl?: ReactNode; onLaunched: (agentId: string, worktree: Worktree, operationKey: string) => void; onTurnedOff: () => Promise<void>; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; onNavigateWorktree: (worktreeId: string) => void; onRename: () => void; onRemove?: () => void; removeDisabledReason?: string }) {
   const launchKey = launchOperationKey(worktree.id);
   const restartKey = restartOperationKey(worktree.id);
   const deactivateKey = deactivateOperationKey(worktree.id);
@@ -5620,7 +5687,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
   const launchKind = pendingWorktreeLaunches.get(worktree.id)?.kind ?? worktree.launch?.kind;
   const presentation = inactiveWorktreePresentation(worktree.label, launchKind, { startingNewTask, restarting, turningOff, waking, launching, sleeping });
   const worktreeBookmarks = useWorktreeBookmarks(worktree.id);
-  const worktreeConversations = useWorktreeConversations(worktree.id);
+  const worktreeConversations = useWorktreeConversations(worktree.id, undefined, { onNavigateWorktree, onOperationFeedback });
   const worktreeNotes = useWorktreeNotes(worktree.id);
   const projectBrowser = useProjectBrowser(worktree.projectUrl, worktree.id, worktree.projectProxied);
   const filePreview = useFilePreview(`/api/worktrees/${encodeURIComponent(worktree.id)}/file-preview`);
@@ -6813,6 +6880,14 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     const worktree = worktrees.find(candidate => candidate.id === target.worktreeId);
     if (worktree !== undefined) void launchWorktree(worktree);
   };
+  // move to one Worktree's tab, deferring until a pending resume/launch has made it a tab — a
+  // conversation resume already drives the handoff, so this never starts a fresh agent the way
+  // selectTarget's PR-switch fallback does
+  const navigateToWorktree = (worktreeId: string) => {
+    const index = items.findIndex(candidate => candidate.agent?.worktreeId === worktreeId || candidate.worktree?.id === worktreeId);
+    if (index >= 0) return select(index);
+    setActivateWorktreeId(worktreeId);
+  };
   // pin or unpin one Worktree so an idle checkout keeps (or drops) its tab
   const togglePin = async (worktree: Worktree) => {
     const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/pin`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pinned: !worktree.pinned }) }).catch(() => undefined);
@@ -7001,7 +7076,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   })}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label launcher-symbol-label"><LauncherLabelIcon name="scratch" /><span>Scratch</span></span><LaunchSplitButton label="~ Scratch" resolution={data.scratchLaunch} compact disabled={creatingAgent} onLaunch={choice => void createAgent(choice)} /></div>{data.projects.map(launcherProject)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav><ToastRegion feedback={visibleOperationFeedback} onDismissFeedback={() => setOperationFeedback(undefined)} launchErrorMessage={launchErrorMessage} /></>;
   const consoleClass = `console${davo.enabled && voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view"><ServerSwitcher className="output-server-switcher" />{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
-  return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${visibleActive}`} aria-labelledby={`tab-${visibleActive}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} {...(activeWorktree === undefined ? {} : { pinned: activeWorktree.pinned, onTogglePin: () => void togglePin(activeWorktree), onRenameWorktree: () => setRenameWorktreeId(activeWorktree.id), worktreeLabel: activeWorktree.label })} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} onRename={() => setRenameWorktreeId(item.worktree!.id)} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}{item?.pendingLaunch && <PendingSessionCard key={item.pendingLaunch.id} launch={item.pendingLaunch} tabBar={tabBar} cleanupControl={cleanupControl} retrying={creatingAgent} onRetry={choice => { /* retain the same pending draft on retry */ void runPendingSessionLaunch(item.pendingLaunch!, choice); }} onDiscard={() => { /* discard only the selected failed placeholder */ discardPendingSessionLaunch(item.pendingLaunch!.id); }} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
+  return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${visibleActive}`} aria-labelledby={`tab-${visibleActive}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onNavigateWorktree={navigateToWorktree} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} {...(activeWorktree === undefined ? {} : { pinned: activeWorktree.pinned, onTogglePin: () => void togglePin(activeWorktree), onRenameWorktree: () => setRenameWorktreeId(activeWorktree.id), worktreeLabel: activeWorktree.label })} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} onNavigateWorktree={navigateToWorktree} onRename={() => setRenameWorktreeId(item.worktree!.id)} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}{item?.pendingLaunch && <PendingSessionCard key={item.pendingLaunch.id} launch={item.pendingLaunch} tabBar={tabBar} cleanupControl={cleanupControl} retrying={creatingAgent} onRetry={choice => { /* retain the same pending draft on retry */ void runPendingSessionLaunch(item.pendingLaunch!, choice); }} onDiscard={() => { /* discard only the selected failed placeholder */ discardPendingSessionLaunch(item.pendingLaunch!.id); }} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
 }
 
 // coordinate console session and update lifecycle
