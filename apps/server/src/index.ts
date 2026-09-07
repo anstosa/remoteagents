@@ -34,4 +34,6 @@ const cleanupMonitor = new CleanupMonitor(cleanup, dashboardUpdates, push);
 app.addHook('onClose', async () => { clearInterval(dashboardTimer); cleanupMonitor.stop(); notifications.stop(); });
 void dashboardUpdates.refresh().catch(() => {});
 cleanupMonitor.start();
+// fire enabled Schedules unattended, beside the other periodic jobs; buildApp's onClose stops it
+app.scheduler.start();
 await app.listen(config.listen);

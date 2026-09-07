@@ -30,7 +30,15 @@ export type ReviewNotification = {
   url: string;
   worktreeId: string;
 };
-export type PushMessage = AgentNotification | CleanupNotification | ReviewNotification;
+export type ScheduleNotification = {
+  kind: 'schedule';
+  title: string;
+  body: string;
+  tag: string;
+  url: string;
+  worktreeId?: string;
+};
+export type PushMessage = AgentNotification | CleanupNotification | ReviewNotification | ScheduleNotification;
 
 type NotificationDelivery = (notification: AgentNotification) => void | Promise<void>;
 
@@ -47,6 +55,34 @@ export const agentNotificationTag = (agent: Pick<Agent, 'id' | 'worktreeId'>) =>
 // build one review-ready push payload
 export function reviewNotification(agentId: string, worktreeId: string, projectName: string, worktreeName: string): ReviewNotification {
   return { kind: 'review', title: `Review ready in ${projectName}`, body: `${worktreeName} is ready for review`, tag: `review-ready-${worktreeId}`, url: `/#agent=${encodeURIComponent(agentId)}`, worktreeId };
+}
+
+// build one skipped/failed scheduled-Run push payload. The url deep-links to the agent when the Run has a
+// pane, else to the Worktree for a Worktree target, else the console root. `worktreeId` is carried for
+// Worktree targets, and the service worker prefers it over the url — so a Worktree Run always opens the
+// Worktree (as agent notifications do), while a Scratch/Project Run with a pane uses the /#agent url. A
+// launched Run sends nothing, so only skipped and failed reach here.
+export function scheduleNotification(params: {
+  status: 'skipped' | 'failed';
+  targetLabel: string;
+  noteId: string;
+  noteTitle?: string;
+  detail?: string;
+  agentId?: string;
+  worktreeId?: string;
+}): ScheduleNotification {
+  const { status, targetLabel, noteId, noteTitle, detail, agentId, worktreeId } = params;
+  const url = agentId !== undefined
+    ? `/#agent=${encodeURIComponent(agentId)}`
+    : worktreeId !== undefined ? `/#worktree=${encodeURIComponent(worktreeId)}` : '/';
+  return {
+    kind: 'schedule',
+    title: `Scheduled run ${status} in ${targetLabel}`,
+    body: `${noteTitle ?? 'Untitled note'}${detail === undefined ? '' : ` · ${detail}`}`,
+    tag: `schedule-${noteId}`,
+    url,
+    ...(worktreeId === undefined ? {} : { worktreeId })
+  };
 }
 
 // build one agent-state push payload

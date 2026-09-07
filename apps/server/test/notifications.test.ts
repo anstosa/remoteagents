@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Agent } from '../src/domain/models.js';
 import { resolveAttention } from '../src/adapters/attention.js';
-import { AgentNotificationCoordinator, agentAttentionState, agentNotification, reviewNotification, type AgentNotification, type AgentNotificationContext } from '../src/notifications.js';
+import { AgentNotificationCoordinator, agentAttentionState, agentNotification, reviewNotification, scheduleNotification, type AgentNotification, type AgentNotificationContext } from '../src/notifications.js';
 
 // Resolve attention from the title exactly as DiscoveryService would, so the
 // coordinator reads the same resolved state the wire carries.
@@ -70,6 +70,36 @@ describe('agent notifications', () => {
       tag: 'review-ready-eric',
       url: '/#agent=agent-1',
       worktreeId: 'eric'
+    });
+  });
+
+  it('builds a skipped scheduled-run notification that deep-links to the reused pane and carries the Worktree', () => {
+    expect(scheduleNotification({ status: 'skipped', targetLabel: 'Atlas', noteId: 'note-1', noteTitle: 'Morning triage', detail: 'previous run still working', agentId: 'agent-9', worktreeId: 'wt-main' })).toEqual({
+      kind: 'schedule',
+      title: 'Scheduled run skipped in Atlas',
+      body: 'Morning triage · previous run still working',
+      tag: 'schedule-note-1',
+      url: '/#agent=agent-9',
+      worktreeId: 'wt-main'
+    });
+  });
+
+  it('deep-links a pane-less failed Worktree run to its Worktree, and falls back to Untitled note and the root', () => {
+    expect(scheduleNotification({ status: 'failed', targetLabel: 'Atlas', noteId: 'note-2', detail: 'launch refused', worktreeId: 'wt-main' })).toEqual({
+      kind: 'schedule',
+      title: 'Scheduled run failed in Atlas',
+      body: 'Untitled note · launch refused',
+      tag: 'schedule-note-2',
+      url: '/#worktree=wt-main',
+      worktreeId: 'wt-main'
+    });
+    // a Scratch/Project target with no pane has no Worktree deep-link, so it points at the console root
+    expect(scheduleNotification({ status: 'skipped', targetLabel: 'Scratch', noteId: 'note-3', noteTitle: 'Ping', detail: 'target is gone' })).toEqual({
+      kind: 'schedule',
+      title: 'Scheduled run skipped in Scratch',
+      body: 'Ping · target is gone',
+      tag: 'schedule-note-3',
+      url: '/'
     });
   });
 

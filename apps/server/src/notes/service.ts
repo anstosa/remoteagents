@@ -34,6 +34,15 @@ export class WorktreeNoteService {
     return [...((await this.read())[worktreeId] ?? [])];
   }
 
+  // every scheduled note across all keys, paired with its persistence key — the scheduler's
+  // enumeration for one tick. Only notes that carry a Schedule are returned.
+  async scheduled(): Promise<Array<{ key: string; note: WorktreeNote }>> {
+    await this.mutation;
+    const stored = await this.read();
+    return Object.entries(stored).flatMap(([key, notes]) =>
+      notes.filter(note => note.schedule !== undefined).map(note => ({ key, note })));
+  }
+
   // create an optionally titled note
   async create(worktreeId: string, title?: string): Promise<WorktreeNote | undefined> {
     if (!validWorktreeId(worktreeId) || title !== undefined && !validTitle(title)) return undefined;

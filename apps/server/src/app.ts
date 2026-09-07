@@ -28,7 +28,7 @@ import { PullRequestSwitchService } from './pull-requests/switch-service.js';
 import { NewTaskService } from './new-task/service.js';
 import { WorktreeManagementService } from './worktrees/management.js';
 import { SavedPromptService } from './saved-prompts/service.js';
-import { agentAttentionState, AgentNotificationCoordinator, reviewNotification, type AgentNotificationContext } from './notifications.js';
+import { agentAttentionState, AgentNotificationCoordinator, reviewNotification, scheduleNotification, type AgentNotificationContext } from './notifications.js';
 import { stackActions, type Agent, type SocketRef, type StackAction, type Worktree } from './domain/models.js';
 import { CommandCatalogService } from './commands/service.js';
 import { LatestViewportScheduler, PaneViewportCoordinator } from './logs/viewport-scheduler.js';
@@ -36,6 +36,7 @@ import { boundedViewport } from './logs/viewport.js';
 import { DashboardUpdates, type DashboardPayload } from './dashboard/updates.js';
 import { WorktreeNoteService, type WorktreeNote } from './notes/service.js';
 import { cronError, previewRuns, scheduleNextRun } from './schedule/cron.js';
+import { Scheduler } from './schedule/scheduler.js';
 import { type Schedule, type ScheduleLastRun, type ScheduleTarget, validScheduleTarget } from './schedule/types.js';
 import { CleanupService } from './cleanup/service.js';
 import { PromptHistoryService } from './prompt-history/service.js';
@@ -69,7 +70,12 @@ import { isUpdateAdvisorForTarget, isUpdateAdvisorLabel, updateAdvisorLabel, upd
 import { isFullGitSha } from './git/revision.js';
 import { AgentUpdateService, type AgentUpdateServiceLike } from './agent-updates/service.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; conversationNamePollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; prompts?: PromptService; notes?: WorktreeNoteService; consoleNamed?: ConsoleNamedConversationService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'> };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; conversationNamePollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; prompts?: PromptService; notes?: WorktreeNoteService; consoleNamed?: ConsoleNamedConversationService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'>; scheduleBootAt?: Date };
+// buildApp decorates the returned instance with the Schedule scheduler, so index.ts can start it and
+// the HTTP-seam tests can drive its `tick(now)` over the same fakes the Run routes use.
+declare module 'fastify' {
+  interface FastifyInstance { scheduler: Scheduler }
+}
 // derive one stable opaque scratch persistence group
 const scratchSaveKey = (workspace: string) => `scratch_${createHash('sha256').update(workspace).digest('base64url').slice(0, 40)}`;
 // bound full history scans
@@ -686,11 +692,23 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const configuredWorktree = (id: string) => worktreeById(discovery.worktreesNow(), id);
   // notes and console-named conversations are Project-scoped: their shared key is the Worktree's projectId (ADR 0003)
   const worktreeSaveKey = (id: string) => configuredWorktree(id)?.projectId;
-  // the anchor for a Schedule's displayed next-run: a restart never replays a missed instant
-  const scheduleBootAt = new Date();
+  // the anchor for a Schedule's displayed next-run and its firing: a restart never replays a missed
+  // instant. Injectable so tests can place boot before a due instant they mean to fire.
+  const scheduleBootAt = deps.scheduleBootAt ?? new Date();
   // decorate a note with its server-computed next run, so the display and the fire agree
   const decorateNote = (note: WorktreeNote) => note.schedule === undefined ? note : { ...note, nextRun: scheduleNextRun(note.schedule, scheduleBootAt)?.toISOString() };
   const decorateNotes = (stored: WorktreeNote[]) => stored.map(decorateNote);
+  // resolve a Schedule notification's operator-facing "<Project | Scratch>" label and, for a Worktree
+  // target, its wire id (the service worker deep-links to the Worktree). A Worktree resolves to its
+  // Project's label; a gone Worktree falls back to a generic word so a "target is gone" skip still notifies.
+  const resolveScheduleTarget = (target: ScheduleTarget): { label: string; worktreeId?: string } => {
+    if ('scratch' in target) return { label: 'Scratch' };
+    if ('worktreeId' in target) {
+      const worktree = configuredWorktree(target.worktreeId);
+      return { label: config.projects.find(project => project.id === worktree?.projectId)?.label ?? worktree?.label ?? 'a worktree', worktreeId: target.worktreeId };
+    }
+    return { label: config.projects.find(project => project.id === target.projectId)?.label ?? 'a project' };
+  };
   // validate a set-schedule body into a Schedule, or return the operator-facing reason it was refused;
   // launchability is checked at Run time, since configuration can change — here only existence and shape
   const buildSchedule = (raw: Record<string, unknown>): Schedule | string => {
@@ -1395,10 +1413,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (agent === undefined) return { status: 'failed', detail: notReadyDetail, reason: 'no-agent' };
     const readiness = await waitForReadiness(agent);
     if (readiness.state !== 'ready') {
+      // the pane is closed here, so the Run has no pane to remember or deep-link to: drop its id, so
+      // lastRun records no agentId and the notification falls back to the Worktree (or root) url
       await prompts.close(agent.id).catch(() => undefined);
       return readiness.state === 'blocked'
-        ? { status: 'failed', detail: readiness.reason, reason: 'not-ready-blocked', agentId: agent.id }
-        : { status: 'failed', detail: notReadyDetail, reason: 'not-ready-timeout', agentId: agent.id };
+        ? { status: 'failed', detail: readiness.reason, reason: 'not-ready-blocked' }
+        : { status: 'failed', detail: notReadyDetail, reason: 'not-ready-timeout' };
     }
     if (!await prompts.submit(agent.id, text)) return { status: 'failed', detail: 'the note could not be delivered', reason: 'delivery-failed', agentId: agent.id };
     return { status: 'launched', agentId: agent.id };
@@ -1466,12 +1486,32 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         lastRun = { at, status: 'failed', detail: 'run error' };
       }
       const updated = await notes.recordLastRun(saveKey, noteId, lastRun);
-      // the Schedule may have been removed mid-run; the outcome is then dropped
-      return updated === undefined ? 'gone' : { note: updated };
+      // the Schedule may have been removed mid-run; the outcome is then dropped, notification and all
+      if (updated === undefined) return 'gone';
+      // a skipped or failed Run notifies so an unattended failure reaches the phone; a launched Run
+      // stays quiet (the agent's own "done working" notification already fires when the answer lands)
+      if (lastRun.status !== 'launched') {
+        const target = resolveScheduleTarget(schedule.target);
+        void push.notify(scheduleNotification({
+          status: lastRun.status,
+          targetLabel: target.label,
+          noteId,
+          ...(note.title === undefined ? {} : { noteTitle: note.title }),
+          ...(lastRun.detail === undefined ? {} : { detail: lastRun.detail }),
+          ...(lastRun.agentId === undefined ? {} : { agentId: lastRun.agentId }),
+          ...(target.worktreeId === undefined ? {} : { worktreeId: target.worktreeId })
+        })).catch(() => undefined);
+      }
+      return { note: updated };
     } finally {
       scheduleRunsInFlight.delete(flightKey);
     }
   };
+  // fire enabled Schedules once a minute, unattended, through the very seam Run now uses. Constructed
+  // here so it closes over the real Run primitive; decorated onto the app below so index.ts starts it
+  // and the HTTP-seam tests drive its `tick(now)`. It is not started here — tests build the app
+  // without a live timer running.
+  const scheduler = new Scheduler(() => notes.scheduled(), recordedScheduleRun, scheduleBootAt);
   // Run now on a Schedule: run it synchronously exactly as the scheduler will and return the decorated
   // Note; a second Run now while one is in flight is refused with a conflict.
   const runScheduleNow = async (saveKey: string, noteId: string, reply: FastifyReply): Promise<unknown> => {
@@ -2244,6 +2284,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     } catch { socket.close(1008); }
   });
   app.get('/ws/input/:id', { websocket: true }, async (socket, request) => { try { const s = controlled(request, false); const ticket = String(request.headers['sec-websocket-protocol'] ?? '').split(',').map(x => x.trim())[1]; const id = (request.params as { id: string }).id; if (!tickets.consume(ticket, s.id, 'input', id)) throw new Error(); const target = await discovery.target(id); if (!target) throw new Error(); socket.on('message', (raw: unknown) => { try { if (!control.active(s.id)) throw new Error(); const frame = JSON.parse(String(raw)); if (frame?.v !== 1 || frame?.type !== 'input' || typeof frame.data !== 'string' || !/^[A-Za-z0-9_-]*$/.test(frame.data)) throw new Error(); const decoded = Buffer.from(frame.data, 'base64url'); if (!decoded.length || decoded.length > 65_536 || decoded.toString('base64url') !== frame.data) throw new Error(); const input = decoded.toString('utf8'); const releaseMutation = prompts.beginAgentMutation(id); if (releaseMutation === undefined) throw new Error(); /* route interrupts through queue cancellation; forward the literal Ctrl+C when the agent is idle so a live-log interrupt still reaches the pane */ void (input === '\x03' ? prompts.cancel(id).then(outcome => outcome === 'not-working' ? tmux.input(target.socket, target.agent.paneId, input) : outcome === 'ok') : tmux.input(target.socket, target.agent.paneId, input)).then(ok => { if (!ok) socket.close(1011); }).finally(releaseMutation); } catch { socket.close(1008); } }); } catch { socket.close(1008); } });
-  app.addHook('onClose', async () => { reviewJobs.close(); await accounts.close(); await paneViewports.restoreAll(); dashboardUpdates.close(); });
+  app.addHook('onClose', async () => { scheduler.stop(); reviewJobs.close(); await accounts.close(); await paneViewports.restoreAll(); dashboardUpdates.close(); });
+  // expose the scheduler on the instance (index.ts starts it; the HTTP-seam tests tick it)
+  app.decorate('scheduler', scheduler);
   return app;
 }

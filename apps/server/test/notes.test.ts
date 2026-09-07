@@ -88,4 +88,24 @@ describe('worktree notes', () => {
       await expect(service.update('cora', notes[10]!.id, 'overflow')).resolves.toBeUndefined();
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
+
+  it('enumerates every scheduled note across all keys, and only scheduled ones', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-scheduled-notes-'));
+    try {
+      const service = new WorktreeNoteService(join(directory, 'notes.json'));
+      const daily = { cron: '0 9 * * *', kind: 'claude', target: { scratch: true }, enabled: true, updatedAt: '2026-09-06T09:00:00-07:00' } as const;
+      const coraScheduled = await service.create('cora', 'Morning triage');
+      await service.setSchedule('cora', coraScheduled!.id, daily);
+      await service.create('cora', 'Plain note');
+      const owenScheduled = await service.create('owen', 'Nightly summary');
+      await service.setSchedule('owen', owenScheduled!.id, daily);
+      const scheduled = await service.scheduled();
+      expect(scheduled).toHaveLength(2);
+      expect(scheduled.map(entry => ({ key: entry.key, id: entry.note.id })).sort((a, b) => a.key.localeCompare(b.key)))
+        .toEqual([{ key: 'cora', id: coraScheduled!.id }, { key: 'owen', id: owenScheduled!.id }]);
+      expect(scheduled.every(entry => entry.note.schedule !== undefined)).toBe(true);
+      // an empty store enumerates to nothing
+      await expect(new WorktreeNoteService(join(directory, 'empty.json')).scheduled()).resolves.toEqual([]);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
 });
