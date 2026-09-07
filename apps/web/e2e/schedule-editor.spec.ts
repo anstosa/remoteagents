@@ -1,26 +1,30 @@
 import { expect, test, type Page } from '@playwright/test';
+import type { Schedule } from '../src/schedule-editor.js';
 
 // pin the zone so the server-supplied instants render as fixed local sentences
 test.use({ timezoneId: 'America/Los_Angeles' });
 
 type Emitted = { type: string; body?: { cron: string; enabled: boolean; kind: string; target: unknown } };
 const emitted = (page: Page) => page.evaluate(() => (window as unknown as { scheduleEmitted: Emitted[] }).scheduleEmitted);
+const lastBody = async (page: Page) => (await emitted(page)).at(-1)?.body;
 
-const mount = async (page: Page) => {
+const mount = async (page: Page, initial?: Schedule) => {
   await page.goto('/');
-  await page.evaluate(async () => {
+  await page.evaluate(async initial => {
     const { renderScheduleEditor } = await import('/e2e/schedule-editor-fixture.tsx');
     const root = document.createElement('div');
     root.style.width = '100%';
     document.body.replaceChildren(root);
-    renderScheduleEditor(root);
-  });
+    renderScheduleEditor(root, initial);
+  }, initial);
 };
+
+const editorOf = (page: Page) => page.getByRole('group', { name: 'Schedule', exact: true });
 
 // the full slot walk, asserted identically at both viewports
 const walk = async (page: Page) => {
   await mount(page);
-  const editor = page.getByRole('group', { name: 'Schedule', exact: true });
+  const editor = editorOf(page);
 
   // unscheduled state and hint
   await expect(editor).toContainText('Not scheduled.');
@@ -51,14 +55,14 @@ const walk = async (page: Page) => {
   await editor.getByRole('button', { name: 'Time' }).click();
   await editor.getByLabel('Set time').fill('08:30');
   await expect(editor.getByRole('button', { name: 'Time' })).toHaveText('8:30 AM');
-  expect((await emitted(page)).at(-1)).toEqual({ type: 'set', body: { cron: '30 8 * * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true } });
+  expect(await lastBody(page)).toEqual({ cron: '30 8 * * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true });
   await page.keyboard.press('Escape');
 
   // pause → the switch and footnote change
   await editor.getByRole('switch', { name: 'Schedule enabled' }).click();
   await expect(editor.getByRole('switch', { name: 'Schedule enabled' })).toHaveText('○ Paused');
   await expect(editor).toContainText('Paused · would next run Mon 7 Sep 9:00 AM');
-  expect((await emitted(page)).at(-1)).toEqual({ type: 'set', body: { cron: '30 8 * * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: false } });
+  expect(await lastBody(page)).toEqual({ cron: '30 8 * * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: false });
 
   // remove → back to unscheduled
   await editor.getByRole('button', { name: 'Remove schedule' }).click();
@@ -74,4 +78,210 @@ test('walks every Schedule slot at a desktop viewport', async ({ page }) => {
 test('walks every Schedule slot at a phone viewport', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await walk(page);
+});
+
+// each cadence preset's emitted cron and rendered sentence, plus the raw-cron field
+test('maps the weekdays, weekly, every-N and cron cadences', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mount(page);
+  const editor = editorOf(page);
+  const base = { kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true };
+
+  await editor.getByRole('button', { name: 'Schedule this note' }).click();
+  await editor.getByRole('button', { name: 'Cadence' }).click();
+  const cadence = editor.getByRole('dialog', { name: 'Cadence' });
+
+  // weekdays: M H * * 1-5, keeps the trailing time slot
+  await cadence.getByRole('button', { name: 'Weekdays at' }).click();
+  expect(await lastBody(page)).toEqual({ ...base, cron: '0 9 * * 1-5' });
+  await expect(editor.getByRole('button', { name: 'Cadence' })).toHaveText('every weekday');
+  await expect(editor.getByRole('button', { name: 'Time' })).toHaveText('9:00 AM');
+
+  // weekly: Sunday = 0, ascending; day chips add and remove days by name
+  await cadence.getByRole('button', { name: 'Weekly on' }).click();
+  expect(await lastBody(page)).toEqual({ ...base, cron: '0 9 * * 1' });
+  await expect(editor.getByRole('button', { name: 'Cadence' })).toHaveText('every Mon');
+  await cadence.getByRole('button', { name: 'Wednesday' }).click();
+  await cadence.getByRole('button', { name: 'Friday' }).click();
+  expect(await lastBody(page)).toEqual({ ...base, cron: '0 9 * * 1,3,5' });
+  await expect(editor.getByRole('button', { name: 'Cadence' })).toHaveText('every Mon, Wed, Fri');
+  await cadence.getByRole('button', { name: 'Monday' }).click();
+  expect(await lastBody(page)).toEqual({ ...base, cron: '0 9 * * 3,5' });
+  await expect(editor.getByRole('button', { name: 'Cadence' })).toHaveText('every Wed, Fri');
+
+  // every N hours: 0 */N * * *, no time slot; a divisor reads "every N h"
+  await cadence.getByRole('button', { name: 'Every N hours' }).click();
+  expect(await lastBody(page)).toEqual({ ...base, cron: '0 */6 * * *' });
+  await expect(editor.getByRole('button', { name: 'Cadence' })).toHaveText('every 6 h');
+  await expect(editor.getByRole('button', { name: 'Time' })).toHaveCount(0);
+  // a non-divisor spells out the hours it fires and notes the midnight restart
+  await cadence.getByRole('button', { name: 'Fewer hours' }).click();
+  expect(await lastBody(page)).toEqual({ ...base, cron: '0 */5 * * *' });
+  await expect(editor.getByRole('button', { name: 'Cadence' })).toHaveText('at 12:00 AM, 5:00 AM, 10:00 AM, 3:00 PM, 8:00 PM (restarts at midnight)');
+
+  // raw cron: an invalid expression shows inline and keeps the previous value
+  await cadence.getByRole('button', { name: 'Cron' }).click();
+  const priorCount = (await emitted(page)).length;
+  await editor.getByLabel('Cron expression').fill('nope');
+  await editor.getByLabel('Cron expression').press('Enter');
+  await expect(cadence.getByRole('alert')).toContainText('Invalid cron expression: nope');
+  expect((await emitted(page)).length).toBe(priorCount);
+  // a valid expression the presets cannot express emits and reads "on cron …"
+  await editor.getByLabel('Cron expression').fill('0 9 1 * *');
+  await editor.getByLabel('Cron expression').press('Enter');
+  expect(await lastBody(page)).toEqual({ ...base, cron: '0 9 1 * *' });
+  await expect(cadence.getByRole('alert')).toHaveCount(0);
+  await expect(editor.getByRole('button', { name: 'Cadence' })).toHaveText('on cron 0 9 1 * *');
+});
+
+// re-opening the popover restores the preset that reproduces a stored expression
+test('restores a stored weekly expression as the weekly preset', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mount(page, { cron: '30 7 * * 1,3,5', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true });
+  const editor = editorOf(page);
+  await expect(editor.getByRole('button', { name: 'Cadence' })).toHaveText('every Mon, Wed, Fri');
+  await expect(editor.getByRole('button', { name: 'Time' })).toHaveText('7:30 AM');
+  await editor.getByRole('button', { name: 'Cadence' }).click();
+  const cadence = editor.getByRole('dialog', { name: 'Cadence' });
+  await expect(cadence.getByRole('button', { name: 'Weekly on' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(cadence.getByRole('button', { name: 'Monday' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(cadence.getByRole('button', { name: 'Wednesday' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(cadence.getByRole('button', { name: 'Friday' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(cadence.getByRole('button', { name: 'Tuesday' })).toHaveAttribute('aria-pressed', 'false');
+});
+
+// a stored weekdays expression restores the Weekdays preset and its time
+test('restores a stored weekdays expression as the weekdays preset', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mount(page, { cron: '0 6 * * 1-5', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true });
+  const editor = editorOf(page);
+  await expect(editor.getByRole('button', { name: 'Cadence' })).toHaveText('every weekday');
+  await expect(editor.getByRole('button', { name: 'Time' })).toHaveText('6:00 AM');
+  await editor.getByRole('button', { name: 'Cadence' }).click();
+  await expect(editor.getByRole('dialog', { name: 'Cadence' }).getByRole('button', { name: 'Weekdays at' })).toHaveAttribute('aria-pressed', 'true');
+});
+
+// a stored every-N expression restores the Every-N preset and its stepper value, with no time slot
+test('restores a stored every-N expression as the every-N preset', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mount(page, { cron: '0 */8 * * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true });
+  const editor = editorOf(page);
+  await expect(editor.getByRole('button', { name: 'Cadence' })).toHaveText('every 8 h');
+  await expect(editor.getByRole('button', { name: 'Time' })).toHaveCount(0);
+  await editor.getByRole('button', { name: 'Cadence' }).click();
+  const cadence = editor.getByRole('dialog', { name: 'Cadence' });
+  await expect(cadence.getByRole('button', { name: 'Every N hours' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(cadence.getByRole('group', { name: 'Hours between runs' })).toContainText('8 h');
+});
+
+// closing and reopening the popover clears a rejected raw-cron draft, even for a raw-stored schedule
+test('reopening the cadence popover discards a rejected raw-cron draft', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mount(page, { cron: '0 9 1 * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true });
+  const editor = editorOf(page);
+  await editor.getByRole('button', { name: 'Cadence' }).click();
+  const cadence = editor.getByRole('dialog', { name: 'Cadence' });
+  await expect(editor.getByLabel('Cron expression')).toHaveValue('0 9 1 * *');
+  await editor.getByLabel('Cron expression').fill('broken');
+  await editor.getByLabel('Cron expression').press('Enter');
+  await expect(cadence.getByRole('alert')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(cadence).toHaveCount(0);
+  // reopening re-derives from the stored expression with no stale draft or error
+  await editor.getByRole('button', { name: 'Cadence' }).click();
+  await expect(editor.getByLabel('Cron expression')).toHaveValue('0 9 1 * *');
+  await expect(editor.getByRole('dialog', { name: 'Cadence' }).getByRole('alert')).toHaveCount(0);
+});
+
+// editing the time on a non-daily preset keeps that preset (it must not revert to Daily)
+test('editing the time on a weekly schedule keeps it weekly', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mount(page, { cron: '0 9 * * 1,3,5', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true });
+  const editor = editorOf(page);
+  await editor.getByRole('button', { name: 'Time' }).click();
+  await editor.getByLabel('Set time').fill('08:30');
+  expect(await lastBody(page)).toEqual({ cron: '30 8 * * 1,3,5', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true });
+  await expect(editor.getByRole('button', { name: 'Cadence' })).toHaveText('every Mon, Wed, Fri');
+});
+
+// entering raw Cron mode then closing without committing drops the mode and restores the sentence
+test('leaving raw Cron mode without committing keeps the derived preset', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mount(page, { cron: '0 9 * * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true });
+  const editor = editorOf(page);
+  await editor.getByRole('button', { name: 'Cadence' }).click();
+  await editor.getByRole('dialog', { name: 'Cadence' }).getByRole('button', { name: 'Cron' }).click();
+  await expect(editor.getByRole('button', { name: 'Cadence' })).toHaveText('on cron 0 9 * * *');
+  await page.keyboard.press('Escape');
+  // the sentence re-derives to Daily with its time slot back, and reopening shows Daily pressed
+  await expect(editor.getByRole('button', { name: 'Cadence' })).toHaveText('every day');
+  await expect(editor.getByRole('button', { name: 'Time' })).toHaveText('9:00 AM');
+  await editor.getByRole('button', { name: 'Cadence' }).click();
+  await expect(editor.getByRole('dialog', { name: 'Cadence' }).getByRole('button', { name: 'Daily at' })).toHaveAttribute('aria-pressed', 'true');
+});
+
+// weekly days emit ascending and de-duplicated no matter the tap order, and never empty
+test('weekly day chips stay canonical and non-empty', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mount(page, { cron: '0 9 * * 1', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true });
+  const editor = editorOf(page);
+  await editor.getByRole('button', { name: 'Cadence' }).click();
+  const cadence = editor.getByRole('dialog', { name: 'Cadence' });
+  // tap Saturday before Wednesday — the emitted list is still ascending
+  await cadence.getByRole('button', { name: 'Saturday' }).click();
+  await cadence.getByRole('button', { name: 'Wednesday' }).click();
+  expect(await lastBody(page)).toEqual({ cron: '0 9 * * 1,3,6', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true });
+  await expect(editor.getByRole('button', { name: 'Cadence' })).toHaveText('every Mon, Wed, Sat');
+  // deselect down to one day, then tapping the last remaining day is a no-op (never emits an empty list)
+  await cadence.getByRole('button', { name: 'Wednesday' }).click();
+  await cadence.getByRole('button', { name: 'Saturday' }).click();
+  await expect(editor.getByRole('button', { name: 'Cadence' })).toHaveText('every Mon');
+  const beforeLast = (await emitted(page)).length;
+  await cadence.getByRole('button', { name: 'Monday' }).click();
+  expect((await emitted(page)).length).toBe(beforeLast);
+  await expect(cadence.getByRole('button', { name: 'Monday' })).toHaveAttribute('aria-pressed', 'true');
+});
+
+// switching to another preset clears a rejected raw draft even when the emitted cron is unchanged
+test('switching away from raw Cron clears a rejected draft', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mount(page, { cron: '0 9 * * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true });
+  const editor = editorOf(page);
+  await editor.getByRole('button', { name: 'Cadence' }).click();
+  const cadence = editor.getByRole('dialog', { name: 'Cadence' });
+  await cadence.getByRole('button', { name: 'Cron' }).click();
+  await editor.getByLabel('Cron expression').fill('bad');
+  await editor.getByLabel('Cron expression').press('Enter');
+  await expect(cadence.getByRole('alert')).toBeVisible();
+  // Daily emits the same stored cron (no prop change), then Cron re-shows the field: it must be clean
+  await cadence.getByRole('button', { name: 'Daily at' }).click();
+  await cadence.getByRole('button', { name: 'Cron' }).click();
+  await expect(editor.getByLabel('Cron expression')).toHaveValue('0 9 * * *');
+  await expect(cadence.getByRole('alert')).toHaveCount(0);
+});
+
+// a parseable cron that never matches a date is refused inline, not committed
+test('refuses a raw cron that never runs', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mount(page, { cron: '0 9 * * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true });
+  const editor = editorOf(page);
+  await editor.getByRole('button', { name: 'Cadence' }).click();
+  const cadence = editor.getByRole('dialog', { name: 'Cadence' });
+  await cadence.getByRole('button', { name: 'Cron' }).click();
+  const priorCount = (await emitted(page)).length;
+  await editor.getByLabel('Cron expression').fill('0 0 31 2 *');
+  await editor.getByLabel('Cron expression').press('Enter');
+  await expect(cadence.getByRole('alert')).toContainText('never runs');
+  expect((await emitted(page)).length).toBe(priorCount);
+});
+
+// a stored expression the server can no longer parse renders as unable to run
+test('shows a stored cron that no longer parses as invalid', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mount(page, { cron: 'nonsense', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true });
+  const editor = editorOf(page);
+  await expect(editor).toHaveClass(/schedule-invalid/);
+  await expect(editor.locator('.schedule-invalid-note')).toBeVisible();
+  await expect(editor).toContainText('invalid cron');
+  await expect(editor.getByRole('button', { name: 'Cadence' })).toHaveText('on cron nonsense');
 });

@@ -24,7 +24,7 @@ import { useViewportFlyout } from './viewport-flyout.js';
 import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
 import { VoiceDialog, type VoiceWorktree } from './voice/voice-dialog.js';
 import { AdaptersContext, agentKindGlyph, agentKindLabel, agentKinds, configuredKinds, LaunchMenu, LaunchSplitButton, LaunchTabBadge, launchRequestInit, type AdapterCapabilities, type AgentKind, type LaunchChoice, type LaunchResolution } from './launch-profile.js';
-import { ScheduleEditor, type Schedule, type ScheduleSetBody, type ScheduleTarget } from './schedule-editor.js';
+import { ScheduleEditor, scheduleInvalid, type Schedule, type ScheduleSetBody, type ScheduleTarget } from './schedule-editor.js';
 import './styles.css';
 
 // the fields the web reads off the server's inline-question payload; the server
@@ -3433,12 +3433,13 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     } catch { setSaveStatus('error'); }
     finally { setScheduleBusy(false); }
   };
-  // the server owns the clock and zone, so the next-runs preview is fetched, never computed here
-  const previewSchedule = async (cron: string): Promise<string[]> => {
+  // the server owns the clock, the zone and the parser, so the next-runs preview and the
+  // raw-cron field's validity are both fetched, never computed here
+  const previewSchedule = async (cron: string): Promise<{ next: string[]; error?: string }> => {
     const response = await request(`/api/schedule/preview?cron=${encodeURIComponent(cron)}`);
-    if (!response.ok) return [];
-    const payload = await response.json() as { next?: unknown };
-    return Array.isArray(payload.next) ? payload.next.filter((value): value is string => typeof value === 'string') : [];
+    const payload = await response.json().catch(() => ({})) as { next?: unknown; error?: unknown };
+    if (!response.ok) return { next: [], error: typeof payload.error === 'string' ? payload.error : 'invalid cron expression' };
+    return { next: Array.isArray(payload.next) ? payload.next.filter((value): value is string => typeof value === 'string') : [] };
   };
 
   // hide notes without any persistence context
@@ -3464,7 +3465,13 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
         return <div className="note-row" key={note.id}>{editingTitle ? <form className="note-menu-rename-form" onSubmit={event => { event.preventDefault(); void saveMenuTitle(); }} onKeyDown={event => {
           // save or cancel from the keyboard
           if (event.key === 'Escape') { event.preventDefault(); setMenuRenameDraft(undefined); }
-        }}><input aria-label="Note name" value={menuRenameDraft.title} maxLength={120} autoFocus disabled={menuRenamingId !== undefined} onChange={event => setMenuRenameDraft({ id: note.id, title: event.target.value })} /><button className="log-control note-menu-rename-save" type="submit" disabled={noteMenuBusy || !menuRenameDraft.title.trim()} aria-label="Save note name" title="Save note name">{menuRenamingId === note.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>}</button><button className="log-control note-menu-rename-cancel" type="button" disabled={noteMenuBusy} aria-label="Cancel note rename" title="Cancel" onClick={() => setMenuRenameDraft(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><button className="log-control note-choice" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} title={(note.title ?? note.text) || 'Blank note'} onClick={() => open(note)}>{note.schedule !== undefined && <span className={`note-schedule-badge${note.schedule.enabled ? '' : ' paused'}`} aria-label={note.schedule.enabled ? 'Scheduled' : 'Schedule paused'} title={note.schedule.enabled ? 'Scheduled' : 'Schedule paused'}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg></span>}<span className="note-menu-name">{label}</span></button><span className="note-menu-actions"><button className="log-control note-menu-rename" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Rename note: ${label}`} title="Rename note" onClick={() => setMenuRenameDraft({ id: note.id, title: Array.from(note.title ?? label).slice(0, 120).join('') })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button><button className="log-control note-menu-delete" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Delete note: ${label}`} title="Delete note" onClick={() => void removeFromMenu(note)}>{menuDeletingId === note.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg>}</button></span></>}</div>;
+        }}><input aria-label="Note name" value={menuRenameDraft.title} maxLength={120} autoFocus disabled={menuRenamingId !== undefined} onChange={event => setMenuRenameDraft({ id: note.id, title: event.target.value })} /><button className="log-control note-menu-rename-save" type="submit" disabled={noteMenuBusy || !menuRenameDraft.title.trim()} aria-label="Save note name" title="Save note name">{menuRenamingId === note.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>}</button><button className="log-control note-menu-rename-cancel" type="button" disabled={noteMenuBusy} aria-label="Cancel note rename" title="Cancel" onClick={() => setMenuRenameDraft(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><button className="log-control note-choice" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} title={(note.title ?? note.text) || 'Blank note'} onClick={() => open(note)}>{note.schedule !== undefined && (() => {
+          // dim the clock when the schedule is paused or its stored cron won't run (no server nextRun)
+          const invalid = scheduleInvalid(note);
+          const dim = !note.schedule.enabled || invalid;
+          const badgeLabel = invalid ? 'Schedule invalid' : note.schedule.enabled ? 'Scheduled' : 'Schedule paused';
+          return <span className={`note-schedule-badge${dim ? ' paused' : ''}`} aria-label={badgeLabel} title={badgeLabel}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg></span>;
+        })()}<span className="note-menu-name">{label}</span></button><span className="note-menu-actions"><button className="log-control note-menu-rename" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Rename note: ${label}`} title="Rename note" onClick={() => setMenuRenameDraft({ id: note.id, title: Array.from(note.title ?? label).slice(0, 120).join('') })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button><button className="log-control note-menu-delete" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Delete note: ${label}`} title="Delete note" onClick={() => void removeFromMenu(note)}>{menuDeletingId === note.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg>}</button></span></>}</div>;
       })}
       <button className="log-control new-note" disabled={noteMenuBusy || menuRenameDraft !== undefined} onClick={() => void create()}>+ New note</button>
     </div></FlyoutPortal>}

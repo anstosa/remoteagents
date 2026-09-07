@@ -542,6 +542,18 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
 .schedule-describe { margin: 0; font-size: .64rem; color: var(--subtext-1); }
 .schedule-preview { margin: 0; font-size: .64rem; color: var(--subtext-0); }
 .schedule-preview b { color: var(--text); font-weight: 600; }
+.schedule-days { display: flex; flex-wrap: wrap; gap: .25rem; }
+.schedule-days button { min-width: 1.9rem; min-height: 1.9rem; padding: .2rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: transparent; color: var(--subtext-1); font: inherit; font-weight: 600; cursor: pointer; }
+.schedule-days button[aria-pressed='true'] { border-color: var(--yellow); background: color-mix(in srgb, var(--yellow) 22%, transparent); color: var(--text); }
+.schedule-stepper { display: inline-flex; align-items: center; gap: .4rem; }
+.schedule-stepper button { min-width: 1.9rem; min-height: 1.9rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: transparent; color: var(--text); font: inherit; font-weight: 700; line-height: 1; cursor: pointer; }
+.schedule-stepper button:disabled { opacity: .5; cursor: default; }
+.schedule-stepper-value { min-width: 2.6rem; text-align: center; color: var(--text); font-weight: 600; }
+.schedule-cron-field { display: grid; gap: .3rem; }
+.schedule-cron-field input { min-height: 2rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); padding: .25rem .45rem; background: var(--mantle); color: var(--text); font: inherit; }
+.schedule-cron-error { margin: 0; font-size: .62rem; color: var(--red); }
+.schedule-invalid .schedule-slot { border-color: color-mix(in srgb, var(--red) 45%, var(--surface-1)); }
+.schedule-invalid-note { margin: 0; font-size: .64rem; color: var(--red); }
 .note-markdown { height: 100%; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: .8rem var(--edge); color: var(--text); font-size: var(--output-font-size); line-height: 1.55; outline-offset: -2px; cursor: text; scrollbar-width: thin; user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; -webkit-overflow-scrolling: touch; }
 .note-markdown > :first-child { margin-top: 0; }
 .note-markdown > :last-child { margin-bottom: 0; }
