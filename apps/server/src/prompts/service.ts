@@ -9,15 +9,19 @@ import type { Adapter, AgentKind, CompletionBaseline, CompletionEvent, Submissio
 import type { Agent } from '../domain/models.js';
 import { run } from '../tmux/command.js';
 import type { PromptHistoryService } from '../prompt-history/service.js';
-import type { SavedPromptService } from '../saved-prompts/service.js';
 import { agentAttentionState } from '../notifications.js';
-import { QueuedPromptService, type QueuedPromptSummary } from './queue.js';
+import { QueuedPromptService, type QueuedPrompt, type QueuedPromptSummary } from './queue.js';
 import { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentData, promptAttachmentName, validPrompt, validPromptAttachments, type PromptAttachment } from './validation.js';
 import { expandCommand } from '../launch/service.js';
-import { configuredWorktreeForWorkspace, projectIdOf } from '../workspaces/resolver.js';
+import { configuredWorktreeForWorkspace } from '../workspaces/resolver.js';
 import { isUpdateAdvisorLabel, updateAdvisorLabel, updateAdvisorPendingLabel } from '../update-advisor.js';
 import { isFullGitSha } from '../git/revision.js';
 export { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentBytes, validPromptAttachments, type PromptAttachment } from './validation.js';
+
+// where a halted queue's prompts are drained: each queued prompt is handed to this sink, in order,
+// and removed only when the sink reports it durable. The console wires it to the notes store; a
+// false return leaves the prompt queued and the queue halted (see saveQueued).
+export type UndeliveredDrain = (scope: string, prompt: QueuedPrompt) => Promise<boolean>;
 
 const answerCaptureGraceMs = 10_000;
 // a reported-state prompt must report `working` within this window or the dispatch is failed
@@ -64,7 +68,7 @@ export class PromptService {
   private readonly mutationVersions = new Map<string, number>();
   private lifecycleMutationVersion = 0;
 
-  constructor(private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly history?: PromptHistoryService, private readonly queued?: QueuedPromptService, private readonly saved?: SavedPromptService, private readonly resolveAdapter: (kind: AgentKind) => AdapterView | undefined = adapterFor, private readonly teardownFor: (kind: AgentKind) => string | undefined = () => undefined) {}
+  constructor(private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly history?: PromptHistoryService, private readonly queued?: QueuedPromptService, private readonly drainUndelivered?: UndeliveredDrain, private readonly resolveAdapter: (kind: AgentKind) => AdapterView | undefined = adapterFor, private readonly teardownFor: (kind: AgentKind) => string | undefined = () => undefined) {}
 
   // submit or durably queue one prompt. `resetAt` marks the prompt as the first
   // turn of a conversation just reset with the Adapter's new-conversation command
@@ -327,16 +331,16 @@ export class PromptService {
     await this.dispatch(agent.id, scope);
   }
 
-  // move queued prompts durably into saved prompts
+  // drain a halted queue's prompts into Notes, in order, one Note per prompt
   private async saveQueued(scope: string): Promise<boolean> {
-    if (this.dispatching.has(scope) || this.queued === undefined || this.saved === undefined) return false;
+    if (this.dispatching.has(scope) || this.queued === undefined || this.drainUndelivered === undefined) return false;
     this.dispatching.add(scope);
     try {
-      // preserve every prompt until its saved copy succeeds
+      // preserve every prompt until its Note is durable
       while (true) {
         const prompt = await this.queued.next(scope);
         if (prompt === undefined) return true;
-        const result = await this.queued.consumeOnSuccess(scope, prompt.id, async queued => await this.saved!.save(this.savedScope(scope), queued.text, queued.attachments ?? []) !== undefined);
+        const result = await this.queued.consumeOnSuccess(scope, prompt.id, queued => this.drainUndelivered!(scope, queued));
         if (result === 'failed') return false;
       }
     } catch {
@@ -723,13 +727,6 @@ export class PromptService {
     if (isUpdateAdvisorLabel(agent.displayLabel)) return `agent:${agentId}`;
     const worktree = configuredWorktreeForWorkspace(this.discovery.worktreesNow(), agent.workspace);
     return worktree === undefined ? `agent:${agentId}` : worktree.id;
-  }
-
-  // saved prompts are Project-scoped (shared across a Project's Worktrees, ADR 0003): a
-  // Worktree scope `<projectId>:<realpath>` collapses to `<projectId>`; a Scratch scope
-  // `agent:<id>` keeps its own agent key
-  private savedScope(scope: string): string {
-    return scope.startsWith('agent:') ? scope.slice('agent:'.length) : projectIdOf(scope);
   }
 
   // keep staged attachments outside Git status

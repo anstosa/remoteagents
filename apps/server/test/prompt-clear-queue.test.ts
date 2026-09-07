@@ -10,7 +10,7 @@ const socket = { fingerprint: 'socket', path: '/tmp/sock', device: 1, inode: 1 }
 // Regression for the reported bug: sending `/clear` to Claude, then a follow-up
 // prompt in the next few seconds, dropped the follow-up. `/clear` never reports
 // `working`, so its awaiting-start phase sat through reportedWorkingGraceMs and then
-// halted, sweeping the queued follow-up into saved prompts instead of dispatching it.
+// halted, draining the queued follow-up into a Note instead of dispatching it.
 describe('clear then queue', () => {
   afterEach(() => vi.useRealTimers());
 
@@ -29,9 +29,9 @@ describe('clear then queue', () => {
       capture: async () => '',
       sendKeys: async () => true,
     };
-    const savedPrompts = { save: async (_scope: string, text: string) => { saved.push(text); return { id: 'saved' }; } };
+    const drainUndelivered = async (_scope: string, prompt: { text: string }) => { saved.push(prompt.text); return true; };
     // resolve the real Claude adapter (reported-state, turn-less) by kind
-    const service = new PromptService(discovery as never, tmux as never, undefined, queue, savedPrompts as never);
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue, drainUndelivered as never);
     try {
       // send /clear: dispatched to the pane, leaving an awaiting-start phase
       await expect(service.submit(agent.id, '/clear')).resolves.toBe(true);
@@ -41,7 +41,7 @@ describe('clear then queue', () => {
       vi.setSystemTime(6_000);
       await service.observe(agent);
 
-      // the follow-up must reach the pane, not be swept into saved prompts
+      // the follow-up must reach the pane, not be drained into a Note
       expect(pasted).toEqual(['/clear', 'do the thing']);
       expect(saved).toEqual([]);
       await expect(service.listQueued(agent.id)).resolves.toEqual([]);

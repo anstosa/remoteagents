@@ -7,6 +7,7 @@ test('manages waiting prompts from the queue-add control connected to Queue', as
     { id: 'queued-prompt-002', text: 'Second queued prompt', createdAt: '2026-08-04T01:01:00.000Z', attachments: [{ name: 'context.txt', size: 7 }] }
   ];
   const saved: Array<{ id: string; text: string; attachments?: Array<{ name: string; size: number }> }> = [];
+  const notes: Array<{ id: string; title: string; text: string }> = [];
   await page.addInitScript(() => {
     class MockWebSocket {
       static readonly CONNECTING = 0;
@@ -32,6 +33,7 @@ test('manages waiting prompts from the queue-add control connected to Queue', as
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: saved } });
+    if (url.pathname === '/api/worktrees/cora/notes' && request.method() === 'GET') return route.fulfill({ json: { notes } });
     if (url.pathname === '/api/agents/agent-1/prompt-history') return route.fulfill({ json: { prompts: [] } });
     if (url.pathname === '/api/agents/agent-1/queued-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: queued } });
     const saveMatch = /^\/api\/agents\/agent-1\/queued-prompts\/([^/]+)\/save$/u.exec(url.pathname);
@@ -39,9 +41,9 @@ test('manages waiting prompts from the queue-add control connected to Queue', as
       const index = queued.findIndex(prompt => prompt.id === saveMatch[1]);
       if (index < 0) return route.fulfill({ status: 404, json: { error: 'missing' } });
       const [prompt] = queued.splice(index, 1);
-      const savedPrompt = { id: `saved-${prompt!.id}`, text: prompt!.text, ...('attachments' in prompt! ? { attachments: prompt!.attachments } : {}) };
-      saved.unshift(savedPrompt);
-      return route.fulfill({ status: 201, json: savedPrompt });
+      const note = { id: `note-${prompt!.id}`, title: 'Queued prompt · 09:41', text: prompt!.text };
+      notes.unshift(note);
+      return route.fulfill({ status: 201, json: note });
     }
     const match = /^\/api\/agents\/agent-1\/queued-prompts\/([^/]+)(\/move)?$/u.exec(url.pathname);
     if (match?.[2] === '/move' && request.method() === 'POST') {
@@ -106,14 +108,16 @@ test('manages waiting prompts from the queue-add control connected to Queue', as
   await page.getByRole('button', { name: 'Save queued prompt changes: Second queued prompt' }).click();
   await expect(copies.first()).toContainText('Edited queued prompt');
 
-  await page.getByRole('button', { name: 'Save queued prompt: Edited queued prompt' }).click();
+  const saveAsNote = page.getByRole('button', { name: 'Save queued prompt as note: Edited queued prompt' });
+  await expect(saveAsNote).toHaveAttribute('title', 'Save as note');
+  await saveAsNote.click();
   await expect(page.getByRole('button', { name: 'Queued prompts (1)' })).toBeVisible();
   await expect(copies).toHaveCount(1);
-  // dismiss through the click-blocking backdrop
-  await page.locator('.flyout-backdrop').click({ position: { x: 4, y: 4 } });
-  await page.getByRole('button', { name: 'Saved prompts (1)' }).click();
-  await expect(page.getByLabel('Saved prompts', { exact: true })).toContainText('Edited queued prompt');
   expect(requested).toContain('POST /api/agents/agent-1/queued-prompts/queued-prompt-002/save');
+  // dismiss through the click-blocking backdrop, then open Notes: the saved prompt is now a note
+  await page.locator('.flyout-backdrop').click({ position: { x: 4, y: 4 } });
+  await page.getByRole('button', { name: /^Notes \(/u }).click();
+  await expect(page.getByLabel('Worktree notes')).toContainText('Queued prompt · 09:41');
 
   await page.locator('.flyout-backdrop').click({ position: { x: 4, y: 4 } });
   await page.getByRole('textbox', { name: 'Prompt' }).fill('Third queued prompt');

@@ -89,6 +89,20 @@ describe('worktree notes', () => {
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
+  it('creates a titled note with initial text in one mutation, respecting the aggregate budget', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-note-with-text-'));
+    try {
+      const service = new WorktreeNoteService(join(directory, 'notes.json'));
+      const note = await service.createWithText('cora', 'Queued prompt · 09:41', 'Draft the release notes.');
+      expect(note).toMatchObject({ title: 'Queued prompt · 09:41', text: 'Draft the release notes.' });
+      await expect(new WorktreeNoteService(join(directory, 'notes.json')).list('cora')).resolves.toEqual([note]);
+      // a blank title or over-budget text is refused, writing nothing
+      await expect(service.createWithText('cora', '   ', 'text')).resolves.toBeUndefined();
+      await expect(service.createWithText('cora', 'Too big', 'x'.repeat(300_000))).resolves.toBeUndefined();
+      await expect(service.list('cora')).resolves.toEqual([note]);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
   it('enumerates every scheduled note across all keys, and only scheduled ones', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-scheduled-notes-'));
     try {

@@ -11,7 +11,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { QueuedPromptService } from '../src/prompts/queue.js';
-import { SavedPromptService } from '../src/saved-prompts/service.js';
+import { WorktreeNoteService } from '../src/notes/service.js';
 import { ReviewTourStore } from '../src/review-tour/store.js';
 import type { ReviewTour } from '../src/review-tour/contracts.js';
 import { PullRequestLookupError } from '../src/pull-requests/service.js';
@@ -1007,7 +1007,7 @@ describe('queued prompt API', () => {
     }
   }, 15_000);
 
-  it('moves a queued prompt and its attachments into saved prompts', async () => {
+  it('saves a queued prompt as a note, consuming the queued copy and naming its dropped attachments', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-save-queued-prompt-api-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
@@ -1017,7 +1017,7 @@ describe('queued prompt API', () => {
       auth: new AuthService(hash, Buffer.alloc(32, 12).toString('base64url')),
       discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined, worktreesNow: () => [worktree] } as never,
       queuedPrompts: new QueuedPromptService(join(directory, 'queue.json')),
-      savedPrompts: new SavedPromptService(join(directory, 'saved.json'))
+      notes: new WorktreeNoteService(join(directory, 'notes.json'))
     });
     try {
       const boot = await queuedApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
@@ -1029,14 +1029,160 @@ describe('queued prompt API', () => {
 
       const saved = await queuedApp.inject({ method: 'POST', url: `/api/agents/agent-1/queued-prompts/${queued!.id}/save`, headers });
       const remaining = await queuedApp.inject({ method: 'GET', url: '/api/agents/agent-1/queued-prompts', headers: { host: headers.host, cookie: headers.cookie } });
-      const savedPrompts = await queuedApp.inject({ method: 'GET', url: '/api/agents/agent-1/saved-prompts', headers: { host: headers.host, cookie: headers.cookie } });
+      const worktreeNotes = await queuedApp.inject({ method: 'GET', url: '/api/worktrees/cora/notes', headers: { host: headers.host, cookie: headers.cookie } });
 
       expect(saved.statusCode).toBe(201);
-      expect(saved.json()).toMatchObject({ text: 'Save this prompt', attachments: [{ name: 'context.txt', size: 7 }] });
+      expect(saved.json()).toMatchObject({ title: expect.stringMatching(/^Queued prompt · \d\d:\d\d$/u), text: 'Save this prompt\n\nDropped attachments: context.txt' });
       expect(remaining.json()).toEqual({ prompts: [] });
-      expect(savedPrompts.json()).toMatchObject({ prompts: [{ text: 'Save this prompt', attachments: [{ name: 'context.txt', size: 7 }] }] });
+      expect(worktreeNotes.json().notes).toMatchObject([{ title: expect.stringMatching(/^Queued prompt · \d\d:\d\d$/u), text: 'Save this prompt\n\nDropped attachments: context.txt' }]);
     } finally {
       await queuedApp.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it('leaves a queued prompt in place and returns an error when the note store fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-save-queued-prompt-fail-'));
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '⠋ Working' });
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    const queuedApp = await buildApp({ ...config }, {
+      auth: new AuthService(hash, Buffer.alloc(32, 14).toString('base64url')),
+      discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined, worktreesNow: () => [worktree] } as never,
+      queuedPrompts: new QueuedPromptService(join(directory, 'queue.json')),
+      // the notes store refuses every write
+      notes: { createWithText: async () => undefined } as never
+    });
+    try {
+      const boot = await queuedApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await queuedApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      await queuedApp.inject({ method: 'POST', url: '/api/agents/agent-1/prompt', headers, payload: { prompt: 'Keep this prompt' } });
+      const listed = await queuedApp.inject({ method: 'GET', url: '/api/agents/agent-1/queued-prompts', headers: { host: headers.host, cookie: headers.cookie } });
+      const [queued] = listed.json().prompts as Array<{ id: string }>;
+
+      const saved = await queuedApp.inject({ method: 'POST', url: `/api/agents/agent-1/queued-prompts/${queued!.id}/save`, headers });
+      const remaining = await queuedApp.inject({ method: 'GET', url: '/api/agents/agent-1/queued-prompts', headers: { host: headers.host, cookie: headers.cookie } });
+
+      expect(saved.statusCode).toBe(409);
+      expect(remaining.json().prompts).toMatchObject([{ id: queued!.id, text: 'Keep this prompt' }]);
+    } finally {
+      await queuedApp.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it('drains a halted queue into Undelivered notes when active work fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-drain-queue-api-'));
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    // a realistic `<projectId>:<realpath>` wire id, so the drain's projectId collapse is exercised
+    const worktree = { id: 'cora:/worktrees/cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '⠋ Working' });
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    let capture = ['› Earlier prompt', '', '• Earlier answer', '', '─ Worked for 1s', '', '› Active prompt', '', '• Working'].join('\n');
+    const drainApp = await buildApp({ ...config }, {
+      auth: new AuthService(hash, Buffer.alloc(32, 15).toString('base64url')),
+      discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined, worktreesNow: () => [worktree], dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) } as never,
+      tmux: { pastePrompt: async () => true, capture: async () => capture, sendKeys: async () => true } as never,
+      queuedPrompts: new QueuedPromptService(join(directory, 'queue.json')),
+      notes: new WorktreeNoteService(join(directory, 'notes.json'))
+    });
+    try {
+      const boot = await drainApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await drainApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      // both prompts queue behind the working agent
+      await drainApp.inject({ method: 'POST', url: '/api/agents/agent-1/prompt', headers, payload: { prompt: 'First undelivered', attachments: [{ name: 'context.txt', data: Buffer.from('context').toString('base64') }] } });
+      await drainApp.inject({ method: 'POST', url: '/api/agents/agent-1/prompt', headers, payload: { prompt: 'Second undelivered' } });
+
+      // the active turn fails: observing the pane halts the queue and drains it into Notes
+      capture = ['› Active prompt', '', '■ Request failed', ''].join('\n');
+      agent.title = 'Ready';
+      await drainApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: headers.host, cookie: headers.cookie } });
+
+      const remaining = await drainApp.inject({ method: 'GET', url: '/api/agents/agent-1/queued-prompts', headers: { host: headers.host, cookie: headers.cookie } });
+      // read back through the same worktree wire id the fly-out uses: both the drain key and the read
+      // key must collapse `<projectId>:<realpath>` to the Project id, or the notes would be invisible
+      const worktreeNotes = await drainApp.inject({ method: 'GET', url: `/api/worktrees/${encodeURIComponent('cora:/worktrees/cora')}/notes`, headers: { host: headers.host, cookie: headers.cookie } });
+
+      expect(remaining.json()).toEqual({ prompts: [] });
+      const drained = worktreeNotes.json().notes as Array<{ title: string; text: string }>;
+      // one note per prompt, drained front-of-queue first (so the notes list, newest first, reverses them)
+      expect(drained.map(note => note.text)).toEqual(['Second undelivered', 'First undelivered\n\nDropped attachments: context.txt']);
+      expect(drained.every(note => /^Undelivered prompt · \d\d:\d\d$/u.test(note.title))).toBe(true);
+    } finally {
+      await drainApp.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it('saves a scratch agent queued prompt as a note under its scratch note key', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-save-scratch-note-'));
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    // no configured worktree: the queue keys as agent:<id> while notes key by the hashed Scratch dir
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/me/scratch', title: '⠋ Working' });
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    const queuedApp = await buildApp({ ...config }, {
+      auth: new AuthService(hash, Buffer.alloc(32, 16).toString('base64url')),
+      discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined, worktreesNow: () => [] } as never,
+      queuedPrompts: new QueuedPromptService(join(directory, 'queue.json')),
+      notes: new WorktreeNoteService(join(directory, 'notes.json'))
+    });
+    try {
+      const boot = await queuedApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await queuedApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      await queuedApp.inject({ method: 'POST', url: '/api/agents/agent-1/prompt', headers, payload: { prompt: 'Scratch prompt' } });
+      const listed = await queuedApp.inject({ method: 'GET', url: '/api/agents/agent-1/queued-prompts', headers: { host: headers.host, cookie: headers.cookie } });
+      const [queued] = listed.json().prompts as Array<{ id: string }>;
+
+      const saved = await queuedApp.inject({ method: 'POST', url: `/api/agents/agent-1/queued-prompts/${queued!.id}/save`, headers });
+      const remaining = await queuedApp.inject({ method: 'GET', url: '/api/agents/agent-1/queued-prompts', headers: { host: headers.host, cookie: headers.cookie } });
+      // the agent notes route resolves the same scratch key, so the saved note is round-tripped through it
+      const agentNotes = await queuedApp.inject({ method: 'GET', url: '/api/agents/agent-1/notes', headers: { host: headers.host, cookie: headers.cookie } });
+
+      expect(saved.statusCode).toBe(201);
+      expect(saved.json()).toMatchObject({ title: expect.stringMatching(/^Queued prompt · \d\d:\d\d$/u), text: 'Scratch prompt' });
+      expect(remaining.json()).toEqual({ prompts: [] });
+      expect(agentNotes.json().notes).toMatchObject([{ title: expect.stringMatching(/^Queued prompt · \d\d:\d\d$/u), text: 'Scratch prompt' }]);
+    } finally {
+      await queuedApp.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it('drains a scratch agent halted queue into a note under its scratch note key', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-drain-scratch-api-'));
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    // no configured worktree: the queue keys as agent:<id> and the drain must resolve the scratch key
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/me/scratch', title: '⠋ Working' });
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    let capture = ['› Active prompt', '', '• Working'].join('\n');
+    const drainApp = await buildApp({ ...config }, {
+      auth: new AuthService(hash, Buffer.alloc(32, 17).toString('base64url')),
+      discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined, worktreesNow: () => [], dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) } as never,
+      tmux: { pastePrompt: async () => true, capture: async () => capture, sendKeys: async () => true } as never,
+      queuedPrompts: new QueuedPromptService(join(directory, 'queue.json')),
+      notes: new WorktreeNoteService(join(directory, 'notes.json'))
+    });
+    try {
+      const boot = await drainApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await drainApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      await drainApp.inject({ method: 'POST', url: '/api/agents/agent-1/prompt', headers, payload: { prompt: 'Scratch undelivered' } });
+
+      capture = ['› Active prompt', '', '■ Request failed', ''].join('\n');
+      agent.title = 'Ready';
+      await drainApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: headers.host, cookie: headers.cookie } });
+
+      const remaining = await drainApp.inject({ method: 'GET', url: '/api/agents/agent-1/queued-prompts', headers: { host: headers.host, cookie: headers.cookie } });
+      const agentNotes = await drainApp.inject({ method: 'GET', url: '/api/agents/agent-1/notes', headers: { host: headers.host, cookie: headers.cookie } });
+
+      expect(remaining.json()).toEqual({ prompts: [] });
+      expect(agentNotes.json().notes).toMatchObject([{ title: expect.stringMatching(/^Undelivered prompt · \d\d:\d\d$/u), text: 'Scratch undelivered' }]);
+    } finally {
+      await drainApp.close();
       await rm(directory, { recursive: true, force: true });
     }
   }, 15_000);

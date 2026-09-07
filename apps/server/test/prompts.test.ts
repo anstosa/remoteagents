@@ -3,13 +3,14 @@ import { execFileSync } from 'node:child_process';
 import { readFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { maxPromptAttachmentBytes, PromptService } from '../src/prompts/service.js';
+import { maxPromptAttachmentBytes, PromptService, type UndeliveredDrain } from '../src/prompts/service.js';
 import { codexAdapter } from '../src/adapters/codex.js';
 import { inlineQuestionId } from '../src/adapters/inline-questions.js';
-import { QueuedPromptService } from '../src/prompts/queue.js';
-import { SavedPromptService } from '../src/saved-prompts/service.js';
+import { QueuedPromptService, type QueuedPrompt } from '../src/prompts/queue.js';
 import { stated } from './helpers/agent.js';
 const socket={fingerprint:'socket',path:'/tmp/sock',device:1,inode:1}; const agent=stated({id:'socket:%1',paneId:'%1',sessionId:'socket:$1',socketFingerprint:'socket',workspace:'/tmp',title:''});
+// records every prompt a halted queue drains into Notes, in drain order (front of the queue first)
+const drainRecorder = () => { const drained: QueuedPrompt[] = []; const drain: UndeliveredDrain = async (_scope, prompt) => { drained.push(prompt); return true; }; return { drained, drain }; };
 it('allows prompt attachments totaling 25 MiB', () => {
   expect(maxPromptAttachmentBytes).toBe(25 * 1024 * 1024);
 });
@@ -647,10 +648,10 @@ it('holds prompts while an agent works and dispatches them in the managed order'
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-it('saves queued prompts instead of dispatching them after active work fails', async () => {
+it('drains queued prompts into Notes instead of dispatching them after active work fails', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-failed-queue-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
-  const saved = new SavedPromptService(join(directory, 'saved.json'));
+  const { drained, drain } = drainRecorder();
   const mutableAgent = stated({ ...agent, title: '⠋ Working' });
   const pasted: string[] = [];
   let capture = ['› Earlier prompt', '', '• Earlier answer', '', '─ Worked for 1s', '', '› Active prompt', '', '• Working'].join('\n');
@@ -660,7 +661,7 @@ it('saves queued prompts instead of dispatching them after active work fails', a
     capture: async () => capture,
     sendKeys: async () => true
   };
-  const service = new PromptService(discovery as never, tmux as never, undefined, queue, saved);
+  const service = new PromptService(discovery as never, tmux as never, undefined, queue, drain);
   try {
     await expect(service.submit(agent.id, 'First queued prompt')).resolves.toBe(true);
     await expect(service.submit(agent.id, 'Second queued prompt', [{ name: 'context.txt', data: Buffer.from('context').toString('base64') }])).resolves.toBe(true);
@@ -671,14 +672,15 @@ it('saves queued prompts instead of dispatching them after active work fails', a
 
     expect(pasted).toEqual([]);
     await expect(service.listQueued(agent.id)).resolves.toEqual([]);
-    await expect(saved.list(agent.id)).resolves.toMatchObject([
-      { text: 'Second queued prompt', attachments: [{ name: 'context.txt', size: 7 }] },
-      { text: 'First queued prompt' }
+    // drained front-of-queue first, each with its attachment names carried through
+    expect(drained).toMatchObject([
+      { text: 'First queued prompt' },
+      { text: 'Second queued prompt', attachments: [{ name: 'context.txt' }] }
     ]);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-it('keeps a failed queue transfer halted until every prompt is saved', async () => {
+it('keeps a failed queue transfer halted until every prompt is drained into a Note', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-halted-queue-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
   const mutableAgent = stated({ ...agent, title: '⠋ Working' });
@@ -691,15 +693,13 @@ it('keeps a failed queue transfer halted until every prompt is saved', async () 
     capture: async () => ['› Active prompt', '', '■ Cancelled', ''].join('\n'),
     sendKeys: async () => true
   };
-  const saved = {
-    // simulate transient saved-prompt storage failure
-    save: async (_scope: string, text: string) => {
-      if (!saveSucceeds) return undefined;
-      transferred.push(text);
-      return { id: 'saved-prompt-id', text };
-    }
+  // simulate transient notes-store failure until saveSucceeds flips
+  const drain: UndeliveredDrain = async (_scope, prompt) => {
+    if (!saveSucceeds) return false;
+    transferred.push(prompt.text);
+    return true;
   };
-  const service = new PromptService(discovery as never, tmux as never, undefined, queue, saved as never);
+  const service = new PromptService(discovery as never, tmux as never, undefined, queue, drain);
   try {
     await expect(service.submit(agent.id, 'Queued after cancellation')).resolves.toBe(true);
     mutableAgent.title = 'Ready';
@@ -718,10 +718,10 @@ it('keeps a failed queue transfer halted until every prompt is saved', async () 
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-it('marks queued prompts for saving when cancellation succeeds', async () => {
+it('drains queued prompts into Notes when cancellation succeeds', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-cancelled-queue-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
-  const saved = new SavedPromptService(join(directory, 'saved.json'));
+  const { drained, drain } = drainRecorder();
   const mutableAgent = stated({ ...agent, title: '⠋ Working' });
   const interrupts: string[] = [];
   const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }) };
@@ -730,7 +730,7 @@ it('marks queued prompts for saving when cancellation succeeds', async () => {
     capture: async () => ['› Active prompt', '', '• Completed successfully', '', '─ Worked for 1s', ''].join('\n'),
     sendKeys: async (_socket: unknown, pane: string, keys: string[]) => { if (keys.includes('C-c')) interrupts.push(pane); return true; }
   };
-  const service = new PromptService(discovery as never, tmux as never, undefined, queue, saved);
+  const service = new PromptService(discovery as never, tmux as never, undefined, queue, drain);
   try {
     await expect(service.submit(agent.id, 'Do not run this')).resolves.toBe(true);
     await expect(service.cancel(agent.id)).resolves.toBe('ok');
@@ -739,18 +739,18 @@ it('marks queued prompts for saving when cancellation succeeds', async () => {
 
     expect(interrupts).toEqual(['%1']);
     await expect(service.listQueued(agent.id)).resolves.toEqual([]);
-    await expect(saved.list(agent.id)).resolves.toMatchObject([{ text: 'Do not run this' }]);
+    expect(drained).toMatchObject([{ text: 'Do not run this' }]);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 it('dispatches a prompt queued behind a Codex turn that completes only in the rollout', async () => {
   // The reported bug: native Codex renders no `─ Worked for` boundary, so the TUI
   // parse never observes the finish; the first prompt's phase never completes and,
-  // after the grace window, the queued second prompt is relocated to saved. The
+  // after the grace window, the queued second prompt is drained into a Note. The
   // rollout's task_complete is the authoritative signal that fixes it.
   const directory = await mkdtemp(join(tmpdir(), 'rac-rollout-complete-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
-  const saved = new SavedPromptService(join(directory, 'saved.json'));
+  const { drained, drain } = drainRecorder();
   const mutableAgent = stated({ ...agent, title: 'Ready' });
   const pasted: string[] = [];
   const recorded: Array<[string, string]> = [];
@@ -779,7 +779,7 @@ it('dispatches a prompt queued behind a Codex turn that completes only in the ro
       since: async (baseline: { ordinal: number }) => turnDone ? { kind: 'completed' as const, ordinal: baseline.ordinal + 4, answer: 'The answer.' } : { kind: 'pending' as const }
     }
   };
-  const service = new PromptService(discovery as never, tmux as never, history as never, queue, saved, () => view);
+  const service = new PromptService(discovery as never, tmux as never, history as never, queue, drain, () => view);
   try {
     await expect(service.submit(agent.id, 'First prompt')).resolves.toBe(true);
     await expect(service.submit(agent.id, 'Second prompt')).resolves.toBe(true);
@@ -791,10 +791,10 @@ it('dispatches a prompt queued behind a Codex turn that completes only in the ro
     mutableAgent.title = 'Ready';
     await service.observe(mutableAgent);
     await service.observe(mutableAgent);
-    // still pending: the second prompt is neither dispatched nor saved
+    // still pending: the second prompt is neither dispatched nor drained
     expect(pasted).toEqual(['First prompt']);
     await expect(service.listQueued(agent.id)).resolves.toMatchObject([{ text: 'Second prompt' }]);
-    await expect(saved.list(agent.id)).resolves.toEqual([]);
+    expect(drained).toEqual([]);
 
     // the rollout records task_complete: the answer is stored and the queue dispatches
     turnDone = true;
@@ -802,14 +802,14 @@ it('dispatches a prompt queued behind a Codex turn that completes only in the ro
     expect(pasted).toEqual(['First prompt', 'Second prompt']);
     expect(recorded).toEqual([['h-1', 'The answer.']]);
     await expect(service.listQueued(agent.id)).resolves.toEqual([]);
-    await expect(saved.list(agent.id)).resolves.toEqual([]);
+    expect(drained).toEqual([]);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 it('fails a rollout-tracked turn that the log records as aborted', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-rollout-abort-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
-  const saved = new SavedPromptService(join(directory, 'saved.json'));
+  const { drained, drain } = drainRecorder();
   const mutableAgent = stated({ ...agent, title: 'Ready' });
   const pasted: string[] = [];
   let composer = '';
@@ -820,7 +820,7 @@ it('fails a rollout-tracked turn that the log records as aborted', async () => {
     sendKeys: async () => { composer = ''; return true; }
   };
   const view = { ...codexAdapter, completion: { baseline: async () => ({ rollout: 'rollout.jsonl', ordinal: 0 }), since: async (baseline: { ordinal: number }) => ({ kind: 'aborted' as const, ordinal: baseline.ordinal + 3 }) } };
-  const service = new PromptService(discovery as never, tmux as never, undefined, queue, saved, () => view);
+  const service = new PromptService(discovery as never, tmux as never, undefined, queue, drain, () => view);
   try {
     await expect(service.submit(agent.id, 'First prompt')).resolves.toBe(true);
     await expect(service.submit(agent.id, 'Second prompt')).resolves.toBe(true);
@@ -831,10 +831,10 @@ it('fails a rollout-tracked turn that the log records as aborted', async () => {
     await service.observe(mutableAgent);
     await service.observe(mutableAgent);
 
-    // an aborted turn holds the queue back and saves it rather than dispatching
+    // an aborted turn holds the queue back and drains it into a Note rather than dispatching
     expect(pasted).toEqual(['First prompt']);
     await expect(service.listQueued(agent.id)).resolves.toEqual([]);
-    await expect(saved.list(agent.id)).resolves.toMatchObject([{ text: 'Second prompt' }]);
+    expect(drained).toMatchObject([{ text: 'Second prompt' }]);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -1026,11 +1026,11 @@ it('dispatches a queued Turn-less prompt only once the Agent is finished', async
 it('fails a reported dispatch that never reports working within the window', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-turnless-fail-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
-  const saved = new SavedPromptService(join(directory, 'saved.json'));
+  const { drained, drain } = drainRecorder();
   const mutableAgent = stated({ ...agent, title: 'Ready' });   // the paste landed in a dialog: never works
   const discovery = { worktreesNow: () => [], target: async () => ({ agent: mutableAgent, socket }) };
   const tmux = { pastePrompt: async () => true, sendKeys: async () => true };
-  const service = new PromptService(discovery as never, tmux as never, undefined, queue, saved, (() => turnlessReported) as never);
+  const service = new PromptService(discovery as never, tmux as never, undefined, queue, drain, (() => turnlessReported) as never);
   vi.useFakeTimers({ toFake: ['Date'] });
   try {
     const start = Date.now();
@@ -1039,10 +1039,10 @@ it('fails a reported dispatch that never reports working within the window', asy
     // still finished, still inside the window: keep waiting
     await service.observe(mutableAgent);
     await expect(service.listQueued(agent.id)).resolves.toMatchObject([{ text: 'Behind it' }]);
-    // the window (5s) elapses with no working report: fail the dispatch and save the queue
+    // the window (5s) elapses with no working report: fail the dispatch and drain the queue
     vi.setSystemTime(start + 6_000);
     await service.observe(mutableAgent);
-    await expect(saved.list(agent.id)).resolves.toMatchObject([{ text: 'Behind it' }]);
+    expect(drained).toMatchObject([{ text: 'Behind it' }]);
     await expect(service.listQueued(agent.id)).resolves.toEqual([]);
   } finally {
     vi.useRealTimers();

@@ -340,6 +340,9 @@ const mobileModifiers = new Map<string, { alt: boolean; ctrl: boolean; shift: bo
 })();
 type WorktreeNoteView = { noteId: string; expanded: boolean };
 const retainedWorktreeNoteViews = new Map<string, WorktreeNoteView>();
+// force a note view's list to refetch from a sibling component (the queued panel's Save as note
+// lives in Prompt, while the notes hook lives in the sibling Log), keyed by note view id
+const noteReloadRequests = new Map<string, () => void>();
 const worktreeNoteViewKey = (worktreeId: string) => `rac.note-view:${worktreeId}`;
 const getWorktreeNoteView = (worktreeId: string) => {
   const retained = retainedWorktreeNoteViews.get(worktreeId);
@@ -2276,24 +2279,24 @@ function Prompt({ id, ready = true, lifecycleControl, launchControl, history, on
     } catch { setQueuedPromptError('Unable to cancel this queued prompt.'); }
     finally { setQueuedPromptAction(undefined); }
   };
-  const moveQueuedPromptToSaved = async (queued: QueuedPrompt) => {
+  const saveQueuedPromptAsNote = async (queued: QueuedPrompt) => {
     if (queuedPromptAction !== undefined) return;
     setQueuedPromptAction({ id: queued.id, kind: 'save' });
     setQueuedPromptError(undefined);
-    setSavedPromptError(undefined);
     try {
       const response = await request(`/api/agents/${encodeURIComponent(id)}/queued-prompts/${encodeURIComponent(queued.id)}/save`, { method: 'POST' });
       if (!response.ok) throw new Error();
-      const saved: unknown = await response.json();
-      if (!isSavedPrompt(saved)) throw new Error();
-      setSavedPrompts(current => [saved, ...current]);
+      const note: unknown = await response.json();
+      if (!isWorktreeNote(note)) throw new Error();
       setQueuedPrompts(current => {
         const remaining = current.filter(prompt => prompt.id !== queued.id);
         if (remaining.length === 0) setQueuedPromptsOpen(false);
         return remaining;
       });
       if (queuedPromptEdit?.id === queued.id) setQueuedPromptEdit(undefined);
-    } catch { setQueuedPromptError('Unable to save this queued prompt.'); }
+      // refetch the sibling notes fly-out so the new Note appears there
+      noteReloadRequests.get(worktreeId ?? `agent:${id}`)?.();
+    } catch { setQueuedPromptError('Unable to save this queued prompt as a note.'); }
     finally { setQueuedPromptAction(undefined); }
   };
   const saveQueuedPromptEdit = async (queued: QueuedPrompt) => {
@@ -2474,7 +2477,7 @@ function Prompt({ id, ready = true, lifecycleControl, launchControl, history, on
   // render numbered answers
   if (question && answerMode) return <section className="prompt question-prompt" aria-label="Agent question" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}><div className="question-heading"><div className="question-copy"><strong>Agent question</strong><span>{question.text}</span></div><div className="question-tools"><button type="button" className="question-notes-toggle" aria-controls={questionNotesId} aria-expanded={questionNotesOpen} onClick={() => { /* toggle answer notes */ setNotesQuestionId(questionNotesOpen ? undefined : question.id); }}>{questionNotesOpen ? 'Hide notes' : 'Add notes'}</button>{questionModeToggle}</div></div><div className="question-choices">{question.choices.map(choice => <button key={`${choice.answerIndex}-${choice.label}`} className="question-choice" disabled={pending} onClick={() => void answer(choice.answerIndex)}><b aria-hidden="true">{choice.number}</b><span>{choice.label}</span></button>)}</div>{questionNotes}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}<div className="prompt-actions">{stop}{swapped && swap}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}{ready ? <More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onOperationFeedback={onOperationFeedback} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} /> : <button className="more icon-button" aria-label="More options" disabled>⋮</button>}</div></section>;
   const queueLabel = swapped ? 'Enter' : pending ? 'Queueing' : 'Queue';
-  const queuePanel = queuedPromptsOpen && <FlyoutPortal onDismiss={() => setQueuedPromptsOpen(false)}><section className="queued-prompts-panel more-menu flyout-menu" ref={queuedPromptFlyoutRef} style={queuedPromptFlyoutStyle} aria-label="Queued prompts"><header><strong>Queued prompts</strong></header>{queuedPromptError && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<div className="queued-prompts-list">{queuedPrompts.map((queued, index) => { const label = queued.text || queued.attachments?.map(attachment => attachment.name).join(', ') || 'Attachments only'; const editing = queuedPromptEdit?.id === queued.id; const busy = queuedPromptAction !== undefined; return <div className={`queued-prompt-item${editing ? ' editing' : ''}`} key={queued.id}><span className="queued-prompt-order"><strong className="queued-prompt-position" aria-label={`Queue position ${index + 1}`}>{index + 1}</strong><span className="queued-prompt-order-buttons"><button type="button" disabled={busy || index === 0} aria-label={`Move queued prompt earlier: ${label}`} title="Move earlier" onClick={() => void moveQueuedPrompt(queued, 'earlier')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button type="button" disabled={busy || index === queuedPrompts.length - 1} aria-label={`Move queued prompt later: ${label}`} title="Move later" onClick={() => void moveQueuedPrompt(queued, 'later')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></span></span>{editing ? <textarea aria-label={`Edit queued prompt: ${label}`} value={queuedPromptEdit.text} maxLength={32_000} autoFocus onChange={event => setQueuedPromptEdit({ id: queued.id, text: event.target.value })} /> : <button className="queued-prompt-copy" type="button" disabled={busy} title={label} onClick={() => setQueuedPromptEdit({ id: queued.id, text: queued.text })}><span>{queued.text || 'Attachments only'}</span>{queued.attachments?.length ? <small>{queued.attachments.map(attachment => attachment.name).join(', ')}</small> : null}</button>}<span className="queued-prompt-actions">{editing ? <><button type="button" disabled={busy || !queuedPromptEdit.text.trim() && queued.attachments === undefined} aria-label={`Save queued prompt changes: ${label}`} title="Save changes" onClick={() => void saveQueuedPromptEdit(queued)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={busy} aria-label={`Stop editing queued prompt: ${label}`} title="Stop editing" onClick={() => setQueuedPromptEdit(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></> : <button type="button" disabled={busy} aria-label={`Save queued prompt: ${label}`} title="Move to saved prompts" onClick={() => void moveQueuedPromptToSaved(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'save' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5V3Zm3 0v6h8V3M8 21v-7h8v7" /></svg>}</button>}<button className="queued-prompt-cancel" type="button" disabled={busy} aria-label={`Cancel queued prompt: ${label}`} title="Cancel queued prompt" onClick={() => void cancelQueuedPrompt(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'cancel' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button></span></div>; })}</div></section></FlyoutPortal>;
+  const queuePanel = queuedPromptsOpen && <FlyoutPortal onDismiss={() => setQueuedPromptsOpen(false)}><section className="queued-prompts-panel more-menu flyout-menu" ref={queuedPromptFlyoutRef} style={queuedPromptFlyoutStyle} aria-label="Queued prompts"><header><strong>Queued prompts</strong></header>{queuedPromptError && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<div className="queued-prompts-list">{queuedPrompts.map((queued, index) => { const label = queued.text || queued.attachments?.map(attachment => attachment.name).join(', ') || 'Attachments only'; const editing = queuedPromptEdit?.id === queued.id; const busy = queuedPromptAction !== undefined; return <div className={`queued-prompt-item${editing ? ' editing' : ''}`} key={queued.id}><span className="queued-prompt-order"><strong className="queued-prompt-position" aria-label={`Queue position ${index + 1}`}>{index + 1}</strong><span className="queued-prompt-order-buttons"><button type="button" disabled={busy || index === 0} aria-label={`Move queued prompt earlier: ${label}`} title="Move earlier" onClick={() => void moveQueuedPrompt(queued, 'earlier')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button type="button" disabled={busy || index === queuedPrompts.length - 1} aria-label={`Move queued prompt later: ${label}`} title="Move later" onClick={() => void moveQueuedPrompt(queued, 'later')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></span></span>{editing ? <textarea aria-label={`Edit queued prompt: ${label}`} value={queuedPromptEdit.text} maxLength={32_000} autoFocus onChange={event => setQueuedPromptEdit({ id: queued.id, text: event.target.value })} /> : <button className="queued-prompt-copy" type="button" disabled={busy} title={label} onClick={() => setQueuedPromptEdit({ id: queued.id, text: queued.text })}><span>{queued.text || 'Attachments only'}</span>{queued.attachments?.length ? <small>{queued.attachments.map(attachment => attachment.name).join(', ')}</small> : null}</button>}<span className="queued-prompt-actions">{editing ? <><button type="button" disabled={busy || !queuedPromptEdit.text.trim() && queued.attachments === undefined} aria-label={`Save queued prompt changes: ${label}`} title="Save changes" onClick={() => void saveQueuedPromptEdit(queued)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={busy} aria-label={`Stop editing queued prompt: ${label}`} title="Stop editing" onClick={() => setQueuedPromptEdit(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></> : <button type="button" disabled={busy} aria-label={`Save queued prompt as note: ${label}`} title="Save as note" onClick={() => void saveQueuedPromptAsNote(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'save' ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}</button>}<button className="queued-prompt-cancel" type="button" disabled={busy} aria-label={`Cancel queued prompt: ${label}`} title="Cancel queued prompt" onClick={() => void cancelQueuedPrompt(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'cancel' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button></span></div>; })}</div></section></FlyoutPortal>;
   const queuedToggle = !swapped && queuedPrompts.length > 0 ? <button className={`queued-prompts-toggle icon-button${queuedPromptsOpen ? ' active' : ''}`} type="button" disabled={pending} aria-label={`Queued prompts (${queuedPrompts.length})`} aria-expanded={queuedPromptsOpen} title={`${queuedPrompts.length} queued prompt${queuedPrompts.length === 1 ? '' : 's'}`} onClick={() => setQueuedPromptsOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M4 11h10M4 16h7M18 13v6m-3-3h6" /></svg><span className="saved-prompts-count queued-prompts-count" aria-hidden="true">{queuedPrompts.length}</span></button> : null;
   // join history to the submit controls
   const historySlot = !swapped && historySlotRef !== undefined ? <span className="prompt-history-slot" ref={historySlotRef} /> : null;
@@ -3123,6 +3126,14 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     }).catch(() => undefined);
     return () => { cancelled = true; };
   }, [dashboardGeneration, resourceBase, noteViewId, menuOpen, activeNote]);
+  // let a sibling component (the queued panel's Save as note, which lives in Prompt) force this
+  // note view's list to refetch, so a newly saved Note appears when the fly-out is next opened
+  useEffect(() => {
+    if (noteViewId === undefined) return;
+    const reload = () => { void load(true); };
+    noteReloadRequests.set(noteViewId, reload);
+    return () => { if (noteReloadRequests.get(noteViewId) === reload) noteReloadRequests.delete(noteViewId); };
+  }, [noteViewId, resourceBase]);
   useLayoutEffect(() => { if (activeNote !== undefined && editing) editorRef.current?.focus(); }, [activeNote?.id, editing]);
   useLayoutEffect(() => { if (activeNote !== undefined && renaming) titleEditorRef.current?.select(); }, [activeNote?.id, renaming]);
   useEffect(() => {
@@ -3200,10 +3211,10 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
       persist(note.id, dirtyTexts.current.get(note.id) ?? draftRef.current);
     }, 500);
   };
-  const load = async () => {
+  const load = async (force = false) => {
     // require one persistence context
     if (resourceBase === undefined) return undefined;
-    if (notes !== undefined) return notes;
+    if (!force && notes !== undefined) return notes;
     setLoading(true);
     try {
       const response = await request(`${resourceBase}/notes`);

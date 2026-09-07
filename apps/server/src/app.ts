@@ -17,7 +17,7 @@ import { agentKinds, codexFamily, sameConversation, type Adapter, type AgentKind
 import { TmuxAdapter } from './tmux/adapter.js';
 import { maxPromptAttachments, maxPromptAttachmentBytes, PromptService, type PromptAttachment } from './prompts/service.js';
 import { validPrompt } from './prompts/validation.js';
-import { QueuedPromptService } from './prompts/queue.js';
+import { QueuedPromptService, type QueuedPrompt } from './prompts/queue.js';
 import { LaunchService } from './launch/service.js';
 import { createAgentWaiter, launchPollAttempts, launchPollDelay as defaultLaunchPollDelay, launchReadyTimeoutSeconds } from './launch/wait.js';
 import { scratchLaunchKey, WorktreeLaunchStore } from './worktrees/store.js';
@@ -35,6 +35,7 @@ import { LatestViewportScheduler, PaneViewportCoordinator } from './logs/viewpor
 import { boundedViewport } from './logs/viewport.js';
 import { DashboardUpdates, type DashboardPayload } from './dashboard/updates.js';
 import { WorktreeNoteService, type WorktreeNote } from './notes/service.js';
+import { promptNoteContent } from './notes/from-prompt.js';
 import { cronError, previewRuns, scheduleNextRun } from './schedule/cron.js';
 import { Scheduler } from './schedule/scheduler.js';
 import { type Schedule, type ScheduleLastRun, type ScheduleTarget, validScheduleTarget } from './schedule/types.js';
@@ -107,7 +108,7 @@ export function logFrame(last: string, value: string, refreshMetadata = false): 
 }
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = deps.prompts ?? new PromptService(discovery, tmux, promptHistory, queuedPrompts, savedPrompts, undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const consoleNamed = deps.consoleNamed ?? new ConsoleNamedConversationService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = deps.prompts ?? new PromptService(discovery, tmux, promptHistory, queuedPrompts, (scope: string, prompt: QueuedPrompt) => drainUndelivered(scope, prompt), undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const consoleNamed = deps.consoleNamed ?? new ConsoleNamedConversationService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
   const temporaryPreviews = deps.temporaryPreviews ?? new TemporaryPreviewService();
   // freeze the checkout identity serving this process
   const deployedRevision = serverAdmin.revision();
@@ -735,6 +736,21 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
     return { agent: target.agent, worktree, saveKey: worktree?.projectId ?? scratchSaveKey(target.agent.workspace) };
   };
+  // map a halted queue's scope to its Notes key (the Project id, or the hashed Scratch key), so a
+  // drained prompt lands in the same note group the agent's own notes use. A Worktree scope
+  // `<projectId>:<realpath>` collapses to its Project id; a Scratch scope resolves through the live
+  // agent. A gone agent yields no key, leaving the prompt queued and the queue halted.
+  const noteKeyForQueueScope = async (scope: string): Promise<string | undefined> =>
+    scope.startsWith('agent:') ? (await agentPersistence(scope.slice('agent:'.length)))?.saveKey : projectIdOf(scope);
+  // the PromptService's drain sink: each prompt from a halted queue becomes an "Undelivered prompt"
+  // Note (attachments named in the text, not kept). A false return keeps the prompt queued and the
+  // queue halted, exactly as the retired saved-prompts hand-off did.
+  const drainUndelivered = async (scope: string, prompt: QueuedPrompt): Promise<boolean> => {
+    const key = await noteKeyForQueueScope(scope);
+    if (key === undefined) return false;
+    const { title, text } = promptNoteContent('Undelivered prompt', new Date(), prompt);
+    return await notes.createWithText(key, title, text) !== undefined;
+  };
   // resolve the observed branch for one configured worktree
   const reviewBranch = async (id: string): Promise<string | undefined> => {
     const discovered = await discovery.dashboard();
@@ -1168,19 +1184,22 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return preview === undefined ? reply.code(404).send({ error: 'file unavailable' }) : preview;
   });
   app.post('/api/agents/:id/saved-prompts', { bodyLimit: Math.ceil(maxPromptAttachmentBytes * 1.4) }, async (request, reply) => { controlled(request, true); const key = await savedPromptKey((request.params as { id: string }).id); const data = body(request); const attachments = promptAttachments(data.attachments); if (key === undefined) return reply.code(404).send({ error: 'target unavailable' }); if (typeof data.prompt !== 'string' || attachments === undefined) return reply.code(400).send({ error: 'invalid prompt' }); const saved = await savedPrompts.save(key, data.prompt, attachments); return saved === undefined ? reply.code(400).send({ error: 'invalid prompt' }) : reply.code(201).send(saved); });
+  // save a queued prompt as a Note under the agent's note key, consuming the queued copy only once
+  // the Note is durable; attachments are dropped and named in the note text
   app.post('/api/agents/:id/queued-prompts/:promptId/save', async (request, reply) => {
     controlled(request, true);
     const { id, promptId } = request.params as { id: string; promptId: string };
-    const [queueKey, savedKey] = await Promise.all([promptStorageKey(id), savedPromptKey(id)]);
-    if (queueKey === undefined || savedKey === undefined) return reply.code(404).send({ error: 'target unavailable' });
-    let saved: Awaited<ReturnType<SavedPromptService['save']>>;
+    const [queueKey, persistence] = await Promise.all([promptStorageKey(id), agentPersistence(id)]);
+    if (queueKey === undefined || persistence === undefined) return reply.code(404).send({ error: 'target unavailable' });
+    let note: WorktreeNote | undefined;
     const result = await queuedPrompts.consumeOnSuccess(queueKey, promptId, async queued => {
-      saved = await savedPrompts.save(savedKey, queued.text, queued.attachments ?? []);
-      return saved !== undefined;
+      const content = promptNoteContent('Queued prompt', new Date(), queued);
+      note = await notes.createWithText(persistence.saveKey, content.title, content.text);
+      return note !== undefined;
     });
     if (result === 'missing') return reply.code(404).send({ error: 'queued prompt unavailable' });
-    if (result === 'failed' || saved === undefined) return reply.code(409).send({ error: 'unable to save queued prompt' });
-    return reply.code(201).send(saved);
+    if (result === 'failed' || note === undefined) return reply.code(409).send({ error: 'unable to save queued prompt' });
+    return reply.code(201).send(note);
   });
   app.post('/api/agents/:id/saved-prompts/:promptId/queue', async (request, reply) => {
     controlled(request, true);

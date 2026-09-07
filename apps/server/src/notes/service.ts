@@ -57,6 +57,22 @@ export class WorktreeNoteService {
     });
   }
 
+  // create a titled note with initial text in one mutation — the save-as-note and halt-drain
+  // paths write the note atomically before consuming the queued prompt, so a two-step
+  // create-then-update (which could leave a blank titled note on failure) will not do
+  async createWithText(worktreeId: string, title: string, text: string): Promise<WorktreeNote | undefined> {
+    if (!validWorktreeId(worktreeId) || !validTitle(title) || !validText(text)) return undefined;
+    return await this.mutate(stored => {
+      const notes = stored[worktreeId] ?? [];
+      if (notes.length >= maxNotesPerWorktree) return undefined;
+      if (stored[worktreeId] === undefined && Object.keys(stored).length >= maxWorktrees) return undefined;
+      if (totalNoteLength(stored) + title.length + text.length > maxTotalNoteLength) return undefined;
+      const note: WorktreeNote = { id: randomBytes(18).toString('base64url'), text, title };
+      stored[worktreeId] = [note, ...notes];
+      return note;
+    });
+  }
+
   async update(worktreeId: string, noteId: string, text: string): Promise<WorktreeNote | undefined> {
     if (!validWorktreeId(worktreeId) || !validNoteId(noteId) || !validText(text)) return undefined;
     return await this.mutate(stored => {
