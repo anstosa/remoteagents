@@ -161,8 +161,8 @@ test('enables Davo and saves a configurable name and context', async ({ page }) 
   const updates: Array<{ enabled: boolean; name: string; context: string }> = [];
   const settingsPage = await openSettings(page, {}, { onDavo: settings => { updates.push(settings); } });
   const enabled = settingsPage.getByRole('switch', { name: 'Enable Davo' });
-  const switchTrack = settingsPage.locator('.client-settings-switch-track');
   const davoSection = settingsPage.locator('.client-settings-davo');
+  const switchTrack = davoSection.locator('.client-settings-switch-track');
 
   await expect(enabled).not.toBeChecked();
   const [davoBounds, switchBounds] = await Promise.all([davoSection.boundingBox(), switchTrack.boundingBox()]);
