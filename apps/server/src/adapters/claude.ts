@@ -28,6 +28,13 @@ function recognizes({ comm, argv }: { comm: string; argv: string[] }): boolean {
 // non-interactive/bare modes, and every mode flag the console selects by launch mode.
 const conflictingArgs = ['--settings', '--bare', '--safe-mode', '-c', '--continue', '-r', '--resume', '--session-id', '-p', '--print'] as const;
 
+// Slash commands that clear or reset the session and return straight to an idle
+// composer with no model turn, so they fire SessionStart (`finished`) but never
+// UserPromptSubmit (`working`). The console submits these fire-and-forget (no
+// awaiting-start phase). Commands that open a persistent picker (/model, /resume,
+// /fork…) are deliberately excluded: a queued follow-up must not paste into them.
+const instantCommands = new Set(['/clear']);
+
 /**
  * The Claude Code Adapter (chunk 2). State is reported through hooks (`stateSource:
  * 'reported'`), so the title carries no signal and `inferState` is always
@@ -58,6 +65,8 @@ export const claudeAdapter: Adapter = {
   submission: {
     // both modes: paste the text and press Enter — no trailing space, never Tab
     prepare: (prompt) => ({ text: prompt, keys: ['Enter'] }),
+    // /clear and its like complete without a `working` report — track no completion
+    completesWithoutWork: (prompt) => instantCommands.has(prompt.trim().split(/\s+/u)[0] ?? ''),
     // Escape then C-c as separate writes; never Escape Escape (Rewind) or C-c C-c (exit)
     interrupt: ['Escape', 'C-c'],
     selectOption: (index) => [...Array.from({ length: index }, () => 'Down' as TmuxKey), 'Enter'],

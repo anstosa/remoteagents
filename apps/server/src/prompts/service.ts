@@ -343,6 +343,10 @@ export class PromptService {
     // the Adapter describes the paste text and the submit keys; the console pastes and sends them
     const adapter = this.resolveAdapter(first.agent.kind);
     if (adapter === undefined) return false;
+    // an instant conversation-control command (Claude's /clear) never reports
+    // `working`; an awaiting-start phase for it would time out and sweep a queued
+    // follow-up into saved prompts, so it is submitted fire-and-forget with no phase
+    const instant = adapter.submission.completesWithoutWork?.(prompt) ?? false;
     const scope = this.historyScope(first.agent, agentId);
     const workspace = this.workspaceFor(first.agent.workspace);
     const staged = await this.stageAttachments(workspace, attachments);
@@ -406,8 +410,9 @@ export class PromptService {
     if (!submitted) {
       // halt only when a durable prompt is still waiting
       await this.holdFailedSubmission(scope);
-    } else {
-      // track the successful prompt
+    } else if (!instant) {
+      // track the successful prompt (an instant command has no completion to await
+      // and no answer to record, so it opens no phase and leaves the queue free)
       const entry = await this.history?.record(scope, attachmentPrompt).catch(() => undefined);
       // monitor managed prompt completion
       if (this.queued !== undefined) this.phases.set(scope, { state: 'awaiting-start', changedAt: Date.now(), historyPrompt: attachmentPrompt, ...(entry === undefined ? {} : { historyEntryId: entry.id }), ...(rolloutBaseline === undefined ? {} : { rolloutBaseline }) });

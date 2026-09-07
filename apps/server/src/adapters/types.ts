@@ -120,6 +120,15 @@ export interface Adapter {
     prepare(prompt: string, mode: SubmissionMode): Submission;
     /** Observe durable acceptance; absence keeps this adapter on best-effort tmux delivery. */
     observeDraft?(capture: string, prompt: string): SubmissionDraftState;
+    /**
+     * A prompt that completes without ever reporting `working` — an instant
+     * conversation-control command like Claude's `/clear`, which returns straight
+     * to an idle composer with no model turn. The console must not open an
+     * awaiting-start phase for it: that phase would wait for a `working` report
+     * that never comes, time out, and sweep any queued follow-up into saved
+     * prompts. Absent (or `false`) keeps the normal tracked-completion path.
+     */
+    completesWithoutWork?(prompt: string): boolean;
     readonly interrupt: TmuxKey[];
     /** navigate from the freshly observed cursor when the question provides one */
     selectOption(index: number, selectedIndex?: number): TmuxKey[];
