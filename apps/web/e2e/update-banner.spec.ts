@@ -1,29 +1,11 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
-test('places the update chip in the tab bar beside notification controls', async ({ page }) => {
-  await page.goto('/');
-  await page.setContent(`
-    <link rel="stylesheet" href="/src/styles.css">
-    <nav class="tabs" role="tablist" style="width: 800px">
-      <button role="tab">Agent</button>
-      <button class="notification-control" type="button">Enable alerts</button>
-      <button class="update-ready" type="button">Upstream update <span>View</span></button>
-      <span class="launcher"><button class="new-agent-tab" type="button">+</button></span>
-    </nav>
-    <section class="panel" style="width: 800px; height: 500px"></section>
-  `);
-
-  const tabs = page.getByRole('tablist');
-  const notification = page.getByRole('button', { name: 'Enable alerts' });
-  const banner = page.getByRole('button', { name: 'Upstream update View' });
-  await expect(tabs.locator(':scope > .update-ready')).toHaveCount(1);
-  await expect(page.locator('.panel .update-ready')).toHaveCount(0);
-  const [notificationBounds, bannerBounds] = await Promise.all([notification.boundingBox(), banner.boundingBox()]);
-  expect(notificationBounds).not.toBeNull();
-  expect(bannerBounds).not.toBeNull();
-  expect(Math.abs(notificationBounds!.y + notificationBounds!.height / 2 - (bannerBounds!.y + bannerBounds!.height / 2))).toBeLessThanOrEqual(1);
-  expect(Math.abs(notificationBounds!.height - bannerBounds!.height)).toBeLessThanOrEqual(1);
-});
+// open the reviewed host update from global settings
+const openUpstreamUpdate = async (page: Page) => {
+  await page.getByRole('button', { name: /Global settings/u }).click();
+  const settings = page.getByRole('dialog', { name: 'Settings' });
+  await settings.getByRole('button', { name: 'View upstream update' }).click();
+};
 
 test('keeps the embedded update advisor out of the main agent tabs', async ({ page }) => {
   await page.route('**/api/**', async route => {
@@ -52,6 +34,8 @@ test('keeps the embedded update advisor out of the main agent tabs', async ({ pa
 test('reloads a stale client instead of restarting the server', async ({ page }) => {
   let updateStarts = 0;
   let navigations = 0;
+  const revisionSha = 'a1b2c3d4e5f6789012345678901234567890abcd';
+  const committedAt = '2026-09-06T14:22:31-07:00';
   // count full-page reloads
   page.on('framenavigated', frame => {
     // ignore child-frame navigation
@@ -68,6 +52,8 @@ test('reloads a stale client instead of restarting the server', async ({ page })
     if (url.pathname === '/api/ui-version') return route.fulfill({ json: { version: '/assets/index-new.js' } });
     // keep the host repository current
     if (url.pathname === '/api/server/update-available') return route.fulfill({ json: { available: false } });
+    // publish deployed server metadata
+    if (url.pathname === '/api/server/revision') return route.fulfill({ json: { sha: revisionSha, committedAt } });
     // flag accidental host mutations
     if (url.pathname === '/api/server/update' && request.method() === 'POST') {
       updateStarts += 1;
@@ -81,9 +67,17 @@ test('reloads a stale client instead of restarting the server', async ({ page })
   await page.goto('/');
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   const initialNavigations = navigations;
-  const banner = page.getByRole('button', { name: 'Local update Reload' });
-  await expect(banner).toBeVisible();
-  await banner.click();
+  const tabs = page.getByRole('tablist');
+  await expect(tabs.getByRole('button', { name: 'Reload local update' })).toHaveCount(0);
+  await expect(tabs.getByRole('button', { name: 'View upstream update' })).toHaveCount(0);
+  await page.getByRole('button', { name: /Global settings/u }).click();
+  const settings = page.getByRole('dialog', { name: 'Settings' });
+  const server = settings.getByRole('group', { name: 'Server' });
+  await expect(server.getByText(revisionSha.slice(0, 7))).toBeVisible();
+  await expect(server.locator('time')).toHaveAttribute('datetime', committedAt);
+  const reload = settings.getByRole('button', { name: 'Reload local update' });
+  await expect(reload).toBeVisible();
+  await reload.click();
 
   await expect.poll(() => navigations).toBeGreaterThan(initialNavigations);
   expect(updateStarts).toBe(0);
@@ -132,9 +126,7 @@ test('opens the commit review before starting and retains update failures in the
   });
 
   await page.goto('/');
-  const banner = page.getByRole('button', { name: 'Upstream update View' });
-  await expect(banner).toBeVisible();
-  await banner.click();
+  await openUpstreamUpdate(page);
 
   const dialog = page.getByRole('dialog', { name: 'Review update' });
   await expect(dialog).toBeVisible();
@@ -151,7 +143,7 @@ test('opens the commit review before starting and retains update failures in the
   await expect(dialog).toBeHidden();
   const visibleStatusChecks = updateStatusChecks;
   await expect.poll(() => updateStatusChecks).toBeGreaterThan(visibleStatusChecks);
-  const reopen = page.getByRole('button', { name: 'Server update Reopen' });
+  const reopen = page.getByRole('dialog', { name: 'Settings' }).getByRole('button', { name: 'Reopen server update' });
   await expect(reopen).toBeFocused();
   await reopen.click();
   await expect(dialog).toBeVisible();
@@ -247,7 +239,10 @@ test('opens an advisor for flagged update paths before enabling Update', async (
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'Upstream update View' }).click();
+  await openUpstreamUpdate(page);
+  const settingsPage = page.locator('#global-settings-page');
+  await expect(settingsPage).toHaveAttribute('inert', '');
+  await expect(settingsPage).toHaveAttribute('aria-hidden', 'true');
   const dialog = page.getByRole('dialog', { name: 'Review update' });
   await expect(dialog.getByText('Change server configuration')).toBeVisible();
   await expect(dialog.getByText('.env.example')).toBeVisible();
@@ -324,6 +319,9 @@ test('opens an advisor for flagged update paths before enabling Update', async (
   await expect(dialog.getByText('I reviewed the advisor guidance for this exact update.')).toBeVisible();
   await dialog.getByRole('button', { name: 'Close server update' }).click();
   await expect(dialog).toHaveCount(0);
+  await expect(settingsPage).not.toHaveAttribute('inert', '');
+  await expect(settingsPage).not.toHaveAttribute('aria-hidden', 'true');
+  await expect(settingsPage.getByRole('button', { name: 'View upstream update' })).toBeFocused();
   await expect.poll(() => advisorStops).toBe(1);
 });
 
@@ -356,7 +354,7 @@ test('reopens a durable rebuild retry after a post-merge failure', async ({ page
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'Upstream update View' }).click();
+  await openUpstreamUpdate(page);
   const dialog = page.getByRole('dialog', { name: 'Review update' });
   await expect(dialog.getByText('Host rebuild needs another attempt.')).toBeVisible();
   await dialog.getByRole('button', { name: 'Retry rebuild' }).click();

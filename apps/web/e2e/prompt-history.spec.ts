@@ -71,7 +71,13 @@ test('shows worktree prompt history and cycles it from the composer', async ({ p
   // the recent-prompt text button is gone; history is reached from the composer-row icon
   await expect(page.getByRole('button', { name: 'Last prompt', exact: true })).toHaveCount(0);
   const historyToggle = page.getByRole('button', { name: 'Prompt history (2)' });
+  const submissionControls = page.getByRole('group', { name: 'Prompt submission controls' });
+  const queue = submissionControls.getByRole('button', { name: 'Queue', exact: true });
   await expect(historyToggle).toBeVisible();
+  const [historyBounds, queueBounds] = await Promise.all([historyToggle.boundingBox(), queue.boundingBox()]);
+  expect(historyBounds).not.toBeNull();
+  expect(queueBounds).not.toBeNull();
+  expect(Math.abs(historyBounds!.x + historyBounds!.width - queueBounds!.x)).toBeLessThanOrEqual(1);
   await historyToggle.click();
   const historyMenu = page.getByLabel('Prompt history', { exact: true });
   const historyHeader = historyMenu.locator('header');

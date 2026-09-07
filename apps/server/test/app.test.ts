@@ -78,6 +78,14 @@ describe('server administration API', () => {
     const defaults: string[] = [];
     const davoSettings: Array<{ enabled: boolean; name: string; context: string }> = [];
     const targetSha = '2'.repeat(40);
+    const committedAt = '2026-09-06T14:22:31-07:00';
+    let revisionReads = 0;
+    const revisionStatus = vi.fn(async () => {
+      revisionReads += 1;
+      // expose a later checkout if the app rereads
+      if (revisionReads > 1) return { sha: '3'.repeat(40), committedAt: '2026-09-07T14:22:31-07:00' };
+      return { sha: targetSha, committedAt };
+    });
     const reviewedPreview = { available: true, rebuildRetryAvailable: false, baseSha: '1'.repeat(40), targetSha, fastForwardable: true, commitCount: 1, commits: [{ sha: targetSha, subject: 'Update server', author: 'Ansel', authoredAt: '2026-08-27T12:00:00-07:00' }], commitsTruncated: false, filesTruncated: false, advisory: { required: false, reasons: [] as Array<{ kind: 'config'; paths: string[] }> } };
     let preview = reviewedPreview;
     const startUpdate = vi.fn(async () => ({ id: 'server_update_operation_1234', kind: 'update' as const, state: 'queued' as const, targetSha }));
@@ -89,7 +97,8 @@ describe('server administration API', () => {
       updateStatus: async (id: string) => id === 'server_update_operation_1234' ? ({ id, kind: 'update' as const, state: 'running' as const, targetSha }) : undefined,
       // expose fetched upstream state
       updateAvailable: async () => true,
-      updatePreview: async () => preview
+      updatePreview: async () => preview,
+      revision: revisionStatus
     };
     const adminApp = await buildApp({ ...config, adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true } } }, { auth: new AuthService(hash, Buffer.alloc(32, 19).toString('base64url')), serverAdmin: serverAdmin as never });
     try {
@@ -107,6 +116,8 @@ describe('server administration API', () => {
       const update = await adminApp.inject({ method: 'POST', url: '/api/server/update', headers, payload: { expectedTargetSha: targetSha } });
       const status = await adminApp.inject({ method: 'GET', url: '/api/server/update/server_update_operation_1234', headers: { host: headers.host, cookie: headers.cookie } });
       const availability = await adminApp.inject({ method: 'GET', url: '/api/server/update-available', headers: { host: headers.host, cookie: headers.cookie } });
+      const revision = await adminApp.inject({ method: 'GET', url: '/api/server/revision', headers: { host: headers.host, cookie: headers.cookie } });
+      const repeatedRevision = await adminApp.inject({ method: 'GET', url: '/api/server/revision', headers: { host: headers.host, cookie: headers.cookie } });
       const updatePreview = await adminApp.inject({ method: 'GET', url: '/api/server/update-preview', headers: { host: headers.host, cookie: headers.cookie } });
       // require explicit advisor acknowledgement for flagged previews
       preview = { ...preview, advisory: { required: true, reasons: [{ kind: 'config', paths: ['.env.example'] }] } };
@@ -127,6 +138,8 @@ describe('server administration API', () => {
       expect(startUpdate).toHaveBeenCalledWith(targetSha);
       expect(status.json()).toMatchObject({ state: 'running' });
       expect(availability.json()).toEqual({ available: true, commitCount: 1, targetSha });
+      expect(revision.json()).toEqual({ sha: targetSha, committedAt });
+      expect(repeatedRevision.json()).toEqual({ sha: targetSha, committedAt });
       expect(updatePreview.json()).toEqual(reviewedPreview);
       expect(unacknowledgedUpdate.statusCode).toBe(409);
     } finally {
@@ -139,7 +152,7 @@ describe('server administration API', () => {
     const targetSha = '2'.repeat(40);
     const preview = { available: true, rebuildRetryAvailable: false, baseSha: '1'.repeat(40), targetSha, fastForwardable: true, commitCount: 1, commits: [], commitsTruncated: false, filesTruncated: false, advisory: { required: false, reasons: [] } };
     const startUpdate = vi.fn();
-    const serverAdmin = { updatePreview: async () => preview, startUpdate, updateAvailable: async () => true };
+    const serverAdmin = { updatePreview: async () => preview, startUpdate, updateAvailable: async () => true, revision: async () => undefined };
     const adminApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 21).toString('base64url')), serverAdmin: serverAdmin as never });
     try {
       const boot = await adminApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
@@ -160,7 +173,7 @@ describe('server administration API', () => {
     const targetSha = '2'.repeat(40);
     const preview = { available: false, rebuildRetryAvailable: true, baseSha: targetSha, targetSha, fastForwardable: true, commitCount: 0, commits: [], commitsTruncated: false, filesTruncated: false, advisory: { required: false, reasons: [] } };
     const startUpdate = vi.fn(async () => ({ id: 'server_update_retry_123456', kind: 'update' as const, state: 'queued' as const, targetSha }));
-    const serverAdmin = { updatePreview: async () => preview, startUpdate, updateAvailable: async () => false };
+    const serverAdmin = { updatePreview: async () => preview, startUpdate, updateAvailable: async () => false, revision: async () => undefined };
     const adminApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 22).toString('base64url')), serverAdmin: serverAdmin as never });
     try {
       const boot = await adminApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
@@ -215,7 +228,8 @@ describe('server administration API', () => {
       updateAvailable: async () => true,
       activeUpdateTarget: async () => activeTarget,
       startUpdate: async () => ({ id: 'server_update_advisor_1234', kind: 'update' as const, state: 'queued' as const, targetSha }),
-      updateStatus: async () => ({ id: 'server_update_advisor_1234', kind: 'update' as const, state: 'complete' as const, targetSha })
+      updateStatus: async () => ({ id: 'server_update_advisor_1234', kind: 'update' as const, state: 'complete' as const, targetSha }),
+      revision: async () => undefined
     };
     const adminApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 23).toString('base64url')), discovery: discovery as never, launch: launch as never, tmux: tmux as never, serverAdmin: serverAdmin as never, queuedPrompts: new QueuedPromptService(join(directory, 'queue.json')) });
     try {
@@ -281,7 +295,7 @@ describe('server administration API', () => {
       target: async (id: string) => !closed && id === legacy.id ? { agent: legacy, socket } : undefined
     };
     const tmux = { close: vi.fn(async () => { closed = true; return true; }) };
-    const serverAdmin = { updateStatus: async () => ({ id: 'server_update_advisor_1234', kind: 'update' as const, state: 'complete' as const, targetSha }), updateAvailable: async () => false, activeUpdateTarget: async () => undefined };
+    const serverAdmin = { updateStatus: async () => ({ id: 'server_update_advisor_1234', kind: 'update' as const, state: 'complete' as const, targetSha }), updateAvailable: async () => false, activeUpdateTarget: async () => undefined, revision: async () => undefined };
     const adminApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 25).toString('base64url')), discovery: discovery as never, tmux: tmux as never, serverAdmin: serverAdmin as never });
     try {
       const boot = await adminApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
@@ -312,7 +326,7 @@ describe('server administration API', () => {
     const launch = { launchUpdateAdvisor: vi.fn(async () => true) };
     const tmux = { pastePrompt: vi.fn(async () => true), queue: vi.fn(async () => true), close: vi.fn(async (_socket: unknown, paneId: string) => { if (paneId === older.paneId) olderClosed = true; return true; }) };
     const preview = { available: true, rebuildRetryAvailable: false, baseSha: '1'.repeat(40), targetSha, fastForwardable: true, commitCount: 1, commits: [], commitsTruncated: false, filesTruncated: false, advisory: { required: true, reasons: [{ kind: 'config', paths: ['.env.example'] }] } };
-    const serverAdmin = { updatePreview: async () => preview, updateAdvisor: () => ({ repository: '/host/repo', prompt: 'Inspect the fixed committed range without changing it.' }), updateAvailable: async () => true, activeUpdateTarget: async () => undefined };
+    const serverAdmin = { updatePreview: async () => preview, updateAdvisor: () => ({ repository: '/host/repo', prompt: 'Inspect the fixed committed range without changing it.' }), updateAvailable: async () => true, activeUpdateTarget: async () => undefined, revision: async () => undefined };
     const adminApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 24).toString('base64url')), discovery: discovery as never, launch: launch as never, tmux: tmux as never, serverAdmin: serverAdmin as never });
     try {
       const boot = await adminApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });

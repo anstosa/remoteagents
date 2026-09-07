@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('manages waiting prompts from the clock control connected to Queue', async ({ page }) => {
+test('manages waiting prompts from the queue-add control connected to Queue', async ({ page }) => {
   const requested: string[] = [];
   const queued = [
     { id: 'queued-prompt-001', text: 'First queued prompt', createdAt: '2026-08-04T01:00:00.000Z' },
@@ -73,13 +73,17 @@ test('manages waiting prompts from the clock control connected to Queue', async 
 
   await page.goto('/');
   await expect.poll(() => requested).toContain('GET /api/agents/agent-1/queued-prompts');
-  const queue = page.getByRole('button', { name: 'Queue', exact: true });
-  const clock = page.getByRole('button', { name: 'Queued prompts (2)' });
-  await expect(clock).toBeVisible();
-  const [queueBounds, clockBounds] = await Promise.all([queue.boundingBox(), clock.boundingBox()]);
-  expect(Math.abs(queueBounds!.x + queueBounds!.width - clockBounds!.x)).toBeLessThanOrEqual(1);
+  const submissionControls = page.getByRole('group', { name: 'Prompt submission controls' });
+  const history = submissionControls.getByRole('button', { name: 'Prompt history (0)' });
+  const queue = submissionControls.getByRole('button', { name: 'Queue', exact: true });
+  const queueAdd = page.getByRole('button', { name: 'Queued prompts (2)' });
+  await expect(queueAdd).toBeVisible();
+  await expect(queueAdd).toHaveScreenshot('queue-add-control.png');
+  const [historyBounds, queueBounds, queueAddBounds] = await Promise.all([history.boundingBox(), queue.boundingBox(), queueAdd.boundingBox()]);
+  expect(Math.abs(historyBounds!.x + historyBounds!.width - queueBounds!.x)).toBeLessThanOrEqual(1);
+  expect(Math.abs(queueBounds!.x + queueBounds!.width - queueAddBounds!.x)).toBeLessThanOrEqual(1);
 
-  await clock.click();
+  await queueAdd.click();
   const menu = page.getByLabel('Queued prompts', { exact: true });
   const copies = menu.locator('.queued-prompt-copy');
   const positions = menu.locator('.queued-prompt-position');
@@ -114,9 +118,10 @@ test('manages waiting prompts from the clock control connected to Queue', async 
   await page.locator('.flyout-backdrop').click({ position: { x: 4, y: 4 } });
   await page.getByRole('textbox', { name: 'Prompt' }).fill('Third queued prompt');
   await queue.click();
-  const updatedClock = page.getByRole('button', { name: 'Queued prompts (2)' });
-  await expect(updatedClock).toBeVisible();
-  if (!await menu.isVisible()) await updatedClock.click();
+  const updatedQueueAdd = page.getByRole('button', { name: 'Queued prompts (2)' });
+  await expect(updatedQueueAdd).toBeVisible();
+  // reopen the queue only when the previous action closed it
+  if (!await menu.isVisible()) await updatedQueueAdd.click();
   await expect(menu).toBeVisible();
   await expect(copies.last()).toContainText('Third queued prompt');
   await page.getByRole('button', { name: 'Cancel queued prompt: First queued prompt' }).click();

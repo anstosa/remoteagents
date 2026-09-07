@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('keeps file attachments in the icon-labelled more menu', async ({ page }) => {
+test('keeps file attachments in the shortcut rail and out of the more menu', async ({ page }) => {
   test.setTimeout(60_000);
   let finishPullRequests!: () => void;
   let finishPullRequestRefresh!: () => void;
@@ -76,7 +76,8 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
   });
 
   await page.goto('/');
-  await expect(page.locator('.prompt-actions .attachment-button')).toHaveCount(0);
+  const attachmentShortcut = page.locator('.prompt-action-rail').getByRole('button', { name: 'Attach files', exact: true });
+  await expect(attachmentShortcut).toBeVisible();
   await page.getByRole('button', { name: 'More options' }).click();
 
   const menu = page.locator('.more-menu');
@@ -84,22 +85,22 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
   const pullRequestHeading = menu.getByRole('button', { name: 'Pull requests', exact: true });
   const loadingPlaceholder = menu.getByRole('status', { name: 'Loading pull requests…', exact: true });
   const loadingSpinner = pullRequestHeading.locator('.spinner');
-  const attachMenuItem = menu.getByRole('button', { name: 'Attach files', exact: true });
-  const menuIcon = attachMenuItem.locator('.more-menu-icon');
+  await expect(menu.getByRole('button', { name: 'Attach files', exact: true })).toHaveCount(0);
+  await expect(menu.getByRole('button', { name: 'Finish and PR', exact: true })).toHaveCount(0);
   await expect(loadingPlaceholder).toBeVisible();
   await expect(pullRequestHeading).toBeDisabled();
   const swapItem = menu.getByRole('button', { name: 'Swap to terminal', exact: true });
-  const [pullRequestHeadingBox, swapBox, stableItemBefore] = await Promise.all([pullRequestHeading.boundingBox(), swapItem.boundingBox(), attachMenuItem.boundingBox()]);
+  const swapIcon = swapItem.locator('.more-menu-icon');
+  const [pullRequestHeadingBox, stableItemBefore] = await Promise.all([pullRequestHeading.boundingBox(), swapItem.boundingBox()]);
   expect(pullRequestHeadingBox).not.toBeNull();
-  expect(swapBox).not.toBeNull();
   expect(stableItemBefore).not.toBeNull();
-  expect(pullRequestHeadingBox!.y).toBeLessThan(swapBox!.y);
-  const [spinnerSize, iconSize] = await Promise.all([loadingSpinner, menuIcon].map(async item => await item.evaluate(element => {
+  expect(pullRequestHeadingBox!.y).toBeLessThan(stableItemBefore!.y);
+  const [spinnerSize, iconSize] = await Promise.all([loadingSpinner, swapIcon].map(async item => await item.evaluate(element => {
     const style = getComputedStyle(element);
     return { width: style.width, height: style.height };
   })));
   expect(spinnerSize).toEqual(iconSize);
-  const [loadingLayout, menuItemLayout] = await Promise.all([pullRequestHeading, attachMenuItem].map(async item => await item.evaluate(element => {
+  const [loadingLayout, menuItemLayout] = await Promise.all([pullRequestHeading, swapItem].map(async item => await item.evaluate(element => {
     const style = getComputedStyle(element);
     return {
       tagName: element.tagName,
@@ -114,7 +115,8 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
   })));
   expect(loadingLayout).toEqual(menuItemLayout);
   finishPullRequests();
-  for (const label of ['Swap to terminal', 'Finish and PR', 'Attach files']) {
+  // retain icons on the remaining fixed actions
+  for (const label of ['Swap to terminal']) {
     const item = menu.getByRole('button', { name: label, exact: true });
     await expect(item).toBeVisible();
     await expect(item.locator('.more-menu-icon')).toHaveCount(1);
@@ -138,14 +140,11 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
   await expect(actions.locator('.more-menu-icon')).toHaveCount(1);
   await expect(loadingPlaceholder).toHaveCount(0);
   await expect(menu.locator('.new-task-option .more-menu-reason')).toHaveText('Start a fresh task for this worktree.');
-  const attachItem = menu.getByRole('button', { name: 'Attach files', exact: true });
-  await attachItem.hover();
-  await expect(attachItem).toHaveCSS('background-color', 'rgb(49, 50, 68)');
 
   await expect(menu.getByRole('button', { name: 'Switch to PR', exact: true })).toHaveCount(0);
   const pullRequest = menu.getByRole('link', { name: '#2567: Make prompt actions fit', exact: true });
   await expect(pullRequest).toBeVisible();
-  await expect.poll(async () => Math.abs((await attachMenuItem.boundingBox())!.y - stableItemBefore!.y)).toBeLessThanOrEqual(1);
+  await expect.poll(async () => Math.abs((await swapItem.boundingBox())!.y - stableItemBefore!.y)).toBeLessThanOrEqual(1);
   await expect(pullRequest).not.toContainText('Open');
   const pullRequestActions = pullRequest.locator('xpath=../..').locator('.switch-pr-actions');
   await expect(pullRequestActions.getByRole('img', { name: 'CI checks failed' })).toBeVisible();
@@ -182,12 +181,14 @@ test('keeps file attachments in the icon-labelled more menu', async ({ page }) =
   await expect(github).toHaveURL('https://github.example.com/pull/2567');
   await github.close();
 
+  // leave the overflow menu before using the fixed shortcut
+  await page.mouse.click(4, 4);
+  await expect(menu).toBeHidden();
   const fileChooserPromise = page.waitForEvent('filechooser');
-  await menu.getByRole('button', { name: 'Attach files', exact: true }).click();
+  await attachmentShortcut.click();
   const fileChooser = await fileChooserPromise;
   await fileChooser.setFiles({ name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('test attachment') });
 
-  await expect(menu).toBeHidden();
   await expect(page.getByLabel('Selected attachments')).toContainText('notes.txt');
 });
 
@@ -198,7 +199,7 @@ test('queues the configured push prompt and falls back to the default action', a
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: queued.length + 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready', ...(push === undefined ? {} : { push }) }], projects: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: queued.length + 1, reviewTour: { available: true }, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', branch: 'feature/push-action', gitStatus: { files: 0, staged: 0, unstaged: 0, untracked: 0, conflicted: 0 }, title: 'Ready', ...(push === undefined ? {} : { push }) }], projects: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
@@ -213,17 +214,33 @@ test('queues the configured push prompt and falls back to the default action', a
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'More options' }).click();
-  const custom = page.locator('.more-menu').getByRole('button', { name: 'Finish and PR', exact: true });
+  const more = page.getByRole('button', { name: 'More options' });
+  await more.click();
+  await expect(page.locator('.more-menu').getByRole('button', { name: 'Finish and PR', exact: true })).toHaveCount(0);
+  // leave the overflow menu before opening branch status
+  await page.keyboard.press('Escape');
+  await expect(more).toHaveAttribute('aria-expanded', 'false');
+  await page.getByRole('button', { name: /^Git status:/u }).click();
+  const branchFlyout = page.getByRole('region', { name: 'Changed files' });
+  const review = branchFlyout.getByRole('button', { name: 'Review', exact: true });
+  const custom = branchFlyout.getByRole('button', { name: 'Finish and PR', exact: true });
   await expect(custom.locator('.more-menu-icon')).toBeVisible();
+  const [reviewBounds, customBounds] = await Promise.all([review.boundingBox(), custom.boundingBox()]);
+  expect(customBounds!.x).toBeGreaterThan(reviewBounds!.x + reviewBounds!.width);
+  expect(customBounds!.y).toBeCloseTo(reviewBounds!.y, 0);
   await custom.click();
   await expect.poll(() => queued).toEqual(['$finish']);
-  await expect(page.locator('.more-menu')).toBeHidden();
+  await expect(branchFlyout).toBeHidden();
 
   push = undefined;
   await page.reload();
-  await page.getByRole('button', { name: 'More options' }).click();
-  await page.locator('.more-menu').getByRole('button', { name: 'Commit/Push', exact: true }).click();
+  await more.click();
+  await expect(page.locator('.more-menu').getByRole('button', { name: 'Commit/Push', exact: true })).toHaveCount(0);
+  // leave the overflow menu before opening branch status
+  await page.keyboard.press('Escape');
+  await expect(more).toHaveAttribute('aria-expanded', 'false');
+  await page.getByRole('button', { name: /^Git status:/u }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Commit/Push', exact: true }).click();
   await expect.poll(() => queued).toEqual(['$finish', 'review, commit, and push']);
 });
 

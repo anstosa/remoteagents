@@ -118,6 +118,11 @@ test('bookmarks the current chat above notes and resumes a selected bookmark', a
   expect(rowPresentation.selectionShadow).not.toBe('none');
   await menu.getByRole('button', { name: `Rename saved chat: ${originalTitle}` }).click();
   const chatName = menu.getByRole('textbox', { name: 'Chat name' });
+  await chatName.fill('Discarded title');
+  await chatName.press('Escape');
+  await expect(chatName).toBeHidden();
+  await expect(menu).toBeVisible();
+  await menu.getByRole('button', { name: `Rename saved chat: ${originalTitle}` }).click();
   await chatName.fill('Release migration checklist');
   await menu.getByRole('button', { name: 'Save chat name' }).click();
   await expect.poll(() => renamedBookmark).toBe('Release migration checklist');

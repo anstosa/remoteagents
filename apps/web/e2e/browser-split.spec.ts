@@ -59,9 +59,8 @@ test('loads direct external previews without managed proxy endpoints', async ({ 
 
   await page.goto('/');
   const controls = page.getByRole('group', { name: 'Project controls' });
-  await expect(controls.getByRole('link', { name: 'Open' })).toHaveAttribute('href', directUrl);
-  const split = controls.getByRole('button', { name: 'Open project in split view' });
-  await expect(split).toBeVisible();
+  const stackControls = controls.getByRole('button', { name: 'Stack controls: healthy' });
+  await expect(stackControls).toBeVisible();
   const adminLink = page.getByRole('link', { name: 'Open https://external-preview.example/admin' });
   await expect(adminLink).toBeVisible();
   const closedPopupPromise = page.waitForEvent('popup');
@@ -69,12 +68,24 @@ test('loads direct external previews without managed proxy endpoints', async ({ 
   const closedPopup = await closedPopupPromise;
   await expect(closedPopup).toHaveURL('https://external-preview.example/admin');
   await closedPopup.close();
+  await stackControls.click();
+  await expect(page.getByRole('link', { name: 'Open', exact: true })).toHaveAttribute('href', directUrl);
+  const split = page.getByRole('button', { name: 'Split', exact: true });
+  await expect(split).toBeVisible();
   await split.click();
 
   const browser = page.getByRole('dialog', { name: 'Browser' });
   const frame = browser.locator('iframe[title="Project browser"]');
   await expect(frame).toHaveAttribute('src', directUrl);
   await expect(page.frameLocator('iframe[title="Project browser"]').getByText('Direct external preview')).toBeVisible();
+  await stackControls.click();
+  const closeSplit = page.getByRole('button', { name: 'Close', exact: true });
+  await expect(closeSplit).toHaveAttribute('aria-pressed', 'true');
+  await closeSplit.click();
+  await expect(browser).toBeHidden();
+  await stackControls.click();
+  await page.getByRole('button', { name: 'Split', exact: true }).click();
+  await expect(browser).toBeVisible();
   const address = browser.getByRole('textbox', { name: 'Browser address' });
   await expect(address).toHaveValue(directUrl);
   const home = browser.getByRole('button', { name: 'Go to project home' });
@@ -184,15 +195,17 @@ test('opens the configured project in desktop and mobile split views', async ({ 
 
   await page.goto('/');
   const projectControls = page.getByRole('group', { name: 'Project controls' });
-  await expect(projectControls.locator('.project-open + .project-browser-toggle + .project-stack-toggle')).toHaveCount(1);
-  const split = page.getByRole('button', { name: 'Open project in split view' });
-  await expect(split).toBeVisible();
+  const stackControls = projectControls.getByRole('button', { name: 'Stack controls: healthy' });
+  await expect(projectControls.locator('.project-stack-trigger')).toHaveCount(1);
   const localOutputLink = page.getByRole('link', { name: 'Open https://project.example.com/from-output?view=files#changed' });
   await expect(localOutputLink).toBeVisible();
   const closedSplitPopupPromise = page.waitForEvent('popup');
   await localOutputLink.click();
   const closedSplitPopup = await closedSplitPopupPromise;
   await closedSplitPopup.close();
+  await stackControls.click();
+  const split = page.getByRole('button', { name: 'Split', exact: true });
+  await expect(split).toBeVisible();
   await split.click();
 
   const browser = page.getByRole('dialog', { name: 'Browser' });
@@ -358,12 +371,13 @@ test('opens the configured project in desktop and mobile split views', async ({ 
   await browser.getByRole('button', { name: 'Close browser' }).click();
   await expect(note).toBeVisible();
   await page.getByRole('tab', { name: 'Delta — Agent closed' }).click();
-  await split.click();
+  await page.getByRole('button', { name: 'Open project in split view' }).click();
   await expect(browser.locator('.browser-frame-shell')).toHaveClass(/desktop/u);
   await browser.getByRole('button', { name: 'Close browser' }).click();
 
   await page.getByRole('tab', { name: 'Cora — Prompt done' }).click();
-  await split.click();
+  await projectControls.getByRole('button', { name: 'Stack controls: healthy' }).click();
+  await page.getByRole('button', { name: 'Split', exact: true }).click();
   await expect(browser.locator('.browser-frame-shell')).toHaveClass(/mobile/u);
   await expect(preview.locator('main')).toHaveAttribute('data-location', '/spa');
 

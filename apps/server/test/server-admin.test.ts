@@ -50,6 +50,22 @@ describe('server administration', () => {
     expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ name: 'Framework', integrations: { enabled: true, mcp: { writeEnabled: true }, realtime: { enabled: false, writeToolsEnabled: true, name: 'Riley', context: 'Direct and dry.' }, multiInstance: { enabled: true } } });
   });
 
+  it('reads the deployed checkout revision without fetching upstream', async () => {
+    const committedAt = '2026-09-06T14:22:31-07:00';
+    const runCommand = vi.fn(async () => ({ code: 0, stdout: `${baseSha}\0${committedAt}\n`, stderr: '' }));
+    const service = new ServerAdminService(config, { checkoutRoot: '/workspace/remoteagents', runCommand });
+
+    await expect(service.revision()).resolves.toEqual({ sha: baseSha, committedAt });
+    expect(runCommand).toHaveBeenCalledWith('/usr/bin/git', ['-C', '/workspace/remoteagents', 'show', '-s', '--format=%H%x00%cI', 'HEAD'], undefined, 5_000);
+  });
+
+  it('rejects malformed deployed checkout revisions', async () => {
+    const runCommand = vi.fn(async () => ({ code: 0, stdout: 'not-a-commit\0not-a-date\n', stderr: '' }));
+    const service = new ServerAdminService(config, { checkoutRoot: '/workspace/remoteagents', runCommand });
+
+    await expect(service.revision()).resolves.toBeUndefined();
+  });
+
   it('launches only the fixed updater through the host tmux bridge', async () => {
     root = await mkdtemp(join(tmpdir(), 'rac-server-admin-'));
     const runCommand = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));

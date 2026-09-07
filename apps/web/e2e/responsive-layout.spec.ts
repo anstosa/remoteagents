@@ -14,7 +14,7 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
           { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/owen', displayLabel: '🥔 Owen', title: 'Ready' },
           { id: 'agent-3', sessionId: 'socket:$3', workspace: '/worktrees/dave', displayLabel: '🥔 Dave', title: 'Ready' },
           { id: 'agent-4', sessionId: 'socket:$4', workspace: '/worktrees/eric', displayLabel: '🥔 Eric', title: 'Ready' },
-          { id: 'agent-5', sessionId: 'socket:$5', workspace: '/worktrees/remote-agents', branch: 'feature/output-git-summary', gitStatus: { files: 3, staged: 1, unstaged: 2, untracked: 1, conflicted: 0 }, displayLabel: '📱 Remote Agents', title: 'Ready', projectUrl: 'https://project.example.com', stack: { actions: ['start', 'build'], tunnel: true }, pullRequest: { number: 42, title: 'Move the worktree tabs', status: 'open', url: 'https://github.com/octo/repo/pull/42' } }
+          { id: 'agent-5', sessionId: 'socket:$5', workspace: '/worktrees/remote-agents', worktreeId: 'remote-agents', branch: 'feature/output-git-summary', gitStatus: { files: 3, staged: 1, unstaged: 2, untracked: 1, conflicted: 0 }, displayLabel: '📱 Remote Agents', title: 'Ready', attention: 'finished', projectUrl: 'https://project.example.com', stack: { actions: ['start', 'build'], tunnel: true }, pullRequest: { number: 42, title: 'Move the worktree tabs', status: 'open', url: 'https://github.com/octo/repo/pull/42' } }
         ],
         projects: []
       }
@@ -60,6 +60,13 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
       gitSummary: bounds('.git-status-summary'),
       gitBranchDisplay: getComputedStyle(document.querySelector<HTMLElement>('.git-branch')!).display,
       gitDotDisplay: getComputedStyle(document.querySelector<HTMLElement>('.git-status-dot')!).display,
+      gitIconDisplay: getComputedStyle(document.querySelector<HTMLElement>('.git-branch-icon')!).display,
+      gitDot: bounds('.git-status-dot'),
+      promptRail: bounds('.prompt-action-rail'),
+      attachment: bounds('.prompt-action-rail .attachment-button'),
+      power: bounds('.prompt-action-rail .deactivate-agent'),
+      stackTrigger: bounds('.project-stack-trigger'),
+      stackDot: bounds('.project-stack-status-dot'),
       logStatus: bounds('.log-status'),
       serverSwitcher: bounds('.output-server-switcher'),
       serverSettings: bounds('.output-server-switcher .server-switcher-settings'),
@@ -74,7 +81,7 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
       promptActions: bounds('.prompt-actions'),
       controls: [...document.querySelectorAll<HTMLElement>('.prompt-actions button, .prompt-actions .project-open')].map(element => {
         const rect = element.getBoundingClientRect();
-        return { left: rect.left, right: rect.right, top: rect.top };
+        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
       })
     };
   });
@@ -85,10 +92,23 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   expect(Math.abs(layout.output.left)).toBeLessThanOrEqual(1);
   expect(Math.abs(layout.output.width - layout.viewportWidth)).toBeLessThanOrEqual(1);
   expect(layout.outputBorder).toEqual({ top: '0px', bottom: '1px' });
-  // on a narrow viewport the git status chip collapses to a dot in the composer row
+  // the shortcut rail renders branch state as a corner badge
   expect(layout.gitBranchDisplay).toBe('none');
   expect(layout.gitDotDisplay).toBe('block');
+  expect(layout.gitIconDisplay).toBe('block');
   expect(layout.gitSummary.right).toBeLessThanOrEqual(layout.viewportWidth);
+  // match the branch and stack corner badge offsets
+  expect(Math.abs((layout.gitDot.top - layout.gitSummary.top) - (layout.stackDot.top - layout.stackTrigger.top))).toBeLessThanOrEqual(1);
+  expect(Math.abs((layout.gitSummary.right - layout.gitDot.right) - (layout.stackTrigger.right - layout.stackDot.right))).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.gitDot.width - layout.stackDot.width)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.gitDot.height - layout.stackDot.height)).toBeLessThanOrEqual(1);
+  // keep one standard gap between the fixed shortcut rows
+  expect(Math.abs(layout.attachment.top - layout.gitSummary.bottom - 6)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.power.top - layout.attachment.bottom - 6)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.attachment.left - layout.power.left)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.power.bottom - layout.promptRail.bottom)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.power.bottom - layout.promptActions.bottom)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.power.bottom - layout.prompt.bottom)).toBeLessThanOrEqual(1);
   expect(layout.logStatusStyle.position).toBe('absolute');
   expect(layout.logStatusStyle.boxShadow).not.toBe('none');
   expect(layout.logStatusStyle.backgroundColor).toBe('rgb(249, 226, 175)');
@@ -111,6 +131,30 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   expect(layout.pullRequest.bottom).toBeLessThanOrEqual(layout.prompt.top);
   expect(layout.controls.every(control => control.left >= 0 && control.right <= layout.viewportWidth)).toBe(true);
   const finalRowTop = Math.max(...layout.controls.map(control => control.top));
-  const finalRowRight = Math.max(...layout.controls.filter(control => Math.abs(control.top - finalRowTop) < 1).map(control => control.right));
+  const finalRow = layout.controls.filter(control => Math.abs(control.top - finalRowTop) < 1);
+  expect(finalRow.every(control => Math.abs(control.bottom - layout.power.bottom) <= 1)).toBe(true);
+  const finalRowRight = Math.max(...finalRow.map(control => control.right));
   expect(Math.abs(layout.promptActions.right - finalRowRight)).toBeLessThanOrEqual(1);
+
+  const promptBox = page.getByRole('textbox', { name: 'Prompt' });
+  await promptBox.fill(Array.from({ length: 10 }, (_, index) => `Growing line ${index + 1}`).join('\n'));
+  await expect.poll(async () => (await promptBox.boundingBox())?.height ?? 0).toBeGreaterThan(100);
+  const grown = await page.evaluate(() => {
+    const bounds = (selector: string) => {
+      const rect = document.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
+      return { top: rect.top, bottom: rect.bottom };
+    };
+    return {
+      prompt: bounds('.prompt'),
+      branch: bounds('.git-status-summary'),
+      power: bounds('.prompt-action-rail .deactivate-agent'),
+      actions: bounds('.prompt-actions')
+    };
+  });
+  // grow the prompt upward without moving either bottom control row
+  expect(grown.prompt.top).toBeLessThan(layout.prompt.top);
+  expect(Math.abs(grown.prompt.bottom - layout.prompt.bottom)).toBeLessThanOrEqual(1);
+  expect(Math.abs(grown.branch.top - layout.gitSummary.top)).toBeLessThanOrEqual(1);
+  expect(Math.abs(grown.power.bottom - layout.power.bottom)).toBeLessThanOrEqual(1);
+  expect(Math.abs(grown.actions.bottom - layout.promptActions.bottom)).toBeLessThanOrEqual(1);
 });

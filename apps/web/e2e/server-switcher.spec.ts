@@ -108,6 +108,12 @@ test('shows and switches the configured server on authentication and output scre
   await expect(controlStatusDots.last()).toBeVisible();
   await expect(controlStatusDots.first()).toHaveCSS('opacity', '1');
   await expect(controlStatusDots.last()).toHaveCSS('opacity', '1');
+  await expect(controlStatusDots.first()).toHaveCSS('position', 'absolute');
+  // pin the compact status badge to the server tab corner
+  const [controlServerBounds, controlDotBounds] = await Promise.all([renderedBounds(controlServers.current), renderedBounds(controlStatusDots.first())]);
+  expect(Math.abs(controlDotBounds.x + controlDotBounds.width - (controlServerBounds.x + controlServerBounds.width - 4))).toBeLessThanOrEqual(1);
+  expect(Math.abs(controlDotBounds.y - (controlServerBounds.y + 4))).toBeLessThanOrEqual(1);
+  expect(controlDotBounds.width).toBeLessThan(8);
   // require the takeover card to expand with complete labels
   const [controlCardBounds, controlGroupBounds] = await Promise.all([renderedBounds(page.locator('.console-recovery')), renderedBounds(controlServers.group)]);
   expect(controlCardBounds.width).toBeGreaterThan(320);
@@ -120,7 +126,8 @@ test('shows and switches the configured server on authentication and output scre
   const narrowControlLabelsFit = await controlServers.group.locator('.server-switcher-button > span').evaluateAll(labels => labels.every(label => label.scrollWidth <= label.clientWidth));
   expect(narrowControlLabelsFit).toBe(true);
   const narrowControlScrolls = await controlServers.group.evaluate(group => group.scrollWidth > group.clientWidth);
-  expect(narrowControlScrolls).toBe(true);
+  // keep the corner badges out of the horizontal layout
+  expect(narrowControlScrolls).toBe(false);
 
   remoteServer.name = 'Framework';
   remoteName = remoteServer.name;

@@ -86,8 +86,8 @@ test('saves prompts per agent and consumes a saved prompt back into the composer
   })).toBe(true);
 
   await prompt.fill('Summarize the release risks.');
-  await expect(saveGroup.locator('+ .prompt-history-slot + .queue-prompt-group .queue')).toHaveAttribute('aria-label', 'Queue');
-  await expect(saveGroup.locator('+ .prompt-history-slot + .queue-prompt-group .queue')).toHaveText('');
+  const queue = page.getByRole('group', { name: 'Prompt submission controls' }).getByRole('button', { name: 'Queue', exact: true });
+  await expect(queue).toHaveText('');
   await prompt.press('Control+s');
 
   const confirmed = saveGroup.getByRole('button', { name: 'Saved', exact: true });
@@ -299,7 +299,6 @@ test('saves attachment bytes, shows their names, and restores them into the comp
   });
   expect(defaultAllowed).toBe(true);
   const fileChooser = page.waitForEvent('filechooser');
-  await page.getByRole('button', { name: 'More' }).click();
   await page.getByRole('button', { name: 'Attach files', exact: true }).click();
   await (await fileChooser).setFiles({ name: 'context.txt', mimeType: 'text/plain', buffer: Buffer.from('saved context') });
   await expect(page.getByLabel('Selected attachments')).toContainText('context.txt');

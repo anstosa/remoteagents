@@ -93,6 +93,8 @@ export function logFrame(last: string, value: string, refreshMetadata = false): 
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
   const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, promptHistory, queuedPrompts, savedPrompts, undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new BookmarkService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
+  // freeze the checkout identity serving this process
+  const deployedRevision = serverAdmin.revision();
   const reviewJobs = new ReviewTourJobs(reviewTours, reviewStore, async review => {
     const worktree = review.prepared.resolved.worktree;
     const projectName = config.projects.find(project => project.id === worktree.projectId)?.label ?? worktree.label;
@@ -616,6 +618,13 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return preview === undefined
       ? reply.code(503).send({ error: 'Server update checks are unavailable on this deployment.' })
       : { available: preview.available || preview.rebuildRetryAvailable, commitCount: preview.commitCount, targetSha: preview.targetSha };
+  });
+  // publish the deployed checkout revision to settings
+  app.get('/api/server/revision', async (request, reply) => {
+    controlled(request);
+    const revision = await deployedRevision;
+    // keep unavailable repository metadata explicit
+    return revision === undefined ? reply.code(503).send({ error: 'Server revision is unavailable on this deployment.' }) : revision;
   });
   // preview the exact fetched update range
   app.get('/api/server/update-preview', async (request, reply) => {

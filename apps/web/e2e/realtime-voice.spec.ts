@@ -157,7 +157,8 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
   await expect(settingsPage.getByRole('group', { name: 'Server' })).toContainText('Garage Server');
   await expect(settingsPage.getByRole('button', { name: 'Update Server' })).toHaveCount(0);
   await settingsPage.getByRole('button', { name: 'Back to console' }).click();
-  await page.getByRole('button', { name: 'Upstream update View' }).click();
+  await settings.click();
+  await settingsPage.getByRole('button', { name: 'View upstream update' }).click();
   const updateDialog = page.getByRole('dialog', { name: 'Review update' });
   await updateDialog.getByRole('button', { name: 'Update', exact: true }).click();
   await expect(updateDialog).toContainText('Pulling the reviewed revision, rebuilding, and restarting…');

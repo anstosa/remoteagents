@@ -89,15 +89,15 @@ test('renders independent stack URLs and actions for worktrees in one project', 
   const panel = page.getByRole('tabpanel');
 
   await expect(page.getByRole('tab', { name: 'Cora — Working' })).toHaveAttribute('aria-selected', 'true');
-  await expect(panel.getByRole('link', { name: 'Open' })).toHaveAttribute('href', 'https://cora.example.com');
-  await panel.getByRole('button', { name: 'Stack controls' }).click();
+  await panel.getByRole('button', { name: 'Stack controls: healthy' }).click();
+  await expect(page.getByRole('link', { name: 'Open', exact: true })).toHaveAttribute('href', 'https://cora.example.com');
   await expect(page.getByRole('button', { name: 'Migrate stack' })).toBeVisible();
   // reset the menu without depending on its private markup
   await page.reload();
 
   await page.getByRole('tab', { name: 'Owen — Agent closed' }).click();
-  await expect(panel.getByRole('link', { name: 'Open' })).toHaveAttribute('href', 'https://owen.example.com');
-  await panel.getByRole('button', { name: 'Stack controls' }).click();
+  await panel.getByRole('button', { name: 'Stack controls: healthy' }).click();
+  await expect(page.getByRole('link', { name: 'Open', exact: true })).toHaveAttribute('href', 'https://owen.example.com');
   await expect(page.getByRole('button', { name: 'Restart stack' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Migrate stack' })).toHaveCount(0);
   // reset the menu before checking the stack-free checkout

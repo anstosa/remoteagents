@@ -53,6 +53,7 @@ async function openSettings(page: import('@playwright/test').Page, adapters: unk
     if (url.pathname === '/api/agents/agent-cora/prompt-history') return route.fulfill({ json: { prompts: [] } });
     if (url.pathname === '/api/agents/agent-cora/commands') return route.fulfill({ json: { commands: [] } });
     if (url.pathname === '/api/worktrees/cora/notes') return route.fulfill({ json: { notes: [] } });
+    if (url.pathname === '/api/server/revision') return route.fulfill({ json: { sha: 'a1b2c3d4e5f6789012345678901234567890abcd', committedAt: '2026-09-06T14:22:31-07:00' } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/codex/accounts') return route.fulfill({ json: { accounts: [] } });
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
@@ -220,8 +221,11 @@ test('opens settings as a full-screen page from a gear and returns focus to the 
   const terminalBounds = await settingsPage.getByRole('group', { name: 'Terminal font' }).boundingBox();
   // retain visible breathing room between flat settings
   if (clientBounds === null || serverBounds === null || terminalBounds === null) throw new Error('Settings have no layout bounds');
-  expect(serverBounds.y - (clientBounds.y + clientBounds.height)).toBeGreaterThanOrEqual(12);
-  expect(Math.abs((serverBounds.y - clientBounds.y) - (terminalBounds.y - serverBounds.y))).toBeLessThanOrEqual(4);
+  const clientServerGap = serverBounds.y - (clientBounds.y + clientBounds.height);
+  const serverTerminalGap = terminalBounds.y - (serverBounds.y + serverBounds.height);
+  expect(clientServerGap).toBeGreaterThanOrEqual(12);
+  expect(serverTerminalGap).toBeGreaterThanOrEqual(12);
+  expect(Math.abs(clientServerGap - serverTerminalGap)).toBeLessThanOrEqual(4);
   const back = settingsPage.getByRole('button', { name: 'Back to console' });
   await back.focus();
   await page.keyboard.press('Shift+Tab');

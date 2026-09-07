@@ -10,21 +10,25 @@ test('uses action-specific stack operation labels', () => {
   expect(stackOperationLabel('migrate')).toBe('Migrating');
 });
 
-test('renders the project link as a labelled busy control during an operation', async ({ page }) => {
+test('keeps the stack flyout available during an operation', async ({ page }) => {
   await page.goto('/');
   await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div id="busy-root"></div>');
   await page.evaluate(async () => {
     const { renderProjectOpen } = await import('/e2e/project-open-fixture.tsx');
     renderProjectOpen(document.querySelector<HTMLElement>('#busy-root')!);
   });
-  const link = page.getByRole('link', { name: 'Building…' });
+  const toggle = page.getByRole('button', { name: 'Stack controls: working' });
+  await expect(toggle).toBeEnabled();
+  await expect(toggle.locator('.project-stack-server-icon')).toBeVisible();
+  await expect(toggle.locator('.project-stack-status-dot.status-working')).toBeVisible();
+  await toggle.click();
+  const link = page.getByRole('link', { name: 'Open', exact: true });
   await expect(link).toHaveAttribute('aria-busy', 'true');
   await expect(link).toHaveAttribute('aria-disabled', 'true');
-  await expect(link.locator('.spinner')).toHaveCount(1);
-  await expect(page.getByRole('button', { name: 'Stack controls' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Building…' })).toBeDisabled();
 });
 
-test('joins stack controls onto Open and runs actions from its dropdown', async ({ page }) => {
+test('consolidates managed project controls into one server flyout', async ({ page }) => {
   await page.goto('/');
   await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="prompt-actions"><div id="control-root"></div></div>');
   await page.evaluate(async () => {
@@ -33,33 +37,45 @@ test('joins stack controls onto Open and runs actions from its dropdown', async 
   });
 
   const root = page.locator('#control-root');
-  const open = root.getByRole('link', { name: 'Open' });
-  const browser = root.getByRole('button', { name: 'Open project in split view' });
-  const toggle = root.getByRole('button', { name: 'Stack controls' });
-  await expect(root.locator('.project-open + .project-browser-toggle + .project-stack-toggle')).toHaveCount(1);
-  const [openBounds, browserBounds, toggleBounds] = await Promise.all([open.boundingBox(), browser.boundingBox(), toggle.boundingBox()]);
-  expect(openBounds).not.toBeNull();
-  expect(browserBounds).not.toBeNull();
+  const toggle = root.getByRole('button', { name: 'Stack controls: down' });
+  await expect(root.locator('.project-open-group > .project-stack-trigger')).toHaveCount(1);
+  await expect(root.getByRole('link')).toHaveCount(0);
+  await expect(root.getByRole('button')).toHaveCount(1);
+  const [toggleBounds, dotBounds] = await Promise.all([toggle.boundingBox(), toggle.locator('.project-stack-status-dot').boundingBox()]);
   expect(toggleBounds).not.toBeNull();
-  expect(Math.abs(openBounds!.x + openBounds!.width - browserBounds!.x)).toBeLessThanOrEqual(1);
-  expect(Math.abs(browserBounds!.x + browserBounds!.width - toggleBounds!.x)).toBeLessThanOrEqual(1);
-  expect(Math.abs(openBounds!.y - toggleBounds!.y)).toBeLessThanOrEqual(1);
-  expect(Math.abs(openBounds!.height - toggleBounds!.height)).toBeLessThanOrEqual(1);
-  expect(Math.abs(browserBounds!.width - browserBounds!.height)).toBeLessThanOrEqual(1);
-  expect(Math.abs(toggleBounds!.width - toggleBounds!.height)).toBeLessThanOrEqual(1);
-
-  await browser.click();
-  await expect(root).toHaveAttribute('data-browser', 'open');
-
+  expect(dotBounds).not.toBeNull();
+  // pin the status dot to the button's upper-right corner
+  expect(Math.abs(dotBounds!.x + dotBounds!.width - (toggleBounds!.x + toggleBounds!.width - 3.2))).toBeLessThanOrEqual(1);
+  expect(Math.abs(dotBounds!.y - (toggleBounds!.y + 3.2))).toBeLessThanOrEqual(1);
   await toggle.click();
+  const footer = page.getByRole('group', { name: 'Project view controls' });
+  const external = footer.getByRole('link', { name: 'Open', exact: true });
+  const browser = footer.getByRole('button', { name: 'Split', exact: true });
+  await expect(external).toHaveAttribute('href', 'https://project.example.com');
+  await expect(external).toHaveCSS('white-space', 'nowrap');
+  await expect(external.locator('svg')).toBeVisible();
+  await expect(browser.locator('svg')).toBeVisible();
+  await expect(footer).toHaveCSS('border-top-width', '1px');
+  await expect(browser).toHaveCSS('border-left-width', '1px');
+  const [externalBounds, browserBounds] = await Promise.all([external.boundingBox(), browser.boundingBox()]);
+  expect(externalBounds).not.toBeNull();
+  expect(browserBounds).not.toBeNull();
+  expect(Math.abs(externalBounds!.x + externalBounds!.width - browserBounds!.x)).toBeLessThanOrEqual(1);
+  const lastActionBounds = await page.getByRole('button', { name: 'Restart stack', exact: true }).boundingBox();
+  const footerBounds = await footer.boundingBox();
+  expect(lastActionBounds).not.toBeNull();
+  expect(footerBounds).not.toBeNull();
+  expect(lastActionBounds!.y + lastActionBounds!.height).toBeLessThan(footerBounds!.y);
   await expect(page.getByRole('button', { name: 'Start stack', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Build stack', exact: true })).toBeVisible();
+  await browser.click();
+  await toggle.click();
+  await expect(page.getByRole('button', { name: 'Close', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: 'Build stack', exact: true }).click();
-  await expect(root).toHaveAttribute('data-action', 'build');
-  await expect(root.getByRole('link', { name: 'Building…' })).toHaveAttribute('aria-busy', 'true');
+  await expect(root.locator('.project-stack-trigger')).toHaveAccessibleName('Stack controls: working');
 });
 
-test('hides the browser split control while the stack is stopped', async ({ page }) => {
+test('disables the browser split control while the stack is stopped', async ({ page }) => {
   await page.goto('/');
   await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="prompt-actions"><div id="control-root"></div></div>');
   await page.evaluate(async () => {
@@ -68,10 +84,13 @@ test('hides the browser split control while the stack is stopped', async ({ page
   });
 
   const root = page.locator('#control-root');
-  await expect(root.getByRole('link', { name: 'Open' })).toBeVisible();
-  await expect(root.getByRole('button', { name: 'Open project in split view' })).toHaveCount(0);
-  await expect(root.getByRole('button', { name: 'Stack controls' })).toBeVisible();
+  await expect(root.getByRole('link')).toHaveCount(0);
+  const toggle = root.getByRole('button', { name: 'Stack controls: down' });
+  await expect(toggle).toBeVisible();
   await expect(root.locator('.project-open-group')).not.toHaveClass(/has-browser-control/u);
+  await toggle.click();
+  await expect(page.getByRole('link', { name: 'Open', exact: true })).toHaveAttribute('aria-disabled', 'true');
+  await expect(page.getByRole('button', { name: 'Split', exact: true })).toBeDisabled();
 });
 
 test('keeps direct project controls visible independently of managed stack state', async ({ page }) => {
@@ -89,12 +108,16 @@ test('keeps direct project controls visible independently of managed stack state
   await expect(directSplit).toBeEnabled();
   await expect(direct.getByRole('button', { name: 'Stack controls' })).toHaveCount(0);
   await directSplit.click();
-  await expect(direct).toHaveAttribute('data-browser', 'open');
+  await expect(directSplit).toHaveAttribute('aria-pressed', 'true');
 
   const unavailable = page.locator('#unavailable-root');
-  await expect(unavailable.getByRole('link', { name: 'Open' })).toHaveAttribute('aria-disabled', 'true');
-  await expect(unavailable.getByRole('button', { name: 'Open project in split view' })).toBeDisabled();
-  await expect(unavailable.getByRole('button', { name: 'Stack controls' })).toBeVisible();
+  const unavailableToggle = unavailable.getByRole('button', { name: 'Stack controls: down' });
+  await expect(unavailableToggle).toBeVisible();
+  await expect(unavailable.getByRole('link')).toHaveCount(0);
+  await unavailableToggle.click();
+  const unavailableFooter = page.getByRole('group', { name: 'Project view controls' });
+  await expect(unavailableFooter.getByRole('link', { name: 'Open', exact: true })).toHaveAttribute('aria-disabled', 'true');
+  await expect(unavailableFooter.getByRole('button', { name: 'Split', exact: true })).toBeDisabled();
 });
 
 test('shows stack controls when the worktree has commands but no project URL', async ({ page }) => {
@@ -113,7 +136,7 @@ test('shows stack controls when the worktree has commands but no project URL', a
   expect(cornerRadius).toBeGreaterThan(0);
   await toggle.click();
   await page.getByRole('button', { name: 'Restart stack', exact: true }).click();
-  await expect(root).toHaveAttribute('data-action', 'restart');
+  await expect(toggle).toHaveAccessibleName('Stack controls: working');
 });
 
 test('shows accessible running, stopped, and unknown states on stack-only controls', async ({ page }) => {
@@ -128,11 +151,11 @@ test('shows accessible running, stopped, and unknown states on stack-only contro
   const running = page.getByRole('button', { name: 'Stack controls: running' });
   const stopped = page.getByRole('button', { name: 'Stack controls: stopped' });
   const unknown = page.getByRole('button', { name: 'Stack controls: unknown' });
-  await expect(running.locator('.status.live > i')).toBeVisible();
-  await expect(stopped.locator('.status.disconnected > i')).toBeVisible();
-  await expect(unknown.locator('.status.inactive > i')).toBeVisible();
+  await expect(running.locator('.project-stack-status-dot.status-running')).toBeVisible();
+  await expect(stopped.locator('.project-stack-status-dot.status-stopped')).toBeVisible();
+  await expect(unknown.locator('.project-stack-status-dot.status-unknown')).toBeVisible();
   // compare rendered state colors
-  const statusColors = await Promise.all([running, stopped, unknown].map(control => control.locator('.status > i').evaluate(element => getComputedStyle(element).backgroundColor)));
+  const statusColors = await Promise.all([running, stopped, unknown].map(control => control.locator('.project-stack-status-dot').evaluate(element => getComputedStyle(element).backgroundColor)));
   expect(new Set(statusColors).size).toBe(3);
   await expect(running).toHaveAttribute('title', 'Stack controls · running');
   await expect(stopped).toHaveAttribute('title', 'Stack controls · stopped');

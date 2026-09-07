@@ -10,6 +10,7 @@ import { isFullGitSha } from '../git/revision.js';
 export type ServerUpdateState = 'queued' | 'running' | 'complete' | 'failed';
 export type ServerUpdateStatus = { id: string; kind: 'update'; state: ServerUpdateState; targetSha: string };
 export type ServerUpdateTargetConflict = { kind: 'target-conflict'; targetSha: string };
+export type ServerRevision = { sha: string; committedAt: string };
 export type ServerUpdateCommit = { sha: string; subject: string; author: string; authoredAt: string };
 export type ServerUpdateAdvisoryReason = { kind: 'config' | 'compose' | 'runtime' | 'dependency' | 'state' | 'other'; paths: string[] };
 export type ServerUpdatePreview = { available: boolean; rebuildRetryAvailable: boolean; baseSha: string; targetSha: string; fastForwardable: boolean; commitCount: number; commits: ServerUpdateCommit[]; commitsTruncated: boolean; filesTruncated: boolean; advisory: { required: boolean; reasons: ServerUpdateAdvisoryReason[] } };
@@ -64,6 +65,7 @@ const advisoryReasons = (paths: string[], fastForwardable: boolean): ServerUpdat
 
 // persist identity and launch host updates
 export class ServerAdminService {
+  private readonly checkoutRoot: string;
   private readonly configWritePath: string;
   private readonly hostRepository: string | undefined;
   private readonly statusDirectory: string;
@@ -78,12 +80,31 @@ export class ServerAdminService {
   constructor(config: ValidatedConfig, options: ServerAdminOptions = {}) {
     // updates run in the server's own checkout (see server-checkout.ts)
     const checkout = options.checkoutRoot ?? serverCheckout();
+    this.checkoutRoot = checkout;
     this.configWritePath = options.configWritePath ?? process.env.RAC_CONFIG_WRITE_PATH ?? process.env.RAC_CONFIG ?? '';
     this.hostRepository = options.hostRepository ?? serverCheckoutOnHost(config.projects, process.env.RAC_HOST_REPOSITORY, checkout);
     this.statusDirectory = options.statusDirectory ?? process.env.RAC_SERVER_ADMIN_STATUS_DIR ?? join(checkout, '.data');
     this.tmuxBinary = options.tmuxBinary ?? process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux';
     this.tmuxSocket = options.tmuxSocket ?? (process.env.RAC_HOST_TMUX_DIR === undefined ? undefined : join(process.env.RAC_HOST_TMUX_DIR, 'default'));
     this.runCommand = options.runCommand ?? run;
+  }
+
+  // read the deployed checkout revision
+  async revision(): Promise<ServerRevision | undefined> {
+    try {
+      const result = await this.runCommand('/usr/bin/git', ['-C', this.checkoutRoot, 'show', '-s', '--format=%H%x00%cI', 'HEAD'], undefined, 5_000);
+      // reject missing or malformed repository output
+      if (result.code !== 0) return undefined;
+      const fields = result.stdout.trimEnd().split('\0');
+      // require one exact commit record
+      if (fields.length !== 2) return undefined;
+      const [sha, committedAt] = fields as [string, string];
+      // publish only a canonical revision and timestamp
+      if (!isFullGitSha(sha) || Number.isNaN(Date.parse(committedAt))) return undefined;
+      return { sha, committedAt };
+    } catch {
+      return undefined;
+    }
   }
 
   // atomically replace one bounded configuration surface

@@ -236,6 +236,11 @@ test('keeps note flyouts left-aligned and shifts long menus within the output bo
 
   await menu.getByRole('button', { name: `Rename note: ${originalTitle}` }).click();
   const noteName = menu.getByRole('textbox', { name: 'Note name' });
+  await noteName.fill('Discarded title');
+  await noteName.press('Escape');
+  await expect(noteName).toBeHidden();
+  await expect(menu).toBeVisible();
+  await menu.getByRole('button', { name: `Rename note: ${originalTitle}` }).click();
   await noteName.fill('Release coordination checklist');
   await menu.getByRole('button', { name: 'Save note name' }).click();
   await expect.poll(() => renamedNote).toBe('Release coordination checklist');

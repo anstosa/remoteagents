@@ -25,9 +25,11 @@ test('uses consistent prompt control styles while preserving destructive and que
       <div class="prompt-actions">
         <button class="swap-agent icon-button" aria-label="Swap"></button>
         <button class="more icon-button" aria-label="More"></button>
-        <span class="project-open-group has-stack-actions">
+        <span class="project-open-group">
           <a class="project-open status-healthy" href="#"><i></i>Open</a>
-          <button class="project-stack-toggle icon-button" aria-label="Stack"></button>
+        </span>
+        <span class="project-open-group has-stack-actions">
+          <button class="project-stack-toggle project-stack-trigger icon-button" aria-label="Stack"><svg class="project-stack-server-icon" viewBox="0 0 24 24"></svg><i class="project-stack-status-dot status-healthy"></i></button>
         </span>
         <span class="save-prompt-group">
           <button class="save-prompt outline-button icon-button" aria-label="Save"><svg viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5V3Z"></path></svg></button>

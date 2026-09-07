@@ -1,8 +1,19 @@
-import { type ReactNode, type SyntheticEvent } from 'react';
+import { useEffect, type ReactNode, type SyntheticEvent } from 'react';
 import { createPortal } from 'react-dom';
 
 // render one click-through-blocking flyout portal
 export function FlyoutPortal({ children, onDismiss }: { children: ReactNode; onDismiss: () => void }) {
+  useEffect(() => {
+    // dismiss the active flyout from the keyboard
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      // preserve nested escape handlers and ignore unrelated keys
+      if (event.defaultPrevented || event.key !== 'Escape') return;
+      event.preventDefault();
+      onDismiss();
+    };
+    document.addEventListener('keydown', dismissOnEscape);
+    return () => document.removeEventListener('keydown', dismissOnEscape);
+  }, [onDismiss]);
   // keep early press events away from document handlers
   const blockPress = (event: SyntheticEvent) => { event.stopPropagation(); };
   // consume the completed outside interaction
