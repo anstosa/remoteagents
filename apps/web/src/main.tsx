@@ -2888,7 +2888,7 @@ function useWorktreeConversations(worktreeId?: string, agentId?: string, resume?
 }
 
 // manage persistent worktree notes
-function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistantMessage?: string, latestAssistantMessageOverflows = false, onPromptHistoryChanged?: () => void | Promise<void>, promptHistory: PromptHistoryEntry[] = [], schedulePrefill?: SchedulePrefill) {
+function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistantMessage?: string, latestAssistantMessageOverflows = false, onPromptHistoryChanged?: () => void | Promise<void>, promptHistory: PromptHistoryEntry[] = [], schedulePrefill?: SchedulePrefill, onLaunchAndRun?: (noteId: string) => Promise<boolean>, launchRunLabel?: string) {
   const [notes, setNotes] = useState<WorktreeNote[]>();
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeNote, setActiveNote] = useState<WorktreeNote>();
@@ -2903,6 +2903,8 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   const [menuRenameDraft, setMenuRenameDraft] = useState<{ id: string; title: string }>();
   const [menuRenamingId, setMenuRenamingId] = useState<string>();
   const [menuDeletingId, setMenuDeletingId] = useState<string>();
+  const [menuRunningId, setMenuRunningId] = useState<string>();
+  const [menuStatus, setMenuStatus] = useState('');
   const [menuError, setMenuError] = useState('');
   const [copyState, setCopyState] = useState<'idle'|'copied'|'error'>('idle');
   const [sendState, setSendState] = useState<'idle'|'sending'|'queued'|'error'>('idle');
@@ -3202,6 +3204,8 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
     await onPromptHistoryChanged?.();
     const loaded = await load();
     if (loaded === undefined) return;
+    setMenuStatus('');
+    setMenuError('');
     setMenuOpen(true);
   };
   const changeDraft = (text: string) => {
@@ -3251,6 +3255,36 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
       setSendState('error');
     } finally {
       setPendingOperation(promptPendingKey, false);
+    }
+  };
+  // an idle worktree tab has no agent to prompt, so Run launches one first and runs the note on it
+  const launchAndRunMode = agentId === undefined && onLaunchAndRun !== undefined;
+  // run one note: prompt the live agent (queues behind busy work), or — on an idle worktree
+  // tab — launch an agent first and let it run the note, switching to the new agent tab
+  const runNote = async (note: WorktreeNote) => {
+    // serialize flyout mutations
+    if (menuRunningId !== undefined || menuDeletingId !== undefined || menuRenamingId !== undefined) return;
+    setMenuRunningId(note.id);
+    setMenuError('');
+    setMenuStatus('');
+    try {
+      if (launchAndRunMode) {
+        // persist the open note and let the queued save land before the server reads it, so the
+        // Run submits the current text; the launch toasts and the tab switch carry the outcome
+        flush();
+        await saveQueue.current;
+        await onLaunchAndRun!(note.id);
+      } else if (agentId !== undefined && note.text.trim()) {
+        const response = await request(`/api/agents/${encodeURIComponent(agentId)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: note.text, attachments: [] }) });
+        if (!response.ok) throw new Error();
+        setMenuStatus('Queued');
+        await onPromptHistoryChanged?.();
+      }
+    } catch {
+      setMenuStatus('Queue failed');
+      setMenuError('Unable to run note');
+    } finally {
+      setMenuRunningId(undefined);
     }
   };
   // persist one note title while retaining local text
@@ -3450,7 +3484,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   const latestResponseAvailable = notes !== undefined && substantialResponse !== undefined && !notes.some(note => note.text === substantialResponse);
   const highlightLatestResponse = latestResponseAvailable && substantialResponse === latestAssistantMessage && latestAssistantMessageOverflows;
   const notesLabel = dirtyCount === 0 ? `Notes (${noteCount})` : `Notes (${noteCount}; ${dirtyCount} unsaved)`;
-  const noteMenuBusy = menuRenamingId !== undefined || menuDeletingId !== undefined;
+  const noteMenuBusy = menuRenamingId !== undefined || menuDeletingId !== undefined || menuRunningId !== undefined;
   const control = <div className="notes-control" ref={anchorRef}>
     <button ref={triggerRef} className={`log-control page-arrow notes-toggle${menuOpen || activeNote !== undefined ? ' active' : ''}${dirtyCount > 0 ? ' unsaved' : ''}${highlightLatestResponse ? ' latest-response-available' : ''}`} aria-label={notesLabel} title={notesLabel} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}{noteCount > 0 && <span className="saved-prompts-count notes-count" aria-hidden="true">{noteCount}</span>}</button>
     {menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div ref={flyoutRef} className="notes-menu" style={flyoutStyle} aria-label={worktreeId === undefined ? 'Scratch notes' : 'Worktree notes'}>
@@ -3458,6 +3492,8 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
         // save only an available response
         if (substantialResponse !== undefined) void create(substantialResponse, assistantNoteTitle(substantialResponse));
       }}>Save latest response</button>
+      {launchAndRunMode && launchRunLabel !== undefined && <p className="note-menu-hint">No agent on this tab: Run becomes Launch and run ({launchRunLabel}).</p>}
+      {menuStatus && <p className="note-menu-status" role="status">{menuStatus}</p>}
       {menuError && <p className="note-menu-error" role="alert">{menuError}</p>}
       {notes?.map(note => {
         // render one sticky note row
@@ -3472,7 +3508,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
           const dim = !note.schedule.enabled || invalid;
           const badgeLabel = invalid ? 'Schedule invalid' : note.schedule.enabled ? 'Scheduled' : 'Schedule paused';
           return <span className={`note-schedule-badge${dim ? ' paused' : ''}`} aria-label={badgeLabel} title={badgeLabel}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg></span>;
-        })()}<span className="note-menu-name">{label}</span></button><span className="note-menu-actions"><button className="log-control note-menu-rename" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Rename note: ${label}`} title="Rename note" onClick={() => setMenuRenameDraft({ id: note.id, title: Array.from(note.title ?? label).slice(0, 120).join('') })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button><button className="log-control note-menu-delete" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Delete note: ${label}`} title="Delete note" onClick={() => void removeFromMenu(note)}>{menuDeletingId === note.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg>}</button></span></>}</div>;
+        })()}<span className="note-menu-name">{label}</span></button><span className="note-menu-actions"><button className="log-control note-menu-run" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined || !note.text.trim() || (!launchAndRunMode && agentId === undefined)} aria-label={launchAndRunMode ? `Launch and run note: ${label}` : `Run note: ${label}`} title={launchAndRunMode ? 'Launch and run note' : 'Run note'} onClick={() => void runNote(note)}>{menuRunningId === note.id ? <span className="spinner" /> : launchAndRunMode ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v11l9-5.5L7 4Z" /><path d="M4 20h16" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>}</button><button className="log-control note-menu-rename" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Rename note: ${label}`} title="Rename note" onClick={() => setMenuRenameDraft({ id: note.id, title: Array.from(note.title ?? label).slice(0, 120).join('') })}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button><button className="log-control note-menu-delete" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Delete note: ${label}`} title="Delete note" onClick={() => void removeFromMenu(note)}>{menuDeletingId === note.id ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg>}</button></span></>}</div>;
       })}
       <button className="log-control new-note" disabled={noteMenuBusy || menuRenameDraft !== undefined} onClick={() => void create()}>+ New note</button>
     </div></FlyoutPortal>}
@@ -3504,7 +3540,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, latestAssistant
   // Keyed on the note id so switching notes remounts it — the editor holds per-note session state
   // (whether the Adapter kind is still following the target), which must not leak across notes.
   const scheduleArea = schedulePrefill === undefined ? null : <div className="schedule-area"><ScheduleEditor key={activeNote?.id} schedule={activeNote?.schedule} nextRun={activeNote?.nextRun} prefill={{ kind: schedulePrefill.kind, target: schedulePrefill.target }} runsOnText={schedulePrefill.runsOnText} adapterOptions={schedulePrefill.adapters} targetOptions={schedulePrefill.targets} onSet={payload => void applySchedule(payload)} onRemove={() => void removeSchedule()} preview={previewSchedule} busy={scheduleBusy} /></div>;
-  const pane = activeNote === undefined ? null : <><section className={`note-pane${expanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onKeyDown={event => { if (event.key === 'Escape' && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><div className="note-pane-head"><header className="note-toolbar" role="toolbar" aria-label="Note actions">{renaming ? <form className="note-title-form" onSubmit={event => { event.preventDefault(); void saveTitle(); }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); setRenaming(false); } }}><input ref={titleEditorRef} aria-label="Note name" value={titleDraft} maxLength={120} disabled={renamePending} onChange={event => setTitleDraft(event.target.value)} /><button type="submit" disabled={renamePending || !titleDraft.trim()} aria-label="Save note name" title="Save note name"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={renamePending} aria-label="Cancel note rename" title="Cancel" onClick={() => setRenaming(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><strong title={activeNote.title ?? 'Note'}>{activeNote.title ?? 'Note'}</strong><button className="note-rename" type="button" disabled={deleting || renamePending} aria-label="Rename note" title="Rename note" onClick={() => { setTitleDraft(activeNote.title ?? ''); setRenaming(true); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button></>}{saveStatus === 'error' && <span className="note-save-status error" role="alert" aria-live="assertive">Unable to save</span>}{actionStatus && <span className={`note-action-status${copyState === 'error' || sendState === 'error' ? ' error' : ''}`} role={copyState === 'error' || sendState === 'error' ? 'alert' : 'status'}>{actionStatus}</span>}<button className={`note-copy${copyState === 'copied' ? ' copied' : ''}`} type="button" disabled={deleting} aria-label={copyState === 'copied' ? 'Note copied' : 'Copy note'} title={copyState === 'copied' ? 'Copied' : 'Copy note'} onClick={() => void copy()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={copyState === 'copied' ? 'm5 12 4 4L19 6' : 'M9 9h10v10H9zM5 15H4V5h10v1'} /></svg></button><button className="note-send" type="button" disabled={agentId === undefined || deleting || promptPending || !draft.trim()} aria-label="Send note as prompt" title={agentId === undefined ? 'Launch an agent to send this note' : 'Send note as prompt'} onClick={() => void send()}>{sendState === 'sending' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button><button className="note-delete" type="button" disabled={deleting || sendState === 'sending'} aria-label="Delete note" title="Delete note" onClick={remove}>{deleting ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button><button className="note-expand" type="button" disabled={deleting || sendState === 'sending'} aria-label={expanded ? 'Restore note' : 'Expand note'} title={expanded ? 'Restore note' : 'Expand note'} aria-pressed={expanded} onClick={toggleExpanded}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="note-close" type="button" disabled={deleting || sendState === 'sending'} aria-label="Close note" title="Close note" onClick={close}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{scheduleArea}</div>{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}</>;
+  const pane = activeNote === undefined ? null : <><section className={`note-pane${expanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onKeyDown={event => { if (event.key === 'Escape' && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><div className="note-pane-head"><header className="note-toolbar" role="toolbar" aria-label="Note actions">{renaming ? <form className="note-title-form" onSubmit={event => { event.preventDefault(); void saveTitle(); }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); setRenaming(false); } }}><input ref={titleEditorRef} aria-label="Note name" value={titleDraft} maxLength={120} disabled={renamePending} onChange={event => setTitleDraft(event.target.value)} /><button type="submit" disabled={renamePending || !titleDraft.trim()} aria-label="Save note name" title="Save note name"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={renamePending} aria-label="Cancel note rename" title="Cancel" onClick={() => setRenaming(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><strong title={activeNote.title ?? 'Note'}>{activeNote.title ?? 'Note'}</strong><button className="note-rename" type="button" disabled={deleting || renamePending} aria-label="Rename note" title="Rename note" onClick={() => { setTitleDraft(activeNote.title ?? ''); setRenaming(true); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button></>}{saveStatus === 'error' && <span className="note-save-status error" role="alert" aria-live="assertive">Unable to save</span>}{actionStatus && <span className={`note-action-status${copyState === 'error' || sendState === 'error' ? ' error' : ''}`} role={copyState === 'error' || sendState === 'error' ? 'alert' : 'status'}>{actionStatus}</span>}<button className={`note-copy${copyState === 'copied' ? ' copied' : ''}`} type="button" disabled={deleting} aria-label={copyState === 'copied' ? 'Note copied' : 'Copy note'} title={copyState === 'copied' ? 'Copied' : 'Copy note'} onClick={() => void copy()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={copyState === 'copied' ? 'm5 12 4 4L19 6' : 'M9 9h10v10H9zM5 15H4V5h10v1'} /></svg></button>{launchAndRunMode ? <button className="note-send note-launch-run" type="button" disabled={deleting || menuRunningId !== undefined || !draft.trim()} aria-label="Launch and run note" title={launchRunLabel === undefined ? 'Launch an agent and run this note' : `Launch and run (${launchRunLabel})`} onClick={() => { const note = activeNoteRef.current; if (note !== undefined) void runNote(note); }}>{menuRunningId !== undefined ? <span className="spinner" /> : 'Launch and run'}</button> : <button className="note-send" type="button" disabled={agentId === undefined || deleting || promptPending || !draft.trim()} aria-label="Send note as prompt" title={agentId === undefined ? 'Launch an agent to send this note' : 'Send note as prompt'} onClick={() => void send()}>{sendState === 'sending' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button>}<button className="note-delete" type="button" disabled={deleting || sendState === 'sending'} aria-label="Delete note" title="Delete note" onClick={remove}>{deleting ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button><button className="note-expand" type="button" disabled={deleting || sendState === 'sending'} aria-label={expanded ? 'Restore note' : 'Expand note'} title={expanded ? 'Restore note' : 'Expand note'} aria-pressed={expanded} onClick={toggleExpanded}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="note-close" type="button" disabled={deleting || sendState === 'sending'} aria-label="Close note" title="Close note" onClick={close}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{scheduleArea}</div>{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}</>;
   return { active: activeNote !== undefined, expanded: activeNote !== undefined && expanded, appendToActive, canAppendToActive, canCreate: !loading, control, createWithText: create, pane };
 }
 
@@ -5609,7 +5645,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
   const launchKind = pendingWorktreeLaunches.get(worktree.id)?.kind ?? worktree.launch?.kind;
   const presentation = inactiveWorktreePresentation(worktree.label, launchKind, { startingNewTask, restarting, turningOff, waking, launching, sleeping });
   const worktreeConversations = useWorktreeConversations(worktree.id, undefined, { onNavigateWorktree, onOperationFeedback });
-  const worktreeNotes = useWorktreeNotes(worktree.id, undefined, undefined, false, undefined, undefined, schedulePrefill);
+  const worktreeNotes = useWorktreeNotes(worktree.id, undefined, undefined, false, undefined, undefined, schedulePrefill, sleeping ? undefined : (noteId: string) => launchAndRun(noteId), sleeping ? undefined : `${launchKind === undefined ? 'an agent' : agentKindLabel[launchKind]} on ${worktree.label}`);
   const projectBrowser = useProjectBrowser(worktree.projectUrl, worktree.id, worktree.projectProxied);
   const filePreview = useFilePreview(`/api/worktrees/${encodeURIComponent(worktree.id)}/file-preview`);
   const [gitExpanded, setGitExpanded] = useState(false);
@@ -5660,6 +5696,50 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
       onOperationFeedback({ tone: 'error', message: `${worktree.label} could not ${sleeping ? 'wake up' : 'start'}`, detail: message, worktreeId: worktree.id });
     }
     finally {
+      // preserve successful handoffs until dashboard confirmation
+      if (!handedOff) {
+        pendingWorktreeLaunches.delete(worktree.id);
+        setPendingOperation(operationKey, false);
+      }
+    }
+  };
+  // launch a fresh agent for this idle worktree and run one note on it, then hand the new
+  // agent off so the tab switches to it — the frontend half of the Run primitive
+  const launchAndRun = async (noteId: string): Promise<boolean> => {
+    const operationKey = worktreeLaunchOperationKey(worktree);
+    // serialize inactive worktree actions
+    if (!worktree.available || processing || !beginPendingOperation(operationKey)) return false;
+    pendingWorktreeLaunches.set(worktree.id, { operationKey, ...(worktree.launch?.kind === undefined ? {} : { kind: worktree.launch.kind }) });
+    let handedOff = false;
+    setError('');
+    onOperationFeedback({ tone: 'pending', message: `Starting ${worktree.label}…`, detail: 'Launching an agent to run the note.', worktreeId: worktree.id });
+    try {
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/notes/${encodeURIComponent(noteId)}/run`, { method: 'POST' });
+      // surface a refused launch or a pane that never became ready
+      if (!response.ok) {
+        const message = await launchError(response);
+        setError(message);
+        onOperationFeedback({ tone: 'error', message: `${worktree.label} could not run the note`, detail: message, worktreeId: worktree.id });
+        return false;
+      }
+      const payload = await response.json() as { agentId?: unknown };
+      // require the discovered new agent
+      if (typeof payload.agentId !== 'string') {
+        const message = 'The agent started but could not be opened.';
+        setError(message);
+        onOperationFeedback({ tone: 'error', message: `${worktree.label} could not be opened`, detail: message, worktreeId: worktree.id });
+        return false;
+      }
+      onLaunched(payload.agentId, worktree, operationKey);
+      handedOff = true;
+      onOperationFeedback({ tone: 'success', message: `${worktree.label} is running the note`, detail: 'The new agent session is ready and its output is connecting.', worktreeId: worktree.id });
+      return true;
+    } catch {
+      const message = 'Unable to reach the console while launching the agent.';
+      setError(message);
+      onOperationFeedback({ tone: 'error', message: `${worktree.label} could not start`, detail: message, worktreeId: worktree.id });
+      return false;
+    } finally {
       // preserve successful handoffs until dashboard confirmation
       if (!handedOff) {
         pendingWorktreeLaunches.delete(worktree.id);

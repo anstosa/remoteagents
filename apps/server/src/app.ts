@@ -13,12 +13,13 @@ import { DeviceService } from './auth/devices.js';
 import { TicketStore, type TicketKind } from './auth/tickets.js';
 import { DiscoveryService } from './discovery/service.js';
 import { adapterFor } from './adapters/registry.js';
-import { agentKinds, codexFamily, sameConversation, type AgentKind, type ConversationSummary } from './adapters/types.js';
+import { agentKinds, codexFamily, sameConversation, type AgentKind, type ConversationSummary, type PaneSnapshot } from './adapters/types.js';
 import { TmuxAdapter } from './tmux/adapter.js';
 import { maxPromptAttachments, maxPromptAttachmentBytes, PromptService, type PromptAttachment } from './prompts/service.js';
 import { validPrompt } from './prompts/validation.js';
 import { QueuedPromptService } from './prompts/queue.js';
 import { LaunchService } from './launch/service.js';
+import { createAgentWaiter, launchPollAttempts, launchPollDelay as defaultLaunchPollDelay, launchReadyTimeoutSeconds } from './launch/wait.js';
 import { scratchLaunchKey, WorktreeLaunchStore } from './worktrees/store.js';
 import { safeEnv } from './tmux/command.js';
 import { PushService } from './push-service.js';
@@ -1255,11 +1256,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return reply.code(204).send();
   });
   app.post('/api/agents/:id/question', async (request, reply) => { controlled(request, true); const data = body(request); if (typeof data.questionId !== 'string' || !Number.isInteger(data.index) || !await prompts.answerQuestion((request.params as { id: string }).id, data.questionId, data.index as number)) return reply.code(404).send({ error: 'question unavailable' }); return reply.code(204).send(); });
-  const launchReadyTimeoutSeconds = 60;
-  const launchPollIntervalMs = 250;
-  const launchPollAttempts = launchReadyTimeoutSeconds * 1_000 / launchPollIntervalMs;
   // delay between launch checks
-  const launchPollDelay = deps.launchPollDelay ?? (async () => await new Promise(resolve => setTimeout(resolve, launchPollIntervalMs)));
+  const launchPollDelay = deps.launchPollDelay ?? defaultLaunchPollDelay;
   // read-back after a console rename: poll the agent's own store every 200 ms for ~1.5 s until
   // it reports the submitted name (the probe saw a rename apply within ~200 ms, idle or mid-turn)
   const conversationNamePollIntervalMs = 200;
@@ -1267,20 +1265,32 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const conversationNamePollDelay = deps.conversationNamePollDelay ?? (async () => await new Promise(resolve => setTimeout(resolve, conversationNamePollIntervalMs)));
   // agents with a console rename in flight, so a second concurrent rename is refused
   const renamesInFlight = new Set<string>();
-  // wait for slow agent startup
-  const waitForAgent = async (before: Set<string>, worktreeId?: string, displayLabel?: string) => {
-    // poll for up to sixty seconds
+  // wait for slow agent startup, shared with the Run primitive (launch/wait.ts)
+  const waitForAgent = createAgentWaiter(discovery, launchPollDelay);
+  // wait for a freshly launched pane to become ready for its first prompt, reading the
+  // launching Adapter's `ready` rule over the pane's snapshot and capture (Scheduled
+  // prompts). A kind without a new-conversation capability takes its first prompt at once.
+  type ReadinessOutcome = { state: 'ready' } | { state: 'blocked'; reason: string } | { state: 'timed-out' };
+  const waitForReadiness = async (agent: Agent): Promise<ReadinessOutcome> => {
+    const ready = adapterFor(agent.kind)?.newConversation?.ready;
+    // no readiness rule: the fresh launch may take its first prompt immediately
+    if (ready === undefined) return { state: 'ready' };
     for (let attempt = 0; attempt < launchPollAttempts; attempt += 1) {
-      const dashboard = await discovery.dashboard();
-      const agent = dashboard.agents.find(candidate => !before.has(candidate.id)
-        && (worktreeId === undefined || candidate.worktreeId === worktreeId)
-        && (displayLabel === undefined || candidate.displayLabel === displayLabel));
-      // return the ready agent
-      if (agent) return agent;
+      // force a fresh read each poll so the reported id/title/attention (and a vanished pane)
+      // reflect this instant, not the ~2s background snapshot — mirrors the prompt service
+      const target = await discovery.target(agent.id, true);
+      // a pane that vanished before it settled is a launch that did not survive
+      if (target === undefined) return { state: 'blocked', reason: 'the agent closed before it was ready' };
+      const capture = await tmux.capture(target.socket, target.agent.paneId).catch(() => undefined) ?? '';
+      const snapshot: PaneSnapshot = { title: target.agent.title, attention: target.agent.attention, ...(target.agent.conversationId === undefined ? {} : { conversationId: target.agent.conversationId }) };
+      const readiness = ready(snapshot, capture);
+      // ready to paste, or blocked on something only the operator can clear
+      if (readiness.state === 'ready') return { state: 'ready' };
+      if (readiness.state === 'blocked') return { state: 'blocked', reason: readiness.reason };
       // pause before retrying
       if (attempt + 1 < launchPollAttempts) await launchPollDelay();
     }
-    return undefined;
+    return { state: 'timed-out' };
   };
   // launch and pre-prompt one dedicated update advisor
   const launchUpdateAdvisor = async (targetSha: string): Promise<string | undefined> => {
@@ -1604,6 +1614,43 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const agent = await waitForAgent(before, worktreeId);
     // report a true timeout
     if (!agent) return reply.code(504).send({ error: `The worktree session started, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
+    return reply.code(201).send({ agentId: agent.id });
+  });
+  // launch a fresh agent for a Worktree and run one Note through it — the fresh-launch half
+  // of the Run primitive (Scheduled prompts). Launch the way /launch does, wait for the pane,
+  // wait until the Adapter says it can take a first prompt, then paste the Note's saved text.
+  // A refused launch is 409 and a pane that never appears is 504, exactly like /launch; a
+  // readiness that blocks (Claude's untrusted-directory safety check) or times out closes the
+  // pane the Run created and returns the Adapter's reason, so nothing half-started is left behind.
+  app.post('/api/worktrees/:id/notes/:noteId/run', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const kind = requestedKind(request);
+    // reject an unknown kind before any handoff
+    if (kind.invalid) return reply.code(400).send({ error: 'invalid agent kind' });
+    const saveKey = worktreeSaveKey(id);
+    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const note = (await notes.list(saveKey))?.find(candidate => candidate.id === noteId);
+    if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    // never launch an agent for an empty note
+    if (!note.text.trim()) return reply.code(400).send({ error: 'note is empty' });
+    const before = new Set((await discovery.dashboard()).agents.map(agent => agent.id));
+    // require a successful launch handoff (refuses an unconfigured or unlaunchable kind)
+    if (!await launch.launch(id, kind.kind)) return reply.code(409).send({ error: 'Could not start the worktree agent.' });
+    sleepingWorktrees.delete(id);
+    const agent = await waitForAgent(before, id);
+    // report a true timeout
+    if (!agent) return reply.code(504).send({ error: `The worktree session started, but the agent did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
+    const readiness = await waitForReadiness(agent);
+    // close the pane this Run created rather than leaving a blocked or slow launch behind
+    if (readiness.state !== 'ready') {
+      await prompts.close(agent.id).catch(() => undefined);
+      return readiness.state === 'blocked'
+        ? reply.code(409).send({ error: `The agent started but is not ready: ${readiness.reason}.` })
+        : reply.code(504).send({ error: `The agent started but did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
+    }
+    // paste the Note only after the Adapter reports ready, through the normal prompt path
+    if (!await prompts.submit(agent.id, note.text)) return reply.code(502).send({ error: 'The agent started but the note could not be delivered.' });
     return reply.code(201).send({ agentId: agent.id });
   });
   // launch an agent in place in a non-git `directory` Project (it has no Worktrees). The

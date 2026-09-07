@@ -424,8 +424,10 @@ html.software-keyboard-open .tabs { display: none; }
 .note-menu-actions { display: grid; grid-auto-flow: column; grid-auto-columns: 2.4rem; align-content: stretch; border-left: 1px solid var(--surface-1); }
 .notes-menu .note-menu-actions button { display: grid; width: 2.4rem; min-height: 2.6rem; padding: 0; place-items: center; border: 0; border-radius: 0; background: transparent; }
 .notes-menu .note-menu-actions button + button { border-left: 1px solid var(--surface-1); }
+.notes-menu .note-menu-run { color: var(--green); }
 .notes-menu .note-menu-rename { color: var(--yellow); }
 .notes-menu .note-menu-delete { color: var(--red); }
+.notes-menu .note-menu-run svg { fill: currentColor; }
 .note-menu-actions svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .note-menu-rename-form { display: grid; min-width: 0; min-height: 3.25rem; grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr) 2.4rem 2.4rem; }
 .note-menu-rename-form input { min-width: 0; border: 0; border-radius: 0; padding: .5rem .6rem; background: color-mix(in srgb, var(--surface-0) 82%, transparent); color: var(--text); font-size: .72rem; }
@@ -433,6 +435,8 @@ html.software-keyboard-open .tabs { display: none; }
 .notes-menu .note-menu-rename-form button:last-child { color: var(--subtext-0); }
 .note-menu-rename-form svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .note-menu-error { margin: 0; padding: .35rem .5rem; color: var(--red); font: 650 .64rem/1.35 var(--font-mono); }
+.note-menu-hint { margin: 0; padding: .35rem .5rem; color: var(--subtext-0); font: 600 .64rem/1.4 var(--font-mono); }
+.note-menu-status { margin: 0; padding: .35rem .5rem; color: var(--green); font: 700 .64rem/1.35 var(--font-mono); }
 .notes-menu .new-note { border-color: color-mix(in srgb, var(--yellow) 65%, var(--surface-1)); color: var(--yellow); }
 .notes-menu .save-latest-response { border-color: color-mix(in srgb, var(--blue) 72%, var(--surface-1)); color: var(--blue); }
 /* conversations control: a fly-out with an "All conversations" entry that opens a full-screen searchable dialog */
@@ -503,6 +507,8 @@ html.software-keyboard-open .tabs { display: none; }
 .note-pane header .note-copy.copied { border-color: var(--green); color: var(--green); }
 .note-pane header .note-send { border-color: color-mix(in srgb, var(--mauve) 72%, var(--lavender)); background: linear-gradient(135deg, var(--mauve), color-mix(in srgb, var(--blue) 72%, var(--lavender))); color: var(--crust); box-shadow: 0 0 .7rem color-mix(in srgb, var(--mauve) 35%, transparent); }
 .note-pane header .note-send:not(:disabled):hover { border-color: var(--lavender); background: linear-gradient(135deg, color-mix(in srgb, var(--mauve) 88%, white), var(--blue)); color: var(--crust); filter: brightness(1.08); }
+.note-pane header .note-launch-run { width: auto; flex: 0 0 auto; padding: 0 .6rem; border-color: color-mix(in srgb, var(--green) 60%, var(--surface-1)); color: var(--green); font: 700 .66rem var(--font-mono); white-space: nowrap; }
+.note-pane header .note-launch-run:not(:disabled):hover { border-color: var(--green); color: var(--green); filter: brightness(1.08); }
 .note-pane header .note-delete { border-color: color-mix(in srgb, var(--red) 70%, var(--surface-1)); color: var(--red); }
 .note-pane header .note-expand[aria-pressed='true'] { border-color: var(--yellow); color: var(--yellow); }
 .note-pane header svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
