@@ -7,12 +7,13 @@ import type { CompletionBaseline, CompletionEvent, Conversation } from './types.
  * Codex conversation lookup, gathered behind the Adapter (ADR 0002). These are
  * the only filesystem-touching functions the Codex Adapter owns: the `/proc`
  * fd-walk that finds the rollout files a pane holds open, the bounded
- * `session_meta` read that picks the single top-level Conversation, and the
- * title scan. Roots are injectable through the same environment variables the
- * console has always used (`RAC_HOST_PROC`, `CODEX_HOME`), so behaviour is
- * unchanged from when this lived in `discovery/processes.ts` and
- * `bookmarks/service.ts`. ("Rollout" is Codex's own name for these `.jsonl`
- * files; "Session" is reserved for tmux, per CONTEXT.md.)
+ * `session_meta` read that picks the single top-level Conversation, the
+ * discover-time title scan, and the Conversation-name read from the
+ * `session_index.jsonl` sidecar. Roots are injectable through the same
+ * environment variables the console has always used (`RAC_HOST_PROC`,
+ * `CODEX_HOME`), so behaviour is unchanged from when this lived in
+ * `discovery/processes.ts` and `bookmarks/service.ts`. ("Rollout" is Codex's own
+ * name for these `.jsonl` files; "Session" is reserved for tmux, per CONTEXT.md.)
  */
 
 const threadIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
@@ -23,6 +24,14 @@ const maxMetadataBytes = 128 * 1024;
 const maxTitleLength = 120;
 const maxTitleScanBytes = 4 * 1024 * 1024;
 const maxCompletionScanBytes = 4 * 1024 * 1024;
+// bound the account-global session-index read to its recent tail. The sidecar is
+// append-only and last-write-wins, so the current name is at the file's end; a
+// smaller-than-cap file is read whole (a true forward read). `readName`'s callers
+// (the console read-back, the bookmark seed) target a recently active thread, whose
+// line is near the tail. Above the cap the oldest threads' names fail *safe* — an
+// unread line yields `undefined` (a generic label), never a wrong name. A future
+// `list` that enumerates long-idle threads must not lean on this by-id read.
+const maxIndexScanBytes = 8 * 1024 * 1024;
 const maxAnswerLength = 64_000;
 const maxRolloutEntries = 4_096;
 // rollout files inspected when matching by working directory: the live session is
@@ -111,12 +120,11 @@ async function rolloutMetadata(file: string): Promise<RolloutMetadata | undefine
   }
 }
 
-// normalize a user message into a compact title
+// normalize a user message into a compact title, ignoring injected session context
 function messageTitle(text: string): string | undefined {
   const normalized = text.replace(/\s+/gu, ' ').trim();
-  // ignore injected session context
-  if (!normalized || normalized.startsWith('# AGENTS.md instructions') || normalized.startsWith('<environment_context>')) return undefined;
-  return normalized.length <= maxTitleLength ? normalized : `${normalized.slice(0, maxTitleLength - 1).trimEnd()}…`;
+  if (normalized.startsWith('# AGENTS.md instructions') || normalized.startsWith('<environment_context>')) return undefined;
+  return compactName(normalized);
 }
 
 // extract message text from one Codex response item
@@ -202,31 +210,6 @@ export async function discoverCodexConversation(pane: { pid: number; cwd?: strin
   return { id: selected.id, ...(title === undefined ? {} : { title }) };
 }
 
-// walk the bounded sessions tree for the rollout carrying one exact thread id,
-// visiting recent date-partitions first (`sessions/YYYY/MM/DD`) so a live
-// conversation is found before the entry cap on a host with deep history
-async function rolloutFileById(id: string): Promise<string | undefined> {
-  const home = codexHome();
-  const suffix = `-${id}.jsonl`;
-  const pending = [join(home, 'sessions')];
-  let inspected = 0;
-  while (pending.length > 0 && inspected < maxRolloutEntries) {
-    const directory = pending.pop()!;
-    const entries = (await readdir(directory, { withFileTypes: true }).catch(() => [])).sort((left, right) => left.name.localeCompare(right.name));
-    const subdirectories: string[] = [];
-    for (const entry of entries) {
-      if (inspected >= maxRolloutEntries) break;
-      inspected += 1;
-      // match exact rollout filenames, defer directories so the newest is popped first
-      if (entry.isDirectory()) subdirectories.push(join(directory, entry.name));
-      else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith(suffix)) return join(directory, entry.name);
-    }
-    // ascending push + LIFO pop visits the highest-numbered (most recent) partition first
-    pending.push(...subdirectories);
-  }
-  return undefined;
-}
-
 /**
  * The pane's live top-level rollout located by its working directory, for the
  * confined service that cannot readlink a sandboxed pane's descriptors (the
@@ -273,22 +256,37 @@ async function paneRollout(pane: { pid: number; cwd?: string }): Promise<{ id: s
     ?? (pane.cwd === undefined ? undefined : await rolloutByCwd(pane.cwd));
 }
 
+// normalize whitespace and clamp a Codex display string to the shared bound, so
+// neither a stored thread name nor a user message reaches the UI unbounded
+function compactName(text: string): string | undefined {
+  const normalized = text.replace(/\s+/gu, ' ').trim();
+  if (normalized === '') return undefined;
+  return normalized.length <= maxTitleLength ? normalized : `${normalized.slice(0, maxTitleLength - 1).trimEnd()}…`;
+}
+
 /**
- * The title of one already-known Codex conversation, used when the pane reports
- * its thread through `@rac_session` so the console can skip the fd-walk. A thread
- * id is globally unique, so the rollout is located by id alone — reproducing the
- * old fd-walk title without gating on a path comparison the workspace realpath
- * would fail.
+ * The current Conversation name of an already-known Codex/OMX thread, read from
+ * the account-global `session_index.jsonl` sidecar (`<CODEX_HOME>/session_index.jsonl`).
+ * The sidecar is append-only — one `{ id, thread_name, updated_at }` line per name
+ * change — so the last line carrying this id wins. Both codex and omx share
+ * `~/.codex`, so this reads the same store for either kind. `undefined` when the
+ * sidecar is absent (a fresh thread with no name yet) or carries no line for the id.
  */
-export async function codexConversationTitle(id: string): Promise<string | undefined> {
-  // reject material that could escape the sessions tree
+export async function codexConversationName(id: string): Promise<string | undefined> {
+  // reject material before it reaches a comparison
   if (!validCodexThreadId(id)) return undefined;
-  const file = await rolloutFileById(id);
-  if (file === undefined) return undefined;
-  const metadata = await rolloutMetadata(file).catch(() => undefined);
-  // confirm the located rollout is the Codex conversation it claims by id
-  if (metadata === undefined || metadata.id !== id) return undefined;
-  return await rolloutTitle(file).catch(() => undefined);
+  const file = join(codexHome(), 'session_index.jsonl');
+  const lines = await readRolloutTail(file, maxIndexScanBytes).catch(() => undefined);
+  if (lines === undefined) return undefined;
+  let name: string | undefined;
+  for (const line of lines) {
+    let record: { id?: unknown; thread_name?: unknown };
+    // skip unparseable or truncated lines
+    try { record = JSON.parse(line) as typeof record; } catch { continue; }
+    // append-only, last write wins: keep the newest name recorded for this id
+    if (record.id === id && typeof record.thread_name === 'string' && record.thread_name.length > 0) name = record.thread_name;
+  }
+  return name === undefined ? undefined : compactName(name);
 }
 
 /**

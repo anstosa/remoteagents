@@ -24,6 +24,15 @@ export type SubmissionDraftState = 'visible' | 'cleared' | 'unknown';
 // `keys` queues behind active work; `idleKeys` may use the Agent's direct submit path
 export type Submission = { text: string; keys: TmuxKey[]; idleKeys?: TmuxKey[] };
 export type Conversation = { id: string; title?: string };
+/**
+ * One Named conversation an Adapter's `list` returns: its id, the Conversation
+ * name, whether that name is automatic where the kind can tell (Claude, Pi;
+ * omitted for Codex), the agent-derived last-active time (epoch ms, never the
+ * file mtime), and the directory it was started in.
+ */
+export type ConversationSummary = { id: string; name: string; automatic?: boolean; lastActiveAt: number; directory: string };
+/** The pure tmux delivery for a CLI's own rename command: paste `text`, then send `keys`. */
+export type ConversationRename = { text: string; keys: TmuxKey[] };
 export type Turn = { prompt?: string; text: string; rows?: number };
 // `source` is the web's dismissal-strategy discriminator, not the transport: a
 // `parsed` question the client may optimistically dismiss, a `structured` one (OMX's
@@ -173,12 +182,27 @@ export interface Adapter {
      */
     discover?(pane: { pid: number; cwd?: string }): Promise<Conversation | undefined>;
     /**
-     * The title of one already-known conversation (its id is unique), used when the
-     * pane reports it through `@rac_session`. The pane's `cwd` is supplied for
-     * Adapters (Claude) whose transcript is keyed by working directory; an Adapter
-     * that finds its transcript by id alone (Codex) ignores it.
+     * The Named conversations under the given directories, newest-first — only
+     * Conversations that carry a Conversation name. `directory` is the one each was
+     * started in, matched exactly as the agents' own pickers do. Later chunks fill
+     * this in per kind; a kind that lists must also implement `readName`.
      */
-    title?(id: string, cwd?: string): Promise<string | undefined>;
+    list?(directories: readonly string[]): Promise<ConversationSummary[]>;
+    /**
+     * The pure tmux delivery for the CLI's own rename command (Claude `/rename`,
+     * Codex/OMX `/rename ` with a trailing space): the console pastes `text` and
+     * sends `keys` on the pane. `keys` is `['Enter']` in every Attention state.
+     */
+    rename?(name: string): ConversationRename;
+    /**
+     * The Conversation's current name, read from the agent's own store by id — the
+     * read-back after a console rename, and the seed name the bookmark-create route
+     * reads. The pane's `cwd` is supplied for Adapters (Claude) whose transcript is
+     * keyed by working directory; an Adapter that finds its store by id alone
+     * (Codex) ignores it. `undefined` when the Conversation has no name, or on any
+     * read error — an unknown id, an unknown cwd, or an unreadable/absent store.
+     */
+    readName?(id: string, cwd?: string): Promise<string | undefined>;
   };
   /**
    * Turn completion read from the agent's own structured event log rather than the
@@ -257,6 +281,10 @@ export type AdapterCapability = {
   stateSource: Adapter['stateSource'];
   turnCapture: boolean;
   bookmarks: boolean;
+  /** the Adapter lists its Named conversations (`conversations.list` present) */
+  conversations: boolean;
+  /** the Adapter renames a Conversation from the console (`conversations.rename` present) */
+  naming: boolean;
   inlineQuestions: boolean;
   commands: boolean;
   sandbox: boolean;

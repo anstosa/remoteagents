@@ -1,0 +1,45 @@
+/home/tgrosinger/.local/bin/claude --settings '/tmp/claude-1000/rac-name-probe/out-both-20260906-164653/claude/hooks.json' --allowedTools 'B
+ash(sleep:*)'
+bash-5.2$ /home/tgrosinger/.local/bin/claude --settings '/tmp/claude-1000/rac-name-probe/out-both-20260906-164653/claude/hooks.json' --allow
+edTools 'Bash(sleep:*)'
+ ▐▛███▛█   Claude Code v2.1.263
+▝▜██████▀  Fable 5.1 with xhigh effort · Claude Max
+  ▝▝ ▝▝    ~/scratch
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  -- INSERT -- ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

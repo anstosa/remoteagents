@@ -9,6 +9,14 @@ describe('adapterCapabilities', () => {
     expect(codex?.unavailableReason).toBeUndefined();
   });
 
+  it('derives the three conversation capabilities: bookmarks and naming present, listing not yet wired', () => {
+    // `bookmarks` is the conversations facet's presence, `naming` its rename, `conversations` its list;
+    // every registered kind names and bookmarks, and none lists conversations until a later chunk
+    for (const kind of ['codex', 'omx', 'claude'] as const) {
+      expect(adapterCapabilities({})[kind], kind).toMatchObject({ bookmarks: true, naming: true, conversations: false });
+    }
+  });
+
   it('publishes the configured program and gates launchability on it', () => {
     const configured = adapterCapabilities({ codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true } }).codex;
     expect(configured).toMatchObject({ launchable: true, program: '/usr/local/bin/codex' });
@@ -23,8 +31,8 @@ describe('adapterCapabilities', () => {
     expect(adapterCapabilities({}).codex?.program).toBeUndefined();
   });
 
-  it('derives Claude capabilities: reported state, bookmarks, commands and inline questions, no turns', () => {
+  it('derives Claude capabilities: reported state, bookmarks, naming, commands and inline questions, no turns', () => {
     const claude = adapterCapabilities({ claude: { program: '/usr/local/bin/claude', args: [], env: {}, launchable: true } }).claude;
-    expect(claude).toMatchObject({ launchable: true, program: '/usr/local/bin/claude', stateSource: 'reported', bookmarks: true, commands: true, turnCapture: false, inlineQuestions: true, sandbox: false });
+    expect(claude).toMatchObject({ launchable: true, program: '/usr/local/bin/claude', stateSource: 'reported', bookmarks: true, naming: true, conversations: false, commands: true, turnCapture: false, inlineQuestions: true, sandbox: false });
   });
 });

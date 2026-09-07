@@ -1,0 +1,45 @@
+/home/linuxbrew/.linuxbrew/bin/codex -s read-only -a never
+bash-5.2$ /home/linuxbrew/.linuxbrew/bin/codex -s read-only -a never
+╭───────────────────────────────────────────────────────────────╮
+│ ✨ Update available! 0.150.0 -> 0.153.4                       │
+│ See https://github.com/openai/codex for installation options. │
+│                                                               │
+│ See full release notes:                                       │
+│ https://github.com/openai/codex/releases/latest               │
+╰───────────────────────────────────────────────────────────────╯
+
+╭───────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.150.0)                │
+│                                           │
+│ model:     gpt-5.6-sol   /model to change │
+│ directory: ~/scratch                      │
+╰───────────────────────────────────────────╯
+
+  Tip: New Use /fast to enable our fastest inference with increased plan usage.
+
+• You have 3 usage limit resets available. Run /usage to use one.
+
+
+› Reply with only the word ok.
+
+
+• ok
+
+
+› /rename rac-probe-idle-164847
+
+  gpt-5.6-sol default · ~/scratch
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -32,6 +32,12 @@ type ReportedQuestionFixture = {
   lines: string[];    // a raw capture-pane -e -p snapshot
   question: { text: string; choices: string[]; source: 'structured' } | null;
 };
+type ConversationsFixture = {
+  valid: string[];
+  invalid: string[];
+  // the pinned rename descriptor for this kind: the pasted text and keys for `/rename <name>`
+  rename?: { name: string; text: string; keys: TmuxKey[] };
+};
 
 // The generic key rules every Adapter must obey (spec §"Generic key rules").
 function assertNoForbiddenPairs(keys: readonly TmuxKey[], where: string): void {
@@ -135,10 +141,29 @@ describe('Adapter contract suite', () => {
     });
 
     const conversations = adapter.conversations;
-    if (conversations && has(adapter.kind, 'conversations.json')) it('validates conversation ids', () => {
-      const { valid, invalid } = load<{ valid: string[]; invalid: string[] }>(adapter.kind, 'conversations.json');
-      for (const id of valid) expect(conversations.validId(id), `valid ${JSON.stringify(id)}`).toBe(true);
-      for (const id of invalid) expect(conversations.validId(id), `invalid ${JSON.stringify(id)}`).toBe(false);
-    });
+    if (conversations && has(adapter.kind, 'conversations.json')) {
+      it('validates conversation ids', () => {
+        const { valid, invalid } = load<ConversationsFixture>(adapter.kind, 'conversations.json');
+        for (const id of valid) expect(conversations.validId(id), `valid ${JSON.stringify(id)}`).toBe(true);
+        for (const id of invalid) expect(conversations.validId(id), `invalid ${JSON.stringify(id)}`).toBe(false);
+      });
+
+      it('renames the current conversation with an Enter-only descriptor', () => {
+        const { rename } = load<ConversationsFixture>(adapter.kind, 'conversations.json');
+        // a kind pinned with a rename fixture must implement rename, and vice versa
+        expect(conversations.rename !== undefined, `${adapter.kind} rename descriptor`).toBe(rename !== undefined);
+        if (rename === undefined || conversations.rename === undefined) return;
+        const descriptor = conversations.rename(rename.name);
+        expect(descriptor, `${adapter.kind} rename`).toEqual({ text: rename.text, keys: rename.keys });
+        // the probe pinned Enter for every Attention state — Tab parks a Codex rename until the turn ends
+        expect(descriptor.keys, `${adapter.kind} rename keys`).toEqual(['Enter']);
+      });
+
+      // listing depends on reading a Conversation's current name back, so a kind that
+      // lists must also implement readName (vacuously true until a kind gains `list`)
+      it('implements readName wherever it lists conversations', () => {
+        if (conversations.list !== undefined) expect(conversations.readName, `${adapter.kind} readName`).not.toBeUndefined();
+      });
+    }
   });
 });

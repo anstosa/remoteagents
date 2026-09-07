@@ -1,5 +1,5 @@
 import { basename } from 'node:path';
-import { claudeConfigDir, claudeConversationTitle, validClaudeSessionId } from './claude-conversations.js';
+import { claudeConfigDir, claudeConversationName, validClaudeSessionId } from './claude-conversations.js';
 import { claudeSkillDirectories, claudeSlash } from './claude-commands.js';
 import { claudeFiles, claudeHooksFileName } from './claude-hooks.js';
 import { reportedClaudeQuestion } from './claude-questions.js';
@@ -41,8 +41,8 @@ const instantCommands = new Set(['/clear']);
  * `undefined`. Every launch injects the console-owned `hooks.json` through
  * `--settings`, leaving `~/.claude` untouched. There are no `turns` (fullscreen
  * viewport) and no `panes`, and `conversations` has no `discover` (the transcript
- * fd is not held open) — only a reported `@rac_session` id, titled from the
- * transcript. `AskUserQuestion` renders as an Inline question through the reported
+ * fd is not held open) — only a reported `@rac_session` id, whose name is read from
+ * the transcript. `AskUserQuestion` renders as an Inline question through the reported
  * hook payload (ADR 0006): the dialog draws options in payload order with the
  * highlight on the first, so `selectOption` navigates it by Down-key count.
  */
@@ -84,7 +84,9 @@ export const claudeAdapter: Adapter = {
   },
   conversations: {
     validId: validClaudeSessionId,
-    title: (id, cwd) => claudeConversationTitle(id, cwd),
+    // Claude renames the current Conversation with `/rename <name>`, submitted as Enter
+    rename: (name) => ({ text: `/rename ${name}`, keys: ['Enter'] }),
+    readName: (id, cwd) => claudeConversationName(id, cwd),
   },
   files: claudeFiles,
 };

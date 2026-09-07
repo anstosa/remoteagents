@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { codexDraftState, failedTurnFromCapture, lastPromptFromHistory, latestAgentMessageFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from './codex-turns.js';
 import { parseChoiceQuestion } from './codex-questions.js';
-import { codexConversationTitle, codexHome, codexRolloutBaseline, codexTurnSince, discoverCodexConversation, validCodexThreadId } from './codex-conversations.js';
+import { codexConversationName, codexHome, codexRolloutBaseline, codexTurnSince, discoverCodexConversation, validCodexThreadId } from './codex-conversations.js';
 import type { Adapter, AttentionState, PromptCommand } from './types.js';
 
 /**
@@ -127,7 +127,9 @@ export const codexCommands: NonNullable<Adapter['commands']> = {
 export const codexConversations: NonNullable<Adapter['conversations']> = {
   validId: validCodexThreadId,
   discover: (pane) => discoverCodexConversation(pane),
-  title: (id) => codexConversationTitle(id),
+  // Codex and OMX rename the current thread with `/rename <name> ` (trailing space), submitted as Enter
+  rename: (name) => ({ text: `/rename ${name} `, keys: ['Enter'] }),
+  readName: (id) => codexConversationName(id),
 };
 
 export const codexCompletion: NonNullable<Adapter['completion']> = {

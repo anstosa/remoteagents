@@ -30,6 +30,11 @@ async function writeRollout(home: string, id: string, prompt: string): Promise<s
   return file;
 }
 
+// record a Codex Conversation name in the account-global session_index.jsonl sidecar
+async function writeSessionIndex(home: string, id: string, threadName: string): Promise<void> {
+  await writeFile(join(home, 'session_index.jsonl'), `${JSON.stringify({ id, thread_name: threadName, updated_at: '2026-09-02T20:53:25.975357809Z' })}\n`);
+}
+
 // build a fake /proc where each pid holds the given rollout files open
 async function buildProc(proc: string, holdings: Record<number, string[]>): Promise<void> {
   for (const [pid, files] of Object.entries(holdings)) {
@@ -198,7 +203,7 @@ describe('DiscoveryService dashboard', () => {
     expect(dashboard.projects[0]?.worktrees).toMatchObject([{ id: 'ferry:/worktrees/ferry', main: true, pinned: true, projectUrl: 'https://ferry.external.example.com', projectProxied: false }]);
   });
 
-  it('prefers a valid reported @rac_session over the conversation the fd-walk finds, and reads its title', async () => {
+  it('prefers a valid reported @rac_session over the conversation the fd-walk finds, and reads its name', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const finder = { find: async () => [socket] };
     const tmux = { listPanes: async () => [
@@ -210,7 +215,10 @@ describe('DiscoveryService dashboard', () => {
     const proc = await mkdtemp(join(tmpdir(), 'rac-proc-'));
     const previous = { proc: process.env.RAC_HOST_PROC, home: process.env.CODEX_HOME };
     try {
-      await writeRollout(home, '0198c111-1111-7111-8111-111111111111', 'Reported conversation');
+      await writeRollout(home, '0198c111-1111-7111-8111-111111111111', 'The rollout prompt');
+      // a reported id reads its name from the session_index sidecar, not the rollout prompt:
+      // a distinct sidecar name proves readName (not the retired title scan) is the source
+      await writeSessionIndex(home, '0198c111-1111-7111-8111-111111111111', 'Renamed thread');
       const walkedFirst = await writeRollout(home, '0198c333-3333-7333-8333-333333333333', 'Walked by pane one');
       const walkedSecond = await writeRollout(home, '0198c777-7777-7777-8777-777777777777', 'Walked by pane two');
       await buildProc(proc, { 123: [walkedFirst], 456: [walkedSecond] });
@@ -221,7 +229,7 @@ describe('DiscoveryService dashboard', () => {
 
       // the valid reported id wins over the different conversation the fd-walk would return
       await expect(service.conversationId(agents[0]!.id)).resolves.toBe('0198c111-1111-7111-8111-111111111111');
-      await expect(service.conversation(agents[0]!.id)).resolves.toEqual({ id: '0198c111-1111-7111-8111-111111111111', title: 'Reported conversation' });
+      await expect(service.conversation(agents[0]!.id)).resolves.toEqual({ id: '0198c111-1111-7111-8111-111111111111', title: 'Renamed thread' });
       // a malformed report is rejected and falls back to the fd-walk
       await expect(service.conversationId(agents[1]!.id)).resolves.toBe('0198c777-7777-7777-8777-777777777777');
     } finally {

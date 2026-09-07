@@ -1,7 +1,7 @@
 import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { codexConversationTitle, discoverCodexConversation, openRollouts, validCodexThreadId } from '../../src/adapters/codex-conversations.js';
+import { codexConversationName, discoverCodexConversation, openRollouts, validCodexThreadId } from '../../src/adapters/codex-conversations.js';
 import { codexHome, fakeProc } from '../helpers/codex-fixtures.js';
 
 // write one representative Codex rollout, returning its absolute path
@@ -15,6 +15,12 @@ async function writeSession(home: string, name: string, session: { id: string; c
   const file = join(directory, `${name}-${session.id}.jsonl`);
   await writeFile(file, `${lines.map(line => JSON.stringify(line)).join('\n')}\n`);
   return file;
+}
+
+// write the account-global session_index.jsonl sidecar, one line per name change
+async function writeSessionIndex(home: string, entries: Array<{ id: string; thread_name: string }>): Promise<void> {
+  const lines = entries.map(entry => JSON.stringify({ id: entry.id, thread_name: entry.thread_name, updated_at: '2026-09-02T20:53:25.975357809Z' }));
+  await writeFile(join(home, 'session_index.jsonl'), `${lines.join('\n')}\n`);
 }
 
 describe('Codex conversation lookup', () => {
@@ -74,14 +80,30 @@ describe('Codex conversation lookup', () => {
     await expect(openRollouts(123)).resolves.toEqual([{ id: '0198c444-4444-7444-8444-444444444444', relativePath: 'sessions/2026/08/20/rollout-2026-08-20T12-00-00-0198c444-4444-7444-8444-444444444444.jsonl' }]);
   });
 
-  it('reads a reported conversation title by its unique id', async () => {
+  it('reads a conversation name from the session_index sidecar, last write wins', async () => {
     const home = await codexHome();
-    await writeSession(home, 'rollout-2026-08-20T12-00-00', { id: '0198c555-5555-7555-8555-555555555555', cwd: '/home/ubuntu/cora', prompt: 'Reported conversation title' });
+    await writeSessionIndex(home, [
+      { id: '0198c555-5555-7555-8555-555555555555', thread_name: 'Hello' },
+      { id: '0198c111-1111-7111-8111-111111111111', thread_name: 'A different thread' },
+      { id: '0198c555-5555-7555-8555-555555555555', thread_name: 'Respond to greeting' },
+    ]);
     process.env.CODEX_HOME = home;
 
-    await expect(codexConversationTitle('0198c555-5555-7555-8555-555555555555')).resolves.toBe('Reported conversation title');
-    // an unknown id yields no title
-    await expect(codexConversationTitle('0198c999-9999-7999-8999-999999999999')).resolves.toBeUndefined();
+    // the newest line for the id wins over its earlier provisional name
+    await expect(codexConversationName('0198c555-5555-7555-8555-555555555555')).resolves.toBe('Respond to greeting');
+    // an id whose only line is not the file's last still resolves (not just the final line)
+    await expect(codexConversationName('0198c111-1111-7111-8111-111111111111')).resolves.toBe('A different thread');
+    // an id with no line yields no name
+    await expect(codexConversationName('0198c999-9999-7999-8999-999999999999')).resolves.toBeUndefined();
+  });
+
+  it('tolerates a missing session_index sidecar and rejects a malformed id', async () => {
+    const home = await codexHome();
+    process.env.CODEX_HOME = home;
+    // a fresh CODEX_HOME with no sidecar is unnamed rather than an error
+    await expect(codexConversationName('0198c555-5555-7555-8555-555555555555')).resolves.toBeUndefined();
+    // an invalid id never reaches the filesystem
+    await expect(codexConversationName('not-a-uuid')).resolves.toBeUndefined();
   });
 
   it('falls back to no title when the latest prompt is outside the bounded tail', async () => {

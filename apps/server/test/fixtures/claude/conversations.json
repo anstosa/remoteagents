@@ -9,5 +9,10 @@
     "not-a-uuid",
     "ZZZZZZZZ-2222-4333-8444-555555555555",
     "11111111-2222-4333-8444-55555555555"
-  ]
+  ],
+  "rename": {
+    "name": "diagnose-shell",
+    "text": "/rename diagnose-shell",
+    "keys": ["Enter"]
+  }
 }

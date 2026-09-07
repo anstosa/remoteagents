@@ -460,17 +460,19 @@ export class DiscoveryService {
     return this.reportedConversationId(context) ?? (await context.adapter.discover?.(context.pane))?.id;
   }
 
-  // the pane's current conversation with a title, for bookmarking
+  // the pane's current conversation with its name, for bookmarking
   async conversation(id: string): Promise<Conversation | undefined> {
     const context = await this.conversationContext(id);
     if (context === undefined) return undefined;
     const reported = this.reportedConversationId(context);
-    // a reported id skips the fd-walk; its title is read by id (Codex) or by id and
+    // a reported id skips the fd-walk; its name is read by id (Codex) or by id and
     // the pane's working directory (Claude, whose transcript is keyed by cwd)
     if (reported !== undefined) {
-      const title = await context.adapter.title?.(reported, context.pane.cwd);
-      return { id: reported, ...(title === undefined ? {} : { title }) };
+      const name = await context.adapter.readName?.(reported, context.pane.cwd);
+      return { id: reported, ...(name === undefined ? {} : { title: name }) };
     }
+    // the fd-walk fallback seeds the bookmark from `discover`'s message-derived title,
+    // not the store name — no reported id means no cheap by-id `readName` read
     return await context.adapter.discover?.(context.pane);
   }
   // the Worktrees discovered from every available Project (bare and stale entries

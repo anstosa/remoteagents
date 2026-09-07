@@ -53,8 +53,16 @@ The server module that knows one agent CLI: how to launch and resume it, recogni
 _Avoid_: Driver, plugin, agent type (use "kind" for the identifier, "Adapter" for the module)
 
 **Conversation**:
-The agent CLI's resumable transcript, identified by an id whose shape depends on the Adapter. What a Bookmark points at and what a resume brings back; distinct from the Agent, which is the live pane.
+The agent CLI's resumable transcript, identified by an id whose shape depends on the Adapter. What a resume brings back; distinct from the Agent, which is the live pane. It belongs to the Worktree directory it was started in and resumes there.
 _Avoid_: Session (that word is reserved for tmux), thread, chat
+
+**Conversation name**:
+What the agent CLI calls a Conversation: the name a human gave it, or failing that the title the agent generated. The console only ever sets one through the agent CLI's own rename command.
+_Avoid_: Bookmark, session name, summary
+
+**Named conversation**:
+A Conversation that has a Conversation name. What the console lists and offers to resume; a Conversation with only its id is not shown.
+_Avoid_: Bookmark, saved chat, session
 
 **Launch profile**:
 The choice a worktree launches with: an Adapter plus whether the agent is Sandboxed. The Adapter is remembered per Worktree as the last one used; Sandboxed starts on whenever the Adapter offers it and is never remembered.
@@ -90,9 +98,9 @@ _Avoid_: Choice list, structured question, parsed question, reported question (t
 
 ### Operator state
 
-**Bookmark**:
-A saved reference to one Conversation, precise enough to resume it later; records which Adapter it belongs to.
-_Avoid_: Saved chat, thread link
+**Console-named conversation**:
+A Named conversation whose name was set through the console. The console remembers which Conversations these are and shows them first; the name itself stays with the agent.
+_Avoid_: Bookmark, favourite, pinned conversation (Pinned is a Worktree word)
 
 **Queued prompt**:
 A prompt accepted while the Agent was busy, held durably until it can be dispatched.
