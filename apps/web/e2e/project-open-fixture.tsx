@@ -2,10 +2,12 @@ import { createElement, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ProjectOpen } from '../src/project-open.js';
 
+// render controls during an active operation
 export const renderProjectOpen = (root: HTMLElement) => {
   createRoot(root).render(createElement(ProjectOpen, {
     url: 'https://project.example.com',
     stack: { actions: ['build', 'restart'], operation: 'build', tunnel: true },
+    onBrowserToggle: () => {},
     onStackAction: () => {}
   }));
 };
@@ -43,7 +45,6 @@ const DirectProjectOpenControls = () => {
   const [browserOpen, setBrowserOpen] = useState(false);
   return createElement(ProjectOpen, {
     url: 'https://external-preview.example/map/',
-    projectProxied: false,
     stack: { actions: [], tunnel: true },
     browserOpen,
     onBrowserToggle: () => setBrowserOpen(open => !open)
@@ -59,7 +60,6 @@ export const renderDirectProjectOpenControls = (root: HTMLElement) => {
 export const renderUnavailableDirectProjectOpenControls = (root: HTMLElement) => {
   createRoot(root).render(createElement(ProjectOpen, {
     url: 'https://external-preview.example/map/',
-    projectProxied: false,
     stack: { actions: ['start'], running: false, tunnel: false },
     onBrowserToggle: () => {},
     onStackAction: () => {}

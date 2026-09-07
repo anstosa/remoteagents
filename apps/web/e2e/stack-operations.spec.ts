@@ -24,7 +24,8 @@ test('keeps the stack flyout available during an operation', async ({ page }) =>
   await toggle.click();
   const link = page.getByRole('link', { name: 'Open', exact: true });
   await expect(link).toHaveAttribute('aria-busy', 'true');
-  await expect(link).toHaveAttribute('aria-disabled', 'true');
+  await expect(link).not.toHaveAttribute('aria-disabled', 'true');
+  await expect(page.getByRole('button', { name: 'Split', exact: true })).toBeEnabled();
   await expect(page.getByRole('button', { name: 'Building…' })).toBeDisabled();
 });
 
@@ -75,7 +76,7 @@ test('consolidates managed project controls into one server flyout', async ({ pa
   await expect(root.locator('.project-stack-trigger')).toHaveAccessibleName('Stack controls: working');
 });
 
-test('disables the browser split control while the stack is stopped', async ({ page }) => {
+test('keeps project view controls available while the stack is stopped', async ({ page }) => {
   await page.goto('/');
   await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="prompt-actions"><div id="control-root"></div></div>');
   await page.evaluate(async () => {
@@ -87,10 +88,10 @@ test('disables the browser split control while the stack is stopped', async ({ p
   await expect(root.getByRole('link')).toHaveCount(0);
   const toggle = root.getByRole('button', { name: 'Stack controls: down' });
   await expect(toggle).toBeVisible();
-  await expect(root.locator('.project-open-group')).not.toHaveClass(/has-browser-control/u);
+  await expect(root.locator('.project-open-group')).toHaveClass(/has-browser-control/u);
   await toggle.click();
-  await expect(page.getByRole('link', { name: 'Open', exact: true })).toHaveAttribute('aria-disabled', 'true');
-  await expect(page.getByRole('button', { name: 'Split', exact: true })).toBeDisabled();
+  await expect(page.getByRole('link', { name: 'Open', exact: true })).not.toHaveAttribute('aria-disabled', 'true');
+  await expect(page.getByRole('button', { name: 'Split', exact: true })).toBeEnabled();
 });
 
 test('keeps direct project controls visible independently of managed stack state', async ({ page }) => {
@@ -116,8 +117,8 @@ test('keeps direct project controls visible independently of managed stack state
   await expect(unavailable.getByRole('link')).toHaveCount(0);
   await unavailableToggle.click();
   const unavailableFooter = page.getByRole('group', { name: 'Project view controls' });
-  await expect(unavailableFooter.getByRole('link', { name: 'Open', exact: true })).toHaveAttribute('aria-disabled', 'true');
-  await expect(unavailableFooter.getByRole('button', { name: 'Split', exact: true })).toBeDisabled();
+  await expect(unavailableFooter.getByRole('link', { name: 'Open', exact: true })).not.toHaveAttribute('aria-disabled', 'true');
+  await expect(unavailableFooter.getByRole('button', { name: 'Split', exact: true })).toBeEnabled();
 });
 
 test('shows stack controls when the worktree has commands but no project URL', async ({ page }) => {
