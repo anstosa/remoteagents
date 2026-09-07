@@ -179,6 +179,126 @@ test('resumes a sibling-Worktree Conversation by navigating to that Worktree fir
   await expect.poll(() => switches).toEqual([{ worktreeId: 'owen', body: { kind: 'claude', id: owenId } }]);
 });
 
+// a Project-wide list with a live Cora agent, some rows already named through the console, and
+// a POST /name that confirms (or not) and a DELETE that forgets the record. The conversations
+// GET reflects the record changes so a reload shows the quick list update.
+async function mockNamingConsole(page: import('@playwright/test').Page, options: { confirm?: boolean; rows?: typeof conversations } = {}) {
+  const { confirm = true, rows = conversations } = options;
+  const state = { names: [] as unknown[], removed: [] as string[], namedCurrent: false };
+  await page.route('**/api/**', route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/agents/agent-1/conversations/name' && request.method() === 'POST') {
+      state.names.push(request.postDataJSON());
+      if (!confirm) return route.fulfill({ status: 409, json: { error: 'The agent did not confirm the name.' } });
+      state.namedCurrent = true;
+      return route.fulfill({ status: 201, json: { conversation: { ...rows[0], consoleNamed: true } } });
+    }
+    const removeMatch = url.pathname.match(/^\/api\/worktrees\/cora\/conversations\/([^/]+)\/([^/]+)$/u);
+    if (removeMatch !== null && request.method() === 'DELETE') { state.removed.push(`${removeMatch[1]}/${removeMatch[2]}`); return route.fulfill({ status: 204, body: '' }); }
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, adapters: { claude: { launchable: true } }, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' }], projects: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname.endsWith('/tickets')) return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname.endsWith('/saved-prompts')) return route.fulfill({ json: { prompts: [] } });
+    if (url.pathname.endsWith('/prompt-history')) return route.fulfill({ json: { prompts: [] } });
+    if (url.pathname.endsWith('/notes') && request.method() === 'GET') return route.fulfill({ json: { notes: [] } });
+    if (url.pathname.endsWith('/bookmarks') && request.method() === 'GET') return route.fulfill({ json: { bookmarks: [], canResume: true } });
+    if (url.pathname.endsWith('/conversations') && request.method() === 'GET') {
+      const listed = rows.map(row => row.current ? { ...row, consoleNamed: state.namedCurrent } : row);
+      return route.fulfill({ json: { conversations: listed, canResume: true } });
+    }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  return state;
+}
+
+test('names the current conversation from the fly-out and shows it in the quick list', async ({ page }) => {
+  const state = await mockNamingConsole(page);
+  await page.setViewportSize({ width: 900, height: 780 });
+  await page.goto('/');
+  await page.getByRole('button', { name: /^Conversations/ }).click();
+  const menu = page.locator('.conversations-menu');
+  // the Name field placeholder offers to rename the current conversation
+  const input = menu.getByRole('textbox', { name: 'Name this conversation' });
+  await expect(input).toHaveAttribute('placeholder', /Diagnose the shell/);
+  await input.fill('Shell diagnosis');
+  await menu.getByRole('button', { name: 'Name conversation' }).click();
+  // the console submits the name; on confirm the list reloads and the row joins the quick list
+  await expect.poll(() => state.names).toEqual([{ name: 'Shell diagnosis' }]);
+  await expect(menu.locator('.conversation-rows .conversation-row')).toHaveText(/Diagnose the shell/);
+  await expect(page.getByRole('button', { name: /^Conversations/ })).toHaveAccessibleName('Conversations (1)');
+});
+
+test('shows the reason inline when the agent does not confirm the name', async ({ page }) => {
+  await mockNamingConsole(page, { confirm: false });
+  await page.setViewportSize({ width: 900, height: 780 });
+  await page.goto('/');
+  await page.getByRole('button', { name: /^Conversations/ }).click();
+  const menu = page.locator('.conversations-menu');
+  await menu.getByRole('textbox', { name: 'Name this conversation' }).fill('Shell diagnosis');
+  await menu.getByRole('button', { name: 'Name conversation' }).click();
+  await expect(menu.locator('.conversation-error')).toContainText('did not confirm');
+  // nothing joined the quick list
+  await expect(menu.locator('.conversation-rows')).toHaveCount(0);
+});
+
+// six console-named rows across the Project, newest-active first, to exercise the five-row cap
+const consoleNamedRows = Array.from({ length: 6 }, (_, index) => ({
+  kind: 'claude', id: `1${index}111111-2222-4333-8444-555555555555`, name: `Named ${index}`,
+  automatic: false, lastActiveAt: now - index * 3_600_000, directory: '/worktrees/cora', worktreeId: 'cora', consoleNamed: true, current: false,
+}));
+
+test('the fly-out shows at most five console-named rows, newest first, each removable', async ({ page }) => {
+  const state = await mockNamingConsole(page, { rows: consoleNamedRows });
+  await page.setViewportSize({ width: 900, height: 780 });
+  await page.goto('/');
+  await page.getByRole('button', { name: /^Conversations/ }).click();
+  const menu = page.locator('.conversations-menu');
+  const rows = menu.locator('.conversation-rows .conversation-row');
+  await expect(rows).toHaveCount(5);
+  // newest-active first, as the server ordered them
+  await expect(rows.first()).toContainText('Named 0');
+  await expect(rows.nth(4)).toContainText('Named 4');
+  // removing a row forgets the record; the sixth row takes its place, still capped at five
+  await rows.first().locator('.conversation-remove').click();
+  await expect.poll(() => state.removed).toEqual(['claude/10111111-2222-4333-8444-555555555555']);
+  await expect(menu.locator('.conversation-rows')).not.toContainText('Named 0');
+  await expect(rows).toHaveCount(5);
+  await expect(rows.last()).toContainText('Named 5');
+});
+
+test('the empty state shows the Name field and the All conversations row only', async ({ page }) => {
+  await mockNamingConsole(page, { rows: [conversations[1]!] });
+  await page.setViewportSize({ width: 900, height: 780 });
+  await page.goto('/');
+  await page.getByRole('button', { name: /^Conversations/ }).click();
+  const menu = page.locator('.conversations-menu');
+  await expect(menu.getByRole('textbox', { name: 'Name this conversation' })).toBeVisible();
+  await expect(menu.locator('.conversations-all')).toBeVisible();
+  // no console-named rows, so the quick list is absent
+  await expect(menu.locator('.conversation-rows')).toHaveCount(0);
+});
+
+test('the dialog splits Named here from All named', async ({ page }) => {
+  // the console-named row is a non-current one, so the mock's current-row rewrite leaves it be
+  const mixed = [
+    { ...conversations[0]! },
+    { ...conversations[1]!, consoleNamed: true },
+    { ...conversations[2]! },
+  ];
+  await mockNamingConsole(page, { rows: mixed });
+  await page.setViewportSize({ width: 900, height: 780 });
+  await page.goto('/');
+  const dialog = await openDialog(page);
+  const headings = dialog.locator('.conversations-heading');
+  await expect(headings).toHaveText(['Named here', 'All named']);
+  // the console-named row sits under Named here with a Remove control
+  const namedHere = dialog.locator('.conversation-rows').first();
+  await expect(namedHere.locator('.conversation-row')).toHaveCount(1);
+  await expect(namedHere.locator('.conversation-remove')).toBeVisible();
+});
+
 test('opens the conversations dialog full-screen on a phone', async ({ page }) => {
   await mockConsole(page);
   await page.setViewportSize({ width: 390, height: 780 });

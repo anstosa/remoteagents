@@ -13,7 +13,7 @@ import { DeviceService } from './auth/devices.js';
 import { TicketStore, type TicketKind } from './auth/tickets.js';
 import { DiscoveryService } from './discovery/service.js';
 import { adapterFor } from './adapters/registry.js';
-import { agentKinds, type AgentKind, type ConversationSummary } from './adapters/types.js';
+import { agentKinds, codexFamily, sameConversation, type AgentKind, type ConversationSummary } from './adapters/types.js';
 import { TmuxAdapter } from './tmux/adapter.js';
 import { maxPromptAttachments, maxPromptAttachmentBytes, PromptService, type PromptAttachment } from './prompts/service.js';
 import { validPrompt } from './prompts/validation.js';
@@ -49,7 +49,7 @@ import { configuredWorktreeForWorkspace, projectIdOf, worktreeById, worktreeHost
 import { WorkspaceFileService } from './workspace-files/service.js';
 import { instanceIconSvg, isInstanceIcon } from './instance-icon.js';
 import { instanceAttention, RemoteInstanceStatusPoller, validInstanceStatusRequest, type InstanceStatus } from './instance-status.js';
-import { createHash, createHmac } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { defaultIntegrationConfig, parseDavoSettings, resolveCodexProgram } from './config/schema.js';
 import { OrchestrationService } from './orchestration/index.js';
 import { IntegrationAuthService, registerIntegrationAuthServer, type IntegrationScope, type LocalIntegrationSubject } from './integrations/auth/index.js';
@@ -62,11 +62,12 @@ import { IntegrationControlService } from './integrations/control/index.js';
 import { ServerAdminService } from './server-admin/service.js';
 import { CodexAccountService, safeAccountId, type AccountRateLimitWindow, type AccountSummary } from './accounts/index.js';
 import { BookmarkService } from './bookmarks/service.js';
+import { ConsoleNamedConversationService, type ConsoleNamedConversation } from './conversations/console-named-service.js';
 import { isUpdateAdvisorForTarget, isUpdateAdvisorLabel, updateAdvisorLabel, updateAdvisorPendingLabel } from './update-advisor.js';
 import { isFullGitSha } from './git/revision.js';
 import { AgentUpdateService, type AgentUpdateServiceLike } from './agent-updates/service.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; bookmarks?: BookmarkService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'> };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; conversationNamePollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; savedPrompts?: SavedPromptService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; notes?: WorktreeNoteService; bookmarks?: BookmarkService; consoleNamed?: ConsoleNamedConversationService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'> };
 // derive one stable opaque scratch persistence group
 const scratchSaveKey = (workspace: string) => `scratch_${createHash('sha256').update(workspace).digest('base64url').slice(0, 40)}`;
 // bound full history scans
@@ -98,7 +99,7 @@ export function logFrame(last: string, value: string, refreshMetadata = false): 
 }
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, promptHistory, queuedPrompts, savedPrompts, undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new BookmarkService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const savedPrompts = deps.savedPrompts ?? new SavedPromptService(); const prompts = new PromptService(discovery, tmux, promptHistory, queuedPrompts, savedPrompts, undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const bookmarks = deps.bookmarks ?? new BookmarkService(); const consoleNamed = deps.consoleNamed ?? new ConsoleNamedConversationService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
   const temporaryPreviews = deps.temporaryPreviews ?? new TemporaryPreviewService();
   // freeze the checkout identity serving this process
   const deployedRevision = serverAdmin.revision();
@@ -840,14 +841,11 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     for (const worktree of discovery.worktreesNow()) if (worktree.projectId === projectId) scope.set(worktreeHostRoot(worktree), worktree.id);
     return scope;
   };
-  // list the Named conversations under these directories, resolve each row's Worktree and
-  // whether it is the current one, and order the union newest-active first (consoleNamed is
-  // always false until the naming ticket adds the console-named record store). Codex and OMX
-  // share one rollout reader (ADR 0005), so the union emits a single codex-family row per
-  // rollout; the console badges it with the Worktree's remembered Launch kind when that is
-  // codex or omx, else codex (a Claude/Pi Worktree that also holds a Codex rollout still
-  // shows that rollout as Codex).
-  const codexFamily = (kind: AgentKind): boolean => kind === 'codex' || kind === 'omx';
+  // list the Named conversations under these directories, resolve each row's Worktree, whether it
+  // is the current one, and whether the console named it, and order the union newest-active first.
+  // Codex and OMX share one rollout reader (ADR 0005), so the union emits a single codex-family row
+  // per rollout; the console badges it with the Worktree's remembered Launch kind when that is codex
+  // or omx, else codex (a Claude/Pi Worktree that also holds a Codex rollout still shows it as Codex).
   // the kind a shared codex-family rollout resumes under on one Worktree: its remembered
   // Launch kind when that is itself codex or omx, else Codex — the per-Worktree form of the
   // attribution `listConversations` applies across the whole list
@@ -856,7 +854,11 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const kind = remembered[worktreeId];
     return kind !== undefined && codexFamily(kind) ? kind : 'codex';
   };
-  const listConversations = async (directories: readonly string[], scope: Map<string, string>, currentId: string | undefined): Promise<ConversationRow[]> => {
+  // whether a listed row is one the console named: an intersection with the record store, so a
+  // Conversation the agent no longer lists disappears with it (codex-family matched by id, ADR 0005)
+  const rowConsoleNamed = (records: readonly ConsoleNamedConversation[], row: { kind: AgentKind; id: string }): boolean =>
+    records.some(record => sameConversation(record, row));
+  const listConversations = async (directories: readonly string[], scope: Map<string, string>, currentId: string | undefined, consoleNamedRecords: readonly ConsoleNamedConversation[]): Promise<ConversationRow[]> => {
     const listed = await discovery.conversations(directories);
     // read remembered kinds once, only when a codex-family row needs attributing
     const remembered = listed.some(row => codexFamily(row.kind))
@@ -876,12 +878,18 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         lastActiveAt: row.lastActiveAt,
         directory: row.directory,
         ...(worktreeId === undefined ? {} : { worktreeId }),
-        consoleNamed: false,
+        consoleNamed: rowConsoleNamed(consoleNamedRecords, { kind: row.kind, id: row.id }),
         current: currentId !== undefined && row.id === currentId,
       };
     });
     rows.sort((left, right) => right.lastActiveAt - left.lastActiveAt);
     return rows;
+  };
+  // the scan scope and directories for one live agent: its whole Project's Worktree host roots,
+  // or just its own directory for a Scratch agent that has no Worktree to resume into
+  const agentConversationScope = (persistence: NonNullable<Awaited<ReturnType<typeof agentPersistence>>>): { scope: Map<string, string>; directories: string[] } => {
+    const scope = persistence.worktree === undefined ? new Map<string, string>() : projectConversationScope(persistence.worktree.projectId);
+    return { scope, directories: persistence.worktree === undefined ? [persistence.agent.workspace] : [...scope.keys()] };
   };
   // list one Worktree's Project-wide Named conversations (every kind, every Worktree of the
   // Project); an optional live agent open on this Worktree marks the current row
@@ -897,7 +905,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const scope = projectConversationScope(worktree.projectId);
     // resolve the current Conversation only for a live agent open on this very Worktree
     const currentId = typeof agentId === 'string' ? await currentConversationOnWorktree(id, agentId) : undefined;
-    const conversations = await listConversations([...scope.keys()], scope, currentId);
+    // a failed record read degrades to "nothing console-named" rather than dropping the list
+    const records = await consoleNamed.list(worktree.projectId).catch(() => undefined) ?? [];
+    const conversations = await listConversations([...scope.keys()], scope, currentId, records);
     return { conversations, canResume: launch.canResumeConversation(id) };
   });
   // list one live agent's Named conversations: its whole Project when it belongs to a
@@ -908,11 +918,108 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const persistence = await agentPersistence(id);
     // require one current agent target
     if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
-    const scope = persistence.worktree === undefined ? new Map<string, string>() : projectConversationScope(persistence.worktree.projectId);
-    const directories = persistence.worktree === undefined ? [persistence.agent.workspace] : [...scope.keys()];
+    const { scope, directories } = agentConversationScope(persistence);
     const currentId = await discovery.conversationId(id);
-    const conversations = await listConversations(directories, scope, currentId);
+    // a failed record read degrades to "nothing console-named" rather than dropping the list
+    const records = await consoleNamed.list(persistence.saveKey).catch(() => undefined) ?? [];
+    const conversations = await listConversations(directories, scope, currentId, records);
     return { conversations, canResume: persistence.worktree !== undefined && launch.canResumeConversation(persistence.worktree.id) };
+  });
+  // name the current Conversation from the console: submit the CLI's own rename command into the
+  // pane (bypassing the prompt service — no history entry, no queued-prompt phase), confirm the
+  // name from the agent's own store, then record that the console named it (ADR 0007). The name
+  // itself lives only in the agent's store; the console keeps `{ kind, id, namedAt }`.
+  app.post('/api/agents/:id/conversations/name', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+    controlled(request, true);
+    const id = (request.params as { id: string }).id;
+    const requestedName = body(request).name;
+    // require one bounded, single-line name with no control characters
+    if (typeof requestedName !== 'string') return reply.code(400).send({ error: 'invalid conversation name' });
+    const trimmed = requestedName.trim();
+    if (trimmed.length === 0 || trimmed.length > 120 || /[\0-\x1f\x7f]/u.test(trimmed)) return reply.code(400).send({ error: 'invalid conversation name' });
+    // the agents' own stores collapse runs of whitespace when they read a name back, so collapse
+    // here too — otherwise the read-back of a name with interior double spaces never confirms
+    const name = trimmed.replace(/\s+/gu, ' ');
+    const persistence = await agentPersistence(id);
+    // require one live agent
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    const conversations = adapterFor(persistence.agent.kind)?.conversations;
+    // require an Adapter that both renames and reads the name back
+    if (conversations?.rename === undefined || conversations.readName === undefined) return reply.code(409).send({ error: 'This agent cannot be named from the console.' });
+    // one rename in flight per agent: a second pasted rename would race the first's read-back
+    if (renamesInFlight.has(id)) return reply.code(409).send({ error: 'A rename is already in progress for this conversation.' });
+    renamesInFlight.add(id);
+    try {
+      // refuse while a question dialog owns the keyboard — it would swallow the pasted rename.
+      // force a fresh dashboard: this is a safety gate immediately before terminal input, so a
+      // stale snapshot must not let the rename paste into a question that just appeared
+      const observed = (await discovery.dashboard(true).catch(() => undefined))?.agents.find(agent => agent.id === id);
+      if (observed !== undefined && agentAttentionState(observed) === 'question') return reply.code(409).send({ error: 'Answer the agent\'s question before naming this conversation.' });
+      // require a known current Conversation to rename and to read back
+      const conversationId = await discovery.conversationId(id);
+      if (conversationId === undefined) return reply.code(409).send({ error: 'The current conversation is unknown.' });
+      const target = await discovery.target(id);
+      if (target === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+      // hold the agent's lifecycle mutation lock across the paste so a concurrent restart/switch
+      // cannot close the pane mid-delivery (and so it, in turn, defers to this rename), exactly as
+      // prompt submission does; a live restart reservation refuses the rename
+      const releaseMutation = prompts.beginAgentMutation(id);
+      if (releaseMutation === undefined) return reply.code(409).send({ error: 'The agent is busy with another operation.' });
+      const rename = conversations.rename(name);
+      const buffer = `rac-${randomBytes(18).toString('base64url')}`;
+      try {
+        // paste the Adapter's rename text and send its keys directly on the pane (Enter in every state)
+        if (!await tmux.pastePrompt(target.socket, target.agent.paneId, buffer, rename.text)
+          || !await tmux.sendKeys(target.socket, target.agent.paneId, rename.keys)) return reply.code(502).send({ error: 'Could not deliver the rename to the agent.' });
+      } finally { releaseMutation(); }
+      // read the name back from the agent's own store until it reports the submitted name
+      const cwd = discovery.paneWorkingDirectory(id);
+      let confirmed = false;
+      for (let attempt = 0; attempt < conversationNamePollAttempts; attempt += 1) {
+        await conversationNamePollDelay();
+        const current = await conversations.readName(conversationId, cwd).catch(() => undefined);
+        if (current === name) { confirmed = true; break; }
+      }
+      // the name may still have applied (it will show under All named), but the quick list is
+      // "what I confirmed here", so an unconfirmed rename records nothing
+      if (!confirmed) return reply.code(409).send({ error: 'The agent did not confirm the name.' });
+      // the rename already applied and confirmed; a failed record write (a corrupt or locked store)
+      // must not 500 the request — the row simply won't be console-named until the next successful name
+      await consoleNamed.record(persistence.saveKey, { kind: persistence.agent.kind, id: conversationId }).catch(() => undefined);
+      // return the freshly-listed row for the named Conversation (now console-named and current)
+      const { scope, directories } = agentConversationScope(persistence);
+      const stored = await consoleNamed.list(persistence.saveKey).catch(() => undefined) ?? [];
+      const rows = await listConversations(directories, scope, conversationId, stored);
+      const row = rows.find(candidate => sameConversation(candidate, { kind: persistence.agent.kind, id: conversationId }));
+      return reply.code(201).send({ conversation: row });
+    } finally {
+      renamesInFlight.delete(id);
+    }
+  });
+  // forget the console's record of one Conversation (Worktree-scoped, by kind and id). The
+  // transcript and its name survive; the row leaves the quick list and stays under All named.
+  app.delete('/api/worktrees/:id/conversations/:kind/:conversationId', async (request, reply) => {
+    controlled(request, true);
+    const { id, kind, conversationId } = request.params as { id: string; kind: string; conversationId: string };
+    const saveKey = worktreeSaveKey(id);
+    // require one configured Worktree group
+    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    // reject an unknown kind
+    if (!agentKinds.includes(kind as AgentKind)) return reply.code(400).send({ error: 'invalid conversation' });
+    const removed = await consoleNamed.remove(saveKey, kind as AgentKind, conversationId);
+    return removed ? reply.code(204).send() : reply.code(404).send({ error: 'conversation record unavailable' });
+  });
+  // the agent-scoped twin: a Scratch agent's records key to its workspace, not a Project
+  app.delete('/api/agents/:id/conversations/:kind/:conversationId', async (request, reply) => {
+    controlled(request, true);
+    const { id, kind, conversationId } = request.params as { id: string; kind: string; conversationId: string };
+    const persistence = await agentPersistence(id);
+    // require one live agent
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    // reject an unknown kind
+    if (!agentKinds.includes(kind as AgentKind)) return reply.code(400).send({ error: 'invalid conversation' });
+    const removed = await consoleNamed.remove(persistence.saveKey, kind as AgentKind, conversationId);
+    return removed ? reply.code(204).send() : reply.code(404).send({ error: 'conversation record unavailable' });
   });
   // bookmark the current top-level Codex chat
   app.post('/api/agents/:id/bookmarks', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
@@ -1188,6 +1295,13 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const launchPollAttempts = launchReadyTimeoutSeconds * 1_000 / launchPollIntervalMs;
   // delay between launch checks
   const launchPollDelay = deps.launchPollDelay ?? (async () => await new Promise(resolve => setTimeout(resolve, launchPollIntervalMs)));
+  // read-back after a console rename: poll the agent's own store every 200 ms for ~1.5 s until
+  // it reports the submitted name (the probe saw a rename apply within ~200 ms, idle or mid-turn)
+  const conversationNamePollIntervalMs = 200;
+  const conversationNamePollAttempts = 8;
+  const conversationNamePollDelay = deps.conversationNamePollDelay ?? (async () => await new Promise(resolve => setTimeout(resolve, conversationNamePollIntervalMs)));
+  // agents with a console rename in flight, so a second concurrent rename is refused
+  const renamesInFlight = new Set<string>();
   // wait for slow agent startup
   const waitForAgent = async (before: Set<string>, worktreeId?: string, displayLabel?: string) => {
     // poll for up to sixty seconds
@@ -1507,7 +1621,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // require the Conversation to be homed in this Worktree: a scan of only this Worktree's
     // directory lists it exactly when the agent's own picker would resume it here
     const homeDirectory = worktreeHostRoot(worktree);
-    const homed = (await discovery.conversations([homeDirectory])).some(row => row.id === conversationId && (codexFamily(rowKind) ? codexFamily(row.kind) : row.kind === rowKind));
+    const homed = (await discovery.conversations([homeDirectory])).some(row => sameConversation(row, { kind: rowKind, id: conversationId }));
     if (!homed) return reply.code(409).send({ error: 'This conversation does not belong to this worktree.' });
     // fail before any destructive handoff
     if (!launch.canResumeConversation(worktree.id)) return reply.code(409).send({ error: 'Exact chat resume is not configured for this worktree.' });

@@ -462,9 +462,18 @@ html.software-keyboard-open .tabs { display: none; }
 .conversations-loading { display: flex; align-items: center; gap: .5rem; min-height: 6rem; }
 .conversations-error { color: var(--red); }
 .conversation-rows { display: grid; gap: .35rem; margin: 0; padding: 0; list-style: none; }
-.conversation-row { border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: color-mix(in srgb, var(--surface-0) 52%, transparent); }
+.conversation-row { display: flex; align-items: stretch; overflow: hidden; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: color-mix(in srgb, var(--surface-0) 52%, transparent); }
 .conversation-row.current { border-color: color-mix(in srgb, var(--sky) 72%, var(--surface-1)); background: color-mix(in srgb, var(--sky) 12%, var(--surface-0)); box-shadow: inset .18rem 0 var(--sky); }
-.conversation-choice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; width: 100%; align-items: center; gap: .55rem; border: 0; border-radius: var(--control-radius); padding: .5rem .6rem; background: transparent; text-align: left; color: inherit; cursor: pointer; }
+.conversation-choice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; flex: 1; min-width: 0; align-items: center; gap: .55rem; border: 0; border-radius: 0; padding: .5rem .6rem; background: transparent; text-align: left; color: inherit; cursor: pointer; }
+/* a muted Remove that forgets the console's record without touching the transcript */
+.conversation-remove { display: flex; flex-shrink: 0; align-items: center; justify-content: center; border: 0; border-left: 1px solid var(--surface-1); border-radius: 0; padding: 0 .7rem; background: transparent; color: var(--subtext-0); cursor: pointer; }
+.conversation-remove-icon { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
+.conversation-remove:not(:disabled):hover { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
+.conversation-remove:disabled { cursor: default; opacity: .5; }
+/* the fly-out Name field submits the agent's own rename command */
+.conversations-menu .conversation-name { display: flex; align-items: stretch; gap: .35rem; }
+.conversations-menu .conversation-name input { flex: 1; min-width: 12rem; border: 1px solid var(--surface-2); border-radius: var(--control-radius); padding: .45rem .55rem; background: color-mix(in srgb, var(--surface-0) 82%, transparent); color: var(--text); font-size: .78rem; }
+.conversations-menu .conversation-name button { min-width: 3.4rem; justify-content: center; border-color: color-mix(in srgb, var(--sky) 68%, var(--surface-1)); color: var(--sky); }
 .conversation-choice:not(:disabled):hover { background: color-mix(in srgb, var(--surface-1) 45%, transparent); }
 .conversation-choice:disabled { cursor: default; opacity: .5; }
 .conversation-row.current .conversation-choice:disabled { opacity: 1; }

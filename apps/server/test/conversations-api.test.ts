@@ -1,7 +1,11 @@
 import argon2 from 'argon2';
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import { AuthService } from '../src/auth/service.js';
 import { buildApp } from '../src/app.js';
+import { ConsoleNamedConversationService } from '../src/conversations/console-named-service.js';
 import { stated } from './helpers/agent.js';
 import { testConfig, testWorktree } from './helpers/config.js';
 
@@ -14,7 +18,45 @@ async function authenticatedHeaders(app: Awaited<ReturnType<typeof buildApp>>) {
   return { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
 }
 
+const dirs: string[] = [];
+afterEach(async () => { await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
+
 describe('conversations listing API', () => {
+  it('marks a row console-named as the intersection with the record store (codex-family by id)', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const cora = testWorktree({ id: 'potato:/wt/cora', projectId: 'potato', label: 'Cora', path: '/wt/cora', identity: '/wt/cora', hostPath: '/host/cora' });
+    const claudeId = '11111111-2222-4333-8444-555555555555';
+    const codexId = '0198c555-5555-7555-8555-555555555555';
+    const unnamed = '22222222-3333-4333-8444-555555555555';
+    const discovery = {
+      target: async () => undefined,
+      conversationId: async () => undefined,
+      worktreesNow: () => [cora],
+      conversations: async () => [
+        { kind: 'claude', id: claudeId, name: 'named here', automatic: false, lastActiveAt: 300, directory: '/host/cora' },
+        { kind: 'codex', id: codexId, name: 'codex named here', lastActiveAt: 200, directory: '/host/cora' },
+        { kind: 'claude', id: unnamed, name: 'not named here', automatic: false, lastActiveAt: 100, directory: '/host/cora' },
+      ],
+    };
+    const launch = { canResumeConversation: () => true };
+    const directory = await mkdtemp(join(tmpdir(), 'rac-conv-intersection-')); dirs.push(directory);
+    const consoleNamed = new ConsoleNamedConversationService({ file: join(directory, 'records.json') });
+    await consoleNamed.record('potato', { kind: 'claude', id: claudeId });
+    // recorded under OMX; the codex-tagged row still intersects by id across the pair
+    await consoleNamed.record('potato', { kind: 'omx', id: codexId });
+    const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 45).toString('base64url')), discovery: discovery as never, launch: launch as never, consoleNamed });
+    try {
+      const headers = await authenticatedHeaders(app);
+      const listed = await app.inject({ method: 'GET', url: `/api/worktrees/${encodeURIComponent(cora.id)}/conversations`, headers: { host: headers.host, cookie: headers.cookie } });
+      const rows = listed.json().conversations as Array<{ id: string; consoleNamed: boolean }>;
+      expect(rows.find(row => row.id === claudeId)?.consoleNamed).toBe(true);
+      expect(rows.find(row => row.id === codexId)?.consoleNamed).toBe(true);
+      expect(rows.find(row => row.id === unnamed)?.consoleNamed).toBe(false);
+    } finally {
+      await app.close();
+    }
+  }, 15_000);
+
   it('lists a Project-wide union across its worktrees, resolving worktreeId, current and ordering', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     // two Linked worktrees of one Project; the host-visible checkout root is what the Adapters scan

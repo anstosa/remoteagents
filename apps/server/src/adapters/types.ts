@@ -33,6 +33,15 @@ export type Conversation = { id: string; title?: string };
 export type ConversationSummary = { id: string; name: string; automatic?: boolean; lastActiveAt: number; directory: string };
 /** The pure tmux delivery for a CLI's own rename command: paste `text`, then send `keys`. */
 export type ConversationRename = { text: string; keys: TmuxKey[] };
+/** codex and omx share one rollout store (ADR 0005), so their Conversations are one family. */
+export const codexFamily = (kind: AgentKind): boolean => kind === 'codex' || kind === 'omx';
+/**
+ * Whether two Conversation references name the same Conversation: equal ids and matching kinds,
+ * treating codex and omx as one (ADR 0005), so a rollout resumed or named under either wrapper is
+ * the same Conversation.
+ */
+export const sameConversation = (left: { kind: AgentKind; id: string }, right: { kind: AgentKind; id: string }): boolean =>
+  left.id === right.id && (codexFamily(left.kind) ? codexFamily(right.kind) : left.kind === right.kind);
 export type Turn = { prompt?: string; text: string; rows?: number };
 // `source` is the web's dismissal-strategy discriminator, not the transport: a
 // `parsed` question the client may optimistically dismiss, a `structured` one (OMX's

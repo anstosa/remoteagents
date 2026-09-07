@@ -2897,6 +2897,9 @@ function useWorktreeConversations(worktreeId?: string, agentId?: string, resume?
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [resumingKey, setResumingKey] = useState<string>();
+  const [nameDraft, setNameDraft] = useState('');
+  const [naming, setNaming] = useState(false);
+  const [removingKey, setRemovingKey] = useState<string>();
   const loadGeneration = useRef(0);
   const resourceBase = persistenceResourceBase(worktreeId, agentId);
   const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen, { placement: 'left', boundarySelector: '.log', boundaryRootSelector: '.agent-view, .worktree-view', contentSized: true });
@@ -2911,6 +2914,9 @@ function useWorktreeConversations(worktreeId?: string, agentId?: string, resume?
     setLoading(false);
     setError('');
     setResumingKey(undefined);
+    setNameDraft('');
+    setNaming(false);
+    setRemovingKey(undefined);
   }, [agentId, worktreeId]);
 
   // compute one Project's conversation list on request
@@ -3019,29 +3025,81 @@ function useWorktreeConversations(worktreeId?: string, agentId?: string, resume?
     }
   };
 
+  // name the current Conversation from the console: the server submits the agent's own rename
+  // command into the pane, confirms it from the agent's store, then records it. On success the
+  // list is reloaded so the new console-named row appears; a failure (e.g. the agent did not
+  // confirm) is shown inline and nothing is recorded.
+  const submitName = async () => {
+    const name = nameDraft.trim();
+    // a name is submitted only against a live agent, one at a time
+    if (name === '' || naming || agentId === undefined) return;
+    setNaming(true);
+    setError('');
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(agentId)}/conversations/name`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
+      // surface the server's reason (the confirm timeout, a question dialog, an in-flight rename)
+      if (!response.ok) throw new Error(await launchError(response));
+      setNameDraft('');
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error && reason.message ? reason.message : 'Unable to name this conversation');
+    } finally {
+      setNaming(false);
+    }
+  };
+
+  // forget the console's record of one Conversation. The transcript and its name survive, so the
+  // row drops out of the quick list but stays under All named; the flag is cleared in place.
+  const doRemove = async (conversation: ListedConversation) => {
+    const key = `${conversation.kind}:${conversation.id}`;
+    // remove one record at a time
+    if (removingKey !== undefined || resourceBase === undefined) return;
+    setRemovingKey(key);
+    setError('');
+    try {
+      const response = await request(`${resourceBase}/conversations/${encodeURIComponent(conversation.kind)}/${encodeURIComponent(conversation.id)}`, { method: 'DELETE' });
+      // a 404 means the record was already gone; either way it is no longer console-named
+      if (!response.ok && response.status !== 404) throw new Error('remove failed');
+      setConversations(current => current?.map(row => row.kind === conversation.kind && row.id === conversation.id ? { ...row, consoleNamed: false } : row));
+    } catch {
+      setError('Unable to remove this conversation from the list');
+    } finally {
+      setRemovingKey(undefined);
+    }
+  };
+
   // hide conversations without any persistence context
   if (resourceBase === undefined) return { control: null };
-  // the closed control counts the console-named rows, as the bookmark control did (0 until
-  // the naming ticket lands the console-named record store)
-  const consoleNamedCount = conversations?.filter(conversation => conversation.consoleNamed).length ?? 0;
+  // the closed control counts the console-named rows, as the bookmark control did
+  const consoleNamedRows = (conversations ?? []).filter(conversation => conversation.consoleNamed);
+  const consoleNamedCount = consoleNamedRows.length;
   const total = conversations?.length ?? 0;
   const label = `Conversations (${consoleNamedCount})`;
   const needle = query.trim().toLocaleLowerCase();
   // search matches the Conversation name and the agent kind label
   const matches = (conversations ?? []).filter(conversation => needle === '' || conversation.name.toLocaleLowerCase().includes(needle) || agentKindLabel[conversation.kind].toLocaleLowerCase().includes(needle));
+  // the quick list: the five most recently active Conversations the console named (the server
+  // already orders newest-active first). The Name field placeholder shows the current name if any.
+  const flyoutConsoleNamed = consoleNamedRows.slice(0, 5);
+  const currentName = conversations?.find(conversation => conversation.current)?.name;
+  // the dialog splits console-named rows out ahead of the rest so my own names come first
+  const namedHere = matches.filter(conversation => conversation.consoleNamed);
+  const allNamed = matches.filter(conversation => !conversation.consoleNamed);
 
-  const row = (conversation: ListedConversation) => {
+  const row = (conversation: ListedConversation, removable = false) => {
     const key = `${conversation.kind}:${conversation.id}`;
     const blockedReason = resumeBlockedReason(conversation);
     const resuming = resumingKey === key;
+    const removing = removingKey === key;
     // a listed-but-unresumable row (current, Scratch/orphaned, or an unconfigured kind) stays
-    // inert with its reason as a hint; the working/asking/duplicate cases are stated once at top
-    return <li key={key} className={`conversation-row${conversation.automatic ? ' automatic' : ''}${conversation.current ? ' current' : ''}`} aria-current={conversation.current ? 'true' : undefined}><button className="conversation-choice" type="button" disabled={blockedReason !== undefined || resumingKey !== undefined} title={blockedReason ?? `Resume ${conversation.name}`} onClick={() => void doResume(conversation)}>{resuming ? <span className="spinner" /> : <span className={`conversation-mark launch-kind-${conversation.kind}`} aria-hidden="true">{agentKindGlyph[conversation.kind]}</span>}<span className="conversation-copy"><strong>{conversation.name}</strong><small>{agentKindLabel[conversation.kind]} · {relativeAge(conversation.lastActiveAt)}{conversation.automatic ? ' · automatic title' : ''}</small>{blockedReason !== undefined && !conversation.current && <small className="conversation-blocked">{blockedReason}</small>}</span>{conversation.current && <em className="conversation-pill">CURRENT</em>}</button></li>;
+    // inert with its reason as a hint; the working/asking/duplicate cases only surface server-side,
+    // so tapping such a row runs the switch and lets its rejection land as a toast (see doResume)
+    return <li key={key} className={`conversation-row${conversation.automatic ? ' automatic' : ''}${conversation.current ? ' current' : ''}`} aria-current={conversation.current ? 'true' : undefined}><button className="conversation-choice" type="button" disabled={blockedReason !== undefined || resumingKey !== undefined} title={blockedReason ?? `Resume ${conversation.name}`} onClick={() => void doResume(conversation)}>{resuming ? <span className="spinner" /> : <span className={`conversation-mark launch-kind-${conversation.kind}`} aria-hidden="true">{agentKindGlyph[conversation.kind]}</span>}<span className="conversation-copy"><strong>{conversation.name}</strong><small>{agentKindLabel[conversation.kind]} · {relativeAge(conversation.lastActiveAt)}{conversation.automatic ? ' · automatic title' : ''}</small>{blockedReason !== undefined && !conversation.current && <small className="conversation-blocked">{blockedReason}</small>}</span>{conversation.current && <em className="conversation-pill">CURRENT</em>}</button>{removable && <button className="conversation-remove" type="button" disabled={removingKey !== undefined} aria-label={`Remove ${conversation.name} from this list`} title={`Remove ${conversation.name} from this list`} onClick={() => void doRemove(conversation)}>{removing ? <span className="spinner" /> : <svg className="conversation-remove-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 7V4.5h4V7M6.5 7l.9 12.1a1 1 0 0 0 1 .9h7.2a1 1 0 0 0 1-.9L17.5 7M10 11v5M14 11v5" /></svg>}</button>}</li>;
   };
 
-  const dialog = dialogOpen && createPortal(<div className="dialog conversations-dialog" role="dialog" aria-modal="true" aria-labelledby="conversations-dialog-title" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); closeDialog(); } }} onClick={event => { if (event.target === event.currentTarget) closeDialog(); }}><div><header><div><small>NAMED CONVERSATIONS</small><h2 id="conversations-dialog-title">Conversations</h2></div><button type="button" aria-label="Close conversations" title="Close" onClick={closeDialog}>×</button></header><div className="conversations-tools"><label className="conversations-search"><span className="sr-only">Search conversations</span><input type="search" value={query} placeholder="Search by name or agent" autoFocus onChange={event => setQuery(event.target.value)} /></label>{/* a block that applies to every row is stated once here, never per row */}<p className="conversations-note">Tap a conversation to resume it in its home worktree. A worktree that is working, asking a question, or already running more than one agent can't be switched until it settles.</p>{/* a resume failure keeps the list; a load failure replaces it (below) */}{error && conversations !== undefined && <p className="conversations-error" role="alert">{error}</p>}</div><div className="conversations-list">{loading && conversations === undefined ? <div className="conversations-loading" role="status"><span className="spinner" />Loading…</div> : error && conversations === undefined ? <p className="conversations-error" role="alert">{error}</p> : <><p className="conversations-heading">All named conversations</p>{matches.length === 0 ? <p className="conversations-empty">{total === 0 ? 'No named conversations in this project yet.' : 'No matches.'}</p> : <ul className="conversation-rows">{matches.map(row)}</ul>}</>}</div><footer><span>{total} named</span><button type="button" onClick={closeDialog}>Close</button></footer></div></div>, document.body);
+  const dialog = dialogOpen && createPortal(<div className="dialog conversations-dialog" role="dialog" aria-modal="true" aria-labelledby="conversations-dialog-title" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); closeDialog(); } }} onClick={event => { if (event.target === event.currentTarget) closeDialog(); }}><div><header><div><small>NAMED CONVERSATIONS</small><h2 id="conversations-dialog-title">Conversations</h2></div><button type="button" aria-label="Close conversations" title="Close" onClick={closeDialog}>×</button></header><div className="conversations-tools"><label className="conversations-search"><span className="sr-only">Search conversations</span><input type="search" value={query} placeholder="Search by name or agent" autoFocus onChange={event => setQuery(event.target.value)} /></label>{/* one line of guidance for the whole list; per-row block reasons surface as a toast on tap */}<p className="conversations-note">Tap a conversation to resume it in its home worktree.</p>{/* a resume failure keeps the list; a load failure replaces it (below) */}{error && conversations !== undefined && <p className="conversations-error" role="alert">{error}</p>}</div><div className="conversations-list">{loading && conversations === undefined ? <div className="conversations-loading" role="status"><span className="spinner" />Loading…</div> : error && conversations === undefined ? <p className="conversations-error" role="alert">{error}</p> : matches.length === 0 ? <p className="conversations-empty">{total === 0 ? 'No named conversations in this project yet.' : 'No matches.'}</p> : <>{namedHere.length > 0 && <><p className="conversations-heading">Named here</p><ul className="conversation-rows">{namedHere.map(conversation => row(conversation, true))}</ul></>}{allNamed.length > 0 && <><p className="conversations-heading">All named</p><ul className="conversation-rows">{allNamed.map(conversation => row(conversation))}</ul></>}</>}</div><footer><span>{total} named</span><button type="button" onClick={closeDialog}>Close</button></footer></div></div>, document.body);
 
-  const control = <div className="conversations-control" ref={anchorRef}><button className={`log-control page-arrow conversations-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.3 7.3L4 21l1.7-5.7A8 8 0 1 1 21 12Z" /></svg>}{consoleNamedCount > 0 && <span className="saved-prompts-count conversations-count" aria-hidden="true">{consoleNamedCount}</span>}</button>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div ref={flyoutRef} className="conversations-menu" style={flyoutStyle} aria-label="Conversations">{error && <p className="conversation-error" role="alert">{error}</p>}<button className="log-control conversations-all" type="button" onClick={() => void openDialog()}><span>All conversations</span><small>{total}</small></button></div></FlyoutPortal>}{dialog}</div>;
+  const control = <div className="conversations-control" ref={anchorRef}><button className={`log-control page-arrow conversations-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.3 7.3L4 21l1.7-5.7A8 8 0 1 1 21 12Z" /></svg>}{consoleNamedCount > 0 && <span className="saved-prompts-count conversations-count" aria-hidden="true">{consoleNamedCount}</span>}</button>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div ref={flyoutRef} className="conversations-menu" style={flyoutStyle} aria-label="Conversations">{agentId !== undefined && <form className="conversation-name" onSubmit={event => { event.preventDefault(); void submitName(); }}><input type="text" value={nameDraft} maxLength={120} placeholder={currentName ? `Rename “${currentName}”` : 'Name this conversation'} aria-label="Name this conversation" onChange={event => setNameDraft(event.target.value)} /><button type="submit" disabled={naming || nameDraft.trim() === ''} aria-label="Name conversation">{naming ? <span className="spinner" /> : 'Name'}</button></form>}{error && <p className="conversation-error" role="alert">{error}</p>}{flyoutConsoleNamed.length > 0 && <><p className="conversations-note">Tap a conversation to resume it in its home worktree.</p><ul className="conversation-rows">{flyoutConsoleNamed.map(conversation => row(conversation, true))}</ul></>}<button className="log-control conversations-all" type="button" onClick={() => void openDialog()}><span>All conversations</span><small>{total}</small></button></div></FlyoutPortal>}{dialog}</div>;
   return { control };
 }
 
