@@ -142,6 +142,16 @@ test('shows agent versions, updates one agent, and aggregates availability on se
   });
   const trigger = page.getByRole('button', { name: /Global settings/u });
   await expect(trigger.locator('.server-switcher-settings-update-dot')).toBeVisible();
+  // pulse while any update remains available
+  await expect(trigger).toHaveAccessibleName('Global settings — updates available');
+  await expect.poll(() => trigger.evaluate(element => element.getAnimations().length)).toBeGreaterThan(0);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect.poll(() => trigger.evaluate(element => element.getAnimations().length)).toBe(0);
+  const reducedMotionStyle = await trigger.evaluate(element => { const style = getComputedStyle(element); return { borderColor: style.borderTopColor, color: style.color, shadow: style.boxShadow }; });
+  expect(reducedMotionStyle.borderColor).toBe(reducedMotionStyle.color);
+  expect(reducedMotionStyle.shadow).toContain('inset');
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await expect.poll(() => trigger.evaluate(element => element.getAnimations().length)).toBeGreaterThan(0);
   await trigger.click();
   await expect(settingsPage.getByRole('radio', { name: 'Codex' }).locator('.client-settings-agent-version')).toHaveText('v0.152.1 → v0.153.2');
   await expect(settingsPage.getByRole('radio', { name: 'OMX' }).locator('.client-settings-agent-version')).toHaveText('v0.21.3');
@@ -149,6 +159,8 @@ test('shows agent versions, updates one agent, and aggregates availability on se
   await expect(settingsPage.getByRole('radio', { name: 'Codex' }).locator('.client-settings-agent-version')).toHaveText('v0.153.2');
   await expect(settingsPage.getByRole('button', { name: /Update Codex/u })).toHaveCount(0);
   await expect(trigger.locator('.server-switcher-settings-update-dot')).toHaveCount(0);
+  await expect(trigger).toHaveAccessibleName('Global settings');
+  await expect.poll(() => trigger.evaluate(element => element.getAnimations().length)).toBe(0);
 });
 
 test('reports agent version check failures', async ({ page }) => {
