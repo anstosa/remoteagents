@@ -141,7 +141,8 @@ const isBranchRemovalFacts = (value: unknown): value is BranchRemovalFacts => va
   && typeof (value as BranchRemovalFacts).defaultBranch === 'boolean';
 type AgentState = 'working' | 'prompt-done' | 'action-required' | 'closed' | 'sleeping';
 type DashboardOperation = 'launching'|'restarting'|'clearing'|'deactivating'|'sleeping'|'waking'|'new-task';
-type DashboardItem = { key: string; label: string; state: AgentState; order: number; unread: boolean; operation?: DashboardOperation; agent?: Agent; worktree?: Worktree };
+type PendingSessionLaunch = { id: string; draftId: string; label: string; resolution?: LaunchResolution; choice?: LaunchChoice; kind?: AgentKind; sandboxed?: boolean; phase: 'launching'|'confirming'|'delayed'|'failed'; agentId?: string; error?: string; confirmationTimer?: number } & ({ scope: 'scratch' } | { scope: 'directory'; projectId: string });
+type DashboardItem = { key: string; label: string; state: AgentState; order: number; unread: boolean; operation?: DashboardOperation; agent?: Agent; worktree?: Worktree; pendingLaunch?: PendingSessionLaunch };
 type CompleteLogMetadata = { state: 'complete'; latestAgentMessage: string | null; latestAssistantMessage: string | null; latestAssistantMessageOverflows: boolean };
 type LogFrame = { type: 'append' | 'reset'; text?: string; older?: boolean; newer?: boolean; metadata?: CompleteLogMetadata; question?: InlineQuestion; lastPrompt?: string; latestAgentMessage?: string; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean };
 type ChoiceOption = { label: string; number: number; answerIndex: number };
@@ -280,6 +281,48 @@ const usePromptDraft = (id: string): [string, Dispatch<SetStateAction<string>>] 
   useSyncExternalStore(listener => subscribeToPromptDraft(id, listener), () => getPromptDraft(id), () => ''),
   next => setPromptDraft(id, next)
 ];
+// retain selected files across composer remounts without persisting file contents
+const promptAttachments = new Map<string, File[]>();
+const emptyPromptAttachments: File[] = [];
+// identify drafts prepared before a worktree has an agent
+const worktreePromptId = (worktreeId: string) => `worktree-prompt:${worktreeId}`;
+const promptHandoffFocus = new Map<string, { start: number; end: number }>();
+// share attachment snapshots with the draft's existing subscription
+const usePromptAttachments = (id: string): [File[], Dispatch<SetStateAction<File[]>>] => [
+  useSyncExternalStore(listener => subscribeToPromptDraft(id, listener), () => promptAttachments.get(id) ?? emptyPromptAttachments),
+  // publish file changes before a tab or lifecycle transition can unmount the composer
+  next => {
+    const current = promptAttachments.get(id) ?? emptyPromptAttachments;
+    const files = typeof next === 'function' ? next(current) : next;
+    // release file buffers when the draft is cleared
+    if (files.length === 0) promptAttachments.delete(id);
+    else promptAttachments.set(id, files);
+    // notify every mounted draft consumer
+    promptDraftListeners.get(id)?.forEach(listener => listener());
+  }
+];
+// hand a prepared draft to the dashboard-confirmed agent without sending it
+const handoffPromptDraft = (from: string, to: string) => {
+  const value = getPromptDraft(from);
+  const files = promptAttachments.get(from);
+  const input = document.activeElement;
+  const focused = input instanceof HTMLTextAreaElement && input.dataset.promptId === from;
+  // leave unrelated dashboard refreshes free of draft writes
+  if (!value && files === undefined && !focused) return;
+  // preserve an in-progress edit without stealing focus from another tab
+  if (focused) {
+    promptHandoffFocus.set(to, { start: input.selectionStart, end: input.selectionEnd });
+  }
+  // retain selected files through the placeholder remount
+  if (files !== undefined) promptAttachments.set(to, [...files, ...(promptAttachments.get(to) ?? [])]);
+  // retain any existing draft on the discovered agent
+  if (value) setPromptDraft(to, current => current ? `${value}\n\n${current}` : value);
+  // refresh a previously mounted destination for attachment-only drafts
+  if (files !== undefined) promptDraftListeners.get(to)?.forEach(listener => listener());
+  promptAttachments.delete(from);
+  promptDrafts.delete(from);
+  savePromptDraft(from, '');
+};
 const terminalInputs = new Map<string, (value: string) => void>();
 const exitTerminalInput = new Map<string, () => void>();
 const logHistoryRequests = new Map<string, (direction: -1 | 0 | 1) => void>();
@@ -1827,14 +1870,14 @@ function MobileTerminalKeys({ id }: { id: string }) {
 }
 
 // render the agent prompt controls
-function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting, restarting, clearing, deactivating, sleeping, swapping, swapped, onCancel, onDelete, onRestart, onRestartAs, onClear, onDeactivate, onSleep, onSwap, onPromptFocus, onOperationFeedback, projectUrl, browserOpen, onBrowserToggle, question, worktreeId, newTaskConfigured, stack, review, pinned, onTogglePin, onRenameWorktree, statusSlotRef, historySlotRef }: { id: string; history: PromptHistoryEntry[]; onHistoryChanged: () => Promise<void>; canCancel: boolean; cancelling: boolean; deleting: boolean; restarting: boolean; clearing: boolean; deactivating: boolean; sleeping: boolean; swapping: boolean; swapped: boolean; onCancel: () => void; onDelete?: () => void; onRestart?: () => void; onRestartAs?: RestartAs; onClear?: () => void; onDeactivate?: () => void; onSleep?: () => void; onSwap: () => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; projectUrl?: string; browserOpen?: boolean; onBrowserToggle?: () => void; question?: ChoiceQuestion; worktreeId?: string; newTaskConfigured?: boolean; stack?: Stack; review?: ReviewButtonState; pinned?: boolean; onTogglePin?: () => void; onRenameWorktree?: () => void; statusSlotRef?: (element: HTMLSpanElement | null) => void; historySlotRef?: (element: HTMLSpanElement | null) => void }) {
+function Prompt({ id, ready = true, lifecycleControl, launchControl, history, onHistoryChanged, canCancel, cancelling, deleting, restarting, clearing, deactivating, sleeping, swapping, swapped, onCancel, onDelete, onRestart, onRestartAs, onClear, onDeactivate, onSleep, onSwap, onPromptFocus, onOperationFeedback, projectUrl, browserOpen, onBrowserToggle, question, worktreeId, newTaskConfigured, stack, review, pinned, onTogglePin, onRenameWorktree, statusSlotRef, historySlotRef }: { id: string; ready?: boolean; lifecycleControl?: ReactNode; launchControl?: ReactNode; history: PromptHistoryEntry[]; onHistoryChanged: () => Promise<void>; canCancel: boolean; cancelling: boolean; deleting: boolean; restarting: boolean; clearing: boolean; deactivating: boolean; sleeping: boolean; swapping: boolean; swapped: boolean; onCancel: () => void; onDelete?: () => void; onRestart?: () => void; onRestartAs?: RestartAs; onClear?: () => void; onDeactivate?: () => void; onSleep?: () => void; onSwap: () => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; projectUrl?: string; browserOpen?: boolean; onBrowserToggle?: () => void; question?: ChoiceQuestion; worktreeId?: string; newTaskConfigured?: boolean; stack?: Stack; review?: ReviewButtonState; pinned?: boolean; onTogglePin?: () => void; onRenameWorktree?: () => void; statusSlotRef?: (element: HTMLSpanElement | null) => void; historySlotRef?: (element: HTMLSpanElement | null) => void }) {
   const [value, setValue] = usePromptDraft(id);
   const [commandToken, setCommandToken] = useState<CommandToken>();
   const [activeCommand, setActiveCommand] = useState(0);
   const [promptCommands, setPromptCommands] = useState<PromptCommand[]>([]);
   const pendingKey = `prompt:${id}`;
   const pending = usePendingOperation(pendingKey);
-  const [attachments, setAttachments] = useState<File[]>([]);
+  const [attachments, setAttachments] = usePromptAttachments(id);
   const [attachmentError, setAttachmentError] = useState<string>();
   const [draggingAttachments, setDraggingAttachments] = useState(false);
   const attachmentDragDepth = useRef(0);
@@ -1873,9 +1916,12 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
   const { anchorRef: commandAnchorRef, flyoutRef: commandFlyoutRef, style: commandFlyoutStyle } = useViewportFlyout<HTMLDivElement>(commandToken !== undefined, { placement: 'above', matchAnchorWidth: true });
   const commandOptions = commandToken === undefined ? [] : promptCommands.filter(command => command.value.startsWith(commandToken.prefix) && command.value.slice(1).toLocaleLowerCase().includes(commandToken.query.toLocaleLowerCase()));
   useEffect(() => { historyIndex.current = undefined; historyDraft.current = ''; }, [id]);
+  // load commands only after the agent exists
   useEffect(() => {
     let cancelled = false;
     setPromptCommands([]);
+    // keep startup composers local
+    if (!ready) return;
     void request(`/api/agents/${encodeURIComponent(id)}/commands`).then(response => response.ok ? response.json() : undefined).then((payload: unknown) => {
       if (cancelled || payload === null || typeof payload !== 'object' || !Array.isArray((payload as { commands?: unknown }).commands)) return;
       const catalog = (payload as { commands: unknown[] }).commands.flatMap(command => {
@@ -1886,8 +1932,11 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
       setPromptCommands(catalog);
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [id]);
+  }, [id, ready]);
+  // refresh only a live agent queue
   const refreshQueuedPrompts = useCallback(async () => {
+    // wait for dashboard confirmation
+    if (!ready) return;
     const response = await request(`/api/agents/${encodeURIComponent(id)}/queued-prompts`);
     if (!response.ok) return;
     const payload: unknown = await response.json();
@@ -1896,21 +1945,27 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
     if (prompts.length !== (payload as { prompts: unknown[] }).prompts.length) return;
     setQueuedPrompts(prompts);
     if (prompts.length === 0) setQueuedPromptsOpen(false);
-  }, [id]);
+  }, [id, ready]);
+  // start queue polling when the agent becomes available
   useEffect(() => {
     setQueuedPrompts([]);
     setQueuedPromptsOpen(false);
     setQueuedPromptEdit(undefined);
+    // avoid idle polling before launch completes
+    if (!ready) return;
     return pollWhileVisible(refreshQueuedPrompts, 2_000, true, 15_000);
-  }, [refreshQueuedPrompts]);
+  }, [refreshQueuedPrompts, ready]);
+  // load saved prompts only for a live agent
   useEffect(() => {
+    // do not request resources for a placeholder identity
+    if (!ready) return;
     let cancelled = false;
     void request(`/api/agents/${encodeURIComponent(id)}/saved-prompts`).then(response => response.ok ? response.json() : undefined).then((payload: unknown) => {
       if (cancelled || payload === null || typeof payload !== 'object' || !Array.isArray((payload as { prompts?: unknown }).prompts)) return;
       setSavedPrompts((payload as { prompts: unknown[] }).prompts.filter(isSavedPrompt));
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [id]);
+  }, [id, ready]);
   useEffect(() => () => {
     if (savedConfirmationTimer.current !== undefined) window.clearTimeout(savedConfirmationTimer.current);
     if (copiedSelectionTimer.current !== undefined) window.clearTimeout(copiedSelectionTimer.current);
@@ -1952,6 +2007,15 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
     return () => observer.disconnect();
   }, []);
   const [listening, setListening] = useState(false);
+  // continue typing at the same caret after the launch placeholder is replaced
+  useLayoutEffect(() => {
+    const selection = promptHandoffFocus.get(id);
+    promptHandoffFocus.delete(id);
+    // restore only the composer that owned focus at handoff
+    if (selection === undefined || promptInput.current === null) return;
+    promptInput.current.focus();
+    promptInput.current.setSelectionRange(selection.start, selection.end);
+  }, [id]);
   const recognition = useRef<SpeechRecognitionInstance | undefined>(undefined);
   const voiceHoldTimer = useRef<number | undefined>(undefined);
   const voiceHoldPointer = useRef<number | undefined>(undefined);
@@ -2052,8 +2116,10 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
     recognition.current = undefined;
     setListening(false);
   };
+  // submit only after the launch handoff has a real agent
   const submit = async () => {
-    if (pending || (!swapped && !value && attachments.length === 0)) return;
+    // preserve startup drafts on enter
+    if (!ready || pending || (!swapped && !value && attachments.length === 0)) return;
     stopVoice();
     if (swapped) {
       const sendTerminalInput = terminalInputs.get(id);
@@ -2091,8 +2157,10 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
     }
     finally { setPendingOperation(pendingKey, false); }
   };
+  // save only against an available agent
   const saveCurrentPrompt = async () => {
-    if (pending || savingPrompt || (!value.trim() && attachments.length === 0)) return;
+    // preserve startup drafts on the save shortcut
+    if (!ready || pending || savingPrompt || (!value.trim() && attachments.length === 0)) return;
     stopVoice();
     setSavingPrompt(true);
     setSavedPromptError(undefined);
@@ -2331,7 +2399,7 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
   const cancelButton = <button className="danger icon-button cancel-agent" disabled={!canCancel || cancelling} aria-label="Cancel agent" title="Cancel agent" onClick={onCancel}>{cancelling ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>}</button>;
   const deleteButton = <button className="danger icon-button delete-agent" disabled={deleting} aria-label="Delete agent" title="Delete agent" onClick={onDelete}>{deleting ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button>;
   const powerMenu = onRestart === undefined || onClear === undefined || onDeactivate === undefined || onSleep === undefined ? null : <AgentPowerMenu mode="active" pending={restarting || clearing || deactivating || sleeping} onRestart={onRestart} onClear={onClear} onSleep={onSleep} onTurnOff={onDeactivate} {...(onRestartAs === undefined ? {} : { restartAs: onRestartAs })} />;
-  const stop = powerMenu ?? (onDelete === undefined ? cancelButton : deleteButton);
+  const stop = lifecycleControl ?? powerMenu ?? (onDelete === undefined ? cancelButton : deleteButton);
   // open the native file chooser
   const attachFiles = () => attachmentInput.current?.click();
   // keep file intake one step above lifecycle controls
@@ -2395,24 +2463,29 @@ function Prompt({ id, history, onHistoryChanged, canCancel, cancelling, deleting
       input.setSelectionRange(input.value.length, input.value.length);
     });
   };
-  const composer = <div className="prompt-composer" ref={commandAnchorRef}><textarea ref={promptInput} className={listening ? 'voice-listening' : undefined} aria-label="Prompt" aria-description={supportsSpeechRecognition ? 'Press and hold to start dictation. Tap again to stop.' : undefined} aria-autocomplete="list" aria-expanded={commandToken !== undefined} aria-controls={commandToken === undefined ? undefined : `prompt-commands-${id}`} aria-activedescendant={commandOptions[activeCommand] === undefined ? undefined : `prompt-command-${id}-${activeCommand}`} value={value} onFocus={() => { exitTerminalInput.get(id)?.(); onPromptFocus(); }} onBlur={() => setCommandToken(undefined)} onCopy={flashCopiedPromptSelection} onPaste={pasteAttachments} onPointerDown={beginVoiceHold} onPointerUp={endVoiceHold} onPointerCancel={endVoiceHold} onLostPointerCapture={endVoiceHold} onContextMenu={event => { if (voiceHoldStarted.current) event.preventDefault(); }} onKeyDown={event => { const plainArrow = !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey; if (commandOptions.length > 0 && plainArrow && event.key === 'ArrowDown') { event.preventDefault(); setActiveCommand(current => (current + 1) % commandOptions.length); } else if (commandOptions.length > 0 && plainArrow && event.key === 'ArrowUp') { event.preventDefault(); setActiveCommand(current => (current + commandOptions.length - 1) % commandOptions.length); } else if (commandOptions.length > 0 && plainArrow && event.key === 'Enter') { event.preventDefault(); selectCommand(commandOptions[activeCommand] ?? commandOptions[0]!); } else if (plainArrow && event.key === 'ArrowUp' && (historyIndex.current !== undefined || event.currentTarget.selectionStart === event.currentTarget.selectionEnd && !value.slice(0, event.currentTarget.selectionStart).includes('\n'))) { event.preventDefault(); recallPrompt(-1); } else if (plainArrow && event.key === 'ArrowDown' && historyIndex.current !== undefined) { event.preventDefault(); recallPrompt(1); } else if (event.key === 'Escape' && commandToken !== undefined) { event.preventDefault(); setCommandToken(undefined); } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void saveCurrentPrompt(); } else if (event.key === 'Tab') { event.preventDefault(); setValue(current => current + '\t'); } else if (event.key === 'Enter') { event.preventDefault(); /* preserve explicit line breaks */ if (event.ctrlKey || event.shiftKey) insertPromptText(event.currentTarget, '\n'); /* forward plain blank Enter to output */ else if (!event.metaKey && !event.altKey && !value && attachments.length === 0) terminalInputs.get(id)?.('\r'); /* preserve mobile multiline entry */ else if (window.matchMedia('(max-width: 600px)').matches) insertPromptText(event.currentTarget, '\n'); else void submit(); } }} onChange={updatePrompt} />{commandToken !== undefined && <FlyoutPortal onDismiss={() => setCommandToken(undefined)}><div ref={commandFlyoutRef} className="command-menu" style={commandFlyoutStyle} id={`prompt-commands-${id}`} role="listbox" aria-label={`${commandToken.prefix} commands`}>{commandOptions.length > 0 ? commandOptions.map((command, index) => <button key={command.value} id={`prompt-command-${id}-${index}`} type="button" role="option" aria-selected={index === activeCommand} className={index === activeCommand ? 'active' : ''} onMouseDown={event => event.preventDefault()} onClick={() => selectCommand(command)}><code>{command.value}</code><span>{command.description}</span></button>) : <span className="command-menu-empty">No matching commands</span>}</div></FlyoutPortal>}</div>;
+  const composer = <div className="prompt-composer" ref={commandAnchorRef}><textarea ref={promptInput} data-prompt-id={id} className={listening ? 'voice-listening' : undefined} aria-label="Prompt" aria-description={supportsSpeechRecognition ? 'Press and hold to start dictation. Tap again to stop.' : undefined} aria-autocomplete="list" aria-expanded={commandToken !== undefined} aria-controls={commandToken === undefined ? undefined : `prompt-commands-${id}`} aria-activedescendant={commandOptions[activeCommand] === undefined ? undefined : `prompt-command-${id}-${activeCommand}`} value={value} onFocus={() => { exitTerminalInput.get(id)?.(); onPromptFocus(); }} onBlur={() => setCommandToken(undefined)} onCopy={flashCopiedPromptSelection} onPaste={pasteAttachments} onPointerDown={beginVoiceHold} onPointerUp={endVoiceHold} onPointerCancel={endVoiceHold} onLostPointerCapture={endVoiceHold} onContextMenu={event => { if (voiceHoldStarted.current) event.preventDefault(); }} onKeyDown={event => { const plainArrow = !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey; if (commandOptions.length > 0 && plainArrow && event.key === 'ArrowDown') { event.preventDefault(); setActiveCommand(current => (current + 1) % commandOptions.length); } else if (commandOptions.length > 0 && plainArrow && event.key === 'ArrowUp') { event.preventDefault(); setActiveCommand(current => (current + commandOptions.length - 1) % commandOptions.length); } else if (commandOptions.length > 0 && plainArrow && event.key === 'Enter') { event.preventDefault(); selectCommand(commandOptions[activeCommand] ?? commandOptions[0]!); } else if (plainArrow && event.key === 'ArrowUp' && (historyIndex.current !== undefined || event.currentTarget.selectionStart === event.currentTarget.selectionEnd && !value.slice(0, event.currentTarget.selectionStart).includes('\n'))) { event.preventDefault(); recallPrompt(-1); } else if (plainArrow && event.key === 'ArrowDown' && historyIndex.current !== undefined) { event.preventDefault(); recallPrompt(1); } else if (event.key === 'Escape' && commandToken !== undefined) { event.preventDefault(); setCommandToken(undefined); } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void saveCurrentPrompt(); } else if (event.key === 'Tab') { event.preventDefault(); setValue(current => current + '\t'); } else if (event.key === 'Enter') { event.preventDefault(); /* preserve explicit line breaks */ if (event.ctrlKey || event.shiftKey) insertPromptText(event.currentTarget, '\n'); /* forward plain blank Enter to output */ else if (!event.metaKey && !event.altKey && !value && attachments.length === 0) terminalInputs.get(id)?.('\r'); /* preserve mobile multiline entry */ else if (window.matchMedia('(max-width: 600px)').matches) insertPromptText(event.currentTarget, '\n'); else void submit(); } }} onChange={updatePrompt} />{commandToken !== undefined && <FlyoutPortal onDismiss={() => setCommandToken(undefined)}><div ref={commandFlyoutRef} className="command-menu" style={commandFlyoutStyle} id={`prompt-commands-${id}`} role="listbox" aria-label={`${commandToken.prefix} commands`}>{commandOptions.length > 0 ? commandOptions.map((command, index) => <button key={command.value} id={`prompt-command-${id}-${index}`} type="button" role="option" aria-selected={index === activeCommand} className={index === activeCommand ? 'active' : ''} onMouseDown={event => event.preventDefault()} onClick={() => selectCommand(command)}><code>{command.value}</code><span>{command.description}</span></button>) : <span className="command-menu-empty">No matching commands</span>}</div></FlyoutPortal>}</div>;
   const savedPanel = savedPromptsOpen && <FlyoutPortal onDismiss={() => setSavedPromptsOpen(false)}><section className="saved-prompts-panel more-menu flyout-menu" ref={savedPromptFlyoutRef} style={savedPromptFlyoutStyle} aria-label="Saved prompts"><header><strong>Saved prompts</strong></header><div className="saved-prompts-list">{savedPrompts.map(saved => { const label = saved.text || saved.attachments?.map(attachment => attachment.name).join(', ') || 'Attachments only'; return <div className="saved-prompt-item" key={saved.id}><button className="saved-prompt-restore" type="button" disabled={savedPromptAction !== undefined} title={label} onClick={() => void useSavedPrompt(saved)}>{savedPromptAction?.id === saved.id && savedPromptAction.kind === 'restore' ? <span className="spinner" /> : null}<span className="saved-prompt-copy"><span>{saved.text || 'Attachments only'}</span>{saved.attachments?.length ? <small>{saved.attachments.map(attachment => attachment.name).join(', ')}</small> : null}</span></button><span className="saved-prompt-actions"><button className="saved-prompt-send" type="button" disabled={savedPromptAction !== undefined} aria-label={`Queue saved draft: ${label}`} title="Queue saved draft" onClick={() => void sendSavedPrompt(saved)}>{savedPromptAction?.id === saved.id && savedPromptAction.kind === 'send' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button><button className="saved-prompt-delete" type="button" disabled={savedPromptAction !== undefined} aria-label={`Delete saved draft: ${label}`} title="Delete saved draft" onClick={() => void removeSavedPrompt(saved)}>{savedPromptAction?.id === saved.id && savedPromptAction.kind === 'delete' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg>}</button></span></div>; })}</div></section></FlyoutPortal>;
   const savedToggle = savedPrompts.length > 0 ? <button className={`saved-prompts-toggle icon-button${savedPromptsOpen ? ' active' : ''}`} type="button" disabled={pending} aria-label={`Saved prompts (${savedPrompts.length})`} aria-expanded={savedPromptsOpen} title={`${savedPrompts.length} saved prompt${savedPrompts.length === 1 ? '' : 's'}`} onClick={() => setSavedPromptsOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg><span className="saved-prompts-count" aria-hidden="true">{savedPrompts.length}</span></button> : null;
   const saveLabel = savingPrompt ? 'Saving' : savedConfirmation ? 'Saved' : 'Save';
-  const saveButton = <button className={`save-prompt outline-button icon-button${savedConfirmation ? ' saved' : ''}`} type="button" disabled={pending || savingPrompt || (!value.trim() && attachments.length === 0)} aria-label={saveLabel} title={saveLabel} onClick={() => void saveCurrentPrompt()}>{savingPrompt ? <span className="spinner" /> : savedConfirmation ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5V3Zm3 0v6h8V3M8 21v-7h8v7" /></svg>}</button>;
+  const saveButton = <button className={`save-prompt outline-button icon-button${savedConfirmation ? ' saved' : ''}`} type="button" disabled={!ready || pending || savingPrompt || (!value.trim() && attachments.length === 0)} aria-label={saveLabel} title={saveLabel} onClick={() => void saveCurrentPrompt()}>{savingPrompt ? <span className="spinner" /> : savedConfirmation ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5V3Zm3 0v6h8V3M8 21v-7h8v7" /></svg>}</button>;
   const saveControls = <><span className={`save-prompt-group${savedToggle === null ? '' : ' has-saved-prompts'}`} ref={savedPromptAnchorRef} role="group" aria-label="Saved prompt controls">{saveButton}{savedToggle}</span>{savedPanel}</>;
   const questionModeToggle = question === undefined ? null : <button type="button" className="question-mode-toggle" aria-label={`Switch to ${answerMode ? 'normal prompt' : 'answer'} mode`} onClick={() => { /* toggle detected question mode */ setNormalPromptQuestionId(answerMode ? question.id : undefined); }}>{answerMode ? 'Normal prompt' : 'Answer mode'}</button>;
   const questionNotesId = `question-notes-${id}`;
   const questionNotes = questionNotesOpen ? <div className="question-notes" id={questionNotesId}><textarea aria-label="Answer notes" maxLength={32_000} placeholder="Add notes for the agent…" value={value} onFocus={() => { /* leave terminal input */ exitTerminalInput.get(id)?.(); onPromptFocus(); }} onChange={event => { /* update note draft */ setValue(event.target.value); }} /><div className="question-notes-actions"><button type="button" disabled={pending || !value.trim()} aria-label="Submit notes" onClick={() => { /* submit note draft */ void submit(); }}>{pending ? <><span className="spinner" />Submitting</> : 'Submit notes'}</button></div></div> : null;
   // render numbered answers
-  if (question && answerMode) return <section className="prompt question-prompt" aria-label="Agent question" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}><div className="question-heading"><div className="question-copy"><strong>Agent question</strong><span>{question.text}</span></div><div className="question-tools"><button type="button" className="question-notes-toggle" aria-controls={questionNotesId} aria-expanded={questionNotesOpen} onClick={() => { /* toggle answer notes */ setNotesQuestionId(questionNotesOpen ? undefined : question.id); }}>{questionNotesOpen ? 'Hide notes' : 'Add notes'}</button>{questionModeToggle}</div></div><div className="question-choices">{question.choices.map(choice => <button key={`${choice.answerIndex}-${choice.label}`} className="question-choice" disabled={pending} onClick={() => void answer(choice.answerIndex)}><b aria-hidden="true">{choice.number}</b><span>{choice.label}</span></button>)}</div>{questionNotes}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}<div className="prompt-actions">{stop}{swapped && swap}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}<More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onOperationFeedback={onOperationFeedback} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} /></div></section>;
+  if (question && answerMode) return <section className="prompt question-prompt" aria-label="Agent question" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}><div className="question-heading"><div className="question-copy"><strong>Agent question</strong><span>{question.text}</span></div><div className="question-tools"><button type="button" className="question-notes-toggle" aria-controls={questionNotesId} aria-expanded={questionNotesOpen} onClick={() => { /* toggle answer notes */ setNotesQuestionId(questionNotesOpen ? undefined : question.id); }}>{questionNotesOpen ? 'Hide notes' : 'Add notes'}</button>{questionModeToggle}</div></div><div className="question-choices">{question.choices.map(choice => <button key={`${choice.answerIndex}-${choice.label}`} className="question-choice" disabled={pending} onClick={() => void answer(choice.answerIndex)}><b aria-hidden="true">{choice.number}</b><span>{choice.label}</span></button>)}</div>{questionNotes}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}<div className="prompt-actions">{stop}{swapped && swap}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}{ready ? <More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onOperationFeedback={onOperationFeedback} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} /> : <button className="more icon-button" aria-label="More options" disabled>⋮</button>}</div></section>;
   const queueLabel = swapped ? 'Enter' : pending ? 'Queueing' : 'Queue';
   const queuePanel = queuedPromptsOpen && <FlyoutPortal onDismiss={() => setQueuedPromptsOpen(false)}><section className="queued-prompts-panel more-menu flyout-menu" ref={queuedPromptFlyoutRef} style={queuedPromptFlyoutStyle} aria-label="Queued prompts"><header><strong>Queued prompts</strong></header>{queuedPromptError && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<div className="queued-prompts-list">{queuedPrompts.map((queued, index) => { const label = queued.text || queued.attachments?.map(attachment => attachment.name).join(', ') || 'Attachments only'; const editing = queuedPromptEdit?.id === queued.id; const busy = queuedPromptAction !== undefined; return <div className={`queued-prompt-item${editing ? ' editing' : ''}`} key={queued.id}><span className="queued-prompt-order"><strong className="queued-prompt-position" aria-label={`Queue position ${index + 1}`}>{index + 1}</strong><span className="queued-prompt-order-buttons"><button type="button" disabled={busy || index === 0} aria-label={`Move queued prompt earlier: ${label}`} title="Move earlier" onClick={() => void moveQueuedPrompt(queued, 'earlier')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button type="button" disabled={busy || index === queuedPrompts.length - 1} aria-label={`Move queued prompt later: ${label}`} title="Move later" onClick={() => void moveQueuedPrompt(queued, 'later')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></span></span>{editing ? <textarea aria-label={`Edit queued prompt: ${label}`} value={queuedPromptEdit.text} maxLength={32_000} autoFocus onChange={event => setQueuedPromptEdit({ id: queued.id, text: event.target.value })} /> : <button className="queued-prompt-copy" type="button" disabled={busy} title={label} onClick={() => setQueuedPromptEdit({ id: queued.id, text: queued.text })}><span>{queued.text || 'Attachments only'}</span>{queued.attachments?.length ? <small>{queued.attachments.map(attachment => attachment.name).join(', ')}</small> : null}</button>}<span className="queued-prompt-actions">{editing ? <><button type="button" disabled={busy || !queuedPromptEdit.text.trim() && queued.attachments === undefined} aria-label={`Save queued prompt changes: ${label}`} title="Save changes" onClick={() => void saveQueuedPromptEdit(queued)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={busy} aria-label={`Stop editing queued prompt: ${label}`} title="Stop editing" onClick={() => setQueuedPromptEdit(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></> : <button type="button" disabled={busy} aria-label={`Save queued prompt: ${label}`} title="Move to saved prompts" onClick={() => void moveQueuedPromptToSaved(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'save' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5V3Zm3 0v6h8V3M8 21v-7h8v7" /></svg>}</button>}<button className="queued-prompt-cancel" type="button" disabled={busy} aria-label={`Cancel queued prompt: ${label}`} title="Cancel queued prompt" onClick={() => void cancelQueuedPrompt(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'cancel' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg>}</button></span></div>; })}</div></section></FlyoutPortal>;
   const queuedToggle = !swapped && queuedPrompts.length > 0 ? <button className={`queued-prompts-toggle icon-button${queuedPromptsOpen ? ' active' : ''}`} type="button" disabled={pending} aria-label={`Queued prompts (${queuedPrompts.length})`} aria-expanded={queuedPromptsOpen} title={`${queuedPrompts.length} queued prompt${queuedPrompts.length === 1 ? '' : 's'}`} onClick={() => setQueuedPromptsOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M4 11h10M4 16h7M18 13v6m-3-3h6" /></svg><span className="saved-prompts-count queued-prompts-count" aria-hidden="true">{queuedPrompts.length}</span></button> : null;
   // join history to the submit controls
   const historySlot = !swapped && historySlotRef !== undefined ? <span className="prompt-history-slot" ref={historySlotRef} /> : null;
-  const queueControls = <><span className={`queue-prompt-group${historySlot === null ? '' : ' has-prompt-history'}${queuedToggle === null ? '' : ' has-queued-prompts'}`} ref={queuedPromptAnchorRef} role="group" aria-label="Prompt submission controls">{historySlot}<button className="queue icon-button" disabled={pending || (!swapped && !value && attachments.length === 0)} aria-label={queueLabel} title={queueLabel} onClick={() => void submit()}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button>{queuedToggle}</span>{queuePanel}</>;
-  return <section className="prompt prompt-with-action-rail" aria-label="Prompt composer" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}>{draggingAttachments && <div className="prompt-drop-overlay" role="status">Drop files to attach</div>}<div className="prompt-action-rail" aria-label="Prompt shortcuts">{statusSlotRef && <span className="prompt-status-slot" ref={statusSlotRef} />}{attachmentButton}{stop}</div><div className="prompt-content">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{savedPromptError && <p className="saved-prompt-error" role="alert">{savedPromptError}</p>}{queuedPromptError && !queuedPromptsOpen && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{swapped && swap}{questionModeToggle}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}<More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onOperationFeedback={onOperationFeedback} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} /><ProjectOpen url={projectUrl} stack={stack} browserOpen={browserOpen} onBrowserToggle={onBrowserToggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} />{saveControls}{queueControls}</div><MobileTerminalKeys id={id} /></div></section>;
+  const queueControls = <><span className={`queue-prompt-group${historySlot === null ? '' : ' has-prompt-history'}${queuedToggle === null ? '' : ' has-queued-prompts'}`} ref={queuedPromptAnchorRef} role="group" aria-label="Prompt submission controls">{historySlot}<button className="queue icon-button" disabled={!ready || pending || (!swapped && !value && attachments.length === 0)} aria-label={queueLabel} title={queueLabel} onClick={() => void submit()}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button>{queuedToggle}</span>{queuePanel}</>;
+  return <section className="prompt prompt-with-action-rail" aria-label="Prompt composer" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}>{draggingAttachments && <div className="prompt-drop-overlay" role="status">Drop files to attach</div>}<div className="prompt-action-rail" aria-label="Prompt shortcuts">{statusSlotRef && <span className="prompt-status-slot" ref={statusSlotRef} />}{attachmentButton}{stop}</div><div className="prompt-content">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{savedPromptError && <p className="saved-prompt-error" role="alert">{savedPromptError}</p>}{queuedPromptError && !queuedPromptsOpen && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{swapped && swap}{questionModeToggle}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}{ready ? <More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onOperationFeedback={onOperationFeedback} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} /> : <button className="more icon-button" aria-label="More options" disabled>⋮</button>}<ProjectOpen url={projectUrl} stack={stack} browserOpen={browserOpen} onBrowserToggle={onBrowserToggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} />{saveControls}{queueControls}{launchControl}</div><MobileTerminalKeys id={id} /></div></section>;
+}
+
+// render the complete composer without addressing an agent that discovery has not confirmed
+function PreparingPrompt({ id, lifecycleControl, launchControl, onOperationFeedback }: { id: string; lifecycleControl?: ReactNode; launchControl?: ReactNode; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
+  return <Prompt id={id} ready={false} history={[]} onHistoryChanged={async () => { /* no discovered history */ }} canCancel={false} cancelling={false} deleting={false} restarting={false} clearing={false} deactivating={false} sleeping={false} swapping={false} swapped={false} onCancel={() => { /* no discovered process */ }} onSwap={() => { /* no discovered terminal */ }} onPromptFocus={() => { /* retain local draft focus */ }} onOperationFeedback={onOperationFeedback} lifecycleControl={lifecycleControl} launchControl={launchControl} />;
 }
 
 type MobileKeyIconName = 'control'|'shift'|'tab'|'up'|'down'|'left'|'right';
@@ -5408,6 +5481,15 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
   const startingNewTask = usePendingOperation(newTaskOperationKey(worktree.id));
   const sleeping = worktree.sleeping === true;
   const processing = launching || restarting || turningOff || waking || startingNewTask;
+  const draftId = worktreePromptId(worktree.id);
+  const preparing = launching || waking;
+  // keep a failed launch editable until retry, including after tab navigation
+  const [promptOpened, setPromptOpened] = useState(() => Boolean(getPromptDraft(draftId) || promptAttachments.has(draftId)));
+  // retain the composer when startup progress ends in an error
+  useEffect(() => {
+    // open immediately for launch and wake transitions
+    if (preparing) setPromptOpened(true);
+  }, [preparing]);
   // prefer the explicitly selected pending agent
   const launchKind = pendingWorktreeLaunches.get(worktree.id)?.kind ?? worktree.launch?.kind;
   const presentation = inactiveWorktreePresentation(worktree.label, launchKind, { startingNewTask, restarting, turningOff, waking, launching, sleeping });
@@ -5416,6 +5498,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
   const projectBrowser = useProjectBrowser(worktree.projectUrl, worktree.id, worktree.projectProxied);
   const filePreview = useFilePreview(`/api/worktrees/${encodeURIComponent(worktree.id)}/file-preview`);
   const [gitExpanded, setGitExpanded] = useState(false);
+  const [statusSlot, setStatusSlot] = useState<HTMLElement | null>(null);
   const [error, setError] = useState('');
   // preview one inactive worktree file
   const openGitFile = (path: string) => {
@@ -5502,7 +5585,44 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
       : null;
   const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className={`log-loading inactive${sleeping ? ' sleeping' : ''}`} role={processing || sleeping ? 'status' : undefined} aria-label={presentation.ariaLabel}>{processing ? <span className="spinner" /> : sleeping ? <svg className="sleeping-agent-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg> : null}<strong>{presentation.heading}</strong><span>{presentation.detail}</span>{sleeping && !processing && <button className="wake-agent" type="button" disabled={!worktree.available} onClick={() => void start()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>}</div><span className={`status log-status ${processing ? 'connecting' : sleeping ? 'sleeping' : 'inactive'}`}>{presentation.status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeBookmarks.control}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div>;
   const browserPane = projectBrowser.url === undefined || projectBrowser.homeUrl === undefined ? null : <ProjectBrowserPane url={projectBrowser.url} homeUrl={projectBrowser.homeUrl} proxied={projectBrowser.proxied} worktreeId={worktree.id} onNavigate={projectBrowser.navigate} onClose={projectBrowser.close} />;
-  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit worktreeId={worktree.id} output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{filePreview.dialog}</section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} /><PullRequestCard pullRequest={worktree.pullRequest} /><section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions">{powerMenu}<GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} expanded={gitExpanded} onToggle={() => setGitExpanded(value => !value)} onOpenFile={openGitFile} reviewUnavailable="Launch agent to review" /><span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} />{!sleeping && <LaunchSplitButton label={worktree.label} resolution={worktree.launch} disabled={!worktree.available} pending={processing} onLaunch={choice => void start(choice)} />}</div></section></article>;
+  // keep worktree file inspection available in either composer layout
+  const gitStatus = <GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} expanded={gitExpanded} onToggle={() => { /* toggle file inspection */ setGitExpanded(value => !value); }} onOpenFile={openGitFile} reviewUnavailable="Launch agent to review" />;
+  // preserve the idle recovery actions alongside the prepared draft
+  const launchControl = processing ? undefined : sleeping
+    ? <button type="button" disabled={!worktree.available} onClick={() => { /* retry wake */ void start(); }}>Wake up</button>
+    : <LaunchSplitButton label={worktree.label} resolution={worktree.launch} disabled={!worktree.available} pending={false} onLaunch={choice => { /* retry launch */ void start(choice); }} />;
+  // reuse the complete composer while deferring agent-only operations
+  const prompt = preparing || promptOpened ? <>
+    {error && <p className="launch-error" role="alert">{error}</p>}
+    <Prompt id={draftId} ready={false} history={[]} onHistoryChanged={async () => { /* no agent history yet */ }} canCancel={false} cancelling={false} deleting={false} restarting={restarting} clearing={false} deactivating={turningOff} sleeping={false} swapping={false} swapped={false} onCancel={() => { /* startup cannot be cancelled here */ }} onSwap={() => { /* no terminal until ready */ }} onPromptFocus={() => { /* draft belongs to the inactive worktree */ }} onOperationFeedback={onOperationFeedback} worktreeId={worktree.id} projectUrl={worktree.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} stack={worktree.stack} lifecycleControl={powerMenu ?? undefined} launchControl={launchControl} statusSlotRef={setStatusSlot} />
+  </> : <section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions">{powerMenu}{gitStatus}<span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} />{!sleeping && <LaunchSplitButton label={worktree.label} resolution={worktree.launch} disabled={!worktree.available} pending={processing} onLaunch={choice => void start(choice)} />}</div></section>;
+  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit worktreeId={worktree.id} output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{filePreview.dialog}{statusSlot && createPortal(gitStatus, statusSlot)}</section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} /><PullRequestCard pullRequest={worktree.pullRequest} />{prompt}</article>;
+}
+
+// render a scratch or directory session before discovery publishes its agent identity
+function PendingSessionCard({ launch, tabBar, cleanupControl, retrying, onRetry, onDiscard, onOperationFeedback }: { launch: PendingSessionLaunch; tabBar: ReactNode; cleanupControl?: ReactNode; retrying: boolean; onRetry: (choice?: LaunchChoice) => void; onDiscard: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
+  const processing = launch.phase !== 'failed';
+  let heading = 'Starting agent…';
+  let detail = 'Creating the agent session so it can receive your prepared prompt.';
+  let status = 'Starting';
+  // distinguish session creation, discovery and rejected starts
+  switch (launch.phase) {
+    case 'confirming':
+    case 'delayed':
+      heading = 'Connecting agent…';
+      detail = 'The session started. Waiting for it to appear on the dashboard.';
+      status = 'Connecting';
+      break;
+    case 'failed':
+      heading = 'Agent did not start';
+      detail = launch.error ?? 'Retry the launch when you are ready.';
+      status = 'Failed';
+      break;
+  }
+  const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className="log-loading inactive" role="status" aria-label={processing ? `Starting ${launch.label}` : `${launch.label} launch failed`}>{processing && <span className="spinner" />}<strong>{heading}</strong><span>{detail}</span></div><span className={`status log-status ${processing ? 'connecting' : 'inactive'}`}>{status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div>;
+  const lifecycleControl = launch.phase === 'failed' ? <button className="icon-button" type="button" aria-label="Discard failed launch" title="Discard failed launch" onClick={onDiscard}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg></button> : undefined;
+  const launchControl = launch.phase === 'failed' ? <LaunchSplitButton label={launch.label} resolution={launch.resolution} disabled={retrying} onLaunch={choice => { /* retry without replacing the prepared draft */ onRetry(choice); }} /> : undefined;
+  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log">{output}</div></section>{tabBar}{launch.error !== undefined && <p className="launch-error" role="alert">{launch.error}</p>}<PreparingPrompt id={launch.draftId} lifecycleControl={lifecycleControl} launchControl={launchControl} onOperationFeedback={onOperationFeedback} /></article>;
 }
 
 // render browser notification enrollment
@@ -5816,6 +5936,16 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const [unavailable, setUnavailable] = useState(false);
   const [active, setActive] = useState(0);
   const [creatingAgent, setCreatingAgent] = useState(false);
+  const [pendingSessionLaunches, setPendingSessionLaunches] = useState<PendingSessionLaunch[]>([]);
+  const pendingSessionLaunchesRef = useRef<PendingSessionLaunch[]>([]);
+  const pendingSessionLaunchSequence = useRef(0);
+  const [activatePendingSessionId, setActivatePendingSessionId] = useState<string>();
+  // update render state and dashboard reconciliation from one launch snapshot
+  const updatePendingSessionLaunches = useCallback((update: (current: PendingSessionLaunch[]) => PendingSessionLaunch[]) => {
+    const next = update(pendingSessionLaunchesRef.current);
+    pendingSessionLaunchesRef.current = next;
+    setPendingSessionLaunches(next);
+  }, []);
   const [launcherOpen, setLauncherOpen] = useState(false);
   const tabsRef = useRef<HTMLElement | null>(null);
   const { anchorRef: launcherRef, flyoutRef: launcherMenuRef, style: launcherStyle } = useViewportFlyout(launcherOpen);
@@ -5882,6 +6012,12 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       setPendingOperation(pendingLaunch.operationKey, false);
     }
     pendingWorktreeLaunches.clear();
+    // cancel scratch and directory confirmation recovery
+    for (const pendingLaunch of pendingSessionLaunchesRef.current) {
+      // release only active confirmation timers
+      if (pendingLaunch.confirmationTimer !== undefined) window.clearTimeout(pendingLaunch.confirmationTimer);
+    }
+    pendingSessionLaunchesRef.current = [];
   }, []);
   const applyDashboard = useCallback((payload: Dashboard) => {
     const latestServerStartedAt = latestDashboardServerStartedAt.current;
@@ -5918,14 +6054,56 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     const nextPayload = retainedWorktrees.length === 0 ? payload : { ...payload, projects: mergeRetainedWorktrees(payload.projects, retainedWorktrees) };
     dashboardSnapshot.current = nextPayload;
     const activeAgentIds = new Set(nextPayload.agents.map(agent => agent.id));
+    const activeWorktreeIds = new Set(allWorktrees(nextPayload).map(worktree => worktree.id));
+    // move startup drafts only when their worktree has a discovered agent
+    for (const agent of nextPayload.agents) {
+      // scratch agents have no worktree placeholder
+      if (agent.worktreeId === undefined) continue;
+      activeWorktreeIds.add(agent.worktreeId);
+      const pendingLaunch = pendingWorktreeLaunches.get(agent.worktreeId);
+      // never hand a replacement draft to the old or mismatched session
+      if (pendingLaunch?.sourceAgentId === agent.id || pendingNewTaskSources.get(agent.worktreeId) === agent.id
+        || pendingLaunch?.agentId !== undefined && pendingLaunch.agentId !== agent.id) continue;
+      handoffPromptDraft(worktreePromptId(agent.worktreeId), agent.id);
+    }
+    const confirmedSessionLaunchIds = new Set<string>();
+    // hand scratch and directory drafts only to the exact returned agent
+    for (const pendingLaunch of pendingSessionLaunchesRef.current) {
+      // wait until both the launch response and dashboard agree on identity
+      if (pendingLaunch.agentId === undefined || !activeAgentIds.has(pendingLaunch.agentId)) continue;
+      const shouldActivate = selectedItemKey.current === `pending-${pendingLaunch.id}`;
+      handoffPromptDraft(pendingLaunch.draftId, pendingLaunch.agentId);
+      // cancel stale-agent recovery after discovery confirms the session
+      if (pendingLaunch.confirmationTimer !== undefined) window.clearTimeout(pendingLaunch.confirmationTimer);
+      confirmedSessionLaunchIds.add(pendingLaunch.id);
+      // preserve navigation away from the pending tab
+      if (shouldActivate) {
+        selectedItemKey.current = `agent-${pendingLaunch.agentId}`;
+        setActivateAgentId(pendingLaunch.agentId);
+      }
+    }
+    // remove only dashboard-confirmed placeholders
+    if (confirmedSessionLaunchIds.size > 0) {
+      updatePendingSessionLaunches(current => current.filter(launch => !confirmedSessionLaunchIds.has(launch.id)));
+      setActivatePendingSessionId(current => current !== undefined && confirmedSessionLaunchIds.has(current) ? undefined : current);
+    }
+    const retainedPromptIds = new Set([...activeAgentIds, ...Array.from(activeWorktreeIds, worktreePromptId), ...pendingSessionLaunchesRef.current.map(launch => launch.draftId)]);
     logSnapshots.retain(activeAgentIds);
     for (const id of latestQuestions.keys()) if (!activeAgentIds.has(id)) latestQuestions.delete(id);
     // retire optimistic dismissals for removed agents
     for (const id of dismissedQuestionIds.keys()) if (!activeAgentIds.has(id)) dismissedQuestionIds.delete(id);
     for (const id of latestAssistantMessages.keys()) if (!activeAgentIds.has(id)) latestAssistantMessages.delete(id);
     for (const id of overflowingLatestAssistantMessages) if (!activeAgentIds.has(id)) overflowingLatestAssistantMessages.delete(id);
-    for (const id of promptDrafts.keys()) if (!activeAgentIds.has(id)) promptDrafts.delete(id);
-    const activeWorktreeIds = new Set(allWorktrees(nextPayload).map(worktree => worktree.id));
+    // retain drafts while their agent or inactive worktree still exists
+    for (const id of promptDrafts.keys()) {
+      // retire removed draft caches
+      if (!retainedPromptIds.has(id)) promptDrafts.delete(id);
+    }
+    // release attachment buffers belonging to removed workspaces
+    for (const id of promptAttachments.keys()) {
+      // keep pending launch files through dashboard updates
+      if (!retainedPromptIds.has(id)) promptAttachments.delete(id);
+    }
     for (const [worktreeId, sourceAgentId] of pendingNewTaskSources) {
       const replacement = nextPayload.agents.find(agent => agent.worktreeId === worktreeId && agent.id !== sourceAgentId);
       const sourceStillActive = nextPayload.agents.some(agent => agent.id === sourceAgentId);
@@ -5956,7 +6134,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       setData(nextPayload);
     }
     setUnavailable(false);
-  }, [showOperationFeedback]);
+  }, [showOperationFeedback, updatePendingSessionLaunches]);
   const refresh = useCallback(async () => {
     if (refreshInFlight.current) return;
     refreshInFlight.current = true;
@@ -6191,32 +6369,56 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     ...worktrees.filter(worktree => {
       // a Worktree with a live agent is shown by its agent tab, never a second idle tab
       if (data.agents.some(agent => agent.worktreeId === worktree.id)) return false;
-      // retain pinned, sleeping and pending idle tabs
-      return worktree.pinned || worktree.sleeping === true || pendingNewTaskSources.has(worktree.id) || pendingWorktreeLaunches.has(worktree.id);
+      const draftId = worktreePromptId(worktree.id);
+      // retain pinned, sleeping, pending and prepared idle tabs
+      return worktree.pinned || worktree.sleeping === true || pendingNewTaskSources.has(worktree.id) || pendingWorktreeLaunches.has(worktree.id) || Boolean(getPromptDraft(draftId)) || promptAttachments.has(draftId);
     }).map(worktree => {
       const operation = worktreePendingOperation(worktree);
       return { key: `worktree-${worktree.id}`, label: worktree.label, state: worktree.sleeping === true ? 'sleeping' as const : 'closed' as const, order: worktree.order, unread: false, operation, worktree };
-    })
+    }),
+    ...pendingSessionLaunches.map(pendingLaunch => ({ key: `pending-${pendingLaunch.id}`, label: pendingLaunch.label, state: 'closed' as const, order: Number.MAX_SAFE_INTEGER, unread: false, operation: pendingLaunch.phase === 'failed' ? undefined : 'launching' as const, pendingLaunch }))
   ].sort((left, right) => left.order - right.order);
-  const activeItemKey = items[active]?.key;
-  selectedItemKey.current = activeItemKey;
-  useEffect(() => { setActive(current => Math.min(current, Math.max(items.length - 1, 0))); }, [items.length]);
   const tabKey = items.map(item => item.key).join('\u0000');
+  const selectedIndex = selectedItemKey.current === undefined ? -1 : items.findIndex(candidate => candidate.key === selectedItemKey.current);
+  const visibleActive = selectedIndex < 0 ? Math.min(active, Math.max(items.length - 1, 0)) : selectedIndex;
+  const activeItemKey = items[visibleActive]?.key;
+  // establish the first visible selection
+  if (selectedItemKey.current === undefined) selectedItemKey.current = activeItemKey;
+  // keep numeric tab state aligned without rendering a different key between snapshots
+  useLayoutEffect(() => {
+    // adopt the fallback only after a selected item disappears
+    if (selectedIndex < 0) selectedItemKey.current = activeItemKey;
+    setActive(current => current === visibleActive ? current : visibleActive);
+  }, [activeItemKey, selectedIndex, tabKey, visibleActive]);
   useEffect(() => {
     // activate initial and same-document links
     const activateLinkedItem = () => {
       const hash = location.hash;
-      const encoded = hash.startsWith('#worktree=') ? hash.slice(10) : hash.startsWith('#agent=') ? hash.slice(7) : hash.startsWith('#tab=') ? hash.slice(5) : '';
+      const separator = hash.indexOf('=');
+      const kind = hash.slice(1, separator);
       let target = '';
-      try { target = decodeURIComponent(encoded); } catch { /* retain the current tab */ }
-      const linked = hash.startsWith('#worktree=')
-        ? items.findIndex(item => item.agent?.worktreeId === target || item.worktree?.id === target)
-        : hash.startsWith('#agent=')
-          ? items.findIndex(item => item.agent?.id === target)
-          : items.findIndex(item => item.label === target);
+      try { target = decodeURIComponent(hash.slice(separator + 1)); } catch { /* retain the current tab */ }
+      let linked = -1;
+      // resolve each supported dashboard destination explicitly
+      switch (kind) {
+        case 'worktree':
+          linked = items.findIndex(item => item.agent?.worktreeId === target || item.worktree?.id === target);
+          break;
+        case 'agent':
+          linked = items.findIndex(item => item.agent?.id === target);
+          break;
+        case 'launch':
+          linked = items.findIndex(item => item.pendingLaunch?.id === target);
+          break;
+        case 'tab':
+          linked = items.findIndex(item => item.label === target);
+          break;
+      }
       // ignore unavailable destinations
       if (linked < 0) return;
       const linkedItem = items[linked];
+      // keep linked navigation aligned with the stable selection key
+      selectedItemKey.current = linkedItem?.key;
       setActive(linked);
       // clear the selected notification state
       if (linkedItem?.agent !== undefined) viewAgent(linkedItem.agent);
@@ -6225,7 +6427,23 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     window.addEventListener('hashchange', activateLinkedItem);
     return () => window.removeEventListener('hashchange', activateLinkedItem);
   }, [tabKey, viewAgent]);
-  const select = (index: number) => { const item = items[index]; if (!item) return; const changed = selectedItemKey.current !== item.key; selectedItemKey.current = item.key; if (changed && item.agent !== undefined) viewAgent(item.agent); const target = item.agent === undefined ? `tab=${encodeURIComponent(item.label)}` : `agent=${encodeURIComponent(item.agent.id)}`; history.replaceState(null, '', `${location.pathname}${location.search}#${target}`); setActive(index); };
+  // select a stable dashboard item and publish its deep link
+  const select = (index: number) => {
+    const item = items[index];
+    // ignore stale navigation indices
+    if (!item) return;
+    const changed = selectedItemKey.current !== item.key;
+    selectedItemKey.current = item.key;
+    // mark newly selected agent output as read
+    if (changed && item.agent !== undefined) viewAgent(item.agent);
+    let target = `tab=${encodeURIComponent(item.label)}`;
+    // keep pending launches distinct from same-label sessions
+    if (item.pendingLaunch !== undefined) target = `launch=${encodeURIComponent(item.pendingLaunch.id)}`;
+    // use the exact identity once discovery completes
+    else if (item.agent !== undefined) target = `agent=${encodeURIComponent(item.agent.id)}`;
+    history.replaceState(null, '', `${location.pathname}${location.search}#${target}`);
+    setActive(index);
+  };
   // select one canonical worktree from voice
   const selectVoiceWorktree = (worktreeId: string) => {
     const index = items.findIndex(candidate => candidate.agent?.worktreeId === worktreeId || candidate.worktree?.id === worktreeId);
@@ -6237,7 +6455,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     select(index);
     return { worktreeId, worktreeLabel: selected.worktree?.label ?? selected.label };
   };
-  useShiftArrowTabCycling(active, items.length, select);
+  useShiftArrowTabCycling(visibleActive, items.length, select);
   useEffect(() => {
     if (activateAgentId === undefined) return;
     const index = items.findIndex(candidate => candidate.agent?.id === activateAgentId);
@@ -6255,10 +6473,63 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     select(index);
     setActivateWorktreeId(undefined);
   }, [activateWorktreeId, tabKey]);
-  // open one scratch agent
-  const launched = (agentId: string) => {
+  // activate one scratch or directory launch placeholder
+  useEffect(() => {
+    // wait for the pending launch item
+    if (activatePendingSessionId === undefined) return;
+    const index = items.findIndex(candidate => candidate.pendingLaunch?.id === activatePendingSessionId);
+    // wait for the matching placeholder
+    if (index < 0) return;
+    select(index);
+    setActivatePendingSessionId(undefined);
+  }, [activatePendingSessionId, tabKey]);
+  // discard only a failed local launch and its prepared input
+  const discardPendingSessionLaunch = (launchId: string) => {
+    const launch = pendingSessionLaunchesRef.current.find(candidate => candidate.id === launchId);
+    // successful launches remain available for exact-agent handoff
+    if (launch?.phase !== 'failed') return;
+    const hasDraft = Boolean(getPromptDraft(launch.draftId)) || promptAttachments.has(launch.draftId);
+    // confirm before losing prepared text or files
+    if (hasDraft && !window.confirm('Discard this failed launch and its prepared prompt and attachments?')) return;
+    // release any remaining confirmation timer
+    if (launch.confirmationTimer !== undefined) window.clearTimeout(launch.confirmationTimer);
+    promptAttachments.delete(launch.draftId);
+    promptHandoffFocus.delete(launch.draftId);
+    promptDrafts.delete(launch.draftId);
+    savePromptDraft(launch.draftId, '');
+    updatePendingSessionLaunches(current => current.filter(candidate => candidate.id !== launchId));
+    // clear only notices and activation owned by this failed launch
+    setActivatePendingSessionId(current => current === launchId ? undefined : current);
+    setLaunchErrorMessage(current => current === launch.error ? '' : current);
+    setOperationFeedback(current => current?.tone === 'error' && current.detail === launch.error ? undefined : current);
+    // preserve a different active tab
+    if (selectedItemKey.current !== `pending-${launchId}`) return;
+    const nextIndex = items.findIndex(candidate => candidate.key !== `pending-${launchId}`);
+    // move the selection and hash to a remaining session
+    if (nextIndex >= 0) select(nextIndex);
+    else {
+      selectedItemKey.current = undefined;
+      history.replaceState(null, '', `${location.pathname}${location.search}`);
+      setActive(0);
+    }
+  };
+  // wait for dashboard discovery after one scratch-like launch returns
+  const launched = (agentId: string, launchId: string) => {
     setLaunchErrorMessage('');
-    setActivateAgentId(agentId);
+    const confirmationTimer = window.setTimeout(() => {
+      const pendingLaunch = pendingSessionLaunchesRef.current.find(launch => launch.id === launchId);
+      // ignore replaced or dashboard-confirmed sessions
+      if (!dashboardMounted.current || pendingLaunch?.agentId !== agentId) return;
+      const message = `${pendingLaunch.label} started, but connecting is taking longer than expected. Your prepared prompt will remain here until the agent appears.`;
+      // retain the successful identity without offering a duplicate launch
+      updatePendingSessionLaunches(current => current.map(launch => launch.id === launchId ? { ...launch, phase: 'delayed', error: message, confirmationTimer: undefined } : launch));
+      void refresh();
+    }, worktreeLaunchConfirmationMs);
+    // retain the prepared composer until the exact agent appears
+    updatePendingSessionLaunches(current => current.map(launch => launch.id === launchId ? { ...launch, phase: 'confirming', agentId, error: undefined, confirmationTimer } : launch));
+    const snapshot = dashboardSnapshot.current;
+    // reconcile an agent already discovered while its launch response was pending
+    if (snapshot?.agents.some(agent => agent.id === agentId)) applyDashboard(snapshot);
     void refresh();
   };
   // complete one dashboard-confirmed worktree launch
@@ -6294,63 +6565,65 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     }
     void refresh();
   };
-  const createAgent = async (choice?: LaunchChoice) => {
-    if (creatingAgent) return;
+  // execute one scratch-like launch while preserving its local composer
+  const runPendingSessionLaunch = async (launch: PendingSessionLaunch, choice?: LaunchChoice) => {
+    // never relaunch a session awaiting discovery
+    if (creatingAgent || launch.agentId !== undefined) return;
+    // keep every rejected launch on the same draft-preserving failure path
+    const failLaunch = (message: string, headline: string) => {
+      setLaunchErrorMessage(message);
+      updatePendingSessionLaunches(current => current.map(candidate => candidate.id === launch.id ? { ...candidate, phase: 'failed', error: message } : candidate));
+      showOperationFeedback({ tone: 'error', message: headline, detail: message });
+    };
+    const selectedChoice = choice ?? launch.choice;
     setLaunchErrorMessage('');
     setLauncherOpen(false);
     setCreatingAgent(true);
-    showOperationFeedback({ tone: 'pending', message: 'Starting scratch agent…', detail: 'Creating a new temporary session and waiting for it to become ready.' });
+    updatePendingSessionLaunches(current => current.map(candidate => candidate.id === launch.id ? { ...candidate, phase: 'launching', choice: selectedChoice, kind: selectedChoice?.kind ?? candidate.resolution?.kind, sandboxed: selectedChoice?.sandboxed, agentId: undefined, error: undefined, confirmationTimer: undefined } : candidate));
+    showOperationFeedback({ tone: 'pending', message: `Starting ${launch.label}…`, detail: launch.scope === 'scratch' ? 'Creating a new temporary session and waiting for it to become ready.' : 'Creating a new session in the project directory and waiting for it to become ready.' });
     try {
-      const response = await request('/api/agents/launch', choice === undefined ? { method: 'POST' } : launchRequestInit(choice));
+      const endpoint = launch.scope === 'scratch' ? '/api/agents/launch' : `/api/projects/${encodeURIComponent(launch.projectId)}/launch`;
+      const response = await request(endpoint, selectedChoice === undefined ? { method: 'POST' } : launchRequestInit(selectedChoice));
+      // preserve the prepared draft after a rejected start
       if (!response.ok) {
         const message = await launchError(response);
-        setLaunchErrorMessage(message);
-        return showOperationFeedback({ tone: 'error', message: 'Scratch agent could not start', detail: message });
+        return failLaunch(message, `${launch.label} could not start`);
       }
       const payload = await response.json() as { agentId?: unknown };
+      // require one exact handoff identity
       if (typeof payload.agentId !== 'string') {
         const message = 'The agent started but could not be opened.';
-        setLaunchErrorMessage(message);
-        return showOperationFeedback({ tone: 'error', message: 'Scratch agent could not be opened', detail: message });
+        return failLaunch(message, `${launch.label} could not be opened`);
       }
-      launched(payload.agentId);
-      showOperationFeedback({ tone: 'success', message: 'Scratch agent started', detail: 'The new session is ready and its output is connecting.' });
+      launched(payload.agentId, launch.id);
+      showOperationFeedback({ tone: 'success', message: `${launch.label} is starting`, detail: 'The new session is ready and its output is connecting.' });
     } catch {
       const message = 'Unable to reach the console while launching the agent.';
-      setLaunchErrorMessage(message);
-      showOperationFeedback({ tone: 'error', message: 'Scratch agent could not start', detail: message });
+      failLaunch(message, `${launch.label} could not start`);
     }
     finally { setCreatingAgent(false); }
   };
-  // launch an agent in place in a non-git directory Project — a Scratch-like session, so the
-  // opened agent has no worktree; shares the Scratch `creatingAgent` lock and opener
-  const launchProjectDirectory = async (project: Project, choice?: LaunchChoice) => {
+  // expose one local scratch composer before its launch request begins
+  const createAgent = (choice?: LaunchChoice) => {
     if (creatingAgent) return;
-    setLaunchErrorMessage('');
-    setLauncherOpen(false);
-    setCreatingAgent(true);
-    showOperationFeedback({ tone: 'pending', message: `Starting ${project.label}…`, detail: 'Creating a new session in the project directory and waiting for it to become ready.' });
-    try {
-      const response = await request(`/api/projects/${encodeURIComponent(project.id)}/launch`, choice === undefined ? { method: 'POST' } : launchRequestInit(choice));
-      if (!response.ok) {
-        const message = await launchError(response);
-        setLaunchErrorMessage(message);
-        return showOperationFeedback({ tone: 'error', message: `${project.label} could not start`, detail: message });
-      }
-      const payload = await response.json() as { agentId?: unknown };
-      if (typeof payload.agentId !== 'string') {
-        const message = 'The agent started but could not be opened.';
-        setLaunchErrorMessage(message);
-        return showOperationFeedback({ tone: 'error', message: `${project.label} could not be opened`, detail: message });
-      }
-      launched(payload.agentId);
-      showOperationFeedback({ tone: 'success', message: `${project.label} started`, detail: 'The new session is ready and its output is connecting.' });
-    } catch {
-      const message = 'Unable to reach the console while launching the agent.';
-      setLaunchErrorMessage(message);
-      showOperationFeedback({ tone: 'error', message: `${project.label} could not start`, detail: message });
-    }
-    finally { setCreatingAgent(false); }
+    pendingSessionLaunchSequence.current += 1;
+    const id = `session-${Date.now()}-${pendingSessionLaunchSequence.current}`;
+    const launch: PendingSessionLaunch = { id, draftId: `pending-launch:${id}`, label: 'Scratch', scope: 'scratch', resolution: data?.scratchLaunch, choice, kind: choice?.kind ?? data?.scratchLaunch?.kind, sandboxed: choice?.sandboxed, phase: 'launching' };
+    updatePendingSessionLaunches(current => [...current, launch]);
+    selectedItemKey.current = `pending-${id}`;
+    setActivatePendingSessionId(id);
+    void runPendingSessionLaunch(launch, choice);
+  };
+  // expose one local directory composer before its launch request begins
+  const launchProjectDirectory = (project: Project, choice?: LaunchChoice) => {
+    if (creatingAgent) return;
+    pendingSessionLaunchSequence.current += 1;
+    const id = `session-${Date.now()}-${pendingSessionLaunchSequence.current}`;
+    const launch: PendingSessionLaunch = { id, draftId: `pending-launch:${id}`, label: project.label, scope: 'directory', projectId: project.id, resolution: project.launch, choice, kind: choice?.kind ?? project.launch?.kind, sandboxed: choice?.sandboxed, phase: 'launching' };
+    updatePendingSessionLaunches(current => [...current, launch]);
+    selectedItemKey.current = `pending-${id}`;
+    setActivatePendingSessionId(id);
+    void runPendingSessionLaunch(launch, choice);
   };
   useLayoutEffect(() => {
     const measure = () => {
@@ -6491,7 +6764,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     return true;
   };
   if (data === undefined) return <LoadingScreen label={unavailable ? 'Reconnecting to console' : 'Syncing console state'} />;
-  const item = items[active];
+  const item = items[visibleActive];
   const cleanupCount = data.cleanupPending ?? 0;
   const cleanupControl = cleanupCount === 0 ? null : <button ref={cleanupTriggerRef} className="log-control page-arrow cleanup-toggle" aria-label={`Review ${cleanupCount} cleanup ${cleanupCount === 1 ? 'target' : 'targets'}`} title="Review cleanup" aria-haspopup="dialog" aria-expanded={cleanupOpen} onPointerDown={event => event.preventDefault()} onClick={() => void openCleanup()}><svg className="broom-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m19.36 2.72 1.42 1.42-5.72 5.71c1.07 1.54 1.22 3.39.32 4.59L9.06 8.12c1.2-.9 3.05-.75 4.59.32l5.71-5.72ZM5.93 17.57c-2.01-2.01-3.24-4.41-3.58-6.65l4.88-2.09 7.44 7.44-2.09 4.88c-2.24-.34-4.64-1.57-6.65-3.58Z" /></svg><span className="saved-prompts-count cleanup-count" aria-hidden="true">{cleanupCount}</span></button>;
   const cleanupKindLabel: Record<CleanupTarget['kind'], string> = {
@@ -6595,11 +6868,13 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const tabBar = <><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => {
     const transition = dashboardOperationLabel(entry.operation);
     const label = transition ?? stateLabel[entry.state];
-    return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === active} aria-controls={`panel-${index}`} tabIndex={index === active ? 0 : -1} className={`${index === active ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{entry.agent?.kind !== undefined && <LaunchTabBadge kind={entry.agent.kind} sandboxed={entry.agent.sandboxed} />}{entry.worktree?.locked === true && <span className="tab-git-lock" aria-hidden="true" title="Git has locked this worktree">🔒</span>}{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
+    const kind = entry.agent?.kind ?? entry.pendingLaunch?.kind;
+    const sandboxed = entry.agent?.sandboxed ?? entry.pendingLaunch?.sandboxed;
+    return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === visibleActive} aria-controls={`panel-${index}`} tabIndex={index === visibleActive ? 0 : -1} className={`${index === visibleActive ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{kind !== undefined && <LaunchTabBadge kind={kind} sandboxed={sandboxed} />}{entry.worktree?.locked === true && <span className="tab-git-lock" aria-hidden="true" title="Git has locked this worktree">🔒</span>}{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
   })}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label launcher-symbol-label"><LauncherLabelIcon name="scratch" /><span>Scratch</span></span><LaunchSplitButton label="~ Scratch" resolution={data.scratchLaunch} compact disabled={creatingAgent} onLaunch={choice => void createAgent(choice)} /></div>{data.projects.map(launcherProject)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav><ToastRegion feedback={visibleOperationFeedback} onDismissFeedback={() => setOperationFeedback(undefined)} launchErrorMessage={launchErrorMessage} /></>;
   const consoleClass = `console${davo.enabled && voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view"><ServerSwitcher className="output-server-switcher" />{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
-  return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} {...(activeWorktree === undefined ? {} : { pinned: activeWorktree.pinned, onTogglePin: () => void togglePin(activeWorktree), onRenameWorktree: () => setRenameWorktreeId(activeWorktree.id), worktreeLabel: activeWorktree.label })} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} onRename={() => setRenameWorktreeId(item.worktree!.id)} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
+  return <AdaptersContext.Provider value={data.adapters}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${visibleActive}`} aria-labelledby={`tab-${visibleActive}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} {...(activeWorktree === undefined ? {} : { pinned: activeWorktree.pinned, onTogglePin: () => void togglePin(activeWorktree), onRenameWorktree: () => setRenameWorktreeId(activeWorktree.id), worktreeLabel: activeWorktree.label })} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} onRename={() => setRenameWorktreeId(item.worktree!.id)} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}{item?.pendingLaunch && <PendingSessionCard key={item.pendingLaunch.id} launch={item.pendingLaunch} tabBar={tabBar} cleanupControl={cleanupControl} retrying={creatingAgent} onRetry={choice => { /* retain the same pending draft on retry */ void runPendingSessionLaunch(item.pendingLaunch!, choice); }} onDiscard={() => { /* discard only the selected failed placeholder */ discardPendingSessionLaunch(item.pendingLaunch!.id); }} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></VoiceTriggerContext.Provider></AdaptersContext.Provider>;
 }
 
 // coordinate console session and update lifecycle
