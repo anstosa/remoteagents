@@ -66,8 +66,11 @@ export class PromptService {
 
   constructor(private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly history?: PromptHistoryService, private readonly queued?: QueuedPromptService, private readonly saved?: SavedPromptService, private readonly resolveAdapter: (kind: AgentKind) => AdapterView | undefined = adapterFor, private readonly teardownFor: (kind: AgentKind) => string | undefined = () => undefined) {}
 
-  // submit or durably queue one prompt
-  async submit(agentId: string, prompt: string, attachments: PromptAttachment[] = []): Promise<boolean> {
+  // submit or durably queue one prompt. `resetAt` marks the prompt as the first
+  // turn of a conversation just reset with the Adapter's new-conversation command
+  // (a Run reusing a pane): it flows into the completion baseline so the answer is
+  // read from the fresh thread's rollout, not the reset pane's stale one.
+  async submit(agentId: string, prompt: string, attachments: PromptAttachment[] = [], resetAt?: number): Promise<boolean> {
     if (!validPrompt(prompt, attachments)) return false;
     const releaseMutation = this.beginAgentMutation(agentId);
     const first = await this.discovery.target(agentId);
@@ -100,10 +103,10 @@ export class PromptService {
         // stop before paste when durable storage is unavailable
         if (queued === undefined) return false;
         // delivery may remain queued without rejecting the accepted request
-        await this.dispatch(agentId, scope);
+        await this.dispatch(agentId, scope, resetAt);
         return true;
       }
-      return await this.send(agentId, prompt, attachments, first);
+      return await this.send(agentId, prompt, attachments, first, 'queue', false, resetAt);
     } finally {
       releaseMutation();
     }
@@ -323,21 +326,24 @@ export class PromptService {
     }
   }
 
-  private async dispatch(agentId: string, scope: string): Promise<void> {
+  // `resetAt` is threaded only from a fresh `submit` that just reset the pane; a
+  // queue drain from `observe` passes none, so its baseline is captured as usual
+  private async dispatch(agentId: string, scope: string, resetAt?: number): Promise<void> {
     // reject overlapping or held dispatches
     if (this.dispatching.has(scope) || this.phases.has(scope) || this.restartLocks.has(scope)) return;
     this.dispatching.add(scope);
     try {
       const prompt = await this.queued?.next(scope);
       // consume only after the adapter confirms submission
-      if (prompt !== undefined && await this.send(agentId, prompt.text, prompt.attachments ?? [], undefined, 'queue', true)) {
+      if (prompt !== undefined && await this.send(agentId, prompt.text, prompt.attachments ?? [], undefined, 'queue', true, resetAt)) {
         await this.queued?.remove(scope, prompt.id);
       }
     } finally { this.dispatching.delete(scope); }
   }
 
-  // send one prompt to a stable pane
-  private async send(agentId: string, prompt: string, attachments: PromptAttachment[], discovered?: DiscoveredTarget, submission: 'queue' | 'enter' | 'confirmed-enter' = 'queue', durable = false): Promise<boolean> {
+  // send one prompt to a stable pane. `resetAt`, when set, anchors the completion
+  // baseline on the conversation the pane was just reset into (see `submit`).
+  private async send(agentId: string, prompt: string, attachments: PromptAttachment[], discovered?: DiscoveredTarget, submission: 'queue' | 'enter' | 'confirmed-enter' = 'queue', durable = false, resetAt?: number): Promise<boolean> {
     const first = discovered ?? await this.discovery.target(agentId);
     if (!first) return false;
     // the Adapter describes the paste text and the submit keys; the console pastes and sends them
@@ -391,7 +397,7 @@ export class PromptService {
     // snapshot the rollout baseline before the turn starts: completion is then a
     // `task_complete` recorded past it (the native-Codex TUI renders no boundary,
     // so scraping the pane never observes the finish)
-    const rolloutBaseline = this.queued === undefined ? undefined : await this.captureRolloutBaseline(agentId, adapter);
+    const rolloutBaseline = this.queued === undefined ? undefined : await this.captureRolloutBaseline(agentId, adapter, resetAt);
     // refresh after every settle/baseline delay so key selection reflects send-time state
     const submitTarget = await this.discovery.target(agentId, true);
     if (!submitTarget || submitTarget.socket.fingerprint !== second.socket.fingerprint || submitTarget.agent.paneId !== second.agent.paneId) {
@@ -648,12 +654,13 @@ export class PromptService {
   // snapshot the rollout completion baseline before a turn starts, when the Adapter
   // reads completion from its event log and the pane's pid is known. The pid drives
   // the exact fd-walk; the working directory is the fallback when it is blocked.
-  private async captureRolloutBaseline(agentId: string, adapter: AdapterView | undefined): Promise<CompletionBaseline | undefined> {
+  // `resetAt` defers the baseline to the conversation the pane was just reset into.
+  private async captureRolloutBaseline(agentId: string, adapter: AdapterView | undefined, resetAt?: number): Promise<CompletionBaseline | undefined> {
     if (adapter?.completion === undefined) return undefined;
     const pid = this.paneProcessId(agentId);
     if (pid === undefined) return undefined;
     const cwd = this.paneWorkingDirectory(agentId);
-    return await adapter.completion.baseline({ pid, ...(cwd === undefined ? {} : { cwd }) }).catch(() => undefined);
+    return await adapter.completion.baseline({ pid, ...(cwd === undefined ? {} : { cwd }) }, resetAt).catch(() => undefined);
   }
 
   // the newest terminal turn past the snapshotted baseline from the Adapter's event

@@ -44,7 +44,7 @@ const maxCwdRolloutScans = 512;
 const maxListTailBytes = 256 * 1024;
 
 type RolloutRef = { id: string; relativePath: string };
-type RolloutMetadata = { id: string; cwd: string; parentThreadId?: string };
+type RolloutMetadata = { id: string; cwd: string; parentThreadId?: string; createdAt?: number };
 
 function procRoot(): string {
   return process.env.RAC_HOST_PROC ?? '/proc';
@@ -113,10 +113,12 @@ async function rolloutMetadata(file: string): Promise<RolloutMetadata | undefine
     const record = JSON.parse(firstLine) as { type?: unknown; payload?: unknown };
     // require session metadata
     if (record.type !== 'session_meta' || record.payload === null || typeof record.payload !== 'object') return undefined;
-    const payload = record.payload as { id?: unknown; cwd?: unknown; originator?: unknown; parent_thread_id?: unknown };
+    const payload = record.payload as { id?: unknown; cwd?: unknown; originator?: unknown; parent_thread_id?: unknown; timestamp?: unknown };
     // accept only top-level interactive Codex conversations
     if (typeof payload.id !== 'string' || !validCodexThreadId(payload.id) || typeof payload.cwd !== 'string' || payload.originator !== 'codex-tui') return undefined;
-    return { id: payload.id, cwd: payload.cwd, ...(typeof payload.parent_thread_id === 'string' ? { parentThreadId: payload.parent_thread_id } : {}) };
+    // the recorded session start, epoch ms; used to tell a post-reset rollout from the pre-reset one
+    const createdAt = typeof payload.timestamp === 'string' ? Date.parse(payload.timestamp) : NaN;
+    return { id: payload.id, cwd: payload.cwd, ...(typeof payload.parent_thread_id === 'string' ? { parentThreadId: payload.parent_thread_id } : {}), ...(Number.isFinite(createdAt) ? { createdAt } : {}) };
   } catch {
     return undefined;
   } finally {
@@ -204,8 +206,12 @@ export async function discoverCodexConversation(pane: { pid: number; cwd?: strin
  * live conversation is found before older history in the same directory. The
  * caller supplies `cwd` only when it is unique among live panes, so a directory
  * running two agents never resolves to a sibling's rollout.
+ *
+ * When `createdAfter` is given (a `/new` reset instant), a matching rollout must
+ * also have been recorded after it, so the pane's still-open pre-reset rollout is
+ * skipped and only the freshly opened post-reset thread resolves.
  */
-async function rolloutByCwd(cwd: string): Promise<{ id: string; file: string } | undefined> {
+async function rolloutByCwd(cwd: string, createdAfter?: number): Promise<{ id: string; file: string } | undefined> {
   // Codex records a host-canonical `cwd` and the pane path is host-canonical too
   // (tmux reads it from the pane's `/proc/<pid>/cwd`), so match the raw string first.
   // That holds under Docker, where a host worktree can be bind-mounted at a different
@@ -213,8 +219,10 @@ async function rolloutByCwd(cwd: string): Promise<{ id: string; file: string } |
   // canonical form is only a fallback for a genuinely symlinked local pane path.
   const canonical = await realpath(cwd).catch(() => cwd);
   for await (const { file, metadata } of walkRollouts(codexHome())) {
-    // match the pane's live top-level conversation in this directory
-    if (metadata !== undefined && metadata.parentThreadId === undefined && (metadata.cwd === cwd || metadata.cwd === canonical)) return { id: metadata.id, file };
+    // match the pane's live top-level conversation in this directory, skipping any
+    // rollout that predates a supplied reset instant (the pre-reset thread)
+    if (metadata !== undefined && metadata.parentThreadId === undefined && (metadata.cwd === cwd || metadata.cwd === canonical)
+      && (createdAfter === undefined || (metadata.createdAt !== undefined && metadata.createdAt > createdAfter))) return { id: metadata.id, file };
   }
   return undefined;
 }
@@ -411,11 +419,22 @@ export function maxOrdinalFromRecords(lines: Iterable<string>): number | undefin
   return max;
 }
 
-// the newest terminal turn recorded in the baseline's pinned rollout past its
-// ordinal; reads the exact file `baseline` resolved, so it never drifts to a
-// sibling pane's rollout mid-turn
+// the newest terminal turn recorded past the baseline's ordinal. A resolved
+// baseline reads the exact file it pinned, so it never drifts to a sibling pane's
+// rollout mid-turn; a deferred baseline resolves the post-reset thread first (the
+// newest cwd-matching rollout created after the reset), staying `pending` until it
+// appears.
 export async function codexTurnSince(baseline: CompletionBaseline): Promise<CompletionEvent | undefined> {
-  const lines = await readFileTail(baseline.rollout, maxCompletionScanBytes).catch(() => undefined);
+  let rollout: string;
+  // a resolved baseline names its pinned file; a deferred one resolves the post-reset rollout now
+  if ('rollout' in baseline) rollout = baseline.rollout;
+  else {
+    const resolved = await rolloutByCwd(baseline.cwd, baseline.resetAt).catch(() => undefined);
+    // Codex opens the new thread's rollout only at its first turn; keep polling
+    if (resolved === undefined) return { kind: 'pending' };
+    rollout = resolved.file;
+  }
+  const lines = await readFileTail(rollout, maxCompletionScanBytes).catch(() => undefined);
   return lines === undefined ? undefined : completionFromRecords(lines, baseline.ordinal);
 }
 
@@ -423,7 +442,14 @@ export async function codexTurnSince(baseline: CompletionBaseline): Promise<Comp
 // starts. The fd-walk (`pid`) is exact; the working-directory match (`cwd`) is the
 // privilege-free fallback when a confined service cannot readlink the pane's
 // descriptors. Returns undefined when no single rollout resolves or it cannot be read.
-export async function codexRolloutBaseline(pane: { pid: number; cwd?: string }): Promise<CompletionBaseline | undefined> {
+//
+// `resetAt` marks a turn that first resets the conversation with `/new`: the pane
+// still holds its pre-reset rollout open, so pinning it now would read the old
+// thread. Return a deferred baseline (cwd + instant) instead and let `since`
+// resolve the post-reset rollout once Codex opens it (the completion contract in
+// `types.ts` covers why deferral needs the cwd).
+export async function codexRolloutBaseline(pane: { pid: number; cwd?: string }, resetAt?: number): Promise<CompletionBaseline | undefined> {
+  if (resetAt !== undefined) return pane.cwd === undefined ? undefined : { cwd: pane.cwd, resetAt, ordinal: 0 };
   const selected = await paneRollout(pane);
   if (selected === undefined) return undefined;
   const lines = await readFileTail(selected.file, maxCompletionScanBytes).catch(() => undefined);

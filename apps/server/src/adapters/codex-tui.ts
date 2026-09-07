@@ -141,6 +141,6 @@ export const codexConversations: NonNullable<Adapter['conversations']> = {
 };
 
 export const codexCompletion: NonNullable<Adapter['completion']> = {
-  baseline: (pane) => codexRolloutBaseline(pane),
+  baseline: (pane, resetAt) => codexRolloutBaseline(pane, resetAt),
   since: (baseline) => codexTurnSince(baseline),
 };

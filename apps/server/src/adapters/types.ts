@@ -111,13 +111,22 @@ export type CompletionEvent =
   | { kind: 'completed'; ordinal: number; answer: string }
   | { kind: 'aborted'; ordinal: number };
 /**
- * A rollout completion baseline snapshotted before a turn starts: `rollout` pins
- * the exact event-log file the turn will be read from, `ordinal` is that file's
- * max ordinal at the snapshot. Pinning the file (rather than re-resolving it at
- * completion) keeps `baseline` and `since` reading the same rollout even when a
- * sibling pane's rollout later becomes the newest in a shared directory.
+ * A rollout completion baseline snapshotted before a turn starts, in one of two
+ * shapes:
+ *
+ * - *Resolved* (`rollout`) — the exact event-log file the turn will be read from,
+ *   pinned at capture with the file's `ordinal` at that instant. Pinning the file
+ *   (rather than re-resolving it at completion) keeps `baseline` and `since`
+ *   reading the same rollout even when a sibling pane's rollout later becomes the
+ *   newest in a shared directory. This is the shape a plain turn takes.
+ * - *Deferred* (`cwd` + `resetAt`) — a turn that starts a fresh conversation with
+ *   `/new`. Codex opens the new thread's rollout only at its first turn, so there
+ *   is no file to pin at capture; the baseline records the pane's working
+ *   directory and the reset instant instead, and `since` resolves the newest
+ *   cwd-matching rollout created after `resetAt`. `ordinal` is zero — the whole
+ *   fresh thread is read.
  */
-export type CompletionBaseline = { rollout: string; ordinal: number };
+export type CompletionBaseline = { rollout: string; ordinal: number } | { cwd: string; resetAt: number; ordinal: number };
 
 /**
  * A pane snapshot the console feeds an Adapter's `newConversation` while it drives a
@@ -248,9 +257,16 @@ export interface Adapter {
    * privilege-free fallback a confined service uses when it cannot readlink a
    * sandboxed pane's descriptors. `baseline` returns `undefined` when no single
    * rollout resolves, at which point the console falls back to `turns`.
+   *
+   * `resetAt` marks a turn that first resets the conversation with `/new`: Codex
+   * opens the new thread's rollout only at its first turn, so `baseline` returns a
+   * *deferred* baseline (the cwd and the instant) rather than pinning the pane's
+   * still-open pre-reset rollout, and `since` resolves the post-reset rollout when
+   * it appears. Deferred resolution keys on the cwd, so a reset turn without one is
+   * unresolvable (`undefined`, the same `turns` fallback).
    */
   readonly completion?: {
-    baseline(pane: { pid: number; cwd?: string }): Promise<CompletionBaseline | undefined>;
+    baseline(pane: { pid: number; cwd?: string }, resetAt?: number): Promise<CompletionBaseline | undefined>;
     since(baseline: CompletionBaseline): Promise<CompletionEvent | undefined>;
   };
   /**

@@ -838,6 +838,64 @@ it('fails a rollout-tracked turn that the log records as aborted', async () => {
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+it('passes a reset instant into the baseline capture and records the fresh-thread answer', async () => {
+  // A Run reuses a pane by resetting its conversation, then submits with the reset
+  // instant; the completion baseline must anchor on the fresh thread so the answer
+  // lands on this submit's history entry rather than the stale pre-reset rollout.
+  const directory = await mkdtemp(join(tmpdir(), 'rac-reset-baseline-'));
+  const queue = new QueuedPromptService(join(directory, 'queue.json'));
+  const mutableAgent = stated({ ...agent, title: 'Ready' });
+  const pasted: string[] = [];
+  const recorded: Array<[string, string]> = [];
+  const resetInstants: Array<number | undefined> = [];
+  let composer = '';
+  let turnDone = false;
+  const discovery = {
+    worktreesNow: () => [],
+    target: async () => ({ agent: mutableAgent, socket }),
+    paneProcessId: () => 4242,
+    paneWorkingDirectory: () => '/home/ubuntu/cora'
+  };
+  const tmux = {
+    pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, prompt: string) => { pasted.push(prompt.trimEnd()); composer = `› ${prompt} • Working`; return true; },
+    capture: async () => composer || '› Ready',
+    sendKeys: async () => { composer = ''; return true; }
+  };
+  const history = {
+    record: async (_scope: string, text: string) => ({ id: `h-${pasted.length}`, text }),
+    recordAnswer: async (_scope: string, id: string, answer: string) => { recorded.push([id, answer]); return { id }; }
+  };
+  const resetAt = 1_788_100_000_000;
+  const view = {
+    ...codexAdapter,
+    completion: {
+      // record the reset instant the service supplies; a real deferred baseline resolves
+      // its rollout lazily in `since`, which this fake stands in for
+      baseline: async (_pane: { pid: number; cwd?: string }, reset?: number) => { resetInstants.push(reset); return reset === undefined ? { rollout: 'stale.jsonl' as const, ordinal: 0 } : { cwd: '/home/ubuntu/cora' as const, resetAt: reset, ordinal: 0 }; },
+      since: async () => turnDone ? { kind: 'completed' as const, ordinal: 4, answer: 'Fresh answer.' } : { kind: 'pending' as const }
+    }
+  };
+  const service = new PromptService(discovery as never, tmux as never, history as never, queue, undefined, () => view);
+  try {
+    await expect(service.submit(agent.id, 'Run the note', [], resetAt)).resolves.toBe(true);
+    // the reset instant reached the baseline capture exactly once
+    expect(resetInstants).toEqual([resetAt]);
+
+    mutableAgent.title = '⠋ Working';
+    await service.observe(mutableAgent);
+    mutableAgent.title = 'Ready';
+    await service.observe(mutableAgent);
+    await service.observe(mutableAgent);
+    // the fresh thread has not recorded task_complete: nothing is stored yet
+    expect(recorded).toEqual([]);
+
+    turnDone = true;
+    await service.observe(mutableAgent);
+    // the answer lands on this submit's own history entry
+    expect(recorded).toEqual([['h-1', 'Fresh answer.']]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 it('keeps a dispatching prompt durable when delivery fails while another prompt is enqueued', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-durable-queue-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));

@@ -16,12 +16,16 @@ const turnRecords = (base: number, turnId: string, prompt: string, answer: strin
   { type: 'event_msg', ordinal: base + 3, payload: { type: 'task_complete', turn_id: turnId, last_agent_message: answer, duration_ms: 1200, completed_at: '2026-08-30T15:32:25.200Z' } }
 ];
 
-// write one representative Codex rollout with ordinal-stamped records, returning its path
-async function writeRollout(home: string, id: string, records: Record[], cwd = '/home/ubuntu/cora'): Promise<string> {
-  const directory = join(home, 'sessions', '2026', '08', '30');
+// write one representative Codex rollout with ordinal-stamped records, returning
+// its path. `createdAt` sets both the `session_meta` timestamp and the file's
+// date-partition and name (Codex names a rollout after its second-precision start).
+async function writeRollout(home: string, id: string, records: Record[], cwd = '/home/ubuntu/cora', createdAt = '2026-08-30T15:32:23.000Z'): Promise<string> {
+  const [year, month, day] = createdAt.slice(0, 10).split('-');
+  const directory = join(home, 'sessions', year, month, day);
   await mkdir(directory, { recursive: true });
-  const meta = { type: 'session_meta', ordinal: 0, payload: { id, cwd, timestamp: '2026-08-30T15:32:23.000Z', originator: 'codex-tui' } };
-  const file = join(directory, `rollout-2026-08-30T15-32-23-${id}.jsonl`);
+  const meta = { type: 'session_meta', ordinal: 0, payload: { id, cwd, timestamp: createdAt, originator: 'codex-tui' } };
+  const stamp = createdAt.slice(0, 19).replace(/:/gu, '-');
+  const file = join(directory, `rollout-${stamp}-${id}.jsonl`);
   await writeFile(file, `${[meta, ...records].map(line => JSON.stringify(line)).join('\n')}\n`);
   return file;
 }
@@ -122,5 +126,64 @@ describe('Codex rollout completion', () => {
     await expect(codexRolloutBaseline({ pid: 321, cwd: '/home/ubuntu/cora' })).resolves.toBeUndefined();
     // a pinned rollout that no longer exists reads as undefined, not a throw
     await expect(codexTurnSince({ rollout: join(tmpdir(), 'rac-missing-rollout.jsonl'), ordinal: 0 })).resolves.toBeUndefined();
+  });
+
+  it('defers a reset baseline past the stale open rollout and resolves the post-reset thread', async () => {
+    const home = await codexHome();
+    const cwd = '/home/ubuntu/cora';
+    // the pane still holds the pre-reset rollout open, so a naive fd-walk would pin it
+    const staleId = '0198d100-0000-7000-8000-0000000000a1';
+    const staleFile = await writeRollout(home, staleId, turnRecords(1, 't0', 'Before reset', 'Stale answer.'), cwd, '2026-08-30T15:00:00.000Z');
+    process.env.CODEX_HOME = home;
+    process.env.RAC_HOST_PROC = await fakeProc(321, [staleFile]);
+    const resetAt = Date.parse('2026-08-30T15:30:00.000Z');
+
+    // a reset instant defers to cwd + instant rather than pinning the stale open rollout
+    const baseline = await codexRolloutBaseline({ pid: 321, cwd }, resetAt);
+    expect(baseline).toEqual({ cwd, resetAt, ordinal: 0 });
+    // no rollout newer than the reset exists yet: the post-reset turn stays pending
+    await expect(codexTurnSince(baseline!)).resolves.toEqual({ kind: 'pending' });
+
+    // Codex opens the new thread's rollout at its first turn; since now reads that file
+    const freshId = '0198d100-0000-7000-8000-0000000000a2';
+    await writeRollout(home, freshId, turnRecords(1, 't1', 'After reset', 'Fresh answer.'), cwd, '2026-08-30T16:00:00.000Z');
+    await expect(codexTurnSince(baseline!)).resolves.toEqual({ kind: 'completed', ordinal: 4, answer: 'Fresh answer.' });
+  });
+
+  it('reads an aborted post-reset turn from a deferred baseline', async () => {
+    const home = await codexHome();
+    const cwd = '/home/ubuntu/cora';
+    process.env.CODEX_HOME = home;
+    process.env.RAC_HOST_PROC = await fakeProc(321, []);
+    const resetAt = Date.parse('2026-08-30T15:30:00.000Z');
+    const baseline = await codexRolloutBaseline({ pid: 321, cwd }, resetAt);
+    expect(baseline).toEqual({ cwd, resetAt, ordinal: 0 });
+
+    const freshId = '0198d100-0000-7000-8000-0000000000b2';
+    const aborted: Record[] = [
+      { type: 'response_item', ordinal: 1, payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'After reset' }] } },
+      { type: 'event_msg', ordinal: 2, payload: { type: 'task_started', turn_id: 't1', started_at: '2026-08-30T16:00:01.000Z' } },
+      { type: 'event_msg', ordinal: 3, payload: { type: 'turn_aborted', turn_id: 't1', reason: 'interrupted' } }
+    ];
+    await writeRollout(home, freshId, aborted, cwd, '2026-08-30T16:00:00.000Z');
+    await expect(codexTurnSince(baseline!)).resolves.toEqual({ kind: 'aborted', ordinal: 3 });
+  });
+
+  it('never resolves a deferred baseline to a rollout created before the reset', async () => {
+    const home = await codexHome();
+    const cwd = '/home/ubuntu/cora';
+    // a matching-cwd rollout that predates the reset is not the post-reset thread
+    await writeRollout(home, '0198d100-0000-7000-8000-0000000000c1', turnRecords(1, 't0', 'Old', 'Old answer.'), cwd, '2026-08-30T15:00:00.000Z');
+    process.env.CODEX_HOME = home;
+    process.env.RAC_HOST_PROC = await fakeProc(321, []);
+    const baseline = await codexRolloutBaseline({ pid: 321, cwd }, Date.parse('2026-08-30T15:30:00.000Z'));
+    await expect(codexTurnSince(baseline!)).resolves.toEqual({ kind: 'pending' });
+  });
+
+  it('cannot defer a reset baseline without a pane working directory', async () => {
+    process.env.CODEX_HOME = await codexHome();
+    process.env.RAC_HOST_PROC = await fakeProc(321, []);
+    // deferred resolution keys entirely on the cwd; without one the console falls back
+    await expect(codexRolloutBaseline({ pid: 321 }, Date.parse('2026-08-30T15:30:00.000Z'))).resolves.toBeUndefined();
   });
 });
