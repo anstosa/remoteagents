@@ -412,6 +412,101 @@ it('records the newest unanswered completion after observing restarted work', as
   expect(completed).toEqual(['Recovered after restart']);
 });
 
+// recover native completion after a mid-turn server restart
+it('records a rollout-only answer after restarting during submitted work', async () => {
+  const mutableAgent = stated({ ...agent, title: '⠋ Working' });
+  const completed: Array<[string, string]> = [];
+  const historyEntry = { id: 'prompt-history-restarted-rollout', text: 'Run across restart', createdAt: '2026-09-07T15:58:00.000Z' };
+  let turnDone = false;
+  const discovery = {
+    worktreesNow: () => [],
+    // retain one active pane
+    target: async () => ({ agent: mutableAgent, socket }),
+    // expose its rollout owner
+    paneProcessId: () => 4242
+  };
+  const tmux = {
+    // model native Codex without a completion footer
+    capture: async () => '• Native Codex output'
+  };
+  const history = {
+    // expose the submitted unanswered prompt
+    list: async () => [historyEntry],
+    // collect recovered completion
+    recordAnswer: async (_scope: string, entryId: string, answer: string) => {
+      completed.push([entryId, answer]);
+      return { ...historyEntry, answer, answeredAt: '2026-09-07T16:07:09.000Z' };
+    }
+  };
+  const view = {
+    ...codexAdapter,
+    completion: {
+      // snapshot the resumed in-flight rollout
+      baseline: async () => ({ rollout: 'rollout.jsonl', ordinal: 100 }),
+      // publish its later terminal event
+      since: async (baseline: { ordinal: number }) => turnDone
+        ? { kind: 'completed' as const, ordinal: baseline.ordinal + 50, answer: 'Recovered rollout answer.' }
+        : { kind: 'pending' as const }
+    }
+  };
+  const service = new PromptService(discovery as never, tmux as never, history as never, undefined, undefined, () => view);
+
+  await service.observe(mutableAgent);
+  turnDone = true;
+  mutableAgent.title = 'Ready';
+  await service.observe(mutableAgent);
+
+  expect(completed).toEqual([['prompt-history-restarted-rollout', 'Recovered rollout answer.']]);
+});
+
+// leave stale unanswered history detached from new work
+it('does not adopt an older unanswered prompt during rollout recovery', async () => {
+  const mutableAgent = stated({ ...agent, title: '⠋ Working' });
+  const completed: string[] = [];
+  const latestEntry = { id: 'prompt-history-latest', text: 'Latest task', createdAt: '2026-09-07T16:00:00.000Z', answer: 'Latest answer', answeredAt: '2026-09-07T16:01:00.000Z' };
+  const staleEntry = { id: 'prompt-history-stale-rollout', text: 'Stale task', createdAt: '2026-09-07T15:00:00.000Z' };
+  let turnDone = false;
+  const discovery = {
+    worktreesNow: () => [],
+    // retain one active pane
+    target: async () => ({ agent: mutableAgent, socket }),
+    // expose its rollout owner
+    paneProcessId: () => 4242
+  };
+  const tmux = {
+    // omit terminal completion evidence
+    capture: async () => '• Unrelated native Codex output'
+  };
+  const history = {
+    // keep the stale unanswered entry behind completed work
+    list: async () => [latestEntry, staleEntry],
+    // flag accidental reassignment
+    recordAnswer: async (_scope: string, entryId: string) => {
+      completed.push(entryId);
+      return staleEntry;
+    }
+  };
+  const view = {
+    ...codexAdapter,
+    completion: {
+      // snapshot the unrelated rollout
+      baseline: async () => ({ rollout: 'rollout.jsonl', ordinal: 200 }),
+      // publish its later terminal event
+      since: async (baseline: { ordinal: number }) => turnDone
+        ? { kind: 'completed' as const, ordinal: baseline.ordinal + 50, answer: 'Unrelated answer.' }
+        : { kind: 'pending' as const }
+    }
+  };
+  const service = new PromptService(discovery as never, tmux as never, history as never, undefined, undefined, () => view);
+
+  await service.observe(mutableAgent);
+  turnDone = true;
+  mutableAgent.title = 'Ready';
+  await service.observe(mutableAgent);
+
+  expect(completed).toEqual([]);
+});
+
 // reject pre-restart output before a pending prompt starts
 it('does not assign a promptless completion to work not observed running', async () => {
   const mutableAgent = stated({ ...agent, title: 'Ready' });

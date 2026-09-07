@@ -216,6 +216,8 @@ export class PromptService {
     }
     // wait through active agent work
     if (busy) {
+      // recover one submitted prompt after a server restart
+      const restartedEntry = phase === undefined && !this.observedWorking.has(scope) ? await this.latestUnanswered(scope) : undefined;
       this.observedWorking.add(scope);
       this.reconciled.delete(scope);
       this.reconciliationPendingSince.delete(scope);
@@ -227,11 +229,15 @@ export class PromptService {
         const rolloutBaseline = phase.rolloutBaseline ?? (adapter === undefined ? undefined : await this.captureRolloutBaseline(agent.id, adapter));
         this.phases.set(scope, { ...phase, state: 'working', changedAt: Date.now(), ...(baselineCompletion === undefined ? {} : { baselineCompletion }), ...(rolloutBaseline === undefined ? {} : { rolloutBaseline }) });
       }
-      // adopt externally started work once prompts are queued
-      if (phase === undefined && (await this.queued?.list(scope))?.length) {
+      const waiting = phase === undefined ? await this.queued?.list(scope) : undefined;
+      // inspect queued or restart-orphaned work
+      if (phase === undefined && ((waiting?.length ?? 0) > 0 || restartedEntry !== undefined)) {
         const baselineCompletion = await this.completionSignature(agent.id);
         const rolloutBaseline = adapter === undefined ? undefined : await this.captureRolloutBaseline(agent.id, adapter);
-        this.phases.set(scope, { state: 'working', changedAt: Date.now(), ...(baselineCompletion === undefined ? {} : { baselineCompletion }), ...(rolloutBaseline === undefined ? {} : { rolloutBaseline }) });
+        // adopt an unanswered entry only with structured completion tracking
+        const recoveringEntry = rolloutBaseline === undefined ? undefined : restartedEntry;
+        // retain terminal reconciliation when rollout tracking is unavailable
+        if ((waiting?.length ?? 0) > 0 || recoveringEntry !== undefined) this.phases.set(scope, { state: 'working', changedAt: Date.now(), ...(recoveringEntry === undefined ? {} : { historyEntryId: recoveringEntry.id, historyPrompt: recoveringEntry.text }), ...(baselineCompletion === undefined ? {} : { baselineCompletion }), ...(rolloutBaseline === undefined ? {} : { rolloutBaseline }) });
       }
       return;
     }
@@ -563,6 +569,16 @@ export class PromptService {
     this.reconciled.add(scope);
     this.observedWorking.delete(scope);
     return true;
+  }
+
+  // find one durable prompt whose answer tracking may have restarted
+  private async latestUnanswered(scope: string) {
+    // skip deployments without prompt history
+    if (this.history === undefined || typeof this.history.list !== 'function') return undefined;
+    const entries = await this.history.list(scope);
+    const latest = entries?.[0];
+    // never attach new work to older unanswered history
+    return latest?.answer === undefined ? latest : undefined;
   }
 
   // capture and persist the final answer
