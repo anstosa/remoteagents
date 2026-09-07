@@ -1,8 +1,8 @@
-import { appendFile, mkdir, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { codexConversationName, discoverCodexConversation, openRollouts, validCodexThreadId } from '../../src/adapters/codex-conversations.js';
-import { codexHome, fakeProc } from '../helpers/codex-fixtures.js';
+import { codexConversationName, codexConversationSummaries, discoverCodexConversation, openRollouts, validCodexThreadId } from '../../src/adapters/codex-conversations.js';
+import { codexHome, fakeProc, tempDir } from '../helpers/codex-fixtures.js';
 
 // write one representative Codex rollout, returning its absolute path
 async function writeSession(home: string, name: string, session: { id: string; cwd: string; prompt: string; parentThreadId?: string }): Promise<string> {
@@ -114,5 +114,85 @@ describe('Codex conversation lookup', () => {
     process.env.RAC_HOST_PROC = await fakeProc(123, [file]);
 
     await expect(discoverCodexConversation({ pid: 123 })).resolves.toEqual({ id: '0198c888-8888-7888-8888-888888888888' });
+  });
+});
+
+// write one listable Codex rollout under a date partition, with a top-level `timestamp` per
+// record (the last of which is its last-active time), returning its absolute path
+async function writeListRollout(home: string, ymd: [string, string, string], id: string, session: { cwd: string; lastActiveAt: string; parentThreadId?: string }): Promise<string> {
+  const directory = join(home, 'sessions', ...ymd);
+  await mkdir(directory, { recursive: true });
+  const lines = [
+    { timestamp: '2026-08-01T00:00:00.000Z', ordinal: 0, type: 'session_meta', payload: { id, cwd: session.cwd, originator: 'codex-tui', ...(session.parentThreadId === undefined ? {} : { parent_thread_id: session.parentThreadId }) } },
+    { timestamp: session.lastActiveAt, ordinal: 1, type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'done' } },
+  ];
+  const file = join(directory, `rollout-${ymd.join('-')}T00-00-00-${id}.jsonl`);
+  await writeFile(file, `${lines.map(line => JSON.stringify(line)).join('\n')}\n`);
+  return file;
+}
+
+describe('Codex conversation listing', () => {
+  it('lists Named top-level conversations under the given directories, newest-active first', async () => {
+    const home = await codexHome();
+    process.env.CODEX_HOME = home;
+    // two in-scope named rollouts across separate date partitions
+    await writeListRollout(home, ['2026', '08', '18'], '0198c111-1111-7111-8111-111111111111', { cwd: '/wt/cora', lastActiveAt: '2026-08-18T10:00:00.000Z' });
+    await writeListRollout(home, ['2026', '09', '02'], '0198c222-2222-7222-8222-222222222222', { cwd: '/wt/owen', lastActiveAt: '2026-09-02T10:00:00.000Z' });
+    // a rollout started outside the requested directories is excluded despite its sidecar name
+    await writeListRollout(home, ['2026', '09', '03'], '0198c333-3333-7333-8333-333333333333', { cwd: '/elsewhere', lastActiveAt: '2026-09-03T10:00:00.000Z' });
+    // a child thread is excluded even though its cwd matches and it has a name
+    await writeListRollout(home, ['2026', '09', '04'], '0198c444-4444-7444-8444-444444444444', { cwd: '/wt/cora', lastActiveAt: '2026-09-04T10:00:00.000Z', parentThreadId: '0198c111-1111-7111-8111-111111111111' });
+    // an unnamed rollout (no sidecar line) is excluded, however recent
+    await writeListRollout(home, ['2026', '09', '05'], '0198c555-5555-7555-8555-555555555555', { cwd: '/wt/cora', lastActiveAt: '2026-09-05T10:00:00.000Z' });
+    // superseded sidecar lines: the last name for an id wins
+    await writeSessionIndex(home, [
+      { id: '0198c111-1111-7111-8111-111111111111', thread_name: 'Cora provisional' },
+      { id: '0198c222-2222-7222-8222-222222222222', thread_name: 'Owen chat' },
+      { id: '0198c333-3333-7333-8333-333333333333', thread_name: 'Stranger' },
+      { id: '0198c444-4444-7444-8444-444444444444', thread_name: 'Child task' },
+      { id: '0198c111-1111-7111-8111-111111111111', thread_name: 'Cora renamed' },
+    ]);
+
+    await expect(codexConversationSummaries(['/wt/cora', '/wt/owen'])).resolves.toEqual([
+      { id: '0198c222-2222-7222-8222-222222222222', name: 'Owen chat', lastActiveAt: Date.parse('2026-09-02T10:00:00.000Z'), directory: '/wt/owen' },
+      { id: '0198c111-1111-7111-8111-111111111111', name: 'Cora renamed', lastActiveAt: Date.parse('2026-08-18T10:00:00.000Z'), directory: '/wt/cora' },
+    ]);
+  });
+
+  it('matches a rollout recorded under a directory\'s canonical path and reports the given path', async () => {
+    const home = await codexHome();
+    process.env.CODEX_HOME = home;
+    const real = await tempDir('rac-real-');
+    const link = join(await tempDir('rac-link-'), 'checkout');
+    await symlink(real, link);
+    // Codex records the host-canonical cwd; the console scans the symlinked Worktree path
+    await writeListRollout(home, ['2026', '09', '02'], '0198c111-1111-7111-8111-111111111111', { cwd: real, lastActiveAt: '2026-09-02T10:00:00.000Z' });
+    await writeSessionIndex(home, [{ id: '0198c111-1111-7111-8111-111111111111', thread_name: 'Linked chat' }]);
+
+    await expect(codexConversationSummaries([link])).resolves.toEqual([
+      { id: '0198c111-1111-7111-8111-111111111111', name: 'Linked chat', lastActiveAt: Date.parse('2026-09-02T10:00:00.000Z'), directory: link },
+    ]);
+  });
+
+  it('lists nothing for no directories or an absent sessions tree', async () => {
+    const home = await codexHome();
+    process.env.CODEX_HOME = home;
+    // no directories requested — no walk at all
+    await expect(codexConversationSummaries([])).resolves.toEqual([]);
+    // a fresh CODEX_HOME with no sessions tree contributes nothing rather than throwing
+    await expect(codexConversationSummaries(['/wt/cora'])).resolves.toEqual([]);
+  });
+
+  it('clamps a long or whitespace-laden sidecar name to the shared UI bound', async () => {
+    const home = await codexHome();
+    process.env.CODEX_HOME = home;
+    await writeListRollout(home, ['2026', '09', '02'], '0198c111-1111-7111-8111-111111111111', { cwd: '/wt/cora', lastActiveAt: '2026-09-02T10:00:00.000Z' });
+    // a name Codex generated from a long first message reaches the sidecar unbounded and with
+    // surrounding whitespace; the reader must collapse and clamp it as every other Codex string
+    await writeSessionIndex(home, [{ id: '0198c111-1111-7111-8111-111111111111', thread_name: `  ${'x'.repeat(200)}  ` }]);
+
+    const [row] = await codexConversationSummaries(['/wt/cora']);
+    expect(row?.name).toBe(`${'x'.repeat(119)}…`);
+    expect(row?.name.length).toBe(120);
   });
 });

@@ -481,8 +481,18 @@ export class DiscoveryService {
   // that kind rather than failing the whole union — the console only reads the agents'
   // stores, never writes them, so a locked or absent store degrades to "nothing listed".
   async conversations(directories: readonly string[]): Promise<Array<ConversationSummary & { kind: AgentKind }>> {
-    const perKind = await Promise.all(adapters
-      .filter(adapter => adapter.conversations?.list !== undefined)
+    // codex and omx carry one rollout reader by reference (ADR 0005); run each distinct
+    // reader once so a shared rollout yields a single row, never one per sharing kind. The
+    // row is tagged with the first (registry-order) kind that owns the reader; the console
+    // re-attributes a codex-family row to the Worktree's remembered Launch kind.
+    const seen = new Set<unknown>();
+    const listers = adapters.filter(adapter => {
+      const list = adapter.conversations?.list;
+      if (list === undefined || seen.has(list)) return false;
+      seen.add(list);
+      return true;
+    });
+    const perKind = await Promise.all(listers
       .map(async adapter => (await adapter.conversations!.list!(directories).catch(() => []))
         .map(summary => ({ ...summary, kind: adapter.kind }))));
     return perKind.flat();

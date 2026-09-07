@@ -68,6 +68,44 @@ describe('conversations listing API', () => {
     }
   }, 15_000);
 
+  it('attributes each shared Codex row to the Worktree\'s remembered kind: OMX when it last launched OMX, else Codex', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const cora = testWorktree({ id: 'potato:/wt/cora', projectId: 'potato', label: 'Cora', path: '/wt/cora', identity: '/wt/cora', hostPath: '/host/cora' });
+    const owen = testWorktree({ id: 'potato:/wt/owen', projectId: 'potato', label: 'Owen', path: '/wt/owen', identity: '/wt/owen', hostPath: '/host/owen', main: false });
+    const discovery = {
+      target: async () => undefined,
+      conversationId: async () => undefined,
+      worktreesNow: () => [cora, owen],
+      // the shared Codex reader emits one codex-tagged row per rollout (never one per sharing kind)
+      conversations: async () => [
+        { kind: 'claude', id: 'aaaaaaaa-2222-4333-8444-555555555555', name: 'alpha', automatic: false, lastActiveAt: 100, directory: '/host/cora' },
+        { kind: 'codex', id: 'bbbbbbbb-2222-4333-8444-555555555555', name: 'codex on owen', lastActiveAt: 300, directory: '/host/owen' },
+        { kind: 'codex', id: 'cccccccc-2222-4333-8444-555555555555', name: 'codex on cora', lastActiveAt: 200, directory: '/host/cora' },
+      ],
+    };
+    const launch = { canResumeConversation: () => true };
+    // Owen last launched OMX; Cora last launched Claude (not a codex-family kind → stays Codex)
+    const worktreeStore = { launchProfiles: async () => ({ 'potato:/wt/owen': 'omx', 'potato:/wt/cora': 'claude' }) };
+    const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 44).toString('base64url')), discovery: discovery as never, launch: launch as never, worktreeStore: worktreeStore as never });
+    try {
+      const headers = await authenticatedHeaders(app);
+      const listed = await app.inject({ method: 'GET', url: `/api/worktrees/${encodeURIComponent(cora.id)}/conversations`, headers: { host: headers.host, cookie: headers.cookie } });
+
+      expect(listed.json()).toEqual({
+        canResume: true,
+        conversations: [
+          // Owen's rollout is badged OMX because Owen last launched OMX; ordered first (newest active)
+          { kind: 'omx', id: 'bbbbbbbb-2222-4333-8444-555555555555', name: 'codex on owen', lastActiveAt: 300, directory: '/host/owen', worktreeId: owen.id, consoleNamed: false, current: false },
+          // Cora last launched Claude, so its Codex rollout stays Codex rather than following the launch kind
+          { kind: 'codex', id: 'cccccccc-2222-4333-8444-555555555555', name: 'codex on cora', lastActiveAt: 200, directory: '/host/cora', worktreeId: cora.id, consoleNamed: false, current: false },
+          { kind: 'claude', id: 'aaaaaaaa-2222-4333-8444-555555555555', name: 'alpha', automatic: false, lastActiveAt: 100, directory: '/host/cora', worktreeId: cora.id, consoleNamed: false, current: false },
+        ],
+      });
+    } finally {
+      await app.close();
+    }
+  }, 15_000);
+
   it('keys a Scratch agent to its one directory, with no worktreeId and no resume', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const agent = stated({ id: 'scratch-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/me', title: 'Scratch' });

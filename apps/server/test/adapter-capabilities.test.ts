@@ -9,15 +9,11 @@ describe('adapterCapabilities', () => {
     expect(codex?.unavailableReason).toBeUndefined();
   });
 
-  it('derives the three conversation capabilities: bookmarks and naming everywhere, listing on Claude', () => {
+  it('derives the three conversation capabilities: bookmarks, naming and listing on every kind', () => {
     // `bookmarks` is the conversations facet's presence, `naming` its rename, `conversations` its list;
-    // every registered kind names and bookmarks. Claude lists Named conversations; Codex/OMX gain listing in a later chunk
+    // every registered kind names, bookmarks and lists (Codex and OMX share one rollout reader, ADR 0005)
     for (const kind of ['codex', 'omx', 'claude'] as const) {
-      expect(adapterCapabilities({})[kind], kind).toMatchObject({ bookmarks: true, naming: true });
-    }
-    expect(adapterCapabilities({}).claude, 'claude').toMatchObject({ conversations: true });
-    for (const kind of ['codex', 'omx'] as const) {
-      expect(adapterCapabilities({})[kind], kind).toMatchObject({ conversations: false });
+      expect(adapterCapabilities({})[kind], kind).toMatchObject({ bookmarks: true, naming: true, conversations: true });
     }
   });
 

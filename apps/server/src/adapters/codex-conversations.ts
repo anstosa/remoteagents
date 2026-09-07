@@ -2,7 +2,7 @@ import { open, readFile, readdir, readlink, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readFileTail } from './bounded-file.js';
-import type { CompletionBaseline, CompletionEvent, Conversation } from './types.js';
+import type { CompletionBaseline, CompletionEvent, Conversation, ConversationSummary } from './types.js';
 
 /**
  * Codex conversation lookup, gathered behind the Adapter (ADR 0002). These are
@@ -39,6 +39,9 @@ const maxRolloutEntries = 4_096;
 // effectively always among the newest, so a smaller bound keeps the per-turn scan
 // cheap on a host with deep history
 const maxCwdRolloutScans = 512;
+// bound the per-rollout tail read that finds a listed row's `lastActiveAt`: the newest
+// record's timestamp sits at the very end, so a small tail suffices (mirrors Claude's list)
+const maxListTailBytes = 256 * 1024;
 
 type RolloutRef = { id: string; relativePath: string };
 type RolloutMetadata = { id: string; cwd: string; parentThreadId?: string };
@@ -203,13 +206,25 @@ export async function discoverCodexConversation(pane: { pid: number; cwd?: strin
  * running two agents never resolves to a sibling's rollout.
  */
 async function rolloutByCwd(cwd: string): Promise<{ id: string; file: string } | undefined> {
-  const home = codexHome();
   // Codex records a host-canonical `cwd` and the pane path is host-canonical too
   // (tmux reads it from the pane's `/proc/<pid>/cwd`), so match the raw string first.
   // That holds under Docker, where a host worktree can be bind-mounted at a different
   // container path and an in-container `realpath` would resolve it somewhere else; the
   // canonical form is only a fallback for a genuinely symlinked local pane path.
   const canonical = await realpath(cwd).catch(() => cwd);
+  for await (const { file, metadata } of walkRollouts(codexHome())) {
+    // match the pane's live top-level conversation in this directory
+    if (metadata !== undefined && metadata.parentThreadId === undefined && (metadata.cwd === cwd || metadata.cwd === canonical)) return { id: metadata.id, file };
+  }
+  return undefined;
+}
+
+// Walk a Codex home's sessions tree newest-first — newest rollout within a date partition,
+// newest partition across them — yielding each rollout's path and bounded `session_meta` up to
+// the `maxCwdRolloutScans` cap. The live-pane working-directory match and the Named-conversation
+// listing share this one bounded walk (an early `break` in the caller stops the generator, so a
+// match found among the newest files never reads the rest of a deep-history home).
+async function* walkRollouts(home: string): AsyncGenerator<{ file: string; metadata: RolloutMetadata | undefined }> {
   const pending = [join(home, 'sessions')];
   let inspected = 0;
   while (pending.length > 0 && inspected < maxCwdRolloutScans) {
@@ -222,14 +237,11 @@ async function rolloutByCwd(cwd: string): Promise<{ id: string; file: string } |
       if (inspected >= maxCwdRolloutScans) break;
       inspected += 1;
       const file = join(directory, name);
-      const metadata = await rolloutMetadata(file).catch(() => undefined);
-      // match the pane's live top-level conversation in this directory
-      if (metadata !== undefined && metadata.parentThreadId === undefined && (metadata.cwd === cwd || metadata.cwd === canonical)) return { id: metadata.id, file };
+      yield { file, metadata: await rolloutMetadata(file).catch(() => undefined) };
     }
     // ascending push + LIFO pop visits the highest-numbered (most recent) partition first
     pending.push(...subdirectories);
   }
-  return undefined;
 }
 
 // the pane's single top-level rollout: the exact fd-walk, else the privilege-free
@@ -258,18 +270,100 @@ function compactName(text: string): string | undefined {
 export async function codexConversationName(id: string): Promise<string | undefined> {
   // reject material before it reaches a comparison
   if (!validCodexThreadId(id)) return undefined;
-  const file = join(codexHome(), 'session_index.jsonl');
-  const lines = await readFileTail(file, maxIndexScanBytes).catch(() => undefined);
+  const lines = await readFileTail(join(codexHome(), 'session_index.jsonl'), maxIndexScanBytes).catch(() => undefined);
   if (lines === undefined) return undefined;
   let name: string | undefined;
+  // append-only, last write wins: keep the newest name recorded for this id
+  for (const record of sidecarNameLines(lines)) if (record.id === id) name = record.name;
+  return name === undefined ? undefined : compactName(name);
+}
+
+// every valid, non-empty `{ id, thread_name }` entry of the session-index sidecar, in file
+// order — the shared parse the by-id read (`codexConversationName`) and the enumerate-all read
+// (`codexConversationNames`) both fold in their own way.
+function* sidecarNameLines(lines: Iterable<string>): Generator<{ id: string; name: string }> {
   for (const line of lines) {
     let record: { id?: unknown; thread_name?: unknown };
     // skip unparseable or truncated lines
     try { record = JSON.parse(line) as typeof record; } catch { continue; }
-    // append-only, last write wins: keep the newest name recorded for this id
-    if (record.id === id && typeof record.thread_name === 'string' && record.thread_name.length > 0) name = record.thread_name;
+    if (typeof record.id === 'string' && validCodexThreadId(record.id) && typeof record.thread_name === 'string' && record.thread_name.length > 0) yield { id: record.id, name: record.thread_name };
   }
-  return name === undefined ? undefined : compactName(name);
+}
+
+/**
+ * The current name of every Codex/OMX thread, read once from the account-global
+ * `session_index.jsonl` sidecar. Unlike `codexConversationName`'s by-id read — which scans
+ * the tail for one recently active thread and fails *safe* for anything older — `list`
+ * enumerates long-idle threads, so it makes one forward pass over the (bounded) sidecar and
+ * maps every id at once, the last line for an id winning. An absent sidecar maps nothing; a
+ * thread whose name predates the `maxIndexScanBytes` tail is likewise treated as unnamed
+ * (fails safe to a generic label, never a wrong name).
+ */
+async function codexConversationNames(env: NodeJS.ProcessEnv): Promise<Map<string, string>> {
+  const lines = await readFileTail(join(codexHome(env), 'session_index.jsonl'), maxIndexScanBytes).catch(() => undefined);
+  const names = new Map<string, string>();
+  if (lines === undefined) return names;
+  // append-only, last write wins: a later line for the id supersedes its earlier name
+  for (const record of sidecarNameLines(lines)) {
+    const name = compactName(record.name);
+    if (name !== undefined) names.set(record.id, name);
+  }
+  return names;
+}
+
+// the newest record timestamp in a rollout's bounded tail (epoch ms), never the file mtime —
+// Codex appends open/close bookkeeping that would move mtime past the last real activity.
+// Every rollout record carries a top-level ISO `timestamp`; 0 when none is readable.
+async function rolloutLastActiveAt(file: string): Promise<number> {
+  let latest = 0;
+  for (const line of await readFileTail(file, maxListTailBytes).catch(() => [])) {
+    let record: { timestamp?: unknown };
+    // skip unparseable or truncated lines
+    try { record = JSON.parse(line) as typeof record; } catch { continue; }
+    if (typeof record.timestamp !== 'string') continue;
+    const at = Date.parse(record.timestamp);
+    if (!Number.isNaN(at) && at > latest) latest = at;
+  }
+  return latest;
+}
+
+/**
+ * The Named Codex/OMX conversations started under each of the given directories, newest
+ * (most recently active) first. One walk of the sessions tree — the same newest-first order
+ * and 512-file cap `rolloutByCwd` uses — reads each rollout's `session_meta` first line for
+ * id, cwd, originator and parentage, keeps only top-level (`parent_thread_id`-less)
+ * `codex-tui` conversations whose recorded cwd matches one of the given directories raw or
+ * canonical, and reads a bounded tail for `lastActiveAt`. The name is the sidecar's — a
+ * rollout with no sidecar line is unnamed and omitted; `automatic` is never set for this kind,
+ * which cannot tell a generated title from a typed one. Archived rollouts leave the sessions
+ * tree, so they are absent. `directory` on each row is the given directory that matched (not
+ * the possibly-canonical recorded cwd), so a listed row resolves back to its Worktree. On a
+ * home deeper than the shared `maxCwdRolloutScans` cap the oldest Named rows are dropped, as
+ * for the live-pane match.
+ */
+export async function codexConversationSummaries(directories: readonly string[], env: NodeJS.ProcessEnv = process.env): Promise<ConversationSummary[]> {
+  if (directories.length === 0) return [];
+  // map a recorded cwd (raw or canonical) back to the given directory it should report as
+  const directoryByPath = new Map<string, string>();
+  for (const directory of directories) {
+    if (!directoryByPath.has(directory)) directoryByPath.set(directory, directory);
+    const canonical = await realpath(directory).catch(() => directory);
+    if (!directoryByPath.has(canonical)) directoryByPath.set(canonical, directory);
+  }
+  const names = await codexConversationNames(env);
+  const summaries: ConversationSummary[] = [];
+  for await (const { file, metadata } of walkRollouts(codexHome(env))) {
+    // keep only a top-level conversation started in one of the wanted directories
+    if (metadata === undefined || metadata.parentThreadId !== undefined) continue;
+    const startedIn = directoryByPath.get(metadata.cwd);
+    if (startedIn === undefined) continue;
+    // list only Named conversations — an unnamed rollout has no sidecar line
+    const conversationName = names.get(metadata.id);
+    if (conversationName === undefined) continue;
+    summaries.push({ id: metadata.id, name: conversationName, lastActiveAt: await rolloutLastActiveAt(file), directory: startedIn });
+  }
+  summaries.sort((left, right) => right.lastActiveAt - left.lastActiveAt);
+  return summaries;
 }
 
 /**

@@ -842,13 +842,26 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   };
   // list the Named conversations under these directories, resolve each row's Worktree and
   // whether it is the current one, and order the union newest-active first (consoleNamed is
-  // always false until the naming ticket adds the console-named record store)
+  // always false until the naming ticket adds the console-named record store). Codex and OMX
+  // share one rollout reader (ADR 0005), so the union emits a single codex-family row per
+  // rollout; the console badges it with the Worktree's remembered Launch kind when that is
+  // codex or omx, else codex (a Claude/Pi Worktree that also holds a Codex rollout still
+  // shows that rollout as Codex).
+  const codexFamily = (kind: AgentKind): boolean => kind === 'codex' || kind === 'omx';
   const listConversations = async (directories: readonly string[], scope: Map<string, string>, currentId: string | undefined): Promise<ConversationRow[]> => {
     const listed = await discovery.conversations(directories);
+    // read remembered kinds once, only when a codex-family row needs attributing
+    const remembered = listed.some(row => codexFamily(row.kind))
+      ? await worktreeStore.launchProfiles().catch(() => ({} as Record<string, AgentKind | undefined>))
+      : {};
     const rows: ConversationRow[] = listed.map(row => {
       const worktreeId = scope.get(row.directory);
+      const rememberedKind = worktreeId === undefined ? undefined : remembered[worktreeId];
+      // a shared codex-family row follows the Worktree's remembered kind only when that is
+      // itself codex or omx; anything else (Claude/Pi/unset) leaves the rollout badged Codex
+      const kind = codexFamily(row.kind) ? (rememberedKind !== undefined && codexFamily(rememberedKind) ? rememberedKind : 'codex') : row.kind;
       return {
-        kind: row.kind,
+        kind,
         id: row.id,
         name: row.name,
         ...(row.automatic === undefined ? {} : { automatic: row.automatic }),

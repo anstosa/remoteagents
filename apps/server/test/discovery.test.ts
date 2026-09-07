@@ -304,6 +304,27 @@ describe('DiscoveryService dashboard', () => {
     }
   });
 
+  it('emits one row per shared Codex rollout — codex and omx share one reader, never two rows', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'rac-codex-home-'));
+    const previous = process.env.CODEX_HOME;
+    try {
+      // writeRollout records cwd '/host/cora'; the sidecar name makes it a listable Named row
+      await writeRollout(home, '0198c111-1111-7111-8111-111111111111', 'Shared reader');
+      await writeSessionIndex(home, '0198c111-1111-7111-8111-111111111111', 'Named codex chat');
+      process.env.CODEX_HOME = home;
+      const service = new DiscoveryService();
+
+      // both the codex and omx Adapters carry the same reader (ADR 0005), yet the union
+      // dedupes it to a single codex-tagged row rather than one per sharing kind
+      await expect(service.conversations(['/host/cora'])).resolves.toEqual([
+        { kind: 'codex', id: '0198c111-1111-7111-8111-111111111111', name: 'Named codex chat', lastActiveAt: 0, directory: '/host/cora' },
+      ]);
+    } finally {
+      if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous;
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it('preserves a custom tmux display label for launched scratch agents', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const finder = { find: async () => [socket] };
