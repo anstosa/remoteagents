@@ -137,10 +137,11 @@ test('keeps the current pull request in the Working footer and queues one active
   ]);
   expect(actionsBox.x + actionsBox.width).toBeLessThanOrEqual(cardBox.x + 1);
   expect(cardBox.x + cardBox.width).toBeLessThanOrEqual(modeBox.x + 1);
-  expect([actionsBox, cardBox, modeBox].every(box => { /* align one footer control */ return Math.abs(box.y - cardBox.y) <= 1; })).toBe(true);
-  expect(Math.abs(reviewBox.height - 48)).toBeLessThanOrEqual(1);
-  expect(Math.abs(pushBox.height - cardBox.height)).toBeLessThanOrEqual(1);
-  expect(Math.abs(allPrBox.height - cardBox.height)).toBeLessThanOrEqual(1);
+  expect([actionsBox, cardBox, modeBox].every(box => { /* center one footer control */ return Math.abs(box.y + box.height / 2 - cardBox.y - cardBox.height / 2) <= 1; })).toBe(true);
+  // match standard controls without shrinking the pr card
+  expect(Math.abs(reviewBox.height - attachmentBox.height)).toBeLessThanOrEqual(1);
+  expect(Math.abs(pushBox.height - attachmentBox.height)).toBeLessThanOrEqual(1);
+  expect(Math.abs(allPrBox.height - attachmentBox.height)).toBeLessThanOrEqual(1);
   expect(cardBox.x).toBeGreaterThanOrEqual(footerBox.x);
   expect(cardBox.x + cardBox.width).toBeLessThanOrEqual(footerBox.x + footerBox.width);
   const titleOverflow = await card.locator('.pull-request-card-main > span').evaluate(element => { /* measure the long title */ return { clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }; });
@@ -234,7 +235,7 @@ test('reports fixup failures and allows a successful retry', async ({ page }) =>
 });
 
 // verify the narrow stacked footer and fixed shortcut rail
-test('stacks the enlarged Working footer controls at 375px without growing the branch shortcut', async ({ page }) => {
+test('stacks standard-height Working footer controls at 375px without growing the branch shortcut', async ({ page }) => {
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 375, height: 812 });
   await mountDashboard(page, { dashboard: { generation: 1, agents: [activeAgent], projects: [{ id: 'repo', label: 'Repo', available: true, worktrees: [activeWorktree] }] } });
@@ -257,8 +258,9 @@ test('stacks the enlarged Working footer controls at 375px without growing the b
   expect(cardBox.y + cardBox.height).toBeLessThanOrEqual(modeBox.y + 1);
   expect(Math.abs(actionsBox.width - cardBox.width)).toBeLessThanOrEqual(1);
   expect(Math.abs(modeBox.width - cardBox.width)).toBeLessThanOrEqual(1);
-  expect(Math.abs(reviewBox.height - 48)).toBeLessThanOrEqual(1);
-  expect(Math.abs(workingBox.height - 48)).toBeLessThanOrEqual(1);
+  // retain standard action heights on narrow screens
+  expect(Math.abs(reviewBox.height - attachmentBox.height)).toBeLessThanOrEqual(1);
+  expect(Math.abs(workingBox.height - attachmentBox.height)).toBeLessThanOrEqual(1);
   expect([actionsBox, cardBox, modeBox].every(box => { /* contain one stacked control */ return box.x >= footerBox.x && box.x + box.width <= footerBox.x + footerBox.width + 1; })).toBe(true);
   expect([footerBox, actionsBox, cardBox, modeBox].every(box => { /* contain one panel child */ return box.x >= panelBox.x && box.x + box.width <= panelBox.x + panelBox.width + 1; })).toBe(true);
   expect(panelBox.x).toBeGreaterThanOrEqual(0);
@@ -274,7 +276,7 @@ test('stacks the enlarged Working footer controls at 375px without growing the b
   expect(cardMain.y + cardMain.height / 2).toBeCloseTo(cardIndicators.y + cardIndicators.height / 2, 0);
   expect(fixup.y).toBeCloseTo(push.y, 0);
   expect(fixup.x).toBeGreaterThanOrEqual(push.x + push.width);
-  expect(fixup.height).toBeCloseTo(48, 0);
+  expect(fixup.height).toBeCloseTo(attachmentBox.height, 0);
   await expect(card.getByRole('button')).toHaveCount(0);
   await expect(card.locator('.pull-request-card-main > span')).toHaveCount(1);
   await expect(card.locator('.pull-request-card-main > span')).toHaveCSS('text-overflow', 'ellipsis');

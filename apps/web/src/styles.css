@@ -322,8 +322,8 @@ html.software-keyboard-open .tabs { display: none; }
 /* align the current pr between full-size branch actions */
 .git-status-panel-footer > .pull-request-card { flex: 1 1 0; min-width: 0; margin: 0; }
 .git-status-panel-footer .git-status-actions, .git-status-panel-footer .git-status-mode { flex: 0 0 auto; }
-/* align adjacent actions even when the push label wraps */
-.git-status-panel-footer :is(.git-status-review, .git-status-push, .pull-request-fixup, .git-status-mode button) { height: 3rem; min-height: 3rem; padding: .5rem .7rem; font-size: .75rem; line-height: 1.2; }
+/* keep branch actions aligned at the standard control height */
+.git-status-panel-footer :is(.git-status-review, .git-status-push, .pull-request-fixup, .git-status-mode button) { height: var(--standard-control-size); min-height: var(--standard-control-size); padding: .5rem .7rem; font-size: .75rem; line-height: 1.2; }
 /* keep the single-line pr readable beside the additional action */
 @media (max-width: 900px) {
   .git-status-panel-footer { flex-direction: column; align-items: stretch; }

@@ -123,6 +123,7 @@ test('prefetches shared repository choices and refreshes them when reopened', as
   await github.close();
 });
 
+// keep configured and default branch actions aligned with standard prompt controls
 test('queues the configured push prompt and falls back to the default action', async ({ page }) => {
   let push: { label: string; prompt: string } | undefined = { label: 'Finish and PR', prompt: '$finish' };
   const queued: string[] = [];
@@ -155,12 +156,22 @@ test('queues the configured push prompt and falls back to the default action', a
   const branchFlyout = page.getByRole('region', { name: 'Changed files' });
   const review = branchFlyout.getByRole('button', { name: 'Review', exact: true });
   const custom = branchFlyout.getByRole('button', { name: 'Finish and PR', exact: true });
+  const queue = page.getByRole('button', { name: 'Queue', exact: true });
   await expect(custom.locator('.more-menu-icon')).toBeVisible();
   const [reviewBounds, customBounds] = await Promise.all([review.boundingBox(), custom.boundingBox()]);
   // require rendered action bounds
   if (reviewBounds === null || customBounds === null) throw new Error('branch action bounds unavailable');
   expect(customBounds.x).toBeGreaterThan(reviewBounds.x + reviewBounds.width);
   expect(customBounds.y).toBeCloseTo(reviewBounds.y, 0);
+  // match standard prompt-control height at desktop and mobile widths
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    const [queueSize, reviewSize, customSize] = await Promise.all([queue.boundingBox(), review.boundingBox(), custom.boundingBox()]);
+    // require each responsive control box
+    if (queueSize === null || reviewSize === null || customSize === null) throw new Error('responsive branch action bounds unavailable');
+    expect(reviewSize.height).toBeCloseTo(queueSize.height, 1);
+    expect(customSize.height).toBeCloseTo(queueSize.height, 1);
+  }
   await custom.click();
   await expect.poll(() => queued).toEqual(['$finish']);
   await expect(branchFlyout).toBeHidden();
@@ -173,7 +184,12 @@ test('queues the configured push prompt and falls back to the default action', a
   await page.keyboard.press('Escape');
   await expect(more).toHaveAttribute('aria-expanded', 'false');
   await page.getByRole('button', { name: /^Git status:/u }).click();
-  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Commit/Push', exact: true }).click();
+  const defaultPush = page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Commit/Push', exact: true });
+  const [defaultQueueSize, defaultPushSize] = await Promise.all([queue.boundingBox(), defaultPush.boundingBox()]);
+  // require default action bounds
+  if (defaultQueueSize === null || defaultPushSize === null) throw new Error('default branch action bounds unavailable');
+  expect(defaultPushSize.height).toBeCloseTo(defaultQueueSize.height, 1);
+  await defaultPush.click();
   await expect.poll(() => queued).toEqual(['$finish', 'review, commit, and push']);
 });
 
