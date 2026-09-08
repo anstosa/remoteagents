@@ -80,6 +80,41 @@ the container bind destination.
 
 ## Connect to the host tmux server
 
+The bridge needs a **running host tmux server**, not just a socket file. After a
+reboot, a stale socket can remain while no server is listening. The container
+cannot restart that host process through its read-only socket mount; attempting
+a launch then fails with `Address already in use` or `no server running`.
+
+Run `id -u` and set `HOST_UID` in the ignored `.env` to that value; the example
+assumes UID `1000`. Run the installer as that same user so Compose and recovery
+use the same socket directory. Install the host-side recovery timer before
+enabling the bridge:
+
+```bash
+TMUX_BIN="$(command -v tmux)" bash scripts/install-host-tmux.sh
+sudo loginctl enable-linger "$(id -un)"
+systemctl --user status remote-agent-tmux.timer
+```
+
+If Compose uses a custom `HOST_TMUX_DIR`, pass that same absolute directory to
+the installer. `TMUX_BIN` must be the executable that runs **on the host**, not
+a container-only `HOST_TMUX_BIN` compatibility wrapper. The installer does not
+source `.env`. It starts the server immediately and checks again every 30
+seconds, including after boot. It disables tmux's `exit-empty` so closing the
+last agent does not remove the bridge. Socket storage is private without
+changing the file permissions inherited by newly started agent processes.
+Existing sessions are preserved.
+
+New servers run in a separate, automatically collected user scope rather than
+the repeating check's cgroup. The oneshot service retains `KillMode=process` to
+preserve sessions from earlier installations. Reinstalling does not move an
+existing server or change its inherited file-creation mask; an old server keeps
+those settings until the operator restarts it, and can continue producing
+leftover-process journal warnings until then. Disabling the timer with
+`systemctl --user disable --now remote-agent-tmux.timer` does not stop agents or
+restore `exit-empty`. It also does not restore conversations lost at reboot;
+use the console's resume controls for those.
+
 Copy `compose.override.example.yaml` to `compose.override.yaml` when the console
 must discover and control Codex sessions already running on the host. The
 override adds the host process tree, tmux socket, tmux client, Codex home, and

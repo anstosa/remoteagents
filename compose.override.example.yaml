@@ -1,6 +1,7 @@
 services:
   remote-agent-console:
     environment:
+      # set HOST_UID to id -u and install scripts/install-host-tmux.sh on the host
       # enable discovery and control of the host tmux server
       RAC_HOST_PROC: /host-proc
       RAC_HOST_TMUX_DIR: /host-tmux

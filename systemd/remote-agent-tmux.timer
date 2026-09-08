@@ -1,0 +1,11 @@
+[Unit]
+Description=Recover the Remote Agent Console host tmux bridge
+
+[Timer]
+OnBootSec=5s
+OnUnitInactiveSec=30s
+AccuracySec=1s
+Unit=remote-agent-tmux.service
+
+[Install]
+WantedBy=timers.target
