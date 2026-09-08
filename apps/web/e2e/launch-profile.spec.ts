@@ -162,6 +162,49 @@ test('the launcher offers Scratch and each worktree the same split button', asyn
   await expect.poll(() => posts).toEqual([{ path: '/api/agents/launch', body: { kind: 'codex', sandboxed: false } }]);
 });
 
+// keep launch glyphs full-size, unboxed, and agent-colored across every control
+test('launch buttons show transparent per-agent glyphs in every size', async ({ page }) => {
+  const sandboxedClaude = adapter('/bin/claude', { sandbox: true });
+  const adapters = { codex, omx: adapter('/bin/omx'), claude: sandboxedClaude, pi: adapter('/bin/pi'), opencode: adapter('/bin/opencode') };
+  const kinds = [
+    { label: 'Codex', color: 'rgb(166, 227, 161)' },
+    { label: 'OMX', color: 'rgb(148, 226, 213)' },
+    { label: 'Claude', color: 'rgb(250, 179, 135)' },
+    { label: 'Pi', color: 'rgb(137, 220, 235)' },
+    { label: 'OpenCode', color: 'rgb(203, 166, 247)' },
+  ];
+  await mount(page, { generation: 1, adapters, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'claude', origin: 'worktree' })] }], scratchLaunch: { kind: 'codex', origin: 'scratch' } });
+
+  const fullPrimary = page.locator('.launch-split:not(.compact)').getByRole('button', { name: 'Launch Claude' });
+  await expect(fullPrimary.locator('.launch-kind-mark')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await expect(fullPrimary.locator('.launch-kind-mark')).toHaveCSS('color', 'rgb(250, 179, 135)');
+  await expect(fullPrimary.locator('.launch-kind-mark')).toHaveCSS('font-size', '18.4px');
+  await expect(fullPrimary.locator('.launch-lock')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Launch agent' }).click();
+  const launcher = page.locator('.launcher-menu');
+  const scratchPrimary = launcher.locator('.launcher-row').filter({ hasText: 'Scratch' }).getByRole('button', { name: 'Launch Codex' });
+  const worktreePrimary = launcher.locator('.launcher-row').filter({ hasText: 'Cora' }).getByRole('button', { name: 'Launch Claude' });
+  await expect(scratchPrimary.locator('.launch-kind-mark')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await expect(scratchPrimary.locator('.launch-kind-mark')).toHaveCSS('color', 'rgb(166, 227, 161)');
+  await expect(scratchPrimary.locator('.launch-kind-mark')).toHaveCSS('font-size', '16px');
+  await expect(worktreePrimary.locator('.launch-kind-mark')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await expect(worktreePrimary.locator('.launch-kind-mark')).toHaveCSS('color', 'rgb(250, 179, 135)');
+  await expect(worktreePrimary.locator('.launch-kind-mark')).toHaveCSS('font-size', '16px');
+  await expect(worktreePrimary.locator('.launch-lock')).toBeVisible();
+
+  await launcher.locator('.launcher-row').filter({ hasText: 'Cora' }).getByRole('button', { name: 'Choose agent' }).click();
+  const menu = page.locator('.launch-menu');
+  // verify every chooser glyph fills its space without losing its color
+  for (const kind of kinds) {
+    const mark = menu.getByRole('menuitem', { name: new RegExp(`^${kind.label}`, 'u') }).first().locator('.launch-kind-mark');
+    await expect(mark).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await expect(mark).toHaveCSS('color', kind.color);
+    await expect(mark).toHaveCSS('font-size', '18.4px');
+  }
+  await expect(menu.getByRole('menuitem', { name: /^Claude/u }).first().locator('.launch-lock')).toBeVisible();
+});
+
 // the launcher rows open the same anchored flyout every other Launch control opens: one
 // fixed-width menu hung off the row, dismissed by a press anywhere outside it — including
 // one inside the launcher, whose own backdrop only covers presses outside itself
@@ -205,4 +248,45 @@ test('agent tabs carry the kind glyph and a lock when sandboxed, idle worktree t
   await expect(agentTab.locator('.launch-tab-badge .launch-lock')).toBeVisible();
   // the idle worktree tab carries no badge
   await expect(page.getByRole('tab', { name: /Delta/ }).locator('.launch-tab-badge')).toHaveCount(0);
+});
+
+// keep every agent tab glyph full-size, unboxed, and close to its label at each supported width
+test('agent tab glyphs stay unboxed, full-size, and tightly spaced on desktop and mobile', async ({ page }) => {
+  const agents = [
+    { id: 'codex-agent', sessionId: 'socket:$1', workspace: '/worktrees/codex', worktreeId: 'codex', worktreeLabel: 'Codex tab', worktreeOrder: 1, title: 'Ready', kind: 'codex', attention: 'finished', queuedPromptCount: 0 },
+    { id: 'omx-agent', sessionId: 'socket:$2', workspace: '/worktrees/omx', worktreeId: 'omx', worktreeLabel: 'OMX tab', worktreeOrder: 2, title: 'Ready', kind: 'omx', attention: 'finished', queuedPromptCount: 0 },
+    { id: 'claude-agent', sessionId: 'socket:$3', workspace: '/worktrees/claude', worktreeId: 'claude', worktreeLabel: 'Claude tab', worktreeOrder: 3, title: 'Ready', kind: 'claude', attention: 'finished', sandboxed: true, queuedPromptCount: 0 },
+    { id: 'pi-agent', sessionId: 'socket:$4', workspace: '/worktrees/pi', worktreeId: 'pi', worktreeLabel: 'Pi tab', worktreeOrder: 4, title: 'Ready', kind: 'pi', attention: 'finished', queuedPromptCount: 0 },
+    { id: 'opencode-agent', sessionId: 'socket:$5', workspace: '/worktrees/opencode', worktreeId: 'opencode', worktreeLabel: 'OpenCode tab', worktreeOrder: 5, title: 'Ready', kind: 'opencode', attention: 'finished', queuedPromptCount: 0 },
+  ];
+  const expectedTabs = [
+    { label: 'Codex tab', glyph: '◆' },
+    { label: 'OMX tab', glyph: '◈' },
+    { label: 'Claude tab', glyph: '✳' },
+    { label: 'Pi tab', glyph: 'π' },
+    { label: 'OpenCode tab', glyph: '◇' },
+  ];
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mount(page, { generation: 1, adapters: { codex, claude }, agents, projects: [] });
+
+  // verify both desktop and mobile layouts
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    // verify all five configured tab kinds
+    for (const expected of expectedTabs) {
+      const tab = page.getByRole('tab', { name: new RegExp(expected.label, 'u') });
+      const badge = tab.locator('.launch-tab-badge');
+      const mark = badge.locator('.launch-kind-mark');
+      await expect(mark).toHaveText(expected.glyph);
+      await expect(mark).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+      await expect(mark).toHaveCSS('width', '20px');
+      await expect(mark).toHaveCSS('height', '20px');
+      await expect(mark).toHaveCSS('font-size', '20px');
+      await expect(tab).toHaveCSS('gap', '4px');
+      await expect(badge).toHaveCSS('margin-right', '0px');
+    }
+  }
+
+  // keep the sandbox indicator beside its agent glyph
+  await expect(page.getByRole('tab', { name: /Claude tab/u }).locator('.launch-tab-badge .launch-lock')).toBeVisible();
 });

@@ -139,7 +139,7 @@ export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch
   </>;
 }
 
-// the kind glyph in a tinted square plus a lock when Sandboxed, before an Agent tab's label
+// the kind glyph and optional sandbox lock before an agent tab's label
 export function LaunchTabBadge({ kind, sandboxed }: { kind: AgentKind; sandboxed?: boolean }) {
   return <span className={`launch-tab-badge launch-kind-${kind}`} aria-hidden="true" title={`${agentKindLabel[kind]}${sandboxed ? ' · sandboxed' : ''}`}><KindMark kind={kind} />{sandboxed === true && <LockIcon />}</span>;
 }
