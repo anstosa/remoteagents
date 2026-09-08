@@ -87,6 +87,30 @@ describe('Scheduler', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  it('reconciles an in-flight (running) Note and never dispatches it, even when otherwise due', async () => {
+    const run = vi.fn().mockResolvedValue(undefined);
+    const reconcile = vi.fn().mockResolvedValue(undefined);
+    // a due daily-9am note whose last Run is still `running`: it must be reconciled, not re-dispatched
+    const running = note('busy');
+    running.note.schedule!.lastRun = { at: '2026-01-05T17:00:00.000Z', status: 'running', agentId: 'agent-1', startedAt: '2026-01-05T09:00:00-08:00', sawWorking: true };
+    const scheduler = new Scheduler(async () => [running], run, boot, undefined, reconcile);
+    await scheduler.tick(new Date('2026-01-05T10:00:00-08:00'));
+    expect(reconcile).toHaveBeenCalledWith('proj', 'busy');
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('reconciles a running Note even when its Schedule was since paused', async () => {
+    const run = vi.fn().mockResolvedValue(undefined);
+    const reconcile = vi.fn().mockResolvedValue(undefined);
+    const running = note('busy', { enabled: false });
+    running.note.schedule!.lastRun = { at: '2026-01-05T17:00:00.000Z', status: 'running', agentId: 'agent-1', startedAt: '2026-01-05T09:00:00-08:00' };
+    const scheduler = new Scheduler(async () => [running], run, boot, undefined, reconcile);
+    await scheduler.tick(new Date('2026-01-05T10:00:00-08:00'));
+    // a paused Schedule never dispatches, but its in-flight Run is still reconciled so the pane is not orphaned
+    expect(reconcile).toHaveBeenCalledWith('proj', 'busy');
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it('coalesces a re-entrant tick while one is still in flight', async () => {
     vi.useFakeTimers();
     let release!: () => void;

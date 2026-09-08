@@ -9,11 +9,11 @@ import { buildApp } from '../src/app.js';
 import { WorktreeNoteService } from '../src/notes/service.js';
 import { QueuedPromptService } from '../src/prompts/queue.js';
 import type { PushMessage } from '../src/notifications.js';
-import type { Schedule, ScheduleTarget } from '../src/schedule/types.js';
+import type { Schedule, ScheduleLastRun, ScheduleTarget } from '../src/schedule/types.js';
 import type { Agent } from '../src/domain/models.js';
 import { testConfig, testProject, testWorktree } from './helpers/config.js';
 import { testSocket } from './helpers/discovery-stubs.js';
-import { appearingDiscovery, launchFake, recordingTmux, reuseWorld, zeroPollDelay } from './helpers/run.js';
+import { appearingDiscovery, launchFake, recordingTmux, zeroPollDelay } from './helpers/run.js';
 
 const dirs: string[] = [];
 afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
@@ -55,39 +55,119 @@ async function tickApp(deps: Record<string, unknown>, bootAt = bootPast) {
 
 const lastRunOf = async (notes: WorktreeNoteService, noteId: string) => (await notes.list('proj'))?.find(note => note.id === noteId)?.schedule?.lastRun;
 
+// a discovery that resolves one live agent for the reconcile pass (no fresh launch this tick)
+const staticDiscovery = (agent: Agent) => ({
+  invalidateWorktrees: () => {},
+  worktreesNow: () => [worktree],
+  worktrees: async () => [worktree],
+  dashboard: async () => ({ generation: 1, adapters: {}, agents: [agent], projects: [] }),
+  target: async (id: string) => (id === agent.id ? { agent, socket: testSocket } : undefined),
+});
+
+// seed a scheduled note already mid-managed-Run (lastRun.status === 'running'), so a tick reconciles it.
+// startedAt defaults to now (reconcile measures elapsed against the wall clock), well inside the window.
+async function seedRunning(lastRun: Partial<ScheduleLastRun> = {}): Promise<{ notes: WorktreeNoteService; queued: QueuedPromptService; noteId: string }> {
+  const base = await seed({ target: { worktreeId: 'wt-main' } });
+  await base.notes.recordLastRun('proj', base.noteId, { at: dueInstant, status: 'running', agentId: 'agent-1', startedAt: new Date().toISOString(), sawWorking: false, ...lastRun });
+  return base;
+}
+
 const mutate = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: '__Host-rac=x', 'x-csrf-token': 'csrf' };
 const runNow = (noteId: string) => ({ method: 'POST' as const, url: `/api/worktrees/wt-main/notes/${noteId}/schedule/run`, headers: mutate });
 
 describe('scheduler tick fires Schedules unattended', () => {
-  it('reuses the remembered pane, records launched at the due instant, and pushes nothing', async () => {
+  it('launches fresh at the due instant, records running, pushes nothing, and does not re-fire', async () => {
     const idle: Agent = { ...codexPane, attention: 'finished' };
-    const working: Agent = { ...codexPane, attention: 'working', title: '⠋ Working' };
-    const { discovery, tmux } = reuseWorld({ worktree, socket: testSocket, agent: idle, afterReset: index => (index === 0 ? working : idle) });
+    const discovery = appearingDiscovery({ worktree, agent: idle, socket: testSocket });
     const { messages, push } = pushRecorder();
-    const { notes, queued, noteId } = await seed({ target: { worktreeId: 'wt-main' } }, { previousAgentId: 'agent-1' });
-    const server = await tickApp({ notes, queued, tmux, launch: launchFake(), discovery, push });
+    const { notes, queued, noteId } = await seed({ target: { worktreeId: 'wt-main' } });
+    const tmux = recordingTmux();
+    const launch = launchFake();
+    const server = await tickApp({ notes, queued, tmux, launch, discovery, push });
     try {
       await server.scheduler.tick(tickNow);
-      expect(await lastRunOf(notes, noteId)).toMatchObject({ at: dueInstant, status: 'launched', agentId: 'agent-1' });
-      // the reset then the note were pasted, and a launched Run stays quiet
-      expect(tmux.pasted.filter(text => text.trim() === '/new')).toHaveLength(1);
+      const lastRun = await lastRunOf(notes, noteId);
+      // a managed Run records `running` at the due instant with the watch anchors; it never reuses a pane
+      expect(lastRun).toMatchObject({ at: dueInstant, status: 'running', agentId: 'agent-1', sawWorking: false });
+      expect(typeof lastRun?.startedAt).toBe('string');
+      expect(tmux.pasted.some(text => text.includes('Draft the weekly report'))).toBe(true);
+      expect(tmux.pasted.some(text => text.trim() === '/new')).toBe(false);
+      // a running Run stays quiet
       expect(messages).toEqual([]);
-      // a second tick at the same instant does not re-fire: the recorded due instant advanced the anchor
+      // a second tick reconciles the running Run rather than launching a second agent
       await server.scheduler.tick(tickNow);
-      expect(tmux.pasted.filter(text => text.trim() === '/new')).toHaveLength(1);
+      expect(launch.kinds).toEqual(['codex']);
+      expect(await lastRunOf(notes, noteId)).toMatchObject({ status: 'running' });
+    } finally { await server.close(); }
+  }, 15_000);
+
+  it('closes the pane and records completed once a managed Run has finished', async () => {
+    const { messages, push } = pushRecorder();
+    const { notes, queued, noteId } = await seedRunning({ sawWorking: true });
+    const tmux = recordingTmux();
+    const server = await tickApp({ notes, queued, tmux, launch: launchFake(), discovery: staticDiscovery({ ...codexPane, attention: 'finished' }), push });
+    try {
+      await server.scheduler.tick(tickNow);
+      const lastRun = await lastRunOf(notes, noteId);
+      // the finished pane is closed and recorded completed, dropping the (now dead) agent id; a completed Run stays quiet
+      expect(lastRun).toMatchObject({ at: dueInstant, status: 'completed' });
+      expect(lastRun?.agentId).toBeUndefined();
+      expect(tmux.closed).toEqual(['%1']);
+      expect(messages).toEqual([]);
     } finally { await server.close(); }
   });
 
-  it('pushes a schedule notification for a skipped Run, deep-linking to the reused pane', async () => {
-    const working: Agent = { ...codexPane, attention: 'working', title: '⠋ Working' };
+  it('closes the pane, records needs-input and notifies when a managed Run ends on a question', async () => {
     const { messages, push } = pushRecorder();
-    const { notes, queued, noteId } = await seed({ target: { worktreeId: 'wt-main' } }, { previousAgentId: 'agent-1' });
-    const discovery = { invalidateWorktrees: () => {}, worktreesNow: () => [worktree], worktrees: async () => [worktree], dashboard: async () => ({ generation: 1, adapters: {}, agents: [working], projects: [] }), target: async (id: string) => (id === working.id ? { agent: working, socket: testSocket } : undefined) };
+    const { notes, queued, noteId } = await seedRunning({ sawWorking: true });
+    const tmux = recordingTmux();
+    const server = await tickApp({ notes, queued, tmux, launch: launchFake(), discovery: staticDiscovery({ ...codexPane, attention: 'question' }), push });
+    try {
+      await server.scheduler.tick(tickNow);
+      expect(await lastRunOf(notes, noteId)).toMatchObject({ at: dueInstant, status: 'needs-input', detail: 'the run ended asking a question' });
+      expect(tmux.closed).toEqual(['%1']);
+      // the pane is closed, so the notification falls back to the Worktree deep-link
+      expect(messages).toEqual([{ kind: 'schedule', title: 'Scheduled run needs input in Proj', body: 'Weekly report · the run ended asking a question', tag: `schedule-${noteId}`, url: '/#worktree=wt-main', worktreeId: 'wt-main' }]);
+    } finally { await server.close(); }
+  });
+
+  it('records failed when the managed pane is gone before the run finished', async () => {
+    const { messages, push } = pushRecorder();
+    const { notes, queued, noteId } = await seedRunning({ sawWorking: true });
+    // the remembered agent id resolves to nothing (a manual stop, crash, or restart that outlived it)
+    const discovery = staticDiscovery({ ...codexPane, id: 'someone-else', attention: 'finished' });
     const server = await tickApp({ notes, queued, tmux: recordingTmux(), launch: launchFake(), discovery, push });
     try {
       await server.scheduler.tick(tickNow);
-      expect(await lastRunOf(notes, noteId)).toMatchObject({ at: dueInstant, status: 'skipped', detail: 'previous run still working', agentId: 'agent-1' });
-      expect(messages).toEqual([{ kind: 'schedule', title: 'Scheduled run skipped in Proj', body: 'Weekly report · previous run still working', tag: `schedule-${noteId}`, url: '/#agent=agent-1', worktreeId: 'wt-main' }]);
+      expect(await lastRunOf(notes, noteId)).toMatchObject({ status: 'failed', detail: 'the agent was closed before the run finished' });
+      expect(messages).toEqual([{ kind: 'schedule', title: 'Scheduled run failed in Proj', body: 'Weekly report · the agent was closed before the run finished', tag: `schedule-${noteId}`, url: '/#worktree=wt-main', worktreeId: 'wt-main' }]);
+    } finally { await server.close(); }
+  });
+
+  it('closes the pane and records timed-out when a managed Run overruns the max', async () => {
+    const { messages, push } = pushRecorder();
+    const overran = new Date(Date.now() - 31 * 60 * 1_000).toISOString();
+    const { notes, queued, noteId } = await seedRunning({ sawWorking: true, startedAt: overran });
+    const tmux = recordingTmux();
+    const server = await tickApp({ notes, queued, tmux, launch: launchFake(), discovery: staticDiscovery({ ...codexPane, attention: 'working', title: '⠋ Working' }), push });
+    try {
+      await server.scheduler.tick(tickNow);
+      expect(await lastRunOf(notes, noteId)).toMatchObject({ status: 'timed-out' });
+      expect(tmux.closed).toEqual(['%1']);
+      expect(messages[0]).toMatchObject({ kind: 'schedule', title: 'Scheduled run timed out in Proj' });
+    } finally { await server.close(); }
+  });
+
+  it('flips sawWorking while a managed Run is still working, without closing it or notifying', async () => {
+    const { messages, push } = pushRecorder();
+    const { notes, queued, noteId } = await seedRunning({ sawWorking: false });
+    const tmux = recordingTmux();
+    const server = await tickApp({ notes, queued, tmux, launch: launchFake(), discovery: staticDiscovery({ ...codexPane, attention: 'working', title: '⠋ Working' }), push });
+    try {
+      await server.scheduler.tick(tickNow);
+      expect(await lastRunOf(notes, noteId)).toMatchObject({ status: 'running', sawWorking: true, agentId: 'agent-1' });
+      expect(tmux.closed).toEqual([]);
+      expect(messages).toEqual([]);
     } finally { await server.close(); }
   });
 

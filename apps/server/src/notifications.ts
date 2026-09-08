@@ -62,8 +62,16 @@ export function reviewNotification(agentId: string, worktreeId: string, projectN
 // Worktree targets, and the service worker prefers it over the url — so a Worktree Run always opens the
 // Worktree (as agent notifications do), while a Scratch/Project Run with a pane uses the /#agent url. A
 // launched Run sends nothing, so only skipped and failed reach here.
+// a closed managed Run drops its agentId (there is no pane to open), so `needs-input`/`timed-out`
+// fall back to the Worktree or console root exactly as a pane-less skip does
+const scheduleStatusLabel: Record<'skipped' | 'failed' | 'needs-input' | 'timed-out', string> = {
+  skipped: 'skipped',
+  failed: 'failed',
+  'needs-input': 'needs input',
+  'timed-out': 'timed out'
+};
 export function scheduleNotification(params: {
-  status: 'skipped' | 'failed';
+  status: 'skipped' | 'failed' | 'needs-input' | 'timed-out';
   targetLabel: string;
   noteId: string;
   noteTitle?: string;
@@ -77,7 +85,7 @@ export function scheduleNotification(params: {
     : worktreeId !== undefined ? `/#worktree=${encodeURIComponent(worktreeId)}` : '/';
   return {
     kind: 'schedule',
-    title: `Scheduled run ${status} in ${targetLabel}`,
+    title: `Scheduled run ${scheduleStatusLabel[status]} in ${targetLabel}`,
     body: `${noteTitle ?? 'Untitled note'}${detail === undefined ? '' : ` · ${detail}`}`,
     tag: `schedule-${noteId}`,
     url,

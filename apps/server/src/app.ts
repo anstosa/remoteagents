@@ -37,7 +37,7 @@ import { WorktreeNoteService, type WorktreeNote } from './notes/service.js';
 import { promptNoteContent } from './notes/from-prompt.js';
 import { cronError, previewRuns, scheduleNextRun } from './schedule/cron.js';
 import { Scheduler } from './schedule/scheduler.js';
-import { type Schedule, type ScheduleLastRun, type ScheduleTarget, validScheduleTarget } from './schedule/types.js';
+import { type Schedule, type ScheduleLastRun, type ScheduleRunStatus, type ScheduleTarget, validScheduleTarget } from './schedule/types.js';
 import { CleanupService } from './cleanup/service.js';
 import { PromptHistoryService } from './prompt-history/service.js';
 import { ProjectProxy } from './project-proxy.js';
@@ -1294,6 +1294,45 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const conversationNamePollDelay = deps.conversationNamePollDelay ?? (async () => await new Promise(resolve => setTimeout(resolve, conversationNamePollIntervalMs)));
   // agents with a console rename in flight, so a second concurrent rename is refused
   const renamesInFlight = new Set<string>();
+  // Name a fresh agent's Conversation from the server (no HTTP request), mirroring the delivery,
+  // read-back and record of the console rename route below: paste the Adapter's rename text under the
+  // lifecycle mutation lock, poll the agent's own store until it reports the name, then record it as
+  // console-named so the closed managed Run stays discoverable in the Named list. Best-effort — a kind
+  // that cannot rename, a busy pane, or an unconfirmed read-back returns false and the Run proceeds
+  // unnamed rather than failing. The route keeps its own HTTP guards (question check, returned row).
+  const nameAgentConversation = async (agentId: string, name: string): Promise<boolean> => {
+    const clean = name.trim().replace(/\s+/gu, ' ').slice(0, 120);
+    if (clean.length === 0 || renamesInFlight.has(agentId)) return false;
+    const persistence = await agentPersistence(agentId);
+    if (persistence === undefined) return false;
+    const conversations = adapterFor(persistence.agent.kind)?.conversations;
+    if (conversations?.rename === undefined || conversations.readName === undefined) return false;
+    renamesInFlight.add(agentId);
+    try {
+      const conversationId = await discovery.conversationId(agentId);
+      const target = await discovery.target(agentId);
+      if (conversationId === undefined || target === undefined) return false;
+      const releaseMutation = prompts.beginAgentMutation(agentId);
+      if (releaseMutation === undefined) return false;
+      const rename = conversations.rename(clean);
+      const buffer = `rac-${randomBytes(18).toString('base64url')}`;
+      try {
+        if (!await tmux.pastePrompt(target.socket, target.agent.paneId, buffer, rename.text)
+          || !await tmux.sendKeys(target.socket, target.agent.paneId, rename.keys)) return false;
+      } finally { releaseMutation(); }
+      const cwd = discovery.paneWorkingDirectory(agentId);
+      for (let attempt = 0; attempt < conversationNamePollAttempts; attempt += 1) {
+        await conversationNamePollDelay();
+        if (await conversations.readName(conversationId, cwd).catch(() => undefined) === clean) {
+          await consoleNamed.record(persistence.saveKey, { kind: persistence.agent.kind, id: conversationId }).catch(() => undefined);
+          return true;
+        }
+      }
+      return false;
+    } finally {
+      renamesInFlight.delete(agentId);
+    }
+  };
   // wait for slow agent startup, shared with the Run primitive (launch/wait.ts)
   const waitForAgent = createAgentWaiter(discovery, launchPollDelay);
   // the pane snapshot an Adapter's `newConversation` rules read, from one discovered agent
@@ -1406,7 +1445,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // launch a fresh agent for the target, wait for it and its readiness, then submit the note; a
   // blocked or slow readiness closes the pane this Run created rather than leaving it behind
   const notReadyDetail = `agent did not become ready in ${launchReadyTimeoutSeconds} s`;
-  const runFresh = async (plan: RunPlan, text: string): Promise<RunOutcome> => {
+  const runFresh = async (plan: RunPlan, text: string, name?: string): Promise<RunOutcome> => {
     const before = new Set((await discovery.dashboard()).agents.map(agent => agent.id));
     // a refused launch (an unconfigured or unlaunchable kind, or a busy worktree) pastes nothing
     if (!await plan.launch()) return { status: 'failed', detail: 'launch refused', reason: 'launch-refused' };
@@ -1421,27 +1460,35 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         ? { status: 'failed', detail: readiness.reason, reason: 'not-ready-blocked' }
         : { status: 'failed', detail: notReadyDetail, reason: 'not-ready-timeout' };
     }
+    // an unattended (managed) Run names its fresh conversation before delivering, so the pane the
+    // reconciler later closes is still findable by name in the Named list. Best-effort: a failed
+    // rename never blocks the note's delivery.
+    if (name !== undefined) await nameAgentConversation(agent.id, name).catch(() => undefined);
     if (!await prompts.submit(agent.id, text)) return { status: 'failed', detail: 'the note could not be delivered', reason: 'delivery-failed', agentId: agent.id };
     return { status: 'launched', agentId: agent.id };
   };
-  const runOnce = async (input: { text: string; kind: AgentKind | undefined; target: ScheduleTarget; previousAgentId?: string }): Promise<RunOutcome> => {
+  const runOnce = async (input: { text: string; kind: AgentKind | undefined; target: ScheduleTarget; previousAgentId?: string; unattended?: boolean; conversationName?: string }): Promise<RunOutcome> => {
     // preconditions — a failure records `skipped` with the reason and pastes nothing
     if (!input.text.trim()) return { status: 'skipped', detail: 'note is empty' };
     const plan = resolveRunPlan(input.target, input.kind);
     if (plan === undefined) return { status: 'skipped', detail: 'target is gone' };
     // whether the kind can launch is checked at Run time, since configuration can change
     if (input.kind !== undefined && !launch.isLaunchableKind(input.kind)) return { status: 'skipped', detail: `${input.kind} is not available` };
-    // reuse the Schedule's own pane when the remembered agent is still a live agent of the same
-    // kind whose workspace is the target; a kind without a reset capability launches fresh
-    const capability = input.kind === undefined ? undefined : adapterFor(input.kind)?.newConversation;
-    if (input.previousAgentId !== undefined && capability !== undefined) {
-      const prior = await discovery.target(input.previousAgentId, true);
-      // a live previous agent of another kind or workspace was retargeted: leave it alone, launch fresh
-      if (prior !== undefined && prior.agent.kind === input.kind && plan.matches(prior.agent.workspace)) return await runReuse(prior, capability, input.text);
+    // an unattended (scheduler-fired) Run always launches fresh and names its conversation; its pane is
+    // closed on completion by the reconciler, so it never reuses a pane and the composer is never read.
+    // Only an attended Run now reuses the Schedule's own pane when the remembered agent is still a live
+    // agent of the same kind whose workspace is the target; a kind without a reset capability launches fresh.
+    if (!input.unattended) {
+      const capability = input.kind === undefined ? undefined : adapterFor(input.kind)?.newConversation;
+      if (input.previousAgentId !== undefined && capability !== undefined) {
+        const prior = await discovery.target(input.previousAgentId, true);
+        // a live previous agent of another kind or workspace was retargeted: leave it alone, launch fresh
+        if (prior !== undefined && prior.agent.kind === input.kind && plan.matches(prior.agent.workspace)) return await runReuse(prior, capability, input.text);
+      }
     }
-    return await runFresh(plan, input.text);
+    return await runFresh(plan, input.text, input.unattended ? input.conversationName : undefined);
   };
-  const performRun = async (input: { text: string; kind: AgentKind | undefined; target: ScheduleTarget; previousAgentId?: string }): Promise<RunOutcome> => {
+  const performRun = async (input: { text: string; kind: AgentKind | undefined; target: ScheduleTarget; previousAgentId?: string; unattended?: boolean; conversationName?: string }): Promise<RunOutcome> => {
     const outcome = await runOnce(input);
     // every outcome refreshes the dashboard, even a precondition skip that changed nothing
     await dashboardUpdates.refresh().catch(() => undefined);
@@ -1462,13 +1509,41 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       case 'reset-lost': return { code: 409, error: 'The previous run could not be reset.' };
     }
   };
-  // Run one Note's Schedule once at the due (or Run-now) instant `at`, and record the outcome on
-  // its `lastRun`. One Run per Schedule at a time — the flight guard is shared by Run now and (later)
-  // the scheduler tick, so a scheduled tick and a manual Run cannot reset the one pane at once. An
-  // unexpected error from a dependency still records a `failed` run, so "every run is recorded" holds
-  // even for infrastructure failures. Returns the updated Note, or why nothing ran (Scheduled prompts).
+  // the name a managed (unattended) Run gives its fresh conversation, so the pane the reconciler later
+  // closes stays findable in the Named list: a clock, the Note's title (or a snippet of its text) and
+  // the host-local run time, capped to the 120-char rename limit
+  const scheduledConversationName = (note: WorktreeNote, at: string): string => {
+    const when = new Date(at);
+    const pad = (value: number) => String(value).padStart(2, '0');
+    const stamp = Number.isNaN(when.getTime()) ? at : `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())} ${pad(when.getHours())}:${pad(when.getMinutes())}`;
+    const label = (note.title ?? note.text ?? '').trim().replace(/\s+/gu, ' ') || 'Scheduled note';
+    return `⏰ ${label} — ${stamp}`.slice(0, 120);
+  };
+  // terminal statuses that warrant an unattended notification (a skip, an outright failure, a run that
+  // timed out, or one that ended asking a question); a launched/running/completed Run stays quiet
+  const scheduleAttentionStatuses = new Set<ScheduleRunStatus>(['skipped', 'failed', 'needs-input', 'timed-out']);
+  const notifyScheduleRun = (schedule: Schedule, noteId: string, noteTitle: string | undefined, lastRun: ScheduleLastRun): void => {
+    if (!scheduleAttentionStatuses.has(lastRun.status)) return;
+    const target = resolveScheduleTarget(schedule.target);
+    void push.notify(scheduleNotification({
+      status: lastRun.status as 'skipped' | 'failed' | 'needs-input' | 'timed-out',
+      targetLabel: target.label,
+      noteId,
+      ...(noteTitle === undefined ? {} : { noteTitle }),
+      ...(lastRun.detail === undefined ? {} : { detail: lastRun.detail }),
+      ...(lastRun.agentId === undefined ? {} : { agentId: lastRun.agentId }),
+      ...(target.worktreeId === undefined ? {} : { worktreeId: target.worktreeId })
+    })).catch(() => undefined);
+  };
+  // Run one Note's Schedule once at the due (or Run-now) instant `at`, and record the outcome on its
+  // `lastRun`. One Run per Schedule at a time — the flight guard is shared by Run now, the scheduler
+  // tick and the reconciler, so no two of them mutate the one Note at once. An `unattended` (scheduler)
+  // Run is a managed lifecycle: it launches fresh, names its conversation, records `running`, and the
+  // reconciler later closes its pane; an attended Run now records the immediate outcome and leaves its
+  // pane open. An unexpected error still records a `failed` run, so "every run is recorded" holds even
+  // for infrastructure failures. Returns the updated Note, or why nothing ran (Scheduled prompts).
   const scheduleRunsInFlight = new Set<string>();
-  const recordedScheduleRun = async (saveKey: string, noteId: string, at: string): Promise<{ note: WorktreeNote } | 'in-flight' | 'gone'> => {
+  const recordedScheduleRun = async (saveKey: string, noteId: string, at: string, unattended: boolean): Promise<{ note: WorktreeNote } | 'in-flight' | 'gone'> => {
     const note = (await notes.list(saveKey))?.find(candidate => candidate.id === noteId);
     // gone: an unknown Note or a Note without a Schedule to run
     if (note === undefined || note.schedule === undefined) return 'gone';
@@ -1479,8 +1554,20 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       const schedule = note.schedule;
       let lastRun: ScheduleLastRun;
       try {
-        const outcome = await performRun({ text: note.text, kind: schedule.kind, target: schedule.target, ...(schedule.lastRun?.agentId === undefined ? {} : { previousAgentId: schedule.lastRun.agentId }) });
-        lastRun = { at, status: outcome.status, ...(outcome.status === 'launched' ? {} : { detail: outcome.detail }), ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }) };
+        const outcome = await performRun({
+          text: note.text,
+          kind: schedule.kind,
+          target: schedule.target,
+          unattended,
+          ...(unattended ? { conversationName: scheduledConversationName(note, at) } : {}),
+          ...(unattended || schedule.lastRun?.agentId === undefined ? {} : { previousAgentId: schedule.lastRun.agentId })
+        });
+        // a managed launch is only the *start* of a Run: record it `running` with the watch anchors and
+        // let the reconciler close the pane and write the terminal outcome. An attended Run now records
+        // the immediate `launched`/`skipped`/`failed` outcome and leaves its pane open.
+        lastRun = unattended && outcome.status === 'launched'
+          ? { at, status: 'running', startedAt: new Date().toISOString(), sawWorking: false, ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }) }
+          : { at, status: outcome.status, ...(outcome.status === 'launched' ? {} : { detail: outcome.detail }), ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }) };
       } catch (error) {
         // an unexpected dependency failure is still an outcome the operator should see, not a lost run
         console.warn(`[schedule] run errored for ${flightKey}:`, error);
@@ -1489,34 +1576,82 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       const updated = await notes.recordLastRun(saveKey, noteId, lastRun);
       // the Schedule may have been removed mid-run; the outcome is then dropped, notification and all
       if (updated === undefined) return 'gone';
-      // a skipped or failed Run notifies so an unattended failure reaches the phone; a launched Run
-      // stays quiet (the agent's own "done working" notification already fires when the answer lands)
-      if (lastRun.status !== 'launched') {
-        const target = resolveScheduleTarget(schedule.target);
-        void push.notify(scheduleNotification({
-          status: lastRun.status,
-          targetLabel: target.label,
-          noteId,
-          ...(note.title === undefined ? {} : { noteTitle: note.title }),
-          ...(lastRun.detail === undefined ? {} : { detail: lastRun.detail }),
-          ...(lastRun.agentId === undefined ? {} : { agentId: lastRun.agentId }),
-          ...(target.worktreeId === undefined ? {} : { worktreeId: target.worktreeId })
-        })).catch(() => undefined);
-      }
+      // a launched/running/completed Run stays quiet; the reconciler notifies the terminal outcome
+      notifyScheduleRun(schedule, noteId, note.title, lastRun);
       return { note: updated };
     } finally {
       scheduleRunsInFlight.delete(flightKey);
     }
   };
-  // fire enabled Schedules once a minute, unattended, through the very seam Run now uses. Constructed
-  // here so it closes over the real Run primitive; decorated onto the app below so index.ts starts it
-  // and the HTTP-seam tests drive its `tick(now)`. It is not started here — tests build the app
-  // without a live timer running.
-  const scheduler = new Scheduler(() => notes.scheduled(), recordedScheduleRun, scheduleBootAt);
+  // a managed Run must report `working` within this window or it is taken to have finished without
+  // observable work (a no-op prompt, or a task that started and finished between reconcile ticks)
+  const scheduleRunStartWindowMs = 60 * 1_000;
+  // a managed Run still working after this is closed and recorded `timed-out`, so a runaway task never
+  // holds its Note's one-Run slot forever
+  const scheduleRunMaxMs = 30 * 60 * 1_000;
+  // Advance one in-flight managed Run: read its pane's attention and either flip `sawWorking`, or record
+  // a terminal outcome and close the pane. Shares the per-Note flight guard with dispatch so a manual Run
+  // now and this reconcile can never mutate the one Note at once (Scheduled prompts).
+  const reconcileScheduleRun = async (saveKey: string, noteId: string): Promise<void> => {
+    const flightKey = `${saveKey}:${noteId}`;
+    if (scheduleRunsInFlight.has(flightKey)) return;
+    scheduleRunsInFlight.add(flightKey);
+    try {
+      const note = (await notes.list(saveKey))?.find(candidate => candidate.id === noteId);
+      const schedule = note?.schedule;
+      const lastRun = schedule?.lastRun;
+      if (note === undefined || schedule === undefined || lastRun?.status !== 'running') return;
+      const agentId = lastRun.agentId;
+      const target = agentId === undefined ? undefined : await discovery.target(agentId, true);
+      const started = Date.parse(lastRun.startedAt ?? lastRun.at);
+      const elapsed = Number.isNaN(started) ? 0 : Date.now() - started;
+      let terminal: ScheduleLastRun | undefined;
+      let progressed: ScheduleLastRun | undefined;
+      let closeId: string | undefined;
+      // a terminal outcome drops the agentId: the pane is (about to be) closed or already gone, so a
+      // deep-link would be dead — the notification falls back to the Worktree and the renamed
+      // conversation is how the closed Run is found. Only the still-`running` progress keeps its pane.
+      if (agentId === undefined || target === undefined) {
+        // the managed pane is gone — a manual stop, a crash, or a restart that outlived it
+        terminal = { at: lastRun.at, status: 'failed', detail: 'the agent was closed before the run finished' };
+      } else {
+        const attention = agentAttentionState(target.agent);
+        if (attention === 'working') {
+          if (elapsed >= scheduleRunMaxMs) { terminal = { at: lastRun.at, status: 'timed-out', detail: `still working after ${Math.round(scheduleRunMaxMs / 60_000)} min` }; closeId = agentId; }
+          else if (lastRun.sawWorking !== true) progressed = { ...lastRun, sawWorking: true };
+        } else if (attention === 'question') {
+          terminal = { at: lastRun.at, status: 'needs-input', detail: 'the run ended asking a question' }; closeId = agentId;
+        } else if (lastRun.sawWorking === true || elapsed >= scheduleRunStartWindowMs) {
+          // finished after we saw it work, or past the start window (a fast task can finish between ticks)
+          terminal = { at: lastRun.at, status: 'completed' }; closeId = agentId;
+        }
+        // else: finished, never observed working, still within the start window → it may not have begun
+      }
+      if (closeId !== undefined) await prompts.close(closeId).catch(() => undefined);
+      const record = terminal ?? progressed;
+      if (record === undefined) return;
+      const updated = await notes.recordLastRun(saveKey, noteId, record);
+      if (updated === undefined || terminal === undefined) return;
+      notifyScheduleRun(schedule, noteId, note.title, terminal);
+    } finally {
+      scheduleRunsInFlight.delete(flightKey);
+    }
+  };
+  // fire enabled Schedules once a minute, unattended, through the very seam Run now uses; the reconcile
+  // pass closes each managed Run's pane when it finishes. Constructed here so it closes over the real Run
+  // primitive; decorated onto the app below so index.ts starts it and the HTTP-seam tests drive its
+  // `tick(now)`. It is not started here — tests build the app without a live timer running.
+  const scheduler = new Scheduler(
+    () => notes.scheduled(),
+    (key, noteId, at) => recordedScheduleRun(key, noteId, at, true),
+    scheduleBootAt,
+    undefined,
+    (key, noteId) => reconcileScheduleRun(key, noteId)
+  );
   // Run now on a Schedule: run it synchronously exactly as the scheduler will and return the decorated
   // Note; a second Run now while one is in flight is refused with a conflict.
   const runScheduleNow = async (saveKey: string, noteId: string, reply: FastifyReply): Promise<unknown> => {
-    const result = await recordedScheduleRun(saveKey, noteId, new Date().toISOString());
+    const result = await recordedScheduleRun(saveKey, noteId, new Date().toISOString(), false);
     if (result === 'gone') return reply.code(404).send({ error: 'schedule unavailable' });
     if (result === 'in-flight') return reply.code(409).send({ error: 'A run of this schedule is already in progress.' });
     return decorateNote(result.note);

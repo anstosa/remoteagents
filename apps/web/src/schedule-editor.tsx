@@ -4,7 +4,7 @@ import { agentKindGlyph, agentKindLabel, type AgentKind } from './launch-profile
 // The wire shape of a Schedule (mirrors the server's `Schedule`). `updatedAt` and
 // `lastRun` are server-owned; the editor emits only the four fields the set route reads.
 export type ScheduleTarget = { worktreeId: string } | { projectId: string } | { scratch: true };
-export type ScheduleRunStatus = 'launched' | 'skipped' | 'failed';
+export type ScheduleRunStatus = 'launched' | 'running' | 'completed' | 'needs-input' | 'timed-out' | 'skipped' | 'failed';
 export type ScheduleLastRun = { at: string; status: ScheduleRunStatus; detail?: string; agentId?: string };
 export type Schedule = { cron: string; kind: AgentKind; target: ScheduleTarget; enabled: boolean; updatedAt?: string; lastRun?: ScheduleLastRun };
 export type ScheduleSetBody = { cron: string; kind: AgentKind; target: ScheduleTarget; enabled: boolean };
@@ -141,7 +141,10 @@ export const scheduleInvalid = (note: { schedule?: unknown; nextRun?: string }) 
 
 // A last Run that failed or was skipped needs attention — the single definition the note-pane
 // footnote and the fly-out badge both read, so the two never drift apart.
-export const lastRunNeedsAttention = (lastRun?: ScheduleLastRun): boolean => lastRun !== undefined && lastRun.status !== 'launched';
+// a skip, failure, timeout or a run that ended asking a question wants attention; launched, running
+// (a managed run in flight) and completed do not
+const scheduleAttentionStatuses = new Set<ScheduleRunStatus>(['skipped', 'failed', 'needs-input', 'timed-out']);
+export const lastRunNeedsAttention = (lastRun?: ScheduleLastRun): boolean => lastRun !== undefined && scheduleAttentionStatuses.has(lastRun.status);
 
 type ScheduleEditorProps = {
   schedule?: Schedule;

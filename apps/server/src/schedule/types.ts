@@ -7,7 +7,7 @@ import { agentKinds, type AgentKind } from '../adapters/types.js';
  */
 export type ScheduleTarget = { worktreeId: string } | { projectId: string } | { scratch: true };
 
-export const scheduleRunStatuses = ['launched', 'skipped', 'failed'] as const;
+export const scheduleRunStatuses = ['launched', 'running', 'completed', 'needs-input', 'timed-out', 'skipped', 'failed'] as const;
 export type ScheduleRunStatus = typeof scheduleRunStatuses[number];
 
 /**
@@ -15,8 +15,14 @@ export type ScheduleRunStatus = typeof scheduleRunStatuses[number];
  * `agentId` is the pane the Run used or created — and the *sole* handle a Schedule keeps to its own
  * pane, so "one pane per Schedule" and every reuse decision key on it. A skip or failure that carries
  * an `agentId` keeps the pane reusable; one that drops it makes the next Run launch fresh.
+ *
+ * An *unattended* (scheduler-fired) Run is a managed lifecycle: it launches fresh, records `running`
+ * with `startedAt` and `sawWorking: false`, and the scheduler's reconcile pass watches its pane —
+ * flipping `sawWorking` once it observes `working`, then advancing to a terminal status (`completed`,
+ * `needs-input`, `timed-out`, or `failed`) and closing the pane. `launched` remains the terminal
+ * success of an *attended* Run now, whose pane is left open.
  */
-export type ScheduleLastRun = { at: string; status: ScheduleRunStatus; detail?: string; agentId?: string };
+export type ScheduleLastRun = { at: string; status: ScheduleRunStatus; detail?: string; agentId?: string; startedAt?: string; sawWorking?: boolean };
 
 /**
  * A standing instruction on a Note: when to run it (a 5-field, host-local cron
@@ -53,6 +59,8 @@ const validLastRun = (value: unknown): value is ScheduleLastRun => {
   if (typeof run.status !== 'string' || !(scheduleRunStatuses as readonly string[]).includes(run.status)) return false;
   if (run.detail !== undefined && (typeof run.detail !== 'string' || run.detail.length > 400)) return false;
   if (run.agentId !== undefined && (typeof run.agentId !== 'string' || run.agentId.length > 200)) return false;
+  if (run.startedAt !== undefined && (typeof run.startedAt !== 'string' || Number.isNaN(Date.parse(run.startedAt)))) return false;
+  if (run.sawWorking !== undefined && typeof run.sawWorking !== 'boolean') return false;
   return true;
 };
 

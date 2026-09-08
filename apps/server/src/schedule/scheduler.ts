@@ -5,6 +5,13 @@ import type { Schedule } from './types.js';
 export type ScheduledNote = { key: string; note: { id: string; schedule?: Schedule } };
 /** Run one Note's Schedule once at the instant `at`; the outcome is recorded by the runner itself. */
 export type ScheduleRunner = (key: string, noteId: string, at: string) => Promise<unknown>;
+/**
+ * Advance one in-flight managed Run (its `lastRun.status` is `running`): observe its pane and, when it
+ * has finished (or timed out, or its pane is gone), record a terminal status and close the pane. A no-op
+ * for a Run that is still working. Kept separate from {@link ScheduleRunner} so the tick can reconcile a
+ * running Note without ever re-dispatching it.
+ */
+export type ScheduleReconciler = (key: string, noteId: string) => Promise<unknown>;
 
 /**
  * Fires enabled Schedules while nobody is watching. Modelled on the cleanup monitor: a
@@ -12,7 +19,9 @@ export type ScheduleRunner = (key: string, noteId: string, at: string) => Promis
  * stopped on close. Each tick evaluates every scheduled note against the no-catch-up anchor
  * (`bootAt`, the Schedule's `updatedAt` and its last Run), collapses any backlog into a single due
  * instant, and runs the due Schedules one after another so per-worktree launch serialization is
- * never tripped by the scheduler itself. `tick(now)` is exposed so tests drive it without timers.
+ * never tripped by the scheduler itself. A Note whose last Run is still `running` is reconciled (its
+ * managed pane watched to completion and closed) and never re-dispatched, so one Run per Note holds
+ * across the whole managed lifecycle. `tick(now)` is exposed so tests drive it without timers.
  */
 export class Scheduler {
   private timer?: ReturnType<typeof setInterval>;
@@ -27,7 +36,8 @@ export class Scheduler {
     private readonly scheduled: () => Promise<ScheduledNote[]>,
     private readonly run: ScheduleRunner,
     private readonly bootAt: Date,
-    private readonly intervalMs = 60 * 1_000
+    private readonly intervalMs = 60 * 1_000,
+    private readonly reconcile: ScheduleReconciler = async () => {}
   ) {}
 
   start(): void {
@@ -51,6 +61,9 @@ export class Scheduler {
     for (const flightKey of this.dispatched.keys()) if (!live.has(flightKey)) this.dispatched.delete(flightKey);
     for (const { key, note } of scheduled) {
       const schedule = note.schedule;
+      // an in-flight managed Run is reconciled first — even if its Schedule was since paused or its
+      // cron edited — and never re-dispatched, so exactly one managed Run is alive per Note at a time
+      if (schedule?.lastRun?.status === 'running') { await this.reconcile(key, note.id).catch(() => undefined); continue; }
       if (schedule === undefined || !schedule.enabled) continue;
       const due = dueInstant(schedule, now, this.bootAt);
       if (due === undefined) continue;
