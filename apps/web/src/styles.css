@@ -709,9 +709,9 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .prompt-actions .icon-button, .prompt-action-rail .icon-button { display: inline-grid; flex: 0 0 var(--standard-control-size); width: var(--standard-control-size); height: var(--standard-control-size); padding: 0; place-items: center; }
 :is(.prompt-actions, .prompt-action-rail) .icon-button svg { display: block; width: 1rem; height: 1rem; }
 :is(.prompt-actions, .prompt-action-rail) :is(.swap-agent, .review-tour-toggle, .more, .attachment-button, .project-browser-toggle, .project-stack-toggle), .prompt-actions .project-open { border-color: var(--prompt-control-border); background: var(--prompt-control-background); color: var(--prompt-control-foreground); filter: none; }
-.prompt-actions :is(.outline-button, .saved-prompts-toggle, .queued-prompts-toggle) { border-color: var(--surface-2); background: transparent; color: var(--prompt-control-foreground); filter: none; }
-:is(.prompt-actions, .prompt-action-rail) :is(.swap-agent, .review-tour-toggle, .more, .attachment-button, .project-browser-toggle, .project-stack-toggle, .outline-button, .saved-prompts-toggle, .queued-prompts-toggle):not(:disabled):hover, .prompt-actions .project-open:hover { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); filter: none; }
-.prompt-actions :is(.more, .project-browser-toggle, .project-stack-toggle, .saved-prompts-toggle, .queued-prompts-toggle)[aria-expanded='true'], .prompt-actions .outline-button.active { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); }
+.prompt-actions :is(.outline-button, .queued-prompts-toggle) { border-color: var(--surface-2); background: transparent; color: var(--prompt-control-foreground); filter: none; }
+:is(.prompt-actions, .prompt-action-rail) :is(.swap-agent, .review-tour-toggle, .more, .attachment-button, .project-browser-toggle, .project-stack-toggle, .outline-button, .queued-prompts-toggle):not(:disabled):hover, .prompt-actions .project-open:hover { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); filter: none; }
+.prompt-actions :is(.more, .project-browser-toggle, .project-stack-toggle, .queued-prompts-toggle)[aria-expanded='true'], .prompt-actions .outline-button.active { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); }
 .prompt-actions-spacer { flex: 1; }
 .question-prompt .prompt-actions { justify-content: flex-start; }
 .danger svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
@@ -732,7 +732,7 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .queued-prompts-toggle svg { width: 1.05rem; height: 1.05rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .queued-prompts-count { background: var(--blue); }
 .more-menu.queued-prompts-panel { display: grid; width: calc(100vw - 1rem); max-width: calc(100vw - 1rem); max-height: min(34rem, calc(100vh - 1rem)); overflow: hidden; }
-:is(.queued-prompts-panel, .saved-prompts-panel) header { display: flex; align-items: center; gap: .7rem; padding: .6rem .7rem; border-bottom: 1px solid var(--surface-1); color: var(--blue); }
+.queued-prompts-panel header { display: flex; align-items: center; gap: .7rem; padding: .6rem .7rem; border-bottom: 1px solid var(--surface-1); color: var(--blue); }
 .queued-prompts-list { display: grid; width: 100%; min-height: 0; overflow: auto; }
 .queued-prompt-item { display: grid; width: 100%; min-width: 0; grid-template-columns: 4.4rem minmax(0, 1fr) auto; align-items: stretch; border-bottom: 1px solid color-mix(in srgb, var(--surface-1) 72%, transparent); }
 .queued-prompt-item:last-child { border-bottom: 0; }
@@ -752,28 +752,8 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .more-menu.queued-prompts-panel .queued-prompt-cancel { color: var(--red); }
 .queued-prompt-error { margin: 0; padding: .5rem .7rem; color: var(--red); font: 600 .68rem/1.3 var(--font-mono); }
 .outline-button { border: 1px solid var(--surface-2); background: transparent; color: var(--subtext-0); }
-.save-prompt-group { position: relative; display: inline-flex; align-items: center; }
-.save-prompt { min-width: 2.6rem; }
-.save-prompt-group.has-saved-prompts .save-prompt { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-.save-prompt.saved { border-color: var(--green); color: var(--green); }
-.save-prompt.saved:disabled { opacity: 1; }
-.save-prompt svg { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
-.prompt-actions .saved-prompts-toggle { position: relative; display: grid; flex: 0 0 2.6rem; width: 2.6rem; overflow: visible; border-left: 0; border-radius: 0 var(--control-radius) var(--control-radius) 0; padding: 0; place-items: center; }
-.saved-prompts-toggle svg { width: .9rem; height: .9rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.2; }
+/* shared count badge for the queued-prompt, notes, bookmark, cleanup and response-file toggles */
 .saved-prompts-count { position: absolute; top: -.4rem; right: -.35rem; display: grid; min-width: 1.05rem; height: 1.05rem; padding: 0 .24rem; place-items: center; border: 1px solid var(--mantle); border-radius: 999px; background: var(--mauve); color: var(--crust); font: 800 .6rem/1 var(--font-mono); box-shadow: 0 .2rem .55rem color-mix(in srgb, var(--crust) 60%, transparent); pointer-events: none; }
-/* keep the draft list as the shrinking scroll track */
-.more-menu.saved-prompts-panel { display: grid; width: calc(100vw - 1rem); max-width: calc(100vw - 1rem); max-height: min(34rem, calc(100vh - 1rem)); grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
-.saved-prompts-list { display: grid; width: 100%; min-height: 0; overflow: auto; }
-.saved-prompt-item { display: grid; width: 100%; min-width: 0; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; border-bottom: 1px solid color-mix(in srgb, var(--surface-1) 72%, transparent); }
-.saved-prompt-item:last-child { border-bottom: 0; }
-.saved-prompt-actions { display: grid; grid-auto-flow: column; grid-auto-columns: 2.4rem; align-content: center; border-left: 1px solid color-mix(in srgb, var(--surface-1) 72%, transparent); }
-.more-menu.saved-prompts-panel .saved-prompt-actions button { width: 100%; min-width: 0; justify-content: center; border-radius: 0; padding: .65rem; }
-.more-menu.saved-prompts-panel .saved-prompt-send { color: var(--mauve); }
-.more-menu.saved-prompts-panel .saved-prompt-send:not(:disabled):hover { color: var(--mauve); }
-.more-menu.saved-prompts-panel .saved-prompt-delete { color: var(--red); }
-.more-menu.saved-prompts-panel .saved-prompt-delete:not(:disabled):hover { color: var(--red); }
-.saved-prompt-item svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
-.saved-prompt-error { margin: 0; color: var(--red); font-size: .75rem; }
 .project-open { display: inline-flex; align-items: center; gap: .35rem; border: 1px solid var(--surface-1); text-decoration: none; }
 .project-open svg { width: .8rem; height: .8rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .project-open-group { position: relative; display: inline-flex; align-items: center; }
@@ -1257,10 +1237,6 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .client-rename-dialog > div > .chatgpt-account-login-actions { padding: 0 1rem 1rem; }
 .more-menu > .more-menu-link { display: flex; width: 100%; align-items: center; gap: .45rem; padding: .65rem .9rem; color: var(--text); text-decoration: none; white-space: nowrap; transition: background-color .15s ease, color .15s ease; }
 .flyout-menu button:not(:disabled):hover, .flyout-menu a:hover { background: var(--surface-0); color: var(--text); filter: none; }
-.more-menu.saved-prompts-panel .saved-prompt-restore { min-width: 0; overflow: hidden; padding: .7rem; text-align: left; white-space: normal; }
-.saved-prompt-copy { display: grid; min-width: 0; gap: .25rem; }
-.more-menu.saved-prompts-panel .saved-prompt-copy > span { overflow: hidden; color: var(--text); line-height: 1.35; overflow-wrap: anywhere; white-space: pre-wrap; }
-.saved-prompt-copy small { overflow: hidden; color: var(--overlay-0); font: 600 .65rem/1.25 var(--font-mono); letter-spacing: normal; text-overflow: ellipsis; white-space: nowrap; }
 .more-menu-icon { flex: 0 0 1rem; width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
 .new-task-option { display: grid; }
 .more-menu-reason { min-height: calc(.68rem * 1.35); padding: 0 .75rem .45rem; color: var(--overlay-0); font: 600 .68rem/1.35 var(--font-mono); letter-spacing: normal; white-space: normal; }

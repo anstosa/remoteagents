@@ -1,8 +1,7 @@
 import { expect, test } from '@playwright/test';
 
-test('latches dictation after a long press and stops only on tap, submit, or save', async ({ page }) => {
+test('latches dictation after a long press and stops only on tap or submit', async ({ page }) => {
   let queued = 0;
-  let saved = 0;
   await page.addInitScript(() => {
     const speech = { starts: 0, aborts: 0 };
     let active: {
@@ -55,12 +54,6 @@ test('latches dictation after a long press and stops only on tap, submit, or sav
     if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready' }], projects: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
-    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
-    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'POST') {
-      saved += 1;
-      const body = request.postDataJSON() as { prompt: string };
-      return route.fulfill({ status: 201, json: { id: 'saved-prompt-001', text: body.prompt } });
-    }
     if (url.pathname === '/api/agents/agent-1/prompt' && request.method() === 'POST') {
       queued += 1;
       return route.fulfill({ status: 204 });
@@ -114,13 +107,5 @@ test('latches dictation after a long press and stops only on tap, submit, or sav
   await prompt.press('Enter');
   await expect.poll(() => queued).toBe(1);
   await expect.poll(() => page.evaluate(() => (window as unknown as { __speechState: { aborts: number } }).__speechState.aborts)).toBe(2);
-  await expect(prompt).not.toHaveClass(/voice-listening/u);
-
-  await startDictation(4);
-  await page.evaluate(() => (window as unknown as { __emitSpeech: (transcript: string) => void }).__emitSpeech('save this prompt'));
-  await expect(prompt).toHaveValue('save this prompt');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect.poll(() => saved).toBe(1);
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __speechState: { aborts: number } }).__speechState.aborts)).toBe(3);
   await expect(prompt).not.toHaveClass(/voice-listening/u);
 });

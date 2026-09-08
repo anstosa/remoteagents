@@ -205,7 +205,6 @@ const verifyPendingSessionHandoff = async (page: Page, scope: 'scratch' | 'direc
   await prompt.fill(promptText);
   await attach(page, attachmentName, attachmentBody);
   await expect(page.getByLabel('Selected attachments')).toContainText(attachmentName);
-  await expect(composer.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
   await expect(composer.getByRole('button', { name: 'Queue', exact: true })).toBeDisabled();
 
   harness.finishRequest();
@@ -241,10 +240,8 @@ test('keeps the complete launch composer editable through tab changes and delaye
   await prompt.fill('before  after');
   await attach(page, 'launch-context.txt', 'launch context');
   await expect(page.getByLabel('Selected attachments')).toContainText('launch-context.txt');
-  await expect(composer.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
   await expect(composer.getByRole('button', { name: 'Queue', exact: true })).toBeDisabled();
   await prompt.press('Enter');
-  await prompt.press('Control+s');
   expect(harness.agentWrites()).toEqual([]);
   await expect(prompt).toHaveValue('before  after');
 
@@ -258,7 +255,6 @@ test('keeps the complete launch composer editable through tab changes and delaye
   await expect(page.getByRole('status').filter({ hasText: 'Cora is starting' })).toBeVisible();
   await expect.poll(harness.dashboardRequests).toBeGreaterThanOrEqual(2);
   await expect(prompt).toHaveValue('before  after');
-  await expect(composer.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
   await expect(composer.getByRole('button', { name: 'Queue', exact: true })).toBeDisabled();
 
   await prompt.focus();
@@ -275,7 +271,6 @@ test('keeps the complete launch composer editable through tab changes and delaye
   await page.keyboard.type('handoff');
   await expect(readyPrompt).toHaveValue('before midhandoff after');
   await expect(page.getByLabel('Selected attachments')).toContainText('launch-context.txt');
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
   await expect(page.getByRole('button', { name: 'Queue', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: 'Queue', exact: true }).click();
   await expect.poll(harness.agentWrites).toEqual([{
@@ -300,7 +295,6 @@ test('preserves the prepared draft and files after launch failure and retry', as
   await expect(page.locator('.launch-error')).toContainText('Agent launch failed for the test.');
   await expect(prompt).toHaveValue('Retry this prepared prompt');
   await expect(page.getByLabel('Selected attachments')).toContainText('retry-context.txt');
-  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Queue', exact: true })).toBeDisabled();
 
   await page.getByRole('button', { name: 'Launch Codex' }).click();
@@ -331,7 +325,6 @@ test('shows the editable wake composer without overflowing a mobile viewport', a
   await prompt.fill('Mobile wake draft');
   await attach(page, 'mobile-context.txt', 'mobile context');
   await expect(page.getByLabel('Selected attachments')).toContainText('mobile-context.txt');
-  await expect(composer.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
   await expect(composer.getByRole('button', { name: 'Queue', exact: true })).toBeDisabled();
 
   const layout = await page.evaluate(() => {

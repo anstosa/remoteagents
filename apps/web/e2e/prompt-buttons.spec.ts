@@ -31,10 +31,6 @@ test('uses consistent prompt control styles while preserving destructive and que
         <span class="project-open-group has-stack-actions">
           <button class="project-stack-toggle project-stack-trigger icon-button" aria-label="Stack"><svg class="project-stack-server-icon" viewBox="0 0 24 24"></svg><i class="project-stack-status-dot status-healthy"></i></button>
         </span>
-        <span class="save-prompt-group">
-          <button class="save-prompt outline-button icon-button" aria-label="Save"><svg viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5V3Z"></path></svg></button>
-          <button class="saved-prompts-toggle icon-button" aria-label="Saved"></button>
-        </span>
         <button class="danger icon-button" aria-label="Delete"></button>
         <button class="queue icon-button" aria-label="Queue"><svg viewBox="0 0 24 24"><path d="M22 2 11 13"></path></svg></button>
       </div>
@@ -65,13 +61,6 @@ test('uses consistent prompt control styles while preserving destructive and que
   expect(new Set(hoveredStyles.map(style => style.borderColor)).size).toBe(1);
   expect(new Set(hoveredStyles.map(style => style.color)).size).toBe(1);
   expect(hoveredStyles[0].backgroundColor).not.toBe(neutralStyles[0].backgroundColor);
-
-  for (const name of ['Save', 'Saved']) {
-    const control = page.getByRole('button', { name, exact: true });
-    await control.hover();
-    await page.waitForTimeout(175);
-    expect(await readStyle(control)).toEqual(hoveredStyles[0]);
-  }
 
   const danger = page.getByRole('button', { name: 'Delete' });
   expect((await readStyle(danger)).color).toBe('rgb(243, 139, 168)');

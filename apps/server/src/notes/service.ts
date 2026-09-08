@@ -9,7 +9,8 @@ type StoredNotes = Record<string, WorktreeNote[]>;
 const maxNotesPerWorktree = 50;
 const maxWorktrees = 100;
 const maxNoteLength = 30_000;
-const maxNoteTitleLength = 120;
+// the note-title cap; exported so the saved-prompts boot migration truncates to the same limit
+export const maxNoteTitleLength = 120;
 const maxTotalNoteLength = 300_000;
 const validWorktreeId = (value: string) => /^[A-Za-z0-9_-]{1,80}$/u.test(value);
 const validNoteId = (value: string) => /^[A-Za-z0-9_-]{12,64}$/u.test(value);

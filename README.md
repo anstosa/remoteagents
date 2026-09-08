@@ -37,14 +37,6 @@ pull-request state without losing the terminal-native workflow underneath.
 | **Operations** | Install as a browser app, enable notifications, review stale runtime cleanup targets, and deploy with Docker Compose plus an optional Cloudflare Tunnel. |
 | **Conversational control** | Connect ChatGPT through scoped remote MCP or use the built-in OpenAI Realtime voice dialog to inspect and direct the same agents. |
 
-### Reuse saved drafts
-
-Saved drafts stay attached to their worktree. The full-width flyout shows each
-draft and its attachments, and lets you restore it to the composer, queue it
-directly, or delete it.
-
-![Saved prompt flyout with restore, queue, and delete controls](docs/images/saved-prompts.png)
-
 ### Review implementation changes
 
 Open the branch-status flyout, choose **Working** or **All PR**, then select
@@ -96,7 +88,7 @@ flowchart LR
 The server discovers tmux panes, verifies that their process trees belong to
 Codex/OMX, and streams bounded viewport captures to the browser. Prompts and
 terminal input are sent only to the pane selected through a freshly validated
-agent target. Persistent state—console-named conversations, notes, prompt history, saved prompts, queues,
+agent target. Persistent state—console-named conversations, notes, prompt history, queues,
 device names, and optional push subscriptions—stays in local JSON files.
 
 Each agent CLI the console understands is described by one **Adapter**: a module

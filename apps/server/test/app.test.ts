@@ -1188,54 +1188,6 @@ describe('queued prompt API', () => {
   }, 15_000);
 });
 
-describe('saved prompt API', () => {
-  it('keeps prompts with a configured worktree when its agent pane changes', async () => {
-    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
-    const agents = [
-      stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' }),
-      stated({ id: 'agent-2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' })
-    ];
-    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
-    const prompts = [{ id: 'saved-prompt-001', text: 'Review this change.' }];
-    const keys: string[] = [];
-    const queued: string[] = [];
-    const savedPrompts = {
-      list: async (key: string) => { keys.push(key); return key === 'cora' ? [...prompts] : undefined; },
-      save: async (key: string, text: string, attachments: Array<{ name: string; data: string }>) => { keys.push(key); return key === 'cora' ? { id: 'saved-prompt-002', text, attachments: attachments.map(attachment => ({ name: attachment.name, size: Buffer.from(attachment.data, 'base64').length })) } : undefined; },
-      get: async (key: string, promptId: string) => { keys.push(key); return key === 'cora' ? prompts.find(prompt => prompt.id === promptId) : undefined; },
-      consumeOnSuccess: async (key: string, promptId: string, use: (prompt: { id: string; text: string }) => Promise<boolean>) => { keys.push(key); const prompt = key === 'cora' ? prompts.find(candidate => candidate.id === promptId) : undefined; return prompt === undefined ? 'missing' : await use(prompt) ? 'consumed' : 'failed'; },
-      consume: async (key: string, promptId: string) => { keys.push(key); return key === 'cora' ? prompts.find(prompt => prompt.id === promptId) : undefined; }
-    };
-    const savedApp = await buildApp({ ...config }, {
-      auth: new AuthService(hash, Buffer.alloc(32, 9).toString('base64url')),
-      discovery: { target: async (id: string) => { const agent = agents.find(candidate => candidate.id === id); return agent === undefined ? undefined : { agent, socket }; }, worktreesNow: () => [worktree] } as never,
-      tmux: { pastePrompt: async (_socket: unknown, _paneId: string, _buffer: string, prompt: string) => { queued.push(prompt); return true; }, sendKeys: async () => true } as never,
-      savedPrompts: savedPrompts as never
-    });
-    try {
-      const boot = await savedApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
-      const login = await savedApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
-      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
-
-      const listed = await savedApp.inject({ method: 'GET', url: '/api/agents/agent-2/saved-prompts', headers: { host: headers.host, cookie: headers.cookie } });
-      const created = await savedApp.inject({ method: 'POST', url: '/api/agents/agent-1/saved-prompts', headers, payload: { prompt: 'Summarize this branch.', attachments: [{ name: 'context.txt', data: Buffer.from('context').toString('base64') }] } });
-      const queuedSaved = await savedApp.inject({ method: 'POST', url: '/api/agents/agent-2/saved-prompts/saved-prompt-001/queue', headers });
-      const consumed = await savedApp.inject({ method: 'DELETE', url: '/api/agents/agent-1/saved-prompts/saved-prompt-001', headers });
-
-      expect(listed.json()).toEqual({ prompts });
-      expect(created.statusCode).toBe(201);
-      expect(created.json()).toEqual({ id: 'saved-prompt-002', text: 'Summarize this branch.', attachments: [{ name: 'context.txt', size: 7 }] });
-      expect(queuedSaved.statusCode).toBe(204);
-      expect(queued).toEqual(['Review this change. ']);
-      expect(consumed.json()).toEqual(prompts[0]);
-      expect(keys).toEqual(['cora', 'cora', 'cora', 'cora']);
-    } finally {
-      await savedApp.close();
-    }
-  }, 15_000);
-});
-
 describe('prompt history API', () => {
   it('records and lists history by configured worktree when the agent pane changes', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });

@@ -148,18 +148,8 @@ type CompleteLogMetadata = { state: 'complete'; latestAgentMessage: string | nul
 type LogFrame = { type: 'append' | 'reset'; text?: string; older?: boolean; newer?: boolean; metadata?: CompleteLogMetadata; question?: InlineQuestion; lastPrompt?: string; latestAgentMessage?: string; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean };
 type ChoiceOption = { label: string; number: number; answerIndex: number };
 type ChoiceQuestion = { text: string; choices: ChoiceOption[]; id: string; source: 'structured' | 'parsed' };
-type SavedPromptAttachment = { name: string; size?: number; data?: string };
-type SavedPrompt = { id: string; text: string; attachments?: SavedPromptAttachment[] };
 type QueuedPrompt = { id: string; text: string; createdAt: string; attachments?: Array<{ name: string; size: number }> };
 type PromptHistoryEntry = { id: string; text: string; createdAt: string; answer?: string; answeredAt?: string };
-const isSavedPrompt = (value: unknown): value is SavedPrompt => {
-  if (value === null || typeof value !== 'object' || typeof (value as SavedPrompt).id !== 'string' || typeof (value as SavedPrompt).text !== 'string') return false;
-  const attachments = (value as SavedPrompt).attachments;
-  return attachments === undefined || Array.isArray(attachments) && attachments.every(attachment => attachment !== null && typeof attachment === 'object'
-    && typeof attachment.name === 'string'
-    && (attachment.size === undefined || Number.isInteger(attachment.size) && attachment.size >= 0)
-    && (attachment.data === undefined || typeof attachment.data === 'string'));
-};
 // validate prompt history responses
 const isPromptHistoryEntry = (value: unknown): value is PromptHistoryEntry => value !== null
   && typeof value === 'object'
@@ -601,14 +591,6 @@ const encodeAttachment = async (file: File): Promise<{ name: string; data: strin
   };
   reader.readAsDataURL(file);
 });
-const decodeAttachment = (attachment: SavedPromptAttachment): File => {
-  if (typeof attachment.data !== 'string') throw new Error('Saved attachment data is unavailable');
-  const raw = atob(attachment.data);
-  const bytes = new Uint8Array(raw.length);
-  for (let index = 0; index < raw.length; index += 1) bytes[index] = raw.charCodeAt(index);
-  return new File([bytes], attachment.name);
-};
-
 const agentNotificationTag = (agent: Pick<Agent, 'id' | 'worktreeId'>) => agent.worktreeId === undefined ? `agent-status-${agent.id}` : `worktree-status-${agent.worktreeId}`;
 const reviewNotificationTag = (worktreeId: string) => `review-ready-${worktreeId}`;
 // resolve user-facing names for one agent alert
@@ -1883,12 +1865,6 @@ function Prompt({ id, ready = true, lifecycleControl, launchControl, history, on
   const [attachmentError, setAttachmentError] = useState<string>();
   const [draggingAttachments, setDraggingAttachments] = useState(false);
   const attachmentDragDepth = useRef(0);
-  const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>([]);
-  const [savedPromptsOpen, setSavedPromptsOpen] = useState(false);
-  const [savingPrompt, setSavingPrompt] = useState(false);
-  const [savedConfirmation, setSavedConfirmation] = useState(false);
-  const [savedPromptAction, setSavedPromptAction] = useState<{ id: string; kind: 'delete' | 'restore' | 'send' }>();
-  const [savedPromptError, setSavedPromptError] = useState<string>();
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
   const [queuedPromptsOpen, setQueuedPromptsOpen] = useState(false);
   const [queuedPromptAction, setQueuedPromptAction] = useState<{ id: string; kind: 'cancel' | 'edit' | 'move' | 'save' }>();
@@ -1899,13 +1875,12 @@ function Prompt({ id, ready = true, lifecycleControl, launchControl, history, on
   const answerMode = question === undefined || normalPromptQuestionId !== question.id;
   const questionNotesOpen = question !== undefined && notesQuestionId === question.id;
   // keep file intake out of snapshots and modes without attachment controls
-  const attachmentInputDisabled = pending || swapped || savingPrompt || savedPromptAction?.kind === 'restore' || (question !== undefined && answerMode);
+  const attachmentInputDisabled = pending || swapped || (question !== undefined && answerMode);
   // clear the drop target when the active composer changes or becomes unavailable
   useEffect(() => {
     attachmentDragDepth.current = 0;
     setDraggingAttachments(false);
   }, [id, attachmentInputDisabled, question?.id, answerMode]);
-  const savedConfirmationTimer = useRef<number | undefined>(undefined);
   const copiedSelectionTimer = useRef<number | undefined>(undefined);
   const attachmentInput = useRef<HTMLInputElement | null>(null);
   const promptInput = useRef<HTMLTextAreaElement | null>(null);
@@ -1913,7 +1888,6 @@ function Prompt({ id, ready = true, lifecycleControl, launchControl, history, on
   const historyIndex = useRef<number | undefined>(undefined);
   const historyDraft = useRef('');
   const focusPromptAtEnd = useRef(false);
-  const { anchorRef: savedPromptAnchorRef, flyoutRef: savedPromptFlyoutRef, style: savedPromptFlyoutStyle } = useViewportFlyout(savedPromptsOpen);
   const { anchorRef: queuedPromptAnchorRef, flyoutRef: queuedPromptFlyoutRef, style: queuedPromptFlyoutStyle } = useViewportFlyout(queuedPromptsOpen);
   const { anchorRef: commandAnchorRef, flyoutRef: commandFlyoutRef, style: commandFlyoutStyle } = useViewportFlyout<HTMLDivElement>(commandToken !== undefined, { placement: 'above', matchAnchorWidth: true });
   const commandOptions = commandToken === undefined ? [] : promptCommands.filter(command => command.value.startsWith(commandToken.prefix) && command.value.slice(1).toLocaleLowerCase().includes(commandToken.query.toLocaleLowerCase()));
@@ -1957,19 +1931,7 @@ function Prompt({ id, ready = true, lifecycleControl, launchControl, history, on
     if (!ready) return;
     return pollWhileVisible(refreshQueuedPrompts, 2_000, true, 15_000);
   }, [refreshQueuedPrompts, ready]);
-  // load saved prompts only for a live agent
-  useEffect(() => {
-    // do not request resources for a placeholder identity
-    if (!ready) return;
-    let cancelled = false;
-    void request(`/api/agents/${encodeURIComponent(id)}/saved-prompts`).then(response => response.ok ? response.json() : undefined).then((payload: unknown) => {
-      if (cancelled || payload === null || typeof payload !== 'object' || !Array.isArray((payload as { prompts?: unknown }).prompts)) return;
-      setSavedPrompts((payload as { prompts: unknown[] }).prompts.filter(isSavedPrompt));
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [id, ready]);
   useEffect(() => () => {
-    if (savedConfirmationTimer.current !== undefined) window.clearTimeout(savedConfirmationTimer.current);
     if (copiedSelectionTimer.current !== undefined) window.clearTimeout(copiedSelectionTimer.current);
   }, []);
   useLayoutEffect(() => {
@@ -2158,95 +2120,6 @@ function Prompt({ id, ready = true, lifecycleControl, launchControl, history, on
       setAttachmentError('Unable to read the selected attachments.');
     }
     finally { setPendingOperation(pendingKey, false); }
-  };
-  // save only against an available agent
-  const saveCurrentPrompt = async () => {
-    // preserve startup drafts on the save shortcut
-    if (!ready || pending || savingPrompt || (!value.trim() && attachments.length === 0)) return;
-    stopVoice();
-    setSavingPrompt(true);
-    setSavedPromptError(undefined);
-    try {
-      const payload = await Promise.all(attachments.map(encodeAttachment));
-      const response = await request(`/api/agents/${encodeURIComponent(id)}/saved-prompts`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: value, attachments: payload }) });
-      if (!response.ok) throw new Error();
-      const saved = await response.json() as unknown;
-      if (!isSavedPrompt(saved)) throw new Error();
-      setSavedPrompts(current => [saved, ...current]);
-      setValue('');
-      setAttachments([]);
-      setAttachmentError(undefined);
-      setCommandToken(undefined);
-      setSavedConfirmation(true);
-      if (savedConfirmationTimer.current !== undefined) window.clearTimeout(savedConfirmationTimer.current);
-      savedConfirmationTimer.current = window.setTimeout(() => {
-        savedConfirmationTimer.current = undefined;
-        setSavedConfirmation(false);
-      }, 1_600);
-    } catch {
-      setSavedPromptError('Unable to save this prompt and its attachments.');
-    } finally {
-      setSavingPrompt(false);
-    }
-  };
-  const deleteSavedPrompt = async (saved: SavedPrompt) => {
-    const response = await request(`/api/agents/${encodeURIComponent(id)}/saved-prompts/${encodeURIComponent(saved.id)}`, { method: 'DELETE' });
-    if (!response.ok) throw new Error();
-    const consumed = await response.json() as unknown;
-    if (!isSavedPrompt(consumed)) throw new Error();
-    setSavedPrompts(current => current.filter(prompt => prompt.id !== consumed.id));
-    return consumed;
-  };
-  const useSavedPrompt = async (saved: SavedPrompt) => {
-    if (pending || savedPromptAction !== undefined) return;
-    const savedAttachments = saved.attachments ?? [];
-    if (attachments.length + savedAttachments.length > maxAttachments) return setSavedPromptError(`Restore would exceed ${maxAttachments} attachments.`);
-    if (attachments.reduce((total, file) => total + file.size, 0) + savedAttachments.reduce((total, attachment) => total + (attachment.size ?? 0), 0) > maxAttachmentBytes) return setSavedPromptError(`Restore would exceed ${maxAttachmentMegabytes} MB of attachments.`);
-    setSavedPromptAction({ id: saved.id, kind: 'restore' });
-    setSavedPromptError(undefined);
-    try {
-      const consumed = await deleteSavedPrompt(saved);
-      const restoredAttachments = (consumed.attachments ?? []).map(decodeAttachment);
-      setSavedPromptsOpen(false);
-      focusPromptAtEnd.current = true;
-      if (consumed.text) setValue(current => current ? `${current}${/\s$/u.test(current) ? '' : '\n\n'}${consumed.text}` : consumed.text);
-      setAttachments(current => [...current, ...restoredAttachments]);
-      setAttachmentError(undefined);
-    } catch {
-      setSavedPromptError('Unable to restore this saved prompt.');
-    } finally {
-      setSavedPromptAction(undefined);
-    }
-  };
-  const sendSavedPrompt = async (saved: SavedPrompt) => {
-    if (pending || savedPromptAction !== undefined || !beginPendingOperation(pendingKey)) return;
-    setSavedPromptAction({ id: saved.id, kind: 'send' });
-    setSavedPromptError(undefined);
-    try {
-      const response = await request(`/api/agents/${encodeURIComponent(id)}/saved-prompts/${encodeURIComponent(saved.id)}/queue`, { method: 'POST' });
-      if (!response.ok) throw new Error();
-      setSavedPrompts(current => current.filter(prompt => prompt.id !== saved.id));
-      setSavedPromptsOpen(false);
-      await Promise.all([onHistoryChanged(), refreshQueuedPrompts()]);
-    } catch {
-      setSavedPromptError('Unable to queue this saved prompt.');
-    } finally {
-      setSavedPromptAction(undefined);
-      setPendingOperation(pendingKey, false);
-    }
-  };
-  const removeSavedPrompt = async (saved: SavedPrompt) => {
-    if (pending || savedPromptAction !== undefined) return;
-    setSavedPromptAction({ id: saved.id, kind: 'delete' });
-    setSavedPromptError(undefined);
-    try {
-      await deleteSavedPrompt(saved);
-      if (savedPrompts.length === 1) setSavedPromptsOpen(false);
-    } catch {
-      setSavedPromptError('Unable to delete this saved prompt.');
-    } finally {
-      setSavedPromptAction(undefined);
-    }
   };
   const moveQueuedPrompt = async (queued: QueuedPrompt, direction: 'earlier' | 'later') => {
     if (queuedPromptAction !== undefined) return;
@@ -2465,12 +2338,7 @@ function Prompt({ id, ready = true, lifecycleControl, launchControl, history, on
       input.setSelectionRange(input.value.length, input.value.length);
     });
   };
-  const composer = <div className="prompt-composer" ref={commandAnchorRef}><textarea ref={promptInput} data-prompt-id={id} className={listening ? 'voice-listening' : undefined} aria-label="Prompt" aria-description={supportsSpeechRecognition ? 'Press and hold to start dictation. Tap again to stop.' : undefined} aria-autocomplete="list" aria-expanded={commandToken !== undefined} aria-controls={commandToken === undefined ? undefined : `prompt-commands-${id}`} aria-activedescendant={commandOptions[activeCommand] === undefined ? undefined : `prompt-command-${id}-${activeCommand}`} value={value} onFocus={() => { exitTerminalInput.get(id)?.(); onPromptFocus(); }} onBlur={() => setCommandToken(undefined)} onCopy={flashCopiedPromptSelection} onPaste={pasteAttachments} onPointerDown={beginVoiceHold} onPointerUp={endVoiceHold} onPointerCancel={endVoiceHold} onLostPointerCapture={endVoiceHold} onContextMenu={event => { if (voiceHoldStarted.current) event.preventDefault(); }} onKeyDown={event => { const plainArrow = !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey; if (commandOptions.length > 0 && plainArrow && event.key === 'ArrowDown') { event.preventDefault(); setActiveCommand(current => (current + 1) % commandOptions.length); } else if (commandOptions.length > 0 && plainArrow && event.key === 'ArrowUp') { event.preventDefault(); setActiveCommand(current => (current + commandOptions.length - 1) % commandOptions.length); } else if (commandOptions.length > 0 && plainArrow && event.key === 'Enter') { event.preventDefault(); selectCommand(commandOptions[activeCommand] ?? commandOptions[0]!); } else if (plainArrow && event.key === 'ArrowUp' && (historyIndex.current !== undefined || event.currentTarget.selectionStart === event.currentTarget.selectionEnd && !value.slice(0, event.currentTarget.selectionStart).includes('\n'))) { event.preventDefault(); recallPrompt(-1); } else if (plainArrow && event.key === 'ArrowDown' && historyIndex.current !== undefined) { event.preventDefault(); recallPrompt(1); } else if (event.key === 'Escape' && commandToken !== undefined) { event.preventDefault(); setCommandToken(undefined); } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void saveCurrentPrompt(); } else if (event.key === 'Tab') { event.preventDefault(); setValue(current => current + '\t'); } else if (event.key === 'Enter') { event.preventDefault(); /* preserve explicit line breaks */ if (event.ctrlKey || event.shiftKey) insertPromptText(event.currentTarget, '\n'); /* forward plain blank Enter to output */ else if (!event.metaKey && !event.altKey && !value && attachments.length === 0) terminalInputs.get(id)?.('\r'); /* preserve mobile multiline entry */ else if (window.matchMedia('(max-width: 600px)').matches) insertPromptText(event.currentTarget, '\n'); else void submit(); } }} onChange={updatePrompt} />{commandToken !== undefined && <FlyoutPortal onDismiss={() => setCommandToken(undefined)}><div ref={commandFlyoutRef} className="command-menu" style={commandFlyoutStyle} id={`prompt-commands-${id}`} role="listbox" aria-label={`${commandToken.prefix} commands`}>{commandOptions.length > 0 ? commandOptions.map((command, index) => <button key={command.value} id={`prompt-command-${id}-${index}`} type="button" role="option" aria-selected={index === activeCommand} className={index === activeCommand ? 'active' : ''} onMouseDown={event => event.preventDefault()} onClick={() => selectCommand(command)}><code>{command.value}</code><span>{command.description}</span></button>) : <span className="command-menu-empty">No matching commands</span>}</div></FlyoutPortal>}</div>;
-  const savedPanel = savedPromptsOpen && <FlyoutPortal onDismiss={() => setSavedPromptsOpen(false)}><section className="saved-prompts-panel more-menu flyout-menu" ref={savedPromptFlyoutRef} style={savedPromptFlyoutStyle} aria-label="Saved prompts"><header><strong>Saved prompts</strong></header><div className="saved-prompts-list">{savedPrompts.map(saved => { const label = saved.text || saved.attachments?.map(attachment => attachment.name).join(', ') || 'Attachments only'; return <div className="saved-prompt-item" key={saved.id}><button className="saved-prompt-restore" type="button" disabled={savedPromptAction !== undefined} title={label} onClick={() => void useSavedPrompt(saved)}>{savedPromptAction?.id === saved.id && savedPromptAction.kind === 'restore' ? <span className="spinner" /> : null}<span className="saved-prompt-copy"><span>{saved.text || 'Attachments only'}</span>{saved.attachments?.length ? <small>{saved.attachments.map(attachment => attachment.name).join(', ')}</small> : null}</span></button><span className="saved-prompt-actions"><button className="saved-prompt-send" type="button" disabled={savedPromptAction !== undefined} aria-label={`Queue saved draft: ${label}`} title="Queue saved draft" onClick={() => void sendSavedPrompt(saved)}>{savedPromptAction?.id === saved.id && savedPromptAction.kind === 'send' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button><button className="saved-prompt-delete" type="button" disabled={savedPromptAction !== undefined} aria-label={`Delete saved draft: ${label}`} title="Delete saved draft" onClick={() => void removeSavedPrompt(saved)}>{savedPromptAction?.id === saved.id && savedPromptAction.kind === 'delete' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6" /></svg>}</button></span></div>; })}</div></section></FlyoutPortal>;
-  const savedToggle = savedPrompts.length > 0 ? <button className={`saved-prompts-toggle icon-button${savedPromptsOpen ? ' active' : ''}`} type="button" disabled={pending} aria-label={`Saved prompts (${savedPrompts.length})`} aria-expanded={savedPromptsOpen} title={`${savedPrompts.length} saved prompt${savedPrompts.length === 1 ? '' : 's'}`} onClick={() => setSavedPromptsOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg><span className="saved-prompts-count" aria-hidden="true">{savedPrompts.length}</span></button> : null;
-  const saveLabel = savingPrompt ? 'Saving' : savedConfirmation ? 'Saved' : 'Save';
-  const saveButton = <button className={`save-prompt outline-button icon-button${savedConfirmation ? ' saved' : ''}`} type="button" disabled={!ready || pending || savingPrompt || (!value.trim() && attachments.length === 0)} aria-label={saveLabel} title={saveLabel} onClick={() => void saveCurrentPrompt()}>{savingPrompt ? <span className="spinner" /> : savedConfirmation ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5V3Zm3 0v6h8V3M8 21v-7h8v7" /></svg>}</button>;
-  const saveControls = <><span className={`save-prompt-group${savedToggle === null ? '' : ' has-saved-prompts'}`} ref={savedPromptAnchorRef} role="group" aria-label="Saved prompt controls">{saveButton}{savedToggle}</span>{savedPanel}</>;
+  const composer = <div className="prompt-composer" ref={commandAnchorRef}><textarea ref={promptInput} data-prompt-id={id} className={listening ? 'voice-listening' : undefined} aria-label="Prompt" aria-description={supportsSpeechRecognition ? 'Press and hold to start dictation. Tap again to stop.' : undefined} aria-autocomplete="list" aria-expanded={commandToken !== undefined} aria-controls={commandToken === undefined ? undefined : `prompt-commands-${id}`} aria-activedescendant={commandOptions[activeCommand] === undefined ? undefined : `prompt-command-${id}-${activeCommand}`} value={value} onFocus={() => { exitTerminalInput.get(id)?.(); onPromptFocus(); }} onBlur={() => setCommandToken(undefined)} onCopy={flashCopiedPromptSelection} onPaste={pasteAttachments} onPointerDown={beginVoiceHold} onPointerUp={endVoiceHold} onPointerCancel={endVoiceHold} onLostPointerCapture={endVoiceHold} onContextMenu={event => { if (voiceHoldStarted.current) event.preventDefault(); }} onKeyDown={event => { const plainArrow = !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey; if (commandOptions.length > 0 && plainArrow && event.key === 'ArrowDown') { event.preventDefault(); setActiveCommand(current => (current + 1) % commandOptions.length); } else if (commandOptions.length > 0 && plainArrow && event.key === 'ArrowUp') { event.preventDefault(); setActiveCommand(current => (current + commandOptions.length - 1) % commandOptions.length); } else if (commandOptions.length > 0 && plainArrow && event.key === 'Enter') { event.preventDefault(); selectCommand(commandOptions[activeCommand] ?? commandOptions[0]!); } else if (plainArrow && event.key === 'ArrowUp' && (historyIndex.current !== undefined || event.currentTarget.selectionStart === event.currentTarget.selectionEnd && !value.slice(0, event.currentTarget.selectionStart).includes('\n'))) { event.preventDefault(); recallPrompt(-1); } else if (plainArrow && event.key === 'ArrowDown' && historyIndex.current !== undefined) { event.preventDefault(); recallPrompt(1); } else if (event.key === 'Escape' && commandToken !== undefined) { event.preventDefault(); setCommandToken(undefined); } else if (event.key === 'Tab') { event.preventDefault(); setValue(current => current + '\t'); } else if (event.key === 'Enter') { event.preventDefault(); /* preserve explicit line breaks */ if (event.ctrlKey || event.shiftKey) insertPromptText(event.currentTarget, '\n'); /* forward plain blank Enter to output */ else if (!event.metaKey && !event.altKey && !value && attachments.length === 0) terminalInputs.get(id)?.('\r'); /* preserve mobile multiline entry */ else if (window.matchMedia('(max-width: 600px)').matches) insertPromptText(event.currentTarget, '\n'); else void submit(); } }} onChange={updatePrompt} />{commandToken !== undefined && <FlyoutPortal onDismiss={() => setCommandToken(undefined)}><div ref={commandFlyoutRef} className="command-menu" style={commandFlyoutStyle} id={`prompt-commands-${id}`} role="listbox" aria-label={`${commandToken.prefix} commands`}>{commandOptions.length > 0 ? commandOptions.map((command, index) => <button key={command.value} id={`prompt-command-${id}-${index}`} type="button" role="option" aria-selected={index === activeCommand} className={index === activeCommand ? 'active' : ''} onMouseDown={event => event.preventDefault()} onClick={() => selectCommand(command)}><code>{command.value}</code><span>{command.description}</span></button>) : <span className="command-menu-empty">No matching commands</span>}</div></FlyoutPortal>}</div>;
   const questionModeToggle = question === undefined ? null : <button type="button" className="question-mode-toggle" aria-label={`Switch to ${answerMode ? 'normal prompt' : 'answer'} mode`} onClick={() => { /* toggle detected question mode */ setNormalPromptQuestionId(answerMode ? question.id : undefined); }}>{answerMode ? 'Normal prompt' : 'Answer mode'}</button>;
   const questionNotesId = `question-notes-${id}`;
   const questionNotes = questionNotesOpen ? <div className="question-notes" id={questionNotesId}><textarea aria-label="Answer notes" maxLength={32_000} placeholder="Add notes for the agent…" value={value} onFocus={() => { /* leave terminal input */ exitTerminalInput.get(id)?.(); onPromptFocus(); }} onChange={event => { /* update note draft */ setValue(event.target.value); }} /><div className="question-notes-actions"><button type="button" disabled={pending || !value.trim()} aria-label="Submit notes" onClick={() => { /* submit note draft */ void submit(); }}>{pending ? <><span className="spinner" />Submitting</> : 'Submit notes'}</button></div></div> : null;
@@ -2482,7 +2350,7 @@ function Prompt({ id, ready = true, lifecycleControl, launchControl, history, on
   // join history to the submit controls
   const historySlot = !swapped && historySlotRef !== undefined ? <span className="prompt-history-slot" ref={historySlotRef} /> : null;
   const queueControls = <><span className={`queue-prompt-group${historySlot === null ? '' : ' has-prompt-history'}${queuedToggle === null ? '' : ' has-queued-prompts'}`} ref={queuedPromptAnchorRef} role="group" aria-label="Prompt submission controls">{historySlot}<button className="queue icon-button" disabled={!ready || pending || (!swapped && !value && attachments.length === 0)} aria-label={queueLabel} title={queueLabel} onClick={() => void submit()}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button>{queuedToggle}</span>{queuePanel}</>;
-  return <section className="prompt prompt-with-action-rail" aria-label="Prompt composer" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}>{draggingAttachments && <div className="prompt-drop-overlay" role="status">Drop files to attach</div>}<div className="prompt-action-rail" aria-label="Prompt shortcuts">{statusSlotRef && <span className="prompt-status-slot" ref={statusSlotRef} />}{attachmentButton}{stop}</div><div className="prompt-content">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{savedPromptError && <p className="saved-prompt-error" role="alert">{savedPromptError}</p>}{queuedPromptError && !queuedPromptsOpen && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{swapped && swap}{questionModeToggle}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}{ready ? <More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onOperationFeedback={onOperationFeedback} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} /> : <button className="more icon-button" aria-label="More options" disabled>⋮</button>}<ProjectOpen url={projectUrl} stack={stack} browserOpen={browserOpen} onBrowserToggle={onBrowserToggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} />{saveControls}{queueControls}{launchControl}</div><MobileTerminalKeys id={id} /></div></section>;
+  return <section className="prompt prompt-with-action-rail" aria-label="Prompt composer" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}>{draggingAttachments && <div className="prompt-drop-overlay" role="status">Drop files to attach</div>}<div className="prompt-action-rail" aria-label="Prompt shortcuts">{statusSlotRef && <span className="prompt-status-slot" ref={statusSlotRef} />}{attachmentButton}{stop}</div><div className="prompt-content">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{queuedPromptError && !queuedPromptsOpen && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{swapped && swap}{questionModeToggle}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}{ready ? <More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onOperationFeedback={onOperationFeedback} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} /> : <button className="more icon-button" aria-label="More options" disabled>⋮</button>}<ProjectOpen url={projectUrl} stack={stack} browserOpen={browserOpen} onBrowserToggle={onBrowserToggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} />{queueControls}{launchControl}</div><MobileTerminalKeys id={id} /></div></section>;
 }
 
 // render the complete composer without addressing an agent that discovery has not confirmed

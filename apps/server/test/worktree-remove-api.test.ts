@@ -6,7 +6,6 @@ import { buildApp } from '../src/app.js';
 import { WorktreeLaunchStore } from '../src/worktrees/store.js';
 import { QueuedPromptService } from '../src/prompts/queue.js';
 import { PromptHistoryService } from '../src/prompt-history/service.js';
-import { SavedPromptService } from '../src/saved-prompts/service.js';
 import { ReviewTourStore } from '../src/review-tour/store.js';
 import { testConfig, testProject, testWorktree } from './helpers/config.js';
 import { stated } from './helpers/agent.js';
@@ -30,7 +29,6 @@ async function stores() {
     worktreeStore: new WorktreeLaunchStore({ file: join(root, 'worktrees.json') }),
     queuedPrompts: new QueuedPromptService(join(root, 'queued.json')),
     promptHistory: new PromptHistoryService(join(root, 'history.json')),
-    savedPrompts: new SavedPromptService(join(root, 'saved.json')),
     reviewStore: new ReviewTourStore(join(root, 'reviews.json'))
   };
 }
@@ -181,13 +179,12 @@ describe('DELETE /api/worktrees/:id', () => {
     // removeCheckout would push 'remove' first — so this proves completion order, not call order
     const worktreeManagement = { removal: async () => ({ ok: true, facts: cleanFacts }), removeCheckout: async () => { order.push('remove'); return { ok: true }; } } as never;
     const launch = { killWorktreeShells: async () => { await new Promise(resolve => setTimeout(resolve, 5)); order.push('kill'); } } as never;
-    const { worktreeStore, queuedPrompts, promptHistory, savedPrompts } = await stores();
+    const { worktreeStore, queuedPrompts, promptHistory } = await stores();
     const reviewStore = { summaries: async () => [], current: async () => undefined, invalidate: async (id: string) => { invalidated.push(id); return 1; }, save: async () => undefined } as never;
     await worktreeStore.setPinned(linked.id, true);
     await queuedPrompts.enqueue(linked.id, 'hello');
     await promptHistory.record(linked.id, 'hello');
-    await savedPrompts.save(linked.id, 'a reusable prompt');
-    const server = await app({ discovery: discoveryStub(), worktreeManagement, launch, worktreeStore, queuedPrompts, promptHistory, savedPrompts, reviewStore });
+    const server = await app({ discovery: discoveryStub(), worktreeManagement, launch, worktreeStore, queuedPrompts, promptHistory, reviewStore });
     try {
       const response = await server.inject({ method: 'DELETE', url: `/api/worktrees/${encodeURIComponent(linked.id)}`, headers: mutationHeaders });
       expect(response.statusCode).toBe(200);
@@ -198,7 +195,6 @@ describe('DELETE /api/worktrees/:id', () => {
       expect(await worktreeStore.pins()).toEqual({});
       expect(await queuedPrompts.list(linked.id)).toEqual([]);
       expect(await promptHistory.list(linked.id)).toEqual([]);
-      expect(await savedPrompts.list(linked.id)).toEqual([]);
       expect(invalidated).toEqual([linked.id]);
     } finally { await server.close(); }
   });
@@ -231,10 +227,10 @@ describe('DELETE /api/worktrees/:id', () => {
   it('preserves the worktree records when git removal fails', async () => {
     const worktreeManagement = { removal: async () => ({ ok: true, facts: cleanFacts }), removeCheckout: async () => ({ ok: false, status: 409, error: 'fatal: could not remove' }) } as never;
     const launch = { killWorktreeShells: async () => {} } as never;
-    const { worktreeStore, queuedPrompts, promptHistory, savedPrompts, reviewStore } = await stores();
+    const { worktreeStore, queuedPrompts, promptHistory, reviewStore } = await stores();
     await worktreeStore.setPinned(linked.id, true);
     await queuedPrompts.enqueue(linked.id, 'keep me');
-    const server = await app({ discovery: discoveryStub(), worktreeManagement, launch, worktreeStore, queuedPrompts, promptHistory, savedPrompts, reviewStore });
+    const server = await app({ discovery: discoveryStub(), worktreeManagement, launch, worktreeStore, queuedPrompts, promptHistory, reviewStore });
     try {
       const response = await server.inject({ method: 'DELETE', url: `/api/worktrees/${encodeURIComponent(linked.id)}`, headers: mutationHeaders });
       expect(response.statusCode).toBe(409);

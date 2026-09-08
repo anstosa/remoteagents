@@ -423,7 +423,7 @@ prune only what you know is truly gone.
 
 ### Shared conversations and notes
 
-Console-named conversations, sticky notes and saved prompts belong to the
+Console-named conversations and sticky notes belong to the
 **Project** and are shared automatically across all of its Worktrees, so related
 checkouts see the same named Conversations and use the same notes with no
 configuration. Queued prompts and prompt history stay per-Worktree. Scratch
@@ -431,6 +431,11 @@ agents derive their own persistence group from the scratch workspace, so scratch
 agents opened in the same directory share entries across restarts; resuming a
 Conversation requires a configured Project (scratch agents can name and list
 their Conversations but cannot resume them).
+
+Saved prompts have been retired in favour of Notes. On the first boot after
+upgrading, any saved prompts are carried into Notes automatically and the source
+file is renamed to a `*.migrated-to-notes.bak` sibling, so a second boot does
+nothing; anything that could not be carried over is named in the boot log.
 
 ### Migrating from `worktrees[]`
 

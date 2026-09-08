@@ -265,106 +265,19 @@ test('prevents navigation but does not accept files while prompt submission is p
   expect(dropped.defaultAllowed).toBe(false);
   await expect(page.getByRole('status').filter({ hasText: 'Drop files to attach' })).toHaveCount(0);
   await expect(page.getByLabel('Selected attachments')).toHaveCount(0);
+  // reject a pasted image while the pending submit owns the attachment snapshot
+  await prompt.evaluate(element => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['blocked image'], 'blocked-paste.png', { type: 'image/png' }));
+    element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: transfer }));
+  });
+  await expect(page.getByLabel('Selected attachments')).toHaveCount(0);
+  // reject a file-picker change that arrives while the submit is pending
+  await composer.locator('input[type="file"]').setInputFiles({ name: 'blocked-picker.txt', mimeType: 'text/plain', buffer: Buffer.from('blocked picker') });
+  await expect(page.getByLabel('Selected attachments')).toHaveCount(0);
 
   finishQueue();
   await expect(page.getByRole('button', { name: 'Queue', exact: true })).toBeDisabled();
-});
-
-// keep pending saves from silently clearing newly dropped files
-test('rejects drops while a saved prompt is being written', async ({ page }) => {
-  await mockComposerApi(page);
-  let savedRequest: unknown;
-  let finishSave!: () => void;
-  // hold the saved snapshot until the drop has been attempted
-  const saved = new Promise<void>(resolve => { finishSave = resolve; });
-  // model the saved-prompt persistence boundary
-  await page.route('**/api/agents/agent-1/saved-prompts', async route => {
-    // keep the initial saved list empty
-    if (route.request().method() === 'GET') return route.fulfill({ json: { prompts: [] } });
-    savedRequest = route.request().postDataJSON();
-    await saved;
-    return route.fulfill({ json: { id: 'saved-original', text: 'Save this draft', attachments: [{ name: 'original.txt', size: 8 }] } });
-  });
-  await page.goto('/');
-  const composer = promptComposer(page);
-  await page.getByRole('textbox', { name: 'Prompt' }).fill('Save this draft');
-  await dispatchFileDrag(composer, 'drop', [{ name: 'original.txt', body: 'original' }]);
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Saving', exact: true })).toBeDisabled();
-  await expect.poll(() => savedRequest).toEqual({ prompt: 'Save this draft', attachments: [{ name: 'original.txt', data: Buffer.from('original').toString('base64') }] });
-  try {
-    await dispatchFileDrag(composer, 'dragenter', [{ name: 'late.txt', body: 'late' }]);
-    const dropped = await dispatchFileDrag(composer, 'drop', [{ name: 'late.txt', body: 'late' }]);
-    expect(dropped.defaultAllowed).toBe(false);
-    await expect(page.getByLabel('Selected attachments')).not.toContainText('late.txt');
-    // reject pasted images while the same attachment snapshot is owned
-    await page.getByRole('textbox', { name: 'Prompt' }).evaluate(element => {
-      const transfer = new DataTransfer();
-      transfer.items.add(new File(['late image'], 'late-paste.png', { type: 'image/png' }));
-      element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: transfer }));
-    });
-    await expect(page.getByLabel('Selected attachments')).not.toContainText('late-paste.png');
-    // reject a file-picker change that arrives after the operation started
-    await composer.locator('input[type="file"]').setInputFiles({ name: 'late-picker.txt', mimeType: 'text/plain', buffer: Buffer.from('late picker') });
-    await expect(page.getByLabel('Selected attachments')).not.toContainText('late-picker.txt');
-    await expect(page.getByRole('status').filter({ hasText: 'Drop files to attach' })).toHaveCount(0);
-  } finally {
-    // release the request even when a regression fails an assertion
-    finishSave();
-  }
-  await expect(page.getByLabel('Selected attachments')).toHaveCount(0);
-  await dispatchFileDrag(composer, 'drop', [{ name: 'after-save.txt', body: 'new draft' }]);
-  await expect(page.getByLabel('Selected attachments')).toContainText('after-save.txt');
-});
-
-// keep restore preflight limits valid until its files have been appended
-test('rejects drops while a saved prompt is being restored', async ({ page }) => {
-  await mockComposerApi(page);
-  let restoring = false;
-  let finishRestore!: () => void;
-  // pause the restore response after its limit check
-  const restored = new Promise<void>(resolve => { finishRestore = resolve; });
-  // expose one attachment-bearing saved draft
-  await page.route('**/api/agents/agent-1/saved-prompts', route => route.fulfill({ json: { prompts: [{ id: 'saved-restore', text: 'Restore this draft', attachments: [{ name: 'restored.txt', size: 8 }] }] } }));
-  // hold the consumed saved draft at the persistence boundary
-  await page.route('**/api/agents/agent-1/saved-prompts/saved-restore', async route => {
-    restoring = true;
-    await restored;
-    return route.fulfill({ json: { id: 'saved-restore', text: 'Restore this draft', attachments: [{ name: 'restored.txt', data: Buffer.from('restored').toString('base64') }] } });
-  });
-  await page.goto('/');
-  const composer = promptComposer(page);
-  // leave exactly one slot for the saved attachment
-  const existing = Array.from({ length: 9 }, (_, index) => ({ name: `existing-${index}.txt`, body: 'existing' }));
-  await dispatchFileDrag(composer, 'drop', existing);
-  await page.getByRole('button', { name: 'Saved prompts (1)' }).click();
-  await page.getByRole('button', { name: /^Restore this draft/u }).click();
-  await expect.poll(() => restoring).toBe(true);
-  // dismiss the flyout while its restore request is still pending
-  await page.mouse.click(1, 1);
-  try {
-    const dropped = await dispatchFileDrag(composer, 'drop', [{ name: 'late.txt', body: 'late' }]);
-    expect(dropped.defaultAllowed).toBe(false);
-    await expect(page.getByLabel('Selected attachments')).not.toContainText('late.txt');
-    // reject pasted images while the same attachment snapshot is owned
-    await page.getByRole('textbox', { name: 'Prompt' }).evaluate(element => {
-      const transfer = new DataTransfer();
-      transfer.items.add(new File(['late image'], 'late-paste.png', { type: 'image/png' }));
-      element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: transfer }));
-    });
-    await expect(page.getByLabel('Selected attachments')).not.toContainText('late-paste.png');
-    // reject a file-picker change that arrives after the operation started
-    await composer.locator('input[type="file"]').setInputFiles({ name: 'late-picker.txt', mimeType: 'text/plain', buffer: Buffer.from('late picker') });
-    await expect(page.getByLabel('Selected attachments')).not.toContainText('late-picker.txt');
-  } finally {
-    // allow the original restore to complete
-    finishRestore();
-  }
-  await expect(page.getByLabel('Selected attachments').getByRole('button')).toHaveCount(10);
-  await expect(page.getByLabel('Selected attachments')).toContainText('restored.txt');
-  await page.getByRole('button', { name: 'Remove restored.txt' }).click();
-  await dispatchFileDrag(composer, 'drop', [{ name: 'after-restore.txt', body: 'new context' }]);
-  await expect(page.getByLabel('Selected attachments')).toContainText('after-restore.txt');
 });
 
 // keep file drops from navigating away while an inline answer is required
