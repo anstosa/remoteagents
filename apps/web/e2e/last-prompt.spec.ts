@@ -121,11 +121,11 @@ test('opens prompt history from the composer row while git status expands indepe
   const changesHeader = changedFiles.locator('.git-status-panel-header');
   const changesContent = changedFiles.locator('.git-status-files');
   const changesFooter = changedFiles.locator('.git-status-panel-footer');
-  await expect(changesHeader).toHaveCSS('position', 'sticky');
+  // short viewports scroll the complete panel
+  await expect(changesHeader).toHaveCSS('position', 'static');
   await expect(changesHeader.locator('.git-status-details')).toHaveCSS('text-align', 'right');
   await expect(changesContent).toHaveCSS('overflow-y', 'auto');
-  await expect(changesFooter).toHaveCSS('position', 'sticky');
-  await expect(changesFooter).toHaveCSS('bottom', '0px');
+  await expect(changesFooter).toHaveCSS('position', 'static');
   await expect(changesFooter.getByRole('group', { name: 'Git change view' })).toBeVisible();
   const headerColumns = await changesHeader.evaluate(element => ({
     titleRight: element.querySelector('strong')!.getBoundingClientRect().right,

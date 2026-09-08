@@ -2,11 +2,10 @@ import { expect, test } from '@playwright/test';
 
 test('renders linked pull request cards with draft, open, and merged status colors', async ({ page }) => {
   await page.goto('/');
-  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div id="root"></div><div id="layout-root"></div>');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div id="root"></div>');
   await page.evaluate(async () => {
-    const { renderPullRequestCards, renderPullRequestLayout } = await import('/e2e/pull-request-card-fixture.tsx');
+    const { renderPullRequestCards } = await import('/e2e/pull-request-card-fixture.tsx');
     renderPullRequestCards(document.querySelector<HTMLElement>('#root')!);
-    renderPullRequestLayout(document.querySelector<HTMLElement>('#layout-root')!);
   });
 
   const cards = page.locator('#root');
@@ -20,7 +19,6 @@ test('renders linked pull request cards with draft, open, and merged status colo
   await expect(draft).toHaveCSS('color', 'rgb(147, 153, 178)');
   await expect(open).toHaveCSS('color', 'rgb(166, 227, 161)');
   await expect(merged).toHaveCSS('color', 'rgb(203, 166, 247)');
-  await expect(page.locator('[data-testid="output"] + .pull-request-card + .prompt')).toHaveCount(1);
 
   const verticalCenters = await open.locator('.pull-request-card-icon, strong, span').evaluateAll(elements => {
     const card = elements[0].closest('.pull-request-card')!.getBoundingClientRect();
@@ -48,8 +46,9 @@ test('renders linked pull request cards with draft, open, and merged status colo
   await expect(cards.getByRole('img', { name: 'CI checks failed' })).toHaveCSS('color', 'rgb(243, 139, 168)');
   await expect(cards.getByRole('img', { name: 'Unresolved review comments' })).toBeVisible();
   const fixup = cards.getByRole('button', { name: 'Queue $fixup' });
+  // keep action controls outside pr links
+  await expect(cards.locator('.pull-request-card button')).toHaveCount(0);
   await expect(fixup).toBeVisible();
   await fixup.click();
-  await expect(cards).toHaveAttribute('data-fixup', 'queued');
   await expect(fixup).toContainText('Queued');
 });

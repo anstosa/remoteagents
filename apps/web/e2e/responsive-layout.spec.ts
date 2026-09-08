@@ -75,7 +75,6 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
         const style = getComputedStyle(document.querySelector<HTMLElement>('.log-status')!);
         return { position: style.position, boxShadow: style.boxShadow, backgroundColor: style.backgroundColor, color: style.color, backdropFilter: style.backdropFilter };
       })(),
-      pullRequest: bounds('.pull-request-card'),
       tabs: bounds('.tabs'),
       prompt: bounds('.prompt'),
       promptActions: bounds('.prompt-actions'),
@@ -127,8 +126,7 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   // the upper toolbar is gone: tabs sit directly under the output, and no .log-topbar exists
   expect(Math.abs(layout.tabs.top - layout.output.bottom)).toBeLessThanOrEqual(1);
   await expect(page.locator('.log-topbar')).toHaveCount(0);
-  expect(layout.pullRequest.top).toBeGreaterThanOrEqual(layout.tabs.bottom);
-  expect(layout.pullRequest.bottom).toBeLessThanOrEqual(layout.prompt.top);
+  await expect(page.locator('.agent-view > .pull-request-card')).toHaveCount(0);
   expect(layout.controls.every(control => control.left >= 0 && control.right <= layout.viewportWidth)).toBe(true);
   const finalRowTop = Math.max(...layout.controls.map(control => control.top));
   const finalRow = layout.controls.filter(control => Math.abs(control.top - finalRowTop) < 1);

@@ -228,8 +228,6 @@ html.software-keyboard-open .tabs { display: none; }
 .panel { position: relative; min-width: 0; min-height: 0; outline-offset: 4px; touch-action: pan-y; }
 .agent-view, .worktree-view { width: 100%; height: 100%; min-width: 0; min-height: 0; display: grid; gap: 1rem; overflow: visible; }
 .agent-view { position: relative; grid-template-rows: minmax(0, 1fr) auto; gap: 0; }
-.agent-view > .pull-request-card { margin-top: .375rem; }
-.agent-view > .upstream-rebase-banner + .pull-request-card { margin-top: 0; }
 .agent-view > .prompt, .worktree-view > .prompt { margin: .375rem .375rem .375rem; }
 .worktree-view { align-content: start; }
 .agent-view h2, .worktree-view h2 { color: var(--lavender); margin: 0; }
@@ -302,7 +300,8 @@ html.software-keyboard-open .tabs { display: none; }
 .git-status-summary:hover { color: var(--text); filter: none; }
 .git-branch-icon { display: none; width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .git-branch { flex: 1; min-width: 0; overflow: hidden; color: var(--lavender); text-overflow: ellipsis; }
-.git-status-panel { position: absolute; right: 0; bottom: calc(100% + .7rem); z-index: var(--layer-popover); display: grid; width: calc(100vw - .75rem); max-height: 100dvh; min-width: 0; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid color-mix(in srgb, var(--surface-2) 78%, transparent); border-radius: var(--control-radius); background: color-mix(in srgb, var(--crust) 97%, var(--mantle)); box-shadow: 0 -.7rem 1.8rem color-mix(in srgb, var(--crust) 80%, transparent), inset 0 1px color-mix(in srgb, var(--text) 5%, transparent); color: var(--subtext-0); text-align: left; white-space: normal; }
+/* constrain long pr titles to the available flyout width */
+.git-status-panel { position: absolute; right: 0; bottom: calc(100% + .7rem); z-index: var(--layer-popover); display: grid; width: calc(100vw - .75rem); max-height: 100dvh; min-width: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid color-mix(in srgb, var(--surface-2) 78%, transparent); border-radius: var(--control-radius); background: color-mix(in srgb, var(--crust) 97%, var(--mantle)); box-shadow: 0 -.7rem 1.8rem color-mix(in srgb, var(--crust) 80%, transparent), inset 0 1px color-mix(in srgb, var(--text) 5%, transparent); color: var(--subtext-0); text-align: left; white-space: normal; }
 .git-status-panel-header { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .5rem; padding: .55rem; border-bottom: 1px solid var(--surface-1); background: color-mix(in srgb, var(--crust) 98%, var(--mantle)); }
 .git-status-panel-header strong { color: var(--lavender); font-size: .7rem; }
 .git-status-details { min-width: 0; color: var(--subtext-0); font: 600 .62rem/1.3 var(--font-mono); overflow-wrap: anywhere; text-align: right; }
@@ -319,6 +318,25 @@ html.software-keyboard-open .tabs { display: none; }
 .git-status-mode button:last-child { border-right: 0; }
 .git-status-mode button[aria-pressed="true"] { background: color-mix(in srgb, var(--mauve) 24%, var(--surface-0)); color: var(--lavender); }
 .git-status-mode button:disabled { color: var(--surface-2); }
+/* align the current pr between full-size branch actions */
+.git-status-panel-footer > .pull-request-card { flex: 1 1 0; min-width: 0; margin: 0; }
+.git-status-panel-footer .git-status-actions, .git-status-panel-footer .git-status-mode { flex: 0 0 auto; }
+/* align adjacent actions even when the push label wraps */
+.git-status-panel-footer :is(.git-status-review, .git-status-push, .pull-request-fixup, .git-status-mode button) { height: 3rem; min-height: 3rem; padding: .5rem .7rem; font-size: .75rem; line-height: 1.2; }
+/* keep the single-line pr readable beside the additional action */
+@media (max-width: 900px) {
+  .git-status-panel-footer { flex-direction: column; align-items: stretch; }
+  .git-status-panel-footer > .pull-request-card { flex: 0 0 auto; }
+  .git-status-panel-footer .git-status-actions > button { flex: 1 1 0; min-width: 0; white-space: normal; justify-content: center; }
+  .git-status-panel-footer .git-status-mode { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+/* keep all controls reachable when landscape leaves little vertical room */
+@media (max-height: 500px) {
+  .git-status-panel { display: flex; flex-direction: column; overflow-y: auto; }
+  .git-status-panel > * { flex: 0 0 auto; }
+  .git-status-panel-header, .git-status-panel-footer { position: static; }
+  .git-status-files, .git-status-switch-list { max-height: 40vh; }
+}
 .git-status-files { display: grid; min-width: 0; min-height: 0; gap: .65rem; overflow-y: auto; overscroll-behavior: contain; padding: .55rem; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
 .git-status-switch-list { display: flex; min-width: 0; min-height: 0; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; padding: .3rem; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
 .git-status-empty { min-height: 0; overflow-y: auto; padding: .9rem .55rem; color: var(--overlay-0); }
@@ -724,13 +742,22 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .pull-request-checks.checks-pending { color: var(--peach); }
 .pull-request-issue svg, .pull-request-checks svg { width: 1.1rem; height: 1.1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.3; }
 .pull-request-checks.checks-pending svg { fill: currentColor; stroke: none; }
-.pull-request-fixup { display: inline-flex; flex: 0 0 auto; min-width: 4rem; height: 2rem; align-items: center; justify-content: center; gap: .3rem; margin-right: .5rem; border: 1px solid var(--surface-2); border-radius: calc(var(--control-radius) - .1rem); padding: .25rem .5rem; background: transparent; color: var(--mauve); font: 700 .7rem var(--font-mono); box-shadow: none; }
+.pull-request-fixup { display: inline-flex; flex: 0 0 auto; min-width: 4rem; height: 2rem; align-items: center; justify-content: center; gap: .3rem; border: 1px solid var(--surface-2); border-radius: calc(var(--control-radius) - .1rem); padding: .25rem .5rem; background: transparent; color: var(--mauve); font: 700 .7rem var(--font-mono); box-shadow: none; }
 .pull-request-fixup:not(:disabled):hover { border-color: var(--mauve); color: var(--text); }
 .pull-request-fixup.queued { border-color: var(--green); color: var(--green); }
 .pull-request-fixup svg { width: .85rem; height: .85rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.5; }
 .pull-request-card.status-draft { color: var(--overlay-2); }
 .pull-request-card.status-open { color: var(--green); }
 .pull-request-card.status-merged { color: var(--mauve); }
+/* match the prompt-side branch foreground to its pr */
+.git-status-summary.status-draft { --branch-pr-color: var(--overlay-2); }
+.git-status-summary.status-open { --branch-pr-color: var(--green); }
+.git-status-summary.status-merged { --branch-pr-color: var(--mauve); }
+.prompt-action-rail .git-status-summary.has-pull-request, .prompt-action-rail .git-status-summary.has-pull-request:not(:disabled):hover, .git-status-summary.has-pull-request .git-branch { color: var(--branch-pr-color); }
+/* overlay pr health without resizing or shifting the branch glyph */
+.prompt-action-rail .git-status-summary > .pull-request-issues { position: absolute; right: .15rem; bottom: .15rem; justify-content: flex-end; gap: .15rem; padding: 0; }
+.prompt-action-rail .git-status-summary :is(.pull-request-issue, .pull-request-checks) { width: .65rem; height: .65rem; }
+.prompt-action-rail .git-status-summary :is(.pull-request-issue, .pull-request-checks) svg { width: .65rem; height: .65rem; }
 .upstream-rebase-banner { display: grid; min-width: 0; min-height: 3rem; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .7rem; margin: .375rem .375rem 0; border: 1px solid color-mix(in srgb, var(--yellow) 58%, var(--surface-1)); border-radius: var(--control-radius); padding: .5rem .55rem .5rem .7rem; background: color-mix(in srgb, var(--mantle) 90%, var(--yellow)); color: var(--yellow); box-shadow: inset 0 1px color-mix(in srgb, var(--text) 4%, transparent); }
 .upstream-rebase-banner > svg { width: 1.2rem; height: 1.2rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .upstream-rebase-banner > span { display: grid; min-width: 0; gap: .1rem; }

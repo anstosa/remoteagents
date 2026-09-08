@@ -37,24 +37,41 @@ export function PullRequestIndicators({ checks, issues: issueFlags }: Pick<PullR
   return <span className="pull-request-issues" aria-label="Pull request status"><CheckStatusIcon status={checkStatus} />{issues.map(issue => <IssueIcon key={issue} issue={issue} />)}</span>;
 }
 
-export function PullRequestCard({ pullRequest, onFixup }: { pullRequest?: PullRequestSummary; onFixup?: () => Promise<boolean> }) {
+// render the single-line current pr link and health indicators
+export function PullRequestCard({ pullRequest }: { pullRequest?: PullRequestSummary }) {
+  // omit absent pull requests
+  if (pullRequest === undefined) return null;
+  const label = `${statusLabel[pullRequest.status]} pull request #${pullRequest.number}: ${pullRequest.title}`;
+  return <div className={`pull-request-card status-${pullRequest.status}`}><a className="pull-request-card-main" href={pullRequest.url} target="_blank" rel="noreferrer" aria-label={label} title={label}><PullRequestStatusIcon status={pullRequest.status} className="pull-request-card-icon" /><strong>#{pullRequest.number}</strong><span>{pullRequest.title}</span></a><PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} /></div>;
+}
+
+// keep fixup queue state independent of the pr link
+export function PullRequestFixup({ pullRequest, onFixup, pending = false }: { pullRequest?: PullRequestSummary; onFixup?: () => Promise<boolean>; pending?: boolean }) {
   const [queueing, setQueueing] = useState(false);
+  const submitting = queueing || pending;
   const [queued, setQueued] = useState(false);
   const queuedTimer = useRef<number | undefined>(undefined);
+  // release queued feedback on unmount
   useEffect(() => () => {
+    // cancel outstanding feedback
     if (queuedTimer.current !== undefined) window.clearTimeout(queuedTimer.current);
   }, []);
+  // omit absent pull requests
   if (pullRequest === undefined) return null;
-  const issueNames = (Object.keys(pullRequest.issues ?? {}) as IssueName[]).filter(issue => pullRequest.issues?.[issue] === true);
-  const hasIssues = issueNames.length > 0;
-  const label = `${statusLabel[pullRequest.status]} pull request #${pullRequest.number}: ${pullRequest.title}`;
+  // offer fixes only for reported issues and live agents
+  if (onFixup === undefined || !Object.values(pullRequest.issues ?? {}).includes(true)) return null;
+  // queue one fixup and briefly acknowledge acceptance
   const queueFixup = async () => {
-    if (onFixup === undefined || queueing) return;
+    // reject duplicate submissions
+    if (submitting) return;
     setQueueing(true);
     try {
+      // retain the action after rejected submissions
       if (!await onFixup()) return;
       setQueued(true);
+      // replace earlier feedback
       if (queuedTimer.current !== undefined) window.clearTimeout(queuedTimer.current);
+      // reset temporary acceptance feedback
       queuedTimer.current = window.setTimeout(() => {
         queuedTimer.current = undefined;
         setQueued(false);
@@ -63,5 +80,5 @@ export function PullRequestCard({ pullRequest, onFixup }: { pullRequest?: PullRe
       setQueueing(false);
     }
   };
-  return <div className={`pull-request-card status-${pullRequest.status}`}><a className="pull-request-card-main" href={pullRequest.url} target="_blank" rel="noreferrer" aria-label={label} title={label}><PullRequestStatusIcon status={pullRequest.status} className="pull-request-card-icon" /><strong>#{pullRequest.number}</strong><span>{pullRequest.title}</span></a><PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} />{hasIssues && onFixup !== undefined && <button className={`pull-request-fixup${queued ? ' queued' : ''}`} type="button" disabled={queueing} aria-label="Queue $fixup" title="Queue $fixup" onClick={() => void queueFixup()}>{queueing ? <span className="spinner" /> : queued ? <><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>Queued</> : '$fixup'}</button>}</div>;
+  return <button className={`pull-request-fixup${queued ? ' queued' : ''}`} type="button" disabled={submitting} aria-label="Queue $fixup" title="Queue $fixup" onClick={() => { /* submit the standalone action */ void queueFixup(); }}>{submitting ? <span className="spinner" /> : queued ? <><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>Queued</> : '$fixup'}</button>;
 }

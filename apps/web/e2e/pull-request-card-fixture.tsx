@@ -1,6 +1,6 @@
-import { createElement } from 'react';
+import { createElement, Fragment } from 'react';
 import { createRoot } from 'react-dom/client';
-import { PullRequestCard, type PullRequestSummary } from '../src/pull-request-card.js';
+import { PullRequestCard, PullRequestFixup, type PullRequestSummary } from '../src/pull-request-card.js';
 
 const pullRequests: PullRequestSummary[] = [
   { number: 7, title: 'Draft card', status: 'draft', url: 'https://github.com/octo/repo/pull/7', checks: 'passed' },
@@ -8,14 +8,13 @@ const pullRequests: PullRequestSummary[] = [
   { number: 9, title: 'Merged card', status: 'merged', url: 'https://github.com/octo/repo/pull/9', checks: 'pending' }
 ];
 
+// render pr links with independent fixup actions
 export const renderPullRequestCards = (root: HTMLElement) => {
-  createRoot(root).render(createElement('div', {}, pullRequests.map(pullRequest => createElement(PullRequestCard, { key: pullRequest.number, pullRequest, onFixup: pullRequest.number === 8 ? async () => { root.dataset.fixup = 'queued'; return true; } : undefined }))));
-};
-
-export const renderPullRequestLayout = (root: HTMLElement) => {
-  createRoot(root).render(createElement('article', { className: 'agent-view' },
-    createElement('section', { className: 'log-shell', 'data-testid': 'output' }),
-    createElement(PullRequestCard, { pullRequest: pullRequests[1] }),
-    createElement('section', { className: 'prompt' }, createElement('div', { className: 'prompt-actions', 'data-testid': 'prompt-controls' }))
-  ));
+  createRoot(root).render(createElement('div', {}, pullRequests.map(pullRequest => {
+    // preserve each standalone link and action
+    return createElement(Fragment, { key: pullRequest.number },
+      createElement(PullRequestCard, { pullRequest }),
+      createElement(PullRequestFixup, { pullRequest, onFixup: pullRequest.number === 8 ? async () => { /* accept queued fixes */ return true; } : undefined })
+    );
+  })));
 };
