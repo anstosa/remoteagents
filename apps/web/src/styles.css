@@ -341,10 +341,13 @@ html.software-keyboard-open .tabs { display: none; }
 .git-status-switch-list { display: flex; min-width: 0; min-height: 0; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; padding: .3rem; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
 .git-status-empty { min-height: 0; overflow-y: auto; padding: .9rem .55rem; color: var(--overlay-0); }
 .git-status-tabs { display: flex; border-top: 1px solid var(--surface-1); background: color-mix(in srgb, var(--crust) 98%, var(--mantle)); }
-.git-status-tabs button { flex: 1 1 0; min-width: 0; min-height: 2.25rem; border: 0; border-right: 1px solid var(--surface-1); border-radius: 0; padding: .45rem .6rem; background: transparent; box-shadow: none; color: var(--overlay-0); font: 800 .64rem var(--font-mono); }
+/* keep list-loading spinners beside their tab labels */
+.git-status-tabs button { display: inline-flex; flex: 1 1 0; min-width: 0; min-height: 2.25rem; align-items: center; justify-content: center; gap: .4rem; border: 0; border-right: 1px solid var(--surface-1); border-radius: 0; padding: .45rem .6rem; background: transparent; box-shadow: none; color: var(--overlay-0); font: 800 .64rem var(--font-mono); }
+.git-status-tabs .spinner { flex: 0 0 .65rem; width: .65rem; height: .65rem; border-width: 1.5px; }
 .git-status-tabs button:last-child { border-right: 0; }
 .git-status-tabs button:not(:disabled):hover { background: color-mix(in srgb, var(--lavender) 12%, transparent); color: var(--text); filter: none; }
-.git-status-tabs button[aria-selected="true"] { background: color-mix(in srgb, var(--mauve) 24%, var(--surface-0)); color: var(--lavender); }
+/* match the selected agent and server glow even while hovered */
+.git-status-tabs button[aria-selected="true"], .git-status-tabs button[aria-selected="true"]:hover { background: linear-gradient(145deg, var(--surface-1), var(--surface-0) 68%, var(--surface-0)); color: var(--text); box-shadow: inset 0 0 0 1px var(--blue), inset 0 0 1.35rem color-mix(in srgb, var(--blue) 34%, transparent), inset 0 1px color-mix(in srgb, var(--text) 14%, transparent); }
 .git-status-tabs button:disabled { color: var(--surface-2); }
 .git-status-group, .git-status-file-list { display: grid; min-width: 0; gap: .18rem; }
 .git-status-group-header { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) auto auto; gap: .6rem; align-items: baseline; padding-bottom: .12rem; border-bottom: 1px solid color-mix(in srgb, var(--surface-1) 72%, transparent); color: var(--overlay-0); font-size: 1rem; text-transform: uppercase; letter-spacing: .04em; }

@@ -3941,15 +3941,15 @@ function GitStatus({ id, worktreeId, branch, summary, prSummary, pullRequest, on
     // fall back when comparison disappears
     if (mode === 'pr' && prSummary === undefined) setMode('working');
   }, [mode, prSummary]);
-  // refresh repository choices while their tab is visible
+  // preload both repository lists whenever the flyout opens
   useEffect(() => {
-    // defer remote choices until requested
-    if (!repositoryTabVisible || id === undefined) return;
+    // defer remote choices until the flyout is open
+    if (!expanded || id === undefined) return;
     let cancelled = false;
     const controller = new AbortController();
     setLoadingPrSwitch(true);
     void request(`/api/agents/${encodeURIComponent(id)}/switch-prs`, { signal: controller.signal }).then(async response => ({ ok: response.ok, status: response.status, payload: await response.json().catch(() => undefined) })).then(({ ok, status, payload }) => {
-      // ignore a closed repository tab
+      // ignore a closed flyout
       if (cancelled) return;
       // expose the server failure
       if (!ok) {
@@ -3992,7 +3992,7 @@ function GitStatus({ id, worktreeId, branch, summary, prSummary, pullRequest, on
       controller.abort();
       setLoadingPrSwitch(false);
     };
-  }, [id, prSwitchCacheKey, repositoryTabVisible]);
+  }, [id, prSwitchCacheKey, expanded]);
   // fit the popup above the toolbar
   useLayoutEffect(() => {
     const wrap = wrapRef.current;
@@ -4184,7 +4184,7 @@ function GitStatus({ id, worktreeId, branch, summary, prSummary, pullRequest, on
   if (tab === 'prs') activePanel = pullRequestPanel;
   // show local branch choices
   if (tab === 'branches') activePanel = branchPanel;
-  return <span ref={wrapRef} className={`git-status-wrap${expanded ? ' expanded' : ''}`}><button className={`git-status-summary ${state}${pullRequest === undefined ? '' : ` has-pull-request status-${pullRequest.status}`}`} type="button" aria-label={label} aria-expanded={expanded} title={label} onClick={onToggle}><svg className="git-branch-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2.5" /><circle cx="6" cy="19" r="2.5" /><circle cx="18" cy="7" r="2.5" /><path d="M6 7.5v9M18 9.5v1a6 6 0 0 1-6 6H6" /></svg><span className="git-status-dot" aria-hidden="true" /><span className="git-branch">{branch}</span><span className="git-status-separator" aria-hidden="true">·</span><span className="git-worktree-state">{stateLabel}</span>{/* retain compact pr indicators beside the prompt */}{pullRequest !== undefined && <PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} />}</button>{expanded && <FlyoutPortal onDismiss={() => onToggle?.()}><div className="git-status-panel" role="region" aria-label="Changed files" aria-busy={repositoryTabVisible && loadingPrSwitch} style={panelStyle}>{activePanel}<span className="git-status-tabs" role="tablist" aria-label="Branch views"><button type="button" role="tab" aria-selected={tab === 'working'} onClick={() => setTab('working')}>Working</button><button type="button" role="tab" aria-selected={tab === 'prs'} disabled={id === undefined} title={id === undefined ? 'Launch agent to load pull requests' : undefined} onClick={() => setTab('prs')}>PRs</button><button type="button" role="tab" aria-selected={tab === 'branches'} disabled={id === undefined} title={id === undefined ? 'Launch agent to load branches' : undefined} onClick={() => setTab('branches')}>Branches</button></span></div></FlyoutPortal>}{removingBranch !== undefined && worktreeId !== undefined && <RemoveBranchDialog worktreeId={worktreeId} branch={removingBranch} onClose={() => setRemovingBranch(undefined)} onDeleted={branchRemoved} />}</span>;
+  return <span ref={wrapRef} className={`git-status-wrap${expanded ? ' expanded' : ''}`}><button className={`git-status-summary ${state}${pullRequest === undefined ? '' : ` has-pull-request status-${pullRequest.status}`}`} type="button" aria-label={label} aria-expanded={expanded} title={label} onClick={onToggle}><svg className="git-branch-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2.5" /><circle cx="6" cy="19" r="2.5" /><circle cx="18" cy="7" r="2.5" /><path d="M6 7.5v9M18 9.5v1a6 6 0 0 1-6 6H6" /></svg><span className="git-status-dot" aria-hidden="true" /><span className="git-branch">{branch}</span><span className="git-status-separator" aria-hidden="true">·</span><span className="git-worktree-state">{stateLabel}</span>{/* retain compact pr indicators beside the prompt */}{pullRequest !== undefined && <PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} />}</button>{expanded && <FlyoutPortal onDismiss={() => onToggle?.()}><div className="git-status-panel" role="region" aria-label="Changed files" aria-busy={repositoryTabVisible && loadingPrSwitch} style={panelStyle}>{activePanel}<span className="git-status-tabs" role="tablist" aria-label="Branch views"><button type="button" role="tab" aria-selected={tab === 'working'} onClick={() => setTab('working')}>Working</button><button type="button" role="tab" aria-selected={tab === 'prs'} aria-busy={loadingPrSwitch} disabled={id === undefined} title={id === undefined ? 'Launch agent to load pull requests' : undefined} onClick={() => { /* keep preloading while changing views */ setTab('prs'); }}>PRs{loadingPrSwitch && <span className="spinner" aria-hidden="true" />}</button><button type="button" role="tab" aria-selected={tab === 'branches'} aria-busy={loadingPrSwitch} disabled={id === undefined} title={id === undefined ? 'Launch agent to load branches' : undefined} onClick={() => { /* keep preloading while changing views */ setTab('branches'); }}>Branches{loadingPrSwitch && <span className="spinner" aria-hidden="true" />}</button></span></div></FlyoutPortal>}{removingBranch !== undefined && worktreeId !== undefined && <RemoveBranchDialog worktreeId={worktreeId} branch={removingBranch} onClose={() => setRemovingBranch(undefined)} onDeleted={branchRemoved} />}</span>;
 }
 
 type LogProps = { id: string; worktreeId?: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; pullRequest?: PullRequestSummary; history: PromptHistoryEntry[]; refreshHistory: () => Promise<void>; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined) => void; cleanupControl?: ReactNode; browserUrl?: string; browserHomeUrl?: string; browserProxied?: boolean; browserNavigationRequest?: ProjectBrowserNavigationRequest; onBrowserNavigate?: (url: string) => boolean; onBrowserOpen?: (url: string) => boolean; onBrowserClose?: () => void; terminalMode?: boolean; embedded?: boolean; onReview?: (scope: ReviewScope) => void; reviewOpen?: boolean; reviewUnavailable?: string; pushAction?: PromptAction; processingLabel?: string; processingDetail?: string; statusSlot?: HTMLElement | null; historySlot?: HTMLElement | null; onSelectTarget?: (target: DashboardTarget) => void; onNavigateWorktree?: (worktreeId: string) => void; onOperationFeedback?: (feedback: Omit<OperationFeedback, 'id'>) => void };
@@ -5094,8 +5094,8 @@ function SwitchBranchOption({ branch, enabled, loading, refreshFailed, switching
 
 // explain pull request availability
 function pullRequestStatusReason(loading: boolean, error: string | undefined, loaded: boolean, availability: PullRequestSwitchAvailability | undefined): string | undefined {
-  // prioritize active loading
-  if (loading) return 'Loading pull requests…';
+  // show loading in the tab instead of repeating it in the header
+  if (loading) return undefined;
   // preserve one actionable error
   if (error !== undefined) return error;
   // distinguish an unavailable endpoint
@@ -5109,8 +5109,8 @@ function pullRequestStatusReason(loading: boolean, error: string | undefined, lo
 
 // explain local branch availability
 function branchStatusReason(loading: boolean, error: string | undefined, loaded: boolean, availability: PullRequestSwitchAvailability | undefined): string | undefined {
-  // prioritize active loading
-  if (loading) return 'Loading branches…';
+  // show loading in the tab instead of repeating it in the header
+  if (loading) return undefined;
   // expose the shared repository refresh error
   if (error !== undefined) return error;
   // distinguish an unavailable endpoint

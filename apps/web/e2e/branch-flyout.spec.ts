@@ -8,7 +8,7 @@ async function openBranchTab(page: Page, name: 'PRs' | 'Branches') {
   return panel;
 }
 
-test('keeps branch tabs fixed at the bottom and refreshes choices when reopened', async ({ page }) => {
+test('prefetches shared repository choices and refreshes them when reopened', async ({ page }) => {
   test.setTimeout(60_000);
   let finishPullRequests!: () => void;
   let finishPullRequestRefresh!: () => void;
@@ -42,16 +42,57 @@ test('keeps branch tabs fixed at the bottom and refreshes choices when reopened'
   const panel = page.getByRole('region', { name: 'Changed files' });
   const tabs = panel.getByRole('tablist', { name: 'Branch views' });
   expect(await tabs.getByRole('tab').allTextContents()).toEqual(['Working', 'PRs', 'Branches']);
-  await expect(tabs.getByRole('tab', { name: 'Working' })).toHaveAttribute('aria-selected', 'true');
+  const workingTab = tabs.getByRole('tab', { name: 'Working', exact: true });
+  const pullRequestsTab = tabs.getByRole('tab', { name: 'PRs', exact: true });
+  const branchesTab = tabs.getByRole('tab', { name: 'Branches', exact: true });
+  // reuse the rendered agent selection as the visual contract
+  const selectionEffect = await page.locator('.tabs button.active').evaluate(element => {
+    const style = getComputedStyle(element);
+    return { background: style.backgroundImage, shadow: style.boxShadow };
+  });
+  await expect(workingTab).toHaveAttribute('aria-selected', 'true');
+  await expect(workingTab).toHaveCSS('background-image', selectionEffect.background);
+  await expect(workingTab).toHaveCSS('box-shadow', selectionEffect.shadow);
+  await workingTab.hover();
+  await expect(workingTab).toHaveCSS('background-image', selectionEffect.background);
+  await expect(workingTab).toHaveCSS('box-shadow', selectionEffect.shadow);
+  await expect.poll(() => pullRequestRequests).toBe(1);
+  await expect(panel).toHaveAttribute('aria-busy', 'false');
+  await expect(workingTab.locator('.spinner')).toHaveCount(0);
+  await expect(pullRequestsTab).toHaveAttribute('aria-busy', 'true');
+  await expect(branchesTab).toHaveAttribute('aria-busy', 'true');
+  await expect(pullRequestsTab.locator('.spinner')).toBeVisible();
+  await expect(branchesTab.locator('.spinner')).toBeVisible();
   const [panelBox, tabsBox] = await Promise.all([panel.boundingBox(), tabs.boundingBox()]);
   expect(panelBox).not.toBeNull();
   expect(tabsBox).not.toBeNull();
   // require rendered flyout bounds
   if (panelBox === null || tabsBox === null) throw new Error('branch flyout bounds unavailable');
   expect(Math.abs(panelBox.y + panelBox.height - (tabsBox.y + tabsBox.height))).toBeLessThanOrEqual(1);
-  await tabs.getByRole('tab', { name: 'PRs' }).click();
-  await expect(panel.getByRole('status', { name: 'Loading pull requests…', exact: true })).toBeVisible();
+  await pullRequestsTab.click();
+  await expect(pullRequestsTab).toHaveCSS('background-image', selectionEffect.background);
+  await expect(pullRequestsTab).toHaveCSS('box-shadow', selectionEffect.shadow);
+  await expect(workingTab).toHaveCSS('box-shadow', 'none');
+  await expect(panel).toHaveAttribute('aria-busy', 'true');
+  await expect(panel.locator('.git-status-panel-header')).not.toContainText('Loading');
+  await expect(panel.locator('.git-status-panel-header').getByRole('status')).toHaveCount(0);
+  await branchesTab.click();
+  await expect(branchesTab).toHaveCSS('background-image', selectionEffect.background);
+  await expect(branchesTab).toHaveCSS('box-shadow', selectionEffect.shadow);
+  await expect(pullRequestsTab).toHaveCSS('box-shadow', 'none');
+  await expect(panel).toHaveAttribute('aria-busy', 'true');
+  await expect(panel.locator('.git-status-panel-header')).not.toContainText('Loading');
+  await expect(panel.locator('.git-status-panel-header').getByRole('status')).toHaveCount(0);
+  expect(pullRequestRequests).toBe(1);
+  await workingTab.click();
+  await expect(panel).toHaveAttribute('aria-busy', 'false');
+  await expect(pullRequestsTab.locator('.spinner')).toBeVisible();
   finishPullRequests();
+  await expect(pullRequestsTab).toHaveAttribute('aria-busy', 'false');
+  await expect(branchesTab).toHaveAttribute('aria-busy', 'false');
+  await expect(pullRequestsTab.locator('.spinner')).toHaveCount(0);
+  await expect(branchesTab.locator('.spinner')).toHaveCount(0);
+  await pullRequestsTab.click();
 
   const pullRequestOption = panel.getByRole('group', { name: '#2567: Make prompt actions fit; Open', exact: true });
   const draftOption = panel.getByRole('group', { name: '#2568: Prompt actions experiment; Draft', exact: true });
@@ -67,11 +108,16 @@ test('keeps branch tabs fixed at the bottom and refreshes choices when reopened'
   await expect(checkout).toBeEnabled();
   await page.mouse.click(4, 4);
   await branchButton.click();
-  await expect(panel.getByRole('status', { name: 'Loading pull requests…', exact: true })).toBeVisible();
+  await expect.poll(() => pullRequestRequests).toBe(2);
+  await expect(pullRequestsTab.locator('.spinner')).toBeVisible();
+  await expect(branchesTab.locator('.spinner')).toBeVisible();
+  await pullRequestsTab.click();
   await expect(pullRequest).toBeVisible();
   await expect(checkout).toBeDisabled();
   finishPullRequestRefresh();
   await expect(checkout).toBeEnabled();
+  await expect(pullRequestsTab.locator('.spinner')).toHaveCount(0);
+  await expect(branchesTab.locator('.spinner')).toHaveCount(0);
   const [github] = await Promise.all([page.waitForEvent('popup'), pullRequest.click()]);
   await expect(github).toHaveURL('https://github.example.com/pull/2567');
   await github.close();
@@ -401,11 +447,15 @@ test('shows the workspace pull request cache while refreshing after a tab remoun
 
   const menu = page.locator('.git-status-panel');
   await expect.poll(() => pullRequestRequests).toBe(2);
-  await expect(menu.getByRole('status', { name: 'Loading pull requests…', exact: true })).toBeVisible();
+  await expect(menu.getByRole('tab', { name: 'PRs', exact: true })).toHaveAttribute('aria-busy', 'true');
+  await expect(menu.getByRole('tab', { name: 'Branches', exact: true })).toHaveAttribute('aria-busy', 'true');
+  await expect(menu.getByRole('tab', { name: 'PRs', exact: true }).locator('.spinner')).toBeVisible();
   await expect(menu.getByRole('link', { name: '#401: Cached PR' })).toBeVisible();
   finishRefresh();
   await expect(menu.getByRole('link', { name: '#402: Refreshed PR' })).toBeVisible();
   await expect(menu.getByRole('link', { name: '#401: Cached PR' })).toHaveCount(0);
+  await expect(menu.getByRole('tab', { name: 'PRs', exact: true }).locator('.spinner')).toHaveCount(0);
+  await expect(menu.getByRole('tab', { name: 'Branches', exact: true }).locator('.spinner')).toHaveCount(0);
 });
 
 // protect cached actions after refresh failures
@@ -481,6 +531,12 @@ test('shows the empty pull request state in the PRs tab', async ({ page }) => {
 
 // expose failed pull request lookups
 test('shows the GitHub error instead of an empty pull request state', async ({ page }) => {
+  let finishFailure!: () => void;
+  // hold the shared failure through spinner assertions
+  const failureFinished = new Promise<void>(resolve => {
+    // expose failure completion to the test
+    finishFailure = resolve;
+  });
   // serve one failed pull request request
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
@@ -494,15 +550,36 @@ test('shows the GitHub error instead of an empty pull request state', async ({ p
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     // provide saved prompts
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
-    // fail the pull request lookup
-    if (url.pathname === '/api/agents/agent-1/switch-prs') return route.fulfill({ status: 502, json: { error: 'GitHub could not load pull requests (503): temporary outage.' } });
+    // fail the shared repository lookup
+    if (url.pathname === '/api/agents/agent-1/switch-prs') {
+      await failureFinished;
+      return route.fulfill({ status: 502, json: { error: 'GitHub could not load pull requests (503): temporary outage.' } });
+    }
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 
   await page.goto('/');
-  const menu = await openBranchTab(page, 'PRs');
+  await page.getByRole('button', { name: /^Git status:/u }).click();
+  const menu = page.getByRole('region', { name: 'Changed files' });
+  const workingTab = menu.getByRole('tab', { name: 'Working', exact: true });
+  const pullRequestsTab = menu.getByRole('tab', { name: 'PRs', exact: true });
+  const branchesTab = menu.getByRole('tab', { name: 'Branches', exact: true });
+  await expect(workingTab).toHaveAccessibleName('Working');
+  await expect(pullRequestsTab).toHaveAccessibleName('PRs');
+  await expect(branchesTab).toHaveAccessibleName('Branches');
+  await expect(workingTab.locator('.spinner')).toHaveCount(0);
+  await expect(pullRequestsTab.locator('.spinner')).toBeVisible();
+  await expect(branchesTab.locator('.spinner')).toBeVisible();
+  await pullRequestsTab.click();
+  await expect(menu).toHaveAttribute('aria-busy', 'true');
+  finishFailure();
   await expect(menu.getByRole('alert', { name: 'GitHub could not load pull requests (503): temporary outage.' })).toBeVisible();
   await expect(menu.getByRole('status', { name: 'No open pull requests.' })).toHaveCount(0);
+  await expect(menu).toHaveAttribute('aria-busy', 'false');
+  await expect(pullRequestsTab).toHaveAttribute('aria-busy', 'false');
+  await expect(branchesTab).toHaveAttribute('aria-busy', 'false');
+  await expect(pullRequestsTab.locator('.spinner')).toHaveCount(0);
+  await expect(branchesTab.locator('.spinner')).toHaveCount(0);
 });
 
 // expose shared lookup failures in the branches tab
@@ -555,10 +632,20 @@ test('shows invalid repository data instead of legacy branch defaults', async ({
   await expect(panel.getByRole('status', { name: 'No other local branches.' })).toHaveCount(0);
 });
 
-// clear pending state when repository loading is dismissed
-test('clears repository loading when returning to Working', async ({ page }) => {
-  let finishRepositoryChoices!: () => void;
-  const repositoryChoicesFinished = new Promise<void>(resolve => { finishRepositoryChoices = resolve; });
+// cancel only when the complete branch flyout closes
+test('keeps repository loading across inner tabs and ignores a dismissed response', async ({ page }) => {
+  let finishDismissedRequest!: () => void;
+  let finishCurrentRequest!: () => void;
+  let repositoryRequests = 0;
+  // control the dismissed and current responses independently
+  const dismissedRequestFinished = new Promise<void>(resolve => {
+    // expose stale completion to the test
+    finishDismissedRequest = resolve;
+  });
+  const currentRequestFinished = new Promise<void>(resolve => {
+    // expose current completion to the test
+    finishCurrentRequest = resolve;
+  });
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
     // authenticate the browser
@@ -571,20 +658,51 @@ test('clears repository loading when returning to Working', async ({ page }) => 
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     // provide saved prompts
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
-    // hold repository choices while changing tabs
+    // hold repository choices across tab and flyout changes
     if (url.pathname === '/api/agents/agent-1/switch-prs') {
-      await repositoryChoicesFinished;
-      return route.fulfill({ json: { enabled: true, pullRequests: [], otherPullRequests: [], branches: [], pullRequestsSupported: true } });
+      repositoryRequests += 1;
+      const requestNumber = repositoryRequests;
+      await (requestNumber === 1 ? dismissedRequestFinished : currentRequestFinished);
+      // tolerate the browser aborting the dismissed route
+      await route.fulfill({ json: { enabled: true, pullRequests: [{ number: requestNumber === 1 ? 501 : 502, title: requestNumber === 1 ? 'Dismissed response' : 'Current response', branch: requestNumber === 1 ? 'feature/dismissed' : 'feature/current-response', draft: false, url: `https://github.example.com/pull/${requestNumber === 1 ? 501 : 502}`, checkedOut: false }], otherPullRequests: [], branches: [], pullRequestsSupported: true } }).catch(() => { /* expected after cancellation */ });
+      return;
     }
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 
   await page.goto('/');
-  const panel = await openBranchTab(page, 'PRs');
+  const branchButton = page.getByRole('button', { name: /^Git status:/u });
+  await branchButton.click();
+  const panel = page.getByRole('region', { name: 'Changed files' });
+  const workingTab = panel.getByRole('tab', { name: 'Working', exact: true });
+  const pullRequestsTab = panel.getByRole('tab', { name: 'PRs', exact: true });
+  const branchesTab = panel.getByRole('tab', { name: 'Branches', exact: true });
+  await expect.poll(() => repositoryRequests).toBe(1);
+  await pullRequestsTab.click();
   await expect(panel).toHaveAttribute('aria-busy', 'true');
-  await panel.getByRole('tab', { name: 'Working', exact: true }).click();
+  await branchesTab.click();
+  await expect(panel).toHaveAttribute('aria-busy', 'true');
+  expect(repositoryRequests).toBe(1);
+  await workingTab.click();
   await expect(panel).toHaveAttribute('aria-busy', 'false');
-  finishRepositoryChoices();
+  await expect(pullRequestsTab.locator('.spinner')).toBeVisible();
+  await expect(branchesTab.locator('.spinner')).toBeVisible();
+
+  // dismiss the whole flyout to cancel its request
+  await page.mouse.click(4, 4);
+  await expect(panel).toBeHidden();
+  await branchButton.click();
+  await expect.poll(() => repositoryRequests).toBe(2);
+  await expect(workingTab).toHaveAttribute('aria-selected', 'true');
+  await expect(pullRequestsTab.locator('.spinner')).toBeVisible();
+  finishDismissedRequest();
+  await pullRequestsTab.click();
+  await expect(panel.getByRole('link', { name: '#501: Dismissed response' })).toHaveCount(0);
+  await expect(pullRequestsTab.locator('.spinner')).toBeVisible();
+  finishCurrentRequest();
+  await expect(panel.getByRole('link', { name: '#502: Current response' })).toBeVisible();
+  await expect(pullRequestsTab.locator('.spinner')).toHaveCount(0);
+  await expect(branchesTab.locator('.spinner')).toHaveCount(0);
 });
 
 // check out an open-nowhere local branch, and refuse one detached in an unknown worktree
