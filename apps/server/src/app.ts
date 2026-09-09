@@ -789,7 +789,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return reply.code(204).send();
   });
   // create an optionally titled note
-  app.post('/api/worktrees/:id/notes', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const saveKey = worktreeSaveKey(id); const title = body(request).title; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0'))) return reply.code(400).send({ error: 'invalid note title' }); const note = await notes.create(saveKey, title as string | undefined); return note === undefined ? reply.code(409).send({ error: 'note limit reached' }) : reply.code(201).send(note); });
+  app.post('/api/worktrees/:id/notes', { bodyLimit: 128_000 }, async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const saveKey = worktreeSaveKey(id); const title = body(request).title; const text = body(request).text; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0'))) return reply.code(400).send({ error: 'invalid note title' }); if (text !== undefined && (typeof text !== 'string' || text.length > 30_000 || text.includes('\0'))) return reply.code(400).send({ error: 'invalid note' }); if (text !== undefined && typeof title !== 'string') return reply.code(400).send({ error: 'invalid note title' }); const note = text === undefined ? await notes.create(saveKey, title as string | undefined) : await notes.createWithText(saveKey, title as string, text); return note === undefined ? reply.code(409).send({ error: 'note limit reached' }) : reply.code(201).send(note); });
   app.put('/api/worktrees/:id/notes/:noteId', { bodyLimit: 128_000 }, async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); const text = body(request).text; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof text !== 'string' || text.length > 30_000 || text.includes('\0')) return reply.code(400).send({ error: 'invalid note' }); const note = await notes.update(saveKey, noteId, text); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
   // rename one note
   app.patch('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); const title = body(request).title; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid note title' }); const note = await notes.rename(saveKey, noteId, title); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
@@ -810,15 +810,20 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return stored === undefined ? reply.code(400).send({ error: 'invalid note group' }) : { notes: decorateNotes(stored) };
   });
   // create one live agent note
-  app.post('/api/agents/:id/notes', async (request, reply) => {
+  app.post('/api/agents/:id/notes', { bodyLimit: 128_000 }, async (request, reply) => {
     controlled(request, true);
     const persistence = await agentPersistence((request.params as { id: string }).id);
     const title = body(request).title;
+    const text = body(request).text;
     // require one current persistence group
     if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
     // require one bounded optional title
     if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0'))) return reply.code(400).send({ error: 'invalid note title' });
-    const note = await notes.create(persistence.saveKey, typeof title === 'string' ? title : undefined);
+    // require one bounded optional initial text
+    if (text !== undefined && (typeof text !== 'string' || text.length > 30_000 || text.includes('\0'))) return reply.code(400).send({ error: 'invalid note' });
+    // an initial text must carry a title; the two are written atomically (createWithText) so a failed write never leaves a blank titled note
+    if (text !== undefined && typeof title !== 'string') return reply.code(400).send({ error: 'invalid note title' });
+    const note = text === undefined ? await notes.create(persistence.saveKey, typeof title === 'string' ? title : undefined) : await notes.createWithText(persistence.saveKey, title as string, text);
     return note === undefined ? reply.code(409).send({ error: 'note limit reached' }) : reply.code(201).send(note);
   });
   // update one live agent note

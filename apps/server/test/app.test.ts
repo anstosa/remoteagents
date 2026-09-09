@@ -1325,6 +1325,34 @@ describe('worktree notes API', () => {
       expect(keys[0]).toMatch(/^scratch_[A-Za-z0-9_-]{40}$/u);
     } finally { await notesApp.close(); }
   }, 15_000);
+
+  it('creates a note with initial text in one request (the composer Ctrl+S save), atomically via createWithText', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', projectId: 'potato', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
+    const calls: string[] = [];
+    const notes = {
+      // a blank create must never be reached when the request carries text
+      create: async () => { calls.push('create'); return { id: 'note-identifier-blank', text: '' }; },
+      createWithText: async (key: string, title: string, text: string) => { calls.push(`createWithText:${key}:${title}`); return { id: 'note-identifier-777', title, text }; }
+    };
+    const discovery = { worktreesNow: () => [worktree], dashboard: async () => ({ generation: 1, adapters: {}, agents: [], projects: [] }) };
+    const notesApp = await buildApp({ ...config }, { auth: new AuthService(hash, Buffer.alloc(32, 11).toString('base64url')), discovery: discovery as never, notes: notes as never });
+    try {
+      const boot = await notesApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await notesApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+
+      const created = await notesApp.inject({ method: 'POST', url: '/api/worktrees/cora/notes', headers, payload: { title: 'Draft this idea', text: 'Draft this idea into a note.' } });
+      // an initial text without a title is refused before touching the store
+      const untitled = await notesApp.inject({ method: 'POST', url: '/api/worktrees/cora/notes', headers, payload: { text: 'No title here' } });
+
+      expect(created.statusCode).toBe(201);
+      expect(created.json()).toEqual({ id: 'note-identifier-777', title: 'Draft this idea', text: 'Draft this idea into a note.' });
+      expect(untitled.statusCode).toBe(400);
+      // the text path routes through the atomic createWithText, never the blank create
+      expect(calls).toEqual(['createWithText:potato:Draft this idea']);
+    } finally { await notesApp.close(); }
+  }, 15_000);
 });
 
 describe('workspace files API', () => {
