@@ -2491,7 +2491,8 @@ function useFilePreview(previewUrl: string) {
     try { await copyText(previewPath); setCopied(true); } catch { setCopied(false); }
   };
 
-  const dialog = previewPath === undefined ? null : createPortal(<div className="dialog response-file-dialog" role="dialog" aria-modal="true" aria-label={`File preview: ${previewPath}`} onKeyDown={event => { if (event.key === 'Escape') closePreview(); }}><div><header><strong title={previewPath}>{previewPath}</strong><button className="response-file-copy-path" type="button" onClick={() => void copyPath()}>{copied ? 'Path copied' : 'Copy path'}</button><button type="button" aria-label="Close file preview" title="Close" onClick={closePreview}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{filePreviewContent(previewPath, previewState, preview)}{preview?.truncated && <footer>Preview limited to the first 256 KB.</footer>}</div></div>, document.body);
+  // focus preview keyboard handling when the modal opens
+  const dialog = previewPath === undefined ? null : createPortal(<div className="dialog response-file-dialog" role="dialog" aria-modal="true" aria-label={`File preview: ${previewPath}`} onKeyDown={event => { /* dismiss without forwarding */ if (event.key === 'Escape') { event.preventDefault(); closePreview(); } }}><div><header><strong title={previewPath}>{previewPath}</strong><button className="response-file-copy-path" type="button" onClick={() => void copyPath()}>{copied ? 'Path copied' : 'Copy path'}</button><button type="button" autoFocus aria-label="Close file preview" title="Close" onClick={closePreview}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{filePreviewContent(previewPath, previewState, preview)}{preview?.truncated && <footer>Preview limited to the first 256 KB.</footer>}</div></div>, document.body);
   return { dialog, openFile, closePreview };
 }
 
@@ -4571,6 +4572,17 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, pullRequest, hist
       event.stopPropagation();
       sendInput('\x03');
     };
+    // forward unhandled escape after terminal and local dismiss handlers
+    const escapeOutput = (event: KeyboardEvent) => {
+      // leave handled keys and modified shortcuts alone
+      if (!outputModeActive || event.defaultPrevented || event.key !== 'Escape' || event.ctrlKey || event.shiftKey || event.metaKey || event.altKey) return;
+      const target = event.target;
+      const editable = target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
+      // preserve editors and dialogs even when modal focus moves outside
+      if (editable || document.querySelector('[aria-modal="true"]') !== null || (target instanceof Element && target.closest('[role="dialog"]') !== null)) return;
+      event.preventDefault();
+      sendInput('\x1b');
+    };
     const copySelectionShortcut = (event: KeyboardEvent) => {
       if (isPromptKeyboardTarget(event.target)) return;
       const key = event.key.toLowerCase();
@@ -4691,6 +4703,8 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, pullRequest, hist
     }));
     document.addEventListener('selectionchange', syncSelectionMode);
     window.addEventListener('keydown', interruptOutput, true);
+    // run after document-level escape dismissal
+    window.addEventListener('keydown', escapeOutput);
     document.addEventListener('keydown', copySelectionShortcut, true);
     // Only the panel's own Log owns the font shortcut; the embedded update
     // advisor still follows the store, so gating here keeps a single step per key.
@@ -4951,7 +4965,8 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, pullRequest, hist
       } catch { setStatus('Connecting'); reconnect(); }
     };
     void connect();
-    return () => { closed = true; appendWrites.clear(); cancelConnectedPaint(); if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (answeredQuestionActions.get(id) === answeredQuestion) answeredQuestionActions.delete(id); if (retry !== undefined) window.clearTimeout(retry); if (flushFrame !== undefined) window.cancelAnimationFrame(flushFrame); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (overlayFrame !== undefined) window.cancelAnimationFrame(overlayFrame); if (analysisFrame !== undefined) window.cancelAnimationFrame(analysisFrame); if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer); selectionSubscriptions.forEach(subscription => subscription.dispose()); inputSubscriptions.forEach(subscription => subscription.dispose()); window.removeEventListener('resize', scheduleViewport); window.visualViewport?.removeEventListener('resize', scheduleViewport); document.removeEventListener('visibilitychange', syncVisibleViewport); window.removeEventListener('pageshow', scheduleViewport); document.removeEventListener('selectionchange', syncSelectionMode); window.removeEventListener('keydown', interruptOutput, true); document.removeEventListener('keydown', copySelectionShortcut, true); if (!embedded) document.removeEventListener('keydown', terminalFontShortcut, true); unsubscribeTerminalFontSize(); unsubscribeColorTheme(); document.removeEventListener('copy', nativeOutputCopied); canvas.current?.closest('.log')?.classList.remove('selection-copied'); canvas.current?.removeEventListener('pointerdown', captureSelectionMode, true); canvas.current?.removeEventListener('click', focus); releaseLongPressSelection(); releaseScrollContainment(); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; overlays.clear(); terminals.forEach(candidate => candidate.dispose()); };
+    // release terminal resources and keyboard handlers
+    return () => { closed = true; appendWrites.clear(); cancelConnectedPaint(); if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (answeredQuestionActions.get(id) === answeredQuestion) answeredQuestionActions.delete(id); if (retry !== undefined) window.clearTimeout(retry); if (flushFrame !== undefined) window.cancelAnimationFrame(flushFrame); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (overlayFrame !== undefined) window.cancelAnimationFrame(overlayFrame); if (analysisFrame !== undefined) window.cancelAnimationFrame(analysisFrame); if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer); selectionSubscriptions.forEach(subscription => subscription.dispose()); inputSubscriptions.forEach(subscription => subscription.dispose()); window.removeEventListener('resize', scheduleViewport); window.visualViewport?.removeEventListener('resize', scheduleViewport); document.removeEventListener('visibilitychange', syncVisibleViewport); window.removeEventListener('pageshow', scheduleViewport); document.removeEventListener('selectionchange', syncSelectionMode); window.removeEventListener('keydown', interruptOutput, true); window.removeEventListener('keydown', escapeOutput); document.removeEventListener('keydown', copySelectionShortcut, true); if (!embedded) document.removeEventListener('keydown', terminalFontShortcut, true); unsubscribeTerminalFontSize(); unsubscribeColorTheme(); document.removeEventListener('copy', nativeOutputCopied); canvas.current?.closest('.log')?.classList.remove('selection-copied'); canvas.current?.removeEventListener('pointerdown', captureSelectionMode, true); canvas.current?.removeEventListener('click', focus); releaseLongPressSelection(); releaseScrollContainment(); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; overlays.clear(); terminals.forEach(candidate => candidate.dispose()); };
   }, [embedded, id, onQuestion, terminalMode]);
   const processing = processingLabel !== undefined;
   const loading = !hasRendered || processing;
