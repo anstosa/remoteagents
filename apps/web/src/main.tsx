@@ -571,16 +571,16 @@ const mergeSpeechSegments = (current: string, next: string) => {
   while (overlap > 0 && !left.slice(-overlap).every((word, index) => comparable(word) === comparable(right[index]!))) overlap -= 1;
   return [...left, ...right.slice(overlap)].join(' ');
 };
+// fit existing lines without reserving a blank row
 const fitPromptInput = (input: HTMLTextAreaElement) => {
   const style = getComputedStyle(input);
-  const lineHeight = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.2;
   const borderHeight = Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
   const minHeight = Number.parseFloat(style.minHeight) || 0;
   input.style.minHeight = '0';
   input.style.height = '0';
   const contentHeight = input.scrollHeight;
   input.style.removeProperty('min-height');
-  input.style.height = `${Math.max(minHeight, contentHeight + lineHeight + borderHeight)}px`;
+  input.style.height = `${Math.max(minHeight, contentHeight + borderHeight)}px`;
 };
 const encodeAttachment = async (file: File): Promise<{ name: string; data: string }> => await new Promise((resolve, reject) => {
   const reader = new FileReader();

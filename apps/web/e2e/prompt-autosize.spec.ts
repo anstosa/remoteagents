@@ -1,12 +1,47 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator } from '@playwright/test';
 
-test('grows the prompt to show all content plus one blank line and shrinks again', async ({ page }) => {
+// track prompt sizing inputs
+type PromptDimensions = { height: number; contentHeight: number; lineHeight: number; minHeight: number };
+
+// measure the rendered box and unconstrained content
+const readPromptDimensions = async (prompt: Locator): Promise<PromptDimensions> => await prompt.evaluate(input => {
+  const style = getComputedStyle(input);
+  const borderHeight = Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
+  const minHeight = Number.parseFloat(style.minHeight);
+  const currentHeight = input.style.height;
+  const currentMinHeight = input.style.minHeight;
+  input.style.minHeight = '0';
+  input.style.height = '0';
+  const contentHeight = input.scrollHeight + borderHeight;
+  input.style.minHeight = currentMinHeight;
+  input.style.height = currentHeight;
+  return { height: input.getBoundingClientRect().height, contentHeight, lineHeight: Number.parseFloat(style.lineHeight), minHeight };
+});
+
+// wait for the prompt to fit content without spare space
+const expectPromptFitsContent = async (prompt: Locator): Promise<PromptDimensions> => {
+  // allow browser subpixel rounding
+  await expect.poll(async () => {
+    const dimensions = await readPromptDimensions(prompt);
+    return Math.abs(dimensions.height - Math.max(dimensions.minHeight, dimensions.contentHeight));
+  }).toBeLessThanOrEqual(1);
+  return await readPromptDimensions(prompt);
+};
+
+// cover explicit lines, edits, and soft wrapping
+test('grows only when prompt content needs another line and shrinks again', async ({ page }) => {
+  // mock prompt dependencies
   await page.route('**/api/**', route => {
     const url = new URL(route.request().url());
+    // establish an active browser session
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    // render one idle agent
     if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready' }], projects: [] } });
+    // disable optional push setup
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    // issue one log ticket
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    // return no saved prompts
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
@@ -14,23 +49,36 @@ test('grows the prompt to show all content plus one blank line and shrinks again
   await page.goto('/');
   const prompt = page.getByRole('textbox', { name: 'Prompt' });
   await expect(prompt).toBeVisible();
-  const initialHeight = await prompt.evaluate(input => input.getBoundingClientRect().height);
+  const initial = await expectPromptFitsContent(prompt);
 
+  // build explicit prompt lines
   const lines = Array.from({ length: 8 }, (_, index) => `Prompt line ${index + 1}`);
   await prompt.fill(lines.join('\n'));
-  await expect.poll(() => prompt.evaluate(input => input.getBoundingClientRect().height)).toBeGreaterThan(initialHeight);
-  const dimensions = await prompt.evaluate((input, lineCount) => {
-    const style = getComputedStyle(input);
-    const lineHeight = Number.parseFloat(style.lineHeight);
-    const chrome = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom) + Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
-    return { height: input.getBoundingClientRect().height, minimum: lineHeight * (lineCount + 1) + chrome, maximum: lineHeight * (lineCount + 2) + chrome };
-  }, lines.length);
-  expect(dimensions.height).toBeGreaterThanOrEqual(dimensions.minimum - 1);
-  expect(dimensions.height).toBeLessThan(dimensions.maximum + 1);
+  const filled = await expectPromptFitsContent(prompt);
+  expect(filled.height).toBeGreaterThan(initial.height);
+
+  await prompt.pressSequentially(' still on the last line');
+  const sameLine = await expectPromptFitsContent(prompt);
+  expect(sameLine.height).toBeCloseTo(filled.height, 0);
+
+  await prompt.press('Shift+Enter');
+  const grown = await expectPromptFitsContent(prompt);
+  expect(grown.height - sameLine.height).toBeCloseTo(grown.lineHeight, 0);
+
+  await prompt.press('Backspace');
+  const shrunk = await expectPromptFitsContent(prompt);
+  expect(shrunk.height).toBeCloseTo(sameLine.height, 0);
+
+  const wrappedText = 'This prompt wraps naturally without any explicit newline. '.repeat(12);
+  await prompt.fill(wrappedText);
+  await expect(prompt).toHaveValue(wrappedText);
+  const wrapped = await expectPromptFitsContent(prompt);
+  expect(wrapped.contentHeight).toBeGreaterThan(wrapped.minHeight);
 
   await prompt.fill('Short prompt');
-  await expect.poll(() => prompt.evaluate(input => input.getBoundingClientRect().height)).toBeLessThan(dimensions.height);
-  expect(await prompt.evaluate(input => input.getBoundingClientRect().height)).toBeCloseTo(initialHeight, 0);
+  const short = await expectPromptFitsContent(prompt);
+  expect(short.height).toBeLessThan(wrapped.height);
+  expect(short.height).toBeCloseTo(initial.height, 0);
 });
 
 test('caps the prompt at half the viewport and scrolls overflowing content', async ({ page }) => {
