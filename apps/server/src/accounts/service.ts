@@ -3,6 +3,7 @@ import { constants, type Dirent } from 'node:fs';
 import { mkdir, mkdtemp, open, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { record, safeAccountId } from './validation.js';
 import {
   createCodexProtocolClient,
   initializeCodexProtocol,
@@ -11,7 +12,7 @@ import {
   type CodexProtocolNotification
 } from './protocol.js';
 
-export const safeAccountId = /^[a-zA-Z0-9_-]{1,80}$/u;
+export { safeAccountId } from './validation.js';
 
 export type AccountRateLimitWindow = {
   usedPercent: number;
@@ -29,6 +30,7 @@ export type AccountSummary = {
   id: string;
   label: string;
   active: boolean;
+  authMode?: 'apikey';
   email?: string;
   planType?: string;
   limits?: AccountLimits;
@@ -50,6 +52,7 @@ export type AccountQueryResult = {
 export type AccountQueryContext = {
   id: string;
   active: boolean;
+  authMode: 'chatgpt' | 'apikey';
   codexHome: string;
   authFile: string;
   signal: AbortSignal;
@@ -82,6 +85,7 @@ type ParsedAuth = {
   contents: Buffer;
   contentDigest: string;
   fingerprint: string;
+  mode: 'chatgpt' | 'apikey';
 };
 
 type AccountIdentity = {
@@ -108,7 +112,6 @@ type LoginSession = {
 
 type RepairTarget = {
   id: string;
-  label: string;
   authFile: string;
   sourceContentDigest: string;
   sourceFingerprint?: string;
@@ -120,8 +123,16 @@ const defaultQueryTimeoutMs = 15_000;
 const defaultLoginTimeoutMs = 10 * 60_000;
 const completedLoginRetentionMs = 60 * 60_000;
 const loginAuthPollIntervalMs = 50;
+export const maxAccountLabelLength = 120;
+export const maxApiKeyLength = 8192;
 
 class AccountTimeoutError extends Error {}
+
+// distinguish unsafe slots from operational storage failures
+class InvalidAccountFileError extends Error {}
+
+// identify account operations unsupported by one auth mode
+export class UnsupportedAccountOperationError extends Error {}
 
 // match one filesystem error code
 function hasFileErrorCode(error: unknown, code: string): boolean {
@@ -137,13 +148,6 @@ async function readDirectory(path: string): Promise<Dirent[]> {
     if (hasFileErrorCode(error, 'ENOENT')) return [];
     throw error;
   }
-}
-
-// narrow unknown objects
-function record(value: unknown): Record<string, unknown> | undefined {
-  // reject arrays and null
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  return value as Record<string, unknown>;
 }
 
 // hash secret-bearing inputs
@@ -203,7 +207,8 @@ function parseAuth(contents: Buffer): ParsedAuth {
   return {
     contents,
     contentDigest: digest(contents),
-    fingerprint: digest(JSON.stringify([mode, identityKind, identityValue]))
+    fingerprint: digest(JSON.stringify([mode, identityKind, identityValue])),
+    mode
   };
 }
 
@@ -213,7 +218,7 @@ async function readRegularFile(path: string, maxBytes: number): Promise<Buffer> 
   try {
     const metadata = await handle.stat();
     // reject non-files and oversized data
-    if (!metadata.isFile() || metadata.size > maxBytes) throw new Error('Invalid file');
+    if (!metadata.isFile() || metadata.size > maxBytes) throw new InvalidAccountFileError('Invalid file');
     return await handle.readFile();
   } finally {
     await handle.close();
@@ -240,6 +245,23 @@ function safeScalar(value: unknown, maxLength: number): string | undefined {
   // reject empty, long, or control-bearing values
   if (!trimmed || trimmed.length > maxLength || /[\u0000-\u001f\u007f]/u.test(trimmed)) return undefined;
   return trimmed;
+}
+
+// normalize one persisted account label
+export function normalizeAccountLabel(value: unknown): string | undefined {
+  // reject controls before whitespace trimming
+  if (typeof value !== 'string' || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) return undefined;
+  return safeScalar(value, maxAccountLabelLength);
+}
+
+// normalize one api key without assuming provider prefixes
+export function normalizeApiKey(value: unknown): string | undefined {
+  // require one string input
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  // reject empty, long, whitespace-bearing, or control-bearing keys
+  if (!normalized || normalized.length > maxApiKeyLength || /[\s\u0000-\u001f\u007f]/u.test(normalized)) return undefined;
+  return normalized;
 }
 
 // read display identity from one Codex id token
@@ -431,8 +453,71 @@ export class CodexAccountService {
       }
       const label = await this.readLabel(id);
       await atomicWrite(this.activeAuthFile, parsed.contents);
-      return { id, label, active: true };
+      return { id, label, active: true, ...(parsed.mode === 'apikey' ? { authMode: 'apikey' as const } : {}) };
     });
+  }
+
+  // persist one label without changing account credentials
+  async renameAccount(id: string, label: unknown): Promise<AccountSummary> {
+    // reject unsafe ids before path construction
+    if (!safeAccountId.test(id)) throw new Error('Invalid account id');
+    const normalized = normalizeAccountLabel(label);
+    // reject empty, control-bearing, and oversized labels
+    if (normalized === undefined) throw new Error('Invalid account label');
+    // serialize label writes with account persistence
+    return await this.mutate(async () => {
+      const authFile = join(this.accountsDirectory, `${id}.auth.json`);
+      let contents: Buffer;
+      try {
+        contents = await readRegularFile(authFile, maxAuthFileBytes);
+      } catch (error) {
+        // hide missing and unsafe slots but preserve storage failures
+        if (hasFileErrorCode(error, 'ENOENT') || hasFileErrorCode(error, 'ELOOP') || error instanceof InvalidAccountFileError) throw new Error('Account not found');
+        throw error;
+      }
+      let parsed: ParsedAuth | undefined;
+      try {
+        parsed = parseAuth(contents);
+      } catch { /* broken regular slots remain renameable */ }
+      const activeAuth = parsed === undefined ? undefined : await this.readActiveAuth();
+      await atomicWrite(join(this.accountsDirectory, `${id}.label`), normalized);
+      return {
+        id,
+        label: normalized,
+        active: parsed !== undefined && parsed.fingerprint === activeAuth?.fingerprint,
+        ...(parsed?.mode === 'apikey' ? { authMode: 'apikey' as const } : {})
+      };
+    });
+  }
+
+  // save one api key through an isolated codex login
+  async addApiKeyAccount(apiKey: string): Promise<AccountSummary> {
+    const normalized = normalizeApiKey(apiKey);
+    // reject invalid keys before starting a credential process
+    if (normalized === undefined) throw new Error('Invalid API key');
+    const expectedFingerprint = digest(JSON.stringify(['apikey', 'api-key', digest(normalized)]));
+    const tempHome = await mkdtemp(join(tmpdir(), 'rac-codex-api-key-'));
+    let client: CodexProtocolClient | undefined;
+    try {
+      client = await withDeadline(this.createClient(tempHome, { command: this.codexProgram }), this.queryTimeoutMs);
+      await withDeadline(initializeCodexProtocol(client), this.queryTimeoutMs, () => void client?.close());
+      const response = record(await withDeadline(
+        client.request('account/login/start', { type: 'apiKey', apiKey: normalized }),
+        this.queryTimeoutMs,
+        () => void client?.close()
+      ));
+      // require the synchronous api-key login result
+      if (response?.type !== 'apiKey') throw new Error('Invalid API key login response');
+      const parsed = await this.readCompletedAuth(tempHome);
+      // require codex to persist the requested credential mode
+      if (parsed.mode !== 'apikey' || parsed.fingerprint !== expectedFingerprint) throw new Error('Invalid API key credentials');
+      return await this.persistAddedAccount(parsed, {});
+    } catch {
+      throw new Error('Unable to add API key account');
+    } finally {
+      await client?.close().catch(() => undefined);
+      await rm(tempHome, { recursive: true, force: true });
+    }
   }
 
   // redeem one provider reset credit for a configured account
@@ -447,6 +532,8 @@ export class CodexAccountService {
       } catch {
         throw new Error('Account not found');
       }
+      // reject chatgpt-only reset operations before provider startup
+      if (parsed.mode === 'apikey') throw new UnsupportedAccountOperationError('API key accounts do not support ChatGPT resets');
       const label = await this.readLabel(id);
       const activeAuth = await this.readActiveAuth();
       const active = parsed.fingerprint === activeAuth?.fingerprint;
@@ -665,16 +752,17 @@ export class CodexAccountService {
     } catch {
       throw new Error('Account not found');
     }
-    let sourceFingerprint: string | undefined;
+    let sourceAuth: ParsedAuth | undefined;
     try {
-      sourceFingerprint = parseAuth(contents).fingerprint;
+      sourceAuth = parseAuth(contents);
     } catch { /* invalid credentials remain repairable */ }
+    // preserve api-key slots instead of replacing them through device auth
+    if (sourceAuth?.mode === 'apikey') throw new UnsupportedAccountOperationError('API key accounts do not support ChatGPT login');
     return {
       id,
       authFile,
-      label: await this.readLabel(id),
       sourceContentDigest: digest(contents),
-      ...(sourceFingerprint === undefined ? {} : { sourceFingerprint })
+      ...(sourceAuth === undefined ? {} : { sourceFingerprint: sourceAuth.fingerprint })
     };
   }
 
@@ -686,7 +774,12 @@ export class CodexAccountService {
     } catch {
       return { id: slot.id, label: slot.label, active: false, error: 'Invalid account credentials file' };
     }
-    const summary: AccountSummary = { id: slot.id, label: slot.label, active: parsed.fingerprint === activeAuth?.fingerprint };
+    const summary: AccountSummary = {
+      id: slot.id,
+      label: slot.label,
+      active: parsed.fingerprint === activeAuth?.fingerprint,
+      ...(parsed.mode === 'apikey' ? { authMode: 'apikey' } : {})
+    };
     const queryAuth = summary.active && activeAuth !== undefined ? activeAuth : parsed;
     const tempHome = await mkdtemp(join(tmpdir(), 'rac-codex-account-'));
     const tempAuthFile = join(tempHome, 'auth.json');
@@ -695,7 +788,7 @@ export class CodexAccountService {
     try {
       await writeFile(tempAuthFile, queryAuth.contents, { mode: 0o600 });
       const queryResult = await withDeadline(
-        this.runQuery({ id: slot.id, active: summary.active, codexHome: tempHome, authFile: tempAuthFile, signal: controller.signal }),
+        this.runQuery({ id: slot.id, active: summary.active, authMode: parsed.mode, codexHome: tempHome, authFile: tempAuthFile, signal: controller.signal }),
         this.queryTimeoutMs,
         () => controller.abort()
       );
@@ -742,6 +835,8 @@ export class CodexAccountService {
       if (context.signal.aborted) throw new AccountTimeoutError('Account operation timed out');
       await initializeCodexProtocol(client);
       const account = await client.request('account/read', { refreshToken: !context.active });
+      // api-key auth has no chatgpt rate-limit endpoint
+      if (context.authMode === 'apikey') return { account, rateLimits: undefined };
       const rateLimits = await client.request('account/rateLimits/read');
       return { account, rateLimits };
     } finally {
@@ -817,7 +912,7 @@ export class CodexAccountService {
       const client = session.client;
       // require the live login client
       if (!client) throw new Error('Missing login client');
-      const parsed = await this.readCompletedLoginAuth(session);
+      const parsed = await this.readCompletedAuth(session.tempHome);
       const storedIdentity = credentialIdentity(parsed.contents);
       let identity = storedIdentity;
       try {
@@ -845,9 +940,9 @@ export class CodexAccountService {
     this.retainLoginResult(session);
   }
 
-  // wait for Codex to flush completed credentials
-  private async readCompletedLoginAuth(session: LoginSession): Promise<ParsedAuth> {
-    const authFile = join(session.tempHome, 'auth.json');
+  // wait for codex to flush completed credentials
+  private async readCompletedAuth(codexHome: string): Promise<ParsedAuth> {
+    const authFile = join(codexHome, 'auth.json');
     const deadline = Date.now() + this.queryTimeoutMs;
     let lastError: unknown = new Error('Login credentials unavailable');
     // tolerate completion notifications that precede the atomic auth write
@@ -868,25 +963,31 @@ export class CodexAccountService {
       const entries = await readDirectory(this.accountsDirectory);
       let highest = 0;
       let existingId: string | undefined;
-      // find the highest configured conventional slot
+      let persistedLabel: string | undefined;
+      // find the highest slot and any matching safe identity
       for (const entry of entries) {
-        const match = /^account-(\d+)\.auth\.json$/u.exec(entry.name);
         // ignore unrelated and non-file entries
-        if (!entry.isFile() || !match?.[1]) continue;
-        const number = Number(match[1]);
-        // track safe sequence values
-        if (Number.isSafeInteger(number) && number > highest) highest = number;
+        if (!entry.isFile() || !entry.name.endsWith('.auth.json')) continue;
+        const configuredId = entry.name.slice(0, -'.auth.json'.length);
+        // ignore unsafe configured identifiers
+        if (!safeAccountId.test(configuredId)) continue;
+        const match = /^account-(\d+)\.auth\.json$/u.exec(entry.name);
+        // track safe conventional sequence values
+        if (match?.[1]) {
+          const number = Number(match[1]);
+          // retain the largest safe sequence
+          if (Number.isSafeInteger(number) && number > highest) highest = number;
+        }
         try {
           const existing = parseAuth(await readRegularFile(join(this.accountsDirectory, entry.name), maxAuthFileBytes));
           // reuse the first matching identity
-          if (existingId === undefined && existing.fingerprint === parsed.fingerprint) existingId = entry.name.slice(0, -'.auth.json'.length);
+          if (existingId === undefined && existing.fingerprint === parsed.fingerprint) existingId = configuredId;
         } catch { /* ignore invalid existing slots */ }
       }
       let id = existingId;
       // refresh a known identity in place
       if (id !== undefined) {
-        const label = identity.email ?? id;
-        await atomicWrite(join(this.accountsDirectory, `${id}.label`), label);
+        persistedLabel = await this.readLabel(id);
         await atomicWrite(join(this.accountsDirectory, `${id}.auth.json`), parsed.contents);
       } else {
         await mkdir(this.accountsDirectory, { recursive: true, mode: 0o700 });
@@ -898,11 +999,13 @@ export class CodexAccountService {
           const candidate = `account-${sequence}`;
           const authFile = join(this.accountsDirectory, `${candidate}.auth.json`);
           const labelFile = join(this.accountsDirectory, `${candidate}.label`);
+          const label = parsed.mode === 'apikey' ? `API key (${candidate})` : identity.email ?? candidate;
           try {
             await writeFile(authFile, parsed.contents, { mode: 0o600, flag: 'wx' });
             try {
-              await writeFile(labelFile, identity.email ?? candidate, { mode: 0o600, flag: 'wx' });
+              await writeFile(labelFile, label, { mode: 0o600, flag: 'wx' });
               id = candidate;
+              persistedLabel = label;
             } catch (error) {
               await rm(authFile, { force: true });
               // skip externally reserved labels
@@ -924,9 +1027,9 @@ export class CodexAccountService {
       }
       const persistedId = id;
       // require the completed allocation
-      if (persistedId === undefined) throw new Error('Unable to allocate account slot');
+      if (persistedId === undefined || persistedLabel === undefined) throw new Error('Unable to allocate account slot');
       const active = parsed.fingerprint === (await this.readActiveAuth())?.fingerprint;
-      return { id: persistedId, label: identity.email ?? persistedId, active, ...identity };
+      return { id: persistedId, label: persistedLabel, active, ...(parsed.mode === 'apikey' ? { authMode: 'apikey' as const } : {}), ...identity };
     });
   }
 
@@ -944,7 +1047,8 @@ export class CodexAccountService {
       await atomicWrite(repair.authFile, parsed.contents);
       // repair live credentials only when this slot is still selected
       if (active) await atomicWrite(this.activeAuthFile, parsed.contents);
-      return { id: repair.id, label: repair.label, active, ...identity };
+      const label = await this.readLabel(repair.id);
+      return { id: repair.id, label, active, ...identity };
     });
   }
 

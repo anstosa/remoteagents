@@ -7,6 +7,7 @@ import { buildApp } from '../src/app.js';
 import { stated } from './helpers/agent.js';
 import { testWorktree } from './helpers/config.js';
 import { AuthService } from '../src/auth/service.js';
+import { UnsupportedAccountOperationError } from '../src/accounts/index.js';
 import type { ValidatedConfig } from '../src/config/schema.js';
 import { QueuedPromptService } from '../src/prompts/queue.js';
 
@@ -108,6 +109,141 @@ describe('Codex account API', () => {
     expect(status.json()).toEqual({ status: 'succeeded', account: { id: 'account-3', label: 'new@example.com', email: 'new@example.com', planType: 'plus', active: false } });
     const cancelled = await app.inject({ method: 'DELETE', url: '/api/codex/accounts/login/login-1', headers });
     expect(cancelled.statusCode).toBe(204);
+  }, 15_000);
+
+  it('renames accounts through an authenticated mutation and returns only public fields', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const received: Array<{ id: string; label: unknown }> = [];
+    const accounts = {
+      // keep unrelated listing empty
+      listAccounts: async () => [],
+      // reject unrelated switching
+      switchAccount: async () => { throw new Error('unused'); },
+      // record sanitized rename inputs
+      renameAccount: async (id: string, label: unknown) => {
+        received.push({ id, label });
+        // model safe missing and storage failures
+        if (id === 'missing') throw new Error('Account not found');
+        if (id === 'failed') throw new Error(`storage leaked ${String(label)}`);
+        return { id, label: String(label), active: true, authMode: 'apikey' as const, email: 'hidden@example.com', providerSecret: 'must-not-leak' };
+      },
+      // reject unrelated login startup
+      startAddAccount: async () => { throw new Error('unused'); },
+      // return an unused terminal state
+      status: async () => ({ status: 'failed', error: 'unused' } as const),
+      // reject unrelated login cancellation
+      cancelAddAccount: async () => false,
+      // close without resources
+      close: async () => {}
+    };
+    app = await buildApp(baseConfig, { auth: new AuthService(hash, Buffer.alloc(32, 35).toString('base64url')), accounts: accounts as never });
+    const headers = await login(app);
+
+    const unauthenticated = await app.inject({ method: 'PATCH', url: '/api/codex/accounts/account-1', headers: { host: headers.host, origin: headers.origin, 'x-csrf-token': headers['x-csrf-token'] }, payload: { label: 'Renamed' } });
+    expect(unauthenticated.statusCode).toBe(401);
+    const missingOrigin = await app.inject({ method: 'PATCH', url: '/api/codex/accounts/account-1', headers: { host: headers.host, cookie: headers.cookie, 'x-csrf-token': headers['x-csrf-token'] }, payload: { label: 'Renamed' } });
+    expect(missingOrigin.statusCode).toBe(403);
+    const missingCsrf = await app.inject({ method: 'PATCH', url: '/api/codex/accounts/account-1', headers: { host: headers.host, origin: headers.origin, cookie: headers.cookie }, payload: { label: 'Renamed' } });
+    expect(missingCsrf.statusCode).toBe(403);
+    const secondaryHeaders = await login(app);
+    const inactiveSession = await app.inject({ method: 'PATCH', url: '/api/codex/accounts/account-1', headers: secondaryHeaders, payload: { label: 'Renamed' } });
+    expect(inactiveSession.statusCode).toBe(423);
+
+    // reject unsafe ids and labels before calling the service
+    for (const request of [
+      { url: '/api/codex/accounts/bad.name', label: 'Renamed' },
+      { url: '/api/codex/accounts/account-1', label: undefined },
+      { url: '/api/codex/accounts/account-1', label: '' },
+      { url: '/api/codex/accounts/account-1', label: '\nRenamed' },
+      { url: '/api/codex/accounts/account-1', label: 'Renamed\t' },
+      { url: '/api/codex/accounts/account-1', label: 'line\nbreak' },
+      { url: '/api/codex/accounts/account-1', label: 'control\u0085' },
+      { url: '/api/codex/accounts/account-1', label: 'x'.repeat(121) },
+      { url: '/api/codex/accounts/account-1', label: 42 }
+    ]) {
+      const invalid = await app.inject({ method: 'PATCH', url: request.url, headers, payload: { label: request.label } });
+      expect(invalid.statusCode).toBe(400);
+      expect(invalid.json()).toEqual({ error: 'Invalid account rename.' });
+    }
+    expect(received).toEqual([]);
+
+    const renamed = await app.inject({ method: 'PATCH', url: '/api/codex/accounts/account-1', headers, payload: { label: '  Production key  ' } });
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json()).toEqual({ account: { id: 'account-1', label: 'Production key', active: true, authMode: 'apikey', email: 'hidden@example.com' } });
+    expect(renamed.body).not.toContain('must-not-leak');
+    expect(received).toEqual([{ id: 'account-1', label: 'Production key' }]);
+
+    const missing = await app.inject({ method: 'PATCH', url: '/api/codex/accounts/missing', headers, payload: { label: 'Missing' } });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toEqual({ error: 'Account not found.' });
+    const failed = await app.inject({ method: 'PATCH', url: '/api/codex/accounts/failed', headers, payload: { label: 'private detail' } });
+    expect(failed.statusCode).toBe(503);
+    expect(failed.json()).toEqual({ error: 'Unable to rename account.' });
+    expect(failed.body).not.toContain('private detail');
+  }, 15_000);
+
+  it('saves a bounded api-key account through the controlling session without exposing the key', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const received: string[] = [];
+    const rejectedSecret = 'provider-rejected-secret';
+    const accounts = {
+      listAccounts: async () => [],
+      switchAccount: async () => { throw new Error('unused'); },
+      addApiKeyAccount: async (apiKey: string) => {
+        received.push(apiKey);
+        // return a provider failure without its details reaching the response
+        if (apiKey === rejectedSecret) throw new Error(`provider rejected ${apiKey}`);
+        return { id: 'account-3', label: 'API key (account-3)', active: false, authMode: 'apikey' as const, providerSecret: apiKey };
+      },
+      consumeRateLimitReset: async () => { throw new UnsupportedAccountOperationError('provider details'); },
+      startAddAccount: async () => { throw new UnsupportedAccountOperationError('provider details'); },
+      status: async () => ({ status: 'failed', error: 'unused' } as const),
+      cancelAddAccount: async () => false,
+      close: async () => {}
+    };
+    app = await buildApp(baseConfig, { auth: new AuthService(hash, Buffer.alloc(32, 34).toString('base64url')), accounts: accounts as never });
+    const headers = await login(app);
+    let source = 0;
+    // isolate behavior checks from the production route limiter
+    const postApiKey = (requestHeaders: Record<string, string>, apiKey: unknown) => {
+      source += 1;
+      return app!.inject({ method: 'POST', url: '/api/codex/accounts/api-key', remoteAddress: `192.0.2.${source}`, headers: requestHeaders, payload: { apiKey } });
+    };
+
+    const unauthenticated = await postApiKey({ host: headers.host, origin: headers.origin, 'x-csrf-token': headers['x-csrf-token'] }, 'valid-key');
+    expect(unauthenticated.statusCode).toBe(401);
+    const missingOrigin = await postApiKey({ host: headers.host, cookie: headers.cookie, 'x-csrf-token': headers['x-csrf-token'] }, 'valid-key');
+    expect(missingOrigin.statusCode).toBe(403);
+    const missingCsrf = await postApiKey({ host: headers.host, origin: headers.origin, cookie: headers.cookie }, 'valid-key');
+    expect(missingCsrf.statusCode).toBe(403);
+
+    // reject malformed values before the account service
+    for (const apiKey of ['', '   ', 'embedded space', 'line\nbreak', 'x'.repeat(8193)]) {
+      const invalid = await postApiKey(headers, apiKey);
+      expect(invalid.statusCode).toBe(400);
+      expect(invalid.json()).toEqual({ error: 'Invalid API key.' });
+    }
+    const nonString = await postApiKey(headers, 42);
+    expect(nonString.statusCode).toBe(400);
+    expect(received).toEqual([]);
+
+    const saved = await postApiKey(headers, '  accepted-key\n');
+    expect(saved.statusCode).toBe(201);
+    expect(saved.json()).toEqual({ account: { id: 'account-3', label: 'API key (account-3)', active: false, authMode: 'apikey' } });
+    expect(saved.body).not.toContain('accepted-key');
+    expect(received).toEqual(['accepted-key']);
+
+    const rejected = await postApiKey(headers, rejectedSecret);
+    expect(rejected.statusCode).toBe(503);
+    expect(rejected.json()).toEqual({ error: 'Unable to add API key account.' });
+    expect(rejected.body).not.toContain(rejectedSecret);
+
+    const repair = await app.inject({ method: 'POST', url: '/api/codex/accounts/login', headers, payload: { repairAccountId: 'account-3' } });
+    expect(repair.statusCode).toBe(400);
+    expect(repair.json()).toEqual({ error: 'API key accounts do not support ChatGPT login.' });
+    const reset = await app.inject({ method: 'POST', url: '/api/codex/accounts/account-3/reset', headers });
+    expect(reset.statusCode).toBe(400);
+    expect(reset.json()).toEqual({ error: 'API key accounts do not support ChatGPT resets.' });
   }, 15_000);
 
   it('preserves a prompt that starts while an account switch selects restart targets', async () => {

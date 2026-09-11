@@ -1133,9 +1133,14 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .chatgpt-limit.at-limit progress::-webkit-progress-value { background: var(--red); }
 .chatgpt-limit.at-limit progress::-moz-progress-bar { background: var(--red); }
 .chatgpt-account-copy .chatgpt-limit-reset { color: var(--subtext-0); font-variant-numeric: tabular-nums; }
-.client-settings-accounts .chatgpt-account-reset { width: auto; min-height: 1.8rem; justify-self: start; margin: .25rem 0 0 1.55rem; border: 1px solid color-mix(in srgb, var(--red) 70%, var(--surface-2)); padding: .35rem .6rem; background: color-mix(in srgb, var(--red) 12%, transparent); color: var(--red); box-shadow: none; font-size: .68rem; }
+/* align account actions under the account details */
+.client-settings-accounts .chatgpt-account-actions { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: .4rem; margin: .25rem 0 0 1.55rem; }
+/* keep account labels editable without changing selection */
+.client-settings-accounts .chatgpt-account-rename { width: auto; min-height: 1.8rem; margin: 0; border: 1px solid var(--surface-2); padding: .35rem .6rem; background: var(--surface-0); color: var(--text); box-shadow: none; font-size: .68rem; }
+.client-settings-accounts .chatgpt-account-rename:not(:disabled):hover { border-color: var(--overlay-0); background: var(--surface-1); }
+.client-settings-accounts .chatgpt-account-reset { width: auto; min-height: 1.8rem; margin: 0; border: 1px solid color-mix(in srgb, var(--red) 70%, var(--surface-2)); padding: .35rem .6rem; background: color-mix(in srgb, var(--red) 12%, transparent); color: var(--red); box-shadow: none; font-size: .68rem; }
 .client-settings-accounts .chatgpt-account-reset:not(:disabled):hover { border-color: var(--red); background: color-mix(in srgb, var(--red) 22%, var(--surface-0)); color: var(--red); }
-.client-settings-accounts .chatgpt-account-relogin { width: auto; min-height: 1.8rem; justify-self: start; margin: .25rem 0 0 1.55rem; border: 1px solid color-mix(in srgb, var(--blue) 70%, var(--surface-2)); padding: .35rem .6rem; background: color-mix(in srgb, var(--blue) 12%, transparent); color: var(--blue); box-shadow: none; font-size: .68rem; }
+.client-settings-accounts .chatgpt-account-relogin { width: auto; min-height: 1.8rem; margin: 0; border: 1px solid color-mix(in srgb, var(--blue) 70%, var(--surface-2)); padding: .35rem .6rem; background: color-mix(in srgb, var(--blue) 12%, transparent); color: var(--blue); box-shadow: none; font-size: .68rem; }
 .client-settings-accounts .chatgpt-account-relogin:not(:disabled):hover { border-color: var(--blue); background: color-mix(in srgb, var(--blue) 22%, var(--surface-0)); color: var(--blue); }
 .client-settings-accounts .chatgpt-account-add { width: max-content; min-height: 1.75rem; justify-content: center; border-color: color-mix(in srgb, var(--blue) 62%, var(--surface-2)); padding: .25rem .5rem; background: color-mix(in srgb, var(--blue) 14%, var(--surface-0)); color: var(--blue); box-shadow: none; font-size: .62rem; }
 .client-settings-accounts .chatgpt-account-loading { display: flex; min-height: 4rem; align-items: center; justify-content: center; gap: .5rem; color: var(--overlay-1); }
@@ -1234,6 +1239,13 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .chatgpt-device-code-wrap > small:last-child { color: var(--overlay-1); font-size: .6rem; }
 .chatgpt-device-code-wrap > small.copied { color: var(--green); }
 .chatgpt-account-login > small { color: var(--overlay-1); font: 600 .65rem var(--font-mono); }
+/* keep both authentication options reachable on short screens */
+.chatgpt-account-dialog > div { overflow: auto; max-height: calc(100dvh - 2rem); }
+.chatgpt-account-login.idle { min-height: 0; }
+/* separate the alternative credential form */
+.chatgpt-api-key-form { border-top: 1px solid var(--surface-1); }
+.chatgpt-api-key-form h3 { margin: 0; color: var(--text); font-size: .9rem; }
+.client-rename-dialog .chatgpt-api-key-form > p { font-size: .75rem; }
 .client-rename-dialog > div > .chatgpt-account-login-actions { padding: 0 1rem 1rem; }
 .more-menu > .more-menu-link { display: flex; width: 100%; align-items: center; gap: .45rem; padding: .65rem .9rem; color: var(--text); text-decoration: none; white-space: nowrap; transition: background-color .15s ease, color .15s ease; }
 .flyout-menu button:not(:disabled):hover, .flyout-menu a:hover { background: var(--surface-0); color: var(--text); filter: none; }
@@ -1513,3 +1525,10 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .prune-warning { margin: 0; color: var(--yellow); font-size: .72rem; }
 .prune-error { margin: 0; color: var(--red); font-size: .74rem; }
 .prune-actions { display: flex; justify-content: flex-end; gap: .5rem; }
+
+/* distinguish daily and weekly billing totals */
+.api-key-spend { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem 1rem; margin-top: .35rem; }
+.api-key-spend > span { display: flex; min-width: 0; flex-direction: column; gap: .2rem; }
+.chatgpt-account-copy .api-key-spend strong { font: 600 .9rem/1.4 var(--font-mono); font-variant-numeric: tabular-nums; white-space: normal; overflow-wrap: anywhere; }
+.chatgpt-account-copy .api-key-spend-detail { margin-top: .25rem; font-size: .6rem; font-weight: 400; }
+.api-key-spend-note { margin: 0 0 .9rem; color: var(--subtext-0); font-size: .75rem; line-height: 1.5; }

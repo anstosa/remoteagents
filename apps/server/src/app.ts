@@ -64,13 +64,14 @@ import { RealtimeService } from './integrations/realtime/service.js';
 import { federationForwarder, verifyFederationRequest } from './integrations/federation/index.js';
 import { IntegrationControlService } from './integrations/control/index.js';
 import { ServerAdminService } from './server-admin/service.js';
-import { CodexAccountService, safeAccountId, type AccountRateLimitWindow, type AccountSummary } from './accounts/index.js';
+import { ApiKeySpendService } from './accounts/spend.js';
+import { CodexAccountService, normalizeAccountLabel, normalizeApiKey, safeAccountId, UnsupportedAccountOperationError, type AccountRateLimitWindow, type AccountSummary } from './accounts/index.js';
 import { ConsoleNamedConversationService, type ConsoleNamedConversation } from './conversations/console-named-service.js';
 import { isUpdateAdvisorForTarget, isUpdateAdvisorLabel, updateAdvisorLabel, updateAdvisorPendingLabel } from './update-advisor.js';
 import { isFullGitSha } from './git/revision.js';
 import { AgentUpdateService, type AgentUpdateServiceLike } from './agent-updates/service.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; conversationNamePollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; prompts?: PromptService; notes?: WorktreeNoteService; consoleNamed?: ConsoleNamedConversationService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'>; scheduleBootAt?: Date };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; conversationNamePollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; prompts?: PromptService; notes?: WorktreeNoteService; consoleNamed?: ConsoleNamedConversationService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; accountSpend?: ApiKeySpendService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'>; scheduleBootAt?: Date };
 // buildApp decorates the returned instance with the Schedule scheduler, so index.ts can start it and
 // the HTTP-seam tests can drive its `tick(now)` over the same fakes the Run routes use.
 declare module 'fastify' {
@@ -121,6 +122,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     ]);
   });
   const reviewTourCapability = await reviewTours.capability();
+  const accountSpend = deps.accountSpend ?? new ApiKeySpendService();
   const accounts = deps.accounts ?? new CodexAccountService({ ...(codexProgram === undefined ? {} : { codexProgram }) });
   // tolerate narrow launch doubles while deriving the production launch account home
   const launchHome = typeof launch.agentHome === 'function' ? launch.agentHome() : process.env.HOME ?? '/';
@@ -289,6 +291,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     id: account.id,
     label: account.label,
     active: account.active,
+    ...(account.authMode === 'apikey' ? { authMode: 'apikey' as const } : {}),
     ...(account.email === undefined ? {} : { email: account.email }),
     ...(account.planType === undefined ? {} : { planType: account.planType }),
     ...(account.limits?.primary === undefined ? {} : { primary: publicLimitWindow(account.limits.primary) }),
@@ -1801,9 +1804,36 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.get('/api/codex/accounts', async (request, reply) => {
     controlled(request);
     try {
-      return { accounts: (await accounts.listAccounts()).map(publicAccount) };
+      const configured = await accounts.listAccounts();
+      // fetch billing only for explicitly identified api-key slots
+      const summaries = await Promise.all(configured.map(async account => {
+        const summary = publicAccount(account);
+        // preserve chatgpt summaries without a billing query
+        if (account.authMode !== 'apikey') return summary;
+        const spend = await accountSpend.read(account.id);
+        // expose only public totals and never billing credentials or provider identifiers
+        return { ...summary, spend: spend.status === 'available'
+          ? { status: spend.status, todayUsd: spend.todayUsd, weekUsd: spend.weekUsd, asOf: spend.asOf }
+          : { status: spend.status } };
+      }));
+      return { accounts: summaries };
     } catch {
       return reply.code(503).send({ error: 'Unable to load ChatGPT accounts.' });
+    }
+  });
+  // rename one configured codex account without selecting it
+  app.patch('/api/codex/accounts/:id', async (request, reply) => {
+    controlled(request, true);
+    const id = (request.params as { id: string }).id;
+    const label = normalizeAccountLabel(body(request).label);
+    // require one safe slot and printable bounded label
+    if (!safeAccountId.test(id) || label === undefined) return reply.code(400).send({ error: 'Invalid account rename.' });
+    try {
+      return { account: publicAccount(await accounts.renameAccount(id, label)) };
+    } catch (error) {
+      // distinguish missing slots from storage failures
+      if (error instanceof Error && error.message === 'Account not found') return reply.code(404).send({ error: 'Account not found.' });
+      return reply.code(503).send({ error: 'Unable to rename account.' });
     }
   });
   // switch the global account and restart every open idle worktree
@@ -1869,6 +1899,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       const result = await accounts.consumeRateLimitReset(id);
       return { outcome: result.outcome, ...(result.account === undefined ? {} : { account: publicAccount(result.account) }) };
     } catch (error) {
+      // reject resets unsupported by the stored auth mode
+      if (error instanceof UnsupportedAccountOperationError) return reply.code(400).send({ error: 'API key accounts do not support ChatGPT resets.' });
       // distinguish missing slots from provider failures
       if (error instanceof Error && error.message === 'Account not found') return reply.code(404).send({ error: 'ChatGPT account not found.' });
       return reply.code(502).send({ error: 'Unable to use the ChatGPT reset.' });
@@ -1883,9 +1915,23 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     try {
       return reply.code(201).send({ login: await accounts.startAddAccount(repairAccountId) });
     } catch (error) {
+      // reject device repair unsupported by the stored auth mode
+      if (error instanceof UnsupportedAccountOperationError) return reply.code(400).send({ error: 'API key accounts do not support ChatGPT login.' });
       // distinguish missing repair targets
       if (error instanceof Error && error.message === 'Account not found') return reply.code(404).send({ error: 'ChatGPT account not found.' });
       return reply.code(503).send({ error: 'Unable to start ChatGPT login.' });
+    }
+  });
+  // save one api key as an alternative codex account
+  app.post('/api/codex/accounts/api-key', { config: { rateLimit: { max: 5, timeWindow: '10 minutes' } } }, async (request, reply) => {
+    controlled(request, true);
+    const apiKey = normalizeApiKey(body(request).apiKey);
+    // require one bounded key without provider-specific prefix assumptions
+    if (apiKey === undefined) return reply.code(400).send({ error: 'Invalid API key.' });
+    try {
+      return reply.code(201).send({ account: publicAccount(await accounts.addApiKeyAccount(apiKey)) });
+    } catch {
+      return reply.code(503).send({ error: 'Unable to add API key account.' });
     }
   });
   // report one device-code login state

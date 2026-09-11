@@ -176,6 +176,10 @@ tmux sessions. Enable the optional Cloudflare sidecar with
 After startup, use **Global settings → Add account** to connect one or more
 ChatGPT accounts through device-code login and select the active Codex login.
 Failed account queries offer **Re-login** without changing the active account.
+Use **Rename** beside any saved account or API key to change its display name
+without switching credentials. API-key rows show spending for today and this
+week when optional [OpenAI billing access](docs/accounts.md#api-key-spending) is
+configured; missing billing data is shown as unavailable, never as zero.
 
 Connecting Docker to existing host tmux sessions requires host-specific bind
 mounts, worktree paths, and runtime settings. Follow the

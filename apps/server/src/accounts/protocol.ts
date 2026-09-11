@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface, type Interface as ReadlineInterface } from 'node:readline';
+import { record } from './validation.js';
 
 export type CodexProtocolNotification = { method: string; params?: unknown };
 export type CodexProtocolNotificationListener = (notification: CodexProtocolNotification) => void;
@@ -25,13 +26,6 @@ type JsonlClientOptions = {
 };
 
 const maxProtocolLineBytes = 1024 * 1024;
-
-// narrow unknown objects
-function record(value: unknown): Record<string, unknown> | undefined {
-  // reject arrays and null
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  return value as Record<string, unknown>;
-}
 
 export class JsonlCodexProtocolClient implements CodexProtocolClient {
   private nextId = 1;
@@ -185,8 +179,12 @@ export class JsonlCodexProtocolClient implements CodexProtocolClient {
 export async function createCodexProtocolClient(codexHome: string, options: JsonlClientOptions = {}): Promise<CodexProtocolClient> {
   // never spawn a bare `codex` from PATH; the console configures an absolute program
   if (options.command === undefined) throw new Error('Codex binary is not configured');
+  // exclude server-only billing access from all protocol subprocesses
+  const env: NodeJS.ProcessEnv = { ...process.env, ...options.env, CODEX_HOME: codexHome };
+  delete env.RAC_OPENAI_ADMIN_KEY;
+  delete env.RAC_OPENAI_API_KEY_IDS;
   const child = spawn(options.command, options.args ?? ['app-server', '--listen', 'stdio://'], {
-    env: { ...process.env, ...options.env, CODEX_HOME: codexHome },
+    env,
     stdio: ['pipe', 'pipe', 'pipe']
   });
   return new JsonlCodexProtocolClient(child);

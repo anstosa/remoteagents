@@ -180,7 +180,8 @@ type InstanceStatus = RemoteServer & { attention: InstanceAttention };
 type DavoSettings = { enabled: boolean; available: boolean; name: string; context: string };
 type SessionInfo = { csrfToken: string; active: boolean; deviceName?: string; controllingDeviceName?: string; defaultAgent?: AgentKind; davo?: DavoSettings; server?: ServerInfo };
 type CodexLimitWindow = { usedPercent: number; windowDurationMins?: number; resetsAt?: number };
-type CodexAccount = { id: string; label: string; active: boolean; email?: string; planType?: string; primary?: CodexLimitWindow; secondary?: CodexLimitWindow; resetCount?: number; error?: string };
+type ApiKeySpend = { status: 'available'; todayUsd: number; weekUsd: number; asOf: number } | { status: 'unconfigured' | 'unavailable' };
+type CodexAccount = { id: string; label: string; active: boolean; authMode?: 'apikey'; spend?: ApiKeySpend; email?: string; planType?: string; primary?: CodexLimitWindow; secondary?: CodexLimitWindow; resetCount?: number; error?: string };
 type CodexAccountRestart = { worktreeId: string; status: 'restarted'|'skipped'|'failed'; error?: string };
 type CodexAccountResetOutcome = 'reset'|'nothingToReset'|'noCredit'|'alreadyRedeemed';
 type CodexAccountLogin = { loginId: string; verificationUrl: string; userCode: string };
@@ -700,10 +701,12 @@ type ClientSettings = {
   updateDavo: (settings: Pick<DavoSettings, 'enabled' | 'name' | 'context'>) => Promise<string | undefined>;
   codexAccounts: () => Promise<{ accounts?: CodexAccount[]; error?: string }>;
   switchCodexAccount: (id: string) => Promise<{ account?: CodexAccount; restarts?: CodexAccountRestart[]; error?: string }>;
+  renameCodexAccount: (id: string, label: string) => Promise<{ account?: CodexAccount; error?: string }>;
   resetCodexAccount: (id: string) => Promise<{ outcome?: CodexAccountResetOutcome; account?: CodexAccount; error?: string }>;
+  addCodexApiKeyAccount: (apiKey: string) => Promise<{ account?: CodexAccount; error?: string }>;
   startCodexAccountLogin: (repairAccountId?: string) => Promise<{ login?: CodexAccountLogin; error?: string }>;
   codexAccountLoginStatus: (id: string) => Promise<CodexAccountLoginStatus | undefined>;
-  cancelCodexAccountLogin: (id: string) => Promise<void>;
+  cancelCodexAccountLogin: (id: string) => Promise<boolean>;
 };
 const ClientSettingsContext = createContext<ClientSettings | undefined>(undefined);
 const legacyDavoSettings: DavoSettings = { enabled: true, available: true, name: 'Davo', context: '' };
@@ -865,12 +868,25 @@ const isCodexLimitWindow = (value: unknown): value is CodexLimitWindow => value 
   && (value as CodexLimitWindow).usedPercent <= 100
   && isOptionalUnsignedInteger((value as CodexLimitWindow).windowDurationMins)
   && isOptionalUnsignedInteger((value as CodexLimitWindow).resetsAt);
+// validate exact provider spend without accepting partial totals
+const isApiKeySpend = (value: unknown): value is ApiKeySpend => {
+  // require one object result
+  if (value === null || typeof value !== 'object') return false;
+  const spend = value as { status?: unknown; todayUsd?: unknown; weekUsd?: unknown; asOf?: unknown };
+  // accept explicit missing-data states
+  if (spend.status === 'unconfigured' || spend.status === 'unavailable') return true;
+  return spend.status === 'available' && typeof spend.todayUsd === 'number' && Number.isFinite(spend.todayUsd)
+    && typeof spend.weekUsd === 'number' && Number.isFinite(spend.weekUsd)
+    && typeof spend.asOf === 'number' && Number.isSafeInteger(spend.asOf) && spend.asOf >= 0;
+};
 // validate one safe account summary
 const isCodexAccount = (value: unknown): value is CodexAccount => value !== null
   && typeof value === 'object'
   && typeof (value as CodexAccount).id === 'string'
   && typeof (value as CodexAccount).label === 'string'
   && typeof (value as CodexAccount).active === 'boolean'
+  && ((value as CodexAccount).authMode === undefined || (value as CodexAccount).authMode === 'apikey')
+  && ((value as CodexAccount).spend === undefined || isApiKeySpend((value as CodexAccount).spend))
   && ((value as CodexAccount).email === undefined || typeof (value as CodexAccount).email === 'string')
   && ((value as CodexAccount).planType === undefined || typeof (value as CodexAccount).planType === 'string')
   && ((value as CodexAccount).primary === undefined || isCodexLimitWindow((value as CodexAccount).primary))
@@ -897,8 +913,24 @@ const isCodexAccountLogin = (value: unknown): value is CodexAccountLogin => {
 };
 // label one provider plan
 const codexPlanLabel = (plan: string | undefined): string | undefined => plan === undefined ? undefined : plan.replaceAll('_', ' ').replace(/\b\w/gu, letter => letter.toUpperCase());
-// select one account email label
-const codexAccountEmail = (account: Pick<CodexAccount, 'email' | 'label'>): string => account.email ?? (account.label.includes('@') ? account.label : 'Email unavailable');
+// hide generated slot suffixes without changing custom names
+const codexAccountName = (account: Pick<CodexAccount, 'id' | 'label' | 'authMode'>): string => account.authMode === 'apikey' && account.label === `API key (${account.id})` ? 'API key' : account.label;
+// retain cents in compact dollar totals
+const usdSpend = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// show dollars only after a successful billing query
+function ApiKeySpendSummary({ spend, now }: { spend: ApiKeySpend | undefined; now: number }) {
+  const stale = spend?.status === 'available' && Math.floor(spend.asOf / 86_400) !== Math.floor(now / 86_400_000);
+  const available = spend?.status === 'available' && !stale;
+  const today = available ? usdSpend.format(spend.todayUsd) : 'Unavailable';
+  const week = available ? usdSpend.format(spend.weekUsd) : 'Unavailable';
+  let detail = 'Billing totals unavailable. Reopen settings to refresh.';
+  // label only the state established by the billing response
+  if (available) detail = `As of ${new Date(spend.asOf * 1_000).toLocaleString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })} UTC`;
+  else if (stale) detail = 'Previous-day totals hidden. Reopen settings to refresh.';
+  else if (spend?.status === 'unavailable') detail = 'Billing query failed. Reopen settings to retry.';
+  else if (spend?.status === 'unconfigured') detail = 'OpenAI billing is not configured for this key.';
+  return <><span className="api-key-spend"><span><small>Spent today</small><strong>{today}</strong></span><span><small>Spent this week</small><strong>{week}</strong></span></span><small className="api-key-spend-detail">{detail}</small></>;
+}
 // label one limit duration
 const codexLimitDuration = (minutes: number | undefined): string => {
   // prefer whole days
@@ -1235,8 +1267,9 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const dynamicWorktrees = useDynamicWorktrees();
   const terminalFontIsDefault = terminalFontSize === defaultTerminalFontSize();
   const [open, setOpen] = useState(false);
-  const [dialog, setDialog] = useState<'client' | 'server' | 'account-login'>();
+  const [dialog, setDialog] = useState<'client' | 'server' | 'account-login' | 'account-rename'>();
   const [name, setName] = useState(settings.deviceName);
+  const [renamingAccount, setRenamingAccount] = useState<CodexAccount>();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   const [defaultAgentPending, setDefaultAgentPending] = useState(false);
@@ -1257,9 +1290,12 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const [resettingAccountId, setResettingAccountId] = useState<string>();
   const [accountMessage, setAccountMessage] = useState('');
   const [accountClock, setAccountClock] = useState(() => Date.now());
+  const accountDay = Math.floor(accountClock / 86_400_000);
   const [accountLogin, setAccountLogin] = useState<CodexAccountLogin>();
   const [accountLoginTarget, setAccountLoginTarget] = useState<{ email: string }>();
-  const [accountLoginState, setAccountLoginState] = useState<'pending' | 'failed'>('pending');
+  const [accountLoginState, setAccountLoginState] = useState<'idle' | 'pending' | 'failed'>('pending');
+  const [accountApiKey, setAccountApiKey] = useState('');
+  const [accountApiKeyError, setAccountApiKeyError] = useState('');
   const [deviceCodeCopied, setDeviceCodeCopied] = useState(false);
   const accountLoginRequest = useRef(0);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -1308,7 +1344,7 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     setDavoEnabled(settings.davo.enabled);
     setDavoDraft({ name: settings.davo.name, context: settings.davo.context });
   }, [settings.davo.context, settings.davo.enabled, settings.davo.name]);
-  // query every configured account when opened, only when Codex is configured
+  // refresh accounts on open and at utc day rollover
   useEffect(() => {
     // skip hidden menus and consoles without a configured Codex adapter
     if (!open || !codexConfigured) return;
@@ -1326,7 +1362,7 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
       setAccounts(result.accounts);
     });
     return () => { active = false; };
-  }, [open, codexConfigured, settings.codexAccounts]);
+  }, [open, codexConfigured, settings.codexAccounts, accountDay]);
   // load the deployed server revision when settings opens
   useEffect(() => {
     // skip hidden settings pages
@@ -1355,6 +1391,13 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     setError('');
     setDialog(target);
   };
+  // edit a saved label without selecting the account
+  const beginAccountRename = (account: CodexAccount) => {
+    setRenamingAccount(account);
+    setName(codexAccountName(account));
+    setError('');
+    setDialog('account-rename');
+  };
   // switch the global Codex account
   const switchAccount = async (account: CodexAccount) => {
     // ignore active or duplicate selections
@@ -1372,7 +1415,7 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     setAccounts(current => current.map(candidate => candidate.id === switchedAccount.id ? { ...candidate, ...switchedAccount, active: true } : { ...candidate, active: false }));
     const restarted = result.restarts?.filter(item => item.status === 'restarted').length ?? 0;
     const failed = result.restarts?.filter(item => item.status === 'failed').length ?? 0;
-    setAccountMessage(`Switched to ${codexAccountEmail(account)}. Restarted ${restarted} idle ${restarted === 1 ? 'worktree' : 'worktrees'}${failed === 0 ? '.' : `; ${failed} failed.`}`);
+    setAccountMessage(`Switched to ${codexAccountName(account)}. Restarted ${restarted} idle ${restarted === 1 ? 'worktree' : 'worktrees'}${failed === 0 ? '.' : `; ${failed} failed.`}`);
   };
   // run one configured agent update without closing settings
   const updateAgent = async (kind: AgentKind) => {
@@ -1421,7 +1464,7 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     }
     setResettingAccountId(undefined);
     // report the provider outcome without inventing success
-    const email = codexAccountEmail(account);
+    const email = codexAccountName(account);
     if (result.outcome === 'reset') setAccountMessage(`Used one reset for ${email}.`);
     else if (result.outcome === 'nothingToReset') setAccountMessage(`${email} no longer has a limit available to reset.`);
     else if (result.outcome === 'noCredit') setAccountMessage(`${email} has no resets available.`);
@@ -1429,13 +1472,17 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   };
   // start one device-code login
   const beginAccountLogin = async (account?: CodexAccount) => {
+    // preserve an in-flight account save
+    if (pending) return;
     const requestId = accountLoginRequest.current + 1;
     accountLoginRequest.current = requestId;
     setDialog('account-login');
     setAccountLogin(undefined);
-    setAccountLoginTarget(account === undefined ? undefined : { email: codexAccountEmail(account) });
+    setAccountLoginTarget(account === undefined ? undefined : { email: codexAccountName(account) });
     setAccountLoginState('pending');
     setDeviceCodeCopied(false);
+    setAccountApiKey('');
+    setAccountApiKeyError('');
     setError('');
     const result = await settings.startCodexAccountLogin(account?.id);
     // cancel logins created after the dialog closes or another request starts
@@ -1451,6 +1498,57 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
       return;
     }
     setAccountLogin(result.login);
+  };
+  // save an API key instead of completing device authorization
+  const submitAccountApiKey = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const apiKey = accountApiKey.trim();
+    // reject empty keys and duplicate or repair submissions
+    if (!apiKey || pending || accountLoginTarget !== undefined) return;
+    // reject malformed pasted credentials locally
+    if (apiKey.length > 8192 || /[\s\u0000-\u001f\u007f]/u.test(apiKey)) {
+      setAccountApiKeyError('Enter an API key without spaces or control characters.');
+      return;
+    }
+    accountLoginRequest.current += 1;
+    setPending(true);
+    setAccountApiKeyError('');
+    setAccountLoginState('idle');
+    setAccountLogin(undefined);
+    // stop device polling before storing a different credential
+    if (accountLogin !== undefined && accountLoginState === 'pending') {
+      const cancelled = await settings.cancelCodexAccountLogin(accountLogin.loginId);
+      // check whether device completion won the cancellation race
+      if (!cancelled) {
+        const status = await settings.codexAccountLoginStatus(accountLogin.loginId);
+        // wait for an authorized device login rather than saving two accounts
+        if (status?.status !== 'failed') {
+          setAccountLogin(accountLogin);
+          setAccountLoginState('pending');
+          setPending(false);
+          setAccountApiKeyError('Device sign-in could not be cancelled. Wait for it to finish or try again.');
+          return;
+        }
+      }
+    }
+    const result = await settings.addCodexApiKeyAccount(apiKey);
+    setPending(false);
+    // retain the masked key for correction or retry
+    if (result.account === undefined) {
+      setAccountApiKeyError(result.error ?? 'Unable to save API key.');
+      return;
+    }
+    const addedAccount = result.account;
+    // preserve list-only billing metadata and row order for existing keys
+    setAccounts(current => {
+      // merge a reused identity without discarding its existing snapshot
+      if (current.some(account => account.id === addedAccount.id)) return current.map(account => account.id === addedAccount.id ? { ...account, ...addedAccount } : account);
+      return [...current, addedAccount];
+    });
+    setAccountApiKey('');
+    setDialog(undefined);
+    // distinguish an existing selected key from a newly saved account
+    setAccountMessage(addedAccount.active ? `${codexAccountName(addedAccount)} saved. This account is already selected.` : `${codexAccountName(addedAccount)} added. Select it to use it.`);
   };
   // copy the current device code
   const copyDeviceCode = async () => {
@@ -1474,29 +1572,64 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
       if (accountLogin !== undefined) void settings.cancelCodexAccountLogin(accountLogin.loginId);
     }
     setDialog(undefined);
+    setRenamingAccount(undefined);
+    setAccountApiKey('');
+    setAccountApiKeyError('');
     setError('');
   };
-  // save one client or server name
+  // keep keyboard navigation inside the account popup
+  const accountLoginKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    // close only after any credential save finishes
+    if (event.key === 'Escape') { closeDialog(); return; }
+    // preserve ordinary input keys
+    if (event.key !== 'Tab') return;
+    // select visible enabled controls in popup order
+    const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [href]')).filter(control => control.offsetParent !== null);
+    event.preventDefault();
+    // retain focus while all controls are disabled
+    if (controls.length === 0) return;
+    const activeElement = document.activeElement;
+    const index = activeElement instanceof HTMLElement ? controls.indexOf(activeElement) : -1;
+    const next = event.shiftKey ? (index <= 0 ? controls.length - 1 : index - 1) : (index + 1) % controls.length;
+    controls.at(next)?.focus();
+  };
+  // save a display name without changing account selection
   const submitRename = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    // prevent duplicate writes
-    if (pending || (dialog !== 'client' && dialog !== 'server')) return;
+    // prevent duplicate writes and missing targets
+    if (pending || (dialog !== 'client' && dialog !== 'server' && dialog !== 'account-rename')) return;
     const normalized = name.trim();
-    // keep invalid names local
-    if (!normalized) {
-      setError(`Enter a ${dialog} name.`);
+    // reject empty or control-bearing names locally
+    if (!normalized || /[\u0000-\u001f\u007f-\u009f]/u.test(name)) {
+      setError('Enter a name without control characters.');
       return;
     }
     setPending(true);
     setError('');
-    const failure = dialog === 'client' ? await settings.renameClient(normalized) : await settings.renameServer(normalized);
-    setPending(false);
-    // retain the editor after a failed rename
-    if (failure !== undefined) {
-      setError(failure);
-      return;
+    try {
+      // update only the saved account label
+      if (dialog === 'account-rename') {
+        // retain the editor if its target disappeared
+        if (renamingAccount === undefined) { setError('Account unavailable.'); return; }
+        const result = await settings.renameCodexAccount(renamingAccount.id, normalized);
+        // keep failed edits available for retry
+        if (result.account === undefined) { setError(result.error ?? 'Unable to rename account.'); return; }
+        const renamed = result.account;
+        // retain limits and selection from the current snapshot
+        setAccounts(current => current.map(account => account.id === renamed.id ? { ...account, label: renamed.label } : account));
+        setAccountMessage(`Renamed to ${renamed.label}.`);
+      } else {
+        const failure = dialog === 'client' ? await settings.renameClient(normalized) : await settings.renameServer(normalized);
+        // retain the editor after a failed rename
+        if (failure !== undefined) { setError(failure); return; }
+      }
+      setDialog(undefined);
+      setRenamingAccount(undefined);
+    } catch {
+      setError('Unable to rename. Try again.');
+    } finally {
+      setPending(false);
     }
-    setDialog(undefined);
   };
   // persist one launch fallback without closing settings
   const selectDefaultAgent = async (kind: AgentKind) => {
@@ -1555,10 +1688,12 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     // require an active login
     if (dialog !== 'account-login' || accountLogin === undefined || accountLoginState !== 'pending') return;
     let active = true;
+    const requestId = accountLoginRequest.current;
+    // ignore device responses after an API-key submission
     const poll = async () => {
       const status = await settings.codexAccountLoginStatus(accountLogin.loginId);
       // ignore transient or stale reads
-      if (!active || status === undefined || status.status === 'pending') return;
+      if (!active || requestId !== accountLoginRequest.current || status === undefined || status.status === 'pending') return;
       // show provider failures in place
       if (status.status === 'failed') {
         setAccountLoginState('failed');
@@ -1572,13 +1707,15 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
       }
       const refreshed = await settings.codexAccounts();
       // publish the newly configured account list
-      if (active && refreshed.accounts !== undefined) setAccounts(refreshed.accounts);
+      if (active && requestId === accountLoginRequest.current && refreshed.accounts !== undefined) setAccounts(refreshed.accounts);
       // close the login dialog into a visible success state
-      if (active) {
+      if (active && requestId === accountLoginRequest.current) {
         setDialog(undefined);
         setAccountLogin(undefined);
+        setAccountApiKey('');
         setOpen(true);
-        setAccountMessage(accountLoginTarget === undefined ? `${status.account === undefined ? 'ChatGPT account' : codexAccountEmail(status.account)} added.` : `Re-login complete for ${accountLoginTarget.email}.`);
+        const addedName = status.account === undefined ? 'ChatGPT account' : codexAccountName(status.account);
+        setAccountMessage(accountLoginTarget === undefined ? `${addedName} added.` : `Re-login complete for ${accountLoginTarget.email}.`);
       }
     };
     void poll();
@@ -1587,13 +1724,15 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   }, [accountLogin, accountLoginState, accountLoginTarget, dialog, settings.codexAccountLoginStatus, settings.codexAccounts]);
   // render each configured account
   const accountRows = accounts.map(account => {
-    const plan = codexPlanLabel(account.planType);
-    const details = [account.primary, account.secondary].filter((window): window is CodexLimitWindow => window !== undefined);
-    const email = codexAccountEmail(account);
+    // identify api keys instead of showing a subscription plan
+    const plan = account.authMode === 'apikey' ? 'API Key' : codexPlanLabel(account.planType);
+    const details = (account.authMode === 'apikey' ? [] : [account.primary, account.secondary]).filter((window): window is CodexLimitWindow => window !== undefined);
+    const email = codexAccountName(account);
     const inlinePlan = plan === undefined ? '' : ` (${plan})`;
-    const atLimit = details.some(window => window.usedPercent === 100);
-    const busy = accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined;
-    return <div key={account.id} className="chatgpt-account-option"><button className="chatgpt-account-select" type="button" role="radio" aria-checked={account.active} disabled={account.active || busy} onClick={() => void switchAccount(account)}><span className="chatgpt-account-check" aria-hidden="true">{switchingAccountId === account.id ? <span className="spinner" /> : account.active ? '✓' : ''}</span><span className="chatgpt-account-copy"><strong>{email}{inlinePlan}</strong>{details.map((window, index) => <CodexLimitUsage key={`${account.id}:${index}`} window={window} now={accountClock} />)}{account.resetCount !== undefined && account.resetCount > 0 && <small>{account.resetCount} {account.resetCount === 1 ? 'reset' : 'resets'} available</small>}{account.error !== undefined && <small className="chatgpt-account-error">{account.error}</small>}</span></button>{atLimit && account.resetCount !== undefined && account.resetCount > 0 && <button className="chatgpt-account-reset" type="button" aria-label={`Use reset for ${email}`} disabled={busy} onClick={() => void useAccountReset(account)}>{resettingAccountId === account.id ? <><span className="spinner" />Using reset…</> : 'Use reset'}</button>}{account.error !== undefined && <button className="chatgpt-account-relogin" type="button" aria-label={`Re-login to ${email}`} disabled={busy} onClick={() => void beginAccountLogin(account)}>Re-login</button>}</div>;
+    // api keys do not support chatgpt limit resets
+    const atLimit = account.authMode !== 'apikey' && details.some(window => window.usedPercent === 100);
+    const busy = accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined || pending;
+    return <div key={account.id} className="chatgpt-account-option"><button className="chatgpt-account-select" type="button" role="radio" aria-checked={account.active} disabled={account.active || busy} onClick={() => void switchAccount(account)}><span className="chatgpt-account-check" aria-hidden="true">{switchingAccountId === account.id ? <span className="spinner" /> : account.active ? '✓' : ''}</span><span className="chatgpt-account-copy"><strong title={email}>{email}{inlinePlan}</strong>{account.email !== undefined && account.email !== account.label && <small>{account.email}</small>}{account.authMode === 'apikey' && <ApiKeySpendSummary spend={account.spend} now={accountClock} />}{details.map((window, index) => <CodexLimitUsage key={`${account.id}:${index}`} window={window} now={accountClock} />)}{account.authMode !== 'apikey' && account.resetCount !== undefined && account.resetCount > 0 && <small>{account.resetCount} {account.resetCount === 1 ? 'reset' : 'resets'} available</small>}{account.error !== undefined && <small className="chatgpt-account-error">{account.error}</small>}</span></button>{/* keep account actions in one shared row */}<div className="chatgpt-account-actions" role="group" aria-label={`Actions for ${email}`}><button className="chatgpt-account-rename" type="button" aria-label={`Rename ${email}`} disabled={busy} onClick={() => { /* edit this account label */ beginAccountRename(account); }}>Rename</button>{atLimit && account.resetCount !== undefined && account.resetCount > 0 && <button className="chatgpt-account-reset" type="button" aria-label={`Use reset for ${email}`} disabled={busy} onClick={() => void useAccountReset(account)}>{resettingAccountId === account.id ? <><span className="spinner" />Using reset…</> : 'Use reset'}</button>}{account.error !== undefined && account.authMode !== 'apikey' && <button className="chatgpt-account-relogin" type="button" aria-label={`Re-login to ${email}`} disabled={busy} onClick={() => void beginAccountLogin(account)}>Re-login</button>}</div></div>;
   });
   // let each configured agent select the server-wide launch fallback
   const agentsSetting = configuredAdapters.length === 0 ? null : <div className="client-settings-setting client-settings-agents" role="radiogroup" aria-label="Agents"><header><small>AGENTS</small>{defaultAgentPending && <span className="spinner" role="status" aria-label="Saving default agent" />}</header><div className="client-settings-agent-list">{configuredAdapters.map(([kind, capability]) => {
@@ -1643,7 +1782,7 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   else if (settings.davo.available) davoStateLabel = 'Off';
   const davoSection = <section className="client-settings-section client-settings-davo" aria-labelledby="settings-davo-title"><header><div><small>VOICE</small><h2 id="settings-davo-title">{davoTitle}</h2></div><label className="client-settings-toggle"><input aria-label={`Enable ${davoTitle}`} role="switch" type="checkbox" checked={davoEnabled} disabled={davoPending || !settings.davo.available && !davoEnabled} onChange={event => void toggleDavo(event)} /><span className="client-settings-switch-state">{davoStateLabel}</span><span className="client-settings-switch-track" aria-hidden="true" /></label></header>{davoEnabled && <form className="client-settings-davo-form" onSubmit={event => void saveDavo(event)}><label>Name<input aria-label="Davo name" type="text" value={davoDraft.name} maxLength={80} disabled={davoPending} onChange={event => setDavoDraft(current => ({ ...current, name: event.target.value }))} /></label><label>Context<textarea aria-label="Davo context" value={davoDraft.context} maxLength={16_000} disabled={davoPending} onChange={event => setDavoDraft(current => ({ ...current, context: event.target.value }))} /></label><footer>{davoError && <span className="client-settings-davo-error" role="alert">{davoError}</span>}{!davoError && davoMessage && <span className="client-settings-davo-message" role="status">{davoMessage}</span>}<button type="submit" disabled={davoPending || !davoDraft.name.trim()}>{davoPending ? <><span className="spinner" />Saving…</> : 'Save'}</button></footer></form>}{!davoEnabled && davoError && <span className="client-settings-davo-error" role="alert">{davoError}</span>}</section>;
   // the Codex accounts section renders only when adapters.codex is configured
-  const accountsSection = !codexConfigured ? null : <section className="client-settings-section client-settings-accounts" aria-labelledby="settings-accounts-title"><header><small>CHATGPT</small><h2 id="settings-accounts-title">Accounts</h2><button className="chatgpt-account-add" type="button" disabled={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined} onClick={() => void beginAccountLogin()}>+ Add account</button></header><div className="client-settings-account-list" role="radiogroup" aria-label="ChatGPT accounts">{accountsLoading && accounts.length === 0 ? <div className="chatgpt-account-loading" role="status"><span className="spinner" />Loading ChatGPT accounts…</div> : accountRows}</div>{accountMessage && <span className="chatgpt-account-message" role="status">{accountMessage}</span>}</section>;
+  const accountsSection = !codexConfigured ? null : <section className="client-settings-section client-settings-accounts" aria-labelledby="settings-accounts-title"><header><small>CODEX</small><h2 id="settings-accounts-title">Accounts</h2><button className="chatgpt-account-add" type="button" disabled={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined} onClick={() => void beginAccountLogin()}>+ Add account</button></header>{/* define billing periods separately from account selection */}{accounts.some(account => account.authMode === 'apikey') && <p className="api-key-spend-note">API-key spend is in USD, using UTC days and weeks starting Monday. OpenAI reporting may be delayed.</p>}<div className="client-settings-account-list" role="radiogroup" aria-label="ChatGPT accounts">{accountsLoading && accounts.length === 0 ? <div className="chatgpt-account-loading" role="status"><span className="spinner" />Loading ChatGPT accounts…</div> : accountRows}</div>{accountMessage && <span className="chatgpt-account-message" role="status">{accountMessage}</span>}</section>;
   // close the settings page and consume its notification route
   const closeSettings = () => {
     setOpen(false);
@@ -1670,11 +1809,20 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
     controls.at(next)?.focus();
   };
   const settingsPage = !open ? null : createPortal(<div ref={pageRef} id="global-settings-page" className="client-settings-page" role="dialog" aria-modal={settings.serverUpdateVisible ? undefined : true} aria-hidden={settings.serverUpdateVisible || undefined} inert={settings.serverUpdateVisible} aria-labelledby="global-settings-title" aria-busy={accountsLoading || switchingAccountId !== undefined || resettingAccountId !== undefined || defaultAgentPending || davoPending} tabIndex={-1} onKeyDown={pageKey}><header className="client-settings-page-header"><div className="client-settings-page-heading"><small>REMOTE AGENT CONSOLE</small><h1 id="global-settings-title">Settings</h1></div><button className="client-settings-page-close" type="button" aria-label="Back to console" title="Back to console" onClick={closeSettings}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6M9 12h10" /></svg><span>Back to console</span></button></header><div className="client-settings-page-content"><section className="client-settings-section client-settings-console" aria-label="Console settings">{settingsRows}</section>{davoSection}{accountsSection}</div></div>, document.body);
-  const renameTarget = dialog === 'client' || dialog === 'server' ? dialog : undefined;
-  const renameDialog = renameTarget === undefined ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-rename-title" onKeyDown={event => { /* close on escape */ if (event.key === 'Escape') closeDialog(); }}><div><header><div><small>GLOBAL SETTINGS</small><h2 id="settings-rename-title">Rename {renameTarget === 'client' ? 'Client' : 'Server'}</h2></div><button type="button" aria-label={`Close rename ${renameTarget}`} disabled={pending} onClick={closeDialog}>×</button></header><form onSubmit={event => void submitRename(event)}><label>{renameTarget === 'client' ? 'Client' : 'Server'} name<input autoFocus type="text" value={name} maxLength={renameTarget === 'client' ? 64 : 80} autoComplete="nickname" onChange={event => setName(event.target.value)} /></label>{error && <span className="auth-error" role="alert">{error}</span>}<footer><button type="button" disabled={pending} onClick={closeDialog}>Cancel</button><button type="submit" disabled={pending || !name.trim()}>{pending ? <><span className="spinner" />Renaming…</> : 'Save'}</button></footer></form></div></div>, document.body);
+  const renameTarget = dialog === 'client' || dialog === 'server' || dialog === 'account-rename' ? dialog : undefined;
+  let renameTitle = renamingAccount?.authMode === 'apikey' ? 'API key' : 'account';
+  let renameMaxLength = 120;
+  // retain the existing bounds for console identities
+  if (renameTarget === 'client') { renameTitle = 'Client'; renameMaxLength = 64; }
+  else if (renameTarget === 'server') { renameTitle = 'Server'; renameMaxLength = 80; }
+  // reuse the bounded name editor for accounts and console identities
+  const renameDialog = renameTarget === undefined ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-rename-title" onKeyDown={accountLoginKey}><div><header><div><small>GLOBAL SETTINGS</small><h2 id="settings-rename-title">Rename {renameTitle}</h2></div><button type="button" aria-label={`Close rename ${renameTitle.toLowerCase()}`} disabled={pending} onClick={closeDialog}>×</button></header><form onSubmit={event => { /* save the edited name */ void submitRename(event); }}><label>{renameTitle} name<input autoFocus type="text" value={name} maxLength={renameMaxLength} autoComplete="off" disabled={pending} onChange={event => { /* retain the current draft */ setName(event.target.value); }} /></label>{error && <span className="auth-error" role="alert">{error}</span>}<footer><button type="button" disabled={pending} onClick={closeDialog}>Cancel</button><button type="submit" disabled={pending || !name.trim()}>{pending ? <><span className="spinner" />Renaming…</> : 'Save'}</button></footer></form></div></div>, document.body);
   let accountLoginContent: ReactNode;
+  // offer device authorization again after an API-key attempt
+  if (accountLoginState === 'idle') {
+    accountLoginContent = <button type="button" disabled={pending} onClick={() => { /* restart device login */ void beginAccountLogin(); }}>Use device authentication</button>;
   // render a failed login
-  if (accountLoginState === 'failed') {
+  } else if (accountLoginState === 'failed') {
     accountLoginContent = <span className="auth-error">{error || 'ChatGPT login failed.'}</span>;
   // render an active device-code login
   } else if (accountLogin !== undefined) {
@@ -1683,7 +1831,10 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   } else {
     accountLoginContent = <><span className="spinner" /><span>Starting secure ChatGPT login…</span></>;
   }
-  const accountLoginDialog = dialog !== 'account-login' ? null : createPortal(<div className="dialog client-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="account-login-title"><div><header><div><small>GLOBAL SETTINGS</small><h2 id="account-login-title">{accountLoginTarget === undefined ? 'Add ChatGPT account' : 'Re-login to ChatGPT'}</h2></div><button type="button" aria-label="Close account login" onClick={closeDialog}>×</button></header><div className={`chatgpt-account-login ${accountLoginState}`} role="status">{accountLoginContent}</div><footer className="chatgpt-account-login-actions"><button type="button" onClick={closeDialog}>Cancel</button></footer></div></div>, document.body);
+  // keep API keys out of the repair flow and browser persistence
+  const accountApiKeyForm = accountLoginTarget !== undefined ? null : <form id="chatgpt-api-key-form" className="chatgpt-api-key-form" onSubmit={event => { /* save the pasted credential */ void submitAccountApiKey(event); }} aria-labelledby="chatgpt-api-key-title"><h3 id="chatgpt-api-key-title">Or use an API key</h3><p id="chatgpt-api-key-description">Use an OpenAI API key instead of device authentication. API usage is billed separately from ChatGPT.</p><label>API key<input type="password" value={accountApiKey} placeholder="Paste your API key" maxLength={8192} {...noAutofill} disabled={pending} aria-describedby="chatgpt-api-key-description" onChange={event => { /* keep the credential only in this dialog */ setAccountApiKey(event.target.value); setAccountApiKeyError(''); }} /></label>{accountApiKeyError && <span className="auth-error" role="alert">{accountApiKeyError}</span>}</form>;
+  // render both account-add alternatives with one shared cancel action
+  const accountLoginDialog = dialog !== 'account-login' ? null : createPortal(<div className="dialog client-rename-dialog chatgpt-account-dialog" role="dialog" aria-modal="true" aria-labelledby="account-login-title" onKeyDown={accountLoginKey}><div><header><div><small>GLOBAL SETTINGS</small><h2 id="account-login-title">{accountLoginTarget === undefined ? 'Add ChatGPT account' : 'Re-login to ChatGPT'}</h2></div><button autoFocus type="button" aria-label="Close account login" disabled={pending} onClick={closeDialog}>×</button></header><div className={`chatgpt-account-login ${accountLoginState}`} role="status">{accountLoginContent}</div>{accountApiKeyForm}<footer className="chatgpt-account-login-actions"><button type="button" disabled={pending} onClick={closeDialog}>Cancel</button>{accountLoginTarget === undefined && <button type="submit" form="chatgpt-api-key-form" disabled={pending || !accountApiKey.trim()}>{pending ? <><span className="spinner" />Saving…</> : 'Add API key'}</button>}</footer></div></div>, document.body);
   // toggle the settings page as a fresh user action
   const toggleSettings = () => {
     // clear stale operation messages on a new open
@@ -7245,6 +7396,14 @@ function App() {
     if (!response.ok || !isCodexAccount(payload?.account) || !Array.isArray(payload?.restarts) || !payload.restarts.every(isCodexAccountRestart)) return { error: typeof payload?.error === 'string' ? payload.error : 'Unable to switch ChatGPT accounts.' };
     return { account: payload.account, restarts: payload.restarts };
   }, []);
+  // persist one account display name through the controlled boundary
+  const renameCodexAccount = useCallback(async (id: string, label: string): Promise<{ account?: CodexAccount; error?: string }> => {
+    const response = await request(`/api/codex/accounts/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ label }) });
+    const payload = await response.json().catch(() => undefined) as { account?: unknown; error?: unknown } | undefined;
+    // reject malformed or mismatched rename results
+    if (!response.ok || !isCodexAccount(payload?.account) || payload.account.id !== id) return { error: typeof payload?.error === 'string' ? payload.error : 'Unable to rename account.' };
+    return { account: payload.account };
+  }, []);
   // redeem one ChatGPT rate-limit reset credit
   const resetCodexAccount = useCallback(async (id: string): Promise<{ outcome?: CodexAccountResetOutcome; account?: CodexAccount; error?: string }> => {
     const response = await request(`/api/codex/accounts/${encodeURIComponent(id)}/reset`, { method: 'POST' });
@@ -7252,6 +7411,15 @@ function App() {
     // require one documented reset outcome
     if (!response.ok || !isCodexAccountResetOutcome(payload?.outcome) || payload?.account !== undefined && !isCodexAccount(payload.account)) return { error: typeof payload?.error === 'string' ? payload.error : 'Unable to use the ChatGPT reset.' };
     return { outcome: payload.outcome, ...(payload.account === undefined ? {} : { account: payload.account }) };
+  }, []);
+  // save a key through the authenticated server boundary
+  const addCodexApiKeyAccount = useCallback(async (apiKey: string): Promise<{ account?: CodexAccount; error?: string }> => {
+    const response = await request('/api/codex/accounts/api-key', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ apiKey }) });
+    // discard malformed responses without exposing credential-bearing content
+    const payload = await response.json().catch(() => undefined) as { account?: unknown } | undefined;
+    // keep server and provider diagnostics out of the credential form
+    if (!response.ok || !isCodexAccount(payload?.account)) return { error: 'Unable to save API key. Check the key and try again.' };
+    return { account: payload.account };
   }, []);
   // start one ChatGPT device-code login
   const startCodexAccountLogin = useCallback(async (repairAccountId?: string): Promise<{ login?: CodexAccountLogin; error?: string }> => {
@@ -7276,8 +7444,9 @@ function App() {
     return { status, ...(payload?.account === undefined ? {} : { account: payload.account }), ...(typeof payload?.error === 'string' ? { error: payload.error } : {}) };
   }, []);
   // cancel one abandoned account login
-  const cancelCodexAccountLogin = useCallback(async (id: string): Promise<void> => {
-    await request(`/api/codex/accounts/login/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  const cancelCodexAccountLogin = useCallback(async (id: string): Promise<boolean> => {
+    const response = await request(`/api/codex/accounts/login/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    return response.status === 204;
   }, []);
   const refreshSession = useCallback(async () => {
     try {
@@ -7497,7 +7666,7 @@ function App() {
           ? <ControlScreen session={sessionInfo} claimed={applySession} />
           : <Login initialError={error} done={applySession} />;
   // expose settings without a manual server update bypass
-  const clientSettings = useMemo<ClientSettings | undefined>(() => state === 'ready' && sessionInfo?.deviceName !== undefined ? { deviceName: sessionInfo.deviceName, serverName: serverInfo.name, serverUrl: serverInfo.url, clientUpdateAvailable, serverUpdateAvailable, serverUpdateVisible: serverUpdateOpen && !serverUpdateMinimized, serverUpdateMinimized, defaultAgent: sessionInfo.defaultAgent, davo: sessionInfo.davo ?? legacyDavoSettings, renameClient, renameServer, loadServerRevision, reloadClient, openServerUpdate, setDefaultAgent, agentUpdates, updateAgent, updateDavo, codexAccounts, switchCodexAccount, resetCodexAccount, startCodexAccountLogin, codexAccountLoginStatus, cancelCodexAccountLogin } : undefined, [agentUpdates, cancelCodexAccountLogin, clientUpdateAvailable, codexAccountLoginStatus, codexAccounts, loadServerRevision, openServerUpdate, reloadClient, renameClient, renameServer, resetCodexAccount, serverInfo.name, serverInfo.url, serverUpdateAvailable, serverUpdateMinimized, serverUpdateOpen, sessionInfo?.davo, sessionInfo?.defaultAgent, sessionInfo?.deviceName, setDefaultAgent, startCodexAccountLogin, state, switchCodexAccount, updateAgent, updateDavo]);
+  const clientSettings = useMemo<ClientSettings | undefined>(() => state === 'ready' && sessionInfo?.deviceName !== undefined ? { deviceName: sessionInfo.deviceName, serverName: serverInfo.name, serverUrl: serverInfo.url, clientUpdateAvailable, serverUpdateAvailable, serverUpdateVisible: serverUpdateOpen && !serverUpdateMinimized, serverUpdateMinimized, defaultAgent: sessionInfo.defaultAgent, davo: sessionInfo.davo ?? legacyDavoSettings, renameClient, renameServer, loadServerRevision, reloadClient, openServerUpdate, setDefaultAgent, agentUpdates, updateAgent, updateDavo, codexAccounts, switchCodexAccount, renameCodexAccount, resetCodexAccount, addCodexApiKeyAccount, startCodexAccountLogin, codexAccountLoginStatus, cancelCodexAccountLogin } : undefined, [addCodexApiKeyAccount, agentUpdates, cancelCodexAccountLogin, clientUpdateAvailable, codexAccountLoginStatus, codexAccounts, loadServerRevision, openServerUpdate, reloadClient, renameClient, renameServer, renameCodexAccount, resetCodexAccount, serverInfo.name, serverInfo.url, serverUpdateAvailable, serverUpdateMinimized, serverUpdateOpen, sessionInfo?.davo, sessionInfo?.defaultAgent, sessionInfo?.deviceName, setDefaultAgent, startCodexAccountLogin, state, switchCodexAccount, updateAgent, updateDavo]);
   return <ServerContext.Provider value={serverInfo}><ServerStatusContext.Provider value={serverStatuses}><ClientSettingsContext.Provider value={clientSettings}>{screen}<ServerUpdateDialog open={serverUpdateOpen} minimized={serverUpdateMinimized} onMinimize={minimizeServerUpdate} onClose={closeServerUpdate} />{reconnecting && <ReconnectingOverlay />}</ClientSettingsContext.Provider></ServerStatusContext.Provider></ServerContext.Provider>;
 }
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');

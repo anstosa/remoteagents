@@ -1,9 +1,10 @@
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CodexAccountService,
+  UnsupportedAccountOperationError,
   type AddAccountStatus,
   type CodexProtocolClient,
   type CodexProtocolNotification,
@@ -25,6 +26,11 @@ function auth(accountId: string, accessToken: string, refreshToken = 'refresh-se
     auth_mode: 'chatgpt',
     tokens: { account_id: accountId, access_token: accessToken, refresh_token: refreshToken }
   });
+}
+
+// build representative api-key credentials
+function apiKeyAuth(apiKey: string): string {
+  return JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: apiKey });
 }
 
 // build credentials with safe display claims
@@ -334,6 +340,247 @@ describe('codex multi-account service', () => {
     expect(await readFile(join(home, 'auth.json'), 'utf8')).toBe(selected);
   });
 
+  it('persists trimmed labels for chatgpt and api-key slots without changing active auth or querying providers', async () => {
+    const home = await accountHome();
+    const chatgpt = auth('acct-one', 'chatgpt-secret');
+    const apiKey = apiKeyAuth('api-key-secret');
+    await writeSlot(home, 'account-1', chatgpt, 'Personal');
+    await writeSlot(home, 'account-2', apiKey, 'Production API');
+    await writeFile(join(home, 'auth.json'), chatgpt);
+    let queryCount = 0;
+    const service = new CodexAccountService({
+      codexHome: home,
+      // fail if rename starts a provider query
+      queryAccount: async () => {
+        queryCount += 1;
+        throw new Error('provider must not run');
+      }
+    });
+
+    await expect(service.renameAccount('account-1', '  Primary account  ')).resolves.toEqual({
+      id: 'account-1', label: 'Primary account', active: true
+    });
+    await expect(service.renameAccount('account-2', 'Usage key')).resolves.toEqual({
+      id: 'account-2', label: 'Usage key', active: false, authMode: 'apikey'
+    });
+
+    expect(queryCount).toBe(0);
+    expect(await readFile(join(home, 'accounts', 'account-1.label'), 'utf8')).toBe('Primary account');
+    expect(await readFile(join(home, 'accounts', 'account-2.label'), 'utf8')).toBe('Usage key');
+    expect(await readFile(join(home, 'auth.json'), 'utf8')).toBe(chatgpt);
+    const reloaded = new CodexAccountService({
+      codexHome: home,
+      // return minimal safe account data after reload
+      queryAccount: async () => ({ account: { account: { type: 'chatgpt' } }, rateLimits: undefined })
+    });
+    await expect(reloaded.listAccounts()).resolves.toMatchObject([
+      { id: 'account-1', label: 'Primary account' },
+      { id: 'account-2', label: 'Usage key', authMode: 'apikey' }
+    ]);
+  });
+
+  it('validates rename inputs and renames an existing broken regular slot', async () => {
+    const home = await accountHome();
+    await writeSlot(home, 'broken', '{}', 'Broken');
+    const service = new CodexAccountService({ codexHome: home });
+
+    // reject unsafe names and identifiers before writing labels
+    for (const label of ['', '   ', '\nName', 'Name\t', 'line\nbreak', 'control\u0085', 'x'.repeat(121), 42]) {
+      await expect(service.renameAccount('broken', label)).rejects.toThrow('Invalid account label');
+    }
+    await expect(service.renameAccount('../broken', 'Safe')).rejects.toThrow('Invalid account id');
+    await expect(service.renameAccount('missing', 'Safe')).rejects.toThrow('Account not found');
+    // reject auth files reached through symlinks
+    const linkedAuth = join(home, 'linked-auth.json');
+    await writeFile(linkedAuth, auth('acct-linked', 'linked-secret'));
+    await symlink(linkedAuth, join(home, 'accounts', 'linked.auth.json'));
+    await expect(service.renameAccount('linked', 'Unsafe link')).rejects.toThrow('Account not found');
+    await expect(service.renameAccount('broken', '  Needs login  ')).resolves.toEqual({
+      id: 'broken', label: 'Needs login', active: false
+    });
+    expect(await readFile(join(home, 'accounts', 'broken.auth.json'), 'utf8')).toBe('{}');
+    expect(await readFile(join(home, 'accounts', 'broken.label'), 'utf8')).toBe('Needs login');
+  });
+
+  // preserve operational filesystem failures for the http boundary
+  it('propagates account storage failures instead of reporting a missing rename target', async () => {
+    const home = await accountHome();
+    const accountsPath = join(home, 'accounts');
+    await writeFile(accountsPath, 'unexpected regular file');
+    const service = new CodexAccountService({ codexHome: home });
+
+    await expect(service.renameAccount('account-1', 'Renamed')).rejects.toMatchObject({ code: 'ENOTDIR' });
+    expect(await readFile(accountsPath, 'utf8')).toBe('unexpected regular file');
+  });
+
+  it('adds a trimmed api key through isolated codex login without changing the active account', async () => {
+    const home = await accountHome();
+    const active = auth('acct-active', 'active-secret');
+    const apiKey = 'provider-api-secret';
+    await writeSlot(home, 'account-2', auth('acct-existing', 'existing-secret'));
+    await writeFile(join(home, 'auth.json'), active);
+    let isolatedHome = '';
+    const client = new FakeProtocolClient(async (method, params) => {
+      // persist the api key before the synchronous login response
+      if (method === 'account/login/start') {
+        expect(params).toEqual({ type: 'apiKey', apiKey });
+        await writeFile(join(isolatedHome, 'auth.json'), apiKeyAuth(apiKey), { mode: 0o600 });
+        return { type: 'apiKey' };
+      }
+      return {};
+    });
+    const service = new CodexAccountService({
+      codexHome: home,
+      // capture the isolated api-key home
+      createClient: async codexHome => {
+        isolatedHome = codexHome;
+        return client;
+      }
+    });
+
+    const account = await service.addApiKeyAccount(`  ${apiKey}\n`);
+
+    expect(account).toEqual({ id: 'account-3', label: 'API key (account-3)', active: false, authMode: 'apikey' });
+    expect(JSON.stringify(account)).not.toContain(apiKey);
+    expect(await readFile(join(home, 'accounts', 'account-3.auth.json'), 'utf8')).toBe(apiKeyAuth(apiKey));
+    expect(await readFile(join(home, 'accounts', 'account-3.label'), 'utf8')).toBe('API key (account-3)');
+    expect((await stat(join(home, 'accounts', 'account-3.auth.json'))).mode & 0o777).toBe(0o600);
+    expect((await stat(join(home, 'accounts', 'account-3.label'))).mode & 0o777).toBe(0o600);
+    expect(await readFile(join(home, 'auth.json'), 'utf8')).toBe(active);
+    expect(client.calls.map(call => call.method)).toEqual(['initialize', 'account/login/start']);
+    expect(client.closed).toBe(true);
+    await expect(access(isolatedHome)).rejects.toThrow();
+  });
+
+  it('reuses a named api-key slot and preserves its label', async () => {
+    const home = await accountHome();
+    const apiKey = 'named-api-secret';
+    const active = apiKeyAuth(apiKey);
+    await writeSlot(home, 'production', apiKeyAuth(apiKey), 'Production API');
+    await writeFile(join(home, 'auth.json'), active);
+    let isolatedHome = '';
+    const client = new FakeProtocolClient(async method => {
+      // persist matching credentials in the isolated home
+      if (method === 'account/login/start') {
+        await writeFile(join(isolatedHome, 'auth.json'), apiKeyAuth(apiKey), { mode: 0o600 });
+        return { type: 'apiKey' };
+      }
+      return {};
+    });
+    const service = new CodexAccountService({
+      codexHome: home,
+      // capture each isolated api-key home
+      createClient: async codexHome => {
+        isolatedHome = codexHome;
+        return client;
+      }
+    });
+
+    await expect(service.addApiKeyAccount(apiKey)).resolves.toEqual({ id: 'production', label: 'Production API', active: true, authMode: 'apikey' });
+    expect(await readFile(join(home, 'accounts', 'production.label'), 'utf8')).toBe('Production API');
+    expect(await readFile(join(home, 'auth.json'), 'utf8')).toBe(active);
+    await expect(access(join(home, 'accounts', 'account-1.auth.json'))).rejects.toThrow();
+  });
+
+  it('lists api-key accounts without requesting chatgpt rate limits', async () => {
+    const home = await accountHome();
+    const credentials = apiKeyAuth('listed-api-secret');
+    await writeSlot(home, 'account-1', credentials, 'API key (account-1)');
+    await writeFile(join(home, 'auth.json'), credentials);
+    const client = new FakeProtocolClient(async method => {
+      // return the api-key account shape
+      if (method === 'account/read') return { account: { type: 'apiKey' }, requiresOpenaiAuth: true };
+      // fail if the unsupported endpoint is called
+      if (method === 'account/rateLimits/read') throw new Error('chatgpt authentication required');
+      return {};
+    });
+    const service = new CodexAccountService({ codexHome: home, createClient: async () => client });
+
+    await expect(service.listAccounts()).resolves.toEqual([
+      { id: 'account-1', label: 'API key (account-1)', active: true, authMode: 'apikey' }
+    ]);
+    expect(client.calls.map(call => call.method)).toEqual(['initialize', 'account/read']);
+  });
+
+  it('rejects device repair and reset for api-key slots before provider startup', async () => {
+    const home = await accountHome();
+    const credentials = apiKeyAuth('operation-api-secret');
+    await writeSlot(home, 'account-1', credentials, 'API key (account-1)');
+    let createCount = 0;
+    const service = new CodexAccountService({
+      codexHome: home,
+      // count provider clients that must not start
+      createClient: async () => {
+        createCount += 1;
+        throw new Error('provider must not start');
+      }
+    });
+
+    await expect(service.startAddAccount('account-1')).rejects.toThrow(UnsupportedAccountOperationError);
+    await expect(service.consumeRateLimitReset('account-1')).rejects.toThrow(UnsupportedAccountOperationError);
+    expect(createCount).toBe(0);
+    expect(await readFile(join(home, 'accounts', 'account-1.auth.json'), 'utf8')).toBe(credentials);
+    await expect(service.switchAccount('account-1')).resolves.toEqual({ id: 'account-1', label: 'API key (account-1)', active: true, authMode: 'apikey' });
+    expect(await readFile(join(home, 'auth.json'), 'utf8')).toBe(credentials);
+  });
+
+  it('rejects unsafe api keys before protocol use and hides provider failures', async () => {
+    const home = await accountHome();
+    const secret = 'provider-failure-secret';
+    let createCount = 0;
+    let isolatedHome = '';
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const client = new FakeProtocolClient(async method => {
+      // return one secret-bearing provider failure
+      if (method === 'account/login/start') throw new Error(`provider rejected ${secret}`);
+      return {};
+    });
+    const service = new CodexAccountService({
+      codexHome: home,
+      // count only accepted api-key attempts
+      createClient: async codexHome => {
+        createCount += 1;
+        isolatedHome = codexHome;
+        return client;
+      }
+    });
+
+    // reject malformed values before spawning codex
+    for (const invalid of ['', '   ', 'embedded space', 'line\nbreak', 'x'.repeat(8193)]) {
+      await expect(service.addApiKeyAccount(invalid)).rejects.toThrow('Invalid API key');
+    }
+    expect(createCount).toBe(0);
+    await expect(service.addApiKeyAccount(secret)).rejects.toThrow('Unable to add API key account');
+    expect(createCount).toBe(1);
+    expect(logged).not.toHaveBeenCalled();
+    await expect(access(isolatedHome)).rejects.toThrow();
+  });
+
+  it('rejects mismatched api-key credentials written by codex', async () => {
+    const home = await accountHome();
+    let isolatedHome = '';
+    const client = new FakeProtocolClient(async method => {
+      // persist a different credential than the submitted key
+      if (method === 'account/login/start') {
+        await writeFile(join(isolatedHome, 'auth.json'), apiKeyAuth('different-secret'), { mode: 0o600 });
+        return { type: 'apiKey' };
+      }
+      return {};
+    });
+    const service = new CodexAccountService({
+      codexHome: home,
+      // capture the rejected isolated home
+      createClient: async codexHome => {
+        isolatedHome = codexHome;
+        return client;
+      }
+    });
+
+    await expect(service.addApiKeyAccount('submitted-secret')).rejects.toThrow('Unable to add API key account');
+    await expect(access(join(home, 'accounts'))).rejects.toThrow();
+    await expect(access(isolatedHome)).rejects.toThrow();
+  });
+
   it('persists a rotated credential when the later account query fails', async () => {
     const home = await accountHome();
     const original = auth('acct-one', 'old-access', 'old-refresh');
@@ -548,7 +795,7 @@ describe('codex multi-account service', () => {
     await service.close();
   });
 
-  it('reuses an existing slot when the same account is added again', async () => {
+  it('reuses an existing slot when the same account is added again without overwriting its label', async () => {
     const home = await accountHome();
     await writeSlot(home, 'account-1', auth('acct-same', 'old-access'), 'Existing');
     let client!: FakeProtocolClient;
@@ -575,8 +822,9 @@ describe('codex multi-account service', () => {
     const login = await service.startAddAccount();
     client.emit({ method: 'account/login/completed', params: { loginId: login.loginId, success: true } });
     await expect(waitForTerminalStatus(service, login.loginId)).resolves.toMatchObject({
-      status: 'succeeded', account: { id: 'account-1', label: 'same@example.com' }
+      status: 'succeeded', account: { id: 'account-1', label: 'Existing' }
     });
+    expect(await readFile(join(home, 'accounts', 'account-1.label'), 'utf8')).toBe('Existing');
     expect(await readFile(join(home, 'accounts', 'account-1.auth.json'), 'utf8')).toBe(auth('acct-same', 'new-access'));
     await expect(access(join(home, 'accounts', 'account-2.auth.json'))).rejects.toThrow();
     await service.close();
@@ -619,6 +867,45 @@ describe('codex multi-account service', () => {
     await expect(access(join(home, 'accounts', 'account-3.auth.json'))).rejects.toThrow();
     await expect(service.startAddAccount('../account-2')).rejects.toThrow('Invalid account id');
     await expect(service.startAddAccount('missing')).rejects.toThrow('Account not found');
+    await service.close();
+  });
+
+  it('preserves a label renamed while a broken-slot repair is pending', async () => {
+    const home = await accountHome();
+    const active = auth('acct-one', 'active-access');
+    await writeFile(join(home, 'auth.json'), active);
+    await writeSlot(home, 'account-2', '{}', 'Original');
+    let client!: FakeProtocolClient;
+    let loginHome = '';
+    client = new FakeProtocolClient(async method => {
+      // persist repaired credentials before completion
+      if (method === 'account/login/start') {
+        await writeFile(join(loginHome, 'auth.json'), auth('acct-two', 'repaired-access'));
+        return { type: 'chatgptDeviceCode', loginId: 'login-concurrent-label', verificationUrl: 'https://auth.openai.com/device', userCode: 'FIX-LABEL' };
+      }
+      // return the repaired account identity
+      if (method === 'account/read') return { account: { type: 'chatgpt', email: 'work@example.com', planType: 'business' } };
+      return {};
+    });
+    const service = new CodexAccountService({
+      codexHome: home,
+      // capture the isolated repair home
+      createClient: async codexHome => {
+        loginHome = codexHome;
+        return client;
+      }
+    });
+
+    const login = await service.startAddAccount('account-2');
+    await expect(service.renameAccount('account-2', 'Renamed during login')).resolves.toMatchObject({ label: 'Renamed during login' });
+    client.emit({ method: 'account/login/completed', params: { loginId: login.loginId, success: true } });
+
+    await expect(waitForTerminalStatus(service, login.loginId)).resolves.toEqual({
+      status: 'succeeded',
+      account: { id: 'account-2', label: 'Renamed during login', active: false, email: 'work@example.com', planType: 'business' }
+    });
+    expect(await readFile(join(home, 'accounts', 'account-2.label'), 'utf8')).toBe('Renamed during login');
+    expect(await readFile(join(home, 'auth.json'), 'utf8')).toBe(active);
     await service.close();
   });
 
