@@ -142,20 +142,49 @@ describe('TmuxAdapter capture', () => {
     ]);
   });
 
-  it('resumes an agent when its pane has no interactive shell to reclaim the terminal', async () => {
+  // recover when a raw-mode agent consumes ctrl-z instead of suspending
+  it('falls back to the foreground job when ctrl-z does not return the shell', async () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     run
       .mockResolvedValueOnce({ code: 0, stdout: '123\n', stderr: '' })
       .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+    // keep the raw-mode agent in the foreground through the normal poll window
     for (let attempt = 0; attempt < 20; attempt += 1) run.mockResolvedValueOnce({ code: 0, stdout: 'node\n', stderr: '' });
+    run.mockResolvedValueOnce({ code: 0, stdout: '123\n', stderr: '' });
     run.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+
+    await expect(new TmuxAdapter().suspend(socket, '%1')).resolves.toBe(true);
+    expect(run.mock.lastCall?.[1]).toContain('run-shell');
+  });
+
+  // retain failure when the guarded host fallback cannot reclaim the terminal
+  it('reports failure when foreground job suspension fails', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run
+      .mockResolvedValueOnce({ code: 0, stdout: '123\n', stderr: '' })
+      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+    // exhaust the normal shortcut readiness window
+    for (let attempt = 0; attempt < 20; attempt += 1) run.mockResolvedValueOnce({ code: 0, stdout: 'node\n', stderr: '' });
+    run.mockResolvedValueOnce({ code: 0, stdout: '123\n', stderr: '' });
+    run.mockResolvedValueOnce({ code: 1, stdout: '', stderr: '' });
 
     await expect(new TmuxAdapter().suspend(socket, '%1')).resolves.toBe(false);
 
-    expect(run).toHaveBeenLastCalledWith('/usr/bin/tmux', [
-      '-S', '/tmp/tmux', 'run-shell',
-      `tpgid="$(ps -o tpgid= -p 123 | tr -d ' ')" && case "$tpgid" in ''|*[!0-9]*) exit 1;; esac && kill -CONT -- "-$tpgid"`
-    ]);
+    expect(run.mock.lastCall?.[1]).toContain('run-shell');
+  });
+
+  // avoid signaling a reused or replaced pane process
+  it('rejects a changed pane identity before the foreground fallback', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run
+      .mockResolvedValueOnce({ code: 0, stdout: '123\n', stderr: '' })
+      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
+    // simulate an unresponsive agent before its pane is replaced
+    for (let attempt = 0; attempt < 20; attempt += 1) run.mockResolvedValueOnce({ code: 0, stdout: 'node\n', stderr: '' });
+    run.mockResolvedValueOnce({ code: 0, stdout: '456\n', stderr: '' });
+
+    await expect(new TmuxAdapter().suspend(socket, '%1')).resolves.toBe(false);
+    expect(run.mock.calls.some(([, args]) => args.includes('run-shell'))).toBe(false);
   });
 
   it('clears the shell line and foregrounds the suspended agent job', async () => {

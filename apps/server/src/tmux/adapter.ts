@@ -264,20 +264,85 @@ export class TmuxAdapter {
     return (await run(this.binary, ['-S', socket.path, 'set-option', '-p', '-t', pane, '@rac_attention', state])).code === 0;
   }
 
+  // return the terminal to its shell before running a worktree operation
   async suspend(socket: SocketRef, pane: string): Promise<boolean> {
+    // reject unsafe pane coordinates
     if (!paneId.test(pane)) return false;
     const metadata = await run(this.binary, ['-S', socket.path, 'display-message', '-p', '-t', pane, '#{pane_pid}']);
     const pid = metadata.stdout.trim();
+    // capture pane identity before sending the normal suspend shortcut
     if (metadata.code !== 0 || !/^\d+$/u.test(pid)) return false;
+    // let the agent restore its own terminal state first
     if ((await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, 'C-z'])).code !== 0) return false;
+    // keep the normal keyboard-driven suspend fast
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const current = await run(this.binary, ['-S', socket.path, 'display-message', '-p', '-t', pane, '#{pane_current_command}']);
+      // proceed only once a shell owns the terminal
       if (current.code === 0 && /^(?:ba|z|fi|da)?sh$/u.test(current.stdout.trim())) return true;
       await new Promise(resolve => setTimeout(resolve, 25));
     }
-    const resume = `tpgid="$(ps -o tpgid= -p ${pid} | tr -d ' ')" && case "$tpgid" in ''|*[!0-9]*) exit 1;; esac && kill -CONT -- "-$tpgid"`;
-    await run(this.binary, ['-S', socket.path, 'run-shell', resume]);
-    return false;
+    const current = await run(this.binary, ['-S', socket.path, 'display-message', '-p', '-t', pane, '#{pane_pid}']);
+    // do not signal a pane that exited or was replaced while polling
+    if (current.code !== 0 || current.stdout.trim() !== pid) return false;
+    return await this.suspendForegroundJob(socket, pid);
+  }
+
+  // bypass ignored ctrl-z bytes while leaving failed suspension recoverable
+  private async suspendForegroundJob(socket: SocketRef, pid: string): Promise<boolean> {
+    return await this.runShell(socket, `
+# inspect procfs in the tmux server namespace without optional system binaries
+set -f
+# parse fields after the final comm delimiter so spaces and parentheses remain safe
+read_process() {
+  IFS= read -r process_stat < "/proc/$1/stat" || return 1
+  set -- \${process_stat##*) }
+  # require the fields used for identity and job control
+  [ "$#" -ge 20 ] || return 1
+  process_state=$1
+  process_group=$3
+  process_session=$4
+  process_foreground=$6
+  process_started=\${20}
+}
+read_process ${pid} || exit 1
+shell_group=$process_group
+foreground=$process_foreground
+shell_session=$process_session
+# reject missing, invalid, and special process groups
+case "$shell_group:$foreground:$shell_session" in *[!0-9:]*|:*|*::*|*:) exit 1;; esac
+[ "$shell_group" -gt 1 ] && [ "$foreground" -gt 1 ] || exit 1
+# constrain the foreground job to this terminal session
+read_process "$foreground" || exit 1
+[ "$process_group" = "$foreground" ] && [ "$process_session" = "$shell_session" ] || exit 1
+job_started=$process_started
+read_process ${pid} || exit 1
+[ "$process_foreground" = "$foreground" ] || exit 1
+# resume only the captured job if the shell cannot reclaim the terminal
+trap 'kill -s CONT -- "-$foreground" 2>/dev/null || :' EXIT
+# require a real interactive parent shell before stopping any job
+IFS= read -r shell_command < /proc/${pid}/comm || exit 1
+case "$shell_command" in sh|bash|dash|zsh|fish) ;; *) exit 1;; esac
+# accept a shell that reclaimed the terminal after the initial poll
+if [ "$foreground" = "$shell_group" ]; then trap - EXIT; exit 0; fi
+kill -s TSTP -- "-$foreground" || exit 1
+# bound the forced suspend independently of agent keyboard handling
+for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  read_process ${pid} || exit 1
+  # retain suspension only after the original shell owns the terminal
+  if [ "$process_foreground" = "$shell_group" ]; then
+    read_process "$foreground" || exit 1
+    # distinguish a stopped job from one that exited or was replaced
+    [ "$process_group" = "$foreground" ] && [ "$process_session" = "$shell_session" ] && [ "$process_started" = "$job_started" ] || exit 1
+    case "$process_state" in T|t) ;; *) exit 1;; esac
+    trap - EXIT
+    exit 0
+  fi
+  # stop waiting if another job took over this terminal
+  [ "$process_foreground" = "$foreground" ] || exit 1
+  sleep 0.05
+done
+exit 1
+`);
   }
 
   async foreground(socket: SocketRef, pane: string): Promise<boolean> {
