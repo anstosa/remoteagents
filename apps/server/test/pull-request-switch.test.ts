@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { PullRequestSwitchService } from '../src/pull-requests/switch-service.js';
 import type { ValidatedConfig } from '../src/config/schema.js';
 import type { GitCommand } from '../src/git/worktree-state.js';
@@ -31,6 +31,8 @@ function switchingCommand(initialBranch = 'feature/current') {
       if (binary === '/usr/bin/rm') return { code: 0, stdout: '' };
       // share one fake repository identity
       if (args.includes('--git-common-dir')) return commonRepositoryResult;
+      // resolve a shared completion marker
+      if (args.includes('--git-path')) return { code: 0, stdout: `/repositories/project/.git/${args.at(-1)}\n` };
       // expose clean working state
       if (args.includes('status')) return { code: 0, stdout: '' };
       // expose the current branch before and after input
@@ -467,6 +469,128 @@ describe('pull request switching', () => {
     expect(calls[1]).toMatch(/^\x15.*; clear; fg\r$/s);
   });
 
+  // exercise shared metadata across checkout types and host mount aliases
+  it.each([
+    { linked: false, pullRequest: false },
+    { linked: true, pullRequest: false },
+    { linked: false, pullRequest: true },
+    { linked: true, pullRequest: true }
+  ])('observes host completion without shared /tmp (linked: $linked, pull request: $pullRequest)', async ({ linked, pullRequest }) => {
+    const repository = await createMoveRepository();
+    const completionFiles: string[] = [];
+    try {
+      const path = linked ? repository.sourcePath : repository.targetPath;
+      const hostPath = join(repository.root, "host's checkout");
+      await symlink(path, hostPath, 'dir');
+      await mkdir(join(path, 'subdirectory'));
+      await run('/usr/bin/git', ['-C', path, 'branch', 'feature/solo']);
+      await run('/usr/bin/git', ['-C', path, 'remote', 'add', 'origin', repository.targetPath]);
+      const metadata = await run('/usr/bin/git', ['-C', path, 'rev-parse', '--absolute-git-dir']);
+      const targetWorktree = { ...worktree, path, identity: path, hostPath };
+      const targetAgent = { ...agent, workspace: hostPath };
+      // expose the container path separately from the host pane path
+      const discovery = { worktreesNow: () => [targetWorktree], target: async () => ({ agent: targetAgent, socket }), dashboard: async () => ({ generation: 1, agents: [targetAgent], projects: [] }) };
+      // serve the same local revision as a pinned pull request
+      const pulls = { supports: async () => true, open: async () => ({ own: pullRequest ? [{ ...choices[0], branch: 'feature/solo', headSha: repository.headSha }] : [], others: [] }) };
+      // reject reads from the unshared host temporary directory
+      const command: GitCommand = async (binary, args) => {
+        // require completion to live in the shared git metadata
+        if (binary === '/usr/bin/cat') {
+          completionFiles.push(args[0]);
+          expect(dirname(args[0])).toBe(metadata.stdout.trim());
+        }
+        return await run(binary, args);
+      };
+      const tmux = {
+        // model the existing agent suspension contract
+        suspend: async () => true,
+        // execute the actual wrapper from a host-side worktree subdirectory
+        input: async (_socket: unknown, _pane: string, value: string) => {
+          const directory = join(hostPath, 'subdirectory').replaceAll("'", "'\\''");
+          await run('/bin/bash', ['-c', `cd -- '${directory}' && ${value.slice(1, -1)}`]);
+          return true;
+        }
+      };
+      const service = new PullRequestSwitchService(config, discovery as never, tmux as never, pulls as never, command);
+
+      await expect(pullRequest ? service.switch(agent.id, 7) : service.switchBranch(agent.id, 'feature/solo')).resolves.toBe(true);
+      await expect(run('/usr/bin/git', ['-C', path, 'branch', '--show-current'])).resolves.toMatchObject({ stdout: 'feature/solo\n' });
+      await expect(run('/usr/bin/git', ['-C', path, 'status', '--porcelain=v1'])).resolves.toMatchObject({ stdout: '' });
+      // require the successful transaction to remove its metadata files
+      expect((await readdir(metadata.stdout.trim())).filter(name => name.startsWith('rac-switch-'))).toEqual([]);
+      expect(completionFiles).toHaveLength(1);
+    } finally {
+      // remove only completion files created by this fixture, even on regression
+      for (const path of completionFiles) await rm(path, { force: true });
+      await rm(repository.root, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  // fail before suspension when the console cannot resolve shared metadata
+  it.each([
+    { code: 128, stdout: '' },
+    { code: 0, stdout: '' },
+    { code: 0, stdout: '.git/rac-switch-relative\n' }
+  ])('rejects an unreadable completion path and releases the lock ($code, $stdout)', async result => {
+    // expose one available pull request
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+    const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
+    const git = switchingCommand();
+    let unreadable = true;
+    let suspensions = 0;
+    // fail only the first metadata lookup
+    const command: GitCommand = async (binary, args) => {
+      // simulate missing or malformed metadata
+      if (unreadable && args.includes('--git-path')) return result;
+      return await git.command(binary, args);
+    };
+    const tmux = {
+      // count destructive handoffs
+      suspend: async () => { suspensions += 1; return true; },
+      // finish the retry normally
+      input: async () => { git.select('feature/draft'); return true; }
+    };
+    const service = new PullRequestSwitchService(config, discovery as never, tmux as never, pulls as never, command);
+
+    await expect(service.switch(agent.id, 7)).resolves.toBe(false);
+    expect(suspensions).toBe(0);
+    unreadable = false;
+    await expect(service.switch(agent.id, 7)).resolves.toBe(true);
+    expect(suspensions).toBe(1);
+  });
+
+  // refuse read-only metadata before handing control to the pane
+  it('rejects a read-only completion directory and releases the mutation lock', async () => {
+    // expose one ready checkout
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+    const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
+    const git = switchingCommand();
+    let writable = false;
+    let suspensions = 0;
+    // model a read-only mount independently from the test runner's uid
+    const command: GitCommand = async (binary, args) => {
+      // require the shared metadata permission probe
+      if (binary === '/usr/bin/test') {
+        expect(args).toEqual(['-w', '/repositories/project/.git']);
+        return { code: writable ? 0 : 1, stdout: '' };
+      }
+      return await git.command(binary, args);
+    };
+    const tmux = {
+      // detect premature pane suspension
+      suspend: async () => { suspensions += 1; return true; },
+      // finish the retry after write access is restored
+      input: async () => { git.select('feature/draft'); return true; }
+    };
+    const service = new PullRequestSwitchService(config, discovery as never, tmux as never, pulls as never, command);
+
+    await expect(service.switch(agent.id, 7)).resolves.toBe(false);
+    expect(suspensions).toBe(0);
+    writable = true;
+    await expect(service.switch(agent.id, 7)).resolves.toBe(true);
+    expect(suspensions).toBe(1);
+  });
+
   it('blocks a move until an asynchronous pane switch completes', async () => {
     const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
@@ -490,6 +614,51 @@ describe('pull request switching', () => {
     await expect(switching).resolves.toBe(true);
   });
 
+  // preserve completion reporting even when host git cannot start
+  it('records host git failures before releasing the mutation lock', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'rac-pr-switch-failed-git-'));
+    try {
+      await writeFile(join(root, 'git'), '#!/bin/sh\nexit 128\n');
+      await chmod(join(root, 'git'), 0o755);
+      // expose a healthy console-side repository independently from host git
+      const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+      const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
+      const git = switchingCommand();
+      // require the completed shell to report failure instead of polling forever
+      const command: GitCommand = async (binary, args) => {
+        // return a real shared marker path
+        if (args.includes('--git-path')) return { code: 0, stdout: `${join(root, args.at(-1)!)}\n` };
+        // the shell has exited before the first read, so a missing marker is a regression
+        if (binary === '/usr/bin/cat') {
+          const result = await run(binary, args);
+          expect(result.code).toBe(0);
+          return result;
+        }
+        // remove only this fixture's completion marker
+        if (binary === '/usr/bin/rm') return await run(binary, args);
+        return await git.command(binary, args);
+      };
+      let inputs = 0;
+      const tmux = {
+        // simulate a ready pane
+        suspend: async () => true,
+        // wait until the host shell has finished before polling completion
+        input: async (_socket: unknown, _pane: string, value: string) => {
+          inputs += 1;
+          await run('/usr/bin/env', [`PATH=${root}:/usr/bin:/bin`, '/bin/bash', '-c', value.slice(1, -1)]);
+          return true;
+        }
+      };
+      const service = new PullRequestSwitchService(config, discovery as never, tmux as never, pulls as never, command);
+
+      await expect(service.switch(agent.id, 7)).resolves.toBe(false);
+      await expect(service.switch(agent.id, 7)).resolves.toBe(false);
+      expect(inputs).toBe(2);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('records an interrupted shell command before releasing the mutation lock', async () => {
     const root = await mkdtemp(join(tmpdir(), 'rac-pr-switch-shell-'));
     const binaryPath = join(root, 'git');
@@ -503,11 +672,14 @@ describe('pull request switching', () => {
       const command: GitCommand = async (binary, args) => {
         // read real completion markers written by the wrapped shell
         if (binary === '/usr/bin/cat' || binary === '/usr/bin/rm') return await run(binary, args);
+        // use the same fixture directory for both metadata views
+        if (args.includes('--git-path')) return { code: 0, stdout: `${join(root, args.at(-1)!)}\n` };
         return await git.command(binary, args);
       };
       let inputCalls = 0;
       const tmux = {
         suspend: async () => true,
+        // run the wrapper in an isolated signal group
         input: async (_socket: unknown, _pane: string, value: string) => {
           inputCalls += 1;
           const child = spawn('/bin/bash', ['-c', value.slice(1, -1)], {
@@ -662,6 +834,8 @@ describe('pull request switching', () => {
         if (binary === '/usr/bin/rm') return { code: 0, stdout: '' };
         // share one fake repository identity
         if (args.includes('--git-common-dir')) return commonRepositoryResult;
+        // resolve a shared completion marker
+        if (args.includes('--git-path')) return { code: 0, stdout: `/repositories/project/.git/${args.at(-1)}\n` };
         // expose clean working state
         if (args.includes('status')) return { code: 0, stdout: '' };
         // enumerate the local branches for the availability payload

@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative } from 'node:path';
 import type { ValidatedConfig } from '../config/schema.js';
 import type { DiscoveryService } from '../discovery/service.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { run } from '../tmux/command.js';
 import { cleanWorkingTree, type GitCommand } from '../git/worktree-state.js';
-import { worktreeById, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
+import { worktreeById, worktreeHostRoot, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
 import { PullRequestService, type PullRequestChoice } from './service.js';
 import type { Worktree } from '../domain/models.js';
 
@@ -155,9 +156,22 @@ export class PullRequestSwitchService {
     const currentBranch = await this.command('/usr/bin/git', ['-C', targetWorktree.identity, 'symbolic-ref', '--quiet', '--short', 'HEAD']);
     // reject a no-op switch that cannot prove command completion
     if (currentBranch.code === 0 && currentBranch.stdout.trim() === checkoutBranch) return false;
-    const completionPath = `/tmp/rac-switch-${randomUUID()}`;
+    // share git metadata with the host pane, not the container's private /tmp
+    const completionName = `rac-switch-${randomUUID()}`;
+    const completion = await this.command('/usr/bin/git', ['-C', targetWorktree.identity, 'rev-parse', '--path-format=absolute', '--git-path', completionName]);
+    const completionPath = completion.stdout.trim();
+    // reject unavailable metadata before suspending the agent
+    if (completion.code !== 0 || !completionPath.startsWith('/')) return false;
+    const writable = await this.command('/usr/bin/test', ['-w', dirname(completionPath)]);
+    // reject read-only mounts that cannot record checkout completion
+    if (writable.code !== 0) return false;
     const temporaryCompletionPath = `${completionPath}.tmp`;
-    const recordCompletion = `rac_switch_status=$?; trap - EXIT HUP INT TERM; printf '%s\\n' "$rac_switch_status" > ${quote(temporaryCompletionPath)} && mv -- ${quote(temporaryCompletionPath)} ${quote(completionPath)}; exit "$rac_switch_status"`;
+    // remap checkout-local metadata; external git directories use identical bridge paths
+    const relativeCompletionPath = relative(targetWorktree.identity, completionPath);
+    const hostCompletionPath = relativeCompletionPath === '..' || relativeCompletionPath.startsWith('../') || isAbsolute(relativeCompletionPath)
+      ? completionPath
+      : join(worktreeHostRoot(targetWorktree), relativeCompletionPath);
+    const recordCompletion = `rac_switch_status=$?; trap - EXIT HUP INT TERM; printf '%s\\n' "$rac_switch_status" > ${quote(`${hostCompletionPath}.tmp`)} && mv -- ${quote(`${hostCompletionPath}.tmp`)} ${quote(hostCompletionPath)}; exit "$rac_switch_status"`;
     const command = `/bin/sh -c ${quote(`trap ${quote(recordCompletion)} EXIT HUP INT TERM; ${switchCommand}`)}; clear; fg`;
     // suspend before handing the pane to Git
     if (!await this.tmux.suspend(target.socket, target.agent.paneId)) return false;
