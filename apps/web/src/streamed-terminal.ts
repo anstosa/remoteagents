@@ -1,4 +1,4 @@
-import { Terminal as XTerm } from '@xterm/xterm';
+import { Terminal as XTerm, type IDisposable } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { installPaneStreamSafety } from './pane-safety.js';
@@ -120,6 +120,9 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
   let reconnectTimer: number | undefined;
   let overlayFrame: number | undefined;
   let viewportFrame: number | undefined;
+  // Re-proposes the viewport on each render until one carries, then drops itself (wired to
+  // onRender below); see there for why the open and initial-resize sends aren't enough.
+  let firstViewportSub: IDisposable | undefined;
 
   const scheduleOverlayRender = () => {
     if (overlayFrame !== undefined) return;
@@ -139,6 +142,9 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
     const dimensions = fit.proposeDimensions();
     if (!dimensions || !Number.isFinite(dimensions.cols) || !Number.isFinite(dimensions.rows) || dimensions.cols < 1 || dimensions.rows < 1) return;
     connection.send({ type: 'viewport', cols: dimensions.cols, rows: dimensions.rows, scrollback });
+    // A grid was proposable, so the cell is now measured; stop re-proposing on every render.
+    firstViewportSub?.dispose();
+    firstViewportSub = undefined;
   };
 
   const scheduleViewport = () => {
@@ -148,6 +154,9 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
       sendViewport();
     });
   };
+  // The first render measures the character cell proposeDimensions() needs; propose the
+  // grid again on each render until one carries (sendViewport drops this listener then).
+  firstViewportSub = terminal.onRender(() => sendViewport());
 
   // Every byte — the seed included — goes through the hooked parser; the seed is not
   // SGR-only. Ack the consumed count from the write callback so the server's
@@ -319,6 +328,7 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
       if (overlayFrame !== undefined) window.cancelAnimationFrame(overlayFrame);
       if (viewportFrame !== undefined) window.cancelAnimationFrame(viewportFrame);
+      firstViewportSub?.dispose();
       const current = connection;
       connection = undefined;
       if (current !== undefined) { try { current.close(); } catch { /* already closing */ } }
