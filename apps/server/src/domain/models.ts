@@ -18,6 +18,9 @@ export type GitStatusSummary = { files: number; staged: number; unstaged: number
 export type GitComparisonSummary = { base: string; files: number; changes?: GitStatusChange[] };
 export type GitUpstreamSummary = { upstream: string; ahead: number; behind: number };
 export type Agent = { id: string; paneId: string; sessionId: string; socketFingerprint: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind: AgentKind; attention: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; projectId?: string; worktreeId?: string; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion };
+// An Agent's `sessionId` is the console's composite id `${socketFingerprint}:${tmuxSession}`
+// (discovery keys agents that way). Recover the raw tmux session name a command targets.
+export const agentTmuxSession = (agent: Pick<Agent, 'sessionId' | 'socketFingerprint'>): string => agent.sessionId.slice(agent.socketFingerprint.length + 1);
 /**
  * A configured directory the console manages (config `projects[]`). A `repository`
  * Project's identity is the realpath of its common git directory, so two entries

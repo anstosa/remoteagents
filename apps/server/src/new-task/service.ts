@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 import type { ValidatedConfig } from '../config/schema.js';
 import type { DiscoveryService } from '../discovery/service.js';
-import type { Worktree } from '../domain/models.js';
+import { agentTmuxSession, type Worktree } from '../domain/models.js';
 import { cleanAndPushedOrDetached, type GitCommand } from '../git/worktree-state.js';
 import { worktreeHostRoot, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
@@ -38,7 +38,7 @@ export class NewTaskService {
     const task = worktree.newTask.replaceAll('{taskId}', taskId());
     const script = hostCommand(`cd -- ${quote(path)} && eval ${quote(task)}`, home);
     const session = worktreeSessionName(path);
-    const currentSession = target.agent.sessionId.slice(target.agent.socketFingerprint.length + 1);
+    const currentSession = agentTmuxSession(target.agent);
     const shell = process.env.RAC_HOST_TMUX_DIR === undefined ? interactiveShellPath() : hostInteractiveShellPath();
     if (!await startNamedReplacementSession(this.tmuxBinary, target.socket.path, currentSession, session, ['-c', path, shell, '-lc', interactiveShellBootstrap(script, home, shell)], this.command)) return false;
     return await this.tmux.closeSession(target.socket, currentSession);

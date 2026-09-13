@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { run } = vi.hoisted(() => ({ run: vi.fn() }));
-vi.mock('../src/tmux/command.js', () => ({ run }));
+// mock only the process spawner; keep the module's other helpers real
+vi.mock('../src/tmux/command.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../src/tmux/command.js')>()), run }));
 
 import { existsSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';

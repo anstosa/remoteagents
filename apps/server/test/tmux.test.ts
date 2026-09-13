@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { run } = vi.hoisted(() => ({ run: vi.fn() }));
-vi.mock('../src/tmux/command.js', () => ({ run }));
+// mock only the process spawner; keep tmuxBinary and the id patterns real
+vi.mock('../src/tmux/command.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../src/tmux/command.js')>()), run }));
 
 import { TmuxAdapter } from '../src/tmux/adapter.js';
 import { latestAgentMessageFromHistory, latestCompletedAssistantMessage, latestCompletedAssistantTurn } from '../src/adapters/codex-turns.js';
@@ -228,6 +229,24 @@ describe('TmuxAdapter capture', () => {
     run.mockResolvedValueOnce({ code: 0, stdout: '200\t50\t200\t50\n0\t0\tattached,control-mode,UTF-8\ton\n90\t20\tattached,suspended,UTF-8\ton\n80\t24\tattached,ignore-size,UTF-8\ton\n120\t40\tattached,UTF-8\ton\n', stderr: '' });
 
     await expect(new TmuxAdapter().size(socket, '%1')).resolves.toEqual({ cols: 200, rows: 50, clientLimit: { cols: 120, rows: 39 } });
+  });
+
+  it('drops a control-mode client even when it has published a size', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    // the console's own control client (attaches with control-mode + ignore-size) can
+    // report a phantom 80x24; only the real 120x40 terminal should bound the pane
+    run.mockResolvedValueOnce({ code: 0, stdout: '200\t50\t200\t50\n80\t24\tattached,control-mode,ignore-size,UTF-8\toff\n120\t40\tattached,UTF-8\ton\n', stderr: '' });
+
+    await expect(new TmuxAdapter().size(socket, '%1')).resolves.toEqual({ cols: 200, rows: 50, clientLimit: { cols: 120, rows: 39 } });
+  });
+
+  it('does not let a lone control-mode client clamp the pane', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    // only the console's control client is attached, reporting a phantom 80x24; the
+    // pane must not be clamped to it, so no client limit is reported
+    run.mockResolvedValueOnce({ code: 0, stdout: '200\t50\t200\t50\n80\t24\tattached,control-mode,ignore-size,UTF-8\toff\n', stderr: '' });
+
+    await expect(new TmuxAdapter().size(socket, '%1')).resolves.toEqual({ cols: 200, rows: 50 });
   });
 
   it('reports a pane that an attached terminal has grown past the request bound', async () => {

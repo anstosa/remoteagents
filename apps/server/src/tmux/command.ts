@@ -1,6 +1,15 @@
 import { spawn } from 'node:child_process';
 import { userInfo } from 'node:os';
 import { interactiveShellPath } from './interactive-shell.js';
+// the tmux binary the console runs; read at call time so tests can stub the env
+export const tmuxBinary = (): string => process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux';
+// tmux pane and session identifiers, validated before they are put in a command
+export const paneIdPattern = /^%\d+$/u;
+export const sessionIdPattern = /^\$?[-\w.]+$/u;
+// the one capture-pane invocation the log view uses, over either transport: spawned as
+// argv by the adapter, or joined into a control-connection command (ADR 0008). Both must
+// stay byte-identical, so the flags live here. The pane is validated by the caller.
+export const capturePaneArgs = (pane: string, depth: number): string[] => ['capture-pane', '-e', '-p', '-t', pane, '-S', `-${depth}`];
 // build one restricted subprocess environment; SHELL names the console's interactive shell,
 // resolved by the one reader of RAC_INTERACTIVE_SHELL
 export const safeEnv = (): NodeJS.ProcessEnv => { const user = userInfo(); return { HOME: user.homedir, USER: user.username, LOGNAME: user.username, SHELL: interactiveShellPath(), TERM: 'xterm-256color', COLORTERM: 'truecolor', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', PATH: '/usr/local/bin:/usr/bin:/bin' }; };

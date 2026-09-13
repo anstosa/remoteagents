@@ -28,10 +28,11 @@ import { PullRequestSwitchService } from './pull-requests/switch-service.js';
 import { NewTaskService } from './new-task/service.js';
 import { WorktreeManagementService } from './worktrees/management.js';
 import { agentAttentionState, AgentNotificationCoordinator, reviewNotification, scheduleNotification, type AgentNotificationContext } from './notifications.js';
-import { stackActions, type Agent, type SocketRef, type StackAction, type Worktree } from './domain/models.js';
+import { agentTmuxSession, stackActions, type Agent, type SocketRef, type StackAction, type Worktree } from './domain/models.js';
 import { CommandCatalogService } from './commands/service.js';
 import { LatestViewportScheduler, PaneViewportCoordinator } from './logs/viewport-scheduler.js';
 import { boundedViewport } from './logs/viewport.js';
+import { PaneStreamRegistry, type PaneStreamProvider } from './tmux/control.js';
 import { DashboardUpdates, type DashboardPayload } from './dashboard/updates.js';
 import { WorktreeNoteService, type WorktreeNote } from './notes/service.js';
 import { promptNoteContent } from './notes/from-prompt.js';
@@ -71,7 +72,7 @@ import { isUpdateAdvisorForTarget, isUpdateAdvisorLabel, updateAdvisorLabel, upd
 import { isFullGitSha } from './git/revision.js';
 import { AgentUpdateService, type AgentUpdateServiceLike } from './agent-updates/service.js';
 
-export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; conversationNamePollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; prompts?: PromptService; notes?: WorktreeNoteService; consoleNamed?: ConsoleNamedConversationService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; accountSpend?: ApiKeySpendService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'>; scheduleBootAt?: Date };
+export type Dependencies = { auth?: AuthService; control?: ControlService; devices?: DeviceService; discovery?: DiscoveryService; tmux?: TmuxAdapter; tickets?: TicketStore; launch?: LaunchService; launchPollDelay?: () => Promise<void>; conversationNamePollDelay?: () => Promise<void>; push?: PushService; notifications?: AgentNotificationCoordinator; prSwitch?: PullRequestSwitchService; newTask?: NewTaskService; promptHistory?: PromptHistoryService; queuedPrompts?: QueuedPromptService; prompts?: PromptService; notes?: WorktreeNoteService; consoleNamed?: ConsoleNamedConversationService; commandCatalog?: CommandCatalogService; cleanup?: CleanupService; dashboardUpdates?: DashboardUpdates<DashboardPayload>; reviewTours?: ReviewTourService; reviewStore?: ReviewTourStore; workspaceFiles?: WorkspaceFileService; serverAdmin?: ServerAdminService; accounts?: CodexAccountService; accountSpend?: ApiKeySpendService; instanceStatusPoller?: Pick<RemoteInstanceStatusPoller, 'statuses'>; worktreeStore?: WorktreeLaunchStore; worktreeManagement?: WorktreeManagementService; worktreeCommands?: WorktreeCommandService; agentUpdates?: AgentUpdateServiceLike; temporaryPreviews?: Pick<TemporaryPreviewService, 'resolve'>; scheduleBootAt?: Date; paneStream?: PaneStreamProvider };
 // buildApp decorates the returned instance with the Schedule scheduler, so index.ts can start it and
 // the HTTP-seam tests can drive its `tick(now)` over the same fakes the Run routes use.
 declare module 'fastify' {
@@ -81,6 +82,8 @@ declare module 'fastify' {
 const scratchSaveKey = (workspace: string) => `scratch_${createHash('sha256').update(workspace).digest('base64url').slice(0, 40)}`;
 // bound full history scans
 const logMetadataRefreshMs = 30_000;
+// how long a pane must be quiet after output before its live frame is captured
+const logQuietWindowMs = 250;
 const body = (request: FastifyRequest): Record<string, unknown> => (request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {});
 // one Named conversation on the wire: the Adapter's summary tagged with its kind, plus the
 // server-resolved Worktree, console-named flag and whether it is the current Conversation
@@ -128,6 +131,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const launchHome = typeof launch.agentHome === 'function' ? launch.agentHome() : process.env.HOME ?? '/';
   const agentUpdates = deps.agentUpdates ?? new AgentUpdateService(config, launchHome);
   const paneViewports = new PaneViewportCoordinator();
+  // one tmux control-mode client per session, shared by every viewer, drives the
+  // event-driven log frames (ADR 0008)
+  const paneStream: PaneStreamProvider = deps.paneStream ?? new PaneStreamRegistry();
   const updateAdvisors = new Map<string, string>();
   const updateAdvisorLifecycles = new Map<string, Promise<void>>();
   // serialize launch and stop operations for one reviewed target
@@ -2339,6 +2345,11 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         (nextCols, nextRows) => tmux.resize(target.socket, target.agent.paneId, nextCols, nextRows),
         () => tmux.unpinWindowSize(target.socket, target.agent.paneId)
       );
+      // one control-mode client per session (shared, ref-counted); its Captures run on
+      // that connection and its %output drives the event-driven frame below (ADR 0008).
+      // The client attaches to the raw tmux session, not the composite agent id.
+      const paneClient = paneStream.get(target.socket, agentTmuxSession(target.agent));
+      const captureVia = (depth: number) => paneClient.capture(target.agent.paneId, depth);
       let last = '';
       let history = 0;
       let rows = 36;
@@ -2363,8 +2374,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
           if (!control.active(s.id)) return socket.close(1008);
           const detailed = requestedHistory > 0 || Date.now() >= metadataRefreshAt;
           const captured = detailed
-            ? await tmux.captureWindow(target.socket, target.agent.paneId, requestedHistory, requestedRows)
-            : await (tmux.captureRecentWindow?.(target.socket, target.agent.paneId, requestedRows) ?? tmux.captureWindow(target.socket, target.agent.paneId, requestedHistory, requestedRows));
+            ? await tmux.captureWindow(target.socket, target.agent.paneId, requestedHistory, requestedRows, captureVia)
+            : await (tmux.captureRecentWindow?.(target.socket, target.agent.paneId, requestedRows, captureVia) ?? tmux.captureWindow(target.socket, target.agent.paneId, requestedHistory, requestedRows, captureVia));
           if (captured === undefined) return socket.close(1008);
           // A page/viewport request may arrive while tmux is capturing the old
           // window. Never publish that stale window: it makes the next click
@@ -2416,6 +2427,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         if (viewportRefreshing) return;
         viewportRefreshing = true;
         try {
+          // the live frame is event-driven, so an idle pane never polls; keep checking
+          // the control lease here so a dropped connection is still torn down promptly
+          if (!control.active(s.id)) return socket.close(1008);
           if (viewportEstablished) {
             // each tick re-targets the pane: external layout changes are
             // repaired, and a terminal attached to the session caps the size
@@ -2426,11 +2440,29 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
               return;
             }
           }
-          if (history === 0) await poll();
+          // the live frame is event-driven now (a %output on the pane arms the quiet
+          // window below); the interval keeps only the sizing re-target and the
+          // periodic metadata refresh, both of which a later ticket moves onto events
+          if (history === 0 && Date.now() >= metadataRefreshAt) await poll();
         } finally {
           viewportRefreshing = false;
         }
       };
+      // %output on the viewed pane arms a short quiet window; on expiry one Capture on
+      // the control connection produces the live frame, so an idle pane is never
+      // captured. A capture already scheduled coalesces any further output.
+      let quietTimer: ReturnType<typeof setTimeout> | undefined;
+      const armLiveFrame = () => {
+        if (quietTimer !== undefined || history !== 0 || socket.readyState !== socket.OPEN) return;
+        quietTimer = setTimeout(() => { quietTimer = undefined; if (history === 0) void poll(true); }, logQuietWindowMs);
+      };
+      const unsubscribePane = paneClient.subscribe(target.agent.paneId, {
+        onActivity: armLiveFrame,
+        // tmux resumed a paused pane; re-capture its current screen
+        onReseed: () => { if (history === 0) void poll(true); },
+        // the pane, session or control client ended; let the browser reconnect
+        onExit: () => { if (socket.readyState === socket.OPEN) socket.close(1011); }
+      });
       const timer = setInterval(() => { void refresh(); }, config.pollIntervalMs);
       socket.on('message', (raw: unknown) => {
         try {
@@ -2465,12 +2497,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
           throw new Error();
         } catch { socket.close(1008); }
       });
-      socket.on('close', () => { clearInterval(timer); if (paneViewport !== undefined) void paneViewport.release(); });
+      socket.on('close', () => { clearInterval(timer); if (quietTimer !== undefined) clearTimeout(quietTimer); unsubscribePane(); if (paneViewport !== undefined) void paneViewport.release(); });
       await poll();
     } catch { socket.close(1008); }
   });
   app.get('/ws/input/:id', { websocket: true }, async (socket, request) => { try { const s = controlled(request, false); const ticket = String(request.headers['sec-websocket-protocol'] ?? '').split(',').map(x => x.trim())[1]; const id = (request.params as { id: string }).id; if (!tickets.consume(ticket, s.id, 'input', id)) throw new Error(); const target = await discovery.target(id); if (!target) throw new Error(); socket.on('message', (raw: unknown) => { try { if (!control.active(s.id)) throw new Error(); const frame = JSON.parse(String(raw)); if (frame?.v !== 1 || frame?.type !== 'input' || typeof frame.data !== 'string' || !/^[A-Za-z0-9_-]*$/.test(frame.data)) throw new Error(); const decoded = Buffer.from(frame.data, 'base64url'); if (!decoded.length || decoded.length > 65_536 || decoded.toString('base64url') !== frame.data) throw new Error(); const input = decoded.toString('utf8'); const releaseMutation = prompts.beginAgentMutation(id); if (releaseMutation === undefined) throw new Error(); /* route interrupts through queue cancellation; forward the literal Ctrl+C when the agent is idle so a live-log interrupt still reaches the pane */ void (input === '\x03' ? prompts.cancel(id).then(outcome => outcome === 'not-working' ? tmux.input(target.socket, target.agent.paneId, input) : outcome === 'ok') : tmux.input(target.socket, target.agent.paneId, input)).then(ok => { if (!ok) socket.close(1011); }).finally(releaseMutation); } catch { socket.close(1008); } }); } catch { socket.close(1008); } });
-  app.addHook('onClose', async () => { scheduler.stop(); reviewJobs.close(); await accounts.close(); await paneViewports.restoreAll(); dashboardUpdates.close(); });
+  app.addHook('onClose', async () => { scheduler.stop(); reviewJobs.close(); await accounts.close(); await paneViewports.restoreAll(); paneStream.closeAll(); dashboardUpdates.close(); });
   // expose the scheduler on the instance (index.ts starts it; the HTTP-seam tests tick it)
   app.decorate('scheduler', scheduler);
   return app;

@@ -1,10 +1,8 @@
 import type { Pane, SocketRef } from '../domain/models.js';
 import { lastPromptFromHistory, latestAgentMessageFromHistory, latestCompletedAssistantMessage } from '../adapters/codex-turns.js';
 import type { AttentionState, TmuxKey } from '../adapters/types.js';
-import { run } from './command.js';
+import { capturePaneArgs, paneIdPattern as paneId, run, sessionIdPattern as sessionId, tmuxBinary } from './command.js';
 
-const paneId = /^%\d+$/;
-const sessionId = /^\$?[-\w.]+$/;
 const attentionStates: ReadonlySet<string> = new Set(['working', 'finished', 'question']);
 
 // a chord written in one send-keys is read as Meta; wait this long after Escape
@@ -54,6 +52,12 @@ function bottomAlignedWindow(lines: string[], rows: number): string[] {
 
 export type CapturedWindow = { text: string; older: boolean; lastPrompt?: string; latestAgentMessage?: string; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean };
 
+// Run a `capture-pane` for a pane at the given scrollback depth and return its raw
+// stdout, or undefined on failure. The default spawns a tmux process; the log socket
+// passes one that issues the capture over its control-mode connection (ADR 0008), so
+// the live view captures with no process spawn while the processing below is shared.
+export type PaneCaptureRunner = (depth: number) => Promise<string | undefined>;
+
 export type PaneSize = { cols: number; rows: number };
 // clientLimit: the largest pane size every tmux client attached to the pane's
 // session can display; absent when nothing is attached
@@ -76,11 +80,13 @@ function parseLayout(line: string | undefined): Layout | undefined {
 // `status` is off, on, or a line count
 const statusLines = (status: string): number => status === 'off' ? 0 : status === 'on' ? 1 : Number.parseInt(status, 10) || 1;
 
-// Mirror tmux's own ignore_client_size(): suspended clients and control-mode
-// clients that never published a size do not count, and an ignore-size client
-// counts only when no other client is attached. tmux sizes a window to the
-// space beneath each client's status line, and the console sizes a pane to
-// the window minus its companion panes, so both come off the limit.
+// Mirror tmux's own ignore_client_size(): suspended clients do not count, and an
+// ignore-size client counts only when no other client is attached. The console's
+// own control-mode client (ADR 0008) attaches with `ignore-size` and never declares
+// a size, but tmux still lists it, sometimes with a phantom 80x24; it is never a real
+// viewport, so it is dropped outright rather than allowed to clamp every pane to
+// 80x24. tmux sizes a window to the space beneath each client's status line, and the
+// console sizes a pane to the window minus its companion panes, so both come off the limit.
 function clientLimit(layout: Layout, lines: string[]): PaneSize | undefined {
   const clients = lines.flatMap(line => {
     const match = /^(\d+)\t(\d+)\t([^\t]*)\t([^\t]*)$/u.exec(line);
@@ -88,7 +94,7 @@ function clientLimit(layout: Layout, lines: string[]): PaneSize | undefined {
     const flags = new Set(match[3]!.split(','));
     const ttyCols = Number(match[1]);
     const ttyRows = Number(match[2]);
-    if (flags.has('suspended') || ttyCols < 2 || ttyRows < 2) return [];
+    if (flags.has('suspended') || flags.has('control-mode') || ttyCols < 2 || ttyRows < 2) return [];
     return [{ cols: ttyCols, rows: ttyRows - statusLines(match[4]!), ignored: flags.has('ignore-size') }];
   });
   const counted = clients.some(client => !client.ignored) ? clients.filter(client => !client.ignored) : clients;
@@ -102,7 +108,7 @@ function clientLimit(layout: Layout, lines: string[]): PaneSize | undefined {
 }
 
 export class TmuxAdapter {
-  private readonly binary = process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux';
+  private readonly binary = tmuxBinary();
   private readonly inputQueues = new Map<string, Promise<boolean>>();
 
   // read pane identity and console-owned launch metadata
@@ -133,39 +139,47 @@ export class TmuxAdapter {
 
   async capture(socket: SocketRef, pane: string): Promise<string | undefined> {
     if (!paneId.test(pane)) return undefined;
-    const out = await run(this.binary, ['-S', socket.path, 'capture-pane', '-e', '-p', '-t', pane, '-S', '-800']);
+    const out = await run(this.binary, ['-S', socket.path, ...capturePaneArgs(pane, 800)]);
     return out.code === 0 ? safeSnapshot(out.stdout).slice(-96_000) : undefined;
   }
 
+  // capture a pane's scrollback to the given depth, spawning a tmux process unless a
+  // control-connection runner is supplied (ADR 0008)
+  private async captureText(socket: SocketRef, pane: string, depth: number, captureVia?: PaneCaptureRunner): Promise<string | undefined> {
+    if (captureVia !== undefined) return await captureVia(depth);
+    const out = await run(this.binary, ['-S', socket.path, ...capturePaneArgs(pane, depth)]);
+    return out.code === 0 ? out.stdout : undefined;
+  }
+
   // capture only the current browser window
-  async captureRecentWindow(socket: SocketRef, pane: string, rows: number): Promise<CapturedWindow | undefined> {
+  async captureRecentWindow(socket: SocketRef, pane: string, rows: number, captureVia?: PaneCaptureRunner): Promise<CapturedWindow | undefined> {
     // reject unsafe pane coordinates
     if (!paneId.test(pane) || !Number.isInteger(rows) || rows < 2 || rows > 300) return undefined;
     const depth = Math.min(300, rows + 24);
-    const out = await run(this.binary, ['-S', socket.path, 'capture-pane', '-e', '-p', '-t', pane, '-S', `-${depth}`]);
+    const stdout = await this.captureText(socket, pane, depth, captureVia);
     // reject failed captures
-    if (out.code !== 0) return undefined;
-    const lines = out.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
+    if (stdout === undefined) return undefined;
+    const lines = stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
     const start = Math.max(0, lines.length - rows);
     const window = bottomAlignedWindow(lines.slice(start), rows);
     return { text: safeSnapshot(window.join('\n')), older: start > 0 };
   }
 
-  async captureWindow(socket: SocketRef, pane: string, history: number, rows: number): Promise<CapturedWindow | undefined> {
+  async captureWindow(socket: SocketRef, pane: string, history: number, rows: number, captureVia?: PaneCaptureRunner): Promise<CapturedWindow | undefined> {
     if (!paneId.test(pane) || !Number.isInteger(history) || history < 0 || history > 5_000 || !Number.isInteger(rows) || rows < 2 || rows > 300) return undefined;
     // tmux's -S/-E coordinates shift around wrapped and blank rows. Capture a
     // bounded history snapshot and slice its concrete lines instead, so page
     // offsets are stable and adjacent windows overlap exactly as requested.
-    const out = await run(this.binary, ['-S', socket.path, 'capture-pane', '-e', '-p', '-t', pane, '-S', '-5000']);
-    if (out.code !== 0) return undefined;
-    const lines = out.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
+    const stdout = await this.captureText(socket, pane, 5_000, captureVia);
+    if (stdout === undefined) return undefined;
+    const lines = stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
     const maximumOffset = Math.max(0, lines.length - rows);
     const offset = Math.min(history, maximumOffset);
     const end = lines.length - offset;
     const start = Math.max(0, end - rows);
-    const lastPrompt = lastPromptFromHistory(out.stdout);
-    const latestAgentMessage = latestAgentMessageFromHistory(out.stdout);
-    const assistantMessage = latestCompletedAssistantMessage(out.stdout);
+    const lastPrompt = lastPromptFromHistory(stdout);
+    const latestAgentMessage = latestAgentMessageFromHistory(stdout);
+    const assistantMessage = latestCompletedAssistantMessage(stdout);
     const latestAssistantMessage = assistantMessage !== undefined && assistantMessage.text.length <= 30_000 ? assistantMessage.text : undefined;
     const latestAssistantMessageOverflows = assistantMessage === undefined || latestAssistantMessage === undefined ? undefined : assistantMessage.rows > rows;
     const window = bottomAlignedWindow(lines.slice(start, end), rows);
