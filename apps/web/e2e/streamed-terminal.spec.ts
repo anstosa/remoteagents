@@ -21,10 +21,19 @@ const drive = <T = unknown>(page: Page, name: string, ...args: unknown[]): Promi
 
 const setup = async (page: Page, options: Record<string, unknown> = {}) => {
   await page.goto('/');
-  await page.setContent('<div id="term"></div>');
+  // Clear the app's DOM but keep the <head> the app injected: the Catppuccin palette
+  // <style> lives there, and the component reads its theme from those `:root` tokens
+  // exactly as it does in the app. page.setContent() would replace the whole document
+  // and drop that <style> — Vite dedupes the already-loaded CSS module, so re-importing
+  // styles.css in the fixture would not re-inject it — leaving `--base` unresolved and
+  // the terminal theme stuck on xterm's black default.
   await page.evaluate(async options => {
+    document.body.replaceChildren();
+    const mount = document.createElement('div');
+    mount.id = 'term';
+    document.body.append(mount);
     const module = await import('/e2e/streamed-terminal-fixture.ts');
-    await module.renderStreamedTerminal(document.querySelector<HTMLElement>('#term')!, options);
+    await module.renderStreamedTerminal(mount, options);
   }, options);
   await expect(page.locator('#term')).toHaveAttribute('data-ready', 'true');
 };
