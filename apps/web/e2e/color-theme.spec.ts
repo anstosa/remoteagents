@@ -68,13 +68,14 @@ const rootBackground = (page: Page) => page.evaluate(() => getComputedStyle(docu
 const metaThemeColor = (page: Page) => page.evaluate(() => document.querySelector('meta[name="theme-color"]')?.getAttribute('content'));
 
 // The open terminal's painted background: xterm mirrors its theme's background
-// onto the `.xterm-viewport` element's inline `background-color`, rewriting it
-// whenever `options.theme` changes. Reading the on-screen (active) frame's
-// viewport proves an already-open terminal repainted, using xterm's own DOM
-// rather than any production-only hook.
+// onto the scrollable element's inline `background-color`, rewriting it whenever
+// `options.theme` changes. (In xterm 6.0 this moved from `.xterm-viewport`, now a
+// static-black overview-ruler sibling, to `.xterm-scrollable-element`.) Reading the
+// on-screen (active) frame proves an already-open terminal repainted, using xterm's
+// own DOM rather than any production-only hook.
 const terminalBackground = (page: Page) => page.evaluate(() => {
-  const viewport = document.querySelector<HTMLElement>('.log-canvas .terminal-frame.active .xterm-viewport');
-  return viewport?.style.backgroundColor ?? '';
+  const scrollable = document.querySelector<HTMLElement>('.log-canvas .terminal-frame.active .xterm-scrollable-element');
+  return scrollable?.style.backgroundColor ?? '';
 });
 
 const openSettings = async (page: Page) => {
