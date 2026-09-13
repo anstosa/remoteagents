@@ -598,7 +598,7 @@ describe('pull request switch API', () => {
 
   it('switches and moves a local branch through the controlled HTTP boundary', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const switchBranch = vi.fn<() => Promise<boolean>>().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const switchBranch = vi.fn<() => Promise<'switched' | 'unavailable'>>().mockResolvedValueOnce('switched').mockResolvedValueOnce('unavailable');
     const moveBranch = vi.fn<() => Promise<'moved' | 'recovery-required'>>().mockResolvedValueOnce('moved').mockResolvedValueOnce('recovery-required');
     const prSwitch = { switchBranch, moveBranch };
     const pullRequestApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 19).toString('base64url')), prSwitch: prSwitch as never });
@@ -626,6 +626,31 @@ describe('pull request switch API', () => {
       // the invalid requests short-circuit, so the mocks saw only the two valid calls each
       expect(switchBranch).toHaveBeenCalledTimes(2);
       expect(moveBranch).toHaveBeenCalledTimes(2);
+    } finally {
+      await pullRequestApp.close();
+    }
+  }, 15_000);
+
+  it('surfaces a busy agent as a 409 with a reason through the controlled HTTP boundary', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    // every one of the four routes maps a busy service result to a 409 carrying a "busy" reason
+    const prSwitch = { switch: async () => 'busy' as const, switchBranch: async () => 'busy' as const, move: async () => 'busy' as const, moveBranch: async () => 'busy' as const };
+    const pullRequestApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 20).toString('base64url')), prSwitch: prSwitch as never });
+    try {
+      const boot = await pullRequestApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await pullRequestApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      const responses = await Promise.all([
+        pullRequestApp.inject({ method: 'POST', url: '/api/agents/agent-1/switch-pr', headers, payload: { number: 301 } }),
+        pullRequestApp.inject({ method: 'POST', url: '/api/agents/agent-1/switch-branch', headers, payload: { branch: 'feature/solo' } }),
+        pullRequestApp.inject({ method: 'POST', url: '/api/agents/agent-1/move-pr', headers, payload: { number: 301 } }),
+        pullRequestApp.inject({ method: 'POST', url: '/api/agents/agent-1/move-branch', headers, payload: { branch: 'feature/solo' } })
+      ]);
+
+      for (const response of responses) {
+        expect(response.statusCode).toBe(409);
+        expect(response.json().error).toMatch(/busy/i);
+      }
     } finally {
       await pullRequestApp.close();
     }

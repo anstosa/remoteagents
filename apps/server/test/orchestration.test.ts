@@ -59,7 +59,7 @@ function dependencies(overrides: Partial<OrchestrationDependencies> = {}): Orche
       log: async () => undefined
     },
     workspaceFiles: { preview: async (_workspace, path) => ({ path, size: 12, binary: false, truncated: false, content: 'abcdefghijkl' }) },
-    pullRequests: { available: async () => ({ enabled: true, pullRequests: [] }), actionsUrl: async () => undefined, switch: async () => true },
+    pullRequests: { available: async () => ({ enabled: true, pullRequests: [] }), actionsUrl: async () => undefined, switch: async () => 'switched' as const },
     newTasks: { available: async () => ({ enabled: true }), start: async () => true },
     loadInstances: async () => [{ id: config.publicOrigin.origin, name: config.name, url: config.publicOrigin.origin, local: true }, { id: 'https://remote.example.com', name: 'Remote', url: 'https://remote.example.com', local: false }],
     launchWorktree: async () => true,
@@ -76,6 +76,16 @@ describe('OrchestrationService', () => {
     await expect(finished.cancel(activeAgent.id)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } });
     const missing = new OrchestrationService(dependencies({ prompts: { ...dependencies().prompts, cancel: async () => 'unavailable' } }));
     await expect(missing.cancel(activeAgent.id)).resolves.toMatchObject({ ok: false, error: { code: 'not_found' } });
+  });
+
+  it('maps each pull request switch outcome to its result', async () => {
+    const switched = new OrchestrationService(dependencies({ pullRequests: { ...dependencies().pullRequests, switch: async () => 'switched' as const } }));
+    await expect(switched.switchPullRequest({ agentId: activeAgent.id, number: 7 })).resolves.toMatchObject({ ok: true, value: { switched: true } });
+    // a non-'switched' string result must be a conflict, never read as success
+    const unavailable = new OrchestrationService(dependencies({ pullRequests: { ...dependencies().pullRequests, switch: async () => 'unavailable' as const } }));
+    await expect(unavailable.switchPullRequest({ agentId: activeAgent.id, number: 7 })).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } });
+    const busy = new OrchestrationService(dependencies({ pullRequests: { ...dependencies().pullRequests, switch: async () => 'busy' as const } }));
+    await expect(busy.switchPullRequest({ agentId: activeAgent.id, number: 7 })).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } });
   });
 
   it('answers an inline question only for a hashed id and an in-range index', async () => {

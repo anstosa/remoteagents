@@ -636,8 +636,11 @@ export class OrchestrationService {
   async switchPullRequest(input: SwitchPullRequestInputV1): Promise<OrchestrationResult<{ switched: true }>> {
     // enforce positive GitHub pull request numbers
     if (!validIdentifier(input.agentId) || !Number.isSafeInteger(input.number) || input.number < 1) return failure('invalid_request', 'Invalid pull request switch.');
-    return await this.operation(async () => await this.dependencies.pullRequests.switch(input.agentId, input.number)
-      ? success({ switched: true as const })
-      : failure('conflict', 'Pull request could not be switched.'));
+    return await this.operation(async () => {
+      const result = await this.dependencies.pullRequests.switch(input.agentId, input.number);
+      // only 'switched' is success; 'busy' and 'unavailable' are both conflicts (a truthy string would otherwise read as success)
+      if (result === 'switched') return success({ switched: true as const });
+      return failure('conflict', result === 'busy' ? 'The agent is busy; wait for it to finish before switching.' : 'Pull request could not be switched.');
+    });
   }
 }

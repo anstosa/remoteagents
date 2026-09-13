@@ -1,34 +1,41 @@
 import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative } from 'node:path';
 import type { ValidatedConfig } from '../config/schema.js';
 import type { DiscoveryService } from '../discovery/service.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { run } from '../tmux/command.js';
 import { cleanWorkingTree, type GitCommand } from '../git/worktree-state.js';
-import { worktreeById, worktreeHostRoot, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
+import { worktreeById, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
+import { agentAttentionState } from '../notifications.js';
 import { PullRequestService, type PullRequestChoice } from './service.js';
 import type { Worktree } from '../domain/models.js';
 
-const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-const switchPollDelayMs = 200;
 // bound the local-branch list folded into the availability payload
 const maxSwitchableBranches = 200;
-// wait between completion marker polls
-const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+// the switch path runs a network `git fetch` in-process; the old pane-driven flow let it run as
+// long as it needed, so bound it generously rather than at run's 5s default. Local ops finish well
+// under this; the ceiling only keeps a hung fetch from wedging the mutation lock indefinitely.
+const gitCommandTimeoutMs = 120_000;
+const runGit: GitCommand = (binary, args) => run(binary, args, undefined, gitCommandTimeoutMs);
 
 export type PullRequestWorktree = { worktreeId: string; worktreeName: string; agentId?: string };
 export type SwitchablePullRequest = PullRequestChoice & { checkoutBranch: string; checkedOut: boolean; openIn?: PullRequestWorktree };
 export type SwitchableBranch = { branch: string; checkedOut: boolean; openIn?: PullRequestWorktree };
 export type PullRequestSwitchAvailability = { enabled: boolean; pullRequests: SwitchablePullRequest[]; otherPullRequests: SwitchablePullRequest[]; branches: SwitchableBranch[]; pullRequestsSupported: boolean };
-export type PullRequestMoveResult = 'moved' | 'unavailable' | 'recovery-required';
+export type PullRequestMoveResult = 'moved' | 'unavailable' | 'recovery-required' | 'busy';
+// a branch/PR checkout outcome; 'busy' means an involved agent is working and, with job
+// control gone, cannot be interrupted for the checkout
+export type BranchSwitchResult = 'switched' | 'unavailable' | 'busy';
 type GitHead = { branch?: string; commit: string };
 type SwitchTarget = NonNullable<Awaited<ReturnType<DiscoveryService['target']>>>;
 
 export class PullRequestSwitchService {
   private branchMutationInProgress = false;
 
-  constructor(private readonly config: ValidatedConfig, private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly pullRequests = new PullRequestService(), private readonly command: GitCommand = run) {}
+  // `tmux` is no longer used: switch and move run git in-process and never touch a pane. It is
+  // kept as the injected seam our tests assert stays untouched, and goes when "Remove Swap to
+  // terminal" retires TmuxAdapter.suspend/foreground.
+  constructor(private readonly config: ValidatedConfig, private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly pullRequests = new PullRequestService(), private readonly command: GitCommand = runGit) {}
 
   // list one agent's switchable pull requests and local branches
   async available(agentId: string): Promise<PullRequestSwitchAvailability | undefined> {
@@ -115,9 +122,9 @@ export class PullRequestSwitchService {
     return await this.pullRequests.actionsUrl(worktree?.identity ?? target.agent.workspace);
   }
 
-  async switch(agentId: string, number: number): Promise<boolean> {
+  async switch(agentId: string, number: number): Promise<BranchSwitchResult> {
     // reject invalid or concurrent branch mutations
-    if (!Number.isInteger(number) || number < 1 || this.branchMutationInProgress) return false;
+    if (!Number.isInteger(number) || number < 1 || this.branchMutationInProgress) return 'unavailable';
     this.branchMutationInProgress = true;
     try {
       const available = await this.available(agentId);
@@ -125,18 +132,18 @@ export class PullRequestSwitchService {
       const target = await this.discovery.target(agentId);
       const targetWorktree = target === undefined ? undefined : this.worktree(target.agent.workspace);
       // require one ready and unused target
-      if (!available?.enabled || pullRequest === undefined || pullRequest.checkedOut || target === undefined || targetWorktree === undefined) return false;
-      const switchCommand = pullRequest.headOnOrigin ? this.branchSwitchCommand(pullRequest) : this.pullRequestSwitchCommand(pullRequest);
-      return await this.runSwitch(target, targetWorktree, pullRequest.checkoutBranch, switchCommand);
+      if (!available?.enabled || pullRequest === undefined || pullRequest.checkedOut || target === undefined || targetWorktree === undefined) return 'unavailable';
+      return await this.runSwitch(target, targetWorktree, pullRequest.checkoutBranch, workspace =>
+        pullRequest.headOnOrigin ? this.switchBranchRef(workspace, pullRequest) : this.switchPullRequestRef(workspace, pullRequest));
     } finally {
       this.branchMutationInProgress = false;
     }
   }
 
   // switch to one available local branch open in no other worktree
-  async switchBranch(agentId: string, branch: string): Promise<boolean> {
+  async switchBranch(agentId: string, branch: string): Promise<BranchSwitchResult> {
     // reject an empty or concurrent branch mutation
-    if (typeof branch !== 'string' || branch === '' || this.branchMutationInProgress) return false;
+    if (typeof branch !== 'string' || branch === '' || this.branchMutationInProgress) return 'unavailable';
     this.branchMutationInProgress = true;
     try {
       const available = await this.available(agentId);
@@ -144,45 +151,25 @@ export class PullRequestSwitchService {
       const switchable = available?.branches.find(candidate => candidate.branch === branch);
       const target = await this.discovery.target(agentId);
       const targetWorktree = target === undefined ? undefined : this.worktree(target.agent.workspace);
-      if (!available?.enabled || switchable === undefined || switchable.checkedOut || target === undefined || targetWorktree === undefined) return false;
-      return await this.runSwitch(target, targetWorktree, branch, this.plainSwitchCommand(branch));
+      if (!available?.enabled || switchable === undefined || switchable.checkedOut || target === undefined || targetWorktree === undefined) return 'unavailable';
+      return await this.runSwitch(target, targetWorktree, branch, workspace => this.switchLocalBranch(workspace, branch));
     } finally {
       this.branchMutationInProgress = false;
     }
   }
 
-  // suspend the pane, inject one branch-changing command, and await its completion
-  private async runSwitch(target: SwitchTarget, targetWorktree: Worktree, checkoutBranch: string, switchCommand: string): Promise<boolean> {
+  // run one branch-changing git transaction in-process, gated on an idle agent
+  private async runSwitch(target: SwitchTarget, targetWorktree: Worktree, checkoutBranch: string, perform: (workspace: string) => Promise<boolean>): Promise<BranchSwitchResult> {
+    // without job control a working agent cannot be interrupted for a checkout
+    if (agentAttentionState(target.agent) === 'working') return 'busy';
     const currentBranch = await this.command('/usr/bin/git', ['-C', targetWorktree.identity, 'symbolic-ref', '--quiet', '--short', 'HEAD']);
-    // reject a no-op switch that cannot prove command completion
-    if (currentBranch.code === 0 && currentBranch.stdout.trim() === checkoutBranch) return false;
-    // share git metadata with the host pane, not the container's private /tmp
-    const completionName = `rac-switch-${randomUUID()}`;
-    const completion = await this.command('/usr/bin/git', ['-C', targetWorktree.identity, 'rev-parse', '--path-format=absolute', '--git-path', completionName]);
-    const completionPath = completion.stdout.trim();
-    // reject unavailable metadata before suspending the agent
-    if (completion.code !== 0 || !completionPath.startsWith('/')) return false;
-    const writable = await this.command('/usr/bin/test', ['-w', dirname(completionPath)]);
-    // reject read-only mounts that cannot record checkout completion
-    if (writable.code !== 0) return false;
-    const temporaryCompletionPath = `${completionPath}.tmp`;
-    // remap checkout-local metadata; external git directories use identical bridge paths
-    const relativeCompletionPath = relative(targetWorktree.identity, completionPath);
-    const hostCompletionPath = relativeCompletionPath === '..' || relativeCompletionPath.startsWith('../') || isAbsolute(relativeCompletionPath)
-      ? completionPath
-      : join(worktreeHostRoot(targetWorktree), relativeCompletionPath);
-    const recordCompletion = `rac_switch_status=$?; trap - EXIT HUP INT TERM; printf '%s\\n' "$rac_switch_status" > ${quote(`${hostCompletionPath}.tmp`)} && mv -- ${quote(`${hostCompletionPath}.tmp`)} ${quote(hostCompletionPath)}; exit "$rac_switch_status"`;
-    const command = `/bin/sh -c ${quote(`trap ${quote(recordCompletion)} EXIT HUP INT TERM; ${switchCommand}`)}; clear; fg`;
-    // suspend before handing the pane to Git
-    if (!await this.tmux.suspend(target.socket, target.agent.paneId)) return false;
-    const accepted = await this.tmux.input(target.socket, target.agent.paneId, `\x15${command}\r`);
-    // resume after failed input delivery
-    if (!accepted) {
-      await this.command('/usr/bin/rm', ['-f', '--', temporaryCompletionPath, completionPath]);
-      await this.tmux.foreground(target.socket, target.agent.paneId);
-      return false;
-    }
-    return await this.waitForSwitchCompletion(completionPath, targetWorktree.identity, checkoutBranch);
+    // reject a no-op switch onto the branch already checked out
+    if (currentBranch.code === 0 && currentBranch.stdout.trim() === checkoutBranch) return 'unavailable';
+    // a failed fetch or switch leaves the current branch untouched, so nothing to roll back
+    if (!await perform(targetWorktree.identity)) return 'unavailable';
+    // verify HEAD reached the requested branch before reporting success
+    const head = await this.command('/usr/bin/git', ['-C', targetWorktree.identity, 'symbolic-ref', '--quiet', '--short', 'HEAD']);
+    return head.code === 0 && head.stdout.trim() === checkoutBranch ? 'switched' : 'unavailable';
   }
 
   // move one occupied pull request into the requested worktree
@@ -239,23 +226,7 @@ export class PullRequestSwitchService {
     }
   }
 
-  // hold the mutation lock until one submitted pane command finishes
-  private async waitForSwitchCompletion(completionPath: string, workspace: string, branch: string): Promise<boolean> {
-    // wait through slow or interactively interrupted fetches
-    for (;;) {
-      const completion = await this.command('/usr/bin/cat', [completionPath]);
-      // verify the final branch only after the shell records completion
-      if (completion.code === 0) {
-        await this.command('/usr/bin/rm', ['-f', '--', completionPath]);
-        if (completion.stdout.trim() !== '0') return false;
-        const current = await this.command('/usr/bin/git', ['-C', workspace, 'symbolic-ref', '--quiet', '--short', 'HEAD']);
-        return current.code === 0 && current.stdout.trim() === branch;
-      }
-      await delay(switchPollDelayMs);
-    }
-  }
-
-  // transfer one checked-out branch and its working state
+  // transfer one checked-out branch and its working state, in-process, gated on idle agents
   private async moveCheckedOutBranch(agentId: string, enabled: boolean, movable: SwitchableBranch): Promise<PullRequestMoveResult> {
     const { branch: checkoutBranch, checkedOut, openIn } = movable;
     const target = await this.discovery.target(agentId);
@@ -266,32 +237,16 @@ export class PullRequestSwitchService {
     const sourceTarget = openIn.agentId === undefined ? undefined : await this.discovery.target(openIn.agentId);
     // fail closed when the active source changed identity
     if (openIn.agentId !== undefined && (sourceTarget === undefined || sourceTarget.agent.id === target.agent.id || this.worktree(sourceTarget.agent.workspace)?.id !== sourceWorktree.id)) return 'unavailable';
+    // without job control neither the destination nor an active source can be interrupted for a move
+    if (agentAttentionState(target.agent) === 'working' || (sourceTarget !== undefined && agentAttentionState(sourceTarget.agent) === 'working')) return 'busy';
     const sourceBranch = await this.command('/usr/bin/git', ['-C', sourceWorktree.identity, 'symbolic-ref', '--quiet', '--short', 'HEAD']);
     // revalidate the occupied branch immediately before mutation
     if (sourceBranch.code !== 0 || sourceBranch.stdout.trim() !== checkoutBranch) return 'unavailable';
-
-    let sourceSuspended = sourceTarget === undefined;
-    // pause the source agent before moving its working copy
-    if (sourceTarget !== undefined) sourceSuspended = await this.tmux.suspend(sourceTarget.socket, sourceTarget.agent.paneId);
-    if (!sourceSuspended) return 'unavailable';
-    const targetSuspended = await this.tmux.suspend(target.socket, target.agent.paneId);
-    // resume the source when the destination cannot pause
-    if (!targetSuspended) {
-      const sourceResumed = sourceTarget === undefined || await this.tmux.foreground(sourceTarget.socket, sourceTarget.agent.paneId);
-      return sourceResumed ? 'unavailable' : 'recovery-required';
-    }
-
-    let result: PullRequestMoveResult = 'recovery-required';
     try {
-      result = await this.performMove(sourceWorktree, targetWorktree, checkoutBranch);
+      return await this.performMove(sourceWorktree, targetWorktree, checkoutBranch);
     } catch {
-      result = 'recovery-required';
+      return 'recovery-required';
     }
-    const sourceResumed = sourceTarget === undefined || await this.tmux.foreground(sourceTarget.socket, sourceTarget.agent.paneId);
-    const targetResumed = await this.tmux.foreground(target.socket, target.agent.paneId);
-    // expose stopped agents as a recovery-required partial result
-    if (!sourceResumed || !targetResumed) return 'recovery-required';
-    return result;
   }
 
   // execute the git transaction after both agents pause
@@ -400,25 +355,43 @@ export class PullRequestSwitchService {
   private pullRequestBranch(pullRequest: PullRequestChoice): string { return `rac/pr/${pullRequest.number}/${pullRequest.headSha.slice(0, 12)}`; }
 
   // switch one existing local branch without touching origin
-  private plainSwitchCommand(branch: string): string { return `git switch -- ${quote(branch)}`; }
-
-  // switch one SHA-pinned origin branch
-  private branchSwitchCommand(pullRequest: SwitchablePullRequest): string {
-    const localRef = `refs/heads/${pullRequest.branch}`;
-    const fetchedRef = `refs/remotes/origin/${pullRequest.branch}`;
-    const fetchSpec = `refs/heads/${pullRequest.branch}:${fetchedRef}`;
-    const fetchedCommit = `${fetchedRef}^{commit}`;
-    const localCommit = `${localRef}^{commit}`;
-    return `git fetch origin --no-tags --force ${quote(fetchSpec)} && test "$(git rev-parse ${quote(fetchedCommit)})" = ${quote(pullRequest.headSha)} && if git show-ref --verify --quiet ${quote(localRef)}; then test "$(git rev-parse ${quote(localCommit)})" = ${quote(pullRequest.headSha)} && git switch -- ${quote(pullRequest.branch)}; else git switch -c ${quote(pullRequest.branch)} --track ${quote(fetchedRef)}; fi`;
+  private async switchLocalBranch(workspace: string, branch: string): Promise<boolean> {
+    const switched = await this.command('/usr/bin/git', ['-C', workspace, 'switch', '--', branch]);
+    return switched.code === 0;
   }
 
-  // switch one SHA-pinned GitHub pull request ref
-  private pullRequestSwitchCommand(pullRequest: SwitchablePullRequest): string {
+  // fetch one SHA-pinned origin branch and check out its tracking local branch
+  private async switchBranchRef(workspace: string, pullRequest: SwitchablePullRequest): Promise<boolean> {
+    const fetchedRef = `refs/remotes/origin/${pullRequest.branch}`;
+    return await this.fetchAndSwitch(workspace, `refs/heads/${pullRequest.branch}:${fetchedRef}`, fetchedRef, pullRequest.headSha, pullRequest.branch, ['--track', fetchedRef]);
+  }
+
+  // fetch one SHA-pinned GitHub pull request ref and check out its local branch
+  private async switchPullRequestRef(workspace: string, pullRequest: SwitchablePullRequest): Promise<boolean> {
     const fetchedRef = `refs/rac/pull/${pullRequest.number}`;
-    const fetchSpec = `refs/pull/${pullRequest.number}/head:${fetchedRef}`;
-    const fetchedCommit = `${fetchedRef}^{commit}`;
-    const localRef = `refs/heads/${pullRequest.checkoutBranch}`;
-    const localCommit = `${localRef}^{commit}`;
-    return `git fetch origin --no-tags --force ${quote(fetchSpec)} && test "$(git rev-parse ${quote(fetchedCommit)})" = ${quote(pullRequest.headSha)} && if git show-ref --verify --quiet ${quote(localRef)}; then test "$(git rev-parse ${quote(localCommit)})" = ${quote(pullRequest.headSha)} && git switch -- ${quote(pullRequest.checkoutBranch)}; else git switch -c ${quote(pullRequest.checkoutBranch)} --no-track ${quote(fetchedRef)}; fi`;
+    return await this.fetchAndSwitch(workspace, `refs/pull/${pullRequest.number}/head:${fetchedRef}`, fetchedRef, pullRequest.headSha, pullRequest.checkoutBranch, ['--no-track', fetchedRef]);
+  }
+
+  // fetch a pinned ref, verify it is the reviewed head, then switch to its local branch, creating it when absent
+  private async fetchAndSwitch(workspace: string, fetchSpec: string, fetchedRef: string, headSha: string, localBranch: string, createArgs: string[]): Promise<boolean> {
+    const fetched = await this.command('/usr/bin/git', ['-C', workspace, 'fetch', 'origin', '--no-tags', '--force', fetchSpec]);
+    if (fetched.code !== 0) return false;
+    // require the fetched ref to pin the exact reviewed head before mutating the checkout
+    if (!await this.commitMatches(workspace, `${fetchedRef}^{commit}`, headSha)) return false;
+    const existing = await this.command('/usr/bin/git', ['-C', workspace, 'show-ref', '--verify', '--quiet', `refs/heads/${localBranch}`]);
+    if (existing.code === 0) {
+      // reuse an existing local branch only when it already matches the reviewed head
+      if (!await this.commitMatches(workspace, `refs/heads/${localBranch}^{commit}`, headSha)) return false;
+      const switched = await this.command('/usr/bin/git', ['-C', workspace, 'switch', '--', localBranch]);
+      return switched.code === 0;
+    }
+    const created = await this.command('/usr/bin/git', ['-C', workspace, 'switch', '-c', localBranch, ...createArgs]);
+    return created.code === 0;
+  }
+
+  // whether one revision resolves to the exact commit
+  private async commitMatches(workspace: string, revision: string, sha: string): Promise<boolean> {
+    const resolved = await this.command('/usr/bin/git', ['-C', workspace, 'rev-parse', '--verify', '--quiet', revision]);
+    return resolved.code === 0 && resolved.stdout.trim() === sha;
   }
 }
