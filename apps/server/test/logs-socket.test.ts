@@ -1,9 +1,10 @@
 import { createServer } from 'node:net';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
 import { TicketStore } from '../src/auth/tickets.js';
 import { TmuxAdapter } from '../src/tmux/adapter.js';
+import { codexAdapter } from '../src/adapters/codex.js';
 import type { PaneActivitySubscriber, PaneStreamProvider } from '../src/tmux/control.js';
 import { testConfig, testProject } from './helpers/config.js';
 
@@ -20,27 +21,31 @@ const dashboardUpdates = { setLoader: () => {}, refresh: async () => {}, close: 
 
 const socket = { fingerprint: 'sockfp', path: '/tmp/rac-logs-test.sock', device: 0, inode: 0 };
 // the composite agent id embeds the raw tmux session ($1) behind the socket fingerprint
-const agent = { id: 'agent-1', paneId: '%1', sessionId: 'sockfp:$1', socketFingerprint: 'sockfp', workspace: '/repo', title: 'Ready', kind: 'codex', attention: 'finished' };
-const discovery = {
-  target: async (id: string) => (id === 'agent-1' ? { agent, socket } : undefined),
+const agentOf = (kind: string) => ({ id: 'agent-1', paneId: '%1', sessionId: 'sockfp:$1', socketFingerprint: 'sockfp', workspace: '/repo', title: 'Ready', kind, attention: 'finished' });
+const discoveryOf = (kind: string) => ({
+  target: async (id: string) => (id === 'agent-1' ? { agent: agentOf(kind), socket } : undefined),
   // the project proxy inspects every WS upgrade; no worktrees means it passes ours to Fastify
   worktreesNow: () => []
-} as never;
+}) as never;
 
-// a control client whose activity the test drives, recording the session it was asked to attach
+// a control client whose activity the test drives, recording the session it was asked to
+// attach and the depths it was asked to capture (so a derive Capture is observable)
 function fakePaneStream() {
   const sessions: string[] = [];
+  const captureDepths: number[] = [];
   let subscriber: PaneActivitySubscriber | undefined;
   let unsubscribes = 0;
   let text = 'first-frame';
   const client = {
     subscribe(_pane: string, sub: PaneActivitySubscriber) { subscriber = sub; return () => { unsubscribes += 1; }; },
-    capture: async () => text
+    capture: async (_pane: string, depth: number) => { captureDepths.push(depth); return text; },
+    windowId: async () => '@7'
   };
   const provider: PaneStreamProvider = { get: (_socket, session) => { sessions.push(session); return client; }, closeAll: () => {} };
   return {
     provider,
     sessions,
+    captureDepths,
     setText: (value: string) => { text = value; },
     fire: (event: keyof PaneActivitySubscriber) => subscriber?.[event](),
     unsubscribes: () => unsubscribes
@@ -49,10 +54,13 @@ function fakePaneStream() {
 
 const open: Array<{ app: FastifyInstance; ws: WebSocket }> = [];
 afterEach(async () => {
+  const closed = new Set<FastifyInstance>();
   for (const { app, ws } of open.splice(0)) {
     try { ws.close(); } catch { /* already closed */ }
-    await app.close();
+    // a test may register two sockets on one app; close each app once
+    if (!closed.has(app)) { closed.add(app); await app.close().catch(() => { /* already closed */ }); }
   }
+  vi.restoreAllMocks();
 });
 
 // a loopback port to point the app's public origin at, so the browserless WebSocket's
@@ -69,12 +77,12 @@ async function freePort(): Promise<number> {
   });
 }
 
-async function connect(paneStream: PaneStreamProvider): Promise<{ frames: Record<string, unknown>[]; closeCode: () => number | undefined }> {
+async function connect(paneStream: PaneStreamProvider, kind = 'codex'): Promise<{ frames: Record<string, unknown>[]; send: (frame: unknown) => void; closeCode: () => number | undefined }> {
   const port = await freePort();
   const tickets = new TicketStore();
   const app = await buildApp(
     testConfig({ publicOrigin: new URL(`http://127.0.0.1:${port}`), projects: [testProject({ id: 'proj' })] as never }),
-    { auth, control, dashboardUpdates, discovery, tickets, tmux: new TmuxAdapter() as never, paneStream } as never
+    { auth, control, dashboardUpdates, discovery: discoveryOf(kind), tickets, tmux: new TmuxAdapter() as never, paneStream } as never
   );
   await app.listen({ host: '127.0.0.1', port });
   const ticket = tickets.mint('session', 'logs', 'agent-1').id;
@@ -88,7 +96,7 @@ async function connect(paneStream: PaneStreamProvider): Promise<{ frames: Record
     ws.addEventListener('open', () => resolve());
     ws.addEventListener('error', () => reject(new Error('websocket failed to open')));
   });
-  return { frames, closeCode: () => closeCode };
+  return { frames, send: (frame: unknown) => ws.send(JSON.stringify(frame)), closeCode: () => closeCode };
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
@@ -146,5 +154,124 @@ describe('/ws/logs event-driven frames', () => {
     await waitFor(() => closeCode() !== undefined);
     expect(closeCode()).toBe(1011);
     await waitFor(() => stream.unsubscribes() >= 1);
+  });
+});
+
+describe('/ws/logs derive', () => {
+  const question = { id: 'q', text: 'Pick one', choices: ['1. keep', '2. drop'], source: 'parsed' as const };
+
+  it('frames a derived question after the quiet window and never re-parses an unchanged pane', async () => {
+    // the real Codex parser is replaced by a counting one: a question only when the pane
+    // text carries the marker, so the test controls both the question and the parse count
+    const questions = codexAdapter.questions as { parse: (capture: string) => typeof question | undefined };
+    const parse = vi.spyOn(questions, 'parse').mockImplementation(capture => capture.includes('CHOOSE') ? question : undefined);
+    const stream = fakePaneStream();
+    const { frames } = await connect(stream.provider);
+    await waitFor(() => frames.length >= 1);
+
+    // the pane prints a Codex-shaped choice list; the next frame carries the question
+    stream.setText('CHOOSE an option');
+    stream.fire('onActivity');
+    await waitFor(() => frames.some(frame => JSON.stringify(frame.question) === JSON.stringify(question)));
+
+    // an idle re-capture of the same pane must not run the parser again
+    const parsesAfterQuestion = parse.mock.calls.length;
+    const framesAfterQuestion = frames.length;
+    stream.fire('onActivity');
+    stream.fire('onActivity');
+    await new Promise(resolve => setTimeout(resolve, 400));
+    expect(parse.mock.calls.length).toBe(parsesAfterQuestion);
+    expect(frames.length).toBe(framesAfterQuestion);
+  });
+
+  it('sends Turn metadata on the derive frame and answers an on-demand metadata request', async () => {
+    const stream = fakePaneStream();
+    const { frames, send } = await connect(stream.provider);
+
+    // the derive frame at subscribe carries the latest Turn's metadata envelope
+    await waitFor(() => frames.some(frame => (frame.metadata as { state?: string } | undefined)?.state === 'complete'));
+
+    // an on-demand request answers even though the pane text did not change
+    const before = frames.length;
+    send({ v: 1, type: 'metadata' });
+    await waitFor(() => frames.length > before);
+    expect((frames.at(-1)!.metadata as { state?: string }).state).toBe('complete');
+  });
+
+  it('performs no deep derive Capture for a Claude Agent', async () => {
+    const stream = fakePaneStream();
+    const { frames, send } = await connect(stream.provider, 'claude');
+    await waitFor(() => frames.length >= 1);
+
+    // Claude has no Turns and no question parser, so it takes only the cheap window Capture
+    // (never the 5000-line derive) and its frames carry no question or metadata
+    stream.setText('claude output');
+    stream.fire('onActivity');
+    await waitFor(() => frames.some(frame => String(frame.text).includes('claude output')));
+    // an on-demand metadata request is a no-op for a non-derive Adapter: no frame at all,
+    // not even a forced empty reset
+    const beforeRequest = frames.length;
+    send({ v: 1, type: 'metadata' });
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    expect(frames.length).toBe(beforeRequest);
+    expect(stream.captureDepths.length).toBeGreaterThan(0);
+    expect(stream.captureDepths).not.toContain(5_000);
+    expect(frames.every(frame => frame.metadata === undefined && frame.question === undefined)).toBe(true);
+  });
+});
+
+describe('/ws/logs window-keyed Size claim', () => {
+  it('shares one claim between two panes of the same window (keyed by window, not pane)', async () => {
+    // Both panes resolve to window @7 (the fake pane stream's windowId). The claim is keyed by
+    // window, so the two viewers share one coordinator entry and release unpins exactly once.
+    // Were the claim keyed by pane id, each socket would hold its own claim and unpin twice —
+    // this is what proves app.ts uses the resolved window id in the key, not the pane fallback.
+    const resizes: Array<{ pane: string; cols: number; rows: number }> = [];
+    const unpins: string[] = [];
+    type Capture = (depth: number) => Promise<string | undefined>;
+    const tmux = {
+      size: async () => ({ cols: 80, rows: 24 }),
+      resize: async (_s: unknown, pane: string, cols: number, rows: number) => { resizes.push({ pane, cols, rows }); return true; },
+      unpinWindowSize: async (_s: unknown, pane: string) => { unpins.push(pane); return true; },
+      captureRecentWindow: async (_s: unknown, _p: string, _r: number, via: Capture) => { const text = await via(60); return text === undefined ? undefined : { text, older: false }; },
+      captureWindow: async (_s: unknown, _p: string, _h: number, _r: number, via: Capture) => { const text = await via(5_000); return text === undefined ? undefined : { text, older: false }; }
+    } as never;
+    const panes: Record<string, string> = { 'agent-1': '%1', 'agent-2': '%2' };
+    const discovery = {
+      target: async (id: string) => (panes[id] ? { agent: { ...agentOf('claude'), id, paneId: panes[id] }, socket } : undefined),
+      worktreesNow: () => []
+    } as never;
+    const stream = fakePaneStream();
+
+    const port = await freePort();
+    const tickets = new TicketStore();
+    const app = await buildApp(
+      testConfig({ publicOrigin: new URL(`http://127.0.0.1:${port}`), projects: [testProject({ id: 'proj' })] as never }),
+      { auth, control, dashboardUpdates, discovery, tickets, tmux, paneStream: stream.provider } as never
+    );
+    await app.listen({ host: '127.0.0.1', port });
+
+    const openViewport = async (id: string, cols: number, rows: number) => {
+      const ticket = tickets.mint('session', 'logs', id).id;
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/logs/${id}`, ['rac', ticket]);
+      open.push({ app, ws });
+      await new Promise<void>((resolve, reject) => { ws.addEventListener('open', () => resolve()); ws.addEventListener('error', () => reject(new Error('websocket failed to open'))); });
+      ws.send(JSON.stringify({ v: 1, type: 'viewport', cols, rows }));
+      return ws;
+    };
+
+    const first = await openViewport('agent-1', 100, 30);
+    await waitFor(() => resizes.some(resize => resize.pane === '%1'));
+    const second = await openViewport('agent-2', 120, 40);
+    await waitFor(() => resizes.some(resize => resize.pane === '%2'));
+
+    first.close();
+    second.close();
+    await waitFor(() => unpins.length >= 1);
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // one window, one claim: exactly one unpin, for the window's single (latest) owner
+    expect(unpins).toEqual(['%2']);
   });
 });

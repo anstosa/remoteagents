@@ -91,6 +91,29 @@ describe('pane viewport coordination', () => {
     expect(applied).toEqual([[62, 41], [307, 70], [307, 80]]);
   });
 
+  it('shares one Size claim between two viewers of panes in the same window', async () => {
+    // both /ws/logs sockets key the claim by the window id, so two panes of one window
+    // resolve to a single coordinator entry: the latest viewer drives the one pin, and only
+    // that viewer's release restores the window and unpins it
+    const applied: Array<[number, number]> = [];
+    let unpins = 0;
+    const coordinator = new PaneViewportCoordinator();
+    const windowKey = 'socket:@3';
+    const read = async () => geometry(220, 80);
+    const apply = async (cols: number, rows: number) => { applied.push([cols, rows]); return true; };
+    const unpin = async () => { unpins += 1; return true; };
+
+    const first = coordinator.acquire(windowKey, read, apply, unpin);
+    const second = coordinator.acquire(windowKey, read, apply, unpin);
+    await first.resize(100, 30);   // superseded by the second viewer of the same window
+    await second.resize(120, 40);  // the single claim tracks the latest viewer
+    await first.release();          // the superseded viewer restores and unpins nothing
+    await second.release();
+
+    expect(applied).toEqual([[120, 40], [220, 80]]);
+    expect(unpins).toBe(1);
+  });
+
   it('repairs pane geometry changed by an external tmux layout manager', async () => {
     const applied: Array<[number, number]> = [];
     let current = geometry(220, 80);

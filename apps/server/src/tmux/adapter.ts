@@ -62,9 +62,11 @@ export type PaneSize = { cols: number; rows: number };
 // clientLimit: the largest pane size every tmux client attached to the pane's
 // session can display; absent when nothing is attached
 export type PaneGeometry = PaneSize & { clientLimit?: PaneSize };
-// the largest pane the console will ask tmux for; a pane tmux has already made
-// larger (a wide attached terminal) is still reported as it is
-export const paneSizeLimit: PaneSize = { cols: 500, rows: 300 };
+// The console imposes no size ceiling of its own; the only bound is tmux's own maximum
+// window dimension (WINDOW_MAXIMUM, 10000). A pane tmux has already made larger (a wide
+// attached terminal) is still reported as it is. (Sizing, ADR 0008: the old 500x300 clamp
+// is gone.)
+export const paneSizeLimit: PaneSize = { cols: 10_000, rows: 10_000 };
 
 type Layout = { windowCols: number; windowRows: number; paneCols: number; paneRows: number };
 const layoutFormat = '#{window_width}\t#{window_height}\t#{pane_width}\t#{pane_height}';
@@ -154,7 +156,7 @@ export class TmuxAdapter {
   // capture only the current browser window
   async captureRecentWindow(socket: SocketRef, pane: string, rows: number, captureVia?: PaneCaptureRunner): Promise<CapturedWindow | undefined> {
     // reject unsafe pane coordinates
-    if (!paneId.test(pane) || !Number.isInteger(rows) || rows < 2 || rows > 300) return undefined;
+    if (!paneId.test(pane) || !Number.isInteger(rows) || rows < 2 || rows > paneSizeLimit.rows) return undefined;
     const depth = Math.min(300, rows + 24);
     const stdout = await this.captureText(socket, pane, depth, captureVia);
     // reject failed captures
@@ -166,7 +168,7 @@ export class TmuxAdapter {
   }
 
   async captureWindow(socket: SocketRef, pane: string, history: number, rows: number, captureVia?: PaneCaptureRunner): Promise<CapturedWindow | undefined> {
-    if (!paneId.test(pane) || !Number.isInteger(history) || history < 0 || history > 5_000 || !Number.isInteger(rows) || rows < 2 || rows > 300) return undefined;
+    if (!paneId.test(pane) || !Number.isInteger(history) || history < 0 || history > 5_000 || !Number.isInteger(rows) || rows < 2 || rows > paneSizeLimit.rows) return undefined;
     // tmux's -S/-E coordinates shift around wrapped and blank rows. Capture a
     // bounded history snapshot and slice its concrete lines instead, so page
     // offsets are stable and adjacent windows overlap exactly as requested.

@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { mkdtemp as mkdtempAsync, rm as rmAsync } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -72,7 +72,7 @@ describe.skipIf(!tmuxSocketsWork)('tmux control client (real tmux)', () => {
     try {
       await client.ready;
       let activity = 0;
-      client.subscribe(pane, { onActivity: () => { activity += 1; }, onReseed: () => {}, onExit: () => {} });
+      client.subscribe(pane, { onActivity: () => { activity += 1; }, onReseed: () => {}, onResize: () => {}, onExit: () => {} });
 
       // typing into the pane echoes through the tty, producing %output
       expect((await run(tmux, ['-S', socket, 'send-keys', '-t', pane, '-l', 'hello'])).code).toBe(0);
@@ -98,7 +98,7 @@ describe.skipIf(!tmuxSocketsWork)('tmux control client (real tmux)', () => {
       await client.ready;
       let ready = false;
       // subscribe before typing so the echo's %output is not missed
-      client.subscribe(pane, { onActivity: () => { ready = true; }, onReseed: () => {}, onExit: () => {} });
+      client.subscribe(pane, { onActivity: () => { ready = true; }, onReseed: () => {}, onResize: () => {}, onExit: () => {} });
       expect((await run(tmux, ['-S', socket, 'send-keys', '-t', pane, '-l', 'café ☕'])).code).toBe(0);
       await eventually(() => ready);
 
@@ -122,8 +122,8 @@ describe.skipIf(!tmuxSocketsWork)('tmux control client (real tmux)', () => {
       expect(second).toBe(first);
       expect(registry.size).toBe(1);
 
-      const unsubscribeA = first.subscribe(pane, { onActivity: () => {}, onReseed: () => {}, onExit: () => {} });
-      const unsubscribeB = second.subscribe(pane, { onActivity: () => {}, onReseed: () => {}, onExit: () => {} });
+      const unsubscribeA = first.subscribe(pane, { onActivity: () => {}, onReseed: () => {}, onResize: () => {}, onExit: () => {} });
+      const unsubscribeB = second.subscribe(pane, { onActivity: () => {}, onReseed: () => {}, onResize: () => {}, onExit: () => {} });
 
       unsubscribeA();
       expect(registry.size).toBe(1);
@@ -158,13 +158,82 @@ describe.skipIf(!tmuxSocketsWork)('tmux control client (real tmux)', () => {
     }
   });
 
+  it('reads the id of the window holding a pane, so the Size claim is keyed by window', async () => {
+    const { ref, socket, pane } = await fixtureSession();
+    const client = new TmuxControlClient(tmux, ref.path, 'fixture', () => {});
+    try {
+      await client.ready;
+      const expected = (await run(tmux, ['-S', socket, 'display-message', '-p', '-t', pane, '#{window_id}'])).stdout.trim();
+      expect(expected).toMatch(/^@\d+$/);
+      expect(await client.windowId(pane)).toBe(expected);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it('re-clamps on an external window resize (%layout-change)', async () => {
+    const { ref, socket, pane } = await fixtureSession();
+    const client = new TmuxControlClient(tmux, ref.path, 'fixture', () => {});
+    try {
+      await client.ready;
+      let resizes = 0;
+      client.subscribe(pane, { onActivity: () => {}, onReseed: () => {}, onResize: () => { resizes += 1; }, onExit: () => {} });
+      // an external resize-window (as a zoom or an operator's resize does) emits %layout-change
+      // to our control client, which re-asserts the Size claim
+      expect((await run(tmux, ['-S', socket, 'resize-window', '-t', pane, '-x', '100', '-y', '30'])).code).toBe(0);
+      await eventually(() => resizes > 0);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it('re-asserts the Size claim when a pane is zoomed from an attached terminal', async () => {
+    const { ref, socket, pane } = await fixtureSession();
+    // a second pane so the window can be zoomed; zoom and unzoom both emit %layout-change
+    expect((await run(tmux, ['-S', socket, 'split-window', '-t', pane, '-d', 'cat'])).code).toBe(0);
+    const client = new TmuxControlClient(tmux, ref.path, 'fixture', () => {});
+    try {
+      await client.ready;
+      let resizes = 0;
+      client.subscribe(pane, { onActivity: () => {}, onReseed: () => {}, onResize: () => { resizes += 1; }, onExit: () => {} });
+      expect((await run(tmux, ['-S', socket, 'resize-pane', '-Z', '-t', pane])).code).toBe(0);
+      await eventually(() => resizes > 0);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it('re-clamps when an attached client resizes (the -B client-size subscription)', async () => {
+    const { ref, socket, pane } = await fixtureSession();
+    const client = new TmuxControlClient(tmux, ref.path, 'fixture', () => {});
+    // A second control client, `-f ignore-size` so it never affects window-size and so emits
+    // no %layout-change: every onResize below therefore comes from the client-size
+    // subscription (%subscription-changed), isolating the -B path from the layout path.
+    const second = spawn(tmux, ['-S', socket, '-C', 'attach-session', '-t', 'fixture', '-f', 'ignore-size']);
+    try {
+      await client.ready;
+      let resizes = 0;
+      client.subscribe(pane, { onActivity: () => {}, onReseed: () => {}, onResize: () => { resizes += 1; }, onExit: () => {} });
+      // let the subscription arm and the attach's own change settle, then drive one pure
+      // client-size change; tmux pushes it through %subscription-changed at most once a second
+      await new Promise(resolve => setTimeout(resolve, 1_100));
+      resizes = 0;
+      second.stdin?.write('refresh-client -C 200x60\n');
+      await eventually(() => resizes > 0);
+    } finally {
+      second.stdin?.write('detach\n');
+      second.kill('SIGTERM');
+      client.dispose();
+    }
+  });
+
   it('ends subscribers when the tmux server goes away', async () => {
     const { ref, socket, pane } = await fixtureSession();
     const client = new TmuxControlClient(tmux, ref.path, 'fixture', () => {});
     try {
       await client.ready;
       let exited = false;
-      client.subscribe(pane, { onActivity: () => {}, onReseed: () => {}, onExit: () => { exited = true; } });
+      client.subscribe(pane, { onActivity: () => {}, onReseed: () => {}, onResize: () => {}, onExit: () => { exited = true; } });
       await run(tmux, ['-S', socket, 'kill-server']);
       await eventually(() => exited);
     } finally {

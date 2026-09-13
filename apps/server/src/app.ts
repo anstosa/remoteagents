@@ -13,7 +13,7 @@ import { DeviceService } from './auth/devices.js';
 import { TicketStore, type TicketKind } from './auth/tickets.js';
 import { DiscoveryService } from './discovery/service.js';
 import { adapterFor } from './adapters/registry.js';
-import { agentKinds, codexFamily, sameConversation, type Adapter, type AgentKind, type ConversationSummary, type PaneSnapshot, type ResetSettling } from './adapters/types.js';
+import { agentKinds, codexFamily, sameConversation, type Adapter, type AgentKind, type ConversationSummary, type InlineQuestion, type PaneSnapshot, type ResetSettling } from './adapters/types.js';
 import { TmuxAdapter } from './tmux/adapter.js';
 import { maxPromptAttachments, maxPromptAttachmentBytes, PromptService, type PromptAttachment } from './prompts/service.js';
 import { validPrompt } from './prompts/validation.js';
@@ -80,8 +80,6 @@ declare module 'fastify' {
 }
 // derive one stable opaque scratch persistence group
 const scratchSaveKey = (workspace: string) => `scratch_${createHash('sha256').update(workspace).digest('base64url').slice(0, 40)}`;
-// bound full history scans
-const logMetadataRefreshMs = 30_000;
 // how long a pane must be quiet after output before its live frame is captured
 const logQuietWindowMs = 250;
 const body = (request: FastifyRequest): Record<string, unknown> => (request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {});
@@ -101,6 +99,8 @@ const promptAttachments = (value: unknown): PromptAttachment[] | undefined => {
   return attachments.some(attachment => attachment === undefined) ? undefined : attachments as PromptAttachment[];
 };
 type LogFrame = { type: 'append'|'reset'; text: string };
+// the latest Turn's derive envelope carried on a log frame (Codex/OMX only)
+type LogMetadata = { state: 'complete'; latestAgentMessage: string | null; latestAssistantMessage: string | null; latestAssistantMessageOverflows: boolean };
 // build one complete viewport frame
 export function logFrame(last: string, value: string, refreshMetadata = false): LogFrame | undefined {
   // retain metadata-only refreshes
@@ -2315,6 +2315,11 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return reply.code(201).send({ agentId: agent.id });
   });
   app.post('/api/agents/:id/tickets', async (request, reply) => { const s = controlled(request, true); const kind = body(request).kind; if (kind !== 'input' && kind !== 'logs') return reply.code(400).send({ error: 'invalid ticket type' }); const target = await discovery.target((request.params as { id: string }).id); if (!target) return reply.code(404).send({ error: 'target unavailable' }); return { ticket: tickets.mint(s.id, kind as TicketKind, target.agent.id).id }; });
+  // renew and check the single-browser control lease on an interval; close the socket the
+  // moment the lease is lost. The one periodic tick a pane socket keeps (its live frame and
+  // Size claim are event-driven), and the dashboard socket's heartbeat, are the same thing.
+  const leaseHeartbeat = (socket: { close: (code: number) => void }, sessionId: string, ms: number) =>
+    setInterval(() => { if (!control.active(sessionId)) socket.close(1008); }, ms);
   app.get('/ws/dashboard', { websocket: true }, async (socket, request) => {
     try {
       const s = controlled(request, false);
@@ -2325,7 +2330,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ v: 1, type: 'dashboard', dashboard: value }));
       };
       const unsubscribe = dashboardUpdates.subscribe(send);
-      const lease = setInterval(() => { if (!control.active(s.id)) socket.close(1008); }, 5_000);
+      const lease = leaseHeartbeat(socket, s.id, 5_000);
       socket.on('close', () => { clearInterval(lease); unsubscribe(); });
       void dashboardUpdates.refresh().catch(() => {});
     } catch { socket.close(1008); }
@@ -2338,32 +2343,55 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       if (!tickets.consume(ticket, s.id, 'logs', id)) throw new Error();
       const target = await discovery.target(id);
       if (!target) throw new Error();
+      // one control-mode client per session (shared, ref-counted); its Captures run on
+      // that connection and its %output/%layout-change/%subscription-changed drive the
+      // event-driven frame and Size claim below (ADR 0008). The client attaches to the
+      // raw tmux session, not the composite agent id.
+      const paneClient = paneStream.get(target.socket, agentTmuxSession(target.agent));
+      const captureVia = (depth: number) => paneClient.capture(target.agent.paneId, depth);
+      // The Agent's derive: only Adapters with Turns or an inline-question parser (Codex,
+      // OMX) produce a `question`/`metadata` derive; Claude has neither, so it gets no deep
+      // Capture and its reported questions stay on the dashboard tick (Captures and the
+      // derive, ADR 0008).
+      const adapter = adapterFor(target.agent.kind);
+      const derives = adapter?.turns !== undefined || adapter?.questions?.parse !== undefined;
+      // One Size claim per tmux window, keyed by window: resolve the pane's window id over
+      // the control connection (no spawn), so two panes of one window share a claim. Falls
+      // back to the pane id until resolved, which for one pane per window is the same claim.
+      let windowKey = target.agent.paneId;
+      const windowKeyReady = paneClient.windowId(target.agent.paneId)
+        .then(id => { if (id !== undefined) windowKey = id; })
+        .catch(() => { /* keep the pane-id fallback */ });
       let paneViewport: ReturnType<typeof paneViewports.acquire> | undefined;
+      // INVARIANT: every caller must `await windowKeyReady` before the first call, so the
+      // memoised claim is keyed by the window id, not the pane-id fallback. Both call sites
+      // (the resize callback and reclamp) do; a new one that forgets would silently key by pane.
       const viewportLease = () => paneViewport ??= paneViewports.acquire(
-        `${target.socket.fingerprint}:${target.agent.paneId}`,
+        `${target.socket.fingerprint}:${windowKey}`,
         () => tmux.size(target.socket, target.agent.paneId),
         (nextCols, nextRows) => tmux.resize(target.socket, target.agent.paneId, nextCols, nextRows),
         () => tmux.unpinWindowSize(target.socket, target.agent.paneId)
       );
-      // one control-mode client per session (shared, ref-counted); its Captures run on
-      // that connection and its %output drives the event-driven frame below (ADR 0008).
-      // The client attaches to the raw tmux session, not the composite agent id.
-      const paneClient = paneStream.get(target.socket, agentTmuxSession(target.agent));
-      const captureVia = (depth: number) => paneClient.capture(target.agent.paneId, depth);
       let last = '';
       let history = 0;
       let rows = 36;
       let cols = 120;
-      let lastResetAt = 0;
       let polling = false;
       let pollQueued = false;
-      let metadataRefreshAt = Date.now() + logMetadataRefreshMs;
+      let forceQueued = false;
       let viewportEstablished = false;
-      let viewportRefreshing = false;
+      let reclamping = false;
       let viewVersion = 0;
-      const poll = async (immediate = false) => {
+      // the last derive the browser was sent, so `question`/`metadata` go out only on change;
+      // the parse input, so an unchanged pane never re-runs the question parser
+      let lastParseInput: string | undefined;
+      let lastQuestion: InlineQuestion | undefined;
+      let lastQuestionKey = '';
+      let lastMetadataKey = '';
+      const poll = async (force = false) => {
         if (polling) {
-          pollQueued ||= immediate;
+          pollQueued = true;
+          forceQueued ||= force;
           return;
         }
         polling = true;
@@ -2372,7 +2400,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         const requestedVersion = viewVersion;
         try {
           if (!control.active(s.id)) return socket.close(1008);
-          const detailed = requestedHistory > 0 || Date.now() >= metadataRefreshAt;
+          // a derive Adapter always takes the deep Capture (it feeds the derive); everyone
+          // takes it while paged; otherwise the cheap window-only Capture (Claude, live)
+          const detailed = derives || requestedHistory > 0;
           const captured = detailed
             ? await tmux.captureWindow(target.socket, target.agent.paneId, requestedHistory, requestedRows, captureVia)
             : await (tmux.captureRecentWindow?.(target.socket, target.agent.paneId, requestedRows, captureVia) ?? tmux.captureWindow(target.socket, target.agent.paneId, requestedHistory, requestedRows, captureVia));
@@ -2384,68 +2414,63 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
             pollQueued = true;
             return;
           }
-          const frame = requestedHistory === 0 ? logFrame(last, captured.text, detailed) : logFrame('', captured.text);
-          // skip unchanged cheap captures
+          let question: InlineQuestion | undefined;
+          let metadata: LogMetadata | undefined;
+          if (derives) {
+            // parse for an inline numbered choice list only when the pane changed, so an
+            // idle re-capture never re-parses; the parse feeds the Turn/question derive
+            const parseInput = captured.latestAgentMessage ?? captured.text;
+            if (parseInput !== lastParseInput) { lastParseInput = parseInput; lastQuestion = adapter?.questions?.parse?.(parseInput); }
+            question = lastQuestion;
+            metadata = { state: 'complete', latestAgentMessage: captured.latestAgentMessage ?? null, latestAssistantMessage: captured.latestAssistantMessage ?? null, latestAssistantMessageOverflows: captured.latestAssistantMessageOverflows === true };
+          }
+          const questionKey = JSON.stringify(question ?? null);
+          const metadataKey = JSON.stringify(metadata ?? null);
+          // emit when the visible window changed, when the derive changed, or on an
+          // on-demand (`force`) request, so `question`/`metadata` go out only on change
+          const deriveChanged = derives && (questionKey !== lastQuestionKey || metadataKey !== lastMetadataKey);
+          const frame = requestedHistory === 0 ? logFrame(last, captured.text, force || deriveChanged) : logFrame('', captured.text);
           if (frame === undefined) return;
-          const now = Date.now();
-          if (!immediate && lastResetAt && now - lastResetAt < 750) return;
-          last = captured.text;
-          lastResetAt = now;
           if (socket.readyState === socket.OPEN) {
-            // parse the viewed agent's capture for an inline numbered choice
-            // list — on every frame (a detailed frame's isolated message, else the
-            // visible window) so the web renders it promptly rather than parsing
-            // pane text itself and without waiting on the periodic detailed frame
-            const question = adapterFor(target.agent.kind)?.questions?.parse?.(captured.latestAgentMessage ?? captured.text);
-            const metadata = detailed ? { state: 'complete' as const, latestAgentMessage: captured.latestAgentMessage ?? null, latestAssistantMessage: captured.latestAssistantMessage ?? null, latestAssistantMessageOverflows: captured.latestAssistantMessageOverflows === true } : undefined;
+            last = captured.text;
+            lastQuestionKey = questionKey;
+            lastMetadataKey = metadataKey;
             socket.send(JSON.stringify({ v: 1, ...frame, older: captured.older, newer: requestedHistory > 0, ...(metadata === undefined ? {} : { metadata }), ...(question === undefined ? {} : { question }), ...(captured.lastPrompt === undefined ? {} : { lastPrompt: captured.lastPrompt }) }));
-            // defer the next successful full-history scan
-            if (detailed && requestedHistory === 0) metadataRefreshAt = Date.now() + logMetadataRefreshMs;
           }
         } finally {
           polling = false;
           if (pollQueued) {
             pollQueued = false;
-            void poll(true);
+            const queuedForce = forceQueued;
+            forceQueued = false;
+            void poll(queuedForce);
           }
         }
       };
       const requestView = (nextHistory: number) => {
-        const returningToLive = history > 0 && nextHistory === 0;
         history = nextHistory;
         last = '';
-        // refresh metadata after leaving history
-        if (returningToLive) metadataRefreshAt = 0;
         viewVersion += 1;
-        void poll(true);
+        void poll();
       };
       const viewport = new LatestViewportScheduler(
-        (nextCols, nextRows) => viewportLease().resize(nextCols, nextRows),
+        async (nextCols, nextRows) => { await windowKeyReady; return await viewportLease().resize(nextCols, nextRows); },
         requestView
       );
-      const refresh = async () => {
-        if (viewportRefreshing) return;
-        viewportRefreshing = true;
+      // Re-clamp the Size claim on a control-mode resize event (a window layout change, an
+      // external resize, a zoom/unzoom, or an attached terminal attaching, detaching or
+      // resizing). There is no periodic sizing tick: the claim follows events (Sizing, ADR 0008).
+      const reclamp = async () => {
+        if (!viewportEstablished || reclamping) return;
+        reclamping = true;
         try {
-          // the live frame is event-driven, so an idle pane never polls; keep checking
-          // the control lease here so a dropped connection is still torn down promptly
+          await windowKeyReady;
           if (!control.active(s.id)) return socket.close(1008);
-          if (viewportEstablished) {
-            // each tick re-targets the pane: external layout changes are
-            // repaired, and a terminal attached to the session caps the size
-            const ensured = await viewportLease().ensure(cols, rows);
-            if (!ensured.ok) return socket.close(1011);
-            if (ensured.resized) {
-              requestView(history);
-              return;
-            }
-          }
-          // the live frame is event-driven now (a %output on the pane arms the quiet
-          // window below); the interval keeps only the sizing re-target and the
-          // periodic metadata refresh, both of which a later ticket moves onto events
-          if (history === 0 && Date.now() >= metadataRefreshAt) await poll();
+          const ensured = await viewportLease().ensure(cols, rows);
+          if (!ensured.ok) return socket.close(1011);
+          if (ensured.resized) requestView(history);
         } finally {
-          viewportRefreshing = false;
+          reclamping = false;
         }
       };
       // %output on the viewed pane arms a short quiet window; on expiry one Capture on
@@ -2454,16 +2479,20 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       let quietTimer: ReturnType<typeof setTimeout> | undefined;
       const armLiveFrame = () => {
         if (quietTimer !== undefined || history !== 0 || socket.readyState !== socket.OPEN) return;
-        quietTimer = setTimeout(() => { quietTimer = undefined; if (history === 0) void poll(true); }, logQuietWindowMs);
+        quietTimer = setTimeout(() => { quietTimer = undefined; if (history === 0) void poll(); }, logQuietWindowMs);
       };
       const unsubscribePane = paneClient.subscribe(target.agent.paneId, {
         onActivity: armLiveFrame,
         // tmux resumed a paused pane; re-capture its current screen
-        onReseed: () => { if (history === 0) void poll(true); },
+        onReseed: () => { if (history === 0) void poll(); },
+        // a window layout or attached-client change; re-assert and re-clamp the Size claim
+        onResize: () => { void reclamp(); },
         // the pane, session or control client ended; let the browser reconnect
         onExit: () => { if (socket.readyState === socket.OPEN) socket.close(1011); }
       });
-      const timer = setInterval(() => { void refresh(); }, config.pollIntervalMs);
+      // an idle pane never polls; this heartbeat only renews and checks the control lease so
+      // a lost lease still tears the socket down promptly (no sizing or metadata work here)
+      const timer = leaseHeartbeat(socket, s.id, config.pollIntervalMs);
       socket.on('message', (raw: unknown) => {
         try {
           const frame = JSON.parse(String(raw));
@@ -2488,10 +2517,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
             return;
           }
           if (frame.type === 'metadata') {
-            // refresh only the live pane
+            // on-demand derive for the live pane; only a derive Adapter has one to send
             if (history !== 0) throw new Error();
-            metadataRefreshAt = 0;
-            void poll(true);
+            if (derives) void poll(true);
             return;
           }
           throw new Error();

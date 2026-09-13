@@ -16,6 +16,12 @@ export type ControlEvent =
   | { type: 'output'; pane: string; data: string }
   | { type: 'pause'; pane: string }
   | { type: 'continue'; pane: string }
+  // a window's layout changed (external resize, zoom or unzoom); the viewer re-asserts its Size claim
+  | { type: 'layout'; window: string }
+  // a `refresh-client -B` format subscription changed (a terminal attached, detached or resized);
+  // the viewer re-clamps. Only the name routes the change — the value is a signal, never read —
+  // and tmux reports it at most once a second.
+  | { type: 'subscription'; name: string }
   | { type: 'exit'; reason: string };
 
 const beginPattern = /^%begin \d+ (\d+)/u;
@@ -115,11 +121,25 @@ export class ControlProtocolParser {
     if (line.startsWith('%extended-output ')) return this.emitExtendedOutput(line.slice('%extended-output '.length));
     if (line.startsWith('%pause ')) return this.emit({ type: 'pause', pane: line.slice('%pause '.length).trim() });
     if (line.startsWith('%continue ')) return this.emit({ type: 'continue', pane: line.slice('%continue '.length).trim() });
+    if (line.startsWith('%layout-change ')) return this.emitLayout(line.slice('%layout-change '.length));
+    if (line.startsWith('%subscription-changed ')) return this.emitSubscription(line.slice('%subscription-changed '.length));
     if (line === '%exit' || line.startsWith('%exit ')) {
       return this.emit({ type: 'exit', reason: line.slice('%exit'.length).trim() || 'server exited' });
     }
-    // %layout-change, %window-*, %session-*, %subscription-changed, %client-* and the
-    // rest are not acted on in this slice; a later ticket subscribes to layout events
+    // %window-*, %session-*, %client-* and the rest are not acted on
+  }
+
+  // %layout-change window-id layout visible-layout flags
+  private emitLayout(rest: string): void {
+    const window = rest.split(' ', 1)[0] ?? '';
+    if (window !== '') this.emit({ type: 'layout', window });
+  }
+
+  // %subscription-changed name [context] : value — the name is the first token and is all the
+  // viewer needs to route the change; the value that follows is a change signal, never read
+  private emitSubscription(rest: string): void {
+    const name = rest.split(' ', 1)[0] ?? '';
+    if (name !== '') this.emit({ type: 'subscription', name });
   }
 
   // %output pane-id value

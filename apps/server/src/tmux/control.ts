@@ -11,6 +11,15 @@ import { capturePaneArgs, paneIdPattern as paneId, safeEnv, sessionIdPattern as 
 import { ControlProtocolParser, type CommandReply, type ControlEvent } from './control-protocol.js';
 
 const maxCaptureDepth = 5_000;
+// One `refresh-client -B` subscription per control client tracks every attached client's
+// size. `what` is empty (the attached-session context, evaluated once) and the format is an
+// `#{L:}` loop over all clients — a `-B` format may contain colons, as every `#{mod:…}` does.
+// The comma separator keeps the argument space-free, so tmux's command tokenizer takes the
+// whole `name::format` as one argument. The value is a change signal only, never parsed: any
+// attach, detach or resize changes it and tmux reports it through %subscription-changed, at
+// most once a second.
+const clientSizeSubscription = 'rac-clients';
+const clientSizeSubscribeArg = `${clientSizeSubscription}::#{L:#{client_width}x#{client_height},}`;
 // a command whose reply block does not arrive in this long is a broken connection: the
 // client fails and its viewers reconnect, mirroring run()'s SIGKILL timeout for spawns.
 // Generous because tmux orders a reply behind pending %output.
@@ -21,6 +30,9 @@ export type PaneActivitySubscriber = {
   onActivity: () => void;
   // tmux paused and resumed this pane; the viewer must re-capture
   onReseed: () => void;
+  // a window layout changed or an attached terminal attached, detached or resized; the
+  // viewer re-asserts and re-clamps its Size claim (Sizing, ADR 0008)
+  onResize: () => void;
   // the pane, session or control client ended; the viewer must reconnect
   onExit: () => void;
 };
@@ -29,6 +41,8 @@ export type PaneActivitySubscriber = {
 export type PaneClient = {
   subscribe(pane: string, subscriber: PaneActivitySubscriber): () => void;
   capture(pane: string, depth: number): Promise<string | undefined>;
+  // the id of the window holding the pane (`@N`), so the Size claim is keyed by window
+  windowId(pane: string): Promise<string | undefined>;
 };
 export type PaneStreamProvider = {
   get(socket: SocketRef, session: string): PaneClient;
@@ -55,6 +69,12 @@ export class TmuxControlClient implements PaneClient {
     this.ready = new Promise<void>((resolve, reject) => this.blockWaiters.push({ resolve: () => resolve(), reject, timer: this.armTimeout() }));
     // an attach that fails before any capture attaches a catch would otherwise be an unhandled rejection
     this.ready.catch(() => {});
+    // once attached, subscribe to attached clients' sizes so a terminal resize is a push, not
+    // a poll. If the subscription itself fails (an older tmux without `-B`, a transient error)
+    // the client stays alive on %layout-change re-clamps only: attach/detach/resize of a second
+    // terminal no longer re-clamps, and there is no periodic fallback. A tmux that old is not a
+    // target here, so this soft-degrades rather than wedges.
+    void this.ready.then(() => this.command(`refresh-client -B ${clientSizeSubscribeArg}`)).catch(() => { /* a broken connection tears the client down elsewhere */ });
     this.child.stdout.on('data', (chunk: Buffer) => this.parser.push(chunk));
     this.child.stderr.on('data', () => { /* tmux diagnostics are not actionable here */ });
     // a write to a child whose read-end has closed (server gone) raises EPIPE
@@ -77,6 +97,11 @@ export class TmuxControlClient implements PaneClient {
       // continue the pane and tell subscribers to re-capture its current state
       case 'pause': void this.continuePane(event.pane); return;
       case 'continue': return;
+      // a window layout changed (external resize, zoom, unzoom) or an attached terminal
+      // attached, detached or resized (our client-size subscription): every viewer re-clamps.
+      // Both are session-wide, so broadcast; a re-clamp on an unaffected pane is a no-op.
+      case 'layout': this.notifyResize(); return;
+      case 'subscription': if (event.name === clientSizeSubscription) this.notifyResize(); return;
       case 'exit': this.fail(); return;
     }
   }
@@ -134,6 +159,22 @@ export class TmuxControlClient implements PaneClient {
     const subscribers = this.subscribers.get(pane);
     if (subscribers !== undefined) for (const subscriber of [...subscribers]) subscriber.onActivity();
     // panes nobody is viewing are discarded here, never turned off
+  }
+
+  // a layout or attached-client change reaches every viewer of this session
+  private notifyResize(): void {
+    for (const set of [...this.subscribers.values()]) for (const subscriber of [...set]) subscriber.onResize();
+  }
+
+  // the id of the pane's window (`@N`), read over the control connection so the Size claim
+  // can be keyed by window with no process spawn
+  async windowId(pane: string): Promise<string | undefined> {
+    if (!paneId.test(pane)) return undefined;
+    await this.ready.catch(() => undefined);
+    if (this.disposed) return undefined;
+    const block = await this.command(`display-message -p -t ${pane} '#{window_id}'`).catch(() => undefined);
+    const id = block?.ok === true ? block.lines[0]?.trim() : undefined;
+    return id !== undefined && /^@\d+$/u.test(id) ? id : undefined;
   }
 
   private async continuePane(pane: string): Promise<void> {

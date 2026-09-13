@@ -78,8 +78,25 @@ describe('ControlProtocolParser', () => {
     expect(collect(['%exit killed\n'])).toEqual([{ type: 'exit', reason: 'killed' }]);
   });
 
-  it('ignores notifications it does not act on in this slice', () => {
-    expect(collect(['%layout-change @1 abc\n', '%window-add @2\n', '%output %1 x\n'])).toEqual([
+  it('surfaces a %layout-change with its window id so the viewer re-asserts its Size claim', () => {
+    // window id first, then layout, visible-layout and flags — only the window matters here
+    expect(collect(['%layout-change @1 b3f2,80x24,0,0,1 b3f2,80x24,0,0,1 *\n'])).toEqual([
+      { type: 'layout', window: '@1' }
+    ]);
+  });
+
+  it('surfaces a %subscription-changed by its name so the viewer re-clamps', () => {
+    // only the name routes the change; the value that follows is not parsed
+    expect(collect(['%subscription-changed rac-clients @1 : 190x50 80x24\n'])).toEqual([
+      { type: 'subscription', name: 'rac-clients' }
+    ]);
+    expect(collect(['%subscription-changed rac-clients\n'])).toEqual([
+      { type: 'subscription', name: 'rac-clients' }
+    ]);
+  });
+
+  it('ignores notifications it does not act on', () => {
+    expect(collect(['%window-add @2\n', '%client-detached other\n', '%output %1 x\n'])).toEqual([
       { type: 'output', pane: '%1', data: 'x' }
     ]);
   });
