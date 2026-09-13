@@ -115,11 +115,11 @@ export class TmuxAdapter {
 
   // read pane identity and console-owned launch metadata
   async listPanes(socket: SocketRef): Promise<Pane[]> {
-    const out = await run(this.binary, ['-S', socket.path, 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_question}\t#{@rac_console_managed}']);
+    const out = await run(this.binary, ['-S', socket.path, 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_question}\t#{@rac_console_managed}\t#{@rac_role}\t#{@rac_pane_name}']);
     if (out.code !== 0) return [];
     return out.stdout.trim().split('\n').filter(Boolean).flatMap((line) => {
-      const [id, session, name, pid, path, command, title, displayLabel, startCommand, attention, sessionRef, sandboxed, question, consoleManaged] = line.split('\t');
-      return paneId.test(id) && sessionId.test(session) && name && /^\d+$/.test(pid) && path ? [{ paneId: id, sessionId: session, sessionName: name, pid: Number(pid), path, command: command ?? '', title: title ?? '', ...(displayLabel ? { displayLabel } : {}), ...(startCommand ? { startCommand } : {}), ...(attention ? { reportedAttention: attention } : {}), ...(sessionRef ? { reportedSession: sessionRef } : {}), ...(sandboxed ? { reportedSandboxed: sandboxed } : {}), ...(question ? { reportedQuestion: question } : {}), ...(consoleManaged === '1' ? { consoleManaged: true } : {}), socket }] : [];
+      const [id, session, name, pid, path, command, title, displayLabel, startCommand, attention, sessionRef, sandboxed, question, consoleManaged, role, paneName] = line.split('\t');
+      return paneId.test(id) && sessionId.test(session) && name && /^\d+$/.test(pid) && path ? [{ paneId: id, sessionId: session, sessionName: name, pid: Number(pid), path, command: command ?? '', title: title ?? '', ...(displayLabel ? { displayLabel } : {}), ...(startCommand ? { startCommand } : {}), ...(attention ? { reportedAttention: attention } : {}), ...(sessionRef ? { reportedSession: sessionRef } : {}), ...(sandboxed ? { reportedSandboxed: sandboxed } : {}), ...(question ? { reportedQuestion: question } : {}), ...(consoleManaged === '1' ? { consoleManaged: true } : {}), ...(role ? { role } : {}), ...(paneName ? { paneName } : {}), socket }] : [];
     });
   }
 
@@ -141,6 +141,42 @@ export class TmuxAdapter {
       option => run(this.binary, ['-S', socket.path, 'set-option', '-p', '-t', pane, '-u', option])
     ));
     return results.every(result => result.code === 0);
+  }
+
+  // Mark a pane as a Console shell (ADR 0001 style): `@rac_role=shell` so launch adoption,
+  // Remove's blind kill and cleanup all skip it, and `@rac_pane_name` (the picker's name,
+  // empty by default). Both are set at creation so a restart rediscovers the shell from them.
+  async markConsoleShell(socket: SocketRef, pane: string, name: string): Promise<boolean> {
+    if (!paneId.test(pane) || name.length > 120 || /[\0\r\n]/u.test(name)) return false;
+    if ((await run(this.binary, ['-S', socket.path, 'set-option', '-p', '-t', pane, '@rac_role', 'shell'])).code !== 0) return false;
+    return (await run(this.binary, ['-S', socket.path, 'set-option', '-p', '-t', pane, '@rac_pane_name', name])).code === 0;
+  }
+
+  // Open a Console shell in a new detached window of an existing session, cwd the Worktree,
+  // running the given login-shell argv, and mark it. Returns the new pane id, or undefined on
+  // failure. The window is detached (`-d`) so an attached terminal is not yanked to it (spec).
+  async createConsoleShellWindow(socket: SocketRef, session: string, cwd: string, shellArgv: readonly string[], name: string): Promise<string | undefined> {
+    if (!sessionId.test(session) && !/^[A-Za-z0-9_@%+=:,./-]+$/u.test(session)) return undefined;
+    const created = await run(this.binary, ['-S', socket.path, 'new-window', '-d', '-t', session, '-c', cwd, '-P', '-F', '#{pane_id}', '--', ...shellArgv]);
+    if (created.code !== 0) return undefined;
+    const pane = created.stdout.trim();
+    if (!paneId.test(pane)) return undefined;
+    if (await this.markConsoleShell(socket, pane, name)) return pane;
+    // an unmarked shell would be adopted by a later Launch (it looks like an idle landing
+    // shell); end it rather than leak an operator-owned pane the console cannot see
+    await this.close(socket, pane);
+    return undefined;
+  }
+
+  // rename one Console shell: write (or clear, when empty) its `@rac_pane_name` option, the
+  // name the picker shows. Rejects control characters and an over-long name; an empty name
+  // unsets the option so the picker falls back to `command · ~/path`.
+  async renamePaneName(socket: SocketRef, pane: string, name: string): Promise<boolean> {
+    if (!paneId.test(pane) || name.length > 120 || /[\0\r\n]/u.test(name)) return false;
+    const args = name === ''
+      ? ['-S', socket.path, 'set-option', '-p', '-t', pane, '-u', '@rac_pane_name']
+      : ['-S', socket.path, 'set-option', '-p', '-t', pane, '@rac_pane_name', name];
+    return (await run(this.binary, args)).code === 0;
   }
 
   // assign one server-owned pane label

@@ -9,7 +9,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LaunchService, composeCommand, composeLaunch, expandCommand, expandHomeCommand, scratchLabel } from '../src/launch/service.js';
-import { hostCommand } from '../src/tmux/interactive-shell.js';
+import { hostCommand, interactiveShellPath } from '../src/tmux/interactive-shell.js';
 import { startNamedReplacementSession, worktreeSessionName } from '../src/tmux/session-name.js';
 import type { SocketRef, Worktree } from '../src/domain/models.js';
 import { testWorktree } from './helpers/config.js';
@@ -425,7 +425,7 @@ describe('LaunchService', () => {
     // default socket; the runner path must step around it, not collide on new-session
     run.mockImplementation(async (_binary: string, args: string[]) => args.includes('list-sessions') ? { code: 0, stdout: 'owen\n', stderr: '' } : { code: 0, stdout: '', stderr: '' });
     const worktree = testWorktree({ id: 'owen', projectId: 'proj', path: '/worktrees/owen', identity: '/worktrees/owen', main: false });
-    const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree], root);
+    const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree], () => new Set(), root);
 
     await expect(service.launch(worktree.id)).resolves.toBe(true);
 
@@ -685,5 +685,104 @@ describe('LaunchService', () => {
     // with a single launchable kind the store is not even consulted
     await service.resolveLaunchKind('cora');
     expect(lookups).toEqual([]);
+  });
+
+  describe('Console shells', () => {
+    const alex = () => cora({ id: 'alex', label: 'Alex', path: '/worktrees/alex', hostPath: '/home/ubuntu/alex' });
+    const shellPane = (over: Record<string, unknown>, socket: SocketRef) => ({ paneId: '%1', sessionId: '$1', pid: 1, path: '/home/ubuntu/alex', command: 'zsh', title: '', socket, ...over });
+
+    it('opens a Console shell beside a live Agent as a detached window with cwd, a login shell and both marker options', async () => {
+      // the argv contract: a detached window (`-d`), the Worktree cwd, a login shell, and the
+      // two markers set at creation so a restart rediscovers the shell from them
+      run.mockResolvedValue({ code: 0, stdout: '%9', stderr: '' });
+      const socket: SocketRef = { fingerprint: 'sock', path: '/tmp/tmux/default', device: 1, inode: 1 };
+      const worktree = alex();
+      const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
+
+      await expect(service.createConsoleShell(worktree, 'build', { socket, session: '$1' })).resolves.toBe('%9');
+
+      const newWindow = run.mock.calls.find(call => call[1].includes('new-window'));
+      expect(newWindow?.[1]).toEqual(['-S', '/tmp/tmux/default', 'new-window', '-d', '-t', '$1', '-c', '/worktrees/alex', '-P', '-F', '#{pane_id}', '--', interactiveShellPath(), '-l']);
+      expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux/default', 'set-option', '-p', '-t', '%9', '@rac_role', 'shell']);
+      expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux/default', 'set-option', '-p', '-t', '%9', '@rac_pane_name', 'build']);
+    });
+
+    it('opens the first Console shell in a fresh session named for the Worktree when there is no live Agent', async () => {
+      run.mockImplementation(async (_bin: string, args: string[]) => ({ code: 0, stdout: args.includes('new-session') ? '%5' : '', stderr: '' }));
+      const socket: SocketRef = { fingerprint: 'sock', path: '/tmp/tmux/default', device: 1, inode: 1 };
+      const worktree = alex();
+      const service = new LaunchService(codex, { find: async () => [socket] }, undefined, undefined, undefined, () => [worktree]);
+
+      await expect(service.createConsoleShell(worktree, '')).resolves.toBe('%5');
+
+      const newSession = run.mock.calls.find(call => call[1].includes('new-session'));
+      expect(newSession?.[1]).toEqual(['new-session', '-d', '-s', 'alex', '-c', '/worktrees/alex', '-P', '-F', '#{pane_id}', '--', interactiveShellPath(), '-l']);
+      expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['set-option', '-p', '-t', '%5', '@rac_role', 'shell']);
+    });
+
+    it('never adopts a Console shell for a launch and joins its session instead', async () => {
+      process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+      run.mockResolvedValue({ code: 0, stdout: '%9', stderr: '' });
+      const socket: SocketRef = { fingerprint: 'sock', path: '/host-tmux/default', device: 1, inode: 2 };
+      const worktree = alex();
+      const panes = { listPanes: async () => [shellPane({ role: 'shell' }, socket)], pastePrompt: vi.fn(async () => true), enter: vi.fn(async () => true) };
+      const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree]);
+
+      await expect(service.launch('alex')).resolves.toBe(true);
+
+      expect(panes.pastePrompt).not.toHaveBeenCalled();
+      // no adoptable idle shell: the launch adds a window to the session holding the Console shell
+      const newWindow = run.mock.calls.find(call => call[1].includes('new-window'));
+      expect(newWindow?.[1]).toEqual(expect.arrayContaining(['-S', '/host-tmux/default', 'new-window', '-d', '-t', '$1']));
+    });
+
+    it('never adopts a pane the operator currently has open as a Terminal', async () => {
+      process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+      run.mockResolvedValue({ code: 0, stdout: '%9', stderr: '' });
+      const socket: SocketRef = { fingerprint: 'sock', path: '/host-tmux/default', device: 1, inode: 2 };
+      const worktree = alex();
+      // an ordinary idle shell that would normally be adopted, but a browser has it open
+      const panes = { listPanes: async () => [shellPane({}, socket)], pastePrompt: vi.fn(async () => true), enter: vi.fn(async () => true) };
+      const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree], () => new Set(['sock\0%1']));
+
+      await expect(service.launch('alex')).resolves.toBe(true);
+
+      expect(panes.pastePrompt).not.toHaveBeenCalled();
+    });
+
+    it("killWorktreeShells leaves a Console shell and an open Terminal alone, killing only an idle landing shell", async () => {
+      const socket: SocketRef = { fingerprint: 'sock', path: '/host-tmux/default', device: 1, inode: 2 };
+      const worktree = alex();
+      const closed: string[] = [];
+      const panes = {
+        listPanes: async () => [
+          shellPane({ paneId: '%1', role: 'shell' }, socket),
+          shellPane({ paneId: '%2' }, socket),
+          shellPane({ paneId: '%3' }, socket)
+        ],
+        close: async (_socket: SocketRef, pane: string) => { closed.push(pane); return true; }
+      };
+      const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree], () => new Set(['sock\0%3']));
+
+      await service.killWorktreeShells(worktree);
+
+      // %1 is marked, %3 is open as a Terminal; only the bare idle landing shell %2 is killed
+      expect(closed).toEqual(['%2']);
+    });
+
+    it('worktreeConsoleShells returns only this Worktree\'s marked shells', async () => {
+      const socket: SocketRef = { fingerprint: 'sock', path: '/host-tmux/default', device: 1, inode: 2 };
+      const worktree = alex();
+      const panes = { listPanes: async () => [
+        shellPane({ paneId: '%1', role: 'shell', paneName: 'build' }, socket),
+        shellPane({ paneId: '%2' }, socket),                                   // unmarked landing shell
+        shellPane({ paneId: '%3', role: 'shell', path: '/home/ubuntu/other' }, socket) // another worktree
+      ] };
+      const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree]);
+
+      const shells = await service.worktreeConsoleShells(worktree);
+      expect(shells.map(shell => shell.paneId)).toEqual(['%1']);
+      expect(service.consoleShellBusy(shells[0]!)).toBe(false);
+    });
   });
 });

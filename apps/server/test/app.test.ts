@@ -846,6 +846,149 @@ describe('configured worktree deactivation', () => {
   }, 15_000);
 });
 
+describe('Console shells server lifecycle', () => {
+  const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+  const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/worktrees/cora', available: true, pinned: false, main: false, detached: false, locked: false };
+  const idleDashboard = { generation: 1, adapters: {}, agents: [] as unknown[], projects: [{ id: 'cora', label: 'Cora', mode: 'repository', available: true, manageWorktrees: true, stalePaths: [], worktrees: [] }] };
+  const shell = { paneId: '%9', sessionId: '$1', pid: 9, path: '/worktrees/cora', command: 'zsh', role: 'shell', title: '', socket };
+  const consoleShellBusy = (pane: { command: string }) => pane.command !== 'zsh';
+  let secret = 30;
+  // build the app with the given fakes and return a logged-in session's headers
+  const start = async (deps: { discovery?: object; launch?: object; tmux?: object; worktreeCommands?: object }) => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const discovery = { worktreesNow: () => [worktree], dashboard: async () => idleDashboard, target: async () => undefined, ...deps.discovery };
+    const launch = { launchResolutions: async () => new Map(), ...deps.launch };
+    const app = await buildApp({ ...config }, { auth: new AuthService(hash, Buffer.alloc(32, secret++).toString('base64url')), discovery: discovery as never, launch: launch as never, tmux: (deps.tmux ?? {}) as never, ...(deps.worktreeCommands === undefined ? {} : { worktreeCommands: deps.worktreeCommands as never }) });
+    const boot = await app.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+    const login = await app.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+    const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+    return { app, headers };
+  };
+
+  it('lists the Worktree panes with their role, name, busy and agent flags', async () => {
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
+    const agentPane = { paneId: '%1', sessionId: '$1', pid: 1, path: '/worktrees/cora', command: 'codex', title: '', socket };
+    const busyShell = { ...shell, paneName: 'build', command: 'vim' };
+    const { app, headers } = await start({ discovery: { dashboard: async () => ({ ...idleDashboard, agents: [agent] }) }, launch: { worktreePanes: async () => [agentPane, busyShell], consoleShellBusy } });
+    try {
+      const response = await app.inject({ method: 'GET', url: '/api/worktrees/cora/panes', headers: { host: headers.host, cookie: headers.cookie } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().panes).toEqual([
+        { paneId: '%1', session: '$1', command: 'codex', path: '/worktrees/cora', title: '', agent: true },
+        { paneId: '%9', session: '$1', role: 'shell', name: 'build', command: 'vim', path: '/worktrees/cora', title: '', agent: false, busy: true }
+      ]);
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('opens a Console shell beside a live Agent, forwarding the Agent session', async () => {
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
+    const createConsoleShell = vi.fn(async () => '%9');
+    const { app, headers } = await start({ discovery: { dashboard: async () => ({ ...idleDashboard, agents: [agent] }), target: async (id: string) => id === agent.id ? { agent, socket } : undefined }, launch: { createConsoleShell } });
+    try {
+      const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload: { name: 'build' } });
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({ paneId: '%9' });
+      expect(createConsoleShell).toHaveBeenCalledWith(worktree, 'build', { socket, session: '$1' });
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('opens a Console shell with no name and no live Agent', async () => {
+    const createConsoleShell = vi.fn(async () => '%9');
+    const { app, headers } = await start({ launch: { createConsoleShell } });
+    try {
+      const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload: {} });
+      expect(response.statusCode).toBe(201);
+      expect(createConsoleShell).toHaveBeenCalledWith(worktree, '', undefined);
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('renames a Console shell by writing its name option', async () => {
+    const renamePaneName = vi.fn(async () => true);
+    const { app, headers } = await start({ launch: { worktreeConsoleShells: async () => [shell] }, tmux: { renamePaneName } });
+    try {
+      const response = await app.inject({ method: 'PATCH', url: '/api/worktrees/cora/panes/%259', headers, payload: { name: 'build' } });
+      expect(response.statusCode).toBe(204);
+      expect(renamePaneName).toHaveBeenCalledWith(socket, '%9', 'build');
+      // a control character in the name is rejected before touching tmux
+      const bad = await app.inject({ method: 'PATCH', url: '/api/worktrees/cora/panes/%259', headers, payload: { name: 'a\nb' } });
+      expect(bad.statusCode).toBe(400);
+      expect(renamePaneName).toHaveBeenCalledTimes(1);
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('ends an idle Console shell, and reports a busy one until the operator confirms', async () => {
+    const close = vi.fn(async () => true);
+    const busy = { ...shell, command: 'vim' };
+    const { app, headers } = await start({ launch: { worktreeConsoleShells: async () => [busy], consoleShellBusy }, tmux: { close } });
+    try {
+      // a busy shell is reported, not killed, until confirmed
+      const blocked = await app.inject({ method: 'DELETE', url: '/api/worktrees/cora/panes/%259', headers });
+      expect(blocked.statusCode).toBe(409);
+      expect(blocked.json()).toMatchObject({ busy: true });
+      expect(close).not.toHaveBeenCalled();
+      const confirmed = await app.inject({ method: 'DELETE', url: '/api/worktrees/cora/panes/%259?confirm=1', headers });
+      expect(confirmed.statusCode).toBe(204);
+      expect(close).toHaveBeenCalledWith(socket, '%9');
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('ends an idle Console shell without confirmation', async () => {
+    const close = vi.fn(async () => true);
+    const { app, headers } = await start({ launch: { worktreeConsoleShells: async () => [shell], consoleShellBusy }, tmux: { close } });
+    try {
+      const response = await app.inject({ method: 'DELETE', url: '/api/worktrees/cora/panes/%259', headers });
+      expect(response.statusCode).toBe(204);
+      expect(close).toHaveBeenCalledWith(socket, '%9');
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('mints a pane ticket for a Worktree target', async () => {
+    const { app, headers } = await start({});
+    try {
+      const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/tickets', headers, payload: { kind: 'pane' } });
+      expect(response.statusCode).toBe(200);
+      expect(typeof response.json().ticket).toBe('string');
+      const bad = await app.inject({ method: 'POST', url: '/api/worktrees/cora/tickets', headers, payload: { kind: 'logs' } });
+      expect(bad.statusCode).toBe(400);
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('refuses to remove a Worktree while it has an open Console shell', async () => {
+    const { app, headers } = await start({ launch: { worktreeConsoleShells: async () => [shell] }, worktreeCommands: { sessionRunning: async () => false } });
+    try {
+      const response = await app.inject({ method: 'DELETE', url: '/api/worktrees/cora', headers });
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toBe('End the open terminals before removing this worktree');
+    } finally { await app.close(); }
+  }, 15_000);
+
+  // Turn off and Sleep close only the Agent's own pane (`prompts.close`). A Console shell is a
+  // separate pane in its own window, so recording every `kill-pane` and asserting only the
+  // Agent's `%1` is closed proves the shell's pane (`%9`) is never touched — without relying on
+  // the shell-scan, which these routes deliberately never call.
+  it('leaves a Console shell alone when the Agent is turned off', async () => {
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
+    const closed: string[] = [];
+    const { app, headers } = await start({ discovery: { dashboard: async () => ({ ...idleDashboard, agents: [agent] }), target: async (id: string) => id === agent.id ? { agent, socket } : undefined }, tmux: { close: async (_socket: unknown, pane: string) => { closed.push(pane); return true; } } });
+    try {
+      const response = await app.inject({ method: 'POST', url: '/api/agents/agent-1/deactivate', headers });
+      expect(response.statusCode).toBe(204);
+      expect(closed).toEqual(['%1']);
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('leaves a Console shell alone when the Agent is put to sleep', async () => {
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
+    const closed: string[] = [];
+    const { app, headers } = await start({ discovery: { dashboard: async () => ({ ...idleDashboard, agents: [agent] }), target: async (id: string) => id === agent.id ? { agent, socket } : undefined }, tmux: { close: async (_socket: unknown, pane: string) => { closed.push(pane); return true; } } });
+    try {
+      const response = await app.inject({ method: 'POST', url: '/api/agents/agent-1/sleep', headers });
+      expect(response.statusCode).toBe(204);
+      expect(closed).toEqual(['%1']);
+    } finally { await app.close(); }
+  }, 15_000);
+});
+
 describe('agent terminal swap', () => {
   it('backgrounds the agent for terminal mode and foregrounds it when returning', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });

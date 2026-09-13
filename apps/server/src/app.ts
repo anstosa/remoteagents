@@ -28,7 +28,7 @@ import { PullRequestSwitchService } from './pull-requests/switch-service.js';
 import { NewTaskService } from './new-task/service.js';
 import { WorktreeManagementService } from './worktrees/management.js';
 import { agentAttentionState, AgentNotificationCoordinator, reviewNotification, scheduleNotification, type AgentNotificationContext } from './notifications.js';
-import { agentTmuxSession, stackActions, type Agent, type SocketRef, type StackAction, type Worktree } from './domain/models.js';
+import { agentTmuxSession, stackActions, type Agent, type Pane, type SocketRef, type StackAction, type Worktree } from './domain/models.js';
 import { CommandCatalogService } from './commands/service.js';
 import { LatestViewportScheduler, PaneViewportCoordinator } from './logs/viewport-scheduler.js';
 import { boundedViewport } from './logs/viewport.js';
@@ -111,7 +111,7 @@ export function logFrame(last: string, value: string, refreshMetadata = false): 
 }
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const prompts = deps.prompts ?? new PromptService(discovery, tmux, promptHistory, queuedPrompts, (scope: string, prompt: QueuedPrompt) => drainUndelivered(scope, prompt), undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const consoleNamed = deps.consoleNamed ?? new ConsoleNamedConversationService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow(), () => paneStream.openPaneKeys()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const prompts = deps.prompts ?? new PromptService(discovery, tmux, promptHistory, queuedPrompts, (scope: string, prompt: QueuedPrompt) => drainUndelivered(scope, prompt), undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const consoleNamed = deps.consoleNamed ?? new ConsoleNamedConversationService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery, tmux); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
   const temporaryPreviews = deps.temporaryPreviews ?? new TemporaryPreviewService();
   // freeze the checkout identity serving this process
   const deployedRevision = serverAdmin.revision();
@@ -2149,6 +2149,79 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(201).send({ worktreeId, ...(agentId === undefined ? {} : { agentId }), ...(launchError === undefined ? {} : { launchError }), ...(setupError === undefined ? {} : { setupError }) });
   });
+  // the session + socket of a Worktree's live Agent, so a new Console shell opens beside it
+  // (an Agent adopted into the operator's own session lives wherever, so it is resolved from
+  // discovery, never by session name)
+  const worktreeAgentSession = async (worktree: Worktree): Promise<{ socket: SocketRef; session: string } | undefined> => {
+    const agent = (await discovery.dashboard()).agents.find(candidate => candidate.worktreeId === worktree.id);
+    if (agent === undefined) return undefined;
+    const target = await discovery.target(agent.id);
+    return target === undefined ? undefined : { socket: target.socket, session: agentTmuxSession(target.agent) };
+  };
+  // shape one Worktree pane for the wire: its id, session, role/name markers and the busy
+  // flag for a Console shell, and whether it is a live Agent's own pane (the picker disables
+  // it). `agentIds` holds Agent ids, which are `${fingerprint}:${paneId}` — the same key this
+  // rebuilds from the pane, so a pane backing a live Agent is matched.
+  const worktreePaneView = (pane: Pane, agentIds: ReadonlySet<string>) => ({
+    paneId: pane.paneId, session: pane.sessionId, ...(pane.sessionName ? { sessionName: pane.sessionName } : {}),
+    ...(pane.role ? { role: pane.role } : {}), ...(pane.paneName ? { name: pane.paneName } : {}),
+    command: pane.command, path: pane.path, title: pane.title,
+    agent: agentIds.has(`${pane.socket.fingerprint}:${pane.paneId}`),
+    ...(pane.role === 'shell' ? { busy: launch.consoleShellBusy(pane) } : {})
+  });
+  // list every pane the console may stream for a Worktree (its Agent's session, its Console
+  // shells, idle landing shells), a read behind the read guard (spec, Console shells)
+  app.get('/api/worktrees/:id/panes', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (request, reply) => {
+    controlled(request);
+    const worktree = configuredWorktree((request.params as { id: string }).id);
+    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const [panes, dashboard] = await Promise.all([launch.worktreePanes(worktree), discovery.dashboard()]);
+    const agentIds = new Set(dashboard.agents.filter(agent => agent.worktreeId === worktree.id).map(agent => agent.id));
+    return { panes: panes.map(pane => worktreePaneView(pane, agentIds)) };
+  });
+  // open a Console shell in the Worktree: beside its live Agent, else the session holding its
+  // Console shells, else a fresh console session named for the Worktree (spec, Console shells)
+  app.post('/api/worktrees/:id/shells', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
+    controlled(request, true);
+    const worktree = configuredWorktree((request.params as { id: string }).id);
+    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const name = body(request).name;
+    if (name !== undefined && (typeof name !== 'string' || name.length > 120 || name.includes('\0') || /[\r\n]/u.test(name))) return reply.code(400).send({ error: 'invalid terminal name' });
+    const paneId = await launch.createConsoleShell(worktree, typeof name === 'string' ? name : '', await worktreeAgentSession(worktree));
+    if (paneId === undefined) return reply.code(500).send({ error: 'could not open a terminal' });
+    await dashboardUpdates.refresh().catch(() => undefined);
+    return reply.code(201).send({ paneId });
+  });
+  // rename a Console shell (writes `@rac_pane_name`); membership is enforced by finding the
+  // pane among the Worktree's own Console shells
+  app.patch('/api/worktrees/:id/panes/:paneId', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
+    controlled(request, true);
+    const { id, paneId } = request.params as { id: string; paneId: string };
+    const worktree = configuredWorktree(id);
+    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const name = body(request).name;
+    if (typeof name !== 'string' || name.length > 120 || name.includes('\0') || /[\r\n]/u.test(name)) return reply.code(400).send({ error: 'invalid terminal name' });
+    const shell = (await launch.worktreeConsoleShells(worktree)).find(candidate => candidate.paneId === paneId);
+    if (shell === undefined) return reply.code(404).send({ error: 'terminal unavailable' });
+    if (!await tmux.renamePaneName(shell.socket, shell.paneId, name)) return reply.code(500).send({ error: 'could not rename the terminal' });
+    await dashboardUpdates.refresh().catch(() => undefined);
+    return reply.code(204).send();
+  });
+  // End a Console shell (kill-pane). A busy shell (its foreground command is not the login
+  // shell) returns 409 `busy` unless `?confirm=1`, so the client can confirm first (spec)
+  app.delete('/api/worktrees/:id/panes/:paneId', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
+    controlled(request, true);
+    const { id, paneId } = request.params as { id: string; paneId: string };
+    const worktree = configuredWorktree(id);
+    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const confirm = (request.query as { confirm?: unknown }).confirm; const confirmed = confirm === '1' || confirm === 'true';
+    const shell = (await launch.worktreeConsoleShells(worktree)).find(candidate => candidate.paneId === paneId);
+    if (shell === undefined) return reply.code(404).send({ error: 'terminal unavailable' });
+    if (!confirmed && launch.consoleShellBusy(shell)) return reply.code(409).send({ error: 'the terminal is busy', busy: true });
+    if (!await tmux.close(shell.socket, shell.paneId)) return reply.code(500).send({ error: 'could not end the terminal' });
+    await dashboardUpdates.refresh().catch(() => undefined);
+    return reply.code(204).send();
+  });
   // the runtime blockers that refuse a Remove, named for the 409: a live Agent in the
   // Worktree, or a running stack operation there. `fresh` forces a live pane scan before a
   // destructive removal so an Agent that started within the discovery cache window is never
@@ -2238,6 +2311,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (worktree.locked) return reply.code(409).send({ error: 'Locked worktrees cannot be removed' });
     const blockers = await worktreeRemovalBlockers(worktree, true);
     if (blockers.length > 0) return reply.code(409).send({ error: `cannot remove the worktree while ${blockers.join(' and ')} ${blockers.length === 1 ? 'is' : 'are'} running` });
+    // refuse while any Console shell is open, so a removal cannot pull the directory out from
+    // under the operator's shell — the reason the launcher row shows (spec, Console shells)
+    if ((await launch.worktreeConsoleShells(worktree)).length > 0) return reply.code(409).send({ error: 'End the open terminals before removing this worktree' });
     const facts = await worktreeManagement.removal(worktree);
     if (!facts.ok) return reply.code(facts.status).send({ error: facts.error });
     // a dirty tree needs the explicit discard; an unpushed one only warns, never blocks
@@ -2320,6 +2396,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return reply.code(201).send({ agentId: agent.id });
   });
   app.post('/api/agents/:id/tickets', async (request, reply) => { const s = controlled(request, true); const kind = body(request).kind; if (kind !== 'input' && kind !== 'logs' && kind !== 'pane') return reply.code(400).send({ error: 'invalid ticket type' }); const target = await discovery.target((request.params as { id: string }).id); if (!target) return reply.code(404).send({ error: 'target unavailable' }); return { ticket: tickets.mint(s.id, kind as TicketKind, target.agent.id).id }; });
+  // a `pane` ticket for a Worktree target (a Console shell or another Worktree pane); the
+  // Worktree counterpart of the Agent ticket route, so `/ws/pane/:id` streams either (spec)
+  app.post('/api/worktrees/:id/tickets', async (request, reply) => { const s = controlled(request, true); const kind = body(request).kind; if (kind !== 'pane') return reply.code(400).send({ error: 'invalid ticket type' }); const id = (request.params as { id: string }).id; if (configuredWorktree(id) === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); return { ticket: tickets.mint(s.id, 'pane', id).id }; });
   // renew and check the single-browser control lease on an interval; close the socket the
   // moment the lease is lost. The one periodic tick a pane socket keeps (its live frame and
   // Size claim are event-driven), and the dashboard socket's heartbeat, are the same thing.
@@ -2546,24 +2625,49 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       const ticket = String(request.headers['sec-websocket-protocol'] ?? '').split(',').map(x => x.trim())[1];
       const id = (request.params as { id: string }).id;
       if (!tickets.consume(ticket, s.id, 'pane', id)) throw new Error();
-      const target = await discovery.target(id);
-      if (!target) throw new Error();
-      const session = agentTmuxSession(target.agent);
-      // membership: the Agent's own pane by default; a requested pane must belong to the
-      // Agent's session, checked against a fresh listing (Decided at charting)
+      // Resolve the pane target: an Agent (default pane = the Agent's own, membership = every
+      // pane of its tmux session, derive + mutation lock on its own pane) or a Worktree (an
+      // explicit pane required, membership = the Worktree's pane set — every pane of every
+      // session holding a Worktree pane, plus its Console shells — raw bytes, no derive, no
+      // lock). Both mint a `pane` ticket bound to their id (spec, The pane socket).
       const requestedPane = (request.query as { pane?: unknown }).pane;
-      let pane = target.agent.paneId;
-      if (typeof requestedPane === 'string' && requestedPane !== '') {
-        if (!/^%\d+$/u.test(requestedPane) || !(await tmux.sessionPaneIds(target.socket, session)).includes(requestedPane)) throw new Error();
+      const agentTarget = await discovery.target(id);
+      let socketRef: SocketRef;
+      let session: string;
+      let pane: string;
+      let isAgentPane = false;
+      let agent: Agent | undefined;
+      if (agentTarget !== undefined) {
+        agent = agentTarget.agent;
+        socketRef = agentTarget.socket;
+        session = agentTmuxSession(agentTarget.agent);
+        pane = agentTarget.agent.paneId;
+        // the Agent's own pane by default; a requested pane must belong to its session
+        if (typeof requestedPane === 'string' && requestedPane !== '') {
+          if (!/^%\d+$/u.test(requestedPane) || !(await tmux.sessionPaneIds(socketRef, session)).includes(requestedPane)) throw new Error();
+          pane = requestedPane;
+        }
+        isAgentPane = pane === agentTarget.agent.paneId;
+      } else {
+        const worktree = configuredWorktree(id);
+        if (worktree === undefined || typeof requestedPane !== 'string' || !/^%\d+$/u.test(requestedPane)) throw new Error();
+        const member = (await launch.worktreePanes(worktree)).find(candidate => candidate.paneId === requestedPane);
+        if (member === undefined) throw new Error();
+        // A live Agent's own pane is reachable through the Worktree set (its cwd is the
+        // Worktree), but it must be streamed only through its Agent target so input takes the
+        // mutation lock and a lone Ctrl+C routes through queued-prompt cancellation. Refuse it
+        // here (the picker lists it disabled), so the Worktree path only ever drives raw panes.
+        if (await discovery.target(`${member.socket.fingerprint}:${member.paneId}`) !== undefined) throw new Error();
+        socketRef = member.socket;
+        session = member.sessionId;
         pane = requestedPane;
       }
-      const isAgentPane = pane === target.agent.paneId;
       // the browser may have disconnected during the awaits above (target/membership lookups);
       // bail before spawning/subscribing so a control client and lease are never left dangling
       if (socket.readyState !== socket.OPEN) return;
-      const paneClient = paneStream.get(target.socket, session);
+      const paneClient = paneStream.get(socketRef, session);
       const captureVia = (depth: number) => paneClient.capture(pane, depth);
-      const adapter = adapterFor(target.agent.kind);
+      const adapter = agent === undefined ? undefined : adapterFor(agent.kind);
       // the Agent's derive (question/metadata) rides the Agent's own pane only, and only for
       // an Adapter with Turns or a question parser (Codex/OMX, not Claude)
       const derives = isAgentPane && (adapter?.turns !== undefined || adapter?.questions?.parse !== undefined);
@@ -2575,10 +2679,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       // INVARIANT: every caller must `await windowKeyReady` before the first call, so the
       // memoised claim is keyed by the window id, not the pane-id fallback (as in /ws/logs).
       const viewportLease = () => paneViewport ??= paneViewports.acquire(
-        `${target.socket.fingerprint}:${windowKey}`,
-        () => tmux.size(target.socket, pane),
-        (nextCols, nextRows) => tmux.resize(target.socket, pane, nextCols, nextRows),
-        () => tmux.unpinWindowSize(target.socket, pane)
+        `${socketRef.fingerprint}:${windowKey}`,
+        () => tmux.size(socketRef, pane),
+        (nextCols, nextRows) => tmux.resize(socketRef, pane, nextCols, nextRows),
+        () => tmux.unpinWindowSize(socketRef, pane)
       );
       // gate every outbound frame on the control lease, like /ws/dashboard's send and
       // /ws/logs' poll: a browser that lost control (a take-control handoff) must stop
@@ -2587,7 +2691,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       const sendBinary = (bytes: Buffer) => { if (!control.active(s.id)) return socket.close(1008); if (socket.readyState === socket.OPEN) socket.send(bytes); };
       // report the pane's ACTUAL size, so a smaller attached terminal the coordinator yields
       // to is the grid the browser conforms to (Sizing, ADR 0008)
-      const reportSize = async () => { const size = await tmux.size(target.socket, pane); if (size !== undefined) sendFrame({ type: 'size', cols: size.cols, rows: size.rows }); };
+      const reportSize = async () => { const size = await tmux.size(socketRef, pane); if (size !== undefined) sendFrame({ type: 'size', cols: size.cols, rows: size.rows }); };
       let cols = 120;
       let rows = 36;
       let seedDepth = 2_000;
@@ -2641,7 +2745,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         try {
           // never derive for a browser that has lost the control lease (as /ws/logs' poll guards)
           if (!control.active(s.id)) return socket.close(1008);
-          const captured = await tmux.captureWindow(target.socket, pane, 0, rows, captureVia);
+          const captured = await tmux.captureWindow(socketRef, pane, 0, rows, captureVia);
           if (captured === undefined) return;
           const parseInput = captured.latestAgentMessage ?? captured.text;
           if (parseInput !== lastParseInput) { lastParseInput = parseInput; lastQuestion = adapter?.questions?.parse?.(parseInput); }
@@ -2678,7 +2782,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
           const ensured = await viewportLease().ensure(cols, rows);
           if (!ensured.ok) return socket.close(1011);
           // report the pane's actual size only when it moved (a layout change may leave it put)
-          if (ensured.resized) { const after = await tmux.size(target.socket, pane); if (after !== undefined) sendFrame({ type: 'size', cols: after.cols, rows: after.rows }); }
+          if (ensured.resized) { const after = await tmux.size(socketRef, pane); if (after !== undefined) sendFrame({ type: 'size', cols: after.cols, rows: after.rows }); }
         } finally {
           reclamping = false;
         }

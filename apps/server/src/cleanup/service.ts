@@ -96,6 +96,9 @@ export class CleanupService {
 
     const candidates: CleanupAction[] = [];
     for (const pane of panes) {
+      // a Console shell is the operator's own pane; cleanup never proposes one, even should a
+      // future adapter rule match a bare shell (spec, Console shells)
+      if (pane.role === 'shell') continue;
       for (const adapter of adapters) {
         const classification = adapter.panes?.classify(pane, scan);
         if (classification === undefined) continue;

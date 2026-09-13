@@ -40,7 +40,7 @@ describe('TmuxAdapter capture', () => {
       socket
     }]);
 
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_question}\t#{@rac_console_managed}']);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_question}\t#{@rac_console_managed}\t#{@rac_role}\t#{@rac_pane_name}']);
   });
 
   it('reads the reported Inline question payload from its pane option', async () => {
@@ -598,5 +598,52 @@ describe('TmuxAdapter prompt history', () => {
     const history = ['• Previous response', '─ Worked for 2s', '', '› New request', '', '• Working on it', ''].join('\n');
 
     expect(latestCompletedAssistantMessage(history)).toBeUndefined();
+  });
+});
+
+describe('TmuxAdapter Console shells', () => {
+  const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+  beforeEach(() => { run.mockReset(); run.mockResolvedValue({ code: 0, stdout: '', stderr: '' }); });
+
+  it('renamePaneName writes the name option, and an empty name unsets it', async () => {
+    await expect(new TmuxAdapter().renamePaneName(socket, '%3', 'build')).resolves.toBe(true);
+    expect(run).toHaveBeenCalledWith(expect.any(String), ['-S', '/tmp/tmux', 'set-option', '-p', '-t', '%3', '@rac_pane_name', 'build']);
+    run.mockClear();
+    await expect(new TmuxAdapter().renamePaneName(socket, '%3', '')).resolves.toBe(true);
+    expect(run).toHaveBeenCalledWith(expect.any(String), ['-S', '/tmp/tmux', 'set-option', '-p', '-t', '%3', '-u', '@rac_pane_name']);
+  });
+
+  it('renamePaneName rejects an invalid pane, an over-long name, and control characters without touching tmux', async () => {
+    await expect(new TmuxAdapter().renamePaneName(socket, 'nope', 'x')).resolves.toBe(false);
+    await expect(new TmuxAdapter().renamePaneName(socket, '%3', 'a'.repeat(121))).resolves.toBe(false);
+    await expect(new TmuxAdapter().renamePaneName(socket, '%3', 'a\nb')).resolves.toBe(false);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('markConsoleShell sets @rac_role=shell then @rac_pane_name', async () => {
+    await expect(new TmuxAdapter().markConsoleShell(socket, '%3', 'build')).resolves.toBe(true);
+    expect(run.mock.calls.map(call => call[1])).toEqual([
+      ['-S', '/tmp/tmux', 'set-option', '-p', '-t', '%3', '@rac_role', 'shell'],
+      ['-S', '/tmp/tmux', 'set-option', '-p', '-t', '%3', '@rac_pane_name', 'build']
+    ]);
+  });
+
+  it('createConsoleShellWindow opens a detached window, returns the pane id, and marks it', async () => {
+    run.mockImplementation(async (_bin: string, args: string[]) => ({ code: 0, stdout: args.includes('new-window') ? '%7' : '', stderr: '' }));
+    await expect(new TmuxAdapter().createConsoleShellWindow(socket, '$1', '/repo', ['/usr/bin/zsh', '-l'], 'build')).resolves.toBe('%7');
+    expect(run).toHaveBeenCalledWith(expect.any(String), ['-S', '/tmp/tmux', 'new-window', '-d', '-t', '$1', '-c', '/repo', '-P', '-F', '#{pane_id}', '--', '/usr/bin/zsh', '-l']);
+    expect(run).toHaveBeenCalledWith(expect.any(String), ['-S', '/tmp/tmux', 'set-option', '-p', '-t', '%7', '@rac_role', 'shell']);
+  });
+
+  it('createConsoleShellWindow ends the pane and reports failure when the markers cannot be set', async () => {
+    // new-window succeeds but the marking set-option fails: the unmarked shell must be killed so
+    // a later Launch never adopts it
+    run.mockImplementation(async (_bin: string, args: string[]) => {
+      if (args.includes('new-window')) return { code: 0, stdout: '%7', stderr: '' };
+      if (args.includes('set-option')) return { code: 1, stdout: '', stderr: 'nope' };
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    await expect(new TmuxAdapter().createConsoleShellWindow(socket, '$1', '/repo', ['/usr/bin/zsh', '-l'], '')).resolves.toBeUndefined();
+    expect(run).toHaveBeenCalledWith(expect.any(String), ['-S', '/tmp/tmux', 'kill-pane', '-t', '%7']);
   });
 });

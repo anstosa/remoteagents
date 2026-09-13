@@ -203,6 +203,26 @@ describe('DiscoveryService dashboard', () => {
     expect(dashboard.projects[0]?.worktrees).toMatchObject([{ id: 'ferry:/worktrees/ferry', main: true, pinned: true, projectUrl: 'https://ferry.external.example.com', projectProxied: false }]);
   });
 
+  it("counts a Worktree's open Console shells on its dashboard row", async () => {
+    const finder = socketFinder();
+    // a marked Console shell and a bare pane in the checkout, plus a shell in another checkout:
+    // only a `@rac_role=shell` pane whose toplevel is this Worktree counts
+    const tmux = paneLister([
+      { paneId: '%1', sessionId: '$0', pid: 11, path: '/host/ferry', command: 'zsh', role: 'shell', title: '' },
+      { paneId: '%2', sessionId: '$0', pid: 12, path: '/host/ferry', command: 'zsh', title: '' },
+      { paneId: '%3', sessionId: '$1', pid: 13, path: '/host/other', command: 'zsh', role: 'shell', title: '' }
+    ]);
+    // bare login shells: no live agent is recognized under any of them
+    const processes = processInspector({ codex: false });
+    const project = testProject({ id: 'ferry', label: 'Ferry', path: '/worktrees/ferry', hostPath: '/host/ferry', push: { label: 'p', prompt: '$p' } });
+    const service = new DiscoveryService(finder, tmux as never, processes, undefined, undefined, [project], undefined, listImpl({ '/worktrees/ferry': [entry('/worktrees/ferry', 'main')] }));
+
+    const dashboard = await service.dashboard();
+
+    expect(dashboard.agents).toHaveLength(0);
+    expect(dashboard.projects[0]?.worktrees).toMatchObject([{ id: 'ferry:/worktrees/ferry', consoleShells: 1 }]);
+  });
+
   it('prefers a valid reported @rac_session over the conversation the fd-walk finds, and reads its name', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const finder = { find: async () => [socket] };

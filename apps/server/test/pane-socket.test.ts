@@ -47,7 +47,7 @@ function fakePaneStream() {
     sendInput: async (_pane, bytes) => { inputs.push(Buffer.from(bytes)); return true; },
     seed: async (_pane, depth) => { seedDepths.push(depth); return seedBytes; }
   };
-  const provider: PaneStreamProvider = { get: () => client, closeAll: () => {} };
+  const provider: PaneStreamProvider = { get: () => client, openPaneKeys: () => new Set(), closeAll: () => {} };
   return {
     provider,
     inputs,
@@ -387,6 +387,85 @@ describe('/ws/pane lifecycle', () => {
     const stream = fakePaneStream();
     const { tmux } = fakeTmux(stream);
     const conn = await connect(stream.provider, { tmux, controlConnect: () => false });
+    await waitFor(() => conn.closeCode() !== undefined);
+    expect(conn.closeCode()).toBe(1008);
+  });
+});
+
+describe('/ws/pane Worktree target', () => {
+  const worktree = { id: 'cora', projectId: 'proj', label: 'Cora', path: '/repo', identity: '/repo', available: true, pinned: false, main: false, detached: false, locked: false, push: { label: 'p', prompt: '$p' } };
+  const member = { paneId: '%2', sessionId: '$1', pid: 2, path: '/repo', command: 'zsh', role: 'shell', title: '', socket };
+
+  // drive /ws/pane against a Worktree target (by default discovery.target misses, so the handler
+  // falls to the Worktree branch and checks membership against launch.worktreePanes). `target`
+  // can resolve a live Agent (so the handler refuses that pane) and `prompts` is wired in so the
+  // no-lock assertions on a raw pane are load-bearing.
+  async function connectWorktree(query: string, worktreePanes: () => Promise<unknown[]>, stream: ReturnType<typeof fakePaneStream>, tmuxOverride: unknown, deps: { target?: (id: string) => Promise<unknown>; prompts?: unknown } = {}) {
+    const control = { connect: () => true, active: () => true } as never;
+    const port = await freePort();
+    const tickets = new TicketStore();
+    const discovery = { target: deps.target ?? (async () => undefined), worktreesNow: () => [worktree] } as never;
+    const launch = { worktreePanes } as never;
+    const app = await buildApp(
+      testConfig({ publicOrigin: new URL(`http://127.0.0.1:${port}`), projects: [testProject({ id: 'proj' })] as never }),
+      { auth, control, dashboardUpdates, discovery, launch, tickets, paneStream: stream.provider, tmux: tmuxOverride, ...(deps.prompts === undefined ? {} : { prompts: deps.prompts }) } as never
+    );
+    await app.listen({ host: '127.0.0.1', port });
+    const ticket = tickets.mint('session', 'pane', 'cora').id;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/pane/cora${query}`, ['rac', ticket]);
+    ws.binaryType = 'arraybuffer';
+    open.push({ app, ws });
+    const binary: Buffer[] = [];
+    const frames: Record<string, unknown>[] = [];
+    let closeCode: number | undefined;
+    ws.addEventListener('message', event => { const data = (event as MessageEvent).data; if (typeof data === 'string') frames.push(JSON.parse(data) as Record<string, unknown>); else binary.push(Buffer.from(data as ArrayBuffer)); });
+    ws.addEventListener('close', event => { closeCode = (event as CloseEvent).code; });
+    await new Promise<void>(resolve => { ws.addEventListener('open', () => resolve()); ws.addEventListener('close', () => resolve()); ws.addEventListener('error', () => resolve()); });
+    return { frames, binary, send: (frame: unknown) => ws.send(JSON.stringify(frame)), closeCode: () => closeCode };
+  }
+
+  it('streams a Console shell of the Worktree and sends its input raw', async () => {
+    const stream = fakePaneStream();
+    stream.setSeed(Buffer.from('SHELLSEED'));
+    const prompts = fakePrompts();
+    const { tmux } = fakeTmux(stream);
+    const conn = await connectWorktree('?pane=%2', async () => [member], stream, tmux, { prompts: prompts.prompts });
+    conn.send({ type: 'viewport', cols: 100, rows: 30, scrollback: 500 });
+    await waitFor(() => conn.binary.length > 0);
+    expect(conn.frames.find(frame => frame.type === 'size')).toEqual({ type: 'size', cols: 80, rows: 24 });
+    expect(conn.binary[0]!.toString()).toBe('SHELLSEED');
+
+    // a Console shell takes no mutation lock and no Ctrl+C routing — a lone Ctrl+C is literal
+    conn.send({ type: 'input', data: encode('\x03') });
+    await waitFor(() => stream.inputs.length > 0);
+    expect([...stream.inputs[0]!]).toEqual([0x03]);
+    // the wired-in prompts double proves the raw path never took the agent mutation lock or cancel
+    expect(prompts.mutations()).toBe(0);
+    expect(prompts.cancels()).toBe(0);
+  });
+
+  it('refuses the live Agent\'s own pane on the Worktree path (it must use the Agent target)', async () => {
+    // %1 is in the Worktree set but backs a live Agent, so raw unlocked writes must be refused
+    const stream = fakePaneStream();
+    const { tmux } = fakeTmux(stream);
+    const agentPane = { paneId: '%1', sessionId: '$1', pid: 1, path: '/repo', command: 'claude', title: '', socket };
+    const conn = await connectWorktree('?pane=%1', async () => [agentPane, member], stream, tmux, { target: async (id: string) => id === `${socket.fingerprint}:%1` ? { agent: agentOf('claude'), socket } : undefined });
+    await waitFor(() => conn.closeCode() !== undefined);
+    expect(conn.closeCode()).toBe(1008);
+  });
+
+  it('closes 1008 for a pane that is not in the Worktree set', async () => {
+    const stream = fakePaneStream();
+    const { tmux } = fakeTmux(stream);
+    const conn = await connectWorktree('?pane=%99', async () => [member], stream, tmux);
+    await waitFor(() => conn.closeCode() !== undefined);
+    expect(conn.closeCode()).toBe(1008);
+  });
+
+  it('closes 1008 when a Worktree target names no pane', async () => {
+    const stream = fakePaneStream();
+    const { tmux } = fakeTmux(stream);
+    const conn = await connectWorktree('', async () => [member], stream, tmux);
     await waitFor(() => conn.closeCode() !== undefined);
     expect(conn.closeCode()).toBe(1008);
   });

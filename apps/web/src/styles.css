@@ -1490,6 +1490,9 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .launcher-menu .launcher-icon { display: inline-flex; flex: 0 0 1.7rem; width: 1.7rem; height: 1.7rem; align-items: center; justify-content: center !important; padding: 0 !important; border: 1px solid transparent !important; border-radius: var(--control-radius); background: transparent; color: var(--overlay-2); cursor: pointer; }
 .launcher-menu .launcher-icon:disabled { opacity: .3; cursor: not-allowed; }
 .launcher-icon-glyph { width: .95rem; height: .95rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
+/* how many Console shells a Worktree has open, so forgotten terminals stay visible */
+.launcher-shells { display: inline-flex; flex: 0 0 auto; align-items: center; gap: .15rem; height: 1.7rem; padding: 0 .35rem; border-radius: var(--control-radius); color: var(--sky); font-size: .7rem; font-variant-numeric: tabular-nums; }
+.launcher-shells .launcher-icon-glyph { width: .8rem; height: .8rem; }
 /* pin is a toggle, so only the pressed button gains a surface */
 .launcher-menu .launcher-pin { border-color: transparent !important; }
 .launcher-menu .launcher-pin.pinned { border-color: var(--lavender) !important; background: var(--lavender); color: var(--crust); }

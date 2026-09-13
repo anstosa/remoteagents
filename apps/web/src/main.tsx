@@ -50,7 +50,7 @@ type AttentionState = 'working' | 'finished' | 'question';
 // Worktree); they remain as optional read-only fallbacks the tab bar consults when an Agent's
 // Worktree is not present in the payload, absent from the real server.
 type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; projectId?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion; stack?: Stack; unread?: boolean; queuedPromptCount: number; launch?: LaunchResolution };
-type Worktree = { id: string; projectId: string; label: string; customLabel?: boolean; path: string; main: boolean; detached: boolean; locked: boolean; branch?: string; sha?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; sleeping?: boolean; order: number; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; stack?: Stack; launch?: LaunchResolution };
+type Worktree = { id: string; projectId: string; label: string; customLabel?: boolean; path: string; main: boolean; detached: boolean; locked: boolean; branch?: string; sha?: string; consoleShells?: number; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; sleeping?: boolean; order: number; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; stack?: Stack; launch?: LaunchResolution };
 // `mode: 'directory'` marks a non-git Project the console launches in place (like Scratch);
 // `launch` is its resolved Launch profile for the Project-level Launch button. A git
 // `repository` Project omits `launch` and launches through its worktrees.
@@ -70,10 +70,11 @@ const allWorktrees = (dashboard: Pick<Dashboard, 'projects'>): Worktree[] => das
 // why a Worktree's Remove is disabled (it is the Project's Main checkout, git holds a lock,
 // or the container does not mount the Project at its host path), or undefined when it can be
 // removed — shared by the launcher row and the idle tab's power menu so both say the same
-const worktreeRemoveDisabledReason = (worktree: Pick<Worktree, 'locked' | 'main'>, project: Pick<Project, 'manageWorktrees' | 'manageWorktreesReason'> | undefined): string | undefined =>
+const worktreeRemoveDisabledReason = (worktree: Pick<Worktree, 'locked' | 'main' | 'consoleShells'>, project: Pick<Project, 'manageWorktrees' | 'manageWorktreesReason'> | undefined): string | undefined =>
   worktree.main ? 'The main worktree cannot be removed'
     : worktree.locked ? 'Locked worktrees cannot be removed'
     : project?.manageWorktrees === false ? project.manageWorktreesReason ?? 'This project cannot be managed here.'
+    : (worktree.consoleShells ?? 0) > 0 ? 'End the open terminals before removing this worktree'
     : undefined;
 // what a launcher row calls a Worktree. Generated labels shed their redundant Project
 // prefix, while an operator's custom label is kept exactly as written
@@ -5221,7 +5222,7 @@ function MoreMenuIcon({ name }: { name: MoreMenuIconName }) {
 }
 
 // the glyphs on a launcher row's icon controls
-const launcherRowIcons = { pin: 'M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6ZM12 15v5', rename: 'M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25ZM20.71 7.04a1 1 0 0 0 0-1.42l-2.34-2.34a1 1 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.84Z', trash: 'M4 7h16M10 7V4.5h4V7M6.5 7l.9 12.1a1 1 0 0 0 1 .9h7.2a1 1 0 0 0 1-.9L17.5 7M10 11v5M14 11v5' };
+const launcherRowIcons = { pin: 'M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6ZM12 15v5', rename: 'M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25ZM20.71 7.04a1 1 0 0 0 0-1.42l-2.34-2.34a1 1 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.84Z', trash: 'M4 7h16M10 7V4.5h4V7M6.5 7l.9 12.1a1 1 0 0 0 1 .9h7.2a1 1 0 0 0 1-.9L17.5 7M10 11v5M14 11v5', terminal: 'M4 5h16v14H4V5Zm3 4 3 3-3 3m5 0h4' };
 const LauncherRowIcon = ({ name }: { name: keyof typeof launcherRowIcons }) => <svg className="launcher-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={launcherRowIcons[name]} /></svg>;
 
 // validate the optional worktree carried by a checked-out switch target
@@ -6696,8 +6697,9 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       // a Worktree with a live agent is shown by its agent tab, never a second idle tab
       if (data.agents.some(agent => agent.worktreeId === worktree.id)) return false;
       const draftId = worktreePromptId(worktree.id);
-      // retain pinned, sleeping, pending and prepared idle tabs
-      return worktree.pinned || worktree.sleeping === true || pendingNewTaskSources.has(worktree.id) || pendingWorktreeLaunches.has(worktree.id) || Boolean(getPromptDraft(draftId)) || promptAttachments.has(draftId);
+      // retain pinned, sleeping, pending and prepared idle tabs, and any Worktree that still
+      // has an open Console shell so stopping the Agent never hides the operator's terminals
+      return worktree.pinned || worktree.sleeping === true || (worktree.consoleShells ?? 0) > 0 || pendingNewTaskSources.has(worktree.id) || pendingWorktreeLaunches.has(worktree.id) || Boolean(getPromptDraft(draftId)) || promptAttachments.has(draftId);
     }).map(worktree => {
       const operation = worktreePendingOperation(worktree);
       return { key: `worktree-${worktree.id}`, label: worktree.label, state: worktree.sleeping === true ? 'sleeping' as const : 'closed' as const, order: worktree.order, unread: false, operation, worktree };
@@ -7222,7 +7224,8 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     else if (worktree.sleeping === true) action = <button type="button" className="launch-compact" disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onClick={() => void launchWorktree(worktree)}>Wake up</button>;
     // launch one inactive worktree
     else action = <LaunchSplitButton label={worktree.label} resolution={worktree.launch} compact disabled={creatingAgent || pendingOperations.has(worktreeLaunchOperationKey(worktree))} onLaunch={choice => void launchWorktree(worktree, choice)} />;
-    return <><button type="button" className={`launcher-icon launcher-pin${worktree.pinned ? ' pinned' : ''}`} aria-pressed={worktree.pinned} aria-label={`${worktree.pinned ? 'Unpin' : 'Pin'} ${worktree.label}`} title={worktree.pinned ? 'Unpin worktree' : 'Pin worktree'} onClick={() => void togglePin(worktree)}><LauncherRowIcon name="pin" /></button><button type="button" className="launcher-icon launcher-rename" disabled={creatingAgent} aria-label={`Rename ${worktree.label}`} title="Rename worktree" onClick={() => setRenameWorktreeId(worktree.id)}><LauncherRowIcon name="rename" /></button><button type="button" className="launcher-icon launcher-remove" disabled={creatingAgent || openAgent !== undefined || removeReason !== undefined} aria-label={`Remove ${worktree.label}`} title={openAgent === undefined ? removeReason ?? 'Remove worktree' : 'Turn off the open agent before removing this worktree'} onClick={() => setRemoveWorktreeId(worktree.id)}><LauncherRowIcon name="trash" /></button>{action}</>;
+    const shellCount = worktree.consoleShells ?? 0;
+    return <>{shellCount > 0 && <span className="launcher-shells" title={`${shellCount} open terminal${shellCount === 1 ? '' : 's'}`} aria-label={`${shellCount} open terminal${shellCount === 1 ? '' : 's'}`}><LauncherRowIcon name="terminal" />{shellCount}</span>}<button type="button" className={`launcher-icon launcher-pin${worktree.pinned ? ' pinned' : ''}`} aria-pressed={worktree.pinned} aria-label={`${worktree.pinned ? 'Unpin' : 'Pin'} ${worktree.label}`} title={worktree.pinned ? 'Unpin worktree' : 'Pin worktree'} onClick={() => void togglePin(worktree)}><LauncherRowIcon name="pin" /></button><button type="button" className="launcher-icon launcher-rename" disabled={creatingAgent} aria-label={`Rename ${worktree.label}`} title="Rename worktree" onClick={() => setRenameWorktreeId(worktree.id)}><LauncherRowIcon name="rename" /></button><button type="button" className="launcher-icon launcher-remove" disabled={creatingAgent || openAgent !== undefined || removeReason !== undefined} aria-label={`Remove ${worktree.label}`} title={openAgent === undefined ? removeReason ?? 'Remove worktree' : 'Turn off the open agent before removing this worktree'} onClick={() => setRemoveWorktreeId(worktree.id)}><LauncherRowIcon name="trash" /></button>{action}</>;
   };
   // render one launcher project at the selected density
   const launcherProject = (project: Project): ReactNode => {

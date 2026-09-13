@@ -43,7 +43,7 @@ function fakePaneStream() {
     sendInput: async () => true,
     seed: async () => Buffer.alloc(0)
   };
-  const provider: PaneStreamProvider = { get: (_socket, session) => { sessions.push(session); return client; }, closeAll: () => {} };
+  const provider: PaneStreamProvider = { get: (_socket, session) => { sessions.push(session); return client; }, openPaneKeys: () => new Set(), closeAll: () => {} };
   return {
     provider,
     sessions,

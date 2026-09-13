@@ -48,6 +48,23 @@ describe('runtime cleanup', () => {
     expect(targets.every(target => /^cleanup-[A-Za-z0-9_-]{24}$/u.test(target.id))).toBe(true);
   });
 
+  it('never proposes a Console shell, even one an adapter rule would otherwise match', async () => {
+    // a recognized-but-inactive Codex pane classifies as a stale agent — unless it is a Console
+    // shell (the operator's own pane), which cleanup skips outright (spec, Console shells)
+    const marked = [pane('%9', '$shell', 900, { role: 'shell', command: 'zsh' })];
+    const unmarked = [pane('%9', '$shell', 900, { command: 'zsh' })];
+    const build = (panes: Pane[]) => new CleanupService(
+      { refresh: async () => [] },
+      { find: async () => [socket] },
+      { listPanes: async () => panes, close: async () => true, terminateHostProcess: async () => true },
+      { recognizeAgent: async pid => pid === 900 ? { kind: 'codex' as const, pid, wrapped: false } : undefined, listProcesses: async () => [] }
+    );
+
+    // the same pane, unmarked, is proposed — so the marker is what excludes it
+    expect((await build(unmarked).scan()).map(target => target.kind)).toEqual(['stale-agent']);
+    expect(await build(marked).scan()).toEqual([]);
+  });
+
   it('keeps workers under an OMX leader, flags a stale OMX pane as OMX, and never calls an excluded Codex worker stale', async () => {
     const panes = [
       pane('%1', '$team', 100, { title: 'leader' }),

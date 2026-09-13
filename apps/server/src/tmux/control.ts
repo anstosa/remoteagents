@@ -63,6 +63,8 @@ export type PaneClient = {
 };
 export type PaneStreamProvider = {
   get(socket: SocketRef, session: string): PaneClient;
+  // `fingerprint\0paneId` for every pane currently open as a Terminal (launch adoption skip)
+  openPaneKeys(): Set<string>;
   closeAll(): void;
 };
 
@@ -171,6 +173,12 @@ export class TmuxControlClient implements PaneClient {
     let total = 0;
     for (const set of this.subscribers.values()) total += set.size;
     return total;
+  }
+
+  // the pane ids this session currently has an open subscriber for (a live pane socket): the
+  // panes launch adoption and Remove's blind kill must treat as open Terminals and skip
+  subscribedPanes(): string[] {
+    return [...this.subscribers.keys()];
   }
 
   // fan a pane's `%output` out to its subscribers: the "changed" signal always, and the
@@ -302,6 +310,18 @@ export class PaneStreamRegistry implements PaneStreamProvider {
   // the number of live control clients (for tests and shutdown)
   get size(): number {
     return this.clients.size;
+  }
+
+  // `fingerprint\0paneId` for every pane a browser currently has open as a Terminal, across
+  // all sessions. Launch adoption and Remove's blind kill consult this so a pane the operator
+  // is streaming is never pasted into or killed (spec, Console shells).
+  openPaneKeys(): Set<string> {
+    const keys = new Set<string>();
+    for (const [key, client] of this.clients) {
+      const fingerprint = key.slice(0, key.indexOf('\0'));
+      for (const pane of client.subscribedPanes()) keys.add(`${fingerprint}\0${pane}`);
+    }
+    return keys;
   }
 
   closeAll(): void {

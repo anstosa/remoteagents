@@ -1,7 +1,11 @@
 import type { AdapterCapability, AgentKind, AttentionState, InlineQuestion } from '../adapters/types.js';
 
 export type SocketRef = { fingerprint: string; path: string; device: number; inode: number };
-export type Pane = { paneId: string; sessionId: string; sessionName?: string; pid: number; path: string; title: string; displayLabel?: string; command: string; startCommand?: string; reportedAttention?: string; reportedSession?: string; reportedSandboxed?: string; reportedQuestion?: string; consoleManaged?: boolean; socket: SocketRef };
+// `role` is the console's pane-role marker (`@rac_role`): `shell` on a Console shell the
+// operator created, so launch adoption, Remove's blind kill and cleanup all skip it, and
+// discovery can count a Worktree's shells. `paneName` (`@rac_pane_name`) is the operator's
+// name for a Console shell, empty by default (the picker then falls back to `command · ~/path`).
+export type Pane = { paneId: string; sessionId: string; sessionName?: string; pid: number; path: string; title: string; displayLabel?: string; command: string; startCommand?: string; reportedAttention?: string; reportedSession?: string; reportedSandboxed?: string; reportedQuestion?: string; consoleManaged?: boolean; role?: string; paneName?: string; socket: SocketRef };
 export type PullRequestIssues = { mergeConflicts?: boolean; failingChecks?: boolean; unresolvedComments?: boolean };
 export type PullRequestCheckStatus = 'passed' | 'pending' | 'failed';
 export type PullRequestSummary = { number: number; title: string; status: 'draft' | 'open' | 'merged'; url: string; baseBranch?: string; checks?: PullRequestCheckStatus; issues?: PullRequestIssues };
@@ -53,7 +57,7 @@ export type CleanupTarget = { id: string; kind: CleanupTargetKind; label: string
  * with no live Agent — the same idle git metadata the flat list used to carry. Active
  * Worktrees omit the metadata (their Agent carries it).
  */
-export type DashboardWorktree = { id: string; projectId: string; label: string; customLabel?: boolean; path: string; available: boolean; pinned: boolean; main: boolean; detached: boolean; locked: boolean; order: number; branch?: string; sha?: string; projectUrl?: string; projectProxied?: boolean; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; pullRequest?: PullRequestSummary };
+export type DashboardWorktree = { id: string; projectId: string; label: string; customLabel?: boolean; path: string; available: boolean; pinned: boolean; main: boolean; detached: boolean; locked: boolean; order: number; branch?: string; sha?: string; consoleShells?: number; projectUrl?: string; projectProxied?: boolean; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; pullRequest?: PullRequestSummary };
 // `manageWorktrees` (with a reason when false) gates the Add/Remove/Prune controls: a
 // Project whose checkout is missing, which is a non-git `directory` Project, or which the
 // Docker bridge does not mount at its host path, cannot have Worktrees created or removed

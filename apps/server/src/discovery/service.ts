@@ -311,6 +311,9 @@ export class DiscoveryService {
   // the base64 reported Inline question payload (`@rac_question`) per agent id, kept
   // server-side so the dashboard and answer path can re-derive it; never published
   private paneQuestionPayloads = new Map<string, string>();
+  // the git toplevel of every Console shell (a pane marked `@rac_role=shell`), so the
+  // dashboard can count a Worktree's shells; rediscovered every scan, nothing persisted
+  private consoleShellWorkspaces: string[] = [];
   private readonly serverStartedAt = Date.now();
   private refreshedAt = 0;
   private refreshInFlight?: Promise<Agent[]>;
@@ -389,6 +392,9 @@ export class DiscoveryService {
       const conversationId = pane.reportedSession !== undefined && pane.reportedSession.length > 0 ? pane.reportedSession : undefined;
       return { id, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, workspace, title: pane.title, kind: recognized.kind, attention, ...(pane.reportedSandboxed === '1' ? { sandboxed: true } : {}), ...(conversationId === undefined ? {} : { conversationId }), ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }) };
     }))).filter((agent): agent is Agent => agent !== undefined);
+    // resolve each Console shell's git toplevel so the dashboard can count a Worktree's shells
+    // (identity = the `@rac_role=shell` marker plus cwd toplevel, spec, Console shells)
+    this.consoleShellWorkspaces = await Promise.all(panes.filter(pane => pane.role === 'shell').map(pane => workspaceRoot(pane.path)));
     this.snapshot = agents;
     this.panePids = panePids;
     this.paneCwds = paneCwds;
@@ -686,7 +692,10 @@ export class DiscoveryService {
     const activeAgents = agents.filter(agent => !isUpdateAdvisorLabel(agent.displayLabel));
     const activeWorktreeIds = new Set(activeAgents.flatMap(agent => agent.worktreeId === undefined ? [] : [agent.worktreeId]));
     const worktreeViews = await Promise.all(worktrees.map(async (worktree): Promise<DashboardWorktree> => {
-      const base: DashboardWorktree = { id: worktree.id, projectId: worktree.projectId, label: worktree.label, ...(worktree.customLabel === true ? { customLabel: true } : {}), path: worktree.path, available: worktree.available, pinned: worktree.pinned, main: worktree.main, detached: worktree.detached, locked: worktree.locked, order: orderOf.get(worktree.id) ?? 0, ...(worktree.branch === undefined ? {} : { branch: worktree.branch }), ...(worktree.sha === undefined ? {} : { sha: worktree.sha }), ...(worktree.projectUrl === undefined ? {} : { projectUrl: worktree.projectUrl, projectProxied: worktree.projectPort !== undefined }) };
+      // a Worktree carries its Console-shell count whether or not it has a live Agent, so the
+      // row shows it and the idle-tab retain rule can keep the tab open (spec, Console shells)
+      const consoleShells = this.consoleShellWorkspaces.filter(workspace => worktreeMatchesWorkspace(worktree, workspace)).length;
+      const base: DashboardWorktree = { id: worktree.id, projectId: worktree.projectId, label: worktree.label, ...(worktree.customLabel === true ? { customLabel: true } : {}), path: worktree.path, available: worktree.available, pinned: worktree.pinned, main: worktree.main, detached: worktree.detached, locked: worktree.locked, order: orderOf.get(worktree.id) ?? 0, ...(worktree.branch === undefined ? {} : { branch: worktree.branch }), ...(worktree.sha === undefined ? {} : { sha: worktree.sha }), ...(consoleShells > 0 ? { consoleShells } : {}), ...(worktree.projectUrl === undefined ? {} : { projectUrl: worktree.projectUrl, projectProxied: worktree.projectPort !== undefined }) };
       if (activeWorktreeIds.has(worktree.id)) return base;
       const meta = await metadataFor(worktree.identity);
       const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, meta.branch);

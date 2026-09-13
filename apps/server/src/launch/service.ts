@@ -66,10 +66,21 @@ const updateAdvisorArgs = ['--dangerously-bypass-approvals-and-sandbox', '--no-a
 export class LaunchService {
   private pending = new Set<string>(); private readonly tmux = process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux'; private readonly hostSocket = process.env.RAC_HOST_TMUX_DIR === undefined ? undefined : join(process.env.RAC_HOST_TMUX_DIR, 'default');
   private readonly localShell = interactiveShellPath();
+  private readonly localShellName = interactiveShellName(this.localShell);
   private readonly hostShell = hostInteractiveShellPath();
   private readonly hostShellName = interactiveShellName(this.hostShell);
-  // `root` (where launch descriptors are written for the local runner path) is a test seam
-  constructor(private readonly config: ValidatedConfig, private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly panes: TmuxAdapter = new TmuxAdapter(), private readonly paneRoot: (path: string) => Promise<string> = workspaceRoot, private readonly worktreeStore: WorktreeLaunchStore = new WorktreeLaunchStore(), private readonly discoveredWorktrees: () => Worktree[] = () => [], private readonly root = `/tmp/remote-agent-console-${process.getuid?.() ?? 0}`) {}
+  // the login shell basename a Console shell reports when idle, for the busy check on End
+  private get shellName(): string { return this.hostSocket === undefined ? this.localShellName : this.hostShellName; }
+  // `root` (where launch descriptors are written for the local runner path) is a test seam.
+  // `openTerminals` returns the `fingerprint\0paneId` keys of panes a browser currently has
+  // open as a Terminal (a live pane-socket subscriber); adoption and Remove's blind kill skip
+  // them so a Launch never pastes into, or kills, a pane the operator is reading (spec).
+  constructor(private readonly config: ValidatedConfig, private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly panes: TmuxAdapter = new TmuxAdapter(), private readonly paneRoot: (path: string) => Promise<string> = workspaceRoot, private readonly worktreeStore: WorktreeLaunchStore = new WorktreeLaunchStore(), private readonly discoveredWorktrees: () => Worktree[] = () => [], private readonly openTerminals: () => ReadonlySet<string> = () => new Set(), private readonly root = `/tmp/remote-agent-console-${process.getuid?.() ?? 0}`) {}
+
+  // a pane the operator currently has open as a Terminal (a live pane-socket subscriber)
+  private paneHasOpenTerminal(pane: Pane): boolean {
+    return this.openTerminals().has(`${pane.socket.fingerprint}\0${pane.paneId}`);
+  }
 
   // one discovered Worktree by its wire id `<projectId>:<realpath>`
   private worktreeById(worktreeId: string): Worktree | undefined {
@@ -191,6 +202,9 @@ export class LaunchService {
       // preserve labeled scratch and modal panes
       if (pane.displayLabel !== undefined) continue;
       if (pane.sessionName?.startsWith('rac-stack-')) continue;
+      // never adopt a Console shell (its own, operator-owned pane) or a pane the operator has
+      // open as a Terminal, so a Launch cannot paste into what someone is typing into or reading
+      if (pane.role === 'shell' || this.paneHasOpenTerminal(pane)) continue;
       if (pane.command !== this.hostShellName) continue;
       // reuse a shell only when its git toplevel is exactly this worktree, never a
       // parent whose subtree holds a nested checkout (a `.claude/worktrees/<n>` the
@@ -211,10 +225,47 @@ export class LaunchService {
     const listed = await Promise.all(sockets.map(async socket => ({ socket, panes: await this.panes.listPanes(socket) })));
     for (const { socket, panes } of listed) for (const pane of panes) {
       if (pane.sessionName?.startsWith('rac-stack-')) continue;
+      // leave a Console shell and any pane open as a Terminal alone; the operator ends those
+      // deliberately (Remove is separately refused while a Console shell exists)
+      if (pane.role === 'shell' || this.paneHasOpenTerminal(pane)) continue;
       if (pane.command !== this.hostShellName) continue;
       if (!await this.paneBelongsTo(worktree, pane.path)) continue;
       await this.panes.close(socket, pane.paneId).catch(() => false);
     }
+  }
+
+  // the Console shells the operator created in this Worktree: panes marked `@rac_role=shell`
+  // whose git toplevel is exactly the Worktree (identity = marker + cwd, spec). Drives the
+  // panes API, the Remove gate, and the launch "join the shells' session" rule.
+  async worktreeConsoleShells(worktree: Worktree): Promise<Pane[]> {
+    const sockets = await this.finder.find();
+    const listed = await Promise.all(sockets.map(async socket => ({ socket, panes: await this.panes.listPanes(socket) })));
+    const shells: Pane[] = [];
+    for (const { panes } of listed) for (const pane of panes) {
+      if (pane.role !== 'shell') continue;
+      if (!await this.paneBelongsTo(worktree, pane.path)) continue;
+      shells.push(pane);
+    }
+    return shells;
+  }
+
+  // Every pane the console may stream for a Worktree: every pane of every tmux session that
+  // holds at least one pane belonging to the Worktree (its live Agent's window, its Console
+  // shells, an idle landing shell), which subsumes the Worktree's Console shells wherever they
+  // sit. Membership for the Worktree pane socket and the source of the panes-API listing.
+  async worktreePanes(worktree: Worktree): Promise<Pane[]> {
+    const sockets = await this.finder.find();
+    const all = (await Promise.all(sockets.map(socket => this.panes.listPanes(socket)))).flat();
+    const belongs = await Promise.all(all.map(pane => this.paneBelongsTo(worktree, pane.path)));
+    const sessions = new Set<string>();
+    all.forEach((pane, index) => { if (belongs[index]) sessions.add(`${pane.socket.fingerprint}\0${pane.sessionId}`); });
+    return all.filter(pane => sessions.has(`${pane.socket.fingerprint}\0${pane.sessionId}`));
+  }
+
+  // whether a Console shell is busy (its foreground command is not the login shell), so the
+  // panes API can ask the operator to confirm ending it
+  consoleShellBusy(pane: Pane): boolean {
+    return pane.command !== this.shellName;
   }
 
   // does a shell's working directory belong to this worktree by exact git toplevel?
@@ -382,6 +433,12 @@ export class LaunchService {
       if (!reused) console.error(`[launch] ${worktree.identity}: could not send the launch into reused shell ${existing.pane.paneId}`);
       return reused;
     }
+    // no adoptable idle shell: if the Worktree already has Console shells, add the Agent's
+    // window to the session holding them, so an attached terminal keeps the agent and the
+    // shells together, rather than opening a separate session (spec, Console shells)
+    const shells = await this.worktreeConsoleShells(worktree);
+    const shellSession = shells[0];
+    if (shellSession !== undefined) return await this.launchInSessionWindow(worktree, command, id, sandboxed, shellSession.socket, shellSession.sessionId);
     const session = worktreeSessionName(worktreeHostRoot(worktree));
     // launch host-mounted worktrees on the host socket
     if (this.hostSocket !== undefined) {
@@ -397,13 +454,7 @@ export class LaunchService {
       return await this.markConsoleManaged(this.hostSocket, session)
         && await this.markSandboxed(this.hostSocket, session, sandboxed);
     }
-    await mkdir(this.root, { recursive: true, mode: 0o700 });
-    const descriptor = join(this.root, `${id}.json`);
-    const payload = { program: this.localShell, args: ['-lc', interactiveShellBootstrap(expandCommand(command, worktree), '$HOME', this.localShell)], cwd: worktree.identity };
-    const handle = await open(descriptor, 'wx', 0o600);
-    await handle.writeFile(JSON.stringify(payload));
-    await handle.close();
-    const runner = new URL('./runner.js', import.meta.url).pathname;
+    const { descriptor, runner } = await this.writeLaunchDescriptor(id, command, worktree);
     // Unlike the host socket, the default socket is shared with the operator's own tmux,
     // so a same-named session is just as likely theirs. Suffix past a taken name
     // (`-2`/`-3`, as startWorktreeShell does) rather than a bare new-session that fails —
@@ -418,6 +469,39 @@ export class LaunchService {
     }
     return await this.markConsoleManaged(undefined, name)
       && await this.markSandboxed(undefined, name, sandboxed);
+  }
+
+  // launch the Agent in a new detached window of an existing session (the session already
+  // holding the Worktree's Console shells), mirroring the fresh-session dispatch but with
+  // `new-window` — the same host bootstrap / local runner split, marked on the new pane
+  private async launchInSessionWindow(worktree: Worktree, command: string, id: string, sandboxed: boolean, socket: SocketRef, session: string): Promise<boolean> {
+    let pane: string;
+    if (this.hostSocket !== undefined) {
+      const hostWorktree = { ...worktree, identity: worktreeHostRoot(worktree) };
+      const home = this.agentHome(worktree.projectId);
+      const created = await run(this.tmux, ['-S', socket.path, 'new-window', '-d', '-t', session, '-c', hostWorktree.identity, '-P', '-F', '#{pane_id}', '--', this.hostShell, '-lc', interactiveShellBootstrap(hostCommand(expandCommand(command, hostWorktree), home), home, this.hostShell)]);
+      if (created.code !== 0) { console.error(`[launch] ${worktree.identity}: tmux new-window in '${session}' failed (code ${created.code})${created.stderr.trim() === '' ? '' : `: ${created.stderr.trim()}`}`); return false; }
+      pane = created.stdout.trim();
+    } else {
+      const { descriptor, runner } = await this.writeLaunchDescriptor(id, command, worktree);
+      const created = await run(this.tmux, ['-S', socket.path, 'new-window', '-d', '-t', session, '-P', '-F', '#{pane_id}', process.execPath, runner, descriptor]);
+      if (created.code !== 0) { console.error(`[launch] ${worktree.identity}: tmux new-window in '${session}' failed (code ${created.code})${created.stderr.trim() === '' ? '' : `: ${created.stderr.trim()}`}`); await unlink(descriptor).catch(() => {}); return false; }
+      pane = created.stdout.trim();
+    }
+    return await this.markConsoleManaged(socket.path, pane) && await this.markSandboxed(socket.path, pane, sandboxed);
+  }
+
+  // Write the local-runner launch descriptor (the composed command wrapped in the interactive
+  // bootstrap, run out of the process table) and return the descriptor path plus the runner
+  // entrypoint. Shared by the fresh-session dispatch and the join-an-existing-session path.
+  private async writeLaunchDescriptor(id: string, command: string, worktree: Worktree): Promise<{ descriptor: string; runner: string }> {
+    await mkdir(this.root, { recursive: true, mode: 0o700 });
+    const descriptor = join(this.root, `${id}.json`);
+    const payload = { program: this.localShell, args: ['-lc', interactiveShellBootstrap(expandCommand(command, worktree), '$HOME', this.localShell)], cwd: worktree.identity };
+    const handle = await open(descriptor, 'wx', 0o600);
+    await handle.writeFile(JSON.stringify(payload));
+    await handle.close();
+    return { descriptor, runner: new URL('./runner.js', import.meta.url).pathname };
   }
 
   // Start the Worktree's own idle interactive shell — a login shell in the checkout, no
@@ -453,6 +537,50 @@ export class LaunchService {
     if (!taken.has(base)) return base;
     for (let suffix = 2; suffix <= 99; suffix += 1) { const candidate = `${base}-${suffix}`; if (!taken.has(candidate)) return candidate; }
     return `${base}-${randomBytes(4).toString('hex')}`;
+  }
+
+  // the login-shell command and cwd for a Console shell: a native login shell, or the host
+  // bootstrap on the host socket (same shape as `startWorktreeShell`). Never sandboxed — it is
+  // the operator's own shell, not the Agent's.
+  private consoleShellCommand(worktree: Worktree): { cwd: string; argv: string[] } {
+    if (this.hostSocket === undefined) return { cwd: worktree.identity, argv: [this.localShell, '-l'] };
+    const home = this.agentHome(worktree.projectId);
+    return { cwd: worktreeHostRoot(worktree), argv: [this.hostShell, '-lc', interactiveShellBootstrap(hostCommand('', home), home, this.hostShell)] };
+  }
+
+  // Open a Console shell for the Worktree and return the new pane id, or undefined on failure.
+  // Placement (spec): a detached window in the session of the Worktree's live Agent (the caller
+  // resolves it from discovery), else the session already holding the Worktree's Console shells,
+  // else a fresh console session named for the Worktree — so agent and shells stay in one session.
+  async createConsoleShell(worktree: Worktree, name: string, agentSession?: { socket: SocketRef; session: string }): Promise<string | undefined> {
+    const { cwd, argv } = this.consoleShellCommand(worktree);
+    if (agentSession !== undefined) return await this.panes.createConsoleShellWindow(agentSession.socket, agentSession.session, cwd, argv, name);
+    const shells = await this.worktreeConsoleShells(worktree);
+    const existing = shells[0];
+    if (existing !== undefined) return await this.panes.createConsoleShellWindow(existing.socket, existing.sessionId, cwd, argv, name);
+    return await this.createConsoleShellSession(worktree, cwd, argv, name);
+  }
+
+  // create the Worktree's first Console shell as a fresh console session named for the Worktree
+  // (the no-live-Agent path); a later Launch adds its window to this session
+  private async createConsoleShellSession(worktree: Worktree, cwd: string, argv: string[], name: string): Promise<string | undefined> {
+    const session = await this.availableSessionName(worktreeSessionName(worktreeHostRoot(worktree)));
+    const socketArgs = this.hostSocket === undefined ? [] : ['-S', this.hostSocket];
+    const created = await run(this.tmux, [...socketArgs, 'new-session', '-d', '-s', session, '-c', cwd, '-P', '-F', '#{pane_id}', '--', ...argv]);
+    if (created.code !== 0) return undefined;
+    const pane = created.stdout.trim();
+    if (await this.markPaneConsoleShell(this.hostSocket, pane, name)) return pane;
+    // an unmarked session would be adoptable by a later Launch; tear it down rather than leak it
+    await run(this.tmux, [...socketArgs, 'kill-session', '-t', session]);
+    return undefined;
+  }
+
+  // mark a freshly created session's pane as a Console shell (the fresh-session path already
+  // knows its socket, so it sets the options directly rather than through a SocketRef)
+  private async markPaneConsoleShell(socketPath: string | undefined, pane: string, name: string): Promise<boolean> {
+    const socket = socketPath === undefined ? [] : ['-S', socketPath];
+    if ((await run(this.tmux, [...socket, 'set-option', '-p', '-t', pane, '@rac_role', 'shell'])).code !== 0) return false;
+    return (await run(this.tmux, [...socket, 'set-option', '-p', '-t', pane, '@rac_pane_name', name])).code === 0;
   }
 
   // mark panes the console deliberately owns so retained OMX workers remain launchable
