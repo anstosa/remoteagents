@@ -123,6 +123,17 @@ export class TmuxAdapter {
     });
   }
 
+  // the pane ids of one tmux session, for the pane socket's membership check: a pane may
+  // be streamed only if it belongs to the target Agent's session (Decided at charting).
+  // A fresh listing on every socket open, so a pane split by hand in an attached terminal
+  // is pickable and a stale id is refused.
+  async sessionPaneIds(socket: SocketRef, session: string): Promise<string[]> {
+    if (!sessionId.test(session)) return [];
+    const out = await run(this.binary, ['-S', socket.path, 'list-panes', '-s', '-t', session, '-F', '#{pane_id}']);
+    if (out.code !== 0) return [];
+    return out.stdout.split('\n').map(line => line.trim()).filter(id => paneId.test(id));
+  }
+
   // clear the console-owned reported-state options once a pane's agent is gone
   async unsetReportedState(socket: SocketRef, pane: string): Promise<boolean> {
     if (!paneId.test(pane)) return false;

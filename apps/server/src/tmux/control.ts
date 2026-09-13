@@ -8,7 +8,7 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import type { SocketRef } from '../domain/models.js';
 import { capturePaneArgs, paneIdPattern as paneId, safeEnv, sessionIdPattern as sessionId, tmuxBinary } from './command.js';
-import { ControlProtocolParser, type CommandReply, type ControlEvent } from './control-protocol.js';
+import { ControlProtocolParser, decodeControlOutput, type CommandReply, type ControlEvent } from './control-protocol.js';
 
 const maxCaptureDepth = 5_000;
 // One `refresh-client -B` subscription per control client tracks every attached client's
@@ -26,23 +26,40 @@ const clientSizeSubscribeArg = `${clientSizeSubscription}::#{L:#{client_width}x#
 const commandTimeoutMs = 10_000;
 
 export type PaneActivitySubscriber = {
-  // a %output for the subscribed pane arrived (bytes discarded in this slice)
-  onActivity: () => void;
+  // a %output for the subscribed pane arrived; the log socket arms its quiet-window
+  // Capture from this. Optional so a pane-stream subscriber that only wants bytes need
+  // not provide it.
+  onActivity?: () => void;
+  // the pane's raw bytes as they happen, decoded from %output; the Pane stream forwards
+  // these to the browser. Optional and decoded lazily, so a subscriber that only needs
+  // "the pane changed" (the log socket) never pays to decode every %output.
+  onOutput?: (bytes: Buffer) => void;
   // tmux paused and resumed this pane; the viewer must re-capture
   onReseed: () => void;
   // a window layout changed or an attached terminal attached, detached or resized; the
   // viewer re-asserts and re-clamps its Size claim (Sizing, ADR 0008)
   onResize: () => void;
-  // the pane, session or control client ended; the viewer must reconnect
-  onExit: () => void;
+  // the session or control client ended; `reason` is the Pane stream's exit reason
+  // ('session ended' when tmux told us via %exit, 'control client lost' when our client
+  // process died). The viewer forwards it and reconnects.
+  onExit: (reason: string) => void;
 };
 
-// the pane-facing surface the log socket depends on; the real client and a test fake both satisfy it
+// the pane-facing surface the log and pane sockets depend on; the real client and a test
+// fake both satisfy it
 export type PaneClient = {
   subscribe(pane: string, subscriber: PaneActivitySubscriber): () => void;
   capture(pane: string, depth: number): Promise<string | undefined>;
   // the id of the window holding the pane (`@N`), so the Size claim is keyed by window
   windowId(pane: string): Promise<string | undefined>;
+  // type bytes into the pane byte-exact (`send-keys -H`) over the connection, no spawn
+  sendInput(pane: string, bytes: Buffer): Promise<boolean>;
+  // a Capture reconstructed as a byte seed for the Pane stream, issued on the connection
+  // so tmux orders it exactly against `%output` (the browser applies the seed, then only
+  // bytes after the reply's end). Alternate screen: each row painted with absolute
+  // positioning and the cursor restored. Normal screen: history joined with CRLF, cleared
+  // first. An empty buffer on failure.
+  seed(pane: string, depth: number): Promise<Buffer>;
 };
 export type PaneStreamProvider = {
   get(socket: SocketRef, session: string): PaneClient;
@@ -81,8 +98,8 @@ export class TmuxControlClient implements PaneClient {
     // asynchronously; without this listener it is an unhandled 'error' that crashes the
     // whole process, and the try/catch around writes only guards synchronous throws
     this.child.stdin.on('error', () => { /* the exit handler tears the client down */ });
-    this.child.on('error', () => this.fail());
-    this.child.on('exit', () => this.fail());
+    this.child.on('error', () => this.fail('control client lost'));
+    this.child.on('exit', () => this.fail('control client lost'));
   }
 
   private onEvent(event: ControlEvent): void {
@@ -92,7 +109,7 @@ export class TmuxControlClient implements PaneClient {
         if (waiter !== undefined) { clearTimeout(waiter.timer); waiter.resolve({ ok: event.ok, lines: event.lines }); }
         return;
       }
-      case 'output': this.notifyActivity(event.pane); return;
+      case 'output': this.notifyActivity(event.pane, event.data); return;
       // we never pause our own read, so a %pause is tmux dropping us transiently;
       // continue the pane and tell subscribers to re-capture its current state
       case 'pause': void this.continuePane(event.pane); return;
@@ -102,12 +119,13 @@ export class TmuxControlClient implements PaneClient {
       // Both are session-wide, so broadcast; a re-clamp on an unaffected pane is a no-op.
       case 'layout': this.notifyResize(); return;
       case 'subscription': if (event.name === clientSizeSubscription) this.notifyResize(); return;
-      case 'exit': this.fail(); return;
+      case 'exit': this.fail('session ended'); return;
     }
   }
 
   private armTimeout(): ReturnType<typeof setTimeout> {
-    return setTimeout(() => this.fail(), commandTimeoutMs);
+    // a command whose reply never arrives means the connection is broken, not the session
+    return setTimeout(() => this.fail('control client lost'), commandTimeoutMs);
   }
 
   // send a command and await its reply block; rejects if the client is gone or stalls
@@ -155,10 +173,17 @@ export class TmuxControlClient implements PaneClient {
     return total;
   }
 
-  private notifyActivity(pane: string): void {
+  // fan a pane's `%output` out to its subscribers: the "changed" signal always, and the
+  // decoded bytes to any subscriber that wants them. The bytes are decoded once, lazily,
+  // so a session watched only by a log socket never pays the octal decode.
+  private notifyActivity(pane: string, data: string): void {
     const subscribers = this.subscribers.get(pane);
-    if (subscribers !== undefined) for (const subscriber of [...subscribers]) subscriber.onActivity();
-    // panes nobody is viewing are discarded here, never turned off
+    if (subscribers === undefined) return; // panes nobody is viewing are discarded here, never turned off
+    let bytes: Buffer | undefined;
+    for (const subscriber of [...subscribers]) {
+      subscriber.onActivity?.();
+      if (subscriber.onOutput !== undefined) subscriber.onOutput(bytes ??= decodeControlOutput(data));
+    }
   }
 
   // a layout or attached-client change reaches every viewer of this session
@@ -177,6 +202,53 @@ export class TmuxControlClient implements PaneClient {
     return id !== undefined && /^@\d+$/u.test(id) ? id : undefined;
   }
 
+  /**
+   * Type raw bytes into a pane byte-exact, as `send-keys -H` (hex literals) on the
+   * control connection, so no `send-keys` process is spawned. `-H` takes each byte as a
+   * two-digit hex literal, so control bytes, UTF-8 continuation bytes and a lone Ctrl+C
+   * all reach the pane verbatim, unlike `-l` which reinterprets keys.
+   */
+  async sendInput(pane: string, bytes: Buffer): Promise<boolean> {
+    if (!paneId.test(pane) || bytes.length === 0) return false;
+    await this.ready.catch(() => undefined);
+    if (this.disposed) return false;
+    const hex = [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join(' ');
+    const block = await this.command(`send-keys -H -t ${pane} ${hex}`).catch(() => undefined);
+    return block?.ok === true;
+  }
+
+  /**
+   * Reconstruct a pane's current screen as a byte seed for the Pane stream, capturing on
+   * the control connection so tmux orders the reply exactly against pending `%output`.
+   * A full-screen program (alternate screen) is painted with each row placed absolutely
+   * (`CSI row;1H`, no newline, so a full-width line can never wrap and scroll a row off)
+   * with `-N` to keep trailing cells, and the cursor restored from `#{cursor_x/y}`. The
+   * normal buffer is the history to `depth`, joined with CRLF, cleared first. Reply lines
+   * are byte-preserving (latin1); the ASCII control prefixes stay ASCII, so latin1
+   * reproduces the exact bytes a spawned capture would print.
+   */
+  async seed(pane: string, depth: number): Promise<Buffer> {
+    if (!paneId.test(pane) || !Number.isInteger(depth) || depth < 1 || depth > maxCaptureDepth) return Buffer.alloc(0);
+    await this.ready.catch(() => undefined);
+    if (this.disposed) return Buffer.alloc(0);
+    const meta = await this.command(`display-message -p -t ${pane} '#{alternate_on} #{cursor_x} #{cursor_y}'`).catch(() => undefined);
+    if (meta?.ok !== true) return Buffer.alloc(0);
+    const [alt, cursorX, cursorY] = (meta.lines[0] ?? '').trim().split(' ');
+    if (alt === '1') {
+      const capture = await this.command(`capture-pane -e -p -N -t ${pane}`).catch(() => undefined);
+      if (capture?.ok !== true) return Buffer.alloc(0);
+      let out = '\x1b[?1049h\x1b[H\x1b[2J';
+      capture.lines.forEach((line, index) => { out += `\x1b[${index + 1};1H${line}`; });
+      const x = Number(cursorX);
+      const y = Number(cursorY);
+      if (Number.isInteger(x) && Number.isInteger(y)) out += `\x1b[${y + 1};${x + 1}H`;
+      return Buffer.from(out, 'latin1');
+    }
+    const capture = await this.command(`capture-pane -e -p -J -t ${pane} -S -${depth}`).catch(() => undefined);
+    if (capture?.ok !== true) return Buffer.alloc(0);
+    return Buffer.from(`\x1b[H\x1b[2J${capture.lines.join('\r\n')}`, 'latin1');
+  }
+
   private async continuePane(pane: string): Promise<void> {
     // the pane id comes from the parser; validate before it enters a command
     if (!paneId.test(pane)) return;
@@ -186,13 +258,13 @@ export class TmuxControlClient implements PaneClient {
     for (const subscriber of [...subscribers]) subscriber.onReseed();
   }
 
-  // the control connection died unexpectedly: end every viewer, then tear down
-  private fail(): void {
+  // the control connection ended: end every viewer with the reason, then tear down
+  private fail(reason: string): void {
     if (this.disposed) return;
     const subscribers = [...this.subscribers.values()].flatMap(set => [...set]);
     this.subscribers.clear();
     this.dispose();
-    for (const subscriber of subscribers) subscriber.onExit();
+    for (const subscriber of subscribers) subscriber.onExit(reason);
   }
 
   dispose(): void {
@@ -217,8 +289,8 @@ export class PaneStreamRegistry implements PaneStreamProvider {
     const existing = this.clients.get(key);
     if (existing !== undefined) return existing;
     // get() spawns immediately, and a client is reaped only once it has had a subscriber
-    // that then leaves (or the client fails). The one caller (the log socket) subscribes
-    // synchronously after get(), so a zero-subscriber client is never left behind.
+    // that then leaves (or the client fails). Every caller (the log and pane sockets)
+    // subscribes synchronously after get(), so a zero-subscriber client is never left behind.
     const client = new TmuxControlClient(this.binary, socket.path, session, () => {
       // evict a disposed client unconditionally, so a reconnecting viewer never gets it
       if (this.clients.get(key) === client) this.clients.delete(key);

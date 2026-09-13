@@ -85,6 +85,12 @@ describe('ControlProtocolParser', () => {
     ]);
   });
 
+  it('surfaces a %window-close as a layout change so the viewer re-checks its pane', () => {
+    // a pane killed alone in its window closes the window; the viewer re-clamps and, finding
+    // its pane gone, ends the stream with "pane closed"
+    expect(collect(['%window-close @3\n'])).toEqual([{ type: 'layout', window: '@3' }]);
+  });
+
   it('surfaces a %subscription-changed by its name so the viewer re-clamps', () => {
     // only the name routes the change; the value that follows is not parsed
     expect(collect(['%subscription-changed rac-clients @1 : 190x50 80x24\n'])).toEqual([

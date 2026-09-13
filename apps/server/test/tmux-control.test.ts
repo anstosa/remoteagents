@@ -227,15 +227,75 @@ describe.skipIf(!tmuxSocketsWork)('tmux control client (real tmux)', () => {
     }
   });
 
+  it('streams a pane\'s bytes to onOutput and types bytes back byte-exact', async () => {
+    const { ref, pane } = await fixtureSession();
+    const client = new TmuxControlClient(tmux, ref.path, 'fixture', () => {});
+    try {
+      await client.ready;
+      const chunks: Buffer[] = [];
+      // subscribe for raw bytes; `cat` echoes each typed byte back through its tty as %output
+      client.subscribe(pane, { onOutput: bytes => { chunks.push(bytes); }, onReseed: () => {}, onResize: () => {}, onExit: () => {} });
+      expect(await client.sendInput(pane, Buffer.from('café ☕'))).toBe(true);
+      await eventually(() => Buffer.concat(chunks).toString('utf8').includes('café ☕'));
+      // and the same bytes land in the pane
+      expect(await client.capture(pane, 100)).toContain('café ☕');
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it('reconstructs a normal-screen seed matching a CRLF-joined capture', async () => {
+    const { ref, socket, pane } = await fixtureSession();
+    const client = new TmuxControlClient(tmux, ref.path, 'fixture', () => {});
+    try {
+      await client.ready;
+      let seen = false;
+      client.subscribe(pane, { onOutput: () => { seen = true; }, onReseed: () => {}, onResize: () => {}, onExit: () => {} });
+      expect((await run(tmux, ['-S', socket, 'send-keys', '-t', pane, '-l', 'hello seed'])).code).toBe(0);
+      await eventually(() => seen);
+      const seed = (await client.seed(pane, 100)).toString('latin1');
+      // clears the browser, then the history joined with CRLF — byte-identical to a spawned -J capture
+      const capture = await run(tmux, ['-S', socket, 'capture-pane', '-e', '-p', '-J', '-t', pane, '-S', '-100']);
+      const expected = `\x1b[H\x1b[2J${capture.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u).join('\r\n')}`;
+      expect(seed).toBe(expected);
+      expect(seed).toContain('hello seed');
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it('paints an alternate-screen seed with absolute positioning and the cursor restored', async () => {
+    const { ref, pane } = await fixtureSession();
+    const client = new TmuxControlClient(tmux, ref.path, 'fixture', () => {});
+    try {
+      await client.ready;
+      let bytes = 0;
+      client.subscribe(pane, { onOutput: chunk => { bytes += chunk.length; }, onReseed: () => {}, onResize: () => {}, onExit: () => {} });
+      // `cat` echoes these bytes to its tty, so tmux's pane parser enters the alternate screen
+      expect(await client.sendInput(pane, Buffer.from('\x1b[?1049hALT SCREEN'))).toBe(true);
+      await eventually(() => bytes > 0);
+      const seed = (await client.seed(pane, 100)).toString('latin1');
+      // enters the alt screen, clears, paints row one absolutely and restores the cursor
+      expect(seed.startsWith('\x1b[?1049h\x1b[H\x1b[2J')).toBe(true);
+      expect(seed).toContain('\x1b[1;1H');
+      expect(seed).toContain('ALT SCREEN');
+      expect(seed).toMatch(/\x1b\[\d+;\d+H$/u);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it('ends subscribers when the tmux server goes away', async () => {
     const { ref, socket, pane } = await fixtureSession();
     const client = new TmuxControlClient(tmux, ref.path, 'fixture', () => {});
     try {
       await client.ready;
-      let exited = false;
-      client.subscribe(pane, { onActivity: () => {}, onReseed: () => {}, onResize: () => {}, onExit: () => { exited = true; } });
+      let exitReason: string | undefined;
+      client.subscribe(pane, { onActivity: () => {}, onReseed: () => {}, onResize: () => {}, onExit: reason => { exitReason = reason; } });
       await run(tmux, ['-S', socket, 'kill-server']);
-      await eventually(() => exited);
+      await eventually(() => exitReason !== undefined);
+      // the server going away ends the client's child; the reason is one of the contract's strings
+      expect(['session ended', 'control client lost']).toContain(exitReason);
     } finally {
       client.dispose();
     }

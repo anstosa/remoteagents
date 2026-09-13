@@ -39,7 +39,9 @@ function fakePaneStream() {
   const client = {
     subscribe(_pane: string, sub: PaneActivitySubscriber) { subscriber = sub; return () => { unsubscribes += 1; }; },
     capture: async (_pane: string, depth: number) => { captureDepths.push(depth); return text; },
-    windowId: async () => '@7'
+    windowId: async () => '@7',
+    sendInput: async () => true,
+    seed: async () => Buffer.alloc(0)
   };
   const provider: PaneStreamProvider = { get: (_socket, session) => { sessions.push(session); return client; }, closeAll: () => {} };
   return {
@@ -47,7 +49,8 @@ function fakePaneStream() {
     sessions,
     captureDepths,
     setText: (value: string) => { text = value; },
-    fire: (event: keyof PaneActivitySubscriber) => subscriber?.[event](),
+    fire: (event: 'onActivity' | 'onReseed' | 'onResize') => subscriber?.[event]?.(),
+    exit: (reason = 'session ended') => subscriber?.onExit?.(reason),
     unsubscribes: () => unsubscribes
   };
 }
@@ -150,7 +153,7 @@ describe('/ws/logs event-driven frames', () => {
     const { frames, closeCode } = await connect(stream.provider);
     await waitFor(() => frames.length >= 1);
 
-    stream.fire('onExit');
+    stream.exit();
     await waitFor(() => closeCode() !== undefined);
     expect(closeCode()).toBe(1011);
     await waitFor(() => stream.unsubscribes() >= 1);

@@ -16,7 +16,9 @@ export type ControlEvent =
   | { type: 'output'; pane: string; data: string }
   | { type: 'pause'; pane: string }
   | { type: 'continue'; pane: string }
-  // a window's layout changed (external resize, zoom or unzoom); the viewer re-asserts its Size claim
+  // a window's layout changed (external resize, zoom or unzoom) or a window closed (a
+  // pane killed, taking its last pane with it); the viewer re-asserts its Size claim and,
+  // finding a gone pane, ends its stream
   | { type: 'layout'; window: string }
   // a `refresh-client -B` format subscription changed (a terminal attached, detached or resized);
   // the viewer re-clamps. Only the name routes the change — the value is a signal, never read —
@@ -122,6 +124,8 @@ export class ControlProtocolParser {
     if (line.startsWith('%pause ')) return this.emit({ type: 'pause', pane: line.slice('%pause '.length).trim() });
     if (line.startsWith('%continue ')) return this.emit({ type: 'continue', pane: line.slice('%continue '.length).trim() });
     if (line.startsWith('%layout-change ')) return this.emitLayout(line.slice('%layout-change '.length));
+    // %window-close window-id — a killed pane took its last pane with it; re-check as a layout change
+    if (line.startsWith('%window-close ')) return this.emitLayout(line.slice('%window-close '.length));
     if (line.startsWith('%subscription-changed ')) return this.emitSubscription(line.slice('%subscription-changed '.length));
     if (line === '%exit' || line.startsWith('%exit ')) {
       return this.emit({ type: 'exit', reason: line.slice('%exit'.length).trim() || 'server exited' });
