@@ -1,4 +1,4 @@
-import { Component, createContext, type Dispatch, type ReactNode, type SetStateAction, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { cloneElement, Component, createContext, type Dispatch, Fragment, type ReactElement, type ReactNode, type SetStateAction, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { Terminal as XTerm } from '@xterm/xterm';
@@ -6,7 +6,7 @@ import '@xterm/xterm/css/xterm.css';
 import { pollWhileVisible } from './client-scheduling.js';
 import { outputUrlMatchesHost } from './output-links.js';
 import { mountStreamedTerminal } from './streamed-terminal.js';
-import { createAgentPaneConnector } from './pane-socket-client.js';
+import { createAgentPaneConnector, createWorktreePaneConnector } from './pane-socket-client.js';
 import { FlyoutPortal } from './flyout-portal.js';
 import { NoteMarkdown } from './note-markdown.js';
 import { ProjectOpen } from './project-open.js';
@@ -1943,7 +1943,7 @@ function MobileTerminalKeys({ id }: { id: string }) {
 }
 
 // render the agent prompt controls
-function Prompt({ id, ready = true, lifecycleControl, launchControl, history, onHistoryChanged, canCancel, cancelling, deleting, restarting, clearing, deactivating, sleeping, swapping, swapped, onCancel, onDelete, onRestart, onRestartAs, onClear, onDeactivate, onSleep, onSwap, onPromptFocus, onOperationFeedback, projectUrl, browserOpen, onBrowserToggle, question, worktreeId, newTaskConfigured, stack, review, pinned, onTogglePin, onRenameWorktree, statusSlotRef, historySlotRef }: { id: string; ready?: boolean; lifecycleControl?: ReactNode; launchControl?: ReactNode; history: PromptHistoryEntry[]; onHistoryChanged: () => Promise<void>; canCancel: boolean; cancelling: boolean; deleting: boolean; restarting: boolean; clearing: boolean; deactivating: boolean; sleeping: boolean; swapping: boolean; swapped: boolean; onCancel: () => void; onDelete?: () => void; onRestart?: () => void; onRestartAs?: RestartAs; onClear?: () => void; onDeactivate?: () => void; onSleep?: () => void; onSwap: () => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; projectUrl?: string; browserOpen?: boolean; onBrowserToggle?: () => void; question?: ChoiceQuestion; worktreeId?: string; newTaskConfigured?: boolean; stack?: Stack; review?: ReviewButtonState; pinned?: boolean; onTogglePin?: () => void; onRenameWorktree?: () => void; statusSlotRef?: (element: HTMLSpanElement | null) => void; historySlotRef?: (element: HTMLSpanElement | null) => void }) {
+function Prompt({ id, ready = true, lifecycleControl, launchControl, history, onHistoryChanged, canCancel, cancelling, deleting, restarting, clearing, deactivating, sleeping, swapping, swapped, onCancel, onDelete, onRestart, onRestartAs, onClear, onDeactivate, onSleep, onSwap, onPromptFocus, onOperationFeedback, projectUrl, browserOpen, onBrowserToggle, question, worktreeId, newTaskConfigured, stack, review, pinned, onTogglePin, onRenameWorktree, statusSlotRef, historySlotRef, terminalControl }: { id: string; ready?: boolean; lifecycleControl?: ReactNode; launchControl?: ReactNode; history: PromptHistoryEntry[]; onHistoryChanged: () => Promise<void>; canCancel: boolean; cancelling: boolean; deleting: boolean; restarting: boolean; clearing: boolean; deactivating: boolean; sleeping: boolean; swapping: boolean; swapped: boolean; onCancel: () => void; onDelete?: () => void; onRestart?: () => void; onRestartAs?: RestartAs; onClear?: () => void; onDeactivate?: () => void; onSleep?: () => void; onSwap: () => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; projectUrl?: string; browserOpen?: boolean; onBrowserToggle?: () => void; question?: ChoiceQuestion; worktreeId?: string; newTaskConfigured?: boolean; stack?: Stack; review?: ReviewButtonState; pinned?: boolean; onTogglePin?: () => void; onRenameWorktree?: () => void; statusSlotRef?: (element: HTMLSpanElement | null) => void; historySlotRef?: (element: HTMLSpanElement | null) => void; terminalControl?: ReactNode }) {
   const [value, setValue] = usePromptDraft(id);
   const [commandToken, setCommandToken] = useState<CommandToken>();
   const [activeCommand, setActiveCommand] = useState(0);
@@ -2463,7 +2463,7 @@ function Prompt({ id, ready = true, lifecycleControl, launchControl, history, on
   // join history to the submit controls
   const historySlot = !swapped && historySlotRef !== undefined ? <span className="prompt-history-slot" ref={historySlotRef} /> : null;
   const queueControls = <><span className={`queue-prompt-group${historySlot === null ? '' : ' has-prompt-history'}${queuedToggle === null ? '' : ' has-queued-prompts'}`} ref={queuedPromptAnchorRef} role="group" aria-label="Prompt submission controls">{historySlot}<button className="queue icon-button" disabled={!ready || pending || (!swapped && !value && attachments.length === 0)} aria-label={queueLabel} title={queueLabel} onClick={() => void submit()}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" /></svg>}</button>{queuedToggle}</span>{queuePanel}</>;
-  return <section className="prompt prompt-with-action-rail" aria-label="Prompt composer" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}>{draggingAttachments && <div className="prompt-drop-overlay" role="status">Drop files to attach</div>}<div className="prompt-action-rail" aria-label="Prompt shortcuts">{statusSlotRef && <span className="prompt-status-slot" ref={statusSlotRef} />}{attachmentButton}{stop}</div><div className="prompt-content">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{queuedPromptError && !queuedPromptsOpen && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{swapped && swap}{questionModeToggle}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}{ready ? <More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onOperationFeedback={onOperationFeedback} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} /> : <button className="more icon-button" aria-label="More options" disabled>⋮</button>}<ProjectOpen url={projectUrl} stack={stack} browserOpen={browserOpen} onBrowserToggle={onBrowserToggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} />{queueControls}{launchControl}</div><MobileTerminalKeys id={id} /></div></section>;
+  return <section className="prompt prompt-with-action-rail" aria-label="Prompt composer" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}>{draggingAttachments && <div className="prompt-drop-overlay" role="status">Drop files to attach</div>}<div className="prompt-action-rail" aria-label="Prompt shortcuts">{statusSlotRef && <span className="prompt-status-slot" ref={statusSlotRef} />}{attachmentButton}{stop}</div><div className="prompt-content">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{queuedPromptError && !queuedPromptsOpen && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{swapped && swap}{questionModeToggle}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}{ready ? <More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} swapDisabled={swapping} onSwap={swapped ? undefined : onSwap} onOperationFeedback={onOperationFeedback} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} /> : <button className="more icon-button" aria-label="More options" disabled>⋮</button>}{terminalControl}<ProjectOpen url={projectUrl} stack={stack} browserOpen={browserOpen} onBrowserToggle={onBrowserToggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} />{queueControls}{launchControl}</div><MobileTerminalKeys id={id} /></div></section>;
 }
 
 // render the complete composer without addressing an agent that discovery has not confirmed
@@ -3903,30 +3903,34 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
   return <section className={`browser-pane ${mobile ? 'mobile' : 'desktop'}${expanded ? ' expanded' : ''}`} role="dialog" aria-label="Browser" onKeyDown={handleEscape}><header className="browser-toolbar" role="toolbar" aria-label="Browser actions">{deviceError && <span className="browser-device-error" role="alert" title={deviceError}>Mode failed</span>}<form className="browser-address-form" onSubmit={submitAddress}><input type="text" inputMode="url" aria-label="Browser address" value={address} spellCheck={false} onChange={changeAddress} onBlur={navigate} /></form><button className="browser-home" type="button" aria-label="Go to project home" title="Home" disabled={atHome} onClick={goHome}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 9-8 9 8M5 10v11h14V10M9 21v-7h6v7" /></svg></button><button className="browser-device-toggle" type="button" aria-label={deviceLabel} aria-pressed={mobile} title={deviceTitle} onClick={toggleDevice}><svg data-device={mobile ? 'mobile' : 'desktop'} viewBox="0 0 24 24" aria-hidden="true">{mobile ? <><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M10 5h4M11 19h2" /></> : <><rect x="3" y="5" width="18" height="13" rx="1" /><path d="M8 21h8M12 18v3" /></>}</svg></button>{proxied ? <button className={`browser-refresh${loading ? ' loading' : ''}`} type="button" aria-label={loading ? 'Stop loading browser' : 'Refresh browser'} aria-busy={loading} title={loading ? 'Stop' : 'Refresh'} onClick={toggleFrameLoad}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={loading ? 'm6 6 12 12M18 6 6 18' : 'M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6'} /></svg></button> : <button className={`browser-refresh${loading ? ' loading' : ''}`} type="button" disabled={loading} aria-label="Refresh browser" aria-busy={loading} title={loading ? 'Loading external preview' : 'Refresh external preview'} onClick={refreshFrame}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" /></svg></button>}<button className="browser-expand" type="button" aria-label={expanded ? 'Exit browser fullscreen' : 'Enter browser fullscreen'} aria-pressed={expanded} title={expanded ? 'Exit fullscreen' : 'Fullscreen'} onClick={() => setExpanded(value => !value)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="browser-close" type="button" aria-label="Close browser" title="Close" onClick={onClose}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header><div ref={frameShellRef} className={`browser-frame-shell ${mobile ? 'mobile' : 'desktop'}`}><iframe ref={frameRef} src={frameSource} title="Project browser" referrerPolicy="no-referrer" onLoad={syncFrameLocation} /></div></section>;
 }
 
-type SplitPanel = 'agent'|'note'|'browser';
-type SplitSizes = Record<SplitPanel, number>;
-type SplitStyle = React.CSSProperties & { '--agent-split': string; '--note-split': string; '--browser-split': string };
-type SplitDrag = { pointerId: number; startX: number; left: SplitPanel; right: SplitPanel; leftWidth: number; rightWidth: number; sizes: SplitSizes; resized?: SplitSizes };
-const splitPanelSelector: Record<SplitPanel, string> = { agent: '.log-output', note: '.note-pane', browser: '.browser-pane' };
+// A Terminal column of the split: its stable key (the tmux pane id) and its rendered pane,
+// which accepts `mobileHidden` so the split can hide it on a phone's single-panel view.
+type TerminalColumn = { key: string; node: ReactElement<{ mobileHidden?: boolean }> };
+type SplitSizes = Record<string, number>;
+type SplitStyle = React.CSSProperties & { '--agent-split': string; '--note-split': string; '--browser-split': string; '--split-cols': string };
+type SplitDrag = { pointerId: number; startX: number; left: string; right: string; leftWidth: number; rightWidth: number; sizes: SplitSizes; resized?: SplitSizes };
+// the fixed panels' selectors; a Terminal column carries its pane id as `data-panel-key`
+const splitPanelSelector = (key: string): string => key === 'agent' ? '.log-output' : key === 'note' ? '.note-pane' : key === 'browser' ? '.browser-pane' : `.terminal-pane[data-panel-key="${key}"]`;
 const browserMobileWidth = 390;
 const minimumSplitPanelWidth = browserMobileWidth;
-// create an independent default layout
-const defaultSplitSizes = (): SplitSizes => ({ agent: 1, note: 1, browser: 1 });
+// the panel kind for a key: the fixed panels are themselves, every Terminal is "terminal".
+// Drives the mobile view class, the switch class and a resizer's aria-label alike.
+const splitPanelKind = (key: string): string => key === 'agent' || key === 'note' || key === 'browser' ? key : 'terminal';
 // scope split layouts to one browser client and workspace composition
 const splitSizesKey = (worktreeId: string, signature: string) => `rac.split-sizes:${worktreeId}:${signature}`;
-// restore one validated browser-local layout
-const savedSplitSizes = (worktreeId: string | undefined, signature: string): SplitSizes => {
+// one panel weight is valid when finite, positive and not absurd
+const validSplitWeight = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 100_000;
+// restore one validated browser-local layout, defaulting every key the store lacks to 1
+const savedSplitSizes = (worktreeId: string | undefined, signature: string, keys: readonly string[]): SplitSizes => {
+  const sizes: SplitSizes = {};
+  for (const key of keys) sizes[key] = 1;
   // keep unscoped agent layouts ephemeral
-  if (worktreeId === undefined) return defaultSplitSizes();
+  if (worktreeId === undefined) return sizes;
   try {
-    const stored = JSON.parse(localStorage.getItem(splitSizesKey(worktreeId, signature)) ?? 'null') as Partial<SplitSizes> | null;
-    // reject missing, nonnumeric, or unreasonable panel weights
-    if (stored !== null
-      && typeof stored.agent === 'number' && Number.isFinite(stored.agent) && stored.agent > 0 && stored.agent <= 100_000
-      && typeof stored.note === 'number' && Number.isFinite(stored.note) && stored.note > 0 && stored.note <= 100_000
-      && typeof stored.browser === 'number' && Number.isFinite(stored.browser) && stored.browser > 0 && stored.browser <= 100_000) return stored as SplitSizes;
+    const stored = JSON.parse(localStorage.getItem(splitSizesKey(worktreeId, signature)) ?? 'null') as Record<string, unknown> | null;
+    if (stored !== null && typeof stored === 'object') for (const key of keys) if (validSplitWeight(stored[key])) sizes[key] = stored[key];
   } catch { /* browser storage is optional */ }
-  return defaultSplitSizes();
+  return sizes;
 };
 // persist one user-adjusted browser-local layout
 const saveSplitSizes = (worktreeId: string | undefined, signature: string, sizes: SplitSizes) => {
@@ -3935,39 +3939,53 @@ const saveSplitSizes = (worktreeId: string | undefined, signature: string, sizes
   try { localStorage.setItem(splitSizesKey(worktreeId, signature), JSON.stringify(sizes)); }
   catch { /* browser storage is optional */ }
 };
-// render ordered resizable output panels
-function ResizableLogSplit({ worktreeId, output, note, browser }: { worktreeId?: string; output: ReactNode; note?: ReactNode; browser?: ReactNode }) {
+// render ordered resizable output panels: the agent, any Terminals, then note and browser
+function ResizableLogSplit({ worktreeId, output, note, browser, terminals }: { worktreeId?: string; output: ReactNode; note?: ReactNode; browser?: ReactNode; terminals?: TerminalColumn[] }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<SplitDrag | undefined>(undefined);
   const hasNote = note !== undefined && note !== null;
   const hasBrowser = browser !== undefined && browser !== null;
-  const previousPanels = useRef({ hasNote, hasBrowser });
-  const signature = `${hasNote ? 'note' : ''}:${hasBrowser ? 'browser' : ''}`;
-  const [sizes, setSizes] = useState<SplitSizes>(() => savedSplitSizes(worktreeId, signature));
-  const [mobilePanel, setMobilePanel] = useState<SplitPanel>('agent');
+  const termCols = terminals ?? [];
+  const hasTerminals = termCols.length > 0;
+  // the panels in column order, each with its key and rendered node
+  const columns: { key: string; node: ReactNode }[] = [
+    { key: 'agent', node: output },
+    ...termCols.map(col => ({ key: col.key, node: col.node })),
+    ...(hasNote ? [{ key: 'note', node: note }] : []),
+    ...(hasBrowser ? [{ key: 'browser', node: browser }] : [])
+  ];
+  const keys = columns.map(column => column.key);
+  // one layout per open-panel composition (the ordered keys), so opening or closing a panel
+  // restores that combination's own widths
+  const signature = keys.join('|');
+  const previousKeys = useRef(keys);
+  const [sizes, setSizes] = useState<SplitSizes>(() => savedSplitSizes(worktreeId, signature, keys));
+  const [mobilePanel, setMobilePanel] = useState<string>('agent');
   // restore the exact workspace layout for each open-panel composition
-  useEffect(() => setSizes(savedSplitSizes(worktreeId, signature)), [signature, worktreeId]);
-  // select newly opened mobile panes
+  useEffect(() => setSizes(savedSplitSizes(worktreeId, signature, signature.split('|'))), [signature, worktreeId]);
+  // select a newly opened panel on phone; fall back to the agent when the shown one closes
   useLayoutEffect(() => {
-    const previous = previousPanels.current;
-    previousPanels.current = { hasNote, hasBrowser };
+    const previous = previousKeys.current;
+    previousKeys.current = keys;
     setMobilePanel(current => {
-      // prioritize a newly opened note
-      if (hasNote && !previous.hasNote) return 'note';
-      // return from closed panes
-      if ((current === 'note' && !hasNote) || (current === 'browser' && !hasBrowser)) return 'agent';
+      // follow a newly opened note or Terminal to it; the browser stays a deliberate tap
+      const opened = keys.find(key => key !== 'agent' && key !== 'browser' && !previous.includes(key));
+      if (opened !== undefined) return opened;
+      if (!keys.includes(current)) return 'agent';
       return current;
     });
-  }, [hasBrowser, hasNote]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signature]);
   // collect current panel widths
-  const measuredSizes = () => {
+  const measuredSizes = (): SplitSizes => {
     const container = containerRef.current;
-    const measured: SplitSizes = { agent: 1, note: 1, browser: 1 };
+    const measured: SplitSizes = {};
     // retain every visible panel width
-    for (const panel of ['agent', 'note', 'browser'] as const) {
-      const element = container?.querySelector<HTMLElement>(`:scope > ${splitPanelSelector[panel]}`);
+    for (const key of keys) {
+      measured[key] = 1;
+      const element = container?.querySelector<HTMLElement>(`:scope > ${splitPanelSelector(key)}`);
       // skip closed panels
-      if (element !== null && element !== undefined) measured[panel] = element.getBoundingClientRect().width;
+      if (element !== null && element !== undefined) measured[key] = element.getBoundingClientRect().width;
     }
     return measured;
   };
@@ -3975,8 +3993,8 @@ function ResizableLogSplit({ worktreeId, output, note, browser }: { worktreeId?:
   const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
     // accept primary-button drags only
     if (event.button !== 0) return;
-    const left = event.currentTarget.dataset.left as SplitPanel;
-    const right = event.currentTarget.dataset.right as SplitPanel;
+    const left = event.currentTarget.dataset.left!;
+    const right = event.currentTarget.dataset.right!;
     const measured = measuredSizes();
     dragRef.current = { pointerId: event.pointerId, startX: event.clientX, left, right, leftWidth: measured[left], rightWidth: measured[right], sizes: measured };
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -4010,8 +4028,8 @@ function ResizableLogSplit({ worktreeId, output, note, browser }: { worktreeId?:
   const keyboardResize = (event: React.KeyboardEvent<HTMLDivElement>) => {
     // handle horizontal arrows only
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-    const left = event.currentTarget.dataset.left as SplitPanel;
-    const right = event.currentTarget.dataset.right as SplitPanel;
+    const left = event.currentTarget.dataset.left!;
+    const right = event.currentTarget.dataset.right!;
     const measured = measuredSizes();
     const combined = measured[left] + measured[right];
     const minimum = minimumSplitPanelWidth;
@@ -4022,14 +4040,221 @@ function ResizableLogSplit({ worktreeId, output, note, browser }: { worktreeId?:
     saveSplitSizes(worktreeId, signature, resized);
     event.preventDefault();
   };
-  const visibleMobilePanel = mobilePanel === 'note' && !hasNote || mobilePanel === 'browser' && !hasBrowser ? 'agent' : mobilePanel;
-  const style: SplitStyle = { '--agent-split': `${sizes.agent}fr`, '--note-split': `${sizes.note}fr`, '--browser-split': `${sizes.browser}fr` };
-  const noteDivider = hasNote ? <div className="split-resizer note-resizer" role="separator" aria-label="Resize agent and note panels" aria-orientation="vertical" tabIndex={0} data-left="agent" data-right="note" onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={stopResize} onPointerCancel={stopResize} onKeyDown={keyboardResize} /> : null;
-  const browserDivider = hasBrowser ? <div className="split-resizer browser-resizer" role="separator" aria-label={`Resize ${hasNote ? 'note' : 'agent'} and browser panels`} aria-orientation="vertical" tabIndex={0} data-left={hasNote ? 'note' : 'agent'} data-right="browser" onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={stopResize} onPointerCancel={stopResize} onKeyDown={keyboardResize} /> : null;
-  // expose hidden mobile split peers
-  const mobileSwitches = hasNote || hasBrowser ? <div className="mobile-split-switches" role="toolbar" aria-label="Split view">{visibleMobilePanel !== 'agent' && <button className="mobile-agent-switch" type="button" aria-label="Show agent output" title="Agent output" onClick={() => { /* show agent output */ setMobilePanel('agent'); }}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1" /><path d="m7 9 3 3-3 3M12 15h5" /></svg></button>}{hasNote && visibleMobilePanel !== 'note' && <button className="mobile-note-switch" type="button" aria-label="Show note" title="Note" onClick={() => { /* show note */ setMobilePanel('note'); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg></button>}{hasBrowser && visibleMobilePanel !== 'browser' && <button className="mobile-browser-switch" type="button" aria-label="Show project browser" title="Project browser" onClick={() => { /* show project browser */ setMobilePanel('browser'); }}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" /></svg></button>}</div> : null;
-  const mobileView = hasNote || hasBrowser ? ` mobile-${visibleMobilePanel}-view` : '';
-  return <div ref={containerRef} className={`log-split${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}${mobileView}`} style={style}>{output}{noteDivider}{note}{browserDivider}{browser}{mobileSwitches}</div>;
+  const hasSplit = hasNote || hasBrowser || hasTerminals;
+  // fall back to the agent when the chosen mobile panel is no longer open
+  const visibleMobilePanel = keys.includes(mobilePanel) ? mobilePanel : 'agent';
+  // one resizer between two adjacent panel keys
+  const resizer = (left: string, right: string) => <div key={`resizer:${left}:${right}`} className={`split-resizer ${splitPanelKind(right)}-resizer`} role="separator" aria-label={`Resize ${splitPanelKind(left)} and ${splitPanelKind(right)} panels`} aria-orientation="vertical" tabIndex={0} data-left={left} data-right={right} onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={stopResize} onPointerCancel={stopResize} onKeyDown={keyboardResize} />;
+  const style: SplitStyle = {
+    '--agent-split': `${sizes.agent ?? 1}fr`, '--note-split': `${sizes.note ?? 1}fr`, '--browser-split': `${sizes.browser ?? 1}fr`,
+    // the generic column template the `.has-terminals` grid uses (agent, terminals, note, browser)
+    '--split-cols': columns.map(column => `minmax(var(--split-pane-min-width), ${sizes[column.key] ?? 1}fr)`).join(' .45rem ')
+  };
+  // the panel columns interleaved with resizers; a Terminal hidden on phone carries `mobileHidden`
+  const laidOut = columns.flatMap((column, index) => {
+    const isTerminal = splitPanelKind(column.key) === 'terminal';
+    const node = isTerminal ? cloneElement(column.node as ReactElement<{ mobileHidden?: boolean }>, { key: column.key, mobileHidden: hasTerminals && column.key !== visibleMobilePanel }) : <Fragment key={column.key}>{column.node}</Fragment>;
+    return index === 0 ? [node] : [resizer(columns[index - 1].key, column.key), node];
+  });
+  // a switch to every hidden panel (agent, each Terminal, note, browser)
+  const mobileSwitches = hasSplit ? <div className="mobile-split-switches" role="toolbar" aria-label="Split view">{columns.filter(column => column.key !== visibleMobilePanel).map(column => {
+    const kind = splitPanelKind(column.key);
+    const label = kind === 'agent' ? 'Show agent output' : kind === 'note' ? 'Show note' : kind === 'browser' ? 'Show project browser' : `Show terminal ${termCols.findIndex(col => col.key === column.key) + 1}`;
+    const icon = kind === 'agent' ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1" /><path d="m7 9 3 3-3 3M12 15h5" /></svg>
+      : kind === 'note' ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>
+      : kind === 'browser' ? <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" /></svg>
+      : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1" /><path d="m7 8 3 3-3 3M12 15h4" /></svg>;
+    return <button key={column.key} className={`mobile-${kind}-switch`} type="button" aria-label={label} title={label} onClick={() => setMobilePanel(column.key)}>{icon}</button>;
+  })}</div> : null;
+  const mobileView = hasSplit ? ` mobile-${splitPanelKind(visibleMobilePanel)}-view` : '';
+  return <div ref={containerRef} className={`log-split${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}${hasTerminals ? ' has-terminals' : ''}${mobileView}`} style={style}>{laidOut}{mobileSwitches}</div>;
+}
+
+// One pane of a Worktree the picker can show as a Terminal (the wire shape of
+// `GET /api/worktrees/:id/panes`): the Agent's session panes, its Console shells and any
+// hand-split panes, each with its tmux window (for the one-Terminal-per-window rule).
+type WorktreePane = { paneId: string; session: string; sessionName?: string; window?: string; role?: string; name?: string; command: string; path: string; title: string; agent: boolean; busy?: boolean };
+// A Terminal panel the operator has open, remembered per Worktree by pane id and name.
+type OpenTerminal = { paneId: string; name: string };
+// last two path segments, so a picker row and a pane head read `command · …/foo/bar`
+const shortWorktreePath = (path: string): string => {
+  const parts = path.split('/').filter(Boolean);
+  return parts.length <= 2 ? path : `…/${parts.slice(-2).join('/')}`;
+};
+// a pane's operator name, or its `command · path` when it has none (spec, the picker)
+const terminalPaneLabel = (pane: WorktreePane): string => pane.name !== undefined && pane.name.trim() !== '' ? pane.name : `${pane.command || 'shell'} · ${shortWorktreePath(pane.path)}`;
+// remember open Terminal panels per Worktree, by tmux pane id (spec, Terminals as Panels).
+// The stored list is bounded — at most `maxOpenTerminals` panels, each name clamped to the
+// pane-name cap — so a corrupt or hostile localStorage value cannot grow unchecked.
+const worktreeTerminalsKey = (worktreeId: string) => `rac.terminals:${worktreeId}`;
+const maxOpenTerminals = 24;
+const maxTerminalNameLength = 120;
+const clampTerminalName = (name: string) => name.length > maxTerminalNameLength ? name.slice(0, maxTerminalNameLength) : name;
+const savedTerminals = (worktreeId: string | undefined): OpenTerminal[] => {
+  if (worktreeId === undefined) return [];
+  try {
+    const stored = JSON.parse(localStorage.getItem(worktreeTerminalsKey(worktreeId)) ?? 'null') as unknown;
+    if (Array.isArray(stored)) return stored.slice(0, maxOpenTerminals).flatMap(entry => entry !== null && typeof entry === 'object' && typeof (entry as OpenTerminal).paneId === 'string' && /^%\d+$/u.test((entry as OpenTerminal).paneId)
+      ? [{ paneId: (entry as OpenTerminal).paneId, name: clampTerminalName(typeof (entry as OpenTerminal).name === 'string' ? (entry as OpenTerminal).name : (entry as OpenTerminal).paneId) }]
+      : []);
+  } catch { /* browser storage is optional */ }
+  return [];
+};
+const saveTerminals = (worktreeId: string | undefined, open: OpenTerminal[]) => {
+  if (worktreeId === undefined) return;
+  try { localStorage.setItem(worktreeTerminalsKey(worktreeId), JSON.stringify(open.slice(0, maxOpenTerminals).map(terminal => ({ paneId: terminal.paneId, name: clampTerminalName(terminal.name) })))); }
+  catch { /* browser storage is optional */ }
+};
+// The open Terminal panels of one Worktree and the picker's live pane list. Panels persist
+// per Worktree by pane id and are reconciled against the live panes on mount, so a reload
+// reopens the ones whose pane still exists and forgets the rest (spec, Terminals as Panels).
+function useWorktreeTerminals(worktreeId: string | undefined) {
+  const [open, setOpen] = useState<OpenTerminal[]>(() => savedTerminals(worktreeId));
+  const [panes, setPanes] = useState<WorktreePane[]>([]);
+  const refreshPanes = useCallback(async (): Promise<WorktreePane[] | undefined> => {
+    if (worktreeId === undefined) return undefined;
+    try {
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/panes`);
+      if (!response.ok) return undefined;
+      const body = await response.json() as { panes?: WorktreePane[] };
+      const list = Array.isArray(body.panes) ? body.panes : [];
+      setPanes(list);
+      return list;
+    } catch { return undefined; }
+  }, [worktreeId]);
+  useEffect(() => {
+    // show this Worktree's stored panels at once, then reconcile against the live panes
+    setOpen(savedTerminals(worktreeId));
+    let cancelled = false;
+    void (async () => {
+      const list = await refreshPanes();
+      // a failed fetch (undefined) leaves the stored panels; a real listing prunes them
+      if (cancelled || list === undefined) return;
+      const byId = new Map(list.map(pane => [pane.paneId, pane] as const));
+      setOpen(current => {
+        const kept = current.filter(terminal => byId.has(terminal.paneId)).map(terminal => ({ paneId: terminal.paneId, name: terminalPaneLabel(byId.get(terminal.paneId)!) }));
+        if (kept.length !== current.length || kept.some((terminal, index) => terminal.name !== current[index]?.name)) saveTerminals(worktreeId, kept);
+        return kept;
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [worktreeId, refreshPanes]);
+  const openPane = useCallback((paneId: string, name: string) => setOpen(current => {
+    if (current.some(terminal => terminal.paneId === paneId)) return current;
+    const next = [...current, { paneId, name }];
+    saveTerminals(worktreeId, next);
+    return next;
+  }), [worktreeId]);
+  const closePane = useCallback((paneId: string) => setOpen(current => {
+    if (!current.some(terminal => terminal.paneId === paneId)) return current;
+    const next = current.filter(terminal => terminal.paneId !== paneId);
+    saveTerminals(worktreeId, next);
+    return next;
+  }), [worktreeId]);
+  return { open, panes, refreshPanes, openPane, closePane };
+}
+type WorktreeTerminals = ReturnType<typeof useWorktreeTerminals>;
+
+// One Terminal column: a titled head over a streamed pane. The pane streams over the
+// Worktree-keyed pane socket; typed keys route to it while it is focused (the composer
+// stays the Agent's). Closing hides the panel and leaves the shell running; when the pane
+// ends the panel closes itself (spec, Terminals as Panels).
+function TerminalPane({ worktreeId, paneId, name, onClose, onExit, mobileHidden }: { worktreeId: string; paneId: string; name: string; onClose: () => void; onExit: () => void; mobileHidden?: boolean }) {
+  const canvas = useRef<HTMLDivElement | null>(null);
+  const [focused, setFocused] = useState(false);
+  const onExitRef = useRef(onExit);
+  onExitRef.current = onExit;
+  useEffect(() => {
+    const container = canvas.current;
+    if (container === null) return;
+    const handle = mountStreamedTerminal(container, {
+      connect: createWorktreePaneConnector(worktreeId, paneId, request),
+      transformInput: data => applyStickyModifiers(paneId, data),
+      onExit: () => onExitRef.current()
+    });
+    const blur = () => handle.terminal.blur();
+    terminalInputs.set(paneId, handle.sendInput);
+    exitTerminalInput.set(paneId, blur);
+    const onFocusIn = () => setFocused(true);
+    const onFocusOut = () => setFocused(false);
+    container.addEventListener('focusin', onFocusIn);
+    container.addEventListener('focusout', onFocusOut);
+    return () => {
+      container.removeEventListener('focusin', onFocusIn);
+      container.removeEventListener('focusout', onFocusOut);
+      // only clear our own registrations, so a fast remount of the same pane id keeps the new one
+      if (terminalInputs.get(paneId) === handle.sendInput) terminalInputs.delete(paneId);
+      if (exitTerminalInput.get(paneId) === blur) exitTerminalInput.delete(paneId);
+      handle.dispose();
+    };
+  }, [worktreeId, paneId]);
+  return <section className={`terminal-pane${focused ? ' focused' : ''}${mobileHidden ? ' mobile-hidden' : ''}`} data-panel-key={paneId}>
+    <header className="pane-head"><span className="pane-dot" aria-hidden="true" /><span className="pane-title" title={name}>{name}</span><span className="pane-live" aria-hidden="true">live</span><button type="button" aria-label={`Close terminal ${name}`} title="Close terminal (the shell keeps running)" onClick={onClose}>×</button></header>
+    <div className="terminal-canvas" ref={canvas} aria-label={`Terminal ${name}`} />
+  </section>;
+}
+
+// The composer's `＋ terminal` button and its fly-out: every pane of the Worktree, one row
+// each (the Agent's own pane and any pane sharing a window with an open Terminal disabled),
+// plus New shell and, for a hidden Console shell, End (spec, Terminals as Panels).
+function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; terminals: WorktreeTerminals }) {
+  const { open, panes, refreshPanes, openPane, closePane } = terminals;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const { anchorRef, flyoutRef, style } = useViewportFlyout<HTMLSpanElement>(menuOpen, { placement: 'above' });
+  const toggle = () => setMenuOpen(current => { const next = !current; if (next) void refreshPanes(); return next; });
+  const openIds = new Set(open.map(terminal => terminal.paneId));
+  // windows already driven by a Terminal (an open panel or the Agent's own pane): one Size
+  // claim per window, so a second pane of the same window is not pickable
+  const claimedWindows = new Set<string>();
+  for (const pane of panes) if (pane.window !== undefined && (pane.agent || openIds.has(pane.paneId))) claimedWindows.add(pane.window);
+  const newShell = async () => {
+    setBusy(true);
+    try {
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/shells`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) });
+      if (!response.ok) return;
+      const { paneId } = await response.json() as { paneId: string };
+      const list = await refreshPanes();
+      const created = list?.find(pane => pane.paneId === paneId);
+      openPane(paneId, created ? terminalPaneLabel(created) : 'shell');
+      setMenuOpen(false);
+    } finally { setBusy(false); }
+  };
+  const endShell = async (pane: WorktreePane) => {
+    if (pane.busy && !window.confirm(`End ${terminalPaneLabel(pane)}? It is running a command.`)) return;
+    setBusy(true);
+    try {
+      const suffix = pane.busy ? '?confirm=1' : '';
+      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/panes/${encodeURIComponent(pane.paneId)}${suffix}`, { method: 'DELETE' });
+      if (response.ok) { closePane(pane.paneId); await refreshPanes(); }
+    } finally { setBusy(false); }
+  };
+  const choose = (pane: WorktreePane) => { openPane(pane.paneId, terminalPaneLabel(pane)); setMenuOpen(false); };
+  return <><span className="terminal-picker-wrap" ref={anchorRef}><button type="button" className="terminal-picker-toggle" aria-haspopup="menu" aria-expanded={menuOpen} aria-label="Open a terminal" title="Open a terminal" onClick={toggle}><span aria-hidden="true">＋</span> terminal</button></span>
+    {menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="terminal-picker flyout-menu" ref={flyoutRef} style={style} role="menu" aria-label="Open a terminal">
+      <div className="terminal-picker-heading">Session panes</div>
+      {panes.length === 0 && <div className="terminal-picker-empty">No panes yet</div>}
+      {panes.map(pane => {
+        const claimed = pane.window !== undefined && claimedWindows.has(pane.window) && !openIds.has(pane.paneId);
+        const disabled = pane.agent || openIds.has(pane.paneId) || claimed;
+        const reason = pane.agent ? 'The agent’s own pane' : openIds.has(pane.paneId) ? 'Already open' : claimed ? 'Another terminal already uses this window' : `${pane.session}${pane.sessionName ? ` (${pane.sessionName})` : ''} · ${pane.paneId}`;
+        return <div className="terminal-picker-row" key={pane.paneId}>
+          <button type="button" role="menuitem" className="terminal-picker-pane" disabled={disabled} title={reason} onClick={() => choose(pane)}><span className="terminal-picker-label">{terminalPaneLabel(pane)}</span><span className="terminal-picker-id" aria-hidden="true">{pane.paneId}</span></button>
+          {pane.role === 'shell' && !openIds.has(pane.paneId) && <button type="button" className="terminal-picker-end" aria-label={`End ${terminalPaneLabel(pane)}`} title="End this shell" disabled={busy} onClick={() => void endShell(pane)}>🗑</button>}
+        </div>;
+      })}
+      <button type="button" role="menuitem" className="terminal-picker-newshell" disabled={busy} onClick={() => void newShell()}><span aria-hidden="true">＋</span> New shell</button>
+    </div></FlyoutPortal>}</>;
+}
+
+// The split columns and the composer control for a Worktree's Terminals, shared by the
+// active AgentCard and the agentless WorktreeCard. A Worktree-less target (Scratch) gets
+// neither: Console shells are keyed by Worktree.
+function useTerminalViews(worktreeId: string | undefined): { columns?: TerminalColumn[]; control?: ReactNode } {
+  const terminals = useWorktreeTerminals(worktreeId);
+  if (worktreeId === undefined) return {};
+  const columns = terminals.open.map(terminal => ({ key: terminal.paneId, node: <TerminalPane key={terminal.paneId} worktreeId={worktreeId} paneId={terminal.paneId} name={terminal.name} onClose={() => terminals.closePane(terminal.paneId)} onExit={() => terminals.closePane(terminal.paneId)} /> }));
+  return { columns, control: <TerminalPicker worktreeId={worktreeId} terminals={terminals} /> };
 }
 
 // format one git stat number
@@ -4335,10 +4560,10 @@ function GitStatus({ id, worktreeId, branch, summary, prSummary, pullRequest, on
   return <span ref={wrapRef} className={`git-status-wrap${expanded ? ' expanded' : ''}`}><button className={`git-status-summary ${state}${pullRequest === undefined ? '' : ` has-pull-request status-${pullRequest.status}`}`} type="button" aria-label={label} aria-expanded={expanded} title={label} onClick={onToggle}><svg className="git-branch-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2.5" /><circle cx="6" cy="19" r="2.5" /><circle cx="18" cy="7" r="2.5" /><path d="M6 7.5v9M18 9.5v1a6 6 0 0 1-6 6H6" /></svg><span className="git-status-dot" aria-hidden="true" /><span className="git-branch">{branch}</span><span className="git-status-separator" aria-hidden="true">·</span><span className="git-worktree-state">{stateLabel}</span>{/* retain compact pr indicators beside the prompt */}{pullRequest !== undefined && <PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} />}</button>{expanded && <FlyoutPortal onDismiss={() => onToggle?.()}><div className="git-status-panel" role="region" aria-label="Changed files" aria-busy={repositoryTabVisible && loadingPrSwitch} style={panelStyle}>{activePanel}<span className="git-status-tabs" role="tablist" aria-label="Branch views"><button type="button" role="tab" aria-selected={tab === 'working'} onClick={() => setTab('working')}>Working</button><button type="button" role="tab" aria-selected={tab === 'prs'} aria-busy={loadingPrSwitch} disabled={id === undefined} title={id === undefined ? 'Launch agent to load pull requests' : undefined} onClick={() => { /* keep preloading while changing views */ setTab('prs'); }}>PRs{loadingPrSwitch && <span className="spinner" aria-hidden="true" />}</button><button type="button" role="tab" aria-selected={tab === 'branches'} aria-busy={loadingPrSwitch} disabled={id === undefined} title={id === undefined ? 'Launch agent to load branches' : undefined} onClick={() => { /* keep preloading while changing views */ setTab('branches'); }}>Branches{loadingPrSwitch && <span className="spinner" aria-hidden="true" />}</button></span></div></FlyoutPortal>}{removingBranch !== undefined && worktreeId !== undefined && <RemoveBranchDialog worktreeId={worktreeId} branch={removingBranch} onClose={() => setRemovingBranch(undefined)} onDeleted={branchRemoved} />}</span>;
 }
 
-type LogProps = { id: string; worktreeId?: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; pullRequest?: PullRequestSummary; history: PromptHistoryEntry[]; refreshHistory: () => Promise<void>; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined) => void; cleanupControl?: ReactNode; browserUrl?: string; browserHomeUrl?: string; browserProxied?: boolean; browserNavigationRequest?: ProjectBrowserNavigationRequest; onBrowserNavigate?: (url: string) => boolean; onBrowserOpen?: (url: string) => boolean; onBrowserClose?: () => void; terminalMode?: boolean; embedded?: boolean; onReview?: (scope: ReviewScope) => void; reviewOpen?: boolean; reviewUnavailable?: string; pushAction?: PromptAction; processingLabel?: string; processingDetail?: string; statusSlot?: HTMLElement | null; historySlot?: HTMLElement | null; onSelectTarget?: (target: DashboardTarget) => void; onNavigateWorktree?: (worktreeId: string) => void; onOperationFeedback?: (feedback: Omit<OperationFeedback, 'id'>) => void; schedulePrefill?: SchedulePrefill };
+type LogProps = { id: string; worktreeId?: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; pullRequest?: PullRequestSummary; history: PromptHistoryEntry[]; refreshHistory: () => Promise<void>; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined) => void; cleanupControl?: ReactNode; browserUrl?: string; browserHomeUrl?: string; browserProxied?: boolean; browserNavigationRequest?: ProjectBrowserNavigationRequest; onBrowserNavigate?: (url: string) => boolean; onBrowserOpen?: (url: string) => boolean; onBrowserClose?: () => void; terminalMode?: boolean; embedded?: boolean; onReview?: (scope: ReviewScope) => void; reviewOpen?: boolean; reviewUnavailable?: string; pushAction?: PromptAction; processingLabel?: string; processingDetail?: string; statusSlot?: HTMLElement | null; historySlot?: HTMLElement | null; onSelectTarget?: (target: DashboardTarget) => void; onNavigateWorktree?: (worktreeId: string) => void; onOperationFeedback?: (feedback: Omit<OperationFeedback, 'id'>) => void; schedulePrefill?: SchedulePrefill; terminals?: TerminalColumn[] };
 
 // render reusable live agent output
-function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, pullRequest, history, refreshHistory, onQuestion, onMetadata, cleanupControl, browserUrl, browserHomeUrl, browserProxied = true, browserNavigationRequest, onBrowserNavigate, onBrowserOpen, onBrowserClose, terminalMode = false, embedded = false, onReview, reviewOpen = false, reviewUnavailable, pushAction = defaultPushAction, processingLabel, processingDetail, statusSlot, historySlot, onSelectTarget, onNavigateWorktree, onOperationFeedback, schedulePrefill }: LogProps) {
+function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, pullRequest, history, refreshHistory, onQuestion, onMetadata, cleanupControl, browserUrl, browserHomeUrl, browserProxied = true, browserNavigationRequest, onBrowserNavigate, onBrowserOpen, onBrowserClose, terminalMode = false, embedded = false, onReview, reviewOpen = false, reviewUnavailable, pushAction = defaultPushAction, processingLabel, processingDetail, statusSlot, historySlot, onSelectTarget, onNavigateWorktree, onOperationFeedback, schedulePrefill, terminals }: LogProps) {
   const canvas = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<XTerm | undefined>(undefined);
   // A Log mounts whenever its tab becomes active. Existing agents therefore
@@ -4696,7 +4921,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, pullRequest, hist
   // distinguish retained output from live frames
   const output = <div className="log-output">{!embedded && <ServerSwitcher className="output-server-switcher" />}<div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'} />{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!terminalMode && !embedded && <div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{responseFiles.control}{worktreeConversations.control}{worktreeNotes.control}</div></div>}</div></div>;
   const browserPane = browserUrl === undefined || browserHomeUrl === undefined || onBrowserNavigate === undefined || onBrowserClose === undefined ? null : <ProjectBrowserPane url={browserUrl} homeUrl={browserHomeUrl} proxied={browserProxied} worktreeId={worktreeId} navigationRequest={browserNavigationRequest} onNavigate={onBrowserNavigate} onClose={onBrowserClose} />;
-  return <section className={`log-shell${embedded ? ' embedded-log-shell' : ''}`}><div className={`log${embedded ? ' embedded-log' : ''}${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit worktreeId={worktreeId} output={output} note={embedded ? undefined : worktreeNotes.pane} browser={browserPane} /></div>{selectionActions}{!embedded && responseFiles.dialog}{!embedded && gitFilePreview.dialog}{!embedded && statusSlot && createPortal(gitSection, statusSlot)}{!embedded && historySlot && createPortal(historyToggle, historySlot)}</section>;
+  return <section className={`log-shell${embedded ? ' embedded-log-shell' : ''}`}><div className={`log${embedded ? ' embedded-log' : ''}${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit worktreeId={worktreeId} output={output} note={embedded ? undefined : worktreeNotes.pane} browser={browserPane} terminals={embedded ? undefined : terminals} /></div>{selectionActions}{!embedded && responseFiles.dialog}{!embedded && gitFilePreview.dialog}{!embedded && statusSlot && createPortal(gitSection, statusSlot)}{!embedded && historySlot && createPortal(historyToggle, historySlot)}</section>;
 }
 
 type MoreMenuIconName = 'actions'|'attachment'|'new-task'|'push'|'rename'|'swap';
@@ -5028,6 +5253,8 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
   const [historySlot, setHistorySlot] = useState<HTMLElement | null>(null);
   const promptHistory = usePromptHistory(agent.id);
   const projectBrowser = useProjectBrowser(agent.projectUrl, agent.worktreeId, agent.projectProxied);
+  // Terminal panels for this Worktree: a column per open pane and the composer's picker.
+  const { columns: terminalColumns, control: terminalControl } = useTerminalViews(agent.worktreeId);
   const startingNewTask = usePendingOperation(newTaskOperationKey(agent.worktreeId ?? agent.id));
   // cancel active agent work
   const cancel = async () => { if (cancelling) return; setCancelling(true); try { await request(`/api/agents/${encodeURIComponent(agent.id)}/cancel`, { method: 'POST' }); } finally { setCancelling(false); } };
@@ -5208,7 +5435,7 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
   };
   // reserve Remote Agents repository updates for the reviewed host update flow
   const upstreamRebase = agent.projectId === 'remoteagents' ? null : <UpstreamRebaseBanner summary={agent.gitUpstream} onRebase={queueRebase} />;
-  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} pullRequest={agent.pullRequest} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} browserProxied={projectBrowser.proxied} browserNavigationRequest={projectBrowser.navigationRequest} onBrowserNavigate={projectBrowser.navigate} onBrowserOpen={projectBrowser.openUrl} onBrowserClose={projectBrowser.close} terminalMode={swapped} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} pushAction={agent.push} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} schedulePrefill={schedulePrefill} statusSlot={statusSlot} historySlot={historySlot} onSelectTarget={onSelectTarget} onNavigateWorktree={onNavigateWorktree} onOperationFeedback={onOperationFeedback} />{tabBar}{upstreamRebase}<Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} sleeping={sleeping} swapping={swapping} swapped={swapped} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onRestartAs={!active && agent.worktreeId !== undefined ? { label: displayLabel, resolution: agent.launch, onLaunch: choice => void restart(choice) } : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSleep={!active && agent.worktreeId !== undefined ? () => void sleep() : undefined} onSwap={() => void changePaneMode()} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} stack={agent.stack} review={review} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} statusSlotRef={setStatusSlot} historySlotRef={setHistorySlot} /></article>;
+  return <article className="agent-view"><Log id={agent.id} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} pullRequest={agent.pullRequest} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} browserProxied={projectBrowser.proxied} browserNavigationRequest={projectBrowser.navigationRequest} onBrowserNavigate={projectBrowser.navigate} onBrowserOpen={projectBrowser.openUrl} onBrowserClose={projectBrowser.close} terminalMode={swapped} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} pushAction={agent.push} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} schedulePrefill={schedulePrefill} statusSlot={statusSlot} historySlot={historySlot} onSelectTarget={onSelectTarget} onNavigateWorktree={onNavigateWorktree} onOperationFeedback={onOperationFeedback} terminals={terminalColumns} />{tabBar}{upstreamRebase}<Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} sleeping={sleeping} swapping={swapping} swapped={swapped} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onRestartAs={!active && agent.worktreeId !== undefined ? { label: displayLabel, resolution: agent.launch, onLaunch: choice => void restart(choice) } : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onSleep={!active && agent.worktreeId !== undefined ? () => void sleep() : undefined} onSwap={() => void changePaneMode()} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} stack={agent.stack} review={review} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} statusSlotRef={setStatusSlot} historySlotRef={setHistorySlot} terminalControl={terminalControl} /></article>;
 }
 
 function launchError(response: Response): Promise<string> {
@@ -5267,6 +5494,8 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
   const worktreeConversations = useWorktreeConversations(worktree.id, undefined, { onNavigateWorktree, onOperationFeedback });
   const worktreeNotes = useWorktreeNotes(worktree.id, undefined, undefined, false, undefined, undefined, schedulePrefill, sleeping ? undefined : (noteId: string) => launchAndRun(noteId), sleeping ? undefined : `${launchKind === undefined ? 'an agent' : agentKindLabel[launchKind]} on ${worktree.label}`);
   const projectBrowser = useProjectBrowser(worktree.projectUrl, worktree.id, worktree.projectProxied);
+  // Terminals work even with no live Agent: an agentless Worktree tab can open a shell.
+  const { columns: terminalColumns, control: terminalControl } = useTerminalViews(worktree.id);
   const filePreview = useFilePreview(`/api/worktrees/${encodeURIComponent(worktree.id)}/file-preview`);
   const [gitExpanded, setGitExpanded] = useState(false);
   const [statusSlot, setStatusSlot] = useState<HTMLElement | null>(null);
@@ -5409,9 +5638,9 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
   // reuse the complete composer while deferring agent-only operations
   const prompt = preparing || promptOpened ? <>
     {error && <p className="launch-error" role="alert">{error}</p>}
-    <Prompt id={draftId} ready={false} history={[]} onHistoryChanged={async () => { /* no agent history yet */ }} canCancel={false} cancelling={false} deleting={false} restarting={restarting} clearing={false} deactivating={turningOff} sleeping={false} swapping={false} swapped={false} onCancel={() => { /* startup cannot be cancelled here */ }} onSwap={() => { /* no terminal until ready */ }} onPromptFocus={() => { /* draft belongs to the inactive worktree */ }} onOperationFeedback={onOperationFeedback} worktreeId={worktree.id} projectUrl={worktree.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} stack={worktree.stack} lifecycleControl={powerMenu ?? undefined} launchControl={launchControl} statusSlotRef={setStatusSlot} />
-  </> : <section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions">{powerMenu}{gitStatus}<span className="prompt-actions-spacer" aria-hidden="true" /><ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} />{!sleeping && <LaunchSplitButton label={worktree.label} resolution={worktree.launch} disabled={!worktree.available} pending={processing} onLaunch={choice => void start(choice)} />}</div></section>;
-  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit worktreeId={worktree.id} output={output} note={worktreeNotes.pane} browser={browserPane} /></div>{filePreview.dialog}{statusSlot && createPortal(gitStatus, statusSlot)}</section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} />{prompt}</article>;
+    <Prompt id={draftId} ready={false} history={[]} onHistoryChanged={async () => { /* no agent history yet */ }} canCancel={false} cancelling={false} deleting={false} restarting={restarting} clearing={false} deactivating={turningOff} sleeping={false} swapping={false} swapped={false} onCancel={() => { /* startup cannot be cancelled here */ }} onSwap={() => { /* no terminal until ready */ }} onPromptFocus={() => { /* draft belongs to the inactive worktree */ }} onOperationFeedback={onOperationFeedback} worktreeId={worktree.id} projectUrl={worktree.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} stack={worktree.stack} lifecycleControl={powerMenu ?? undefined} launchControl={launchControl} statusSlotRef={setStatusSlot} terminalControl={terminalControl} />
+  </> : <section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions">{powerMenu}{gitStatus}<span className="prompt-actions-spacer" aria-hidden="true" />{terminalControl}<ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} />{!sleeping && <LaunchSplitButton label={worktree.label} resolution={worktree.launch} disabled={!worktree.available} pending={processing} onLaunch={choice => void start(choice)} />}</div></section>;
+  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit worktreeId={worktree.id} output={output} note={worktreeNotes.pane} browser={browserPane} terminals={terminalColumns} /></div>{filePreview.dialog}{statusSlot && createPortal(gitStatus, statusSlot)}</section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} />{prompt}</article>;
 }
 
 // render a scratch or directory session before discovery publishes its agent identity

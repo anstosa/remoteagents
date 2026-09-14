@@ -238,6 +238,9 @@ html.software-keyboard-open .tabs { display: none; }
 .log-split { position: relative; display: grid; width: 100%; height: 100%; min-width: 0; min-height: 0; grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
 .log-split.has-note:not(.has-browser), .log-split.has-browser:not(.has-note) { grid-template-rows: repeat(2, minmax(8rem, 1fr)); }
 .log-split.has-note.has-browser { grid-template-rows: repeat(3, minmax(8rem, 1fr)); }
+/* Terminals make the split a list of panels; in a portrait area they stack as rows, in a
+   wide area they become columns (below), and on a phone one panel shows at a time. */
+.log-split.has-terminals { grid-template: none; grid-template-columns: minmax(0, 1fr); grid-auto-flow: row; grid-auto-rows: minmax(8rem, 1fr); }
 .split-resizer { display: none; }
 .mobile-split-switches { display: none; }
 .log-output { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
@@ -614,11 +617,14 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
 .browser-frame-shell.mobile iframe { width: min(var(--split-pane-min-width), 100%); border-right: 1px solid var(--surface-1); border-left: 1px solid var(--surface-1); }
 @keyframes note-pane-appear { from { opacity: 0; } to { opacity: 1; } }
 @container output-area (min-aspect-ratio: 1 / 1) {
-  .log-split.has-note:not(.has-browser) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)); }
-  .log-split.has-browser:not(.has-note) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--browser-split)); }
-  .log-split.has-note.has-browser { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)) .45rem minmax(var(--split-pane-min-width), var(--browser-split)); }
-  .log-split.has-browser:not(.has-note):has(> .browser-pane.mobile:not(.expanded)) { grid-template-columns: minmax(var(--split-pane-min-width), var(--agent-split)) var(--split-pane-min-width); }
-  .log-split.has-note.has-browser:has(> .browser-pane.mobile:not(.expanded)) { grid-template-columns: minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)) var(--split-pane-min-width); }
+  .log-split.has-note:not(.has-browser):not(.has-terminals) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)); }
+  .log-split.has-browser:not(.has-note):not(.has-terminals) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--browser-split)); }
+  .log-split.has-note.has-browser:not(.has-terminals) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)) .45rem minmax(var(--split-pane-min-width), var(--browser-split)); }
+  /* With one or more Terminals the split is a generic list of columns (agent, terminals,
+     note, browser), each `minmax(390px, <weight>fr)`, built in JS as `--split-cols`. */
+  .log-split.has-terminals { grid-template: minmax(0, 1fr) / var(--split-cols); }
+  .log-split.has-browser:not(.has-note):not(.has-terminals):has(> .browser-pane.mobile:not(.expanded)) { grid-template-columns: minmax(var(--split-pane-min-width), var(--agent-split)) var(--split-pane-min-width); }
+  .log-split.has-note.has-browser:not(.has-terminals):has(> .browser-pane.mobile:not(.expanded)) { grid-template-columns: minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)) var(--split-pane-min-width); }
   .split-resizer { position: relative; z-index: 5; display: block; width: .45rem; min-width: .45rem; height: 100%; cursor: col-resize; touch-action: none; outline: 0; }
   .split-resizer::after { position: absolute; inset: 0 calc(50% - .5px); background: var(--surface-1); content: ''; transition: background .12s ease, box-shadow .12s ease; }
   .split-resizer:is(:hover, :focus-visible)::after { background: var(--blue); box-shadow: 0 0 .5rem color-mix(in srgb, var(--blue) 48%, transparent); }
@@ -626,6 +632,7 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
   .note-pane, .browser-pane { border-top: 0; border-left: 1px solid color-mix(in srgb, var(--yellow) 52%, var(--surface-1)); box-shadow: inset 1px 0 color-mix(in srgb, var(--text) 4%, transparent); }
   .browser-pane { border-left-color: color-mix(in srgb, var(--blue) 58%, var(--surface-1)); }
   :is(.note-pane, .browser-pane).expanded { border: 0; }
+  .terminal-pane { border-left: 1px solid color-mix(in srgb, var(--green) 46%, var(--surface-1)); box-shadow: inset 1px 0 color-mix(in srgb, var(--text) 4%, transparent); }
 }
 @media (max-width: 768px) {
   /* supplemental panels already fill phones */
@@ -637,9 +644,18 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
   .log-split.mobile-agent-view > :is(.note-pane, .browser-pane, .split-resizer), .log-split.mobile-note-view > :is(.log-output, .browser-pane, .split-resizer), .log-split.mobile-browser-view > :is(.log-output, .note-pane, .split-resizer) { display: none; }
   .log-split.mobile-agent-view > .log-output { display: block; }
   .log-split.mobile-note-view > .note-pane, .log-split.mobile-browser-view > .browser-pane { display: grid; }
-  .log-split:is(.has-note, .has-browser) > .mobile-split-switches { position: absolute; bottom: .45rem; left: .375rem; z-index: 45; display: flex; gap: .35rem; }
+  /* Terminals on a phone: one panel shows at a time. Every Terminal is hidden unless it is
+     the visible one (mobile-terminal-view + no mobile-hidden), and the agent/note/browser
+     are hidden while a Terminal shows. */
+  .log-split.has-terminals { grid-template: minmax(0, 1fr) / minmax(0, 1fr); grid-auto-flow: row; }
+  .log-split.has-terminals > .split-resizer { display: none; }
+  .log-split.mobile-agent-view.has-terminals > .terminal-pane, .log-split.mobile-note-view.has-terminals > .terminal-pane, .log-split.mobile-browser-view.has-terminals > .terminal-pane { display: none; }
+  .log-split.mobile-terminal-view > :is(.log-output, .note-pane, .browser-pane) { display: none; }
+  .log-split.mobile-terminal-view > .terminal-pane.mobile-hidden { display: none; }
+  .log-split:is(.has-note, .has-browser, .has-terminals) > .mobile-split-switches { position: absolute; bottom: .45rem; left: .375rem; z-index: 45; display: flex; gap: .35rem; }
   .mobile-split-switches button { display: grid; width: 2.6rem; height: 2.6rem; padding: 0; place-items: center; border-color: var(--blue); background: color-mix(in srgb, var(--blue) 22%, var(--mantle)); color: var(--blue); box-shadow: 0 .45rem 1rem color-mix(in srgb, var(--crust) 65%, transparent), inset 0 0 1rem color-mix(in srgb, var(--blue) 18%, transparent); }
   .mobile-split-switches .mobile-note-switch { border-color: var(--yellow); background: color-mix(in srgb, var(--yellow) 18%, var(--mantle)); color: var(--yellow); box-shadow: 0 .45rem 1rem color-mix(in srgb, var(--crust) 65%, transparent), inset 0 0 1rem color-mix(in srgb, var(--yellow) 15%, transparent); }
+  .mobile-split-switches .mobile-terminal-switch { border-color: var(--green); background: color-mix(in srgb, var(--green) 18%, var(--mantle)); color: var(--green); box-shadow: 0 .45rem 1rem color-mix(in srgb, var(--crust) 65%, transparent), inset 0 0 1rem color-mix(in srgb, var(--green) 15%, transparent); }
   .mobile-split-switches svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 }
 /* preserve output width above software keyboards */
@@ -647,6 +663,35 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:is(.has-note, .has-browser) > :is(.note-pane, .browser-pane, .split-resizer, .mobile-split-switches) { display: none; }
 html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:is(.has-note, .has-browser) > .log-output { display: block; }
 .xterm { height: 100%; }
+/* A Terminal panel: a titled head over a streamed pane, focusable, with a sky inset ring
+   marking the panel that receives keys (First-class terminal panes, composition A). */
+.terminal-pane { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; background: var(--base); }
+.terminal-pane .pane-head { display: flex; align-items: center; gap: .4rem; min-width: 0; padding: .2rem .35rem .2rem .55rem; border-bottom: 1px solid var(--surface-1); background: color-mix(in srgb, var(--mantle) 82%, transparent); color: var(--subtext-0); font-size: .72rem; }
+.terminal-pane .pane-dot { flex: none; width: .5rem; height: .5rem; border-radius: 50%; background: var(--green); }
+.terminal-pane .pane-title { flex: 1; min-width: 0; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-pane .pane-live { flex: none; color: var(--green); font-size: .58rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.terminal-pane .pane-head button { display: grid; flex: none; width: 1.5rem; height: 1.5rem; padding: 0; place-items: center; border: 0; border-radius: var(--control-radius); background: transparent; color: var(--overlay-1); font-size: 1rem; line-height: 1; cursor: pointer; }
+.terminal-pane .pane-head button:hover { background: var(--surface-0); color: var(--text); }
+.terminal-pane .terminal-canvas { position: relative; min-width: 0; min-height: 0; }
+.terminal-pane.focused::after { position: absolute; inset: 0; z-index: 6; border: 2px solid var(--sky); border-radius: 2px; content: ''; pointer-events: none; }
+/* The composer's `＋ terminal` picker button and its fly-out of Worktree panes. */
+.terminal-picker-wrap { display: inline-flex; }
+.terminal-picker-toggle { display: inline-flex; align-items: center; gap: .2rem; height: 1.9rem; padding: 0 .55rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: transparent; color: var(--subtext-0); font-size: .78rem; white-space: nowrap; cursor: pointer; }
+.terminal-picker-toggle:hover, .terminal-picker-toggle[aria-expanded='true'] { border-color: var(--green); color: var(--green); }
+.terminal-picker { z-index: var(--layer-popover); min-width: 15rem; max-width: min(22rem, 92vw); max-height: calc(100vh - 1rem); overflow: auto; padding: .3rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: var(--mantle); box-shadow: 0 .7rem 1.8rem color-mix(in srgb, var(--crust) 80%, transparent); }
+.terminal-picker-heading { padding: .25rem .5rem; color: var(--overlay-1); font-size: .68rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.terminal-picker-empty { padding: .35rem .5rem; color: var(--overlay-1); font-size: .8rem; }
+.terminal-picker-row { display: flex; align-items: center; gap: .2rem; }
+.terminal-picker-pane { display: flex; flex: 1; align-items: baseline; gap: .5rem; min-width: 0; padding: .35rem .5rem; border: 0; border-radius: var(--control-radius); background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.terminal-picker-pane:hover:not(:disabled) { background: var(--surface-0); }
+.terminal-picker-pane:disabled { color: var(--overlay-0); cursor: not-allowed; }
+.terminal-picker-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-picker-id { flex: none; color: var(--overlay-1); font-size: .7rem; }
+.terminal-picker-end { display: grid; flex: none; width: 1.7rem; height: 1.7rem; padding: 0; place-items: center; border: 0; border-radius: var(--control-radius); background: transparent; color: var(--overlay-1); cursor: pointer; }
+.terminal-picker-end:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 20%, transparent); color: var(--red); }
+.terminal-picker-newshell { display: flex; align-items: center; gap: .3rem; width: 100%; margin-top: .2rem; padding: .4rem .5rem; border: 0; border-top: 1px solid var(--surface-1); border-radius: 0 0 var(--control-radius) var(--control-radius); background: transparent; color: var(--green); font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+.terminal-picker-newshell:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 15%, transparent); }
+.terminal-picker-newshell:disabled { color: var(--overlay-0); cursor: progress; }
 /* The streamed terminal drives its own scroll and jump-to-latest, so the native
    xterm scrollbar stays hidden. */
 .xterm .xterm-viewport { overflow: hidden !important; scrollbar-width: none; }

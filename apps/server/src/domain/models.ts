@@ -5,7 +5,7 @@ export type SocketRef = { fingerprint: string; path: string; device: number; ino
 // operator created, so launch adoption, Remove's blind kill and cleanup all skip it, and
 // discovery can count a Worktree's shells. `paneName` (`@rac_pane_name`) is the operator's
 // name for a Console shell, empty by default (the picker then falls back to `command · ~/path`).
-export type Pane = { paneId: string; sessionId: string; sessionName?: string; pid: number; path: string; title: string; displayLabel?: string; command: string; startCommand?: string; reportedAttention?: string; reportedSession?: string; reportedSandboxed?: string; reportedQuestion?: string; consoleManaged?: boolean; role?: string; paneName?: string; socket: SocketRef };
+export type Pane = { paneId: string; sessionId: string; sessionName?: string; windowId?: string; pid: number; path: string; title: string; displayLabel?: string; command: string; startCommand?: string; reportedAttention?: string; reportedSession?: string; reportedSandboxed?: string; reportedQuestion?: string; consoleManaged?: boolean; role?: string; paneName?: string; socket: SocketRef };
 export type PullRequestIssues = { mergeConflicts?: boolean; failingChecks?: boolean; unresolvedComments?: boolean };
 export type PullRequestCheckStatus = 'passed' | 'pending' | 'failed';
 export type PullRequestSummary = { number: number; title: string; status: 'draft' | 'open' | 'merged'; url: string; baseBranch?: string; checks?: PullRequestCheckStatus; issues?: PullRequestIssues };

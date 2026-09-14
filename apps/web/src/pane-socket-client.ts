@@ -10,13 +10,15 @@ import type { PaneClientFrame, PaneConnector, PaneServerFrame } from './pane-str
 // internals and can be exercised on its own. It is the app's fetch wrapper.
 type Request = (url: string, init?: RequestInit) => Promise<Response>;
 
-const paneSocketUrl = (id: string): string =>
-  `${location.origin.replace(/^http/u, 'ws')}/ws/pane/${encodeURIComponent(id)}`;
+// The pane socket for a target id, optionally naming a specific pane of its set (the
+// server defaults an Agent target to its own pane; a Worktree target must name one).
+const paneSocketUrl = (id: string, pane?: string): string =>
+  `${location.origin.replace(/^http/u, 'ws')}/ws/pane/${encodeURIComponent(id)}${pane === undefined ? '' : `?pane=${encodeURIComponent(pane)}`}`;
 
-// Opens Agent pane connections: the target is the Agent id and the stream is its own
-// pane (the server defaults to it). Each call mints its own ticket, so a reconnect
-// gets a fresh one rather than replaying a spent ticket.
-export const createAgentPaneConnector = (id: string, request: Request): PaneConnector => handlers => {
+// Shared connector body: mint a single-use `pane` ticket from `ticketPath`, then open the
+// pane socket for `target` (optionally a specific `pane`) with the ticket as the second
+// subprotocol. Each call mints its own ticket, so a reconnect never replays a spent one.
+const createPaneConnector = (target: string, pane: string | undefined, ticketPath: string, request: Request): PaneConnector => handlers => {
   let socket: WebSocket | undefined;
   let closed = false;
   // Frames the component sends before the socket is open (its first `viewport` can be
@@ -29,7 +31,7 @@ export const createAgentPaneConnector = (id: string, request: Request): PaneConn
 
   void (async () => {
     try {
-      const response = await request(`/api/agents/${encodeURIComponent(id)}/tickets`, {
+      const response = await request(ticketPath, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ kind: 'pane' })
@@ -37,7 +39,7 @@ export const createAgentPaneConnector = (id: string, request: Request): PaneConn
       if (!response.ok) throw new Error('pane ticket unavailable');
       const { ticket } = await response.json();
       if (closed) return;
-      const ws = new WebSocket(paneSocketUrl(id), ['rac', ticket]);
+      const ws = new WebSocket(paneSocketUrl(target, pane), ['rac', ticket]);
       ws.binaryType = 'arraybuffer';
       socket = ws;
       ws.onopen = () => { if (!closed && socket === ws) { handlers.onOpen(); flush(); } };
@@ -70,3 +72,14 @@ export const createAgentPaneConnector = (id: string, request: Request): PaneConn
     }
   };
 };
+
+// Opens Agent pane connections: the target is the Agent id and the stream is its own
+// pane (the server defaults to it), the ticket minted from the Agent's route.
+export const createAgentPaneConnector = (id: string, request: Request): PaneConnector =>
+  createPaneConnector(id, undefined, `/api/agents/${encodeURIComponent(id)}/tickets`, request);
+
+// Opens a Terminal's pane connection: the target is the Worktree and the stream is one of
+// its panes (a Console shell, a hand-split pane, or any pane of its Agent's session), the
+// ticket minted from the Worktree's route (spec "The pane socket", Worktree-keyed form).
+export const createWorktreePaneConnector = (worktreeId: string, paneId: string, request: Request): PaneConnector =>
+  createPaneConnector(worktreeId, paneId, `/api/worktrees/${encodeURIComponent(worktreeId)}/tickets`, request);

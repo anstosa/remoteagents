@@ -2153,6 +2153,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // rebuilds from the pane, so a pane backing a live Agent is matched.
   const worktreePaneView = (pane: Pane, agentIds: ReadonlySet<string>) => ({
     paneId: pane.paneId, session: pane.sessionId, ...(pane.sessionName ? { sessionName: pane.sessionName } : {}),
+    // the pane's tmux window, so the picker can disable every pane sharing a window with an
+    // open Terminal (one Size claim per window, the invariant the socket's claim relies on)
+    ...(pane.windowId ? { window: pane.windowId } : {}),
     ...(pane.role ? { role: pane.role } : {}), ...(pane.paneName ? { name: pane.paneName } : {}),
     command: pane.command, path: pane.path, title: pane.title,
     agent: agentIds.has(`${pane.socket.fingerprint}:${pane.paneId}`),

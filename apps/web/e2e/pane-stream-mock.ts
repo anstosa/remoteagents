@@ -35,8 +35,12 @@ export function installPaneStreamMock(): void {
 
     constructor(url: string | URL) {
       this.url = String(url);
+      // A Terminal socket names its pane with `?pane=%N` (the Worktree-keyed form), so key by
+      // that pane id when present — distinct terminals of one Worktree get distinct mocks. The
+      // Agent panel sends no `pane`, so it keys by the target id in the path as before.
+      const paneQuery = /[?&]pane=([^&]+)/u.exec(this.url);
       const match = /\/ws\/pane\/([^/?]+)/u.exec(this.url);
-      this.paneId = match ? decodeURIComponent(match[1]!) : undefined;
+      this.paneId = paneQuery ? decodeURIComponent(paneQuery[1]!) : match ? decodeURIComponent(match[1]!) : undefined;
       if (this.paneId !== undefined) {
         const list = paneSockets.get(this.paneId) ?? [];
         list.push(this);

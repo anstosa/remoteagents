@@ -867,15 +867,15 @@ describe('Console shells server lifecycle', () => {
 
   it('lists the Worktree panes with their role, name, busy and agent flags', async () => {
     const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
-    const agentPane = { paneId: '%1', sessionId: '$1', pid: 1, path: '/worktrees/cora', command: 'codex', title: '', socket };
-    const busyShell = { ...shell, paneName: 'build', command: 'vim' };
+    const agentPane = { paneId: '%1', sessionId: '$1', windowId: '@0', pid: 1, path: '/worktrees/cora', command: 'codex', title: '', socket };
+    const busyShell = { ...shell, windowId: '@3', paneName: 'build', command: 'vim' };
     const { app, headers } = await start({ discovery: { dashboard: async () => ({ ...idleDashboard, agents: [agent] }) }, launch: { worktreePanes: async () => [agentPane, busyShell], consoleShellBusy } });
     try {
       const response = await app.inject({ method: 'GET', url: '/api/worktrees/cora/panes', headers: { host: headers.host, cookie: headers.cookie } });
       expect(response.statusCode).toBe(200);
       expect(response.json().panes).toEqual([
-        { paneId: '%1', session: '$1', command: 'codex', path: '/worktrees/cora', title: '', agent: true },
-        { paneId: '%9', session: '$1', role: 'shell', name: 'build', command: 'vim', path: '/worktrees/cora', title: '', agent: false, busy: true }
+        { paneId: '%1', session: '$1', window: '@0', command: 'codex', path: '/worktrees/cora', title: '', agent: true },
+        { paneId: '%9', session: '$1', window: '@3', role: 'shell', name: 'build', command: 'vim', path: '/worktrees/cora', title: '', agent: false, busy: true }
       ]);
     } finally { await app.close(); }
   }, 15_000);

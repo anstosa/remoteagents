@@ -23,6 +23,9 @@ export interface StreamedTerminalOptions {
   // The Agent pane's derive, forwarded verbatim (the higher-level panel renders them).
   onQuestion?: (question: unknown) => void;
   onMetadata?: (metadata: PaneMetadata) => void;
+  // The pane ended (an `exit` server frame: the shell exited, was killed, or its session
+  // is gone). A Terminal panel closes on it; when unset the stream reconnects as before.
+  onExit?: (reason: string) => void;
   // Rewrite terminal input before it is sent, so the panel's sticky mobile modifiers
   // (Ctrl, Alt, …) apply to typed keys as they do in the Log viewer. Identity by default.
   transformInput?: (data: string) => string;
@@ -223,7 +226,9 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
       // (which clears the scrollback as it lands) followed by live output. Discard any
       // bytes still buffered from before the first size so they cannot flush stale.
       case 'reseed': awaitingSeed = true; pendingBytes.length = 0; pendingByteCount = 0; break;
-      case 'exit': handleDisconnect(frame.reason); break;
+      // A pane that ended closes a Terminal panel (its onExit); the Agent panel supplies
+      // none and shows the status + reconnects on a fresh control client, as before.
+      case 'exit': if (options.onExit) options.onExit(frame.reason); else handleDisconnect(frame.reason); break;
       case 'question': options.onQuestion?.(frame.question); break;
       case 'metadata': options.onMetadata?.(frame.metadata); break;
     }
