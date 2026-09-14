@@ -1,0 +1,72 @@
+import type { PaneClientFrame, PaneConnector, PaneServerFrame } from './pane-stream.js';
+
+// The real transport behind the streamed terminal's `PaneConnector` seam: one
+// `/ws/pane/:id` WebSocket per subscribe, opened with a freshly minted single-use
+// `pane` ticket as the second subprotocol (the pattern every socket uses). Binary
+// frames are raw pane bytes; text frames are the JSON server frames. The component
+// drives this; tests drive a scripted connector instead (streamed-terminal-fixture).
+//
+// `request` is injected rather than imported so this module stays free of the app's
+// internals and can be exercised on its own. It is the app's fetch wrapper.
+type Request = (url: string, init?: RequestInit) => Promise<Response>;
+
+const paneSocketUrl = (id: string): string =>
+  `${location.origin.replace(/^http/u, 'ws')}/ws/pane/${encodeURIComponent(id)}`;
+
+// Opens Agent pane connections: the target is the Agent id and the stream is its own
+// pane (the server defaults to it). Each call mints its own ticket, so a reconnect
+// gets a fresh one rather than replaying a spent ticket.
+export const createAgentPaneConnector = (id: string, request: Request): PaneConnector => handlers => {
+  let socket: WebSocket | undefined;
+  let closed = false;
+  // Frames the component sends before the socket is open (its first `viewport` can be
+  // proposed from a render that precedes the open) wait here and flush on open, in order.
+  const outbox: PaneClientFrame[] = [];
+  const flush = () => {
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    while (outbox.length > 0) socket.send(JSON.stringify(outbox.shift()!));
+  };
+
+  void (async () => {
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(id)}/tickets`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'pane' })
+      });
+      if (!response.ok) throw new Error('pane ticket unavailable');
+      const { ticket } = await response.json();
+      if (closed) return;
+      const ws = new WebSocket(paneSocketUrl(id), ['rac', ticket]);
+      ws.binaryType = 'arraybuffer';
+      socket = ws;
+      ws.onopen = () => { if (!closed && socket === ws) { handlers.onOpen(); flush(); } };
+      ws.onmessage = event => {
+        if (closed || socket !== ws) return;
+        if (event.data instanceof ArrayBuffer) { handlers.onBytes(new Uint8Array(event.data)); return; }
+        // A non-JSON text frame is not part of the contract; drop it rather than throw.
+        try { handlers.onFrame(JSON.parse(String(event.data)) as PaneServerFrame); } catch { /* ignore malformed */ }
+      };
+      ws.onclose = event => {
+        if (closed || socket !== ws) return;
+        socket = undefined;
+        handlers.onClose({ code: event.code, reason: event.reason });
+      };
+      ws.onerror = () => ws.close();
+    } catch {
+      // A failed mint or open reads as a lost connection, so the component shows its
+      // reconnecting status and subscribes again after its delay.
+      if (!closed) handlers.onClose({ code: 1006, reason: 'connection failed' });
+    }
+  })();
+
+  return {
+    send: frame => { outbox.push(frame); flush(); },
+    close: () => {
+      closed = true;
+      const current = socket;
+      socket = undefined;
+      current?.close();
+    }
+  };
+};
