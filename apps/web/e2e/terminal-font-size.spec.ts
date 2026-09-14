@@ -1,46 +1,14 @@
 import { expect, test, type Page } from '@playwright/test';
+import { installPaneMock, seedPaneSize, pushBytes, paneLastViewport } from './pane-stream-mock.js';
 
 // A console whose one agent renders a Live log, so both the terminal and the
 // Global settings are on screen. `stored` seeds the localStorage key before
 // the app loads, which is how the garbage-value case stages a bad value.
 async function openConsole(page: Page, stored?: string) {
   await page.setViewportSize({ width: 1280, height: 800 });
+  await installPaneMock(page);
   await page.addInitScript(seed => {
     if (seed !== null) localStorage.setItem('rac.terminal-font-size', seed);
-    const frames: Array<{ url: string; data: string }> = [];
-    class MockWebSocket {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSING = 2;
-      static readonly CLOSED = 3;
-      readonly url: string;
-      readyState = MockWebSocket.CONNECTING;
-      onopen: ((event: Event) => void) | null = null;
-      onclose: ((event: CloseEvent) => void) | null = null;
-      onerror: ((event: Event) => void) | null = null;
-      onmessage: ((event: MessageEvent) => void) | null = null;
-      constructor(url: string | URL) {
-        this.url = String(url);
-        window.setTimeout(() => {
-          if (this.readyState !== MockWebSocket.CONNECTING) return;
-          this.readyState = MockWebSocket.OPEN;
-          this.onopen?.(new Event('open'));
-          if (/\/ws\/logs\/agent-1/.test(this.url)) this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({
-            v: 1,
-            type: 'reset',
-            text: 'agent-1 output line\nagent-1 second line'
-          }) }));
-        });
-      }
-      send(data: string) { frames.push({ url: this.url, data }); }
-      close() {
-        if (this.readyState === MockWebSocket.CLOSED) return;
-        this.readyState = MockWebSocket.CLOSED;
-        this.onclose?.(new CloseEvent('close'));
-      }
-    }
-    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
-    Object.defineProperty(window, '__terminalSocketFrames', { configurable: true, value: frames });
     // Record whether the app's capture-phase handler prevented a font shortcut's
     // default, read after the event has bubbled to the document.
     document.addEventListener('keydown', event => {
@@ -57,26 +25,24 @@ async function openConsole(page: Page, stored?: string) {
       { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready' }
     ], projects: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
-    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'pane-ticket' } });
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
     if (url.pathname === '/api/worktrees/cora/notes') return route.fulfill({ json: { notes: [] } });
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
   await page.goto('/');
   await expect(page.getByLabel('Live log')).toBeVisible({ timeout: 15_000 });
+  // Bring the pane live so the terminal is mounted and the panel has sent its grid.
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await pushBytes(page, 'agent-1', 'agent-1 output line\r\nagent-1 second line\r\n');
 }
 
-const latestViewport = (page: Page) => page.evaluate(() => {
-  const frames = (window as Window & { __terminalSocketFrames?: Array<{ url: string; data: string }> }).__terminalSocketFrames ?? [];
-  return frames
-    .filter(frame => frame.url.includes('/ws/logs/agent-1'))
-    .map(frame => JSON.parse(frame.data) as { type?: string; cols?: number; rows?: number })
-    .filter(frame => frame.type === 'viewport')
-    .at(-1);
-});
+// The panel requests a grid on the pane socket (the Size claim) and re-requests it when
+// the font changes; the last such request carries the current cols and rows.
+const latestViewport = (page: Page) => paneLastViewport(page, 'agent-1');
 
 const terminalFontPx = (page: Page) => page.evaluate(() => {
-  const element = document.querySelector<HTMLElement>('.terminal-frame.active .xterm');
+  const element = document.querySelector<HTMLElement>('.log-canvas .xterm');
   return element === null ? null : getComputedStyle(element).fontSize;
 });
 
@@ -174,7 +140,7 @@ test('the shortcut resizes while the terminal pane is focused', async ({ page })
   await expect.poll(() => latestViewport(page), { timeout: 15_000 }).toBeTruthy();
   // xterm holds keyboard focus in a hidden textarea; the shortcut must still
   // resize the pane rather than being mistaken for an editable field.
-  await page.evaluate(() => document.querySelector<HTMLTextAreaElement>('.terminal-frame.active .xterm-helper-textarea')?.focus());
+  await page.evaluate(() => document.querySelector<HTMLTextAreaElement>('.log-canvas .xterm-helper-textarea')?.focus());
   await page.keyboard.press('Control+Equal');
   await expect.poll(async () => await terminalFontPx(page), { timeout: 5_000 }).toBe('12px');
   expect(await page.evaluate(() => (window as Window & { __fontKeyPrevented?: boolean }).__fontKeyPrevented)).toBe(true);

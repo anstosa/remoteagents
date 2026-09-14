@@ -60,12 +60,9 @@ test('creates, previews, edits, autosaves, and deletes per-worktree notes', asyn
 
   await page.goto('/');
   const notesButton = page.getByRole('button', { name: 'Notes' });
-  const pageUp = page.getByRole('button', { name: 'Page up' });
   await expect(notesButton).toBeVisible();
   await expect(notesButton).toHaveAccessibleName('Notes (0)');
   await expect(notesButton.locator('.notes-icon-sheet')).toHaveAttribute('d', 'M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z');
-  const [notesBounds, pageUpBounds] = await Promise.all([notesButton.boundingBox(), pageUp.boundingBox()]);
-  expect(notesBounds!.y).toBeLessThan(pageUpBounds!.y);
 
   await notesButton.click();
   await page.getByRole('button', { name: '+ New note' }).click();
@@ -218,7 +215,10 @@ test('keeps note flyouts left-aligned and shifts long menus within the output bo
   const [menuBounds, notesButtonBounds, outputBounds] = await Promise.all([renderedBounds(menu), renderedBounds(notesButton), renderedBounds(page.locator('.log'))]);
   expect(menuBounds.x).toBeGreaterThanOrEqual(outputBounds.x);
   expect(menuBounds.x + menuBounds.width).toBeLessThan(notesButtonBounds.x);
-  expect(menuBounds.y).toBeCloseTo(notesButtonBounds.y, 0);
+  // The notes control sits at the footer's bottom now that paging is gone, so the flyout
+  // opens at or above it and stays within the output rather than aligning to its top.
+  expect(menuBounds.y).toBeLessThanOrEqual(notesButtonBounds.y + 1);
+  expect(menuBounds.y).toBeGreaterThanOrEqual(outputBounds.y);
   expect(menuBounds.y + menuBounds.height).toBeLessThanOrEqual(outputBounds.y + outputBounds.height);
 
   visibleNotes = notes;

@@ -91,7 +91,9 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
     }
   };
   terminal.open(host);
-  Object.assign(terminal.element!.style, { fontFamily: terminalFontFamily, fontKerning: 'none', fontWeight: 'normal' });
+  // Mirror the font size onto the element as the font-size subscription does on change, so
+  // the configured size is legible in the DOM from mount (not only after the first change).
+  Object.assign(terminal.element!.style, { fontFamily: terminalFontFamily, fontSize: `${readTerminalFontSize()}px`, fontKerning: 'none', fontWeight: 'normal' });
 
   const applyContainerBackground = (background: string | undefined) => { container.style.background = background ?? ''; };
   applyContainerBackground(computeTerminalTheme().background);

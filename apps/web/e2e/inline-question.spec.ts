@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test';
+import { installPaneMock, seedPaneSize, pushBytes, pushQuestion } from './pane-stream-mock.js';
 
-// The server now parses inline questions from the viewed agent's capture and
-// sends the current one on each authoritative metadata frame. The web renders
-// what it is given and no longer parses pane text, so this spec feeds `question`
-// through the stubbed metadata payload rather than through terminal output.
+// The server derive reports the viewed pane's inline question on the pane socket's
+// `question` frame; the web renders what it is given and never parses pane text. This
+// spec drives those frames through the shared pane mock and answers through the one
+// question endpoint, exactly as the operator does.
 
 const strictQuestion = {
   id: 'question-strict',
@@ -37,62 +38,20 @@ const modelQuestion = {
   source: 'parsed'
 };
 
-test('renders inline questions from the metadata payload and answers through one endpoint', async ({ page }) => {
+test('renders inline questions from the pane stream and answers through one endpoint', async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });
   let selectedIndex: number | undefined;
   let selectedQuestionId: string | undefined;
   let answerCount = 0;
   const submittedPrompts: Array<{ prompt: string; attachments: unknown[] }> = [];
-  await page.addInitScript(({ firstQuestion }) => {
-    const logSockets: MockWebSocket[] = [];
-    class MockWebSocket {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSING = 2;
-      static readonly CLOSED = 3;
-      readonly url: string;
-      readyState = MockWebSocket.CONNECTING;
-      onopen: ((event: Event) => void) | null = null;
-      onclose: ((event: CloseEvent) => void) | null = null;
-      onerror: ((event: Event) => void) | null = null;
-      onmessage: ((event: MessageEvent) => void) | null = null;
-      readonly sent: string[] = [];
-      constructor(url: string | URL) {
-        this.url = String(url);
-        window.setTimeout(() => {
-          if (this.readyState !== MockWebSocket.CONNECTING) return;
-          this.readyState = MockWebSocket.OPEN;
-          this.onopen?.(new Event('open'));
-          if (this.url.includes('/ws/logs/')) {
-            logSockets.push(this);
-            const firstAgent = this.url.includes('/agent-1');
-            // the server delivers the parsed question at the frame top level
-            this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(firstAgent
-              ? { type: 'reset', text: 'Action required\n', question: firstQuestion, metadata: { state: 'complete', latestAgentMessage: null, latestAssistantMessage: null, latestAssistantMessageOverflows: false } }
-              : { type: 'reset', text: 'Second agent ready\n', metadata: { state: 'complete', latestAgentMessage: null, latestAssistantMessage: null, latestAssistantMessageOverflows: false } }) }));
-            // emit an arbitrary later frame to agent-1's log socket
-            Object.assign(window, {
-              emitQuestionFrame: (frame: object) => logSockets.filter(socket => socket.url.includes('/agent-1')).forEach(socket => socket.onmessage?.(new MessageEvent('message', { data: JSON.stringify(frame) })))
-            });
-          }
-        });
-      }
-      send(value: string) { this.sent.push(value); }
-      close() {
-        if (this.readyState === MockWebSocket.CLOSED) return;
-        this.readyState = MockWebSocket.CLOSED;
-        this.onclose?.(new CloseEvent('close'));
-      }
-    }
-    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
-  }, { firstQuestion: strictQuestion });
+  await installPaneMock(page);
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Action required', attention: 'question' }, { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/owen', title: 'Ready', attention: 'finished' }], projects: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
-    if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'pane-ticket' } });
     if (/^\/api\/agents\/agent-[12]\/saved-prompts$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });
     if (/^\/api\/agents\/agent-[12]\/prompt-history$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });
     // capture notes and false-positive prompts
@@ -110,17 +69,12 @@ test('renders inline questions from the metadata payload and answers through one
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 
-  const emit = (frame: object) => page.evaluate(async payload => {
-    (window as unknown as { emitQuestionFrame: (frame: object) => void }).emitQuestionFrame(payload);
-    // wait through deferred question analysis
-    await new Promise<void>(resolve => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
-  }, frame);
-  // a cheap viewport frame carries no metadata; the question rides it at the top
-  // level. Its text mirrors the pane (which changes with the question), because the
-  // server only emits a frame when the pane output actually changed.
-  const cheapFrame = (question?: { text: string }) => ({ type: 'reset', text: `${question ? question.text : 'Working on the task'}\n`, ...(question === undefined ? {} : { question }) });
-
   await page.goto('/');
+  // The panel streams agent-1's pane; the derive reports the current question on a frame.
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await pushBytes(page, 'agent-1', 'Action required\r\n');
+  await pushQuestion(page, 'agent-1', strictQuestion);
+
   await expect(page.getByText('Agent question')).toBeVisible();
   await expect(page.locator('.question-copy')).toContainText('Which strict-mode end state should govern this cleanup?');
   const choices = page.locator('.question-choice');
@@ -184,8 +138,8 @@ test('renders inline questions from the metadata payload and answers through one
   expect(selectedQuestionId).toBe(strictQuestion.id);
   await expect(page.getByText('Agent question')).toHaveCount(0);
 
-  // the optimistic dismissal holds while a cheap frame still reports the same question
-  await emit(cheapFrame(strictQuestion));
+  // the optimistic dismissal holds while the derive still reports the same question
+  await pushQuestion(page, 'agent-1', strictQuestion);
   await expect(page.getByText('Agent question')).toHaveCount(0);
 
   // and survives a tab remount
@@ -197,13 +151,20 @@ test('renders inline questions from the metadata payload and answers through one
   await expect(page.getByText('Agent question')).toHaveCount(0);
 
   // a frame carrying no question clears the dismissal
-  await emit(cheapFrame());
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await pushQuestion(page, 'agent-1', null);
+  await expect(page.getByText('Agent question')).toHaveCount(0);
+  // re-reporting the just-answered question now shows it again — the null released the
+  // dismissal (a stale dismissal would keep it hidden on its own id)
+  await pushQuestion(page, 'agent-1', strictQuestion);
+  await expect(page.locator('.question-copy')).toContainText('Which strict-mode end state should govern this cleanup?');
+  await pushQuestion(page, 'agent-1', null);
   await expect(page.getByText('Agent question')).toHaveCount(0);
 
   // extracted controls must not shrink their source viewport
   const liveLog = page.getByLabel('Live log');
   const normalLogHeight = await liveLog.evaluate(element => element.getBoundingClientRect().height);
-  await emit(cheapFrame(modelQuestion));
+  await pushQuestion(page, 'agent-1', modelQuestion);
   await expect(page.getByRole('region', { name: 'Agent question' })).toContainText('Select Model and Effort');
   await expect(choices).toHaveCount(7);
   const modelLogHeight = await liveLog.evaluate(element => element.getBoundingClientRect().height);
@@ -212,10 +173,10 @@ test('renders inline questions from the metadata payload and answers through one
   await choices.nth(1).click();
   await expect.poll(() => selectedIndex).toBe(1);
   expect(selectedQuestionId).toBe(modelQuestion.id);
+  await expect(page.getByText('Agent question')).toHaveCount(0);
 
-  // a new question (a different id) arriving on a cheap frame — no metadata, so it
-  // must ride the frame itself — is shown promptly and answered on its own id
-  await emit(cheapFrame(deployQuestion));
+  // a new question (a different id) is shown promptly and answered on its own id
+  await pushQuestion(page, 'agent-1', deployQuestion);
   await expect(page.locator('.question-copy')).toContainText('Which deployment environment should receive this release?');
   await expect(choices).toHaveText(['1Staging', '2Production', '3Cancel']);
   selectedIndex = undefined;

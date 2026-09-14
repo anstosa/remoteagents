@@ -1,59 +1,28 @@
 import { expect, test } from '@playwright/test';
+import { installPaneMock, seedPaneSize, pushBytes, paneInputList } from './pane-stream-mock.js';
 
-test('backgrounds an idle agent and swaps the output area to its interactive terminal', async ({ page }) => {
+// Swap to terminal still backgrounds the agent and shows its pane, but the pane now
+// streams over a single `/ws/pane/:id` socket: there is no separate logs/input socket and
+// no `terminal` ticket kind. Typed Enter in the swapped composer and a blank Enter from
+// the normal composer forward as pane input, not a prompt POST.
+
+test('backgrounds an idle agent and swaps the output area to its streamed pane', async ({ page }) => {
   const ticketKinds: string[] = [];
   let backgroundRequests = 0;
   let foregroundRequests = 0;
   let promptRequests = 0;
-  await page.addInitScript(() => {
-    const frames: Array<{ url: string; data: string }> = [];
-    class MockWebSocket {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSING = 2;
-      static readonly CLOSED = 3;
-      readonly url: string;
-      readyState = MockWebSocket.CONNECTING;
-      onopen: ((event: Event) => void) | null = null;
-      onclose: ((event: CloseEvent) => void) | null = null;
-      onerror: ((event: Event) => void) | null = null;
-      onmessage: ((event: MessageEvent) => void) | null = null;
-      constructor(url: string | URL) {
-        this.url = String(url);
-        window.setTimeout(() => {
-          if (this.readyState !== MockWebSocket.CONNECTING) return;
-          this.readyState = MockWebSocket.OPEN;
-          this.onopen?.(new Event('open'));
-        });
-      }
-      send(data: string) { frames.push({ url: this.url, data }); }
-      close() {
-        if (this.readyState === MockWebSocket.CLOSED) return;
-        this.readyState = MockWebSocket.CLOSED;
-        this.onclose?.(new CloseEvent('close'));
-      }
-    }
-    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
-    Object.defineProperty(window, '__terminalSocketFrames', { configurable: true, value: frames });
-  });
+  await installPaneMock(page);
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready', kind: 'codex', attention: 'finished' }, { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/delta', title: 'Second', kind: 'claude', attention: 'finished' }], projects: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready', kind: 'codex', attention: 'finished', queuedPromptCount: 0 }, { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/delta', title: 'Second', kind: 'claude', attention: 'finished', queuedPromptCount: 0 }], projects: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
-    if (url.pathname === '/api/agents/agent-1/background') {
-      backgroundRequests += 1;
-      return route.fulfill({ status: 204 });
-    }
-    if (url.pathname === '/api/agents/agent-1/foreground') {
-      foregroundRequests += 1;
-      return route.fulfill({ status: 204 });
-    }
-    if (url.pathname === '/api/agents/agent-1/prompt') {
-      promptRequests += 1;
-      return route.fulfill({ status: 204 });
-    }
+    if (url.pathname === '/api/agents/agent-1/background') { backgroundRequests += 1; return route.fulfill({ status: 204 }); }
+    if (url.pathname === '/api/agents/agent-1/foreground') { foregroundRequests += 1; return route.fulfill({ status: 204 }); }
+    if (url.pathname === '/api/agents/agent-1/prompt') { promptRequests += 1; return route.fulfill({ status: 204 }); }
+    if (/^\/api\/agents\/agent-[12]\/prompt-history$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });
+    if (/^\/api\/agents\/agent-[12]\/saved-prompts$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });
     if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) {
       const payload = request.postDataJSON() as { kind?: unknown };
       if (typeof payload.kind === 'string') ticketKinds.push(payload.kind);
@@ -63,6 +32,8 @@ test('backgrounds an idle agent and swaps the output area to its interactive ter
   });
 
   await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await pushBytes(page, 'agent-1', 'Ready\r\n');
   await expect(page.getByRole('button', { name: 'Open terminal' })).toHaveCount(0);
   await expect(page.locator('.prompt-actions > .swap-agent')).toHaveCount(0);
   const swapFromMenu = async () => {
@@ -81,53 +52,36 @@ test('backgrounds an idle agent and swaps the output area to its interactive ter
   await expect(returnToAgent).toHaveClass(/swap-agent/u);
   await expect(page.getByRole('button', { name: 'Swap to terminal' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Queue' })).toHaveCount(0);
+  await expect.poll(() => backgroundRequests).toBe(1);
+  // The swapped pane streams over one socket the moment it opens.
+  await seedPaneSize(page, 'agent-1', 80, 24);
+
   const enter = page.getByRole('button', { name: 'Enter', exact: true });
   const prompt = page.getByRole('textbox', { name: 'Prompt' });
   await expect(enter).toBeEnabled();
   await prompt.fill('printf terminal-mode');
   await enter.click();
   await expect(prompt).toHaveValue('');
-  await expect.poll(async () => page.evaluate(() => {
-    const frames = (window as Window & { __terminalSocketFrames?: Array<{ url: string; data: string }> }).__terminalSocketFrames ?? [];
-    return frames.filter(frame => frame.url.includes('/ws/input/')).map(frame => JSON.parse(frame.data) as { data: string });
-  })).toHaveLength(1);
-  const [inputFrame] = await page.evaluate(() => {
-    const frames = (window as Window & { __terminalSocketFrames?: Array<{ url: string; data: string }> }).__terminalSocketFrames ?? [];
-    return frames.filter(frame => frame.url.includes('/ws/input/')).map(frame => JSON.parse(frame.data) as { data: string });
-  });
-  expect(Buffer.from(inputFrame!.data, 'base64url').toString('utf8')).toBe('printf terminal-mode\r');
+  await expect.poll(() => paneInputList(page, 'agent-1')).toEqual(['printf terminal-mode\r']);
   await enter.click();
-  await expect.poll(async () => page.evaluate(() => {
-    const frames = (window as Window & { __terminalSocketFrames?: Array<{ url: string; data: string }> }).__terminalSocketFrames ?? [];
-    return frames.filter(frame => frame.url.includes('/ws/input/')).length;
-  })).toBe(2);
-  const inputFrames = await page.evaluate(() => {
-    const frames = (window as Window & { __terminalSocketFrames?: Array<{ url: string; data: string }> }).__terminalSocketFrames ?? [];
-    return frames.filter(frame => frame.url.includes('/ws/input/')).map(frame => JSON.parse(frame.data) as { data: string });
-  });
-  expect(Buffer.from(inputFrames[1]!.data, 'base64url').toString('utf8')).toBe('\r');
+  await expect.poll(() => paneInputList(page, 'agent-1')).toEqual(['printf terminal-mode\r', '\r']);
   expect(promptRequests).toBe(0);
-  await expect.poll(() => backgroundRequests).toBe(1);
-  await expect.poll(() => ticketKinds.filter(kind => kind === 'logs').length).toBeGreaterThanOrEqual(1);
-  await expect.poll(() => ticketKinds.filter(kind => kind === 'input').length).toBe(1);
+
+  // The panel opens one pane socket per view: it mints `pane` tickets and never the
+  // retired `input` (separate input socket) or `terminal` (swap) kinds. (`logs` still
+  // appears from the dashboard prefetch, retired in the next ticket.)
+  expect(ticketKinds).toContain('pane');
   expect(ticketKinds).not.toContain('terminal');
+  expect(ticketKinds).not.toContain('input');
 
   await returnToAgent.click();
   await expect(page.getByLabel('Live log')).toBeVisible();
-  await expect.poll(() => backgroundRequests).toBe(1);
   await expect.poll(() => foregroundRequests).toBe(1);
+  await seedPaneSize(page, 'agent-1', 80, 24);
 
-  // forward blank Enter from the normal prompt to the agent output
+  // A blank Enter from the normal composer forwards to the pane, not a prompt POST.
   await prompt.press('Enter');
-  await expect.poll(async () => page.evaluate(() => {
-    const frames = (window as Window & { __terminalSocketFrames?: Array<{ url: string; data: string }> }).__terminalSocketFrames ?? [];
-    return frames.filter(frame => frame.url.includes('/ws/input/')).length;
-  })).toBe(3);
-  const forwardedFrames = await page.evaluate(() => {
-    const frames = (window as Window & { __terminalSocketFrames?: Array<{ url: string; data: string }> }).__terminalSocketFrames ?? [];
-    return frames.filter(frame => frame.url.includes('/ws/input/')).map(frame => JSON.parse(frame.data) as { data: string });
-  });
-  expect(Buffer.from(forwardedFrames[2]!.data, 'base64url').toString('utf8')).toBe('\r');
+  await expect.poll(() => paneInputList(page, 'agent-1')).toEqual(['printf terminal-mode\r', '\r', '\r']);
   expect(promptRequests).toBe(0);
 
   await swapFromMenu();

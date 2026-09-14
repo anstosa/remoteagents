@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { installPaneMock } from './pane-stream-mock.js';
 
 test('renders saved notes with stable lists, links, selection actions, and inferred select/edit modes', async ({ page }) => {
   const markdown = [
@@ -46,6 +47,7 @@ test('renders saved notes with stable lists, links, selection actions, and infer
   ].join('\n');
   const note = { id: 'note-identifier-001', text: markdown };
 
+  await installPaneMock(page);
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -79,7 +81,7 @@ test('renders saved notes with stable lists, links, selection actions, and infer
   await expect(page.getByRole('dialog', { name: 'Worktree note' })).toHaveCount(0);
   await expect(page.getByText('Saved', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /^(?:Edit|Select) note$/u })).toHaveCount(0);
-  const outputFontSize = await page.locator('.terminal-frame.active .xterm').evaluate(element => getComputedStyle(element).fontSize);
+  const outputFontSize = await page.locator('.log-canvas .xterm').evaluate(element => getComputedStyle(element).fontSize);
   await expect(preview).toHaveCSS('font-size', outputFontSize);
   await expect(page.getByRole('textbox', { name: 'Note content' })).toHaveCount(0);
   await expect(preview.getByRole('heading', { name: 'Release notes', level: 1 })).toBeVisible();

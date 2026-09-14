@@ -1,43 +1,11 @@
 import { expect, test } from '@playwright/test';
+import { installPaneMock, seedPaneSize, pushBytes, pushMetadata } from './pane-stream-mock.js';
 
 test('lists and previews files from the latest assistant response above notes', async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 600 });
+  await installPaneMock(page);
   await page.addInitScript(() => {
-    const sockets: MockWebSocket[] = [];
-    class MockWebSocket {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSED = 3;
-      readonly url: string;
-      readyState = MockWebSocket.CONNECTING;
-      onopen: ((event: Event) => void) | null = null;
-      onclose: ((event: CloseEvent) => void) | null = null;
-      onerror: ((event: Event) => void) | null = null;
-      onmessage: ((event: MessageEvent) => void) | null = null;
-      // register one mock log socket
-      constructor(url: string | URL) {
-        this.url = String(url);
-        sockets.push(this);
-        window.setTimeout(() => {
-          // open connected sockets once
-          if (this.readyState !== MockWebSocket.CONNECTING) return;
-          this.readyState = MockWebSocket.OPEN;
-          this.onopen?.(new Event('open'));
-        });
-      }
-      send() {}
-      // close one mock socket
-      close() {
-        if (this.readyState === MockWebSocket.CLOSED) return;
-        this.readyState = MockWebSocket.CLOSED;
-        this.onclose?.(new CloseEvent('close'));
-      }
-    }
-    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value: string) => { (window as unknown as { __copiedPath?: string }).__copiedPath = value; } } });
-    Object.defineProperty(window, '__emitLogFrame', {
-      value: (frame: { text: string; latestAssistantMessage: string }) => sockets.find(socket => socket.url.includes('/ws/logs/'))?.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ v: 1, type: 'reset', ...frame }) }))
-    });
   });
 
   await page.route('**/api/**', async route => {
@@ -47,7 +15,7 @@ test('lists and previews files from the latest assistant response above notes', 
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready' }], projects: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
-    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'pane-ticket' } });
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
     if (url.pathname === '/api/worktrees/cora/notes') return route.fulfill({ json: { notes: [] } });
     if (url.pathname === '/api/agents/agent-1/message-files') {
@@ -66,8 +34,19 @@ test('lists and previews files from the latest assistant response above notes', 
   });
 
   await page.goto('/');
+  // Seed the pane so its output-link overlay scans the terminal buffer; the latest Turn
+  // (for the files menu) arrives on the metadata frame.
+  await seedPaneSize(page, 'agent-1', 80, 24);
   await expect(page.getByRole('button', { name: 'Notes' })).toBeEnabled({ timeout: 15_000 });
-  await page.evaluate(() => (window as unknown as { __emitLogFrame: (frame: { text: string; latestAssistantMessage: string }) => void }).__emitLogFrame({ text: 'Updated apps/web/src/main.tsx:1444 and docs/setup.md.', latestAssistantMessage: 'Updated `apps/web/src/main.tsx:1444` and `docs/setup.md`.' }));
+  // The clickable file link comes from the pane text (the output-link overlay); the file
+  // menu comes from the assistant message (backtick-quoted paths) via message-files.
+  const emit = async (text: string, message: string) => {
+    // Land the path text in the lower rows so its output-link overlay clears the
+    // top-left server switcher (a click there would otherwise hit the switcher button).
+    await pushBytes(page, 'agent-1', `${'\r\n'.repeat(20)}${text}\r\n`);
+    await pushMetadata(page, 'agent-1', message, false);
+  };
+  await emit('Updated apps/web/src/main.tsx:1444 and docs/setup.md.', 'Updated `apps/web/src/main.tsx:1444` and `docs/setup.md`.');
 
   const filesButton = page.getByRole('button', { name: 'Files from latest response (2)' });
   const notesButton = page.getByRole('button', { name: 'Notes' });
@@ -116,7 +95,7 @@ test('lists and previews files from the latest assistant response above notes', 
   await expect(dialog).toHaveCount(0);
 
   // preview one live host temporary screenshot
-  await page.evaluate(() => (window as unknown as { __emitLogFrame: (frame: { text: string; latestAssistantMessage: string }) => void }).__emitLogFrame({ text: 'Screenshots: /tmp/agent-screenshot.png', latestAssistantMessage: 'Screenshots: /tmp/agent-screenshot.png' }));
+  await emit('Screenshots: /tmp/agent-screenshot.png', 'Screenshots: /tmp/agent-screenshot.png');
   await page.getByRole('link', { name: 'Preview /tmp/agent-screenshot.png' }).click();
   const imageDialog = page.getByRole('dialog', { name: 'File preview: /tmp/agent-screenshot.png' });
   const image = imageDialog.getByRole('img', { name: 'Preview of /tmp/agent-screenshot.png' });

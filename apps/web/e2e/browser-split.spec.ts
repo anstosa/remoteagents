@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { installPaneMock, seedPaneSize, pushBytes } from './pane-stream-mock.js';
 
 // verify direct external preview routing
 test('loads direct external previews without managed proxy endpoints', async ({ page }) => {
@@ -8,32 +9,7 @@ test('loads direct external previews without managed proxy endpoints', async ({ 
   // record every requested endpoint
   page.on('request', request => { requestPaths.push(new URL(request.url()).pathname); });
   await page.setViewportSize({ width: 1400, height: 850 });
-  await page.addInitScript(() => {
-    class MockWebSocket {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSED = 3;
-      readyState = MockWebSocket.CONNECTING;
-      onopen: ((event: Event) => void) | null = null;
-      onclose: ((event: CloseEvent) => void) | null = null;
-      onerror: ((event: Event) => void) | null = null;
-      onmessage: ((event: MessageEvent) => void) | null = null;
-      private outputSent = false;
-      // open the simulated socket
-      constructor(readonly url: string | URL) { window.setTimeout(() => { this.readyState = MockWebSocket.OPEN; this.onopen?.(new Event('open')); }); }
-      // publish one direct project link
-      send(value: string) {
-        const request: { type?: unknown } = JSON.parse(value);
-        // ignore non-output sockets and later requests
-        if (this.outputSent || !String(this.url).includes('/ws/logs/') || request.type !== 'viewport') return;
-        this.outputSent = true;
-        window.setTimeout(() => this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ v: 1, type: 'reset', text: 'Admin https://external-preview.example/admin' }) })));
-      }
-      // close the simulated socket
-      close() { this.readyState = MockWebSocket.CLOSED; this.onclose?.(new CloseEvent('close')); }
-    }
-    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
-  });
+  await installPaneMock(page);
   // serve the portable external target
   await page.context().route('https://external-preview.example/**', async route => {
     projectRequests.push(route.request().url());
@@ -58,6 +34,9 @@ test('loads direct external previews without managed proxy endpoints', async ({ 
   });
 
   await page.goto('/');
+  // Stream the pane a few rows down so the Open link clears the top-left server switcher.
+  await seedPaneSize(page, 'agent-direct', 80, 24);
+  await pushBytes(page, 'agent-direct', '\r\n\r\n\r\nAdmin https://external-preview.example/admin\r\n');
   const controls = page.getByRole('group', { name: 'Project controls' });
   const stackControls = controls.getByRole('button', { name: 'Stack controls: healthy' });
   await expect(stackControls).toBeVisible();
@@ -128,31 +107,7 @@ test('opens the configured project in desktop and mobile split views', async ({ 
   let holdNextPreviewLoad = false;
   let releasePreviewLoad: (() => void) | undefined;
   await page.setViewportSize({ width: 1600, height: 900 });
-  await page.addInitScript(() => {
-    class MockWebSocket {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSED = 3;
-      readyState = MockWebSocket.CONNECTING;
-      onopen: ((event: Event) => void) | null = null;
-      onclose: ((event: CloseEvent) => void) | null = null;
-      onerror: ((event: Event) => void) | null = null;
-      onmessage: ((event: MessageEvent) => void) | null = null;
-      private outputSent = false;
-      constructor(readonly url: string | URL) { window.setTimeout(() => { this.readyState = MockWebSocket.OPEN; this.onopen?.(new Event('open')); }); }
-      // publish one output frame after viewport negotiation
-      send(value: string) {
-        const request: { type?: unknown } = JSON.parse(value);
-        // ignore non-output sockets and later requests
-        if (this.outputSent || !String(this.url).includes('/ws/logs/') || request.type !== 'viewport') return;
-        this.outputSent = true;
-        const text = 'Home https://project.example.com/\nLocal https://project.example.com/from-output?view=files#changed\nExternal https://outside.example.com/resource';
-        window.setTimeout(() => this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ v: 1, type: 'reset', text }) })));
-      }
-      close() { this.readyState = MockWebSocket.CLOSED; this.onclose?.(new CloseEvent('close')); }
-    }
-    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
-  });
+  await installPaneMock(page);
   // serve reported and unreported project navigation
   await page.route('https://project.example.com/**', async route => {
     let projectUrl = new URL(route.request().url());
@@ -194,6 +149,9 @@ test('opens the configured project in desktop and mobile split views', async ({ 
   });
 
   await page.goto('/');
+  // Stream the pane the project links a few rows down, clear of the server switcher.
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await pushBytes(page, 'agent-1', '\r\n\r\n\r\nHome https://project.example.com/\r\nLocal https://project.example.com/from-output?view=files#changed\r\nExternal https://outside.example.com/resource\r\n');
   const projectControls = page.getByRole('group', { name: 'Project controls' });
   const stackControls = projectControls.getByRole('button', { name: 'Stack controls: healthy' });
   await expect(projectControls.locator('.project-stack-trigger')).toHaveCount(1);
@@ -425,7 +383,12 @@ test('opens the configured project in desktop and mobile split views', async ({ 
   await preview.getByRole('link', { name: 'Open unreported page' }).click();
   await expect(preview.locator('main')).toHaveAttribute('data-location', '/unreported');
   await expect(browser.getByRole('button', { name: 'Go to project home' })).toBeVisible();
+  // Re-stream the project links here: the many split/device/fullscreen resizes above
+  // reflow the pane, and unlike tmux the mock does not persist earlier output, so the
+  // panel's live buffer is re-seeded for this interaction the way the server would.
+  await pushBytes(page, 'agent-1', '\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\nHome https://project.example.com/\r\n');
   const homeOutputLink = page.getByRole('link', { name: 'Open https://project.example.com/', exact: true });
+  await expect(homeOutputLink).toBeVisible();
   await homeOutputLink.click();
   await expect(preview.locator('main')).toHaveAttribute('data-location', '/');
   await expect(browser.getByRole('button', { name: 'Go to project home' })).toBeDisabled();

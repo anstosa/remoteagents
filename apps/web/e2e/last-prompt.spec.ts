@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { installPaneMock, seedPaneSize, pushBytes } from './pane-stream-mock.js';
 
 test.use({ hasTouch: true });
 
@@ -6,50 +7,22 @@ test('opens prompt history from the composer row while git status expands indepe
   const longPrompt = 'Review every changed service and explain the deployment risk before making any edits. '.repeat(8);
   const overflowChanges = Array.from({ length: 47 }, (_, index) => ({ code: ' M', path: `apps/server/src/generated-${index}.ts`, additions: 1, deletions: 0 }));
   await page.setViewportSize({ width: 428, height: 952 });
-  await page.addInitScript(prompt => {
-    class MockWebSocket {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSING = 2;
-      static readonly CLOSED = 3;
-      readonly url: string;
-      readyState = MockWebSocket.CONNECTING;
-      onopen: ((event: Event) => void) | null = null;
-      onclose: ((event: CloseEvent) => void) | null = null;
-      onerror: ((event: Event) => void) | null = null;
-      onmessage: ((event: MessageEvent) => void) | null = null;
-      constructor(url: string | URL) {
-        this.url = String(url);
-        window.setTimeout(() => {
-          if (this.readyState !== MockWebSocket.CONNECTING) return;
-          this.readyState = MockWebSocket.OPEN;
-          this.onopen?.(new Event('open'));
-          if (this.url.includes('/ws/logs/')) {
-            this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'reset', text: 'Ready\\n', lastPrompt: prompt }) }));
-          }
-        });
-      }
-      send() {}
-      close() {
-        if (this.readyState === MockWebSocket.CLOSED) return;
-        this.readyState = MockWebSocket.CLOSED;
-        this.onclose?.(new CloseEvent('close'));
-      }
-    }
-    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
-  }, longPrompt);
+  // The last-prompt field is retired from the wire; the panel streams its pane instead.
+  await installPaneMock(page);
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', branch: 'feature/full-toolbar-git-status', gitStatus: { files: 54, staged: 2, unstaged: 51, untracked: 1, conflicted: 0, changes: [{ code: 'M ', path: 'apps/server/src/app.ts', additions: 1_212, deletions: 3 }, { code: ' M', path: 'apps/web/src/main.tsx', additions: 8, deletions: 2 }, { code: 'MM', path: 'apps/web/src/styles.css', additions: 5, deletions: 4 }, { code: ' M', path: 'apps/web/e2e/last-prompt.spec.ts', additions: 16, deletions: 5 }, { code: ' M', path: 'README.md', additions: 4, deletions: 1 }, { code: 'R ', path: 'docs/setup.md', originalPath: 'docs/install.md', additions: 3, deletions: 2 }, { code: '??', path: 'notes/release plan.md', additions: 9, deletions: 0 }, ...overflowChanges] }, gitPrStatus: { base: 'origin/main', files: 3, changes: [{ code: 'A ', path: 'apps/server/src/pr-only.ts', additions: 1_200, deletions: 0 }, { code: 'M ', path: 'apps/web/src/main.tsx', additions: 30, deletions: 4 }, { code: 'M ', path: 'docs/pr.md', additions: 5, deletions: 1 }] }, title: 'Ready' }], projects: [] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
-    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'pane-ticket' } });
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
     if (url.pathname === '/api/agents/agent-1/prompt-history') return route.fulfill({ json: { prompts: [{ id: 'prompt-history-001', text: longPrompt, createdAt: '2026-08-04T01:00:00.000Z' }] } });
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 
   await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await pushBytes(page, 'agent-1', 'Ready\r\n');
   await expect(page.getByText('Last prompt:', { exact: false })).toHaveCount(0);
   // the recent-prompt text and the upper toolbar are gone; history lives in the composer row
   await expect(page.getByRole('button', { name: 'Last prompt', exact: true })).toHaveCount(0);

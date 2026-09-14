@@ -9,6 +9,8 @@ import { createAnimationFrameTextBatcher, pollWhileVisible } from './client-sche
 import { createOutputLinkOverlays, outputUrlMatchesHost } from './output-links.js';
 import { containOutputScroll } from './output-scroll.js';
 import { preserveOutputLongPressSelection } from './output-touch.js';
+import { mountStreamedTerminal } from './streamed-terminal.js';
+import { createAgentPaneConnector } from './pane-socket-client.js';
 import { FlyoutPortal } from './flyout-portal.js';
 import { NoteMarkdown } from './note-markdown.js';
 import { ProjectOpen } from './project-open.js';
@@ -318,6 +320,15 @@ const answeredQuestionActions = new Map<string, (question: ChoiceQuestion) => vo
 // the id of a just-answered question, kept per agent so its optimistic dismissal survives a remount
 const dismissedQuestionIds = new Map<string, string>();
 const mobileModifiers = new Map<string, { alt: boolean; ctrl: boolean; shift: boolean }>();
+// The pane's sticky mobile modifiers, defaulted so every reader gets the same shape.
+const stickyModifiers = (id: string) => mobileModifiers.get(id) ?? { alt: false, ctrl: false, shift: false };
+// Apply those modifiers to a typed key: Alt prefixes ESC, Ctrl maps a letter to its
+// control char, Shift upper-cases it; anything else passes through unchanged.
+const applyStickyModifiers = (id: string, data: string): string => {
+  const { alt, ctrl, shift } = stickyModifiers(id);
+  const first = data.charAt(0);
+  return `${alt ? '\x1b' : ''}${ctrl && /^[a-z]$/iu.test(first) ? String.fromCharCode(first.toLowerCase().charCodeAt(0) - 96) : shift && /^[a-z]$/iu.test(first) ? `${first.toUpperCase()}${data.slice(1)}` : data}`;
+};
 // Worktree ids changed to `<projectId>:<realpath>` (ADR 0003), so per-Worktree browser
 // prefs keyed by the old config ids are stale; clear those namespaces once.
 (() => {
@@ -1987,13 +1998,13 @@ function MobileTerminalKeys({ id }: { id: string }) {
   // toggle one sticky modifier
   const toggleModifier = (name: 'alt'|'ctrl'|'shift') => {
     const setters = { alt: setAltActive, ctrl: setCtrlActive, shift: setShiftActive };
-    const current = mobileModifiers.get(id) ?? { alt: false, ctrl: false, shift: false };
+    const current = stickyModifiers(id);
     mobileModifiers.set(id, { ...current, [name]: !current[name] });
     setters[name](value => !value);
   };
   // send one mobile key sequence
   const mobileKey = (key: 'tab'|'up'|'down'|'left'|'right'|'dollar'|'slash') => {
-    const { alt, ctrl, shift } = mobileModifiers.get(id) ?? { alt: false, ctrl: false, shift: false };
+    const { alt, ctrl, shift } = stickyModifiers(id);
     const arrows = { up: 'A', down: 'B', right: 'C', left: 'D' };
     let value = key === 'tab' ? (shift ? '\x1b[Z' : '\t') : key === 'dollar' ? '$' : key === 'slash' ? '/' : (ctrl || shift || alt ? `\x1b[1;${ctrl && shift ? 6 : ctrl && alt ? 7 : shift && alt ? 4 : ctrl ? 5 : shift ? 2 : 3}${arrows[key]}` : `\x1b[${arrows[key]}`);
     // prefix modified printable keys
@@ -4521,6 +4532,170 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, pullRequest, hist
     historyPinnedToLatestRef.current = Math.abs(list.scrollHeight - list.clientHeight - list.scrollTop) <= 1;
   };
   useEffect(() => {
+    // The Agent's Panel streams its pane over the Pane socket: the shipped streamed
+    // terminal component on `/ws/pane/:id` replaces the snapshot double-buffer. The
+    // embedded update advisor keeps the snapshot machinery below (retired in a later
+    // ticket) so it and its specs stay untouched.
+    if (!embedded) {
+      let disposed = false;
+      let latestQuestion: InlineQuestion | undefined;
+      let dismissedQuestionId = dismissedQuestionIds.get(id);
+      let copiedSelectionTimer: number | undefined;
+      setStatus('Connecting');
+      setHasRendered(false);
+      setToolbarExpanded(undefined);
+      setLatestAssistantMessage(undefined);
+      setLatestAssistantMessageOverflows(false);
+      setInputActive(terminalMode);
+      setSelectionActive(false);
+      setSelectionToolbar(undefined);
+      // The server derive reports the pane's inline question on `question` frames; the
+      // web renders it and keeps the optimistic dismissal it always had. Suppressed while
+      // the agent is swapped to its shell (terminalMode), which shows the same pane.
+      const applyQuestion = () => {
+        if (dismissedQuestionId !== undefined && latestQuestion?.id !== dismissedQuestionId) {
+          dismissedQuestionId = undefined;
+          dismissedQuestionIds.delete(id);
+        }
+        if (terminalMode || latestQuestion === undefined || latestQuestion.id === dismissedQuestionId) return onQuestion(undefined);
+        onQuestion(choiceQuestionFromInline(latestQuestion));
+      };
+      const answeredQuestion = (answered: ChoiceQuestion) => {
+        dismissedQuestionId = answered.id;
+        dismissedQuestionIds.set(id, answered.id);
+        onQuestion(undefined);
+      };
+      answeredQuestionActions.set(id, answeredQuestion);
+      const handle = mountStreamedTerminal(canvas.current!, {
+        connect: createAgentPaneConnector(id, request),
+        // Typed keys pass through the panel's sticky mobile modifiers, exactly as the
+        // snapshot viewer's input handler did.
+        transformInput: data => applyStickyModifiers(id, data),
+        onOpenUrl: url => openOutputUrlRef.current(url),
+        onOpenFile: path => { void openOutputFileRef.current(path); },
+        onQuestion: question => { latestQuestion = (question ?? undefined) as InlineQuestion | undefined; applyQuestion(); },
+        onMetadata: metadata => {
+          if (disposed) return;
+          const message = metadata.message.trim() || undefined;
+          setLatestAssistantMessage(message);
+          setLatestAssistantMessageOverflows(metadata.overflow);
+          onMetadataRef.current?.(message);
+        }
+      });
+      const terminal = handle.terminal;
+      terminalRef.current = terminal;
+      // Helper keys, paste and the composer's blank-Enter forward reach the pane through
+      // this; the composer's focus blurs it so keystrokes return to prompting.
+      terminalInputs.set(id, handle.sendInput);
+      const exitInput = () => terminal.blur();
+      exitTerminalInput.set(id, exitInput);
+      if (terminalMode) handle.focus();
+      // The stream is live the moment the first bytes parse; the component owns the
+      // transient reconnect status from there on.
+      const renderSub = terminal.onWriteParsed(() => { if (!disposed) { setHasRendered(true); setStatus('Live'); } });
+      // Focusing the pane drives `.input-active` (which collapses the composer to the
+      // terminal helper keys on a phone); blurring it, or focusing the composer, reverts.
+      const onFocusIn = () => { if (!disposed) setInputActive(true); };
+      const onFocusOut = () => { if (!disposed) setInputActive(false); };
+      canvas.current!.addEventListener('focusin', onFocusIn);
+      canvas.current!.addEventListener('focusout', onFocusOut);
+      // --- Selection toolbar (create note, append, add to prompt, copy) ---
+      const nativeSelectionActive = () => {
+        const selection = window.getSelection();
+        if (selection === null || selection.isCollapsed) return false;
+        return [selection.anchorNode, selection.focusNode].some(node => node !== null && canvas.current?.contains(node));
+      };
+      const selectedOutput = () => (terminal.hasSelection() ? terminal.getSelection() : nativeSelectionActive() ? window.getSelection()?.toString() ?? '' : '');
+      const flashCopiedOutputSelection = () => {
+        const log = canvas.current?.closest('.log');
+        log?.classList.add('selection-copied');
+        if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer);
+        copiedSelectionTimer = window.setTimeout(() => { copiedSelectionTimer = undefined; log?.classList.remove('selection-copied'); }, selectionCopyFlashMs);
+      };
+      const copyOutputSelection = async (value: string) => { await copyText(value); if (!disposed) flashCopiedOutputSelection(); };
+      copyOutputSelectionRef.current = copyOutputSelection;
+      const syncSelectionMode = () => {
+        const nativeActive = nativeSelectionActive();
+        const hasTerminalSelection = terminal.hasSelection();
+        setSelectionActive(hasTerminalSelection || nativeActive);
+        if (nativeActive) {
+          const selection = window.getSelection();
+          const range = selection?.rangeCount ? selection.getRangeAt(0) : undefined;
+          const bounds = range === undefined ? undefined : (Array.from(range.getClientRects()).at(-1) ?? range.getBoundingClientRect());
+          const text = selection?.toString() ?? '';
+          return setSelectionToolbar(!text || bounds === undefined ? undefined : { text, top: Math.min(window.innerHeight - 48, bounds.bottom + 8) });
+        }
+        if (!hasTerminalSelection) return setSelectionToolbar(undefined);
+        const text = terminal.getSelection();
+        const position = terminal.getSelectionPosition();
+        const screen = terminal.element?.querySelector<HTMLElement>('.xterm-screen');
+        if (!text || position === undefined || screen === null || screen === undefined) return setSelectionToolbar(undefined);
+        const screenBounds = screen.getBoundingClientRect();
+        const viewportRow = position.end.y - terminal.buffer.active.viewportY + 1;
+        const selectionBottom = screenBounds.top + viewportRow * (screenBounds.height / terminal.rows);
+        setSelectionToolbar({ text, top: Math.min(window.innerHeight - 48, selectionBottom + 8) });
+      };
+      const selectionSub = terminal.onSelectionChange(syncSelectionMode);
+      document.addEventListener('selectionchange', syncSelectionMode);
+      const nativeOutputCopied = () => { if (nativeSelectionActive()) flashCopiedOutputSelection(); };
+      document.addEventListener('copy', nativeOutputCopied);
+      // Ctrl/Cmd+C copies a selection rather than interrupting; with no selection xterm
+      // sends \x03 through onData as any terminal would.
+      terminal.attachCustomKeyEventHandler(event => {
+        if (event.type !== 'keydown' || event.key.toLowerCase() !== 'c') return true;
+        if ((event.ctrlKey || event.metaKey) && !event.shiftKey && terminal.hasSelection()) {
+          event.preventDefault();
+          void copyOutputSelection(terminal.getSelection());
+          return false;
+        }
+        return true;
+      });
+      // Yank / Ctrl+Shift+C copy the output selection, skipped while the composer owns keys.
+      const copySelectionShortcut = (event: KeyboardEvent) => {
+        if (isPromptKeyboardTarget(event.target)) return;
+        const key = event.key.toLowerCase();
+        const yank = key === 'y' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+        const terminalCopy = key === 'c' && event.ctrlKey && event.shiftKey && !event.metaKey && !event.altKey;
+        if (!yank && !terminalCopy) return;
+        const selected = selectedOutput();
+        if (!selected) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void copyOutputSelection(selected);
+      };
+      document.addEventListener('keydown', copySelectionShortcut, true);
+      // Ctrl/Cmd =/+ grow, - shrink, 0 reset the terminal font; the component's font-size
+      // subscription applies the new size. Skipped in editable fields other than xterm's
+      // own textarea, and captured so the browser does not page-zoom.
+      const terminalFontShortcut = (event: KeyboardEvent) => {
+        const target = event.target;
+        const editable = target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
+        if (editable && (target as HTMLElement).closest('.xterm') === null) return;
+        if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) return;
+        if (event.key === '=' || event.key === '+') { event.preventDefault(); stepTerminalFontSize(1); }
+        else if (event.key === '-') { event.preventDefault(); stepTerminalFontSize(-1); }
+        else if (event.key === '0') { event.preventDefault(); resetTerminalFontSize(); }
+      };
+      document.addEventListener('keydown', terminalFontShortcut, true);
+      return () => {
+        disposed = true;
+        if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer);
+        renderSub.dispose();
+        selectionSub.dispose();
+        canvas.current?.removeEventListener('focusin', onFocusIn);
+        canvas.current?.removeEventListener('focusout', onFocusOut);
+        document.removeEventListener('selectionchange', syncSelectionMode);
+        document.removeEventListener('copy', nativeOutputCopied);
+        document.removeEventListener('keydown', copySelectionShortcut, true);
+        document.removeEventListener('keydown', terminalFontShortcut, true);
+        canvas.current?.closest('.log')?.classList.remove('selection-copied');
+        if (terminalInputs.get(id) === handle.sendInput) terminalInputs.delete(id);
+        if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id);
+        if (answeredQuestionActions.get(id) === answeredQuestion) answeredQuestionActions.delete(id);
+        if (terminalRef.current === terminal) terminalRef.current = undefined;
+        handle.dispose();
+      };
+    }
     let socket: WebSocket | undefined;
     let closed = false;
     let retry: number | undefined;
@@ -4862,12 +5037,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, pullRequest, hist
     // advisor still follows the store, so gating here keeps a single step per key.
     if (!embedded) document.addEventListener('keydown', terminalFontShortcut, true);
     document.addEventListener('copy', nativeOutputCopied);
-    const inputSubscriptions = terminals.map(candidate => candidate.onData(value => {
-      const { alt, ctrl, shift } = mobileModifiers.get(id) ?? { alt: false, ctrl: false, shift: false };
-      const first = value.charAt(0);
-      const modified = `${alt ? '\x1b' : ''}${ctrl && /^[a-z]$/iu.test(first) ? String.fromCharCode(first.toLowerCase().charCodeAt(0) - 96) : shift && /^[a-z]$/iu.test(first) ? `${first.toUpperCase()}${value.slice(1)}` : value}`;
-      sendInput(modified);
-    }));
+    const inputSubscriptions = terminals.map(candidate => candidate.onData(value => sendInput(applyStickyModifiers(id, value))));
     let selectionModeAtPointerDown = false;
     const captureSelectionMode = () => {
       // Pointer-down capture runs before the browser collapses a native range.
@@ -5203,7 +5373,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, pullRequest, hist
   };
   const gitSection = embedded ? null : <GitStatus id={id} worktreeId={worktreeId} branch={branch} summary={gitStatus} prSummary={gitPrStatus} pullRequest={pullRequest} onFixup={queueFixup} expanded={toolbarExpanded === 'git'} onToggle={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'git' ? undefined : 'git'); }} onOpenFile={openGitFile} onReview={scope => { setToolbarExpanded(undefined); onReview?.(scope); }} reviewOpen={reviewOpen} reviewUnavailable={reviewUnavailable} pushAction={pushAction} pushPending={pushPending} onPush={queuePush} onSelectTarget={onSelectTarget} onOperationFeedback={onOperationFeedback} />;
   // distinguish retained output from live frames
-  const output = <div className={`log-output${cached ? ' cached' : ''}`}>{!embedded && <ServerSwitcher className="output-server-switcher" />}<div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'}><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></div>{cached && <div className="log-cached-treatment" aria-hidden="true"><span>Cached view · reconnecting</span></div>}{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!terminalMode && <div className="log-controls-bottom"><div className="page-controls">{!embedded && cleanupControl}{!embedded && responseFiles.control}{!embedded && worktreeConversations.control}{!embedded && worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><div className="page-down-controls">{scrolledUp && <button className="log-control page-arrow back-to-bottom" aria-label="Back to bottom" title="Back to bottom" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(0)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19h14M6 8l6 6 6-6" /></svg></button>}<button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div>}</div></div>;
+  const output = <div className={`log-output${cached ? ' cached' : ''}`}>{!embedded && <ServerSwitcher className="output-server-switcher" />}<div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'}>{embedded && <><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></>}</div>{cached && <div className="log-cached-treatment" aria-hidden="true"><span>Cached view · reconnecting</span></div>}{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!terminalMode && <div className="log-controls-bottom"><div className="page-controls">{!embedded && cleanupControl}{!embedded && responseFiles.control}{!embedded && worktreeConversations.control}{!embedded && worktreeNotes.control}{embedded && <><button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><div className="page-down-controls">{scrolledUp && <button className="log-control page-arrow back-to-bottom" aria-label="Back to bottom" title="Back to bottom" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(0)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19h14M6 8l6 6 6-6" /></svg></button>}<button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></>}</div></div>}</div></div>;
   const browserPane = browserUrl === undefined || browserHomeUrl === undefined || onBrowserNavigate === undefined || onBrowserClose === undefined ? null : <ProjectBrowserPane url={browserUrl} homeUrl={browserHomeUrl} proxied={browserProxied} worktreeId={worktreeId} navigationRequest={browserNavigationRequest} onNavigate={onBrowserNavigate} onClose={onBrowserClose} />;
   return <section className={`log-shell${embedded ? ' embedded-log-shell' : ''}`}><div className={`log${embedded ? ' embedded-log' : ''}${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit worktreeId={worktreeId} output={output} note={embedded ? undefined : worktreeNotes.pane} browser={browserPane} /></div>{selectionActions}{!embedded && responseFiles.dialog}{!embedded && gitFilePreview.dialog}{!embedded && statusSlot && createPortal(gitSection, statusSlot)}{!embedded && historySlot && createPortal(historyToggle, historySlot)}</section>;
 }
