@@ -255,6 +255,9 @@ test('a touch drag scrolls the browser scrollback and defers in the alternate sc
     const owned = await drive<boolean>(page, 'touchDrag', 120); // finger down → history
     expect(owned).toBe(true);
     expect(await drive<number>(page, 'viewportY')).toBeLessThan(base);
+    // A scroll drag never becomes a click, so it must not focus the terminal — a scroll
+    // must not summon the soft keyboard.
+    expect(await drive(page, 'activeIsTerminalTextarea')).toBe(false);
 
     await drive(page, 'pushBytes', '\x1b[?1049h'); // enter the alternate screen
     await expect.poll(() => drive(page, 'alternateScreen')).toBe(true);
@@ -275,8 +278,18 @@ test('a tap focuses the terminal textarea so the soft keyboard opens', async ({ 
     await drive(page, 'pushSize', 40, 12);
     await drive(page, 'pushBytes', 'tap here\r\n');
     expect(await drive(page, 'activeIsTerminalTextarea')).toBe(false);
+    // A touch that never becomes a click (a scroll, or a browser-suppressed tap) must not
+    // focus: iOS only raises the keyboard for a focus made from the synthesized click, so
+    // focusing on touchend would leave the textarea focused without a keyboard.
+    await drive(page, 'touchOnly');
+    expect(await drive(page, 'activeIsTerminalTextarea')).toBe(false);
+    // The synthesized click a genuine tap produces focuses the hidden textarea, mirroring
+    // the retired snapshot Log's coarse-pointer affordance that raised the soft keyboard.
     await drive(page, 'tap');
     expect(await drive(page, 'activeIsTerminalTextarea')).toBe(true);
+    // With the tap-summoned keyboard focused, typed characters reach the pane socket.
+    await page.keyboard.type('hi');
+    await expect.poll(() => drive(page, 'inputData')).toBe('hi');
   } finally {
     await context.close();
   }

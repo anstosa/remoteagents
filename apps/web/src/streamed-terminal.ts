@@ -275,27 +275,16 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
   const releaseTouchScroll = attachTerminalTouchScroll(host, terminal);
   const releaseLongPress = preserveOutputLongPressSelection(host, () => { suppressFocusUntil = performance.now() + 250; });
 
-  // Tap-to-focus: on a coarse pointer, focus xterm's textarea synchronously inside the
-  // tap so the mobile browser opens and keeps the soft keyboard. A drag (scroll) or a
-  // long press does not focus. Capture phase, because the long-press guard stops
-  // touchstart propagation on coarse pointers before it would reach a bubble listener.
-  let tapStart: { x: number; y: number; at: number } | undefined;
-  const captureTapStart = (event: TouchEvent) => {
-    tapStart = event.touches.length === 1 ? { x: event.touches[0]!.clientX, y: event.touches[0]!.clientY, at: performance.now() } : undefined;
-  };
-  const focusOnTap = (event: TouchEvent) => {
-    if (!coarse || tapStart === undefined) return;
-    const start = tapStart;
-    tapStart = undefined;
-    const touch = event.changedTouches[0];
-    const moved = touch ? Math.hypot(touch.clientX - start.x, touch.clientY - start.y) : 0;
-    if (moved <= 10 && performance.now() - start.at < 300 && performance.now() >= suppressFocusUntil) terminal.focus();
-  };
-  // Mouse users focus by click.
-  const focusOnClick = () => { if (!coarse && performance.now() >= suppressFocusUntil) terminal.focus(); };
+  // Tap/click-to-focus: focus xterm's hidden textarea synchronously inside the click so a
+  // mobile browser opens and keeps the soft keyboard, mirroring the retired snapshot Log's
+  // coarse-pointer affordance. It must be the click, not touchend: iOS Safari only raises
+  // the keyboard for a focus() made from the click a genuine tap synthesizes, so focusing
+  // on touchend leaves the textarea focused without a keyboard. A scroll drag never yields a
+  // click (terminal-touch-scroll swallows the move), a long press is consumed before the
+  // click (preserveOutputLongPressSelection), and suppressFocusUntil covers link taps and
+  // long-press selection.
+  const focusOnClick = () => { if (performance.now() >= suppressFocusUntil) terminal.focus(); };
   const jumpToBottom = () => { terminal.scrollToBottom(); syncFollowState(); terminal.focus(); };
-  host.addEventListener('touchstart', captureTapStart, { capture: true });
-  host.addEventListener('touchend', focusOnTap, { capture: true });
   host.addEventListener('click', focusOnClick);
   jump.addEventListener('click', jumpToBottom);
 
@@ -342,8 +331,6 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
       resizeObserver.disconnect();
       releaseTouchScroll();
       releaseLongPress();
-      host.removeEventListener('touchstart', captureTapStart, { capture: true });
-      host.removeEventListener('touchend', focusOnTap, { capture: true });
       host.removeEventListener('click', focusOnClick);
       jump.removeEventListener('click', jumpToBottom);
       unsubscribeFont();

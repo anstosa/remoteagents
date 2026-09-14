@@ -135,10 +135,21 @@ export const touchDrag = (deltaY: number): boolean => {
   return !notPrevented;
 };
 
-// Tap once at the terminal's centre.
-export const tap = () => {
+// A touch that starts and ends without a click, as a scroll gesture or a browser-suppressed
+// tap does. iOS only raises the soft keyboard for a focus made from the synthesized click, so
+// this must not focus the terminal.
+export const touchOnly = () => {
   const box = host!.getBoundingClientRect();
   const point = makeTouch(box.left + box.width / 2, box.top + box.height / 2);
   dispatchTouch('touchstart', [point], [point]);
   dispatchTouch('touchend', [], [point]);
+};
+
+// Tap once at the terminal's centre — the full sequence a genuine tap produces, ending in
+// the synthesized click the browser fires when the gesture was neither a scroll nor a long
+// press. The console focuses on that click, which is what raises the mobile keyboard; the
+// focus handler ignores the pointer coordinates, so a bare click stands in for it.
+export const tap = () => {
+  touchOnly();
+  host!.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 };
