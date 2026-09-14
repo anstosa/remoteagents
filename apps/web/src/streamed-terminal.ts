@@ -33,8 +33,9 @@ export interface StreamedTerminalOptions {
 export interface StreamedTerminalHandle {
   readonly terminal: XTerm;
   focus: () => void;
-  // Type bytes into the pane (helper keys, paste); goes out as an input frame.
-  sendInput: (data: string) => void;
+  // Type bytes into the pane (helper keys, paste); goes out as an input frame. Returns
+  // whether the bytes reached the connection (`false` only mid-reconnect).
+  sendInput: (data: string) => boolean;
   // Ask the Agent pane's derive to resend its question and metadata (on-demand).
   requestMetadata: () => void;
   dispose: () => void;
@@ -250,14 +251,18 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
 
   // Send bytes to the pane, split past the frame cap into byte-bounded frames; the
   // server replays them in order, so a boundary mid-UTF-8 is harmless.
-  const sendBytes = (bytes: Uint8Array) => {
-    if (connection === undefined || bytes.length === 0) return;
+  // Returns whether the bytes reached the connection (the connector buffers until open and
+  // flushes in order); `false` only while there is no connection, i.e. mid-reconnect.
+  const sendBytes = (bytes: Uint8Array): boolean => {
+    if (connection === undefined || bytes.length === 0) return false;
     for (let offset = 0; offset < bytes.length; offset += maxInputFrameBytes) {
       connection.send({ type: 'input', data: encodeInputBytes(bytes.subarray(offset, offset + maxInputFrameBytes)) });
     }
+    return true;
   };
-  // Exposed for helper keys and paste, which already carry the exact bytes.
-  const sendInput = (data: string) => sendBytes(new TextEncoder().encode(data));
+  // Exposed for helper keys and paste, which already carry the exact bytes; the boolean lets a
+  // caller that needs delivery confirmation (the update advisor's feedback) know it was sent.
+  const sendInput = (data: string): boolean => sendBytes(new TextEncoder().encode(data));
   // Typed keys pass through the panel's sticky mobile modifiers first (identity when the
   // panel supplies no transform).
   terminal.onData(data => sendBytes(new TextEncoder().encode(options.transformInput ? options.transformInput(data) : data)));

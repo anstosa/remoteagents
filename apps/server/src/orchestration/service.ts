@@ -314,7 +314,7 @@ export class OrchestrationService {
       const target = await this.dependencies.discovery.target(agentId);
       // require a live target for terminal identity
       if (target === undefined) return failure('not_found', 'Agent not found.');
-      const captured = await this.dependencies.tmux.captureWindow(target.socket, target.agent.paneId, 0, defaultLogRows).catch(() => undefined);
+      const captured = await this.dependencies.tmux.captureWindow(target.socket, target.agent.paneId, defaultLogRows).catch(() => undefined);
       // prefer the terminal's prompt-coherent response
       if (captured?.latestAssistantMessage !== undefined) {
         const limited = limitText(redactIntegrationText(captured.latestAssistantMessage), maxTerminalBytes);

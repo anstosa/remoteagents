@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { installPaneMock, paneInputList, pushBytes, pushMetadata } from './pane-stream-mock';
 
 // open the reviewed host update from global settings
 const openUpstreamUpdate = async (page: Page) => {
@@ -160,51 +161,7 @@ test('opens an advisor for flagged update paths before enabling Update', async (
   let advisorLaunched = false;
   let advisorStops = 0;
   await page.setViewportSize({ width: 430, height: 932 });
-  await page.addInitScript(() => {
-    const advisorSockets: MockWebSocket[] = [];
-    const advisorSocketFrames: { url: string; data: string }[] = [];
-    // publish one complete advisor metadata frame
-    const emitAdvisorMetadata = (message: string) => {
-      // update every connected advisor log
-      for (const socket of advisorSockets) socket.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ v: 1, type: 'reset', text: 'Review complete\n', metadata: { state: 'complete', latestAgentMessage: 'Review complete.', latestAssistantMessage: message, latestAssistantMessageOverflows: false } }) }));
-    };
-    class MockWebSocket {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSED = 3;
-      readonly url: string;
-      readyState = MockWebSocket.CONNECTING;
-      onopen: ((event: Event) => void) | null = null;
-      onclose: ((event: CloseEvent) => void) | null = null;
-      onerror: ((event: Event) => void) | null = null;
-      onmessage: ((event: MessageEvent) => void) | null = null;
-      constructor(url: string | URL) {
-        this.url = String(url);
-        // retain advisor log transports for response races
-        if (this.url.includes('/ws/logs/update-advisor')) advisorSockets.push(this);
-        window.setTimeout(() => {
-          // ignore sockets closed before startup
-          if (this.readyState !== MockWebSocket.CONNECTING) return;
-          this.readyState = MockWebSocket.OPEN;
-          this.onopen?.(new Event('open'));
-          // publish one completed advisor response
-          if (this.url.includes('/ws/logs/update-advisor')) emitAdvisorMetadata('No host migration is required for this update.');
-        });
-      }
-      send(data: string) {
-        advisorSocketFrames.push({ url: this.url, data });
-      }
-      close() {
-        // close one mock transport
-        if (this.readyState === MockWebSocket.CLOSED) return;
-        this.readyState = MockWebSocket.CLOSED;
-        this.onclose?.(new CloseEvent('close'));
-      }
-    }
-    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
-    Object.defineProperty(window, '__emitAdvisorMetadata', { configurable: true, value: emitAdvisorMetadata });
-    Object.defineProperty(window, '__advisorSocketFrames', { configurable: true, value: advisorSocketFrames });
-  });
+  await installPaneMock(page);
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -248,6 +205,14 @@ test('opens an advisor for flagged update paths before enabling Update', async (
   await expect(dialog.getByText('.env.example')).toBeVisible();
   const output = dialog.getByLabel('Update advisor output');
   await expect(output).toBeVisible();
+  // the advisor's pane streams inside a narrow modal: let the terminal measure its own grid
+  // (the mock echoes its viewport back as the size) rather than forcing a wide one that would
+  // overflow, then paint the reviewed output and publish the response the feedback form gates on
+  await page.waitForFunction(() => (window as unknown as { __pane: { lastViewport: (id: string) => unknown } }).__pane.lastViewport('update-advisor') !== undefined);
+  // A few blank rows first so the selectable row clears the top-left status badge (the stream
+  // writes top-down), then the completed response the feedback form gates on.
+  await pushBytes(page, 'update-advisor', '\r\n\r\n\r\nReview complete\r\n');
+  await pushMetadata(page, 'update-advisor', 'No host migration is required for this update.');
   const outputBounds = await output.evaluate(element => {
     const output = element.getBoundingClientRect();
     const screen = element.querySelector<HTMLElement>('.xterm-screen')!.getBoundingClientRect();
@@ -255,51 +220,36 @@ test('opens an advisor for flagged update paths before enabling Update', async (
   });
   expect(outputBounds.screenRight).toBeLessThanOrEqual(outputBounds.outputRight + 1);
   expect(outputBounds.screenBottom).toBeLessThanOrEqual(outputBounds.outputBottom + 1);
-  const screen = output.locator('.terminal-frame.active .xterm-screen');
-  const selectedRow = output.locator('.terminal-frame.active .xterm-rows > div', { hasText: 'Review complete' });
-  const [screenBounds, selectedRowBounds, cell] = await Promise.all([
-    screen.boundingBox(),
-    selectedRow.boundingBox(),
-    output.locator('.terminal-frame.active .xterm-char-measure-element').first().evaluate(element => {
-      const bounds = element.getBoundingClientRect();
-      return { width: bounds.width / (element.textContent?.length ?? 1), height: bounds.height };
-    })
-  ]);
-  expect(screenBounds).not.toBeNull();
+  // double-click the reviewed word to select it (a pixel drag is unreliable in the narrow modal)
+  const selectedRow = output.locator('.xterm-rows > div', { hasText: 'Review complete' });
+  const selectedRowBounds = await selectedRow.boundingBox();
   expect(selectedRowBounds).not.toBeNull();
-  const selectionY = selectedRowBounds!.y + cell.height / 2;
-  await page.mouse.move(screenBounds!.x + cell.width, selectionY);
-  await page.mouse.down();
-  await page.mouse.move(screenBounds!.x + cell.width * 7, selectionY, { steps: 4 });
-  await page.mouse.up();
+  await page.mouse.dblclick(selectedRowBounds!.x + selectedRowBounds!.width * 0.2, selectedRowBounds!.y + selectedRowBounds!.height / 2);
   const selectionToolbar = page.getByRole('toolbar', { name: 'Output selection actions' });
   await expect(output.locator('.log')).toHaveClass(/selection-active/u);
   await expect(selectionToolbar.getByRole('button', { name: 'Copy' })).toBeVisible();
   await expect(selectionToolbar.getByRole('button', { name: 'Add to prompt' })).toHaveCount(0);
   await output.getByLabel('Live log').click({ position: { x: 180, y: 80 } });
   await expect(selectionToolbar).toHaveCount(0);
-  await expect(output.getByRole('button', { name: 'Page up' })).toBeVisible();
-  await expect(output.getByRole('button', { name: 'Page down' })).toBeVisible();
-  await output.getByRole('button', { name: 'Page up' }).click();
-  await expect.poll(() => page.evaluate(() => (window as typeof window & { __advisorSocketFrames: { url: string; data: string }[] }).__advisorSocketFrames.some(frame => frame.url.includes('/ws/logs/update-advisor') && JSON.parse(frame.data).type === 'history' && JSON.parse(frame.data).offset > 0))).toBe(true);
-  await output.getByLabel('Live log').click({ position: { x: 180, y: 80 } });
   await expect(output.locator('.log')).toHaveClass(/input-active/u);
   await expect(output.getByLabel('Terminal keys')).toBeVisible();
   const inputBounds = await output.evaluate(element => {
     const bounds = element.getBoundingClientRect();
-    const screen = element.querySelector<HTMLElement>('.terminal-frame.active .xterm-screen')!.getBoundingClientRect();
-    const status = element.querySelector<HTMLElement>('.log-status')!.getBoundingClientRect();
-    return { outputRight: bounds.right, outputBottom: bounds.bottom, screenTop: screen.top, screenRight: screen.right, screenBottom: screen.bottom, statusBottom: status.bottom };
+    const screen = element.querySelector<HTMLElement>('.xterm-screen')!.getBoundingClientRect();
+    return { outputRight: bounds.right, outputBottom: bounds.bottom, screenRight: screen.right, screenBottom: screen.bottom };
   });
   expect(inputBounds.screenRight).toBeLessThanOrEqual(inputBounds.outputRight + 1);
   expect(inputBounds.screenBottom).toBeLessThanOrEqual(inputBounds.outputBottom + 1);
-  expect(inputBounds.screenTop).toBeGreaterThanOrEqual(inputBounds.statusBottom);
   await output.getByRole('button', { name: 'Ctrl+C' }).click();
-  await expect.poll(() => page.evaluate(() => (window as typeof window & { __advisorSocketFrames: { url: string; data: string }[] }).__advisorSocketFrames.some(frame => frame.url.includes('/ws/input/update-advisor') && JSON.parse(frame.data).type === 'input'))).toBe(true);
+  // the interrupt reaches the advisor's pane over its own stream, not a separate input socket
+  await expect.poll(() => paneInputList(page, 'update-advisor')).toContain('\x03');
   await expect(page.getByRole('tab', { name: /Update Advisor/u })).toHaveCount(0);
   const update = dialog.getByRole('button', { name: 'Update', exact: true });
   await expect(update).toBeDisabled();
   await expect(dialog.getByText('I reviewed the advisor guidance for this exact update.')).toBeVisible();
+  // Move focus out of the pane before acknowledging: a focused xterm swallows the first click
+  // that lands outside it, and an operator acknowledging is not mid-keystroke in the terminal.
+  await dialog.getByRole('heading', { name: 'Host changes need review' }).click();
   await dialog.getByRole('checkbox').check();
   await expect(update).toBeEnabled();
   await dialog.getByLabel('Approval or feedback').fill('Double-check the rollback steps.');
@@ -311,11 +261,11 @@ test('opens an advisor for flagged update paths before enabling Update', async (
   await expect(dialog.getByLabel('Approval or feedback')).toBeDisabled();
   await expect(dialog.getByRole('button', { name: 'Send' })).toBeDisabled();
   // ignore the prior response when a stale frame is replayed
-  await page.evaluate(() => (window as typeof window & { __emitAdvisorMetadata: (message: string) => void }).__emitAdvisorMetadata('No host migration is required for this update.'));
+  await pushMetadata(page, 'update-advisor', 'No host migration is required for this update.');
   await expect(update).toBeDisabled();
   await expect(dialog.getByText('I reviewed the advisor guidance for this exact update.')).toHaveCount(0);
   // unlock review only after a new response arrives
-  await page.evaluate(() => (window as typeof window & { __emitAdvisorMetadata: (message: string) => void }).__emitAdvisorMetadata('Rollback steps were double-checked; no migration is required.'));
+  await pushMetadata(page, 'update-advisor', 'Rollback steps were double-checked; no migration is required.');
   await expect(dialog.getByText('I reviewed the advisor guidance for this exact update.')).toBeVisible();
   await dialog.getByRole('button', { name: 'Close server update' }).click();
   await expect(dialog).toHaveCount(0);

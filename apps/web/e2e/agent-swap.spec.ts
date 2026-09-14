@@ -67,10 +67,11 @@ test('backgrounds an idle agent and swaps the output area to its streamed pane',
   await expect.poll(() => paneInputList(page, 'agent-1')).toEqual(['printf terminal-mode\r', '\r']);
   expect(promptRequests).toBe(0);
 
-  // The panel opens one pane socket per view: it mints `pane` tickets and never the
-  // retired `input` (separate input socket) or `terminal` (swap) kinds. (`logs` still
-  // appears from the dashboard prefetch, retired in the next ticket.)
+  // The panel opens one pane socket per view: it mints only `pane` tickets, never the retired
+  // `logs` (snapshot poll / dashboard prefetch), `input` (separate input socket) or `terminal`
+  // (swap) kinds.
   expect(ticketKinds).toContain('pane');
+  expect(ticketKinds).not.toContain('logs');
   expect(ticketKinds).not.toContain('terminal');
   expect(ticketKinds).not.toContain('input');
 

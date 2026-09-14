@@ -315,7 +315,7 @@ describe('TmuxAdapter capture', () => {
       .mockResolvedValueOnce({ code: 0, stdout: 'old\ncurrent\n', stderr: '' })
       .mockResolvedValueOnce({ code: 0, stdout: '120\t36\t120\t36\n', stderr: '' });
 
-    await expect(new TmuxAdapter().captureWindow(socket, '%1', 0, 2)).resolves.toEqual({ text: 'old\x1b[49m\ncurrent\x1b[49m', older: false });
+    await expect(new TmuxAdapter().captureWindow(socket, '%1', 2)).resolves.toEqual({ text: 'old\x1b[49m\ncurrent\x1b[49m', older: false });
     await expect(new TmuxAdapter().resize(socket, '%1', 120, 36)).resolves.toBe(true);
 
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'capture-pane', '-e', '-p', '-t', '%1', '-S', '-5000']);
@@ -365,20 +365,10 @@ describe('TmuxAdapter capture', () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     run.mockResolvedValue({ code: 0, stdout: 'first\nsecond\n\n\n', stderr: '' });
 
-    await expect(new TmuxAdapter().captureWindow(socket, '%1', 0, 4)).resolves.toEqual({
+    await expect(new TmuxAdapter().captureWindow(socket, '%1', 4)).resolves.toEqual({
       text: '\x1b[49m\n\x1b[49m\nfirst\x1b[49m\nsecond\x1b[49m',
       older: false
     });
-  });
-
-  it('slices concrete history lines so adjacent pages preserve their boundary', async () => {
-    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
-    run.mockResolvedValue({ code: 0, stdout: 'one\ntwo\nthree\nfour\nfive\nsix\n', stderr: '' });
-
-    const adapter = new TmuxAdapter();
-    await expect(adapter.captureWindow(socket, '%1', 0, 3)).resolves.toEqual({ text: 'four\x1b[49m\nfive\x1b[49m\nsix\x1b[49m', older: true });
-    await expect(adapter.captureWindow(socket, '%1', 2, 3)).resolves.toEqual({ text: 'two\x1b[49m\nthree\x1b[49m\nfour\x1b[49m', older: true });
-    expect(run).toHaveBeenLastCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'capture-pane', '-e', '-p', '-t', '%1', '-S', '-5000']);
   });
 
   it('sends literal input without attaching or resizing the tmux session', async () => {
@@ -442,7 +432,7 @@ describe('TmuxAdapter prompt history', () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     run.mockResolvedValueOnce({ code: 0, stdout: '› summarize this repository\n• Working\noutput that is no longer visible\nlatest output\n', stderr: '' });
 
-    await expect(new TmuxAdapter().captureWindow(socket, '%1', 0, 2)).resolves.toEqual({ text: 'output that is no longer visible\x1b[49m\nlatest output\x1b[49m', older: true, lastPrompt: 'summarize this repository', latestAgentMessage: '• Working\noutput that is no longer visible\nlatest output' });
+    await expect(new TmuxAdapter().captureWindow(socket, '%1', 2)).resolves.toEqual({ text: 'output that is no longer visible\x1b[49m\nlatest output\x1b[49m', older: true, lastPrompt: 'summarize this repository', latestAgentMessage: '• Working\noutput that is no longer visible\nlatest output' });
   });
 
   it('captures the complete latest agent message when its question choices exceed the viewport', async () => {
@@ -451,7 +441,7 @@ describe('TmuxAdapter prompt history', () => {
     run.mockResolvedValueOnce({ code: 0, stdout: history, stderr: '' });
 
     expect(latestAgentMessageFromHistory(history)).toBe('• Checking environments\n\nWhere should OMX deploy?\n› 1. Staging\n  2. Production\n  3. Preview\n  4. Cancel');
-    await expect(new TmuxAdapter().captureWindow(socket, '%1', 0, 3)).resolves.toMatchObject({
+    await expect(new TmuxAdapter().captureWindow(socket, '%1', 3)).resolves.toMatchObject({
       text: '  2. Production\x1b[49m\n  3. Preview\x1b[49m\n  4. Cancel\x1b[49m',
       latestAgentMessage: '• Checking environments\n\nWhere should OMX deploy?\n› 1. Staging\n  2. Production\n  3. Preview\n  4. Cancel'
     });
@@ -489,7 +479,7 @@ describe('TmuxAdapter prompt history', () => {
     const response = ['• Summary', '', '  - First detail', '  - Second detail', '  - Third detail', '─ Worked for 5s', '', '› Implement {feature}', ''];
     run.mockResolvedValueOnce({ code: 0, stdout: response.join('\n'), stderr: '' });
 
-    await expect(new TmuxAdapter().captureWindow(socket, '%1', 0, 3)).resolves.toMatchObject({
+    await expect(new TmuxAdapter().captureWindow(socket, '%1', 3)).resolves.toMatchObject({
       latestAssistantMessage: 'Summary\n\n- First detail\n- Second detail\n- Third detail',
       latestAssistantMessageOverflows: true
     });
@@ -588,7 +578,7 @@ describe('TmuxAdapter prompt history', () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     run.mockResolvedValueOnce({ code: 0, stdout: ['• Summary', '  One detail', '  Another detail', '─ Worked for 2s', ''].join('\n'), stderr: '' });
 
-    await expect(new TmuxAdapter().captureWindow(socket, '%1', 0, 3)).resolves.toMatchObject({
+    await expect(new TmuxAdapter().captureWindow(socket, '%1', 3)).resolves.toMatchObject({
       latestAssistantMessage: 'Summary\nOne detail\nAnother detail',
       latestAssistantMessageOverflows: false
     });

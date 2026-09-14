@@ -86,9 +86,10 @@ flowchart LR
 ```
 
 The server discovers tmux panes, verifies that their process trees belong to
-Codex/OMX, and streams bounded viewport captures to the browser. Prompts and
-terminal input are sent only to the pane selected through a freshly validated
-agent target. Persistent state—console-named conversations, notes, prompt history, queues,
+Codex/OMX, and streams each pane's raw output to the browser over one tmux
+control-mode client per session (see `docs/adr/0008`). Prompts and terminal input
+are sent only to the pane selected through a freshly validated agent target.
+Persistent state—console-named conversations, notes, prompt history, queues,
 device names, and optional push subscriptions—stays in local JSON files.
 
 Each agent CLI the console understands is described by one **Adapter**: a module

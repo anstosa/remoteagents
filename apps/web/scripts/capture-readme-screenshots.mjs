@@ -139,39 +139,56 @@ try {
   try {
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
     const page = await context.newPage();
-    await page.addInitScript(({ output, lastPrompt, latestAssistantMessage }) => {
-      class MockWebSocket {
+    await page.addInitScript(({ output, latestAssistantMessage }) => {
+      // The Agent panel streams its pane over `/ws/pane/:id`: deliver the seed as binary bytes
+      // and the latest response as a metadata frame, echoing the browser's viewport as the size.
+      const seed = output.replace(/\n/gu, '\r\n');
+      class MockPaneSocket {
         static CONNECTING = 0;
         static OPEN = 1;
         static CLOSING = 2;
         static CLOSED = 3;
-        readyState = MockWebSocket.CONNECTING;
+        readyState = MockPaneSocket.CONNECTING;
+        binaryType = 'blob';
         onopen = null;
         onclose = null;
         onerror = null;
         onmessage = null;
         constructor(url) {
           this.url = String(url);
+          this.isPane = this.url.includes('/ws/pane/');
+          this.painted = false;
           window.setTimeout(() => {
-            if (this.readyState !== MockWebSocket.CONNECTING) return;
-            this.readyState = MockWebSocket.OPEN;
+            if (this.readyState !== MockPaneSocket.CONNECTING) return;
+            this.readyState = MockPaneSocket.OPEN;
             this.onopen?.(new Event('open'));
-            if (this.url.includes('/ws/logs/agent-atlas')) {
-              window.setTimeout(() => this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'reset', text: output, lastPrompt, latestAssistantMessage }) })), 600);
-            }
           }, 20);
         }
-        send() {}
+        send(data) {
+          if (!this.isPane) return;
+          let frame;
+          try { frame = JSON.parse(data); } catch { return; }
+          if (frame.type !== 'viewport' || typeof frame.cols !== 'number' || typeof frame.rows !== 'number') return;
+          const { cols, rows } = frame;
+          window.setTimeout(() => {
+            if (this.readyState !== MockPaneSocket.OPEN) return;
+            this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'size', cols, rows }) }));
+            if (this.painted) return;
+            this.painted = true;
+            const bytes = new TextEncoder().encode(seed);
+            this.onmessage?.(new MessageEvent('message', { data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) }));
+            this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'metadata', metadata: { message: latestAssistantMessage, overflow: false } }) }));
+          }, 60);
+        }
         close() {
-          if (this.readyState === MockWebSocket.CLOSED) return;
-          this.readyState = MockWebSocket.CLOSED;
+          if (this.readyState === MockPaneSocket.CLOSED) return;
+          this.readyState = MockPaneSocket.CLOSED;
           this.onclose?.(new CloseEvent('close'));
         }
       }
-      Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
+      Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockPaneSocket });
     }, {
       output: terminalText,
-      lastPrompt: history[history.length - 1].text,
       latestAssistantMessage: 'Queued prompt management is implemented and all validation checks pass.'
     });
     await page.route('**/api/**', async route => {
@@ -196,7 +213,7 @@ try {
     });
 
     await page.goto(baseUrl, { waitUntil: 'networkidle' });
-    await page.locator('.terminal-frame.active .xterm-screen').waitFor();
+    await page.locator('.log-canvas .xterm-screen').waitFor();
     await page.evaluate(async () => { await document.fonts.ready; });
     await page.waitForTimeout(1_000);
     await capture(page, 'console-overview.png');

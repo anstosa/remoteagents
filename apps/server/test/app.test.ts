@@ -948,7 +948,7 @@ describe('Console shells server lifecycle', () => {
       const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/tickets', headers, payload: { kind: 'pane' } });
       expect(response.statusCode).toBe(200);
       expect(typeof response.json().ticket).toBe('string');
-      const bad = await app.inject({ method: 'POST', url: '/api/worktrees/cora/tickets', headers, payload: { kind: 'logs' } });
+      const bad = await app.inject({ method: 'POST', url: '/api/worktrees/cora/tickets', headers, payload: { kind: 'bogus' } });
       expect(bad.statusCode).toBe(400);
     } finally { await app.close(); }
   }, 15_000);

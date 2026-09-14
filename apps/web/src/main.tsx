@@ -2,13 +2,9 @@ import { Component, createContext, type Dispatch, type ReactNode, type SetStateA
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { Terminal as XTerm } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { BoundedTextCache, nextLiveSnapshot } from './client-cache.js';
-import { createAnimationFrameTextBatcher, pollWhileVisible } from './client-scheduling.js';
-import { createOutputLinkOverlays, outputUrlMatchesHost } from './output-links.js';
-import { containOutputScroll } from './output-scroll.js';
-import { preserveOutputLongPressSelection } from './output-touch.js';
+import { pollWhileVisible } from './client-scheduling.js';
+import { outputUrlMatchesHost } from './output-links.js';
 import { mountStreamedTerminal } from './streamed-terminal.js';
 import { createAgentPaneConnector } from './pane-socket-client.js';
 import { FlyoutPortal } from './flyout-portal.js';
@@ -18,8 +14,8 @@ import { PullRequestCard, PullRequestFixup, PullRequestIndicators, type PullRequ
 import { isStackOperationLog, type StackAction, type StackOperationLog } from './stack-operations.js';
 import { SyntaxHighlightedCode } from './syntax-highlight.js';
 import { isPromptKeyboardTarget, useShiftArrowTabCycling } from './tab-navigation.js';
-import { defaultTerminalFontSize, maxTerminalFontSize, minTerminalFontSize, readTerminalFontSize, resetTerminalFontSize, stepTerminalFontSize, subscribeTerminalFontSize, useTerminalFontSize } from './terminal-font-size.js';
-import { applyColorTheme, setColorTheme, subscribeColorTheme, useColorTheme } from './color-theme.js';
+import { defaultTerminalFontSize, maxTerminalFontSize, minTerminalFontSize, resetTerminalFontSize, stepTerminalFontSize, useTerminalFontSize } from './terminal-font-size.js';
+import { applyColorTheme, setColorTheme, useColorTheme } from './color-theme.js';
 import { setDynamicWorktrees, useDynamicWorktrees } from './dynamic-worktrees.js';
 import { UpstreamRebaseBanner, type GitUpstreamSummary } from './upstream-rebase.js';
 import { useViewportFlyout } from './viewport-flyout.js';
@@ -147,8 +143,6 @@ type AgentState = 'working' | 'prompt-done' | 'action-required' | 'closed' | 'sl
 type DashboardOperation = 'launching'|'restarting'|'clearing'|'deactivating'|'sleeping'|'waking'|'new-task';
 type PendingSessionLaunch = { id: string; draftId: string; label: string; resolution?: LaunchResolution; choice?: LaunchChoice; kind?: AgentKind; sandboxed?: boolean; phase: 'launching'|'confirming'|'delayed'|'failed'; agentId?: string; error?: string; confirmationTimer?: number } & ({ scope: 'scratch' } | { scope: 'directory'; projectId: string });
 type DashboardItem = { key: string; label: string; state: AgentState; order: number; unread: boolean; operation?: DashboardOperation; agent?: Agent; worktree?: Worktree; pendingLaunch?: PendingSessionLaunch };
-type CompleteLogMetadata = { state: 'complete'; latestAgentMessage: string | null; latestAssistantMessage: string | null; latestAssistantMessageOverflows: boolean };
-type LogFrame = { type: 'append' | 'reset'; text?: string; older?: boolean; newer?: boolean; metadata?: CompleteLogMetadata; question?: InlineQuestion; lastPrompt?: string; latestAgentMessage?: string; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean };
 type ChoiceOption = { label: string; number: number; answerIndex: number };
 type ChoiceQuestion = { text: string; choices: ChoiceOption[]; id: string; source: 'structured' | 'parsed' };
 type QueuedPrompt = { id: string; text: string; createdAt: string; attachments?: Array<{ name: string; size: number }> };
@@ -194,7 +188,6 @@ type CodexAccountLoginStatus = { status: 'pending'|'succeeded'|'failed'; account
 type PromptCommand = { value: string; description?: string };
 type CommandToken = { start: number; end: number; prefix: '$'|'/'; query: string };
 const validCommandValue = /^[$/][^\s]+$/u;
-const monoFontFamily = '"JetBrainsMono Nerd Font", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
 const commandTokenAt = (value: string, cursor: number): CommandToken | undefined => {
   const before = value.slice(0, cursor);
   const match = /(?:^|\s)([$/])([^\s]*)$/u.exec(before);
@@ -228,11 +221,6 @@ type SpeechRecognitionResult = ArrayLike<{ transcript: string }> & { isFinal: bo
 type SpeechRecognitionInstance = { continuous: boolean; interimResults: boolean; lang: string; start: () => void; abort: () => void; onresult: ((event: { resultIndex: number; results: ArrayLike<SpeechRecognitionResult> }) => void) | null; onend: (() => void) | null; onerror: ((event: { error?: string }) => void) | null };
 type SpeechRecognitionConstructor = new () => SpeechRecognitionInstance;
 
-const logSnapshots = new BoundedTextCache(64, 64 * 1024);
-const latestAssistantMessages = new Map<string, string>();
-// the inline question the server parsed from each viewed pane's latest metadata frame
-const latestQuestions = new Map<string, InlineQuestion>();
-const overflowingLatestAssistantMessages = new Set<string>();
 const promptDrafts = new Map<string, string>();
 const promptDraftListeners = new Map<string, Set<() => void>>();
 const promptDraftKey = (id: string) => `remote-agent-console:prompt-draft:${id}`;
@@ -313,9 +301,8 @@ const handoffPromptDraft = (from: string, to: string) => {
   promptDrafts.delete(from);
   savePromptDraft(from, '');
 };
-const terminalInputs = new Map<string, (value: string) => void>();
+const terminalInputs = new Map<string, (value: string) => boolean>();
 const exitTerminalInput = new Map<string, () => void>();
-const logHistoryRequests = new Map<string, (direction: -1 | 0 | 1) => void>();
 const answeredQuestionActions = new Map<string, (question: ChoiceQuestion) => void>();
 // the id of a just-answered question, kept per agent so its optimistic dismissal survives a remount
 const dismissedQuestionIds = new Map<string, string>();
@@ -452,41 +439,6 @@ const usePendingOperation = (key: string) => useSyncExternalStore(
   () => false
 );
 // read one complete metadata envelope
-const completeLogMetadata = (frame: LogFrame): CompleteLogMetadata | undefined => {
-  const metadata: unknown = frame.metadata;
-  // validate the explicit transport contract
-  if (metadata !== null && typeof metadata === 'object'
-    && (metadata as CompleteLogMetadata).state === 'complete'
-    && (typeof (metadata as CompleteLogMetadata).latestAgentMessage === 'string' || (metadata as CompleteLogMetadata).latestAgentMessage === null)
-    && (typeof (metadata as CompleteLogMetadata).latestAssistantMessage === 'string' || (metadata as CompleteLogMetadata).latestAssistantMessage === null)
-    && typeof (metadata as CompleteLogMetadata).latestAssistantMessageOverflows === 'boolean') return metadata as CompleteLogMetadata;
-  // retain legacy populated frames during upgrades
-  if (frame.latestAgentMessage !== undefined || frame.latestAssistantMessage !== undefined) return {
-    state: 'complete',
-    latestAgentMessage: frame.latestAgentMessage ?? null,
-    latestAssistantMessage: frame.latestAssistantMessage ?? null,
-    latestAssistantMessageOverflows: frame.latestAssistantMessageOverflows === true
-  };
-  return undefined;
-};
-// cache one log transport frame
-const cacheLogFrame = (id: string, frame: LogFrame) => {
-  const text = frame.text ?? '';
-  const metadata = completeLogMetadata(frame);
-  // apply authoritative empty resets
-  if (frame.type === 'reset' && (text || metadata !== undefined)) logSnapshots.set(id, text);
-  else if (text) logSnapshots.append(id, text);
-  // the inline question rides every frame; cache (or clear) it for tab bootstrap
-  if (frame.question === undefined) latestQuestions.delete(id);
-  else latestQuestions.set(id, frame.question);
-  // preserve complete metadata across cheap viewport frames
-  if (metadata === undefined) return;
-  if (metadata.latestAssistantMessage === null) latestAssistantMessages.delete(id);
-  else latestAssistantMessages.set(id, metadata.latestAssistantMessage);
-  if (metadata.latestAssistantMessageOverflows) overflowingLatestAssistantMessages.add(id);
-  else overflowingLatestAssistantMessages.delete(id);
-};
-
 // preserve one structured choice number
 const choiceFromLabel = (label: string, answerIndex: number): ChoiceOption => {
   const numbered = /^(\d+)[.)]\s+(.+)$/u.exec(label);
@@ -976,8 +928,6 @@ const updateCommitDate = (value: string): string => {
   // preserve malformed server values visibly
   return Number.isNaN(date.valueOf()) ? value : date.toLocaleString();
 };
-// encode one terminal input frame
-const encodeTerminalInput = (value: string): string => btoa(String.fromCharCode(...new TextEncoder().encode(value))).replace(/\+/gu, '-').replace(/\//gu, '_').replace(/=+$/u, '');
 const emptyPromptHistory: PromptHistoryEntry[] = [];
 // keep embedded output history stable
 const refreshEmbeddedHistory = async (): Promise<void> => {};
@@ -1139,37 +1089,13 @@ function ServerUpdateDialog({ open, minimized, onMinimize, onClose }: { open: bo
     setAdvisorQuestion(undefined);
     setInferredQuestion(undefined);
   };
-  // send direct terminal input for free-form question feedback
-  const sendAdvisorInput = async (value: string): Promise<boolean> => {
-    // require one advisor target
-    if (advisorId === undefined) return false;
-    const ticketResponse = await request(`/api/agents/${encodeURIComponent(advisorId)}/tickets`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'input' }) });
-    // require one input ticket
-    if (!ticketResponse.ok) return false;
-    const ticketPayload = await ticketResponse.json().catch(() => undefined) as { ticket?: unknown } | undefined;
-    // reject malformed tickets
-    if (typeof ticketPayload?.ticket !== 'string') return false;
-    return await new Promise(resolve => {
-      const socket = new WebSocket(`${location.origin.replace(/^http/u, 'ws')}/ws/input/${encodeURIComponent(advisorId)}`, ['rac', ticketPayload.ticket as string]);
-      let settled = false;
-      let sent = false;
-      // settle one transport outcome
-      const finish = (result: boolean) => {
-        // ignore duplicate socket events
-        if (settled) return;
-        settled = true;
-        socket.close();
-        resolve(result);
-      };
-      socket.onopen = () => {
-        sent = true;
-        socket.send(JSON.stringify({ v: 1, type: 'input', data: encodeTerminalInput(`${value}\r`) }));
-        window.setTimeout(() => finish(true), 100);
-      };
-      socket.onerror = () => finish(false);
-      socket.onclose = () => finish(sent);
-      window.setTimeout(() => finish(false), 5_000);
-    });
+  // send direct terminal input for free-form question feedback through the advisor's own
+  // Pane stream: the embedded advisor terminal registers its pane input under `advisorId`
+  const sendAdvisorInput = (value: string): boolean => {
+    const send = advisorId === undefined ? undefined : terminalInputs.get(advisorId);
+    // require one mounted advisor pane whose stream is connected (not mid-reconnect)
+    if (send === undefined) return false;
+    return send(`${value}\r`);
   };
   // submit one advisor follow-up
   const submitFeedback = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -1181,7 +1107,7 @@ function ServerUpdateDialog({ open, minimized, onMinimize, onClose }: { open: bo
     setFeedbackMessage('');
     const directInput = advisorState === 'action-required' && visibleQuestion === undefined;
     const sent = directInput
-      ? await sendAdvisorInput(value)
+      ? sendAdvisorInput(value)
       : (await request(`/api/agents/${encodeURIComponent(advisorId)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: value, attachments: [] }) })).ok;
     setFeedbackPending(false);
     // retain failed feedback
@@ -2571,10 +2497,6 @@ const notePreview = (text: string) => {
   return `${words.length === 0 ? 'Blank note' : words.slice(0, 6).join(' ')}…`;
 };
 const appendTextBlock = (current: string, text: string) => `${current}${current ? current.endsWith('\n\n') ? '' : current.endsWith('\n') ? '\n' : '\n\n' : ''}${text}`;
-const bottomAlignedSnapshot = (value: string, rows: number) => {
-  const renderedRows = value ? value.split('\n').length : 0;
-  return `${'\n'.repeat(Math.max(0, rows - renderedRows))}${value}`;
-};
 
 // validate one referenced workspace file
 const isAssistantFile = (value: unknown): value is AssistantFile => value !== null && typeof value === 'object'
@@ -4418,10 +4340,7 @@ type LogProps = { id: string; worktreeId?: string; branch?: string; gitStatus?: 
 // render reusable live agent output
 function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, pullRequest, history, refreshHistory, onQuestion, onMetadata, cleanupControl, browserUrl, browserHomeUrl, browserProxied = true, browserNavigationRequest, onBrowserNavigate, onBrowserOpen, onBrowserClose, terminalMode = false, embedded = false, onReview, reviewOpen = false, reviewUnavailable, pushAction = defaultPushAction, processingLabel, processingDetail, statusSlot, historySlot, onSelectTarget, onNavigateWorktree, onOperationFeedback, schedulePrefill }: LogProps) {
   const canvas = useRef<HTMLDivElement | null>(null);
-  const primaryHost = useRef<HTMLDivElement | null>(null);
-  const secondaryHost = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<XTerm | undefined>(undefined);
-  const [visibleFrame, setVisibleFrame] = useState<0 | 1>(0);
   // A Log mounts whenever its tab becomes active. Existing agents therefore
   // begin by attaching to their live output, not by starting a new process.
   const [status, setStatus] = useState('Connecting');
@@ -4436,7 +4355,6 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, pullRequest, hist
   const historyPanelOpenRef = useRef(false);
   const historyPinnedToLatestRef = useRef(true);
   const historyScrollIntentRef = useRef(false);
-  const [scrolledUp, setScrolledUp] = useState(false);
   const [inputActive, setInputActive] = useState(terminalMode);
   const [selectionActive, setSelectionActive] = useState(false);
   const [selectionToolbar, setSelectionToolbar] = useState<{ text: string; top: number }>();
@@ -4532,384 +4450,122 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, pullRequest, hist
     historyPinnedToLatestRef.current = Math.abs(list.scrollHeight - list.clientHeight - list.scrollTop) <= 1;
   };
   useEffect(() => {
-    // The Agent's Panel streams its pane over the Pane socket: the shipped streamed
-    // terminal component on `/ws/pane/:id` replaces the snapshot double-buffer. The
-    // embedded update advisor keeps the snapshot machinery below (retired in a later
-    // ticket) so it and its specs stay untouched.
-    if (!embedded) {
-      let disposed = false;
-      let latestQuestion: InlineQuestion | undefined;
-      let dismissedQuestionId = dismissedQuestionIds.get(id);
-      let copiedSelectionTimer: number | undefined;
-      setStatus('Connecting');
-      setHasRendered(false);
-      setToolbarExpanded(undefined);
-      setLatestAssistantMessage(undefined);
-      setLatestAssistantMessageOverflows(false);
-      setInputActive(terminalMode);
-      setSelectionActive(false);
-      setSelectionToolbar(undefined);
-      // The server derive reports the pane's inline question on `question` frames; the
-      // web renders it and keeps the optimistic dismissal it always had. Suppressed while
-      // the agent is swapped to its shell (terminalMode), which shows the same pane.
-      const applyQuestion = () => {
-        if (dismissedQuestionId !== undefined && latestQuestion?.id !== dismissedQuestionId) {
-          dismissedQuestionId = undefined;
-          dismissedQuestionIds.delete(id);
-        }
-        if (terminalMode || latestQuestion === undefined || latestQuestion.id === dismissedQuestionId) return onQuestion(undefined);
-        onQuestion(choiceQuestionFromInline(latestQuestion));
-      };
-      const answeredQuestion = (answered: ChoiceQuestion) => {
-        dismissedQuestionId = answered.id;
-        dismissedQuestionIds.set(id, answered.id);
-        onQuestion(undefined);
-      };
-      answeredQuestionActions.set(id, answeredQuestion);
-      const handle = mountStreamedTerminal(canvas.current!, {
-        connect: createAgentPaneConnector(id, request),
-        // Typed keys pass through the panel's sticky mobile modifiers, exactly as the
-        // snapshot viewer's input handler did.
-        transformInput: data => applyStickyModifiers(id, data),
-        onOpenUrl: url => openOutputUrlRef.current(url),
-        onOpenFile: path => { void openOutputFileRef.current(path); },
-        onQuestion: question => { latestQuestion = (question ?? undefined) as InlineQuestion | undefined; applyQuestion(); },
-        onMetadata: metadata => {
-          if (disposed) return;
-          const message = metadata.message.trim() || undefined;
-          setLatestAssistantMessage(message);
-          setLatestAssistantMessageOverflows(metadata.overflow);
-          onMetadataRef.current?.(message);
-        }
-      });
-      const terminal = handle.terminal;
-      terminalRef.current = terminal;
-      // Helper keys, paste and the composer's blank-Enter forward reach the pane through
-      // this; the composer's focus blurs it so keystrokes return to prompting.
-      terminalInputs.set(id, handle.sendInput);
-      const exitInput = () => terminal.blur();
-      exitTerminalInput.set(id, exitInput);
-      if (terminalMode) handle.focus();
-      // The stream is live the moment the first bytes parse; the component owns the
-      // transient reconnect status from there on.
-      const renderSub = terminal.onWriteParsed(() => { if (!disposed) { setHasRendered(true); setStatus('Live'); } });
-      // Focusing the pane drives `.input-active` (which collapses the composer to the
-      // terminal helper keys on a phone); blurring it, or focusing the composer, reverts.
-      const onFocusIn = () => { if (!disposed) setInputActive(true); };
-      const onFocusOut = () => { if (!disposed) setInputActive(false); };
-      canvas.current!.addEventListener('focusin', onFocusIn);
-      canvas.current!.addEventListener('focusout', onFocusOut);
-      // --- Selection toolbar (create note, append, add to prompt, copy) ---
-      const nativeSelectionActive = () => {
-        const selection = window.getSelection();
-        if (selection === null || selection.isCollapsed) return false;
-        return [selection.anchorNode, selection.focusNode].some(node => node !== null && canvas.current?.contains(node));
-      };
-      const selectedOutput = () => (terminal.hasSelection() ? terminal.getSelection() : nativeSelectionActive() ? window.getSelection()?.toString() ?? '' : '');
-      const flashCopiedOutputSelection = () => {
-        const log = canvas.current?.closest('.log');
-        log?.classList.add('selection-copied');
-        if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer);
-        copiedSelectionTimer = window.setTimeout(() => { copiedSelectionTimer = undefined; log?.classList.remove('selection-copied'); }, selectionCopyFlashMs);
-      };
-      const copyOutputSelection = async (value: string) => { await copyText(value); if (!disposed) flashCopiedOutputSelection(); };
-      copyOutputSelectionRef.current = copyOutputSelection;
-      const syncSelectionMode = () => {
-        const nativeActive = nativeSelectionActive();
-        const hasTerminalSelection = terminal.hasSelection();
-        setSelectionActive(hasTerminalSelection || nativeActive);
-        if (nativeActive) {
-          const selection = window.getSelection();
-          const range = selection?.rangeCount ? selection.getRangeAt(0) : undefined;
-          const bounds = range === undefined ? undefined : (Array.from(range.getClientRects()).at(-1) ?? range.getBoundingClientRect());
-          const text = selection?.toString() ?? '';
-          return setSelectionToolbar(!text || bounds === undefined ? undefined : { text, top: Math.min(window.innerHeight - 48, bounds.bottom + 8) });
-        }
-        if (!hasTerminalSelection) return setSelectionToolbar(undefined);
-        const text = terminal.getSelection();
-        const position = terminal.getSelectionPosition();
-        const screen = terminal.element?.querySelector<HTMLElement>('.xterm-screen');
-        if (!text || position === undefined || screen === null || screen === undefined) return setSelectionToolbar(undefined);
-        const screenBounds = screen.getBoundingClientRect();
-        const viewportRow = position.end.y - terminal.buffer.active.viewportY + 1;
-        const selectionBottom = screenBounds.top + viewportRow * (screenBounds.height / terminal.rows);
-        setSelectionToolbar({ text, top: Math.min(window.innerHeight - 48, selectionBottom + 8) });
-      };
-      const selectionSub = terminal.onSelectionChange(syncSelectionMode);
-      document.addEventListener('selectionchange', syncSelectionMode);
-      const nativeOutputCopied = () => { if (nativeSelectionActive()) flashCopiedOutputSelection(); };
-      document.addEventListener('copy', nativeOutputCopied);
-      // Ctrl/Cmd+C copies a selection rather than interrupting; with no selection xterm
-      // sends \x03 through onData as any terminal would.
-      terminal.attachCustomKeyEventHandler(event => {
-        if (event.type !== 'keydown' || event.key.toLowerCase() !== 'c') return true;
-        if ((event.ctrlKey || event.metaKey) && !event.shiftKey && terminal.hasSelection()) {
-          event.preventDefault();
-          void copyOutputSelection(terminal.getSelection());
-          return false;
-        }
-        return true;
-      });
-      // Yank / Ctrl+Shift+C copy the output selection, skipped while the composer owns keys.
-      const copySelectionShortcut = (event: KeyboardEvent) => {
-        if (isPromptKeyboardTarget(event.target)) return;
-        const key = event.key.toLowerCase();
-        const yank = key === 'y' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
-        const terminalCopy = key === 'c' && event.ctrlKey && event.shiftKey && !event.metaKey && !event.altKey;
-        if (!yank && !terminalCopy) return;
-        const selected = selectedOutput();
-        if (!selected) return;
-        event.preventDefault();
-        event.stopPropagation();
-        void copyOutputSelection(selected);
-      };
-      document.addEventListener('keydown', copySelectionShortcut, true);
-      // Ctrl/Cmd =/+ grow, - shrink, 0 reset the terminal font; the component's font-size
-      // subscription applies the new size. Skipped in editable fields other than xterm's
-      // own textarea, and captured so the browser does not page-zoom.
-      const terminalFontShortcut = (event: KeyboardEvent) => {
-        const target = event.target;
-        const editable = target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
-        if (editable && (target as HTMLElement).closest('.xterm') === null) return;
-        if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) return;
-        if (event.key === '=' || event.key === '+') { event.preventDefault(); stepTerminalFontSize(1); }
-        else if (event.key === '-') { event.preventDefault(); stepTerminalFontSize(-1); }
-        else if (event.key === '0') { event.preventDefault(); resetTerminalFontSize(); }
-      };
-      document.addEventListener('keydown', terminalFontShortcut, true);
-      return () => {
-        disposed = true;
-        if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer);
-        renderSub.dispose();
-        selectionSub.dispose();
-        canvas.current?.removeEventListener('focusin', onFocusIn);
-        canvas.current?.removeEventListener('focusout', onFocusOut);
-        document.removeEventListener('selectionchange', syncSelectionMode);
-        document.removeEventListener('copy', nativeOutputCopied);
-        document.removeEventListener('keydown', copySelectionShortcut, true);
-        document.removeEventListener('keydown', terminalFontShortcut, true);
-        canvas.current?.closest('.log')?.classList.remove('selection-copied');
-        if (terminalInputs.get(id) === handle.sendInput) terminalInputs.delete(id);
-        if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id);
-        if (answeredQuestionActions.get(id) === answeredQuestion) answeredQuestionActions.delete(id);
-        if (terminalRef.current === terminal) terminalRef.current = undefined;
-        handle.dispose();
-      };
-    }
-    let socket: WebSocket | undefined;
-    let closed = false;
-    let retry: number | undefined;
-    let snapshot = '';
-    let latestQuestion = latestQuestions.get(id);
-    let interactiveSocket: WebSocket | undefined;
-    let connectingInteractive = false;
-    let attemptedLogConnection = false;
-    let pendingRender = false;
-    let renderingSnapshot = false;
-    let flushFrame: number | undefined;
-    let resizeFrame: number | undefined;
-    let overlayFrame: number | undefined;
-    let analysisFrame: number | undefined;
-    let connectedPaintFrame: number | undefined;
-    let connectedPaintConfirmationFrame: number | undefined;
-    let copiedSelectionTimer: number | undefined;
-    let awaitingConnectedPaint = true;
-    let connectionUpdateVersion = 0;
-    let metadataRefreshPending = false;
+    // The Agent's pane — and the embedded update advisor's pane — stream over `/ws/pane/:id`:
+    // the streamed terminal component (xterm 6.0) is the only pane viewer. `embedded` drops the
+    // panel chrome (git, notes, response files, the global font shortcut) but shares this mount.
+    let disposed = false;
+    let latestQuestion: InlineQuestion | undefined;
     let dismissedQuestionId = dismissedQuestionIds.get(id);
-    let rerenderAfterResize = () => {};
-    const pendingInput: string[] = [];
+    let copiedSelectionTimer: number | undefined;
     setStatus('Connecting');
     setHasRendered(false);
     setToolbarExpanded(undefined);
-    setLatestAssistantMessage(latestAssistantMessages.get(id));
-    setLatestAssistantMessageOverflows(overflowingLatestAssistantMessages.has(id));
-    setVisibleFrame(0);
+    setLatestAssistantMessage(undefined);
+    setLatestAssistantMessageOverflows(false);
     setInputActive(terminalMode);
     setSelectionActive(false);
     setSelectionToolbar(undefined);
-    let historyOffset = 0;
-    let requestHistory = (_offset: number) => {};
-    // Derive the xterm palette from the same CSS custom properties that theme the
-    // UI, so the terminal and the rest of the app share one source of truth and a
-    // newly-opened pane renders in the document's current flavour. Shared slots read
-    // the palette tokens; the bright ANSI slots read the terminal-only --term-bright-*
-    // tokens; white/brightWhite follow canonical Catppuccin (subtext-0/subtext-1).
-    const paletteStyle = getComputedStyle(document.documentElement);
-    const paletteColor = (token: string) => paletteStyle.getPropertyValue(token).trim();
-    // `paletteStyle` is a live computed-style view, so recomputing after the flavour
-    // flips `[data-theme]` reads the new palette — the terminal reflavours with the
-    // UI rather than staying frozen on the flavour it was born in.
-    const computeTerminalTheme = () => ({ background: paletteColor('--base'), foreground: paletteColor('--text'), cursor: paletteColor('--rosewater'), selectionBackground: paletteColor('--mauve'), selectionForeground: paletteColor('--crust'), black: paletteColor('--surface-1'), red: paletteColor('--red'), green: paletteColor('--green'), yellow: paletteColor('--yellow'), blue: paletteColor('--blue'), magenta: paletteColor('--pink'), cyan: paletteColor('--teal'), white: paletteColor('--subtext-0'), brightBlack: paletteColor('--surface-2'), brightRed: paletteColor('--term-bright-red'), brightGreen: paletteColor('--term-bright-green'), brightYellow: paletteColor('--term-bright-yellow'), brightBlue: paletteColor('--term-bright-blue'), brightMagenta: paletteColor('--term-bright-magenta'), brightCyan: paletteColor('--term-bright-cyan'), brightWhite: paletteColor('--subtext-1') });
-    let terminalTheme = computeTerminalTheme();
-    const terminalOptions = { convertEol: true, fontFamily: monoFontFamily, fontSize: readTerminalFontSize(), scrollback: 0, screenReaderMode: window.matchMedia('(pointer: coarse)').matches, theme: terminalTheme };
-    const terminals = [new XTerm(terminalOptions), new XTerm(terminalOptions)];
-    const fits = [new FitAddon(), new FitAddon()];
-    let suppressOutputFocusUntil = 0;
-    const overlays = createOutputLinkOverlays(canvas.current!, () => { suppressOutputFocusUntil = performance.now() + 250; }, path => { void openOutputFileRef.current(path); }, url => openOutputUrlRef.current(url));
-    const releaseScrollContainment = containOutputScroll(canvas.current!);
-    let activeFrame: 0 | 1 = 0;
-    let terminal = terminals[activeFrame];
-    terminalRef.current = terminal;
-    terminals.forEach((candidate, index) => {
-      candidate.loadAddon(fits[index]);
-      candidate.open(index === 0 ? primaryHost.current! : secondaryHost.current!);
-      Object.assign(candidate.element!.style, {
-        fontFamily: monoFontFamily,
-        fontKerning: 'none',
-        fontSize: `${terminalOptions.fontSize}px`,
-        fontWeight: 'normal'
-      });
-      fits[index].fit();
+    // The server derive reports the pane's inline question on `question` frames; the
+    // web renders it and keeps the optimistic dismissal it always had. Suppressed while
+    // the agent is swapped to its shell (terminalMode), which shows the same pane.
+    const applyQuestion = () => {
+      if (dismissedQuestionId !== undefined && latestQuestion?.id !== dismissedQuestionId) {
+        dismissedQuestionId = undefined;
+        dismissedQuestionIds.delete(id);
+      }
+      if (terminalMode || latestQuestion === undefined || latestQuestion.id === dismissedQuestionId) return onQuestion(undefined);
+      onQuestion(choiceQuestionFromInline(latestQuestion));
+    };
+    const answeredQuestion = (answered: ChoiceQuestion) => {
+      dismissedQuestionId = answered.id;
+      dismissedQuestionIds.set(id, answered.id);
+      onQuestion(undefined);
+    };
+    answeredQuestionActions.set(id, answeredQuestion);
+    const handle = mountStreamedTerminal(canvas.current!, {
+      connect: createAgentPaneConnector(id, request),
+      // Typed keys pass through the panel's sticky mobile modifiers before reaching the pane.
+      transformInput: data => applyStickyModifiers(id, data),
+      onOpenUrl: url => openOutputUrlRef.current(url),
+      onOpenFile: path => { void openOutputFileRef.current(path); },
+      onQuestion: question => { latestQuestion = (question ?? undefined) as InlineQuestion | undefined; applyQuestion(); },
+      onMetadata: metadata => {
+        if (disposed) return;
+        const message = metadata.message.trim() || undefined;
+        setLatestAssistantMessage(message);
+        setLatestAssistantMessageOverflows(metadata.overflow);
+        onMetadataRef.current?.(message);
+      }
     });
-    const scheduleOverlayRender = () => {
-      if (overlayFrame !== undefined) return;
-      overlayFrame = window.requestAnimationFrame(() => {
-        overlayFrame = undefined;
-        if (!closed) overlays.render(terminal);
-      });
-    };
-    const encoded = (value: string) => btoa(String.fromCharCode(...new TextEncoder().encode(value))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    const connectInteractive = async () => {
-      if (closed || connectingInteractive || interactiveSocket !== undefined) return;
-      connectingInteractive = true;
-      try {
-        const response = await request(`/api/agents/${encodeURIComponent(id)}/tickets`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'input' }) });
-        if (!response.ok) throw new Error('terminal ticket unavailable');
-        const { ticket } = await response.json();
-        if (closed) return;
-        const ws = new WebSocket(`${location.origin.replace(/^http/, 'ws')}/ws/input/${encodeURIComponent(id)}`, ['rac', ticket]);
-        interactiveSocket = ws;
-        ws.onopen = () => { if (closed || interactiveSocket !== ws) return; while (pendingInput.length) ws.send(JSON.stringify({ v: 1, type: 'input', data: encoded(pendingInput.shift()!) })); };
-        ws.onclose = () => { if (interactiveSocket === ws) interactiveSocket = undefined; };
-        ws.onerror = () => ws.close();
-      } catch { interactiveSocket = undefined; }
-      finally { connectingInteractive = false; }
-    };
-    const sendInput = (value: string) => {
-      if (interactiveSocket?.readyState === WebSocket.OPEN) interactiveSocket.send(JSON.stringify({ v: 1, type: 'input', data: encoded(value) }));
-      else { pendingInput.push(value); void connectInteractive(); }
-    };
-    terminalInputs.set(id, sendInput);
-    let outputModeActive = terminalMode;
-    const exitInput = () => { outputModeActive = false; setInputActive(false); terminal.blur(); };
+    const terminal = handle.terminal;
+    terminalRef.current = terminal;
+    // Helper keys, paste and the composer's blank-Enter forward reach the pane through
+    // this; the composer's focus blurs it so keystrokes return to prompting.
+    terminalInputs.set(id, handle.sendInput);
+    const exitInput = () => terminal.blur();
     exitTerminalInput.set(id, exitInput);
-    // Keep one line in common between page windows so a line at the viewport boundary is never lost while paging.
-    const moveHistory = (direction: -1 | 0 | 1) => {
-      // Adjacent pages intentionally share five rows, preserving context at
-      // the boundary without turning page navigation into a large jump.
-      const step = Math.max(1, terminal.rows - 5);
-      // Keep both controls interactive at the boundaries. The server clamps
-      // unavailable history to the oldest available page.
-      const next = direction < 0 ? historyOffset + step : direction > 0 ? Math.max(0, historyOffset - step) : 0;
-      requestHistory(next);
-    };
-    logHistoryRequests.set(id, moveHistory);
-    const sendViewport = () => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ v: 1, type: 'viewport', cols: terminal.cols, rows: terminal.rows })); };
-    const scheduleViewport = () => {
-      if (resizeFrame !== undefined) return;
-      resizeFrame = window.requestAnimationFrame(() => {
-        resizeFrame = undefined;
-        if (closed) return;
-        overlays.clear();
-        fits.forEach(fit => fit.fit());
-        rerenderAfterResize();
-        scheduleOverlayRender();
-        sendViewport();
-      });
-    };
-    // Re-render both frames at the browser's chosen terminal font size, then let
-    // scheduleViewport refit and send the new cols and rows to tmux.
-    const applyTerminalFontSize = (px: number) => {
-      terminals.forEach(candidate => {
-        candidate.options.fontSize = px;
-        if (candidate.element) candidate.element.style.fontSize = `${px}px`;
-      });
-      scheduleViewport();
-    };
-    const unsubscribeTerminalFontSize = subscribeTerminalFontSize(() => { if (!closed) applyTerminalFontSize(readTerminalFontSize()); });
-    // Repaint both already-open frames when the browser flips flavour, mirroring the
-    // font-size subscription. The store reflavours the document before it notifies,
-    // so recomputing here reads the new palette; re-applying `options.theme` repaints
-    // every ANSI slot, background, foreground, cursor, and selection with no refit
-    // (only colours change, not cell dimensions) and no reconnect.
-    const paintTerminalTheme = () => { terminals.forEach(candidate => { candidate.options.theme = { ...terminalTheme }; }); };
-    const applyTerminalColorTheme = () => { terminalTheme = computeTerminalTheme(); paintTerminalTheme(); };
-    const unsubscribeColorTheme = subscribeColorTheme(() => { if (!closed) applyTerminalColorTheme(); });
-    const observer = new ResizeObserver(scheduleViewport);
-    observer.observe(canvas.current!);
-    window.addEventListener('resize', scheduleViewport);
-    window.visualViewport?.addEventListener('resize', scheduleViewport);
-    const syncVisibleViewport = () => { if (document.visibilityState === 'visible') scheduleViewport(); };
-    document.addEventListener('visibilitychange', syncVisibleViewport);
-    window.addEventListener('pageshow', scheduleViewport);
-    const syncScrollState = () => {
-      setScrolledUp(historyOffset > 0);
-    };
-    const terminalSelectionActive = () => terminals.some(candidate => candidate.hasSelection());
+    if (terminalMode) handle.focus();
+    // The stream is live the moment the first bytes parse; the component owns the
+    // transient reconnect status from there on.
+    const renderSub = terminal.onWriteParsed(() => { if (!disposed) { setHasRendered(true); setStatus('Live'); } });
+    // Focusing the pane drives `.input-active` (which collapses the composer to the
+    // terminal helper keys on a phone); blurring it, or focusing the composer, reverts.
+    const onFocusIn = () => { if (!disposed) setInputActive(true); };
+    const onFocusOut = () => { if (!disposed) setInputActive(false); };
+    canvas.current!.addEventListener('focusin', onFocusIn);
+    canvas.current!.addEventListener('focusout', onFocusOut);
+    // --- Selection toolbar (create note, append, add to prompt, copy) ---
     const nativeSelectionActive = () => {
       const selection = window.getSelection();
       if (selection === null || selection.isCollapsed) return false;
       return [selection.anchorNode, selection.focusNode].some(node => node !== null && canvas.current?.contains(node));
     };
-    const outputSelectionPresent = () => terminalSelectionActive() || nativeSelectionActive();
-    const selectedOutput = () => {
-      const selectedTerminal = terminals.find(candidate => candidate.hasSelection());
-      if (selectedTerminal !== undefined) return selectedTerminal.getSelection();
-      return nativeSelectionActive() ? window.getSelection()?.toString() ?? '' : '';
-    };
+    const selectedOutput = () => (terminal.hasSelection() ? terminal.getSelection() : nativeSelectionActive() ? window.getSelection()?.toString() ?? '' : '');
     const flashCopiedOutputSelection = () => {
       const log = canvas.current?.closest('.log');
       log?.classList.add('selection-copied');
-      terminals.filter(candidate => candidate.hasSelection()).forEach(candidate => {
-        candidate.options.theme = { ...terminalTheme, selectionBackground: terminalTheme.green, selectionInactiveBackground: terminalTheme.green };
-      });
       if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer);
-      copiedSelectionTimer = window.setTimeout(() => {
-        copiedSelectionTimer = undefined;
-        log?.classList.remove('selection-copied');
-        paintTerminalTheme();
-      }, selectionCopyFlashMs);
+      copiedSelectionTimer = window.setTimeout(() => { copiedSelectionTimer = undefined; log?.classList.remove('selection-copied'); }, selectionCopyFlashMs);
     };
-    const copyOutputSelection = async (value: string) => {
-      await copyText(value);
-      if (!closed) flashCopiedOutputSelection();
-    };
+    const copyOutputSelection = async (value: string) => { await copyText(value); if (!disposed) flashCopiedOutputSelection(); };
     copyOutputSelectionRef.current = copyOutputSelection;
-    terminals.forEach(candidate => candidate.attachCustomKeyEventHandler(event => {
-      if (event.type !== 'keydown') return true;
-      if (event.key === 'Tab' && outputModeActive) {
-        event.preventDefault();
-        event.stopPropagation();
-        sendInput(event.shiftKey ? '\x1b[Z' : '\t');
-        return false;
+    const syncSelectionMode = () => {
+      const nativeActive = nativeSelectionActive();
+      const hasTerminalSelection = terminal.hasSelection();
+      setSelectionActive(hasTerminalSelection || nativeActive);
+      if (nativeActive) {
+        const selection = window.getSelection();
+        const range = selection?.rangeCount ? selection.getRangeAt(0) : undefined;
+        const bounds = range === undefined ? undefined : (Array.from(range.getClientRects()).at(-1) ?? range.getBoundingClientRect());
+        const text = selection?.toString() ?? '';
+        return setSelectionToolbar(!text || bounds === undefined ? undefined : { text, top: Math.min(window.innerHeight - 48, bounds.bottom + 8) });
       }
-      if (event.key.toLowerCase() !== 'c') return true;
-      if ((event.ctrlKey || event.metaKey) && candidate.hasSelection()) {
+      if (!hasTerminalSelection) return setSelectionToolbar(undefined);
+      const text = terminal.getSelection();
+      const position = terminal.getSelectionPosition();
+      const screen = terminal.element?.querySelector<HTMLElement>('.xterm-screen');
+      if (!text || position === undefined || screen === null || screen === undefined) return setSelectionToolbar(undefined);
+      const screenBounds = screen.getBoundingClientRect();
+      const viewportRow = position.end.y - terminal.buffer.active.viewportY + 1;
+      const selectionBottom = screenBounds.top + viewportRow * (screenBounds.height / terminal.rows);
+      setSelectionToolbar({ text, top: Math.min(window.innerHeight - 48, selectionBottom + 8) });
+    };
+    const selectionSub = terminal.onSelectionChange(syncSelectionMode);
+    document.addEventListener('selectionchange', syncSelectionMode);
+    const nativeOutputCopied = () => { if (nativeSelectionActive()) flashCopiedOutputSelection(); };
+    document.addEventListener('copy', nativeOutputCopied);
+    // Ctrl/Cmd+C copies a selection rather than interrupting; with no selection xterm
+    // sends \x03 through onData as any terminal would.
+    terminal.attachCustomKeyEventHandler(event => {
+      if (event.type !== 'keydown' || event.key.toLowerCase() !== 'c') return true;
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && terminal.hasSelection()) {
         event.preventDefault();
-        void copyOutputSelection(candidate.getSelection());
+        void copyOutputSelection(terminal.getSelection());
         return false;
       }
       return true;
-    }));
-    const interruptOutput = (event: KeyboardEvent) => {
-      const controlC = event.key.toLowerCase() === 'c' || event.code === 'KeyC';
-      if (!outputModeActive || !event.ctrlKey || event.shiftKey || event.metaKey || event.altKey || !controlC || selectedOutput()) return;
-      event.preventDefault();
-      event.stopPropagation();
-      sendInput('\x03');
-    };
-    // forward unhandled escape after terminal and local dismiss handlers
-    const escapeOutput = (event: KeyboardEvent) => {
-      // leave handled keys and modified shortcuts alone
-      if (!outputModeActive || event.defaultPrevented || event.key !== 'Escape' || event.ctrlKey || event.shiftKey || event.metaKey || event.altKey) return;
-      const target = event.target;
-      const editable = target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
-      // preserve editors and dialogs even when modal focus moves outside
-      if (editable || document.querySelector('[aria-modal="true"]') !== null || (target instanceof Element && target.closest('[role="dialog"]') !== null)) return;
-      event.preventDefault();
-      sendInput('\x1b');
-    };
+    });
+    // Yank / Ctrl+Shift+C copy the output selection, skipped while the composer owns keys.
     const copySelectionShortcut = (event: KeyboardEvent) => {
       if (isPromptKeyboardTarget(event.target)) return;
       const key = event.key.toLowerCase();
@@ -4922,14 +4578,11 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, pullRequest, hist
       event.stopPropagation();
       void copyOutputSelection(selected);
     };
-    // Ctrl/Cmd =/+ grow, - shrink, 0 reset the terminal font. Handled in the
-    // capture phase so the browser does not also page-zoom, and skipped in
-    // editable fields and when Shift or Alt is held.
+    document.addEventListener('keydown', copySelectionShortcut, true);
+    // Ctrl/Cmd =/+ grow, - shrink, 0 reset the terminal font; the component's font-size
+    // subscription applies the new size. Skipped in editable fields other than xterm's
+    // own textarea, and captured so the browser does not page-zoom.
     const terminalFontShortcut = (event: KeyboardEvent) => {
-      // Leave the shortcut to the browser while an editable field (prompt
-      // composer, note editor, rename or login input) owns the keys — but not
-      // xterm's own hidden textarea, which holds focus exactly when the user
-      // wants to resize the pane.
       const target = event.target;
       const editable = target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
       if (editable && (target as HTMLElement).closest('.xterm') === null) return;
@@ -4938,362 +4591,30 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, pullRequest, hist
       else if (event.key === '-') { event.preventDefault(); stepTerminalFontSize(-1); }
       else if (event.key === '0') { event.preventDefault(); resetTerminalFontSize(); }
     };
-    const nativeOutputCopied = () => { if (nativeSelectionActive()) flashCopiedOutputSelection(); };
-    let outputSelectionActive = false;
-    const syncSelectionMode = () => {
-      const nativeActive = nativeSelectionActive();
-      const selectedTerminal = terminals.find(candidate => candidate.hasSelection());
-      outputSelectionActive = selectedTerminal !== undefined || nativeActive;
-      setSelectionActive(outputSelectionActive);
-      if (!outputSelectionActive) flushSelectedOutput();
-      if (nativeActive) {
-        const selection = window.getSelection();
-        const range = selection?.rangeCount ? selection.getRangeAt(0) : undefined;
-        const rectangles = range === undefined ? [] : Array.from(range.getClientRects());
-        const bounds = rectangles.at(-1) ?? range?.getBoundingClientRect();
-        const text = selection?.toString() ?? '';
-        if (!text || bounds === undefined) return setSelectionToolbar(undefined);
-        return setSelectionToolbar({ text, top: Math.min(window.innerHeight - 48, bounds.bottom + 8) });
-      }
-      if (selectedTerminal === undefined) return setSelectionToolbar(undefined);
-      const text = selectedTerminal.getSelection();
-      const position = selectedTerminal.getSelectionPosition();
-      const screen = selectedTerminal.element?.querySelector<HTMLElement>('.xterm-screen');
-      if (!text || position === undefined || screen === null || screen === undefined) return setSelectionToolbar(undefined);
-      const screenBounds = screen.getBoundingClientRect();
-      const viewportRow = position.end.y - selectedTerminal.buffer.active.viewportY + 1;
-      const selectionBottom = screenBounds.top + viewportRow * (screenBounds.height / selectedTerminal.rows);
-      setSelectionToolbar({ text, top: Math.min(window.innerHeight - 48, selectionBottom + 8) });
-    };
-    const clearOutputSelection = () => {
-      terminals.forEach(candidate => candidate.clearSelection());
-      if (nativeSelectionActive()) window.getSelection()?.removeAllRanges();
-      outputSelectionActive = false;
-      setSelectionActive(false);
-      setSelectionToolbar(undefined);
-    };
-    let flushSelectedOutput = () => {};
-    // request one authoritative live scan
-    const requestMetadataRefresh = () => {
-      // coalesce unavailable or duplicate requests
-      if (metadataRefreshPending || historyOffset !== 0 || socket?.readyState !== WebSocket.OPEN) return;
-      metadataRefreshPending = true;
-      socket.send(JSON.stringify({ v: 1, type: 'metadata' }));
-    };
-    // the server parses the viewed agent's inline question and sends the current
-    // one on each authoritative metadata frame; the web no longer parses pane
-    // text. `latestQuestion` mirrors that frame, cleared when it carries none.
-    const currentQuestion = (): ChoiceQuestion | undefined => {
-      // retire a stale optimistic dismissal once the answered question is gone or replaced
-      if (dismissedQuestionId !== undefined && latestQuestion?.id !== dismissedQuestionId) {
-        dismissedQuestionId = undefined;
-        dismissedQuestionIds.delete(id);
-      }
-      if (latestQuestion === undefined || latestQuestion.id === dismissedQuestionId) return undefined;
-      return choiceQuestionFromInline(latestQuestion);
-    };
-    // optimistically hide one just-answered question until the server reports it gone
-    const answeredQuestion = (answered: ChoiceQuestion) => {
-      dismissedQuestionId = answered.id;
-      dismissedQuestionIds.set(id, answered.id);
-      onQuestion(undefined);
-    };
-    answeredQuestionActions.set(id, answeredQuestion);
-    // defer question analysis until output settles
-    const scheduleOutputAnalysis = () => {
-      if (terminalMode) return;
-      if (analysisFrame !== undefined) return;
-      analysisFrame = window.requestAnimationFrame(() => {
-        analysisFrame = undefined;
-        if (closed) return;
-        onQuestion(currentQuestion());
-      });
-    };
-    const appendWrites = createAnimationFrameTextBatcher(text => {
-      const paintedSocket = socket;
-      const paintedConnectionVersion = connectionUpdateVersion;
-      if (closed || paintedSocket === undefined) return;
-      if (terminalSelectionActive() || renderingSnapshot) {
-        pendingRender = true;
-        return;
-      }
-      terminal.write(text, () => {
-        terminal.scrollToBottom();
-        scheduleOverlayRender();
-        syncScrollState();
-        revealConnectedOutput(paintedSocket, paintedConnectionVersion);
-      });
-    }, undefined, undefined, 1_000_000);
-    const selectionSubscriptions = terminals.map(candidate => candidate.onSelectionChange(() => {
-      syncSelectionMode();
-      if (!terminalSelectionActive()) flushSelectedOutput();
-    }));
-    document.addEventListener('selectionchange', syncSelectionMode);
-    window.addEventListener('keydown', interruptOutput, true);
-    // run after document-level escape dismissal
-    window.addEventListener('keydown', escapeOutput);
-    document.addEventListener('keydown', copySelectionShortcut, true);
-    // Only the panel's own Log owns the font shortcut; the embedded update
-    // advisor still follows the store, so gating here keeps a single step per key.
+    // Only the panel's own Log owns the global font shortcut; the embedded advisor skips it.
     if (!embedded) document.addEventListener('keydown', terminalFontShortcut, true);
-    document.addEventListener('copy', nativeOutputCopied);
-    const inputSubscriptions = terminals.map(candidate => candidate.onData(value => sendInput(applyStickyModifiers(id, value))));
-    let selectionModeAtPointerDown = false;
-    const captureSelectionMode = () => {
-      // Pointer-down capture runs before the browser collapses a native range.
-      // Remember that the tap began in selection mode so its later click cannot
-      // fall through and activate terminal input.
-      selectionModeAtPointerDown = outputSelectionActive || terminalSelectionActive() || nativeSelectionActive();
+    return () => {
+      disposed = true;
+      if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer);
+      renderSub.dispose();
+      selectionSub.dispose();
+      canvas.current?.removeEventListener('focusin', onFocusIn);
+      canvas.current?.removeEventListener('focusout', onFocusOut);
+      document.removeEventListener('selectionchange', syncSelectionMode);
+      document.removeEventListener('copy', nativeOutputCopied);
+      document.removeEventListener('keydown', copySelectionShortcut, true);
+      if (!embedded) document.removeEventListener('keydown', terminalFontShortcut, true);
+      canvas.current?.closest('.log')?.classList.remove('selection-copied');
+      if (terminalInputs.get(id) === handle.sendInput) terminalInputs.delete(id);
+      if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id);
+      if (answeredQuestionActions.get(id) === answeredQuestion) answeredQuestionActions.delete(id);
+      if (terminalRef.current === terminal) terminalRef.current = undefined;
+      handle.dispose();
     };
-    const focus = () => {
-      if (performance.now() < suppressOutputFocusUntil) {
-        suppressOutputFocusUntil = 0;
-        return;
-      }
-      // Capture native accessibility-tree selection before the click's default
-      // action can collapse it on mobile.
-      const selectedTextAtClick = window.getSelection()?.toString() ?? '';
-      const exitSelectionMode = selectionModeAtPointerDown || outputSelectionActive || Boolean(selectedTextAtClick);
-      selectionModeAtPointerDown = false;
-      if (exitSelectionMode) {
-        clearOutputSelection();
-        return exitInput();
-      }
-      if (selectedTextAtClick || terminalSelectionActive() || outputModeActive) return exitInput();
-      outputModeActive = true;
-      setInputActive(true);
-      // Mobile browsers only open and retain the software keyboard when the
-      // terminal textarea is focused synchronously from the user's tap.
-      terminal.focus();
-      void connectInteractive();
-    };
-    const releaseLongPressSelection = preserveOutputLongPressSelection(canvas.current!, () => {
-      exitInput();
-    });
-    canvas.current!.addEventListener('pointerdown', captureSelectionMode, true);
-    canvas.current!.addEventListener('click', focus);
-    if (terminalMode) {
-      terminal.focus();
-      void connectInteractive();
-    }
-    const cachedSnapshot = terminalMode || embedded ? undefined : logSnapshots.get(id);
-    let outputRendered = false;
-    const markRendered = () => {
-      if (outputRendered) return;
-      outputRendered = true;
-      setHasRendered(true);
-    };
-    const cancelConnectedPaint = () => {
-      if (connectedPaintFrame !== undefined) window.cancelAnimationFrame(connectedPaintFrame);
-      if (connectedPaintConfirmationFrame !== undefined) window.cancelAnimationFrame(connectedPaintConfirmationFrame);
-      connectedPaintFrame = undefined;
-      connectedPaintConfirmationFrame = undefined;
-    };
-    const revealConnectedOutput = (ws: WebSocket, paintedConnectionVersion: number) => {
-      if (!awaitingConnectedPaint || paintedConnectionVersion === 0 || closed || socket !== ws || connectedPaintFrame !== undefined || connectedPaintConfirmationFrame !== undefined) return;
-      // Keep the connecting treatment through the first frame that contains
-      // fresh output. The nested animation frame runs after that DOM update
-      // has had an opportunity to paint, so Live never precedes the output.
-      connectedPaintFrame = window.requestAnimationFrame(() => {
-        connectedPaintFrame = undefined;
-        connectedPaintConfirmationFrame = window.requestAnimationFrame(() => {
-          connectedPaintConfirmationFrame = undefined;
-          if (closed || socket !== ws || !awaitingConnectedPaint) return;
-          awaitingConnectedPaint = false;
-          connectionUpdateVersion = 0;
-          markRendered();
-          setStatus('Live');
-        });
-      });
-    };
-    // restore cached questions before the live socket reconnects
-    if (cachedSnapshot) { snapshot = cachedSnapshot; markRendered(); onQuestion(currentQuestion()); terminal.write(cachedSnapshot, () => { scheduleOverlayRender(); syncScrollState(); }); }
-    const reconnect = () => {
-      if (closed || retry !== undefined) return;
-      retry = window.setTimeout(() => {
-        retry = undefined;
-        void connect();
-      }, 1_000);
-    };
-    const renderSnapshot = (ws: WebSocket) => {
-      if (closed || socket !== ws || renderingSnapshot || outputSelectionPresent()) {
-        pendingRender = true;
-        return;
-      }
-      renderingSnapshot = true;
-      const renderedSnapshot = snapshot;
-      const renderedConnectionVersion = connectionUpdateVersion;
-      // Keep the currently focused xterm mounted while output input is active.
-      // Hiding its frame during the normal double-buffer swap dismisses mobile
-      // software keyboards even though the helper textarea remains focused.
-      const preserveFocusedFrame = outputModeActive;
-      const nextFrame: 0 | 1 = preserveFocusedFrame ? activeFrame : activeFrame === 0 ? 1 : 0;
-      const nextTerminal = terminals[nextFrame];
-      const viewport = `\x1b[H${bottomAlignedSnapshot(renderedSnapshot, nextTerminal.rows).replace(/\n/g, '\x1b[K\n')}\x1b[K\x1b[J`;
-      nextTerminal.reset();
-      nextTerminal.write(viewport, () => {
-        renderingSnapshot = false;
-        if (closed || socket !== ws) return;
-        if (outputSelectionPresent()) {
-          nextTerminal.reset();
-          pendingRender = true;
-          return;
-        }
-        // Input may have become active while the inactive frame was rendering.
-        // Discard that frame and redraw into the focused terminal instead.
-        if (outputModeActive && nextTerminal !== terminal) {
-          nextTerminal.reset();
-          pendingRender = true;
-          return flushSelectedOutput();
-        }
-        if (preserveFocusedFrame) {
-          scheduleOverlayRender();
-          syncScrollState();
-          revealConnectedOutput(ws, renderedConnectionVersion);
-          if (snapshot !== renderedSnapshot) pendingRender = true;
-          return flushSelectedOutput();
-        }
-        const previousTerminal = terminal;
-        activeFrame = nextFrame;
-        terminal = nextTerminal;
-        terminalRef.current = terminal;
-        scheduleOverlayRender();
-        setVisibleFrame(activeFrame);
-        revealConnectedOutput(ws, renderedConnectionVersion);
-        // Clear the frame that just went hidden on the next paint. Several of
-        // these can queue while requestAnimationFrame is paused (a backgrounded
-        // window keeps swapping buffers through timer-based write callbacks); by
-        // the time they run the swap may have ping-ponged this terminal back to
-        // active, so never reset the one that is now visible or its content
-        // vanishes with no further frame to redraw it.
-        requestAnimationFrame(() => { if (previousTerminal !== terminal) previousTerminal.reset(); syncScrollState(); });
-        if (snapshot !== renderedSnapshot) pendingRender = true;
-        flushSelectedOutput();
-      });
-    };
-    flushSelectedOutput = () => {
-      if (!pendingRender || outputSelectionPresent() || renderingSnapshot || closed || socket === undefined || flushFrame !== undefined) return;
-      flushFrame = window.requestAnimationFrame(() => {
-        flushFrame = undefined;
-        if (!pendingRender || outputSelectionPresent() || renderingSnapshot || closed || socket === undefined) return;
-        pendingRender = false;
-        renderSnapshot(socket);
-      });
-    };
-    rerenderAfterResize = () => {
-      if (!snapshot || closed || socket === undefined) return;
-      pendingRender = true;
-      flushSelectedOutput();
-    };
-    const connect = async () => {
-      if (attemptedLogConnection) {
-        awaitingConnectedPaint = true;
-        connectionUpdateVersion = 0;
-        cancelConnectedPaint();
-        setStatus('Connecting');
-      }
-      attemptedLogConnection = true;
-      try {
-        const response = await request(`/api/agents/${encodeURIComponent(id)}/tickets`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'logs' }) });
-        if (!response.ok) throw new Error('ticket unavailable');
-        const { ticket } = await response.json();
-        if (closed) return;
-        const ws = new WebSocket(`${location.origin.replace(/^http/, 'ws')}/ws/logs/${encodeURIComponent(id)}`, ['rac', ticket]);
-        socket = ws;
-        requestHistory = offset => {
-          historyOffset = Math.max(0, offset);
-          syncScrollState();
-          if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ v: 1, type: 'history', offset: historyOffset, cols: terminal.cols, rows: terminal.rows }));
-        };
-        ws.onopen = () => {
-          if (closed || socket !== ws) return;
-          scheduleViewport();
-          requestMetadataRefresh();
-        };
-        ws.onmessage = event => {
-          if (closed || socket !== ws) return;
-          const frame = JSON.parse(event.data) as LogFrame;
-          const text = frame.text ?? '';
-          if (frame.newer !== true) historyOffset = 0;
-          syncScrollState();
-          const latest = historyOffset === 0;
-          const metadata = completeLogMetadata(frame);
-          const metadataRefreshed = metadata !== undefined;
-          // the inline question rides every live frame, so it appears and clears
-          // with the pane output rather than waiting on the periodic metadata frame
-          if (!terminalMode && latest) latestQuestion = frame.question;
-          // update complete history only from metadata frames
-          if (!terminalMode && latest && metadata !== undefined) {
-            setLatestAssistantMessage(metadata.latestAssistantMessage ?? undefined);
-            setLatestAssistantMessageOverflows(metadata.latestAssistantMessageOverflows);
-            onMetadataRef.current?.(metadata.latestAssistantMessage?.trim() || undefined);
-            metadataRefreshPending = false;
-          }
-          // keep modal-only advisors out of shared tab caches
-          if (!terminalMode && !embedded && latest) cacheLogFrame(id, frame);
-          // apply authoritative empty resets
-          if (!text) {
-            // retain legacy empty-frame behavior
-            if (!metadataRefreshed || frame.type !== 'reset') return;
-            if (awaitingConnectedPaint) connectionUpdateVersion += 1;
-            appendWrites.clear();
-            snapshot = '';
-            scheduleOutputAnalysis();
-            // defer clears around active selection or rendering
-            if (outputSelectionPresent() || renderingSnapshot) { pendingRender = true; return; }
-            renderSnapshot(ws);
-            return;
-          }
-          if (awaitingConnectedPaint) connectionUpdateVersion += 1;
-          if (frame.type === 'reset') {
-            // reanalyze unchanged output when metadata changes
-            if (text === snapshot && !awaitingConnectedPaint) {
-              if (metadataRefreshed) scheduleOutputAnalysis();
-              return;
-            }
-            appendWrites.clear();
-            snapshot = nextLiveSnapshot(snapshot, frame.type, text);
-            scheduleOutputAnalysis();
-            if (outputSelectionPresent() || renderingSnapshot) {
-              pendingRender = true;
-              return;
-            }
-            return renderSnapshot(ws);
-          }
-          snapshot = nextLiveSnapshot(snapshot, frame.type, text);
-          scheduleOutputAnalysis();
-          if (outputSelectionPresent() || renderingSnapshot) {
-            pendingRender = true;
-            return;
-          }
-          if (!appendWrites.push(text)) {
-            appendWrites.clear();
-            pendingRender = true;
-            flushSelectedOutput();
-          }
-        };
-        ws.onclose = () => {
-          if (closed || socket !== ws) return;
-          socket = undefined;
-          appendWrites.clear();
-          awaitingConnectedPaint = true;
-          connectionUpdateVersion = 0;
-          metadataRefreshPending = false;
-          cancelConnectedPaint();
-          setStatus('Connecting');
-          reconnect();
-        };
-        ws.onerror = () => ws.close();
-      } catch { setStatus('Connecting'); reconnect(); }
-    };
-    void connect();
-    // release terminal resources and keyboard handlers
-    return () => { closed = true; appendWrites.clear(); cancelConnectedPaint(); if (terminalInputs.get(id) === sendInput) terminalInputs.delete(id); if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id); if (logHistoryRequests.get(id) === moveHistory) logHistoryRequests.delete(id); if (answeredQuestionActions.get(id) === answeredQuestion) answeredQuestionActions.delete(id); if (retry !== undefined) window.clearTimeout(retry); if (flushFrame !== undefined) window.cancelAnimationFrame(flushFrame); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (overlayFrame !== undefined) window.cancelAnimationFrame(overlayFrame); if (analysisFrame !== undefined) window.cancelAnimationFrame(analysisFrame); if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer); selectionSubscriptions.forEach(subscription => subscription.dispose()); inputSubscriptions.forEach(subscription => subscription.dispose()); window.removeEventListener('resize', scheduleViewport); window.visualViewport?.removeEventListener('resize', scheduleViewport); document.removeEventListener('visibilitychange', syncVisibleViewport); window.removeEventListener('pageshow', scheduleViewport); document.removeEventListener('selectionchange', syncSelectionMode); window.removeEventListener('keydown', interruptOutput, true); window.removeEventListener('keydown', escapeOutput); document.removeEventListener('keydown', copySelectionShortcut, true); if (!embedded) document.removeEventListener('keydown', terminalFontShortcut, true); unsubscribeTerminalFontSize(); unsubscribeColorTheme(); document.removeEventListener('copy', nativeOutputCopied); canvas.current?.closest('.log')?.classList.remove('selection-copied'); canvas.current?.removeEventListener('pointerdown', captureSelectionMode, true); canvas.current?.removeEventListener('click', focus); releaseLongPressSelection(); releaseScrollContainment(); observer.disconnect(); socket?.close(); interactiveSocket?.close(); if (terminalRef.current === terminal) terminalRef.current = undefined; overlays.clear(); terminals.forEach(candidate => candidate.dispose()); };
   }, [embedded, id, onQuestion, terminalMode]);
   const processing = processingLabel !== undefined;
   const loading = !hasRendered || processing;
-  const visibleStatus = processing ? 'Starting' : terminalMode && status === 'Live' ? 'Terminal' : hasRendered && status === 'Connecting' ? 'Cached' : status;
-  const cached = visibleStatus === 'Cached';
+  const visibleStatus = processing ? 'Starting' : terminalMode && status === 'Live' ? 'Terminal' : status;
   const loadingLabel = processingLabel ?? (terminalMode ? 'Connecting to pane' : status === 'Live' ? 'Waiting for output' : status);
   const selectionActions = selectionToolbar === undefined || (!embedded && worktreeNotes.expanded) ? null : createPortal(<div className={`output-selection-toolbar${embedded ? ' embedded' : ''}`} role="toolbar" aria-label="Output selection actions" style={{ top: selectionToolbar.top }} onPointerDown={event => event.preventDefault()}>
     {!embedded && <button type="button" disabled={!worktreeNotes.canCreate || selectionToolbar.text.length > 30_000} onClick={() => void worktreeNotes.createWithText(selectionToolbar.text, assistantNoteTitle(selectionToolbar.text))}>Create note</button>}
@@ -5373,7 +4694,7 @@ function Log({ id, worktreeId, branch, gitStatus, gitPrStatus, pullRequest, hist
   };
   const gitSection = embedded ? null : <GitStatus id={id} worktreeId={worktreeId} branch={branch} summary={gitStatus} prSummary={gitPrStatus} pullRequest={pullRequest} onFixup={queueFixup} expanded={toolbarExpanded === 'git'} onToggle={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'git' ? undefined : 'git'); }} onOpenFile={openGitFile} onReview={scope => { setToolbarExpanded(undefined); onReview?.(scope); }} reviewOpen={reviewOpen} reviewUnavailable={reviewUnavailable} pushAction={pushAction} pushPending={pushPending} onPush={queuePush} onSelectTarget={onSelectTarget} onOperationFeedback={onOperationFeedback} />;
   // distinguish retained output from live frames
-  const output = <div className={`log-output${cached ? ' cached' : ''}`}>{!embedded && <ServerSwitcher className="output-server-switcher" />}<div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'}>{embedded && <><div ref={primaryHost} className={`terminal-frame ${visibleFrame === 0 ? 'active' : ''}`} /><div ref={secondaryHost} className={`terminal-frame ${visibleFrame === 1 ? 'active' : ''}`} /></>}</div>{cached && <div className="log-cached-treatment" aria-hidden="true"><span>Cached view · reconnecting</span></div>}{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!terminalMode && <div className="log-controls-bottom"><div className="page-controls">{!embedded && cleanupControl}{!embedded && responseFiles.control}{!embedded && worktreeConversations.control}{!embedded && worktreeNotes.control}{embedded && <><button className="log-control page-arrow" aria-label="Page up" title="Page up" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><div className="page-down-controls">{scrolledUp && <button className="log-control page-arrow back-to-bottom" aria-label="Back to bottom" title="Back to bottom" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(0)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19h14M6 8l6 6 6-6" /></svg></button>}<button className="log-control page-arrow" aria-label="Page down" title="Page down" onPointerDown={event => event.preventDefault()} onClick={() => logHistoryRequests.get(id)?.(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></>}</div></div>}</div></div>;
+  const output = <div className="log-output">{!embedded && <ServerSwitcher className="output-server-switcher" />}<div className="log-canvas" ref={canvas} aria-label={terminalMode ? 'Interactive agent pane' : 'Live log'} />{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!terminalMode && !embedded && <div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{responseFiles.control}{worktreeConversations.control}{worktreeNotes.control}</div></div>}</div></div>;
   const browserPane = browserUrl === undefined || browserHomeUrl === undefined || onBrowserNavigate === undefined || onBrowserClose === undefined ? null : <ProjectBrowserPane url={browserUrl} homeUrl={browserHomeUrl} proxied={browserProxied} worktreeId={worktreeId} navigationRequest={browserNavigationRequest} onNavigate={onBrowserNavigate} onClose={onBrowserClose} />;
   return <section className={`log-shell${embedded ? ' embedded-log-shell' : ''}`}><div className={`log${embedded ? ' embedded-log' : ''}${terminalMode ? ' inline-terminal' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit worktreeId={worktreeId} output={output} note={embedded ? undefined : worktreeNotes.pane} browser={browserPane} /></div>{selectionActions}{!embedded && responseFiles.dialog}{!embedded && gitFilePreview.dialog}{!embedded && statusSlot && createPortal(gitSection, statusSlot)}{!embedded && historySlot && createPortal(historyToggle, historySlot)}</section>;
 }
@@ -6077,7 +5398,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
     : onRemove !== undefined
       ? <AgentPowerMenu mode="idle" pending={processing} onRemove={onRemove} onRename={onRename} {...(removeDisabledReason === undefined ? {} : { removeDisabledReason })} />
       : null;
-  const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className={`log-loading inactive${sleeping ? ' sleeping' : ''}`} role={processing || sleeping ? 'status' : undefined} aria-label={presentation.ariaLabel}>{processing ? <span className="spinner" /> : sleeping ? <svg className="sleeping-agent-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg> : null}<strong>{presentation.heading}</strong><span>{presentation.detail}</span>{sleeping && !processing && <button className="wake-agent" type="button" disabled={!worktree.available} onClick={() => void start()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>}</div><span className={`status log-status ${processing ? 'connecting' : sleeping ? 'sleeping' : 'inactive'}`}>{presentation.status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeConversations.control}{worktreeNotes.control}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div>;
+  const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className={`log-loading inactive${sleeping ? ' sleeping' : ''}`} role={processing || sleeping ? 'status' : undefined} aria-label={presentation.ariaLabel}>{processing ? <span className="spinner" /> : sleeping ? <svg className="sleeping-agent-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg> : null}<strong>{presentation.heading}</strong><span>{presentation.detail}</span>{sleeping && !processing && <button className="wake-agent" type="button" disabled={!worktree.available} onClick={() => void start()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>}</div><span className={`status log-status ${processing ? 'connecting' : sleeping ? 'sleeping' : 'inactive'}`}>{presentation.status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeConversations.control}{worktreeNotes.control}</div></div></div></div>;
   const browserPane = projectBrowser.url === undefined || projectBrowser.homeUrl === undefined ? null : <ProjectBrowserPane url={projectBrowser.url} homeUrl={projectBrowser.homeUrl} proxied={projectBrowser.proxied} worktreeId={worktree.id} onNavigate={projectBrowser.navigate} onClose={projectBrowser.close} />;
   // keep worktree file inspection available in either composer layout
   const gitStatus = <GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} pullRequest={worktree.pullRequest} expanded={gitExpanded} onToggle={() => { /* toggle file inspection */ setGitExpanded(value => !value); }} onOpenFile={openGitFile} reviewUnavailable="Launch agent to review" />;
@@ -6113,7 +5434,7 @@ function PendingSessionCard({ launch, tabBar, cleanupControl, retrying, onRetry,
       status = 'Failed';
       break;
   }
-  const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className="log-loading inactive" role="status" aria-label={processing ? `Starting ${launch.label}` : `${launch.label} launch failed`}>{processing && <span className="spinner" />}<strong>{heading}</strong><span>{detail}</span></div><span className={`status log-status ${processing ? 'connecting' : 'inactive'}`}>{status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}<button className="log-control page-arrow" aria-label="Page up" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button className="log-control page-arrow" aria-label="Page down" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></div></div></div></div>;
+  const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className="log-loading inactive" role="status" aria-label={processing ? `Starting ${launch.label}` : `${launch.label} launch failed`}>{processing && <span className="spinner" />}<strong>{heading}</strong><span>{detail}</span></div><span className={`status log-status ${processing ? 'connecting' : 'inactive'}`}>{status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}</div></div></div></div>;
   const lifecycleControl = launch.phase === 'failed' ? <button className="icon-button" type="button" aria-label="Discard failed launch" title="Discard failed launch" onClick={onDiscard}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16m-10 4v6m4-6v6M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" /></svg></button> : undefined;
   const launchControl = launch.phase === 'failed' ? <LaunchSplitButton label={launch.label} resolution={launch.resolution} disabled={retrying} onLaunch={choice => { /* retry without replacing the prepared draft */ onRetry(choice); }} /> : undefined;
   return <article className="agent-view"><section className="log-shell"><div className="log inactive-log">{output}</div></section>{tabBar}{launch.error !== undefined && <p className="launch-error" role="alert">{launch.error}</p>}<PreparingPrompt id={launch.draftId} lifecycleControl={lifecycleControl} launchControl={launchControl} onOperationFeedback={onOperationFeedback} /></article>;
@@ -6585,12 +5906,8 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       setActivatePendingSessionId(current => current !== undefined && confirmedSessionLaunchIds.has(current) ? undefined : current);
     }
     const retainedPromptIds = new Set([...activeAgentIds, ...Array.from(activeWorktreeIds, worktreePromptId), ...pendingSessionLaunchesRef.current.map(launch => launch.draftId)]);
-    logSnapshots.retain(activeAgentIds);
-    for (const id of latestQuestions.keys()) if (!activeAgentIds.has(id)) latestQuestions.delete(id);
     // retire optimistic dismissals for removed agents
     for (const id of dismissedQuestionIds.keys()) if (!activeAgentIds.has(id)) dismissedQuestionIds.delete(id);
-    for (const id of latestAssistantMessages.keys()) if (!activeAgentIds.has(id)) latestAssistantMessages.delete(id);
-    for (const id of overflowingLatestAssistantMessages) if (!activeAgentIds.has(id)) overflowingLatestAssistantMessages.delete(id);
     // retain drafts while their agent or inactive worktree still exists
     for (const id of promptDrafts.keys()) {
       // retire removed draft caches
@@ -6833,24 +6150,6 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     }
     agentStates.current = next;
   }, [data, viewAgent]);
-  const agentIds = data?.agents.map(agent => agent.id).join('\u0000') ?? '';
-  useEffect(() => {
-    if (!data) return;
-    let closed = false;
-    const sockets: WebSocket[] = [];
-    for (const agent of data.agents) {
-      if (logSnapshots.has(agent.id)) continue;
-      void request(`/api/agents/${encodeURIComponent(agent.id)}/tickets`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'logs' }) }).then(async response => {
-        if (!response.ok || closed) return;
-        const { ticket } = await response.json();
-        if (closed) return;
-        const socket = new WebSocket(`${location.origin.replace(/^http/, 'ws')}/ws/logs/${encodeURIComponent(agent.id)}`, ['rac', ticket]);
-        sockets.push(socket);
-        socket.onmessage = event => { if (!closed) cacheLogFrame(agent.id, JSON.parse(event.data) as LogFrame); socket.close(); };
-      }).catch(() => {});
-    }
-    return () => { closed = true; sockets.forEach(socket => socket.close()); };
-  }, [agentIds]);
   const worktrees = data === undefined ? [] : allWorktrees(data);
   // an Agent shows and orders by its Worktree (the server no longer stamps the label/order on
   // the agent); a Scratch agent falls back to its own label and sorts last

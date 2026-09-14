@@ -1,46 +1,8 @@
 import { expect, test } from '@playwright/test';
+import { installPaneMock, pushBytes, seedPaneSize } from './pane-stream-mock';
 
 test('previews a changed file while new agent output arrives', async ({ page }) => {
-  await page.addInitScript(() => {
-    let logSocket: MockWebSocket | undefined;
-    // model the dashboard log connection
-    class MockWebSocket {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSED = 3;
-      readonly url: string;
-      readyState = MockWebSocket.CONNECTING;
-      onopen: ((event: Event) => void) | null = null;
-      onclose: ((event: CloseEvent) => void) | null = null;
-      onerror: ((event: Event) => void) | null = null;
-      onmessage: ((event: MessageEvent) => void) | null = null;
-      constructor(url: string | URL) {
-        this.url = String(url);
-        // retain the agent log connection
-        if (this.url.includes('/ws/logs/')) logSocket = this;
-        window.setTimeout(() => {
-          // ignore closed connections
-          if (this.readyState !== MockWebSocket.CONNECTING) return;
-          this.readyState = MockWebSocket.OPEN;
-          this.onopen?.(new Event('open'));
-          // seed one completed response
-          if (this.url.includes('/ws/logs/')) this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'reset', text: 'Ready\n', latestAssistantMessage: 'Initial response' }) }));
-        });
-      }
-      // ignore client messages
-      send() {}
-      // close the mock connection
-      close() {
-        // preserve idempotent closes
-        if (this.readyState === MockWebSocket.CLOSED) return;
-        this.readyState = MockWebSocket.CLOSED;
-        this.onclose?.(new CloseEvent('close'));
-      }
-    }
-    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
-    // emit a later assistant response
-    Object.defineProperty(window, 'emitAgentResponse', { configurable: true, value: () => logSocket?.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'append', text: 'Still working\n', latestAssistantMessage: 'Updated response' }) })) });
-  });
+  await installPaneMock(page);
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -64,12 +26,15 @@ test('previews a changed file while new agent output arrives', async ({ page }) 
   });
 
   await page.goto('/');
+  await seedPaneSize(page, 'agent-1');
+  await pushBytes(page, 'agent-1', 'Ready\n');
   await page.getByRole('button', { name: /^Git status:/u }).click();
   await page.getByRole('button', { name: 'Preview apps/server/src/app.ts' }).click();
   const preview = page.getByRole('dialog', { name: 'File preview: apps/server/src/app.ts' });
   await expect(preview.getByLabel('Contents of apps/server/src/app.ts')).toContainText('export const app = true;');
 
-  // update the response-file lifecycle
-  await page.evaluate(() => (window as typeof window & { emitAgentResponse: () => void }).emitAgentResponse());
+  // new pane output keeps arriving (and renders) while the preview stays open
+  await pushBytes(page, 'agent-1', 'Still working\n');
+  await expect(page.locator('.log-canvas .xterm-rows')).toContainText('Still working');
   await expect(preview).toBeVisible();
 });

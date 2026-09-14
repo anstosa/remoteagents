@@ -254,8 +254,6 @@ html.software-keyboard-open .tabs { display: none; }
 /* keep modal selection controls above the dialog */
 .output-selection-toolbar.embedded { z-index: calc(var(--layer-dialog) + 1); }
 .log-canvas { position: relative; height: 100%; padding-left: var(--edge); }
-.terminal-frame { position: absolute; inset: 0 0 0 var(--edge); visibility: hidden; background: var(--base); opacity: 0; pointer-events: none; }
-.terminal-frame.active { z-index: 1; visibility: visible; opacity: 1; pointer-events: auto; }
 .inactive-log { background: color-mix(in srgb, var(--crust) 90%, var(--mantle)); }
 .log-loading { position: absolute; inset: 0; z-index: 15; display: grid; place-content: center; justify-items: center; gap: .6rem; max-width: 34rem; margin: auto; padding: 1.25rem; color: var(--subtext-0); font: 600 .75rem var(--font-mono); letter-spacing: .05em; text-align: center; pointer-events: none; }
 .log-loading .spinner { margin: auto; }
@@ -268,9 +266,6 @@ html.software-keyboard-open .tabs { display: none; }
 .log-loading .wake-agent svg { width: 1rem; height: 1rem; fill: currentColor; stroke: none; }
 .log-stale-overlay { position: absolute; inset: 0; z-index: 14; overflow: hidden; pointer-events: none; background: linear-gradient(120deg, color-mix(in srgb, var(--crust) 50%, transparent), color-mix(in srgb, var(--mantle) 26%, transparent)), repeating-linear-gradient(0deg, color-mix(in srgb, var(--crust) 10%, transparent) 0 1px, transparent 1px 5px); box-shadow: inset 0 0 5rem color-mix(in srgb, var(--crust) 72%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--surface-2) 42%, transparent); backdrop-filter: blur(1.75px) saturate(.72) brightness(.82); }
 .log-stale-overlay::after { position: absolute; inset: -20%; content: ''; background: radial-gradient(ellipse at 50% 48%, transparent 25%, color-mix(in srgb, var(--crust) 36%, transparent) 76%); filter: blur(1rem); }
-.log-cached-treatment { position: absolute; inset: 0; z-index: 13; overflow: hidden; border: 2px solid color-mix(in srgb, var(--yellow) 58%, transparent); pointer-events: none; background: repeating-linear-gradient(135deg, transparent 0 18px, color-mix(in srgb, var(--yellow) 5%, transparent) 18px 20px); box-shadow: inset 0 0 3.5rem color-mix(in srgb, var(--yellow) 8%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--crust) 75%, transparent); }
-.log-cached-treatment > span { position: absolute; top: .65rem; left: 50%; max-width: calc(100% - 25rem); overflow: hidden; border: 1px solid color-mix(in srgb, var(--yellow) 62%, var(--surface-1)); border-radius: var(--control-radius); padding: .28rem .5rem; background: color-mix(in srgb, var(--crust) 88%, transparent); box-shadow: 0 .35rem 1rem color-mix(in srgb, var(--crust) 55%, transparent); color: var(--yellow); font: 750 .62rem var(--font-mono); letter-spacing: .07em; text-overflow: ellipsis; text-transform: uppercase; transform: translateX(-50%); white-space: nowrap; }
-@media (max-width: 760px) { .log-cached-treatment > span { top: 3.1rem; max-width: calc(100% - 2rem); } }
 .log-footer { position: absolute; right: 0; bottom: 0; left: 0; z-index: 20; display: grid; pointer-events: none; }
 /* the status chip and prompt-history control portal into these slots in the bottom composer row */
 .prompt-status-slot, .prompt-history-slot { display: contents; }
@@ -382,8 +377,7 @@ html.software-keyboard-open .tabs { display: none; }
 .page-controls { position: relative; z-index: 0; display: grid; gap: .375rem; margin-left: auto; margin-right: calc(.375rem - var(--edge)); pointer-events: auto; }
 /* Absorb near-misses around paging controls instead of focusing the terminal underneath. */
 .page-controls::before { position: absolute; inset: -.375rem; z-index: 0; content: ''; }
-.page-controls > :not(.page-down-controls) { justify-self: end; }
-.page-down-controls { position: relative; z-index: 1; display: flex; justify-content: flex-end; gap: .375rem; }
+.page-controls > * { justify-self: end; }
 .page-controls .page-arrow { position: relative; z-index: 1; display: grid; width: 2.6rem; min-height: 2.6rem; padding: .25rem; place-items: center; }
 .page-arrow svg { width: 1.2rem; height: 1.2rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.35; }
 .output-server-switcher { position: absolute; top: .375rem; left: .375rem; z-index: 40; width: max-content; max-width: calc(100% - .75rem); }
@@ -652,10 +646,9 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
 html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:is(.has-note, .has-browser) { grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
 html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:is(.has-note, .has-browser) > :is(.note-pane, .browser-pane, .split-resizer, .mobile-split-switches) { display: none; }
 html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:is(.has-note, .has-browser) > .log-output { display: block; }
-.back-to-bottom { border-color: var(--sky); background: color-mix(in srgb, var(--sky) 7%, var(--mantle)); color: var(--sky); opacity: 1; }
-.back-to-bottom:not(:disabled):hover { border-color: var(--sky); background: color-mix(in srgb, var(--sky) 15%, var(--mantle)); color: var(--sky); }
 .xterm { height: 100%; }
-/* The dashboard pages output explicitly, so xterm never owns scrolling. */
+/* The streamed terminal drives its own scroll and jump-to-latest, so the native
+   xterm scrollbar stays hidden. */
 .xterm .xterm-viewport { overflow: hidden !important; scrollbar-width: none; }
 .xterm .xterm-viewport::-webkit-scrollbar { display: none; }
 /* A streamed pane renders at its natural grid top-left; a pane smaller than the panel
@@ -1209,7 +1202,6 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .update-advisor-output > .embedded-log-shell { width: 100%; height: 100%; min-height: 0; grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
 .update-advisor-output .embedded-log { width: 100%; margin-left: 0; border: 0; }
 .update-advisor-output .log-canvas { padding-left: 0; }
-.update-advisor-output .terminal-frame { inset: 2.65rem 3.4rem 0 0; }
 .update-advisor-output .log-status { top: .45rem; left: .45rem; }
 .update-advisor-output > .mobile-terminal-keys { min-width: 0; max-width: 100%; }
 .update-advisor-launching, .update-advisor-error { display: flex; min-height: 7rem; align-items: center; justify-content: center; gap: .5rem; border: 1px dashed var(--surface-2); border-radius: var(--control-radius); color: var(--subtext-0); font-size: .72rem; }

@@ -1,35 +1,9 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
+import { installPaneMock } from './pane-stream-mock';
 
-// install the shared agent stream fixture
+// install the shared streamed-pane fixture so the review console's agent panel mounts
 async function installAgentWebSocket(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    class MockWebSocket {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSED = 3;
-      readonly url: string;
-      readyState = MockWebSocket.CONNECTING;
-      onopen: ((event: Event) => void) | null = null;
-      onclose: ((event: CloseEvent) => void) | null = null;
-      onerror: ((event: Event) => void) | null = null;
-      onmessage: ((event: MessageEvent) => void) | null = null;
-      // connect the mocked agent stream
-      constructor(url: string | URL) {
-        this.url = String(url);
-        window.setTimeout(() => {
-          this.readyState = MockWebSocket.OPEN;
-          this.onopen?.(new Event('open'));
-          // seed the visible log
-          if (this.url.includes('/ws/logs/')) this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'reset', text: 'Ready\n' }) }));
-        });
-      }
-      // ignore fixture writes
-      send() {}
-      // close the fixture stream
-      close() { this.readyState = MockWebSocket.CLOSED; this.onclose?.(new CloseEvent('close')); }
-    }
-    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
-  });
+  await installPaneMock(page);
 }
 
 // serve common agent dependencies

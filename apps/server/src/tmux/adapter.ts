@@ -214,24 +214,20 @@ export class TmuxAdapter {
     return { text: safeSnapshot(window.join('\n')), older: start > 0 };
   }
 
-  async captureWindow(socket: SocketRef, pane: string, history: number, rows: number, captureVia?: PaneCaptureRunner): Promise<CapturedWindow | undefined> {
-    if (!paneId.test(pane) || !Number.isInteger(history) || history < 0 || history > 5_000 || !Number.isInteger(rows) || rows < 2 || rows > paneSizeLimit.rows) return undefined;
-    // tmux's -S/-E coordinates shift around wrapped and blank rows. Capture a
-    // bounded history snapshot and slice its concrete lines instead, so page
-    // offsets are stable and adjacent windows overlap exactly as requested.
+  // The deep Capture the derive reads (lastPrompt and the latest agent/assistant messages come
+  // from the full history); returns the concrete bottom window of `rows` lines.
+  async captureWindow(socket: SocketRef, pane: string, rows: number, captureVia?: PaneCaptureRunner): Promise<CapturedWindow | undefined> {
+    if (!paneId.test(pane) || !Number.isInteger(rows) || rows < 2 || rows > paneSizeLimit.rows) return undefined;
     const stdout = await this.captureText(socket, pane, 5_000, captureVia);
     if (stdout === undefined) return undefined;
     const lines = stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
-    const maximumOffset = Math.max(0, lines.length - rows);
-    const offset = Math.min(history, maximumOffset);
-    const end = lines.length - offset;
-    const start = Math.max(0, end - rows);
+    const start = Math.max(0, lines.length - rows);
     const lastPrompt = lastPromptFromHistory(stdout);
     const latestAgentMessage = latestAgentMessageFromHistory(stdout);
     const assistantMessage = latestCompletedAssistantMessage(stdout);
     const latestAssistantMessage = assistantMessage !== undefined && assistantMessage.text.length <= 30_000 ? assistantMessage.text : undefined;
     const latestAssistantMessageOverflows = assistantMessage === undefined || latestAssistantMessage === undefined ? undefined : assistantMessage.rows > rows;
-    const window = bottomAlignedWindow(lines.slice(start, end), rows);
+    const window = bottomAlignedWindow(lines.slice(start), rows);
     return { text: safeSnapshot(window.join('\n')), older: start > 0, ...(lastPrompt === undefined ? {} : { lastPrompt }), ...(latestAgentMessage === undefined ? {} : { latestAgentMessage }), ...(latestAssistantMessage === undefined ? {} : { latestAssistantMessage, latestAssistantMessageOverflows }) };
   }
 

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { installPaneMock, pushBytes, seedPaneSize } from './pane-stream-mock';
 
 test('shows worktree prompt history and cycles it from the composer', async ({ page }) => {
   const notes: Array<{ id: string; text: string; title?: string }> = [];
@@ -8,30 +9,7 @@ test('shows worktree prompt history and cycles it from the composer', async ({ p
     { id: 'history-entry-001', text: 'First prompt', createdAt: '2026-08-04T01:01:00.000Z' }
   ];
   let historyRequests = 0;
-  await page.addInitScript(() => {
-    class MockWebSocket {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSED = 3;
-      readonly url: string;
-      readyState = MockWebSocket.CONNECTING;
-      onopen: ((event: Event) => void) | null = null;
-      onclose: ((event: CloseEvent) => void) | null = null;
-      onerror: ((event: Event) => void) | null = null;
-      onmessage: ((event: MessageEvent) => void) | null = null;
-      constructor(url: string | URL) {
-        this.url = String(url);
-        window.setTimeout(() => {
-          this.readyState = MockWebSocket.OPEN;
-          this.onopen?.(new Event('open'));
-          if (this.url.includes('/ws/logs/')) this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'reset', text: 'Ready\n', lastPrompt: 'First prompt' }) }));
-        });
-      }
-      send() {}
-      close() { this.readyState = MockWebSocket.CLOSED; this.onclose?.(new CloseEvent('close')); }
-    }
-    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
-  });
+  await installPaneMock(page);
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -67,6 +45,8 @@ test('shows worktree prompt history and cycles it from the composer', async ({ p
   });
 
   await page.goto('/');
+  await seedPaneSize(page, 'agent-1');
+  await pushBytes(page, 'agent-1', 'Ready\n');
   await page.addStyleTag({ content: '.prompt-history-list { max-height: 5rem; } .prompt-history-list button { min-height: 4rem; }' });
   // the recent-prompt text button is gone; history is reached from the composer-row icon
   await expect(page.getByRole('button', { name: 'Last prompt', exact: true })).toHaveCount(0);

@@ -47,33 +47,3 @@ export const pollWhileVisible = (task: () => void | Promise<void>, intervalMs: n
     document.removeEventListener('visibilitychange', visibilityChanged);
   };
 };
-
-export const createAnimationFrameTextBatcher = (
-  flush: (value: string) => void,
-  schedule: (callback: FrameRequestCallback) => number = window.requestAnimationFrame.bind(window),
-  cancel: (frame: number) => void = window.cancelAnimationFrame.bind(window),
-  maxLength = Number.MAX_SAFE_INTEGER
-) => {
-  let frame: number | undefined;
-  let pending = '';
-  const clear = () => {
-    pending = '';
-    if (frame === undefined) return;
-    cancel(frame);
-    frame = undefined;
-  };
-  return {
-    push(value: string) {
-      if (pending.length + value.length > maxLength) return false;
-      pending += value;
-      if (frame === undefined) frame = schedule(() => {
-        frame = undefined;
-        const value = pending;
-        pending = '';
-        if (value) flush(value);
-      });
-      return true;
-    },
-    clear
-  };
-};

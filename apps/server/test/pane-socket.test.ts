@@ -75,7 +75,7 @@ function fakeTmux(stream: ReturnType<typeof fakePaneStream>, overrides: Record<s
       resize: async (_s: unknown, _p: string, cols: number, rows: number) => { resizes.push({ cols, rows }); return true; },
       unpinWindowSize: async () => true,
       sessionPaneIds: async () => ['%1', '%2'],
-      captureWindow: async (_s: unknown, _p: string, _h: number, _r: number, via: (depth: number) => Promise<string | undefined>) => {
+      captureWindow: async (_s: unknown, _p: string, _r: number, via: (depth: number) => Promise<string | undefined>) => {
         const text = await via(5_000);
         return text === undefined ? undefined : { text, older: false, latestAgentMessage: text, ...(stream.assistantMessage() === undefined ? {} : { latestAssistantMessage: stream.assistantMessage(), latestAssistantMessageOverflows: false }) };
       },
@@ -468,5 +468,66 @@ describe('/ws/pane Worktree target', () => {
     const conn = await connectWorktree('', async () => [member], stream, tmux);
     await waitFor(() => conn.closeCode() !== undefined);
     expect(conn.closeCode()).toBe(1008);
+  });
+});
+
+describe('/ws/pane window-keyed Size claim', () => {
+  it('shares one claim between two panes of the same window (keyed by window, not pane)', async () => {
+    // Both panes resolve to window @7 (the fake client's windowId), so the two viewers share one
+    // coordinator entry keyed by the window and release unpins exactly once — for the surviving
+    // owner. Were the claim keyed by pane id (or the pane fallback used before windowKeyReady),
+    // each socket would hold its own claim and unpin twice. This proves the /ws/pane handler keys
+    // the Size claim by the resolved window id (app.ts INVARIANT), coverage carried over from the
+    // retired /ws/logs socket test.
+    const stream = fakePaneStream();
+    const resizes: string[] = [];
+    const unpins: string[] = [];
+    const tmux = {
+      size: async () => ({ cols: 80, rows: 24, clientLimit: { cols: 80, rows: 24 } }),
+      resize: async (_s: unknown, pane: string) => { resizes.push(pane); return true; },
+      unpinWindowSize: async (_s: unknown, pane: string) => { unpins.push(pane); return true; },
+      sessionPaneIds: async () => ['%1', '%2'],
+      captureWindow: async (_s: unknown, _p: string, _r: number, via: (depth: number) => Promise<string | undefined>) => {
+        const text = await via(5_000);
+        return text === undefined ? undefined : { text, older: false };
+      }
+    } as never;
+    const panes: Record<string, string> = { 'agent-1': '%1', 'agent-2': '%2' };
+    const discovery = {
+      target: async (id: string) => (panes[id] ? { agent: { ...agentOf('claude'), id, paneId: panes[id]! }, socket } : undefined),
+      worktreesNow: () => []
+    } as never;
+    const control = { connect: () => true, active: () => true } as never;
+
+    const port = await freePort();
+    const tickets = new TicketStore();
+    const app = await buildApp(
+      testConfig({ publicOrigin: new URL(`http://127.0.0.1:${port}`), projects: [testProject({ id: 'proj' })] as never }),
+      { auth, control, dashboardUpdates, discovery, tickets, paneStream: stream.provider, tmux } as never
+    );
+    await app.listen({ host: '127.0.0.1', port });
+
+    const openViewport = async (id: string, cols: number, rows: number) => {
+      const ticket = tickets.mint('session', 'pane', id).id;
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/pane/${id}`, ['rac', ticket]);
+      ws.binaryType = 'arraybuffer';
+      open.push({ app, ws });
+      await new Promise<void>((resolve, reject) => { ws.addEventListener('open', () => resolve()); ws.addEventListener('error', () => reject(new Error('websocket failed to open'))); });
+      ws.send(JSON.stringify({ type: 'viewport', cols, rows, scrollback: 500 }));
+      return ws;
+    };
+
+    const first = await openViewport('agent-1', 100, 30);
+    await waitFor(() => resizes.includes('%1'));
+    const second = await openViewport('agent-2', 120, 40);
+    await waitFor(() => resizes.includes('%2'));
+
+    first.close();
+    second.close();
+    await waitFor(() => unpins.length >= 1);
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // one window, one claim: exactly one unpin, for the window's surviving (latest) owner
+    expect(unpins).toEqual(['%2']);
   });
 });

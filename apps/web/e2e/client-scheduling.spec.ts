@@ -1,65 +1,8 @@
 import { expect, test } from '@playwright/test';
-import { BoundedTextCache, nextLiveSnapshot, retainedTextTail } from '../src/client-cache';
-import { createAnimationFrameTextBatcher } from '../src/client-scheduling';
 
-test('bounds cached text by entry count and retained tail length', () => {
-  const cache = new BoundedTextCache(2, 8);
-
-  cache.set('one', '1234567890');
-  cache.append('one', 'abc');
-  cache.set('two', 'two');
-  cache.set('three', 'three');
-
-  expect(cache.get('one')).toBeUndefined();
-  expect(cache.get('two')).toBe('two');
-  expect(cache.get('three')).toBe('three');
-  expect(cache.size).toBe(2);
-
-  cache.append('three', '12345678');
-  expect(cache.get('three')).toBe('12345678');
-  cache.retain(new Set(['three']));
-  expect(cache.get('two')).toBeUndefined();
-  expect(cache.size).toBe(1);
-});
-
-test('does not split Unicode pairs or retain a partial terminal control line', () => {
-  expect(retainedTextTail('12345😀67890', 6)).toBe('67890');
-  const retained = retainedTextTail(`old\n\x1b[31mred text\nplain tail`, 18);
-  expect(retained.startsWith('\x1b[0m')).toBe(true);
-  expect(retained).toContain('plain tail');
-  expect(retained).not.toContain('[31m');
-});
-
-test('retains complete reset viewports while bounding accumulated append output', () => {
-  const largestPlainViewport = 'x'.repeat(500 * 300 + 299);
-  expect(nextLiveSnapshot('old output', 'reset', largestPlainViewport)).toHaveLength(largestPlainViewport.length);
-  expect(nextLiveSnapshot('x'.repeat(1_000_000), 'append', 'tail')).toHaveLength(1_000_000);
-});
-
-test('coalesces terminal append text once per animation frame and clears stale batches', () => {
-  const frames: FrameRequestCallback[] = [];
-  const cancelled: number[] = [];
-  const writes: string[] = [];
-  const batcher = createAnimationFrameTextBatcher(
-    value => writes.push(value),
-    callback => { frames.push(callback); return frames.length; },
-    frame => { cancelled.push(frame); }
-  );
-
-  batcher.push('alpha ');
-  batcher.push('\x1b[31mred');
-  batcher.push(' text\x1b[0m');
-  expect(frames).toHaveLength(1);
-  frames.shift()!(0);
-  expect(writes).toEqual(['alpha \x1b[31mred text\x1b[0m']);
-
-  batcher.push('stale');
-  batcher.clear();
-  expect(cancelled).toEqual([1]);
-  frames.shift()!(0);
-  expect(writes).toHaveLength(1);
-});
-
+// `pollWhileVisible` (client-scheduling.ts) throttles background polling while the tab is
+// hidden and resumes on return. Preserved from the retired client-resource-usage spec, whose
+// snapshot-cache tests went with the machinery this covers the still-live poll scheduler.
 test('reduces hidden client polling and refreshes when visible', async ({ page }) => {
   await page.clock.install();
   await page.addInitScript(() => {
