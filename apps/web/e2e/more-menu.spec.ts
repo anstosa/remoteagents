@@ -35,7 +35,6 @@ test('keeps attachments and repository choices out of the more menu', async ({ p
   await expect(menu.getByRole('button', { name: 'Attach files', exact: true })).toHaveCount(0);
   await expect(menu.getByText('Pull requests', { exact: true })).toHaveCount(0);
   await expect(menu.getByText('Branches', { exact: true })).toHaveCount(0);
-  await expect(menu.getByRole('button', { name: 'Swap to terminal', exact: true }).locator('.more-menu-icon')).toBeVisible();
   await expect(menu.getByRole('button', { name: 'GitHub Actions', exact: true }).locator('.spinner')).toBeVisible();
   await expect(menu.getByRole('button', { name: 'New Task', exact: true }).locator('.spinner')).toBeVisible();
   finishGithubActions();

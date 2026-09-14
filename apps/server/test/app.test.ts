@@ -989,36 +989,26 @@ describe('Console shells server lifecycle', () => {
   }, 15_000);
 });
 
-describe('agent terminal swap', () => {
-  it('backgrounds the agent for terminal mode and foregrounds it when returning', async () => {
+describe('agent GitHub Actions route', () => {
+  it('returns the pull-request switch service actions URL, or 404 when there is none', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '⠋ Working' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
-    const suspended: Array<{ pane: string; path: string }> = [];
-    const foregrounded: Array<{ pane: string; path: string }> = [];
-    const swapApp = await buildApp(config, {
+    const actionsApp = await buildApp(config, {
       auth: new AuthService(hash, Buffer.alloc(32, 8).toString('base64url')),
       discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined, worktreesNow: () => [] } as never,
-      tmux: {
-        suspend: async (targetSocket: typeof socket, pane: string) => { suspended.push({ pane, path: targetSocket.path }); return true; },
-        foreground: async (targetSocket: typeof socket, pane: string) => { foregrounded.push({ pane, path: targetSocket.path }); return true; }
-      } as never,
       prSwitch: { actionsUrl: async (id: string) => id === agent.id ? 'https://github.com/octo/repo/actions' : undefined } as never
     });
     try {
-      const boot = await swapApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
-      const login = await swapApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
-      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
-      const background = await swapApp.inject({ method: 'POST', url: `/api/agents/${agent.id}/background`, headers });
-      const foreground = await swapApp.inject({ method: 'POST', url: `/api/agents/${agent.id}/foreground`, headers });
-      const actions = await swapApp.inject({ method: 'GET', url: `/api/agents/${agent.id}/github-actions`, headers: { host: headers.host, cookie: headers.cookie } });
+      const boot = await actionsApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await actionsApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0] };
+      const actions = await actionsApp.inject({ method: 'GET', url: `/api/agents/${agent.id}/github-actions`, headers });
+      const missing = await actionsApp.inject({ method: 'GET', url: '/api/agents/agent-2/github-actions', headers });
 
-      expect(background.statusCode).toBe(204);
-      expect(foreground.statusCode).toBe(204);
       expect(actions.json()).toEqual({ url: 'https://github.com/octo/repo/actions' });
-      expect(suspended).toEqual([{ pane: '%1', path: '/tmp/tmux' }]);
-      expect(foregrounded).toEqual([{ pane: '%1', path: '/tmp/tmux' }]);
-    } finally { await swapApp.close(); }
+      expect(missing.statusCode).toBe(404);
+    } finally { await actionsApp.close(); }
   }, 15_000);
 });
 

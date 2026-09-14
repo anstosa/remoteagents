@@ -18,17 +18,6 @@ const choices = [{ number: 7, title: 'Draft work', branch: 'feature/draft', head
 const commonRepositoryResult = { code: 0, stdout: '/repositories/project/.git\n' };
 const cleanCommand = async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('--git-common-dir') ? commonRepositoryResult.stdout : args.includes('status') ? '' : args.includes('refs/heads') ? '' : 'refs/remotes/origin/feature/current\n' });
 
-// a tmux fake that records every job-control call; switch and move must leave it empty
-function recordingTmux() {
-  const calls: string[] = [];
-  const tmux = {
-    suspend: async (_socket: unknown, pane: string) => { calls.push(`suspend:${pane}`); return true; },
-    foreground: async (_socket: unknown, pane: string) => { calls.push(`foreground:${pane}`); return true; },
-    input: async (_socket: unknown, pane: string) => { calls.push(`input:${pane}`); return true; }
-  };
-  return { tmux, calls };
-}
-
 // create one linked repository fixture
 async function createMoveRepository(withSubmodule = false) {
   const root = await mkdtemp(join(tmpdir(), 'rac-pr-move-'));
@@ -104,9 +93,8 @@ function switchService(repository: Awaited<ReturnType<typeof createSwitchReposit
   const targetAgent = { ...agent, workspace: repository.targetPath, branch: 'main', attention };
   const discovery = { worktreesNow: () => [targetWorktree], target: async () => ({ agent: targetAgent, socket }), dashboard: async () => ({ generation: 1, agents: [targetAgent], projects: [] }) };
   const pulls = { supports: async () => true, open: async () => ({ own: [{ number: choice.number, title: 'Draft work', branch: choice.branch, headSha: choice.headSha, headOnOrigin: choice.headOnOrigin, draft: false, url: `https://github.com/octo/repo/pull/${choice.number}` }], others: [] }) };
-  const { tmux, calls } = recordingTmux();
-  const service = new PullRequestSwitchService(config, discovery as never, tmux as never, pulls as never, command);
-  return { service, targetAgent, calls };
+  const service = new PullRequestSwitchService(config, discovery as never, pulls as never, command);
+  return { service, targetAgent };
 }
 
 // add staged, unstaged, and untracked source changes
@@ -118,7 +106,7 @@ async function dirtyMoveSource(sourcePath: string) {
 }
 
 // assemble one standard move service around a real repository
-function moveService(repository: Awaited<ReturnType<typeof createMoveRepository>>, tmux: object, command: GitCommand = run, pulls: object = { supports: async () => true, open: async () => ({ own: [{ ...choices[0], headSha: repository.headSha }], others: [] }) }, targetAttention: AttentionState = 'finished', sourceAttention: AttentionState = 'finished') {
+function moveService(repository: Awaited<ReturnType<typeof createMoveRepository>>, command: GitCommand = run, pulls: object = { supports: async () => true, open: async () => ({ own: [{ ...choices[0], headSha: repository.headSha }], others: [] }) }, targetAttention: AttentionState = 'finished', sourceAttention: AttentionState = 'finished') {
   const targetWorktree = { ...worktree, id: `cora:${repository.targetPath}`, path: repository.targetPath, identity: repository.targetPath };
   const sourceWorktree = { ...worktree, id: 'delta', projectId: 'cora', label: 'Delta', path: repository.sourcePath, identity: repository.sourcePath };
   const targetAgent = { ...agent, workspace: repository.targetPath, branch: 'main', attention: targetAttention };
@@ -128,7 +116,7 @@ function moveService(repository: Awaited<ReturnType<typeof createMoveRepository>
     target: async (id: string) => id === targetAgent.id ? { agent: targetAgent, socket } : id === sourceAgent.id ? { agent: sourceAgent, socket } : undefined,
     dashboard: async () => ({ generation: 1, agents: [targetAgent, sourceAgent], projects: [] })
   };
-  const service = new PullRequestSwitchService(config, discovery as never, tmux as never, pulls as never, command);
+  const service = new PullRequestSwitchService(config, discovery as never, pulls as never, command);
   return { service, targetAgent };
 }
 
@@ -139,9 +127,9 @@ describe('pull request switching', () => {
   it('finds GitHub Actions for configured worktrees and scratch repositories', async () => {
     const requested: string[] = [];
     const pulls = { actionsUrl: async (workspace: string) => { requested.push(workspace); return 'https://github.com/octo/repo/actions'; } };
-    const configured = new PullRequestSwitchService(config, { worktreesNow: () => [worktree], target: async () => ({ agent, socket }) } as never, {} as never, pulls as never, cleanCommand);
+    const configured = new PullRequestSwitchService(config, { worktreesNow: () => [worktree], target: async () => ({ agent, socket }) } as never, pulls as never, cleanCommand);
     const scratchAgent = { ...agent, workspace: '/scratch/repo' };
-    const scratch = new PullRequestSwitchService(config, { worktreesNow: () => [worktree], target: async () => ({ agent: scratchAgent, socket }) } as never, {} as never, pulls as never, cleanCommand);
+    const scratch = new PullRequestSwitchService(config, { worktreesNow: () => [worktree], target: async () => ({ agent: scratchAgent, socket }) } as never, pulls as never, cleanCommand);
 
     await expect(configured.actionsUrl(agent.id)).resolves.toBe('https://github.com/octo/repo/actions');
     await expect(scratch.actionsUrl(scratchAgent.id)).resolves.toBe('https://github.com/octo/repo/actions');
@@ -151,8 +139,7 @@ describe('pull request switching', () => {
   it('marks a pull request unavailable when another agent has its branch checked out', async () => {
     const discovery = { worktreesNow: () => [worktree, { ...worktree, id: 'delta', label: 'Delta' }], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent, { ...agent, id: 'agent-2', branch: 'feature/draft', worktreeId: 'delta' }], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
-    const { tmux } = recordingTmux();
-    const service = new PullRequestSwitchService(config, discovery as never, tmux as never, pulls as never, cleanCommand);
+    const service = new PullRequestSwitchService(config, discovery as never, pulls as never, cleanCommand);
 
     await expect(service.available(agent.id)).resolves.toEqual({ enabled: true, pullRequests: [{ ...choices[0], checkoutBranch: 'feature/draft', checkedOut: true, openIn: { agentId: 'agent-2', worktreeId: 'delta', worktreeName: 'Delta' } }], otherPullRequests: [], branches: [], pullRequestsSupported: true });
     await expect(service.switch(agent.id, 7)).resolves.toBe('unavailable');
@@ -168,12 +155,10 @@ describe('pull request switching', () => {
       if (args.includes('symbolic-ref')) return { code: 0, stdout: 'feature/draft\n' };
       return await cleanCommand(_binary, args);
     };
-    const { tmux, calls } = recordingTmux();
-    const service = new PullRequestSwitchService(config, discovery as never, tmux as never, pulls as never, command);
+    const service = new PullRequestSwitchService(config, discovery as never, pulls as never, command);
 
     await expect(service.available(currentAgent.id)).resolves.toEqual({ enabled: true, pullRequests: [{ ...choices[0], checkoutBranch: 'feature/draft', checkedOut: true, openIn: { agentId: 'agent-1', worktreeId: worktree.id, worktreeName: 'Cora' } }], otherPullRequests: [], branches: [], pullRequestsSupported: true });
     await expect(service.switch(currentAgent.id, 7)).resolves.toBe('unavailable');
-    expect(calls).toEqual([]);
   });
 
   // prefer the live branch over cached dashboard metadata
@@ -186,7 +171,7 @@ describe('pull request switching', () => {
       if (args.includes('symbolic-ref')) return { code: 0, stdout: 'feature/draft\n' };
       return await cleanCommand(_binary, args);
     };
-    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, command);
+    const service = new PullRequestSwitchService(config, discovery as never, pulls as never, command);
 
     await expect(service.available(staleAgent.id)).resolves.toMatchObject({ pullRequests: [{ number: 7, checkedOut: true, openIn: { agentId: 'agent-1', worktreeId: worktree.id, worktreeName: 'Cora' } }] });
   });
@@ -209,7 +194,7 @@ describe('pull request switching', () => {
         if (args.includes('--git-common-dir')) return { code: 0, stdout: `${args[1] === worktree.identity ? targetAlias : sourceAlias}\n` };
         return await cleanCommand(_binary, args);
       };
-      const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, command);
+      const service = new PullRequestSwitchService(config, discovery as never, pulls as never, command);
 
       await expect(service.available(agent.id)).resolves.toMatchObject({ pullRequests: [{ number: 7, checkedOut: true, openIn: { agentId: 'agent-2', worktreeId: 'delta', worktreeName: 'Delta' } }] });
     } finally {
@@ -238,7 +223,7 @@ describe('pull request switching', () => {
       if (args.includes('status')) return { code: 0, stdout: pullRequestsLoaded ? '' : ' M apps/server/src/app.ts\n' };
       return { code: 0, stdout: 'refs/remotes/origin/feature/current\n' };
     };
-    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, command);
+    const service = new PullRequestSwitchService(config, discovery as never, pulls as never, command);
 
     await expect(service.available(agent.id)).resolves.toMatchObject({ enabled: true });
   });
@@ -247,7 +232,7 @@ describe('pull request switching', () => {
     const deltaView = { id: 'delta', projectId: 'cora', label: 'Delta', path: '/worktrees/delta', available: true, pinned: false, main: false, detached: false, locked: false, order: 1, branch: 'feature/draft' };
     const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [{ id: 'cora', label: 'Cora', available: true, worktrees: [deltaView] }] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
-    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, cleanCommand);
+    const service = new PullRequestSwitchService(config, discovery as never, pulls as never, cleanCommand);
 
     await expect(service.available(agent.id)).resolves.toEqual({ enabled: true, pullRequests: [{ ...choices[0], checkoutBranch: 'feature/draft', checkedOut: true, openIn: { worktreeId: 'delta', worktreeName: 'Delta' } }], otherPullRequests: [], branches: [], pullRequestsSupported: true });
   });
@@ -273,7 +258,7 @@ describe('pull request switching', () => {
     const deltaView = { id: 'delta', projectId: 'cora', label: 'Delta', path: '/worktrees/delta', available: true, pinned: false, main: false, detached: false, locked: false, order: 1, branch: 'feature/draft' };
     const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [{ id: 'cora', label: 'Cora', available: true, worktrees: [deltaView] }] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: [], others: [] }) };
-    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, branchListingCommand('feature/current\nfeature/draft\nfeature/solo\n'));
+    const service = new PullRequestSwitchService(config, discovery as never, pulls as never, branchListingCommand('feature/current\nfeature/draft\nfeature/solo\n'));
 
     const availability = await service.available(agent.id);
     expect(availability?.branches).toEqual([
@@ -286,7 +271,7 @@ describe('pull request switching', () => {
   it('excludes the current branch and branches already shown as pull requests', async () => {
     const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
-    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, branchListingCommand('feature/current\nfeature/draft\nfeature/solo\n'));
+    const service = new PullRequestSwitchService(config, discovery as never, pulls as never, branchListingCommand('feature/current\nfeature/draft\nfeature/solo\n'));
 
     const availability = await service.available(agent.id);
     // feature/current is the target branch; feature/draft is pull request #7
@@ -297,7 +282,7 @@ describe('pull request switching', () => {
     const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: [], others: [] }) };
     const listing = Array.from({ length: 250 }, (_value, index) => `feature/branch-${index}`).join('\n');
-    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, branchListingCommand(listing));
+    const service = new PullRequestSwitchService(config, discovery as never, pulls as never, branchListingCommand(listing));
 
     const availability = await service.available(agent.id);
     expect(availability?.branches).toHaveLength(200);
@@ -307,7 +292,7 @@ describe('pull request switching', () => {
     const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
     // fail closed if the GitHub-only path is ever queried
     const pulls = { supports: async () => false, open: async () => { throw new Error('GitHub must not be queried without a supported origin'); } };
-    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, branchListingCommand('feature/current\nfeature/solo\n'));
+    const service = new PullRequestSwitchService(config, discovery as never, pulls as never, branchListingCommand('feature/current\nfeature/solo\n'));
 
     await expect(service.available(agent.id)).resolves.toEqual({ enabled: true, pullRequests: [], otherPullRequests: [], branches: [{ branch: 'feature/solo', checkedOut: false }], pullRequestsSupported: false });
   });
@@ -317,7 +302,7 @@ describe('pull request switching', () => {
     const pulls = { supports: async () => false, open: async () => { throw new Error('unused'); } };
     // reject an unreadable repository identity before any listing
     const command = async (_binary: string, args: string[]) => args.includes('--git-common-dir') ? { code: 128, stdout: '' } : { code: 0, stdout: '' };
-    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, command);
+    const service = new PullRequestSwitchService(config, discovery as never, pulls as never, command);
 
     await expect(service.available(agent.id)).resolves.toBeUndefined();
   });
@@ -331,12 +316,10 @@ describe('pull request switching', () => {
       if (args.includes('--git-common-dir')) return { code: 0, stdout: args[1] === worktree.identity ? '/repositories/target/.git\n' : '/repositories/source/.git\n' };
       return await cleanCommand(_binary, args);
     };
-    const { tmux, calls } = recordingTmux();
-    const service = new PullRequestSwitchService(config, discovery as never, tmux as never, pulls as never, command);
+    const service = new PullRequestSwitchService(config, discovery as never, pulls as never, command);
 
     await expect(service.available(agent.id)).resolves.toMatchObject({ pullRequests: [{ number: 7, checkedOut: false }] });
     await expect(service.move(agent.id, 7)).resolves.toBe('unavailable');
-    expect(calls).toEqual([]);
   });
 
   it('moves an occupied pull request here and recovers every source change', async () => {
@@ -345,8 +328,7 @@ describe('pull request switching', () => {
       await writeFile(join(repository.targetPath, 'tracked.txt'), 'existing stash\n');
       await run('/usr/bin/git', ['-C', repository.targetPath, 'stash', 'push', '--message', 'existing backup']);
       await dirtyMoveSource(repository.sourcePath);
-      const { tmux, calls } = recordingTmux();
-      const { service, targetAgent } = moveService(repository, tmux);
+      const { service, targetAgent } = moveService(repository);
 
       await expect(service.move(targetAgent.id, 7)).resolves.toBe('moved');
 
@@ -357,7 +339,6 @@ describe('pull request switching', () => {
       await expect(readFile(join(repository.targetPath, 'notes.txt'), 'utf8')).resolves.toBe('untracked\n');
       await expect(run('/usr/bin/git', ['-C', repository.targetPath, 'status', '--porcelain=v1'])).resolves.toMatchObject({ stdout: 'MM tracked.txt\n?? notes.txt\n' });
       await expect(run('/usr/bin/git', ['-C', repository.targetPath, 'stash', 'list'])).resolves.toMatchObject({ stdout: expect.stringContaining('existing backup') });
-      expect(calls).toEqual([]);
     } finally {
       await rm(repository.root, { recursive: true, force: true });
     }
@@ -372,8 +353,7 @@ describe('pull request switching', () => {
         if (args[1] === repository.targetPath && args[2] === 'switch' && args.at(-1) === 'feature/draft') return { code: 1, stdout: '' };
         return await run(binary, args);
       };
-      const { tmux } = recordingTmux();
-      const { service, targetAgent } = moveService(repository, tmux, command);
+      const { service, targetAgent } = moveService(repository, command);
 
       await expect(service.move(targetAgent.id, 7)).resolves.toBe('unavailable');
 
@@ -394,8 +374,7 @@ describe('pull request switching', () => {
       await dirtyMoveSource(repository.sourcePath);
       // the source branch changed since the availability snapshot
       await run('/usr/bin/git', ['-C', repository.sourcePath, 'switch', '-c', 'feature/other']);
-      const { tmux } = recordingTmux();
-      const { service, targetAgent } = moveService(repository, tmux);
+      const { service, targetAgent } = moveService(repository);
 
       await expect(service.move(targetAgent.id, 7)).resolves.toBe('unavailable');
 
@@ -414,8 +393,7 @@ describe('pull request switching', () => {
       await writeFile(join(repository.targetPath, 'tracked.txt'), 'existing stash\n');
       await run('/usr/bin/git', ['-C', repository.targetPath, 'stash', 'push', '--message', 'existing backup']);
       await writeFile(join(repository.sourcePath, 'module', 'module.txt'), 'dirty module\n');
-      const { tmux } = recordingTmux();
-      const { service, targetAgent } = moveService(repository, tmux);
+      const { service, targetAgent } = moveService(repository);
 
       await expect(service.move(targetAgent.id, 7)).resolves.toBe('unavailable');
 
@@ -439,8 +417,7 @@ describe('pull request switching', () => {
         if (args[2] === 'switch' && args.at(-1) === 'feature/draft') return { code: 1, stdout: '' };
         return await run(binary, args);
       };
-      const { tmux } = recordingTmux();
-      const { service, targetAgent } = moveService(repository, tmux, command);
+      const { service, targetAgent } = moveService(repository, command);
 
       await expect(service.move(targetAgent.id, 7)).resolves.toBe('recovery-required');
 
@@ -460,8 +437,7 @@ describe('pull request switching', () => {
         if (args[1] === repository.sourcePath && args[2] === 'stash' && args[3] === 'list' && args.includes('--format=%H%x09%gs')) return { code: 1, stdout: '' };
         return await run(binary, args);
       };
-      const { tmux } = recordingTmux();
-      const { service, targetAgent } = moveService(repository, tmux, command);
+      const { service, targetAgent } = moveService(repository, command);
 
       await expect(service.move(targetAgent.id, 7)).resolves.toBe('recovery-required');
 
@@ -476,7 +452,7 @@ describe('pull request switching', () => {
   it('checks out a head-on-origin pull request in-process without touching a pane', async () => {
     const repository = await createSwitchRepository();
     try {
-      const { service, targetAgent, calls } = switchService(repository, { number: 7, branch: 'feature/draft', headSha: repository.draftSha, headOnOrigin: true });
+      const { service, targetAgent } = switchService(repository, { number: 7, branch: 'feature/draft', headSha: repository.draftSha, headOnOrigin: true });
 
       await expect(service.switch(targetAgent.id, 7)).resolves.toBe('switched');
 
@@ -485,7 +461,6 @@ describe('pull request switching', () => {
       await expect(run('/usr/bin/git', ['-C', repository.targetPath, 'status', '--porcelain=v1'])).resolves.toMatchObject({ stdout: '' });
       // a head-on-origin checkout tracks the origin branch (--track)
       await expect(run('/usr/bin/git', ['-C', repository.targetPath, 'config', '--get', 'branch.feature/draft.remote'])).resolves.toMatchObject({ code: 0, stdout: 'origin\n' });
-      expect(calls).toEqual([]);
     } finally {
       await rm(repository.root, { recursive: true, force: true });
     }
@@ -513,7 +488,7 @@ describe('pull request switching', () => {
   it('checks out a SHA-pinned pull request ref in-process without touching a pane', async () => {
     const repository = await createSwitchRepository();
     try {
-      const { service, targetAgent, calls } = switchService(repository, { number: 8, branch: 'main', headSha: repository.prSha, headOnOrigin: false });
+      const { service, targetAgent } = switchService(repository, { number: 8, branch: 'main', headSha: repository.prSha, headOnOrigin: false });
       const checkoutBranch = `rac/pr/8/${repository.prSha.slice(0, 12)}`;
 
       await expect(service.switch(targetAgent.id, 8)).resolves.toBe('switched');
@@ -522,7 +497,6 @@ describe('pull request switching', () => {
       await expect(run('/usr/bin/git', ['-C', repository.targetPath, 'rev-parse', 'HEAD'])).resolves.toMatchObject({ stdout: `${repository.prSha}\n` });
       // a pull-request-ref checkout is detached from origin tracking (--no-track)
       await expect(run('/usr/bin/git', ['-C', repository.targetPath, 'config', '--get', `branch.${checkoutBranch}.remote`])).resolves.toMatchObject({ code: 1, stdout: '' });
-      expect(calls).toEqual([]);
     } finally {
       await rm(repository.root, { recursive: true, force: true });
     }
@@ -531,12 +505,11 @@ describe('pull request switching', () => {
   it('plain-switches to a local branch in-process without touching a pane', async () => {
     const repository = await createSwitchRepository();
     try {
-      const { service, targetAgent, calls } = switchService(repository, { number: 7, branch: 'feature/draft', headSha: repository.draftSha, headOnOrigin: true });
+      const { service, targetAgent } = switchService(repository, { number: 7, branch: 'feature/draft', headSha: repository.draftSha, headOnOrigin: true });
 
       await expect(service.switchBranch(targetAgent.id, 'feature/solo')).resolves.toBe('switched');
 
       await expect(run('/usr/bin/git', ['-C', repository.targetPath, 'branch', '--show-current'])).resolves.toMatchObject({ stdout: 'feature/solo\n' });
-      expect(calls).toEqual([]);
     } finally {
       await rm(repository.root, { recursive: true, force: true });
     }
@@ -594,13 +567,12 @@ describe('pull request switching', () => {
   it('refuses every checkout while the target agent is working and changes nothing', async () => {
     const repository = await createSwitchRepository();
     try {
-      const { service, targetAgent, calls } = switchService(repository, { number: 7, branch: 'feature/draft', headSha: repository.draftSha, headOnOrigin: true }, 'working');
+      const { service, targetAgent } = switchService(repository, { number: 7, branch: 'feature/draft', headSha: repository.draftSha, headOnOrigin: true }, 'working');
 
       await expect(service.switch(targetAgent.id, 7)).resolves.toBe('busy');
       await expect(service.switchBranch(targetAgent.id, 'feature/solo')).resolves.toBe('busy');
 
       await expect(run('/usr/bin/git', ['-C', repository.targetPath, 'branch', '--show-current'])).resolves.toMatchObject({ stdout: 'main\n' });
-      expect(calls).toEqual([]);
     } finally {
       await rm(repository.root, { recursive: true, force: true });
     }
@@ -610,21 +582,19 @@ describe('pull request switching', () => {
     const repository = await createMoveRepository();
     try {
       await dirtyMoveSource(repository.sourcePath);
-      const { tmux, calls } = recordingTmux();
       // a working destination blocks the move even though the source is idle
-      const move = moveService(repository, tmux, run, undefined, 'working');
+      const move = moveService(repository, run, undefined, 'working');
       await expect(move.service.move(move.targetAgent.id, 7)).resolves.toBe('busy');
       // a working source blocks it too
-      const busySource = moveService(repository, tmux, run, undefined, 'finished', 'working');
+      const busySource = moveService(repository, run, undefined, 'finished', 'working');
       await expect(busySource.service.move(busySource.targetAgent.id, 7)).resolves.toBe('busy');
       // the branch move honours the same gate
-      const branchMove = moveService(repository, tmux, run, branchOnlyPulls, 'working');
+      const branchMove = moveService(repository, run, branchOnlyPulls, 'working');
       await expect(branchMove.service.moveBranch(branchMove.targetAgent.id, 'feature/draft')).resolves.toBe('busy');
 
       await expect(run('/usr/bin/git', ['-C', repository.targetPath, 'branch', '--show-current'])).resolves.toMatchObject({ stdout: 'main\n' });
       await expect(run('/usr/bin/git', ['-C', repository.sourcePath, 'branch', '--show-current'])).resolves.toMatchObject({ stdout: 'feature/draft\n' });
       await expect(readFile(join(repository.sourcePath, 'tracked.txt'), 'utf8')).resolves.toBe('staged\nunstaged\n');
-      expect(calls).toEqual([]);
     } finally {
       await rm(repository.root, { recursive: true, force: true });
     }
@@ -640,7 +610,7 @@ describe('pull request switching', () => {
       if (args.includes('status')) return { code: 0, stdout: ' M tracked.txt\n' };
       return { code: 0, stdout: '' };
     };
-    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, command);
+    const service = new PullRequestSwitchService(config, discovery as never, pulls as never, command);
 
     await expect(service.available(agent.id)).resolves.toMatchObject({ enabled: false });
   });
@@ -655,7 +625,7 @@ describe('pull request switching', () => {
       if (args.includes('for-each-ref')) return { code: 0, stdout: 'refs/remotes/origin/main\n' };
       return { code: 128, stdout: '' };
     };
-    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, command);
+    const service = new PullRequestSwitchService(config, discovery as never, pulls as never, command);
 
     await expect(service.available(agent.id)).resolves.toMatchObject({ enabled: true });
   });
@@ -670,7 +640,7 @@ describe('pull request switching', () => {
       if (args.includes('symbolic-ref')) return { code: 1, stdout: '' };
       return { code: 0, stdout: '' };
     };
-    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, command);
+    const service = new PullRequestSwitchService(config, discovery as never, pulls as never, command);
 
     await expect(service.available(agent.id)).resolves.toMatchObject({ enabled: true });
   });
@@ -687,7 +657,7 @@ describe('pull request switching', () => {
       if (args.includes('--format=%(upstream:track)')) return { code: 0, stdout: '[gone]\n' };
       return { code: 0, stdout: '' };
     };
-    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, command);
+    const service = new PullRequestSwitchService(config, discovery as never, pulls as never, command);
 
     await expect(service.available(agent.id)).resolves.toMatchObject({ enabled: true });
   });
@@ -705,7 +675,7 @@ describe('pull request switching', () => {
       if (args.includes('--format=%(upstream:track)')) return { code: 0, stdout: '[ahead 1]\n' };
       return { code: 0, stdout: '' };
     };
-    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, command);
+    const service = new PullRequestSwitchService(config, discovery as never, pulls as never, command);
 
     await expect(service.available(agent.id)).resolves.toMatchObject({ enabled: true });
   });
@@ -715,7 +685,7 @@ describe('pull request switching', () => {
     const other = { number: 8, title: 'Other work', branch: 'main', headSha: otherHeadSha, headOnOrigin: false, draft: false, url: 'https://github.com/octo/repo/pull/8' };
     const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent, { ...agent, id: 'agent-2', branch: 'main' }], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [other] }) };
-    const service = new PullRequestSwitchService(config, discovery as never, {} as never, pulls as never, cleanCommand);
+    const service = new PullRequestSwitchService(config, discovery as never, pulls as never, cleanCommand);
 
     await expect(service.available(agent.id)).resolves.toMatchObject({ pullRequests: [{ number: 7 }], otherPullRequests: [{ number: 8, branch: 'main', checkoutBranch: `rac/pr/8/${otherHeadSha.slice(0, 12)}`, checkedOut: false }] });
   });
@@ -723,7 +693,7 @@ describe('pull request switching', () => {
   it('rejects a branch outside the availability list without a git mutation', async () => {
     const repository = await createSwitchRepository();
     try {
-      const { service, targetAgent, calls } = switchService(repository, { number: 7, branch: 'feature/draft', headSha: repository.draftSha, headOnOrigin: true });
+      const { service, targetAgent } = switchService(repository, { number: 7, branch: 'feature/draft', headSha: repository.draftSha, headOnOrigin: true });
 
       // feature/missing is unlisted; feature/draft is offered only as pull request #7; main is the current branch
       await expect(service.switchBranch(targetAgent.id, 'feature/missing')).resolves.toBe('unavailable');
@@ -734,7 +704,6 @@ describe('pull request switching', () => {
       await expect(service.moveBranch(targetAgent.id, 'feature/solo')).resolves.toBe('unavailable');
 
       await expect(run('/usr/bin/git', ['-C', repository.targetPath, 'branch', '--show-current'])).resolves.toMatchObject({ stdout: 'main\n' });
-      expect(calls).toEqual([]);
     } finally {
       await rm(repository.root, { recursive: true, force: true });
     }
@@ -744,20 +713,17 @@ describe('pull request switching', () => {
     const deltaView = { id: 'delta', projectId: 'cora', label: 'Delta', path: '/worktrees/delta', available: true, pinned: false, main: false, detached: false, locked: false, order: 1, branch: 'feature/draft' };
     const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [{ id: 'cora', label: 'Cora', available: true, worktrees: [deltaView] }] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: [], others: [] }) };
-    const { tmux, calls } = recordingTmux();
-    const service = new PullRequestSwitchService(config, discovery as never, tmux as never, pulls as never, branchListingCommand('feature/current\nfeature/draft\nfeature/solo\n'));
+    const service = new PullRequestSwitchService(config, discovery as never, pulls as never, branchListingCommand('feature/current\nfeature/draft\nfeature/solo\n'));
 
     // feature/draft is open in another worktree, so it must be moved, never plain-switched
     await expect(service.switchBranch(agent.id, 'feature/draft')).resolves.toBe('unavailable');
-    expect(calls).toEqual([]);
   });
 
   it('moves an occupied local branch here and recovers a dirty source', async () => {
     const repository = await createMoveRepository();
     try {
       await dirtyMoveSource(repository.sourcePath);
-      const { tmux, calls } = recordingTmux();
-      const { service, targetAgent } = moveService(repository, tmux, run, branchOnlyPulls);
+      const { service, targetAgent } = moveService(repository, run, branchOnlyPulls);
 
       await expect(service.moveBranch(targetAgent.id, 'feature/draft')).resolves.toBe('moved');
 
@@ -766,7 +732,6 @@ describe('pull request switching', () => {
       await expect(readFile(join(repository.targetPath, 'tracked.txt'), 'utf8')).resolves.toBe('staged\nunstaged\n');
       await expect(readFile(join(repository.targetPath, 'notes.txt'), 'utf8')).resolves.toBe('untracked\n');
       await expect(run('/usr/bin/git', ['-C', repository.targetPath, 'status', '--porcelain=v1'])).resolves.toMatchObject({ stdout: 'MM tracked.txt\n?? notes.txt\n' });
-      expect(calls).toEqual([]);
     } finally {
       await rm(repository.root, { recursive: true, force: true });
     }
@@ -775,8 +740,7 @@ describe('pull request switching', () => {
   it('moves an occupied local branch here from a clean source', async () => {
     const repository = await createMoveRepository();
     try {
-      const { tmux } = recordingTmux();
-      const { service, targetAgent } = moveService(repository, tmux, run, branchOnlyPulls);
+      const { service, targetAgent } = moveService(repository, run, branchOnlyPulls);
 
       await expect(service.moveBranch(targetAgent.id, 'feature/draft')).resolves.toBe('moved');
 
@@ -855,8 +819,7 @@ describe('pull request switching', () => {
         if (!blocked && args[1] === repository.sourcePath && args.includes('symbolic-ref')) { blocked = true; started(); await gate; }
         return await run(binary, args);
       };
-      const { tmux } = recordingTmux();
-      const { service, targetAgent } = moveService(repository, tmux, command);
+      const { service, targetAgent } = moveService(repository, command);
 
       const moving = service.move(targetAgent.id, 7);
       await startedPromise;
@@ -882,8 +845,7 @@ describe('pull request switching', () => {
         if (!blocked && args[1] === repository.sourcePath && args.includes('symbolic-ref')) { blocked = true; started(); await gate; }
         return await run(binary, args);
       };
-      const { tmux } = recordingTmux();
-      const { service, targetAgent } = moveService(repository, tmux, command, branchOnlyPulls);
+      const { service, targetAgent } = moveService(repository, command, branchOnlyPulls);
 
       const moving = service.moveBranch(targetAgent.id, 'feature/draft');
       await startedPromise;

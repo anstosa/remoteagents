@@ -14,8 +14,8 @@ import type { Page } from '@playwright/test';
 export function installPaneStreamMock(): void {
   const paneSockets = new Map<string, MockPaneSocket[]>();
   const connectCounts = new Map<string, number>();
-  // Frames the panel has sent for an id, across every socket it opened (so a remount —
-  // e.g. Swap to terminal reopening the pane — keeps accumulating rather than resetting).
+  // Frames the panel has sent for an id, across every socket it opened (so a remount
+  // reopening the pane keeps accumulating rather than resetting).
   const sentByPane = new Map<string, string[]>();
 
   class MockPaneSocket {

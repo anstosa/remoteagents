@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import type { ValidatedConfig } from '../config/schema.js';
 import type { DiscoveryService } from '../discovery/service.js';
-import { TmuxAdapter } from '../tmux/adapter.js';
 import { run } from '../tmux/command.js';
 import { cleanWorkingTree, type GitCommand } from '../git/worktree-state.js';
 import { worktreeById, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
@@ -32,10 +31,9 @@ type SwitchTarget = NonNullable<Awaited<ReturnType<DiscoveryService['target']>>>
 export class PullRequestSwitchService {
   private branchMutationInProgress = false;
 
-  // `tmux` is no longer used: switch and move run git in-process and never touch a pane. It is
-  // kept as the injected seam our tests assert stays untouched, and goes when "Remove Swap to
-  // terminal" retires TmuxAdapter.suspend/foreground.
-  constructor(private readonly config: ValidatedConfig, private readonly discovery: DiscoveryService, private readonly tmux: TmuxAdapter, private readonly pullRequests = new PullRequestService(), private readonly command: GitCommand = runGit) {}
+  // switch and move run git in-process and never touch a pane, so the service takes no tmux
+  // adapter: it is structurally unable to type into an agent's terminal.
+  constructor(private readonly config: ValidatedConfig, private readonly discovery: DiscoveryService, private readonly pullRequests = new PullRequestService(), private readonly command: GitCommand = runGit) {}
 
   // list one agent's switchable pull requests and local branches
   async available(agentId: string): Promise<PullRequestSwitchAvailability | undefined> {

@@ -30,8 +30,6 @@ const mockComposerApi = async (page: Page, promptRequest?: PromptRequestHandler)
     if (url.pathname === '/api/agents/agent-1/queued-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
     // let tests inspect prompt submission
     if (url.pathname === '/api/agents/agent-1/prompt' && request.method() === 'POST' && promptRequest !== undefined) return promptRequest(route);
-    // allow terminal transitions
-    if (url.pathname === '/api/agents/agent-1/background' || url.pathname === '/api/agents/agent-1/foreground') return route.fulfill({ status: 204 });
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 };
@@ -293,22 +291,4 @@ test('prevents file-drop navigation in question mode', async ({ page }) => {
   await expect(page.getByRole('status').filter({ hasText: 'Drop files to attach' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Switch to normal prompt mode' }).click();
   await expect(page.getByLabel('Selected attachments')).toHaveCount(0);
-});
-
-// verify the swapped-terminal guard
-test('prevents navigation but does not accept files in swapped terminal mode', async ({ page }) => {
-  await mockComposerApi(page);
-  await page.goto('/');
-  await page.getByRole('button', { name: 'More options' }).click();
-  await page.getByRole('button', { name: 'Swap to terminal' }).click();
-  await expect(page.getByLabel('Interactive agent pane')).toBeVisible();
-
-  const composer = promptComposer(page);
-  const hover = await dispatchFileDrag(composer.getByRole('button', { name: 'More options' }), 'dragover', [{ name: 'blocked.txt', body: 'blocked' }]);
-  const dropped = await dispatchFileDrag(page.getByRole('textbox', { name: 'Prompt' }), 'drop', [{ name: 'blocked.txt', body: 'blocked' }]);
-  expect(hover.defaultAllowed).toBe(false);
-  expect(dropped.defaultAllowed).toBe(false);
-  await expect(page.getByRole('status').filter({ hasText: 'Drop files to attach' })).toHaveCount(0);
-  await expect(page.getByLabel('Selected attachments')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Enter', exact: true })).toBeVisible();
 });
