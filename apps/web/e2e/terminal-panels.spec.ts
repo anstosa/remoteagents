@@ -19,8 +19,9 @@ const agentPanes: Pane[] = [
 ];
 
 // A live-mutable pane set + prompt capture, so a spec can change what the panes API returns
-// (a reload dropping a gone pane, a New shell appearing) between navigations.
-const routeApi = (page: Page, options: { panes: () => Pane[]; onShell?: () => string; prompts?: string[]; deleted?: string[] } = { panes: () => agentPanes }) =>
+// (a reload dropping a gone pane, a New shell appearing) between navigations. A DELETE prunes
+// the ended pane and records its query, a PATCH renames one, mirroring the real panes API.
+const routeApi = (page: Page, options: { panes: () => Pane[]; onShell?: () => string; prompts?: string[]; deleted?: string[]; renamed?: { paneId: string; name: string }[] } = { panes: () => agentPanes }) =>
   page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -33,7 +34,22 @@ const routeApi = (page: Page, options: { panes: () => Pane[]; onShell?: () => st
     if (path === '/api/worktrees/cora/notes') return route.fulfill({ json: { notes: [] } });
     if (path === '/api/worktrees/cora/panes' && request.method() === 'GET') return route.fulfill({ json: { panes: options.panes() } });
     if (path === '/api/worktrees/cora/shells' && request.method() === 'POST') return route.fulfill({ status: 201, json: { paneId: options.onShell ? options.onShell() : '%9' } });
-    if (/^\/api\/worktrees\/cora\/panes\/%25\d+$/u.test(path) && request.method() === 'DELETE') { options.deleted?.push(decodeURIComponent(path.split('/').pop()!)); return route.fulfill({ status: 204 }); }
+    if (/^\/api\/worktrees\/cora\/panes\/%25\d+$/u.test(path) && request.method() === 'PATCH') {
+      const paneId = decodeURIComponent(path.split('/').pop()!);
+      const name = (request.postDataJSON() as { name: string }).name;
+      options.renamed?.push({ paneId, name });
+      const pane = options.panes().find(candidate => candidate.paneId === paneId);
+      if (pane !== undefined) pane.name = name;
+      return route.fulfill({ status: 204 });
+    }
+    if (/^\/api\/worktrees\/cora\/panes\/%25\d+$/u.test(path) && request.method() === 'DELETE') {
+      const paneId = decodeURIComponent(path.split('/').pop()!);
+      options.deleted?.push(paneId + url.search);
+      const panes = options.panes();
+      const index = panes.findIndex(candidate => candidate.paneId === paneId);
+      if (index >= 0) panes.splice(index, 1);
+      return route.fulfill({ status: 204 });
+    }
     if (path === '/api/agents/agent-1/prompt' && request.method() === 'POST') { options.prompts?.push((request.postDataJSON() as { prompt: string }).prompt); return route.fulfill({ status: 204 }); }
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
@@ -286,4 +302,142 @@ test('an agentless Worktree tab can open a Terminal', async ({ page }) => {
   await seedPaneSize(page, '%5', 80, 24);
   await pushBytes(page, '%5', 'shell in an agentless worktree\r\n');
   await expect(page.locator('.terminal-pane[data-panel-key="%5"]')).toBeVisible();
+});
+
+test('the picker groups hidden Console shells and reopens one when chosen', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await installPaneMock(page);
+  await routeApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+
+  await openPicker(page);
+  const picker = page.getByRole('menu', { name: 'Open a terminal' });
+  // the Agent's panes sit under Session panes, the shell in its own Console shells group
+  await expect(picker.getByText('Session panes')).toBeVisible();
+  await expect(picker.getByText('Console shells')).toBeVisible();
+  const shell = picker.getByRole('menuitem', { name: /build/u });
+  await expect(shell).toBeEnabled();
+  await shell.click();
+  await seedPaneSize(page, '%5', 80, 24);
+  await expect(page.locator('.terminal-pane[data-panel-key="%5"]')).toBeVisible();
+
+  // once open it is no longer a hidden shell, so the group disappears (the picker still opens)
+  await openPicker(page);
+  const reopened = page.getByRole('menu', { name: 'Open a terminal' });
+  await expect(reopened.getByText('Session panes')).toBeVisible();
+  await expect(reopened.getByText('Console shells')).toHaveCount(0);
+});
+
+test('only a Console shell offers a rename affordance', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await installPaneMock(page);
+  await routeApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+
+  // %6 (vim) is a hand-split pane, not a Console shell — the panes API cannot rename it
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /vim/u }).click();
+  await seedPaneSize(page, '%6', 80, 24);
+  const vim = page.locator('.terminal-pane[data-panel-key="%6"]');
+  await expect(vim).toBeVisible();
+  await expect(vim.getByRole('button', { name: /Rename terminal/u })).toHaveCount(0);
+
+  // a Console shell does offer it
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  await expect(page.locator('.terminal-pane[data-panel-key="%5"]').getByRole('button', { name: /Rename terminal/u })).toBeVisible();
+});
+
+test('renaming a Console shell from its panel updates the head and the picker row', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await installPaneMock(page);
+  const renamed: { paneId: string; name: string }[] = [];
+  const panes = agentPanes.map(pane => ({ ...pane }));
+  await routeApi(page, { panes: () => panes, renamed });
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  const column = page.locator('.terminal-pane[data-panel-key="%5"]');
+  await expect(column.getByText('build')).toBeVisible();
+
+  // rename from the panel head; the endpoint is called and the head shows the new name
+  await column.getByRole('button', { name: /Rename terminal/u }).click();
+  const nameField = column.getByRole('textbox', { name: /Name for terminal/u });
+  await nameField.fill('deploy');
+  await nameField.press('Enter');
+  await expect.poll(() => renamed).toContainEqual({ paneId: '%5', name: 'deploy' });
+  await expect(column.getByText('deploy')).toBeVisible();
+
+  // closing leaves the shell running; it returns to the picker under its new name
+  await column.getByRole('button', { name: /Close terminal/u }).click();
+  await expect(column).toHaveCount(0);
+  await openPicker(page);
+  const picker = page.getByRole('menu', { name: 'Open a terminal' });
+  await expect(picker.getByText('Console shells')).toBeVisible();
+  await expect(picker.getByRole('menuitem', { name: /deploy/u })).toBeVisible();
+});
+
+test('renaming a Console shell renames its phone chip', async ({ page }) => {
+  await page.setViewportSize({ width: 428, height: 880 });
+  await installPaneMock(page);
+  const renamed: { paneId: string; name: string }[] = [];
+  const panes = agentPanes.map(pane => ({ ...pane }));
+  await routeApi(page, { panes: () => panes, renamed });
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  const column = page.locator('.terminal-pane[data-panel-key="%5"]');
+  await expect(column).toBeVisible();
+
+  await column.getByRole('button', { name: /Rename terminal/u }).click();
+  const nameField = column.getByRole('textbox', { name: /Name for terminal/u });
+  await nameField.fill('deploy');
+  await nameField.press('Enter');
+  await expect.poll(() => renamed).toContainEqual({ paneId: '%5', name: 'deploy' });
+
+  // switch away so the Terminal's chip is offered; it names the renamed shell
+  const switches = page.locator('.mobile-split-switches');
+  await switches.locator('.mobile-agent-switch').click();
+  await expect(page.locator('.log-output')).toBeVisible();
+  await expect(switches.locator('.mobile-terminal-switch')).toHaveAttribute('aria-label', 'Show terminal deploy');
+});
+
+test('End removes an idle Console shell silently and confirms a busy one', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await installPaneMock(page);
+  const deleted: string[] = [];
+  const panes: Pane[] = [
+    { paneId: '%1', session: '$1', window: '@0', command: 'codex', path: '/worktrees/cora', title: '', agent: true },
+    { paneId: '%5', session: '$1', window: '@1', role: 'shell', name: 'build', command: 'zsh', path: '/worktrees/cora', title: '', agent: false, busy: false },
+    { paneId: '%8', session: '$1', window: '@4', role: 'shell', name: 'server', command: 'node', path: '/worktrees/cora', title: '', agent: false, busy: true }
+  ];
+  await routeApi(page, { panes: () => panes, deleted });
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+
+  let dialogs = 0;
+  page.on('dialog', dialog => { dialogs++; void dialog.accept(); });
+
+  await openPicker(page);
+  const picker = page.getByRole('menu', { name: 'Open a terminal' });
+  // an idle shell ends with no confirmation, and its row disappears
+  await picker.getByRole('button', { name: 'End build' }).click();
+  await expect.poll(() => deleted).toContain('%5');
+  expect(dialogs).toBe(0);
+  await expect(picker.getByRole('menuitem', { name: /build/u })).toHaveCount(0);
+
+  // a busy shell asks first, then ends with confirm=1
+  await picker.getByRole('button', { name: 'End server' }).click();
+  await expect.poll(() => deleted).toContain('%8?confirm=1');
+  expect(dialogs).toBe(1);
+  await expect(picker.getByRole('menuitem', { name: /server/u })).toHaveCount(0);
 });
