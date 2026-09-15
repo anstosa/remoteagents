@@ -91,6 +91,12 @@ describe('ControlProtocolParser', () => {
     expect(collect(['%window-close @3\n'])).toEqual([{ type: 'layout', window: '@3' }]);
   });
 
+  it('surfaces a %unlinked-window-close the same as a window close', () => {
+    // tmux reports a background window's close (a Console shell exiting on its own, or killed)
+    // as %unlinked-window-close, not %window-close; the viewer must re-check its pane either way
+    expect(collect(['%unlinked-window-close @4\n'])).toEqual([{ type: 'layout', window: '@4' }]);
+  });
+
   it('surfaces a %subscription-changed by its name so the viewer re-clamps', () => {
     // only the name routes the change; the value that follows is not parsed
     expect(collect(['%subscription-changed rac-clients @1 : 190x50 80x24\n'])).toEqual([

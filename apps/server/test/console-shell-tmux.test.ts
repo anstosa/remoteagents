@@ -172,6 +172,29 @@ describe.skipIf(!tmuxSocketsWork)('Console shells (real tmux)', () => {
     await eventually(() => conn.frames.some(frame => frame.type === 'exit' && frame.reason === 'pane closed'));
   });
 
+  it('ends the stream with "pane closed" when the shell exits on its own, not only when killed', async () => {
+    const fixture = await fixtureSession();
+    const worktree = testWorktree({ id: 'proj:wt', projectId: 'proj', path: fixture.worktreeDir, identity: fixture.worktreeDir, main: false });
+    // A shell that exits on its own (not kill-pane), the exact path a real Console shell hits
+    // when the operator types `exit` or Ctrl+D. It blocks on `read` until we send a line, so it
+    // stays alive until the socket has subscribed and the close can never race the seed. This is
+    // the end-to-end companion to the parser unit test that pins the notification mapping
+    // (control-protocol.test.ts): the whole chain must still end the stream, where before the fix
+    // the panel lingered.
+    const pane = await new TmuxAdapter().createConsoleShellWindow(fixture.socket, fixture.session, fixture.worktreeDir, ['/bin/sh', '-c', 'read line; exit 0'], 'ephemeral');
+    expect(pane).toMatch(/^%\d+$/);
+    const sessionId = (await run(tmux, ['-S', fixture.socketPath, 'display-message', '-p', '-t', pane!, '#{session_id}'])).stdout.trim();
+
+    const conn = await openWorktreePane(fixture.socket, worktree, { paneId: pane!, sessionId });
+    conn.send({ type: 'viewport', cols: 80, rows: 24, scrollback: 200 });
+    await eventually(() => conn.frames.some(frame => frame.type === 'size'));
+
+    // send a line so the shell's `read` returns and it exits, closing its background window; tmux
+    // reports that as %unlinked-window-close and the viewer must end the stream, not linger
+    conn.send({ type: 'input', data: encode('\n') });
+    await eventually(() => conn.frames.some(frame => frame.type === 'exit' && frame.reason === 'pane closed'));
+  });
+
   it('joins the session holding the Console shells when a later Launch finds no idle shell', async () => {
     const fixture = await fixtureSession();
     const worktree = testWorktree({ id: 'proj:wt', projectId: 'proj', path: fixture.worktreeDir, identity: fixture.worktreeDir, main: false });

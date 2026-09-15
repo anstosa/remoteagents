@@ -124,8 +124,12 @@ export class ControlProtocolParser {
     if (line.startsWith('%pause ')) return this.emit({ type: 'pause', pane: line.slice('%pause '.length).trim() });
     if (line.startsWith('%continue ')) return this.emit({ type: 'continue', pane: line.slice('%continue '.length).trim() });
     if (line.startsWith('%layout-change ')) return this.emitLayout(line.slice('%layout-change '.length));
-    // %window-close window-id — a killed pane took its last pane with it; re-check as a layout change
+    // A window went away because its last pane closed (a Console shell exiting on its own or
+    // being killed). tmux reports a linked window as %window-close and a background one as
+    // %unlinked-window-close; re-check either as a layout change so the viewer finds its pane
+    // gone and ends the stream with "pane closed".
     if (line.startsWith('%window-close ')) return this.emitLayout(line.slice('%window-close '.length));
+    if (line.startsWith('%unlinked-window-close ')) return this.emitLayout(line.slice('%unlinked-window-close '.length));
     if (line.startsWith('%subscription-changed ')) return this.emitSubscription(line.slice('%subscription-changed '.length));
     if (line === '%exit' || line.startsWith('%exit ')) {
       return this.emit({ type: 'exit', reason: line.slice('%exit'.length).trim() || 'server exited' });
