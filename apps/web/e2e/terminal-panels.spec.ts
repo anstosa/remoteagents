@@ -411,6 +411,162 @@ test('renaming a Console shell renames its phone chip', async ({ page }) => {
   await expect(switches.locator('.mobile-terminal-switch')).toHaveAttribute('aria-label', 'Show terminal deploy');
 });
 
+test('on a phone a visible Terminal swaps the footer to the helper keys and the agent chip restores the composer', async ({ page }) => {
+  await page.setViewportSize({ width: 428, height: 880 });
+  await installPaneMock(page);
+  await routeApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+
+  // the newly opened Terminal is the visible phone panel; the footer is now its helper keys
+  const column = page.locator('.terminal-pane[data-panel-key="%5"]');
+  await expect(column).toBeVisible();
+  const composer = page.getByRole('textbox', { name: 'Prompt' });
+  const escKey = page.getByRole('button', { name: 'Esc' });
+  await expect(escKey).toBeVisible();
+  await expect(composer).toBeHidden();
+
+  // switching back to the agent panel brings the Agent's composer back and hides the keys;
+  // the switcher now offers a chip back to the Terminal (opening it added the chip)
+  const switches = page.locator('.mobile-split-switches');
+  await switches.locator('.mobile-agent-switch').click();
+  await expect(page.locator('.log-output')).toBeVisible();
+  await expect(switches.locator('.mobile-terminal-switch')).toBeVisible();
+  await expect(composer).toBeVisible();
+  await expect(escKey).toBeHidden();
+});
+
+test('on a phone the helper keys drive the visible Terminal, and the Agent pane on the agent panel', async ({ page }) => {
+  await page.setViewportSize({ width: 428, height: 880 });
+  await installPaneMock(page);
+  await routeApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  await pushBytes(page, '%5', '$ \r\n');
+  await expect(page.locator('.terminal-pane[data-panel-key="%5"]')).toBeVisible();
+
+  const esc = String.fromCharCode(27);
+  // the Terminal is the visible panel, so its helper keys reach the Terminal's socket
+  await page.getByRole('button', { name: 'Esc' }).click();
+  await expect.poll(() => paneInputText(page, '%5')).toContain(esc);
+  expect(await paneInputText(page, 'agent-1')).not.toContain(esc);
+
+  // back on the agent panel, focusing the pane surfaces the keys and they drive the Agent
+  const switches = page.locator('.mobile-split-switches');
+  await switches.locator('.mobile-agent-switch').click();
+  await expect(page.locator('.log-output')).toBeVisible();
+  await page.locator('.log-output .xterm-screen').click();
+  await expect(page.locator('.log')).toHaveClass(/input-active/u);
+  await page.getByRole('button', { name: 'Esc' }).click();
+  await expect.poll(() => paneInputText(page, 'agent-1')).toContain(esc);
+});
+
+test('on a phone a tap on a Terminal focuses its textarea', async ({ page }) => {
+  await page.setViewportSize({ width: 428, height: 880 });
+  await installPaneMock(page);
+  await routeApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  await pushBytes(page, '%5', '$ \r\n');
+
+  // a tap focuses xterm's hidden textarea so the soft keyboard opens on the pane
+  const column = page.locator('.terminal-pane[data-panel-key="%5"]');
+  await expect(column).toBeVisible();
+  await column.locator('.xterm-screen').click();
+  await expect(column.locator('.xterm-helper-textarea')).toBeFocused();
+
+  // the focus must land synchronously inside the click handler (iOS only raises the keyboard
+  // for a focus() made from the tap's own click): dispatch a click and read activeElement in
+  // the same tick, with no await between, so a deferred focus would fail this.
+  await column.locator('.xterm-helper-textarea').evaluate(area => area.blur());
+  const focusedSynchronously = await page.evaluate(() => {
+    const screen = document.querySelector('.terminal-pane[data-panel-key="%5"] .xterm-screen');
+    screen?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return document.activeElement?.classList.contains('xterm-helper-textarea') ?? false;
+  });
+  expect(focusedSynchronously).toBe(true);
+});
+
+test('on a phone closing a Terminal returns to the agent panel and drops its chip', async ({ page }) => {
+  await page.setViewportSize({ width: 428, height: 880 });
+  await installPaneMock(page);
+  await routeApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  const column = page.locator('.terminal-pane[data-panel-key="%5"]');
+  await expect(column).toBeVisible();
+
+  // closing the visible Terminal returns the phone view to the agent and removes its chip
+  await column.getByRole('button', { name: /Close terminal/u }).click();
+  await expect(column).toHaveCount(0);
+  await expect(page.locator('.log-output')).toBeVisible();
+  await expect(page.locator('.mobile-split-switches .mobile-terminal-switch')).toHaveCount(0);
+  // the composer is back now that no Terminal is the visible panel
+  await expect(page.getByRole('textbox', { name: 'Prompt' })).toBeVisible();
+});
+
+test.describe('phone touch scrolling', () => {
+  test.use({ hasTouch: true });
+  test('a touch drag scrolls a Terminal\'s scrollback', async ({ page }) => {
+    await page.setViewportSize({ width: 428, height: 880 });
+    await installPaneMock(page);
+    await routeApi(page);
+    await page.goto('/');
+    await seedPaneSize(page, 'agent-1', 80, 24);
+
+    await openPicker(page);
+    await page.getByRole('menuitem', { name: /build/u }).click();
+    await seedPaneSize(page, '%5', 80, 24);
+    // fill well past the 24-row viewport so there is scrollback to reveal
+    await pushBytes(page, '%5', Array.from({ length: 120 }, (_, index) => `line ${index}`).join('\r\n') + '\r\n');
+
+    const column = page.locator('.terminal-pane[data-panel-key="%5"]');
+    await expect(column).toBeVisible();
+    // following the live tail: no jump control, and the last line is on screen
+    const jump = column.getByRole('button', { name: 'Jump to latest' });
+    const visibleRows = () => page.evaluate(() => document.querySelector('.terminal-pane[data-panel-key="%5"] .xterm-rows')?.textContent ?? '');
+    await expect(jump).toBeHidden();
+    await expect.poll(visibleRows).toContain('line 119');
+    const before = await visibleRows();
+
+    // a one-finger drag downward reveals older output (the console owns touch scrolling)
+    await page.evaluate(() => {
+      const host = document.querySelector('.terminal-pane[data-panel-key="%5"] .streamed-terminal-host') as HTMLElement;
+      const rect = host.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      const at = (clientY: number) => new Touch({ identifier: 1, target: host, clientX: x, clientY, pageX: x, pageY: clientY });
+      const fire = (type: string, touches: Touch[], changed: Touch[]) => host.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true, touches, targetTouches: touches, changedTouches: changed }));
+      const startTouch = at(y);
+      fire('touchstart', [startTouch], [startTouch]);
+      const movedTouch = at(y + 220);
+      fire('touchmove', [movedTouch], [movedTouch]);
+      fire('touchend', [], [movedTouch]);
+    });
+
+    // the scrollback moved: older rows are now on screen (rendered rows changed) and the
+    // jump-to-latest control appears because the pane is no longer following the tail
+    await expect.poll(visibleRows).not.toBe(before);
+    await expect(jump).toBeVisible();
+  });
+});
+
 test('End removes an idle Console shell silently and confirms a busy one', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
   await installPaneMock(page);
