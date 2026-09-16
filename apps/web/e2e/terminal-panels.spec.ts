@@ -3,7 +3,7 @@ import { installPaneMock, seedPaneSize, pushBytes, pushExit, paneInputText } fro
 
 // Terminal panels (First-class terminal panes, Console shells): the composer's terminal icon
 // picker lists a Worktree's panes, opening one adds a resizable column beside the agent, a
-// focused Terminal takes typed keys while the composer stays the Agent's, closing hides the
+// focused Terminal takes typed keys while the composer stays the Agent's, minimizing hides the
 // panel and an `exit` frame removes it, New shell creates a Console shell, storage reopens
 // live panels after a reload, and an agentless Worktree can open a Terminal too.
 
@@ -21,7 +21,7 @@ const agentPanes: Pane[] = [
 // A live-mutable pane set + prompt capture, so a spec can change what the panes API returns
 // (a reload dropping a gone pane, a New shell appearing) between navigations. A DELETE prunes
 // the ended pane and records its query, a PATCH renames one, mirroring the real panes API.
-const routeApi = (page: Page, options: { panes: () => Pane[]; onShell?: () => string; prompts?: string[]; deleted?: string[]; renamed?: { paneId: string; name: string }[] } = { panes: () => agentPanes }) =>
+const routeApi = (page: Page, options: { panes: () => Pane[]; onShell?: () => string; prompts?: string[]; deleted?: string[]; deleteStatus?: (paneId: string, confirmed: boolean) => number | { status: number; busy?: boolean }; renamed?: { paneId: string; name: string }[] } = { panes: () => agentPanes }) =>
   page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -45,10 +45,15 @@ const routeApi = (page: Page, options: { panes: () => Pane[]; onShell?: () => st
     if (/^\/api\/worktrees\/cora\/panes\/%25\d+$/u.test(path) && request.method() === 'DELETE') {
       const paneId = decodeURIComponent(path.split('/').pop()!);
       options.deleted?.push(paneId + url.search);
+      const deletion = options.deleteStatus?.(paneId, url.searchParams.get('confirm') === '1') ?? 204;
+      const status = typeof deletion === 'number' ? deletion : deletion.status;
+      const failure = typeof deletion === 'number' ? { error: 'delete failed' } : { error: 'delete failed', busy: deletion.busy };
+      // keep failed deletions visible
+      if (status < 200 || status >= 300) return route.fulfill({ status, json: failure });
       const panes = options.panes();
       const index = panes.findIndex(candidate => candidate.paneId === paneId);
       if (index >= 0) panes.splice(index, 1);
-      return route.fulfill({ status: 204 });
+      return route.fulfill({ status });
     }
     if (path === '/api/agents/agent-1/prompt' && request.method() === 'POST') { options.prompts?.push((request.postDataJSON() as { prompt: string }).prompt); return route.fulfill({ status: 204 }); }
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
@@ -82,8 +87,8 @@ test('terminal picker uses a standard icon button on desktop and phone', async (
     await expect(trigger).toHaveAttribute('title', 'Open a terminal');
     await expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
     await expect(trigger).toHaveAttribute('aria-expanded', 'false');
-    await expect(trigger).toHaveText('');
     await expect(trigger.locator('svg[aria-hidden="true"]')).toBeVisible();
+    await expect(trigger.locator('.terminal-minimized-count')).toHaveText('1');
     // enlarge the glyph without changing its button
     await expect(trigger.locator('svg')).toHaveCSS('width', '20px');
     await expect(trigger.locator('svg')).toHaveCSS('height', '20px');
@@ -129,6 +134,40 @@ test('lists panes with the agent and a claimed window disabled, and opens a colu
   const column = page.locator('.terminal-pane[data-panel-key="%5"]');
   await expect(column).toBeVisible();
   await expect(column.getByText('build')).toBeVisible();
+  const header = column.locator(':scope > header');
+  const status = header.locator('.pane-status');
+  await expect(header.locator(':scope > *').first()).toHaveClass(/\bpane-status\b/u);
+  await expect(status).toHaveAttribute('role', 'status');
+  await expect(status).toHaveText('Live');
+  await expect(header.locator('.pane-dot, .pane-live')).toHaveCount(0);
+  // resolve the theme green
+  const green = await page.evaluate(() => {
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--green)';
+    document.body.append(probe);
+    const color = getComputedStyle(probe).color;
+    probe.remove();
+    return color;
+  });
+  await expect(status).toHaveCSS('background-color', green);
+  // share agent pill styling at a smaller scale
+  const agentStatus = page.locator('.log-output .log-status');
+  // compare state-independent visual properties
+  for (const property of ['color', 'border-radius', 'box-shadow', 'font-family', 'font-weight', 'text-transform']) {
+    const reference = await agentStatus.evaluate((element, key) => getComputedStyle(element).getPropertyValue(key), property);
+    await expect(status).toHaveCSS(property, reference);
+  }
+  await expect(status).toHaveCSS('height', '20px');
+  const agentStatusBox = (await agentStatus.boundingBox())!;
+  const shellStatusBox = (await status.boundingBox())!;
+  expect(shellStatusBox.height).toBeLessThan(agentStatusBox.height);
+  const agentFontSize = await agentStatus.evaluate(element => parseFloat(getComputedStyle(element).fontSize));
+  const shellFontSize = await status.evaluate(element => parseFloat(getComputedStyle(element).fontSize));
+  expect(shellFontSize).toBeLessThan(agentFontSize);
+  // keep letter spacing proportional to the smaller text
+  const agentSpacing = await agentStatus.evaluate(element => parseFloat(getComputedStyle(element).letterSpacing));
+  const shellSpacing = await status.evaluate(element => parseFloat(getComputedStyle(element).letterSpacing));
+  expect(shellSpacing / shellFontSize).toBeCloseTo(agentSpacing / agentFontSize, 3);
   await expect(page.locator('.log-split.has-terminals')).toBeVisible();
   // a resizer sits between the agent and the new column
   await expect(page.locator('.log-split .split-resizer')).toHaveCount(1);
@@ -200,32 +239,57 @@ test('a focused Terminal takes typed keys while the composer still submits to th
   await expect.poll(() => prompts).toContain('deploy please');
 });
 
-test('closing hides the panel without ending the shell, and an exit frame removes it', async ({ page }) => {
+test('minimizing keeps a shell running, persists across reload, and updates the trigger badge', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
   await installPaneMock(page);
   const deleted: string[] = [];
-  await routeApi(page, { panes: () => agentPanes, deleted });
+  const panes: Pane[] = [...agentPanes.map(pane => ({ ...pane })), { paneId: '%8', session: '$1', window: '@4', role: 'shell', name: 'server', command: 'node', path: '/worktrees/cora', title: '', agent: false, busy: true }];
+  await routeApi(page, { panes: () => panes, deleted });
   await page.goto('/');
   await seedPaneSize(page, 'agent-1', 80, 24);
 
+  const trigger = page.getByRole('button', { name: 'Open a terminal', exact: true });
+  const badge = trigger.locator('.terminal-minimized-count');
+  // count only hidden console shells
+  await expect(badge).toHaveText('2');
+  await expect(trigger).toHaveAttribute('aria-description', '2 minimized shells');
   await openPicker(page);
   await page.getByRole('menuitem', { name: /build/u }).click();
   await seedPaneSize(page, '%5', 80, 24);
   const column = page.locator('.terminal-pane[data-panel-key="%5"]');
   await expect(column).toBeVisible();
+  await expect(badge).toHaveText('1');
+  await expect(trigger).toHaveAttribute('aria-description', '1 minimized shell');
 
-  // Close hides the panel and leaves the shell running (no End request).
-  await column.getByRole('button', { name: /Close terminal/u }).click();
+  // minimize hides without deleting
+  const minimize = column.getByRole('button', { name: 'Minimize terminal build', exact: true });
+  await expect(minimize.locator('svg[aria-hidden="true"]')).toBeVisible();
+  await minimize.click();
   await expect(column).toHaveCount(0);
+  await expect(badge).toHaveText('2');
+  await expect(trigger).toHaveAttribute('aria-description', '2 minimized shells');
   expect(deleted).toEqual([]);
 
-  // Reopen, then an exit frame closes the panel by itself.
+  // minimized state survives reload
+  await page.reload();
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await expect(column).toHaveCount(0);
+  await expect(badge).toHaveText('2');
+  await expect(trigger).toHaveAttribute('aria-description', '2 minimized shells');
+
+  // reopening reduces the count
   await openPicker(page);
   await page.getByRole('menuitem', { name: /build/u }).click();
   await seedPaneSize(page, '%5', 80, 24);
-  await expect(page.locator('.terminal-pane[data-panel-key="%5"]')).toBeVisible();
+  await expect(column).toBeVisible();
+  await expect(badge).toHaveText('1');
+  await expect(trigger).toHaveAttribute('aria-description', '1 minimized shell');
+
+  // exit does not create a minimized shell
   await pushExit(page, '%5', 'pane closed');
-  await expect(page.locator('.terminal-pane[data-panel-key="%5"]')).toHaveCount(0);
+  await expect(column).toHaveCount(0);
+  await expect(badge).toHaveText('1');
+  await expect(trigger).toHaveAttribute('aria-description', '1 minimized shell');
 });
 
 test('a reload reopens panels whose pane still exists and drops those that do not', async ({ page }) => {
@@ -330,11 +394,99 @@ for (const panels of ['note', 'browser', 'note and browser']) {
     await seedPaneSize(page, '%5', 80, 24);
     await pushBytes(page, '%5', 'shell ready\r\n');
 
-    const split = page.locator('.log-split.has-terminals');
+    const split = page.locator('.log-split');
+    await expect(split).toHaveClass(/\bhas-terminals\b/u);
     const visiblePanels = split.locator(':scope > :is(.log-output, .terminal-pane, .note-pane, .browser-pane):visible');
     await expect(visiblePanels).toHaveCount(panels === 'note and browser' ? 4 : 3);
     // every desktop column fills the same available output area
     for (const panel of await visiblePanels.all()) await expectFullSplitHeight(panel);
+
+    const terminalHeader = split.locator('.terminal-pane[data-panel-key="%5"] > header');
+    const referenceHeader = split.locator(panels.includes('browser') ? '.browser-pane > header' : '.note-pane header').first();
+    // align shell chrome with adjacent splits
+    await expect.poll(async () => {
+      const terminalBox = await terminalHeader.boundingBox();
+      const referenceBox = await referenceHeader.boundingBox();
+      return Math.round((terminalBox?.height ?? 0) - (referenceBox?.height ?? 0));
+    }).toBe(0);
+    const referenceHeaderHeight = (await referenceHeader.boundingBox())!.height;
+    const minimize = terminalHeader.getByRole('button', { name: 'Minimize terminal build', exact: true });
+    const referenceButton = referenceHeader.getByRole('button', { name: panels.includes('browser') ? 'Close browser' : 'Close note', exact: true });
+    await expect(minimize).toHaveCSS('width', '32px');
+    await expect(minimize).toHaveCSS('height', '32px');
+    await expect(minimize).toHaveCSS('border-style', 'solid');
+    await expect(minimize).toHaveCSS('background-color', await referenceButton.evaluate(element => getComputedStyle(element).backgroundColor));
+    const minimizeIcon = minimize.locator('svg[aria-hidden="true"]');
+    await expect(minimizeIcon).toBeVisible();
+    await expect(minimizeIcon.locator('path')).toHaveAttribute('d', 'M5 12h14');
+    // compare rendered icon centers
+    const minimizeAlignment = await minimizeIcon.evaluate(element => {
+      const svg = element as SVGSVGElement;
+      const buttonBox = svg.parentElement!.getBoundingClientRect();
+      const svgBox = svg.getBoundingClientRect();
+      const pathBox = (svg.querySelector('path') as SVGGraphicsElement).getBBox();
+      return {
+        button: buttonBox.y + buttonBox.height / 2 - (svgBox.y + svgBox.height / 2),
+        path: pathBox.y + pathBox.height / 2 - (svg.viewBox.baseVal.y + svg.viewBox.baseVal.height / 2)
+      };
+    });
+    expect(Math.abs(minimizeAlignment.button)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(minimizeAlignment.path)).toBeLessThanOrEqual(0.5);
+
+    // exercise terminal fullscreen parity once
+    if (panels === 'note and browser') {
+      const terminal = split.locator('.terminal-pane[data-panel-key="%5"]');
+      const canvas = terminal.locator('.terminal-canvas');
+      const expand = terminalHeader.locator('.pane-expand');
+      await expect(expand).toHaveAccessibleName('Enter terminal fullscreen build');
+      await expect(expand).toHaveAttribute('aria-pressed', 'false');
+      // mark the live canvas across toggles
+      await canvas.evaluate(element => { element.dataset.fullscreenProbe = 'preserved'; });
+      await expand.click();
+      await expect(terminal).toHaveClass(/\bexpanded\b/u);
+      await expect(expand).toHaveAccessibleName('Exit terminal fullscreen build');
+      await expect(expand).toHaveAttribute('aria-pressed', 'true');
+      await expect(visiblePanels).toHaveCount(1);
+      await expect(split.locator(':scope > .split-resizer:visible')).toHaveCount(0);
+      const expandedBox = (await terminal.boundingBox())!;
+      const splitBox = (await split.boundingBox())!;
+      expect(expandedBox.width).toBeCloseTo(splitBox.width, 0);
+      expect(expandedBox.height).toBeCloseTo(splitBox.height, 0);
+      await expect(canvas).toHaveAttribute('data-fullscreen-probe', 'preserved');
+
+      // the toggle restores sibling panels
+      await expand.click();
+      await expect(terminal).not.toHaveClass(/\bexpanded\b/u);
+      await expect(expand).toHaveAccessibleName('Enter terminal fullscreen build');
+      await expect(visiblePanels).toHaveCount(4);
+      await expect(canvas).toHaveAttribute('data-fullscreen-probe', 'preserved');
+
+      // canvas Escape remains terminal input
+      await expand.click();
+      await canvas.locator('.xterm-screen').click();
+      await page.keyboard.press('Escape');
+      await expect.poll(() => paneInputText(page, '%5')).toContain(String.fromCharCode(27));
+      await expect(terminal).toHaveClass(/\bexpanded\b/u);
+
+      // header Escape restores the split
+      await expand.focus();
+      await page.keyboard.press('Escape');
+      await expect(terminal).not.toHaveClass(/\bexpanded\b/u);
+      await expect(visiblePanels).toHaveCount(4);
+
+      // minimizing fullscreen restores siblings
+      await expand.click();
+      await minimize.click();
+      await expect(terminal).toHaveCount(0);
+      await expect(visiblePanels).toHaveCount(3);
+      await expect(split.locator('.log-output')).toBeVisible();
+      await expect(split.locator('.note-pane')).toBeVisible();
+      await expect(split.locator('.browser-pane')).toBeVisible();
+      await openPicker(page);
+      await page.getByRole('menuitem', { name: /build/u }).click();
+      await seedPaneSize(page, '%5', 80, 24);
+      await expect(visiblePanels).toHaveCount(4);
+    }
 
     // remove the browser divider and its grid track together in mobile preview mode
     if (panels.includes('browser')) {
@@ -362,12 +514,27 @@ for (const panels of ['note', 'browser', 'note and browser']) {
       expect(desktopBrowserBox.width).toBeGreaterThanOrEqual(390);
     }
 
+    // collapse fullscreen at the phone breakpoint
+    if (panels === 'note and browser') {
+      await terminalHeader.locator('.pane-expand').click();
+      await expect(split.locator('.terminal-pane[data-panel-key="%5"]')).toHaveClass(/\bexpanded\b/u);
+    }
     await page.setViewportSize({ width: 390, height: 844 });
+    const phoneTerminal = split.locator('.terminal-pane[data-panel-key="%5"]');
+    await expect(phoneTerminal).not.toHaveClass(/\bexpanded\b/u);
+    await expect(terminalHeader.locator('.pane-expand')).toBeHidden();
     await expect(visiblePanels).toHaveCount(1);
-    await expectFullSplitHeight(split.locator('.terminal-pane:visible'));
+    await expectFullSplitHeight(phoneTerminal);
+    const phoneHeaderHeight = (await terminalHeader.boundingBox())!.height;
+    expect(phoneHeaderHeight).toBeCloseTo(referenceHeaderHeight, 0);
     await page.getByRole('button', { name: 'Show agent output' }).click();
     await expect(split.locator('.log-output')).toBeVisible();
     await expectFullSplitHeight(split.locator('.log-output'));
+    await split.locator('.mobile-terminal-switch').click();
+    await expect(phoneTerminal).toBeVisible();
+    await expectFullSplitHeight(phoneTerminal);
+    await page.getByRole('button', { name: 'Show agent output' }).click();
+    await expect(split.locator('.log-output')).toBeVisible();
   });
 }
 
@@ -385,11 +552,14 @@ test('on a phone the split switcher gains a chip for the Terminal', async ({ pag
   // the newly opened Terminal is the visible phone panel; the switcher offers the agent
   const column = page.locator('.terminal-pane[data-panel-key="%5"]');
   await expect(column).toBeVisible();
+  await expect(page.locator('.terminal-minimized-count')).toHaveCount(0);
   const switches = page.locator('.mobile-split-switches');
   await expect(switches).toBeVisible();
   await switches.locator('.mobile-agent-switch').click();
   await expect(page.locator('.log-output')).toBeVisible();
   await expect(column).toBeHidden();
+  // panel switching is not minimizing
+  await expect(page.locator('.terminal-minimized-count')).toHaveCount(0);
   // a Terminal chip now returns to it
   await switches.locator('.mobile-terminal-switch').click();
   await expect(column).toBeVisible();
@@ -471,6 +641,115 @@ test('only a Console shell offers a rename affordance', async ({ page }) => {
   await expect(page.locator('.terminal-pane[data-panel-key="%5"]').getByRole('button', { name: /Rename terminal/u })).toBeVisible();
 });
 
+test('a managed shell header deletes through the pane endpoint while failed deletion stays open', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await installPaneMock(page);
+  const deleted: string[] = [];
+  const panes: Pane[] = [
+    { paneId: '%1', session: '$1', window: '@0', command: 'codex', path: '/worktrees/cora', title: '', agent: true },
+    { paneId: '%5', session: '$1', window: '@1', role: 'shell', name: 'build', command: 'zsh', path: '/worktrees/cora', title: '', agent: false, busy: false },
+    { paneId: '%6', session: '$1', window: '@2', command: 'vim', path: '/worktrees/cora/src', title: '', agent: false }
+  ];
+  await routeApi(page, { panes: () => panes, deleted, deleteStatus: paneId => paneId === '%8' ? 500 : 204 });
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  const build = page.locator('.terminal-pane[data-panel-key="%5"]');
+  const removeBuild = build.getByRole('button', { name: 'Delete terminal build', exact: true });
+  await expect(removeBuild.locator('svg[aria-hidden="true"]')).toBeVisible();
+  await removeBuild.click();
+  await expect.poll(() => deleted).toContain('%5');
+  await expect(build).toHaveCount(0);
+  await expect(page.locator('.terminal-minimized-count')).toHaveCount(0);
+
+  // add one busy managed shell
+  panes.push({ paneId: '%8', session: '$1', window: '@4', role: 'shell', name: 'server', command: 'node', path: '/worktrees/cora', title: '', agent: false, busy: true });
+  await openPicker(page);
+  await expect(page.locator('.terminal-minimized-count')).toHaveText('1');
+  await page.getByRole('menuitem', { name: /server/u }).click();
+  await seedPaneSize(page, '%8', 80, 24);
+  const server = page.locator('.terminal-pane[data-panel-key="%8"]');
+  const removeServer = server.getByRole('button', { name: 'Delete terminal server', exact: true });
+  await expect(page.locator('.terminal-minimized-count')).toHaveCount(0);
+
+  let acceptDeletion = false;
+  let dialogs = 0;
+  // exercise cancel and acceptance
+  page.on('dialog', dialog => {
+    dialogs++;
+    // choose the current attempt
+    if (acceptDeletion) void dialog.accept();
+    else void dialog.dismiss();
+  });
+  await removeServer.click();
+  await expect.poll(() => dialogs).toBe(1);
+  expect(deleted).not.toContain('%8?confirm=1');
+  await expect(server).toBeVisible();
+  await expect(page.locator('.terminal-minimized-count')).toHaveCount(0);
+
+  // rejected requests retain the open shell
+  acceptDeletion = true;
+  await removeServer.click();
+  await expect.poll(() => deleted).toContain('%8?confirm=1');
+  await expect(server).toBeVisible();
+  await expect(server.getByRole('alert')).toHaveClass(/\bpane-status\b.*\berror\b/u);
+  await expect(server.getByRole('alert')).toHaveText('Delete failed');
+  await expect(page.locator('.terminal-minimized-count')).toHaveCount(0);
+
+  // unmanaged panes never gain deletion
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /vim/u }).click();
+  await seedPaneSize(page, '%6', 80, 24);
+  const vim = page.locator('.terminal-pane[data-panel-key="%6"]');
+  await expect(vim).toBeVisible();
+  await expect(vim.getByRole('button', { name: /Delete terminal/u })).toHaveCount(0);
+});
+
+test('a stale idle shell asks before retrying a busy DELETE conflict', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await installPaneMock(page);
+  const deleted: string[] = [];
+  const panes: Pane[] = [
+    { paneId: '%1', session: '$1', window: '@0', command: 'codex', path: '/worktrees/cora', title: '', agent: true },
+    { paneId: '%5', session: '$1', window: '@1', role: 'shell', name: 'build', command: 'zsh', path: '/worktrees/cora', title: '', agent: false, busy: false }
+  ];
+  await routeApi(page, { panes: () => panes, deleted, deleteStatus: (_paneId, confirmed) => confirmed ? 204 : { status: 409, busy: true } });
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  const build = page.locator('.terminal-pane[data-panel-key="%5"]');
+  const removeBuild = build.getByRole('button', { name: 'Delete terminal build', exact: true });
+
+  let acceptRetry = false;
+  let dialogs = 0;
+  // control the conflict retry
+  page.on('dialog', dialog => {
+    dialogs++;
+    // choose the current attempt
+    if (acceptRetry) void dialog.accept();
+    else void dialog.dismiss();
+  });
+
+  await removeBuild.click();
+  await expect.poll(() => dialogs).toBe(1);
+  expect(deleted).toEqual(['%5']);
+  await expect(build).toBeVisible();
+  await expect(page.locator('.terminal-minimized-count')).toHaveCount(0);
+
+  // acceptance sends the confirmed retry
+  acceptRetry = true;
+  await removeBuild.click();
+  await expect.poll(() => deleted).toEqual(['%5', '%5', '%5?confirm=1']);
+  await expect(build).toHaveCount(0);
+  await expect(page.locator('.terminal-minimized-count')).toHaveCount(0);
+});
+
 test('renaming a Console shell from its panel updates the head and the picker row', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
   await installPaneMock(page);
@@ -494,8 +773,8 @@ test('renaming a Console shell from its panel updates the head and the picker ro
   await expect.poll(() => renamed).toContainEqual({ paneId: '%5', name: 'deploy' });
   await expect(column.getByText('deploy')).toBeVisible();
 
-  // closing leaves the shell running; it returns to the picker under its new name
-  await column.getByRole('button', { name: /Close terminal/u }).click();
+  // minimizing leaves the shell running; it returns to the picker under its new name
+  await column.getByRole('button', { name: 'Minimize terminal deploy', exact: true }).click();
   await expect(column).toHaveCount(0);
   await openPicker(page);
   const picker = page.getByRole('menu', { name: 'Open a terminal' });
@@ -619,7 +898,7 @@ test('on a phone a tap on a Terminal focuses its textarea', async ({ page }) => 
   expect(focusedSynchronously).toBe(true);
 });
 
-test('on a phone closing a Terminal returns to the agent panel and drops its chip', async ({ page }) => {
+test('on a phone minimizing a Terminal returns to the agent panel and drops its chip', async ({ page }) => {
   await page.setViewportSize({ width: 428, height: 880 });
   await installPaneMock(page);
   await routeApi(page);
@@ -632,11 +911,12 @@ test('on a phone closing a Terminal returns to the agent panel and drops its chi
   const column = page.locator('.terminal-pane[data-panel-key="%5"]');
   await expect(column).toBeVisible();
 
-  // closing the visible Terminal returns the phone view to the agent and removes its chip
-  await column.getByRole('button', { name: /Close terminal/u }).click();
+  // minimizing returns the phone view to the agent and removes its chip
+  await column.getByRole('button', { name: 'Minimize terminal build', exact: true }).click();
   await expect(column).toHaveCount(0);
   await expect(page.locator('.log-output')).toBeVisible();
   await expect(page.locator('.mobile-split-switches .mobile-terminal-switch')).toHaveCount(0);
+  await expect(page.locator('.terminal-minimized-count')).toHaveText('1');
   // the composer is back now that no Terminal is the visible panel
   await expect(page.getByRole('textbox', { name: 'Prompt' })).toBeVisible();
 });

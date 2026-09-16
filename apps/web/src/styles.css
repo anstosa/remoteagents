@@ -245,8 +245,9 @@ html.software-keyboard-open .tabs { display: none; }
 .split-resizer { display: none; }
 .mobile-split-switches { display: none; }
 .log-output { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
-.log-split:has(> :is(.note-pane, .browser-pane).expanded) { display: block; }
-.log-split:has(> :is(.note-pane, .browser-pane).expanded) > :not(.expanded) { display: none; }
+/* let any supplemental split fill the output area without unmounting siblings */
+.log-split:has(> :is(.note-pane, .browser-pane, .terminal-pane).expanded) { display: block; }
+.log-split:has(> :is(.note-pane, .browser-pane, .terminal-pane).expanded) > :not(.expanded) { display: none; }
 .log-output::after { position: absolute; inset: 0; z-index: 30; box-sizing: border-box; border: 3px solid transparent; content: ''; pointer-events: none; }
 .log.input-active .log-output::after { border-color: var(--sky); box-shadow: inset 0 0 1.4rem #00000066, inset 0 0 1.35rem color-mix(in srgb, var(--sky) 34%, transparent); }
 .log.selection-active .log-output::after { border-color: var(--subtext-0); box-shadow: inset 0 0 1.35rem #00000080, inset 0 0 1.2rem color-mix(in srgb, var(--overlay-2) 25%, transparent), 0 0 1rem color-mix(in srgb, var(--overlay-2) 35%, transparent); }
@@ -371,7 +372,9 @@ html.software-keyboard-open .tabs { display: none; }
 .git-status-summary.unavailable .git-worktree-state { color: var(--overlay-0); }
 @media (pointer: coarse) { .git-status-summary { min-height: calc(2.6rem - 1px); } }
 .git-status-dot { display: none; flex: none; width: .5rem; height: .5rem; border-radius: 999px; background: currentColor; }
-.log-status { --log-status-color: var(--yellow); position: absolute; top: calc(.75rem + var(--standard-control-size)); left: .375rem; z-index: 40; display: inline-flex; height: 2rem; flex: none; align-items: center; padding: 0 .58rem; border: 1px solid color-mix(in srgb, var(--log-status-color) 78%, white); border-radius: 999px; background: var(--log-status-color); color: var(--crust); box-shadow: 0 .5rem 1.1rem #000000b8, inset 0 1px color-mix(in srgb, var(--text) 32%, transparent); font: 800 .75rem var(--font-mono); letter-spacing: .04em; pointer-events: none; }
+/* share filled status pill styling between agent output and shell headers */
+.log-status, .terminal-pane .pane-status { --log-status-color: var(--yellow); display: inline-flex; height: 2rem; flex: none; align-items: center; padding: 0 .58rem; border: 1px solid color-mix(in srgb, var(--log-status-color) 78%, white); border-radius: 999px; background: var(--log-status-color); color: var(--crust); box-shadow: 0 .5rem 1.1rem #000000b8, inset 0 1px color-mix(in srgb, var(--text) 32%, transparent); font: 800 .75rem var(--font-mono); letter-spacing: .04em; }
+.log-status { position: absolute; top: calc(.75rem + var(--standard-control-size)); left: .375rem; z-index: 40; pointer-events: none; }
 .log-control { z-index: 20; padding: .3rem .5rem; border-color: var(--surface-1); background: color-mix(in srgb, var(--mantle) 88%, transparent); color: var(--subtext-0); font-size: .7rem; font-weight: 700; box-shadow: none; opacity: .82; }
 .log-control:hover { color: var(--text); opacity: 1; }
 .log-control:disabled { pointer-events: none; }
@@ -499,7 +502,8 @@ html.software-keyboard-open .tabs { display: none; }
 .note-save-status.error { color: var(--red); }
 .note-action-status { color: var(--green); font: 700 .66rem var(--font-mono); white-space: nowrap; }
 .note-action-status.error { color: var(--red); }
-.note-pane header button { display: grid; flex: 0 0 2rem; width: 2rem; height: 2rem; padding: 0; place-items: center; border-color: var(--surface-1); background: transparent; color: var(--subtext-0); box-shadow: none; }
+/* share outlined icon controls across note and shell headers */
+.note-pane header button, .terminal-pane .pane-head button { display: grid; flex: 0 0 2rem; width: 2rem; height: 2rem; padding: 0; place-items: center; border-color: var(--surface-1); background: transparent; color: var(--subtext-0); box-shadow: none; }
 .note-pane header button:hover { border-color: var(--lavender); color: var(--text); }
 .note-pane header .note-copy { color: var(--lavender); }
 .note-pane header .note-rename { margin-right: auto; color: var(--yellow); }
@@ -508,7 +512,7 @@ html.software-keyboard-open .tabs { display: none; }
 .note-pane header .note-send:not(:disabled):hover { border-color: var(--lavender); background: linear-gradient(135deg, color-mix(in srgb, var(--mauve) 88%, white), var(--blue)); color: var(--crust); filter: brightness(1.08); }
 .note-pane header .note-launch-run { width: auto; flex: 0 0 auto; padding: 0 .6rem; border-color: color-mix(in srgb, var(--green) 60%, var(--surface-1)); color: var(--green); font: 700 .66rem var(--font-mono); white-space: nowrap; }
 .note-pane header .note-launch-run:not(:disabled):hover { border-color: var(--green); color: var(--green); filter: brightness(1.08); }
-.note-pane header .note-delete { border-color: color-mix(in srgb, var(--red) 70%, var(--surface-1)); color: var(--red); }
+.note-pane header .note-delete, .terminal-pane .pane-head .pane-delete { border-color: color-mix(in srgb, var(--red) 70%, var(--surface-1)); color: var(--red); }
 .note-pane header .note-expand[aria-pressed='true'] { border-color: var(--yellow); color: var(--yellow); }
 .note-pane header svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .note-pane textarea { width: 100%; min-height: 0; overflow: auto; resize: none; border: 0; border-radius: 0; padding: .8rem var(--edge); background: transparent; font-size: var(--output-font-size); line-height: 1.45; outline-offset: -2px; }
@@ -634,12 +638,12 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
   .log-split:has(> .browser-pane.mobile:not(.expanded)) > .browser-resizer { display: none; }
   .note-pane, .browser-pane { border-top: 0; border-left: 1px solid color-mix(in srgb, var(--yellow) 52%, var(--surface-1)); box-shadow: inset 1px 0 color-mix(in srgb, var(--text) 4%, transparent); }
   .browser-pane { border-left-color: color-mix(in srgb, var(--blue) 58%, var(--surface-1)); }
-  :is(.note-pane, .browser-pane).expanded { border: 0; }
+  :is(.note-pane, .browser-pane, .terminal-pane).expanded { border: 0; }
   .terminal-pane { border-left: 1px solid color-mix(in srgb, var(--green) 46%, var(--surface-1)); box-shadow: inset 1px 0 color-mix(in srgb, var(--text) 4%, transparent); }
 }
 @media (max-width: 768px) {
   /* supplemental panels already fill phones */
-  :is(.note-pane header .note-expand, .browser-pane header .browser-expand) { display: none; }
+  :is(.note-pane header .note-expand, .browser-pane header .browser-expand, .terminal-pane .pane-head .pane-expand) { display: none; }
   .browser-frame-shell.mobile iframe { width: 100%; }
   .browser-frame-shell.desktop { overflow: hidden; place-items: start; }
   .browser-frame-shell.desktop iframe { width: var(--browser-desktop-width, 980px); height: var(--browser-desktop-height, 100%); transform: scale(var(--browser-desktop-scale, 1)); transform-origin: top left; }
@@ -669,20 +673,27 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 /* A Terminal panel: a titled head over a streamed pane, focusable, with a sky inset ring
    marking the panel that receives keys (First-class terminal panes, composition A). */
 .terminal-pane { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; background: var(--base); }
-.terminal-pane .pane-head { display: flex; align-items: center; gap: .4rem; min-width: 0; padding: .2rem .35rem .2rem .55rem; border-bottom: 1px solid var(--surface-1); background: color-mix(in srgb, var(--mantle) 82%, transparent); color: var(--subtext-0); font-size: .72rem; }
-.terminal-pane .pane-dot { flex: none; width: .5rem; height: .5rem; border-radius: 50%; background: var(--green); }
+/* match the existing note and browser fullscreen dimensions */
+.terminal-pane.expanded { width: 100%; height: 100%; border: 0; }
+/* align the shell header with note and browser toolbar heights */
+.terminal-pane .pane-head { display: flex; align-items: center; gap: .55rem; min-width: 0; min-height: 2.8rem; padding: .4rem .55rem; border-bottom: 1px solid var(--surface-1); background: color-mix(in srgb, var(--mantle) 82%, transparent); color: var(--subtext-0); font-size: .72rem; }
+/* scale the shared agent pill down for the shell toolbar */
+.terminal-pane .pane-status { --log-status-color: var(--green); height: 1.25rem; padding: 0 .4rem; font-size: .58rem; white-space: nowrap; }
+.terminal-pane .pane-status.error { --log-status-color: var(--red); }
 .terminal-pane .pane-title { flex: 1; min-width: 0; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.terminal-pane .pane-live { flex: none; color: var(--green); font-size: .58rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
-.terminal-pane .pane-head button { display: grid; flex: none; width: 1.5rem; height: 1.5rem; padding: 0; place-items: center; border: 0; border-radius: var(--control-radius); background: transparent; color: var(--overlay-1); font-size: 1rem; line-height: 1; cursor: pointer; }
-.terminal-pane .pane-head button:hover:not(:disabled) { background: var(--surface-0); color: var(--text); }
+.terminal-pane .pane-head button:not(.pane-delete):hover:not(:disabled) { border-color: var(--green); color: var(--text); }
+.terminal-pane .pane-head .pane-delete:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
 .terminal-pane .pane-head button:disabled { color: var(--overlay-0); cursor: not-allowed; }
 .terminal-pane .pane-head button svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.terminal-pane .pane-head .pane-expand[aria-pressed='true'] { border-color: var(--green); color: var(--green); }
 .terminal-pane .pane-rename { display: flex; flex: 1; align-items: center; gap: .2rem; min-width: 0; }
 .terminal-pane .pane-rename input { flex: 1; min-width: 0; padding: .1rem .3rem; border: 1px solid var(--surface-2); border-radius: var(--control-radius); background: var(--base); color: var(--text); font: inherit; }
 .terminal-pane .terminal-canvas { position: relative; min-width: 0; min-height: 0; }
 .terminal-pane.focused::after { position: absolute; inset: 0; z-index: 6; border: 2px solid var(--sky); border-radius: 2px; content: ''; pointer-events: none; }
 /* terminal picker icon and worktree panes */
 .terminal-picker-wrap { display: inline-flex; }
+/* anchor the shared badge to the terminal trigger */
+.terminal-picker-toggle { position: relative; }
 .terminal-picker { z-index: var(--layer-popover); min-width: 15rem; max-width: min(22rem, 92vw); max-height: calc(100vh - 1rem); overflow: auto; padding: .3rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: var(--mantle); box-shadow: 0 .7rem 1.8rem color-mix(in srgb, var(--crust) 80%, transparent); }
 .terminal-picker-heading { padding: .25rem .5rem; color: var(--overlay-1); font-size: .68rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 .terminal-picker-empty { padding: .35rem .5rem; color: var(--overlay-1); font-size: .8rem; }

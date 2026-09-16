@@ -4156,6 +4156,43 @@ function useWorktreeTerminals(worktreeId: string | undefined) {
     saveTerminals(worktreeId, next);
     return next;
   }), [worktreeId]);
+  // forget ended panes without counting them as minimized shells
+  const forgetPane = useCallback((paneId: string) => {
+    closePane(paneId);
+    // remove the ended pane from the current picker listing
+    setPanes(current => current.filter(pane => pane.paneId !== paneId));
+  }, [closePane]);
+  // share managed-shell deletion between the header and picker
+  const endPane = useCallback(async (pane: WorktreePane): Promise<boolean | undefined> => {
+    // never delete agent panes or unmanaged session panes
+    if (worktreeId === undefined || pane.role !== 'shell' || pane.agent) return false;
+    const confirmation = `End ${terminalPaneLabel(pane)}? It is running a command.`;
+    let confirmed = false;
+    // preserve the existing confirmation before ending a busy shell
+    if (pane.busy) {
+      // leave the running shell unchanged on cancellation
+      if (!window.confirm(confirmation)) return undefined;
+      confirmed = true;
+    }
+    try {
+      const url = `/api/worktrees/${encodeURIComponent(worktreeId)}/panes/${encodeURIComponent(pane.paneId)}`;
+      let response = await request(`${url}${confirmed ? '?confirm=1' : ''}`, { method: 'DELETE' });
+      // recheck consent when a previously idle shell has become busy
+      if (response.status === 409 && !confirmed) {
+        const body = await response.json() as { busy?: boolean };
+        // preserve unrelated conflict responses as failures
+        if (body.busy !== true) return false;
+        // leave newly busy work running on cancellation
+        if (!window.confirm(confirmation)) return undefined;
+        response = await request(`${url}?confirm=1`, { method: 'DELETE' });
+      }
+      // keep the panel and minimized count unchanged on rejection
+      if (!response.ok) return false;
+      forgetPane(pane.paneId);
+      await refreshPanes();
+      return true;
+    } catch { return false; }
+  }, [worktreeId, forgetPane, refreshPanes]);
   // rename a Console shell through the panes API, then read the pane back so the open panel's
   // head, its phone chip and the picker's row all show the stored name (spec, the picker)
   const renamePane = useCallback(async (paneId: string, name: string): Promise<boolean> => {
@@ -4174,20 +4211,56 @@ function useWorktreeTerminals(worktreeId: string | undefined) {
     });
     return true;
   }, [worktreeId, refreshPanes]);
-  return { open, panes, refreshPanes, openPane, closePane, renamePane };
+  return { open, panes, refreshPanes, openPane, closePane, forgetPane, endPane, renamePane };
 }
 type WorktreeTerminals = ReturnType<typeof useWorktreeTerminals>;
 
-// One Terminal column: a titled head over a streamed pane. The pane streams over the
-// Worktree-keyed pane socket; typed keys route to it while it is focused (the composer
-// stays the Agent's). Closing hides the panel and leaves the shell running; when the pane
-// ends the panel closes itself (spec, Terminals as Panels).
-function TerminalPane({ worktreeId, paneId, name, onClose, onExit, onRename, mobileHidden }: { worktreeId: string; paneId: string; name: string; onClose: () => void; onExit: () => void; onRename?: (name: string) => Promise<boolean>; mobileHidden?: boolean }) {
+// render a live terminal with fullscreen, minimize and managed-shell delete actions
+function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, onDelete, mobileHidden }: { worktreeId: string; paneId: string; name: string; onMinimize: () => void; onExit: () => void; onRename?: (name: string) => Promise<boolean>; onDelete?: () => Promise<boolean | undefined>; mobileHidden?: boolean }) {
   const canvas = useRef<HTMLDivElement | null>(null);
   const [focused, setFocused] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameDraft, setRenameDraft] = useState(name);
   const [renamePending, setRenamePending] = useState(false);
+  const [deletePending, setDeletePending] = useState(false);
+  const [deleteError, setDeleteError] = useState(false);
+  // restore normal switching when fullscreen reaches a phone viewport
+  useLayoutEffect(() => {
+    // observe viewport changes only during fullscreen
+    if (!expanded) return;
+    const mobile = window.matchMedia('(max-width: 768px)');
+    // phone panels already fill the output area
+    const collapse = () => {
+      // keep desktop fullscreen intact
+      if (mobile.matches) setExpanded(false);
+    };
+    collapse();
+    mobile.addEventListener('change', collapse);
+    // release the temporary viewport listener
+    return () => mobile.removeEventListener('change', collapse);
+  }, [expanded]);
+  // resize the existing terminal without remounting its stream
+  const toggleExpanded = () => setExpanded(current => !current);
+  // reserve canvas escape for shell applications
+  const handleHeaderKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    // restore fullscreen only from a focused header control
+    if (event.key !== 'Escape' || !expanded) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setExpanded(false);
+  };
+  // preserve the panel when deletion fails or confirmation is cancelled
+  const deleteShell = async () => {
+    // ignore duplicate deletion or non-managed panes
+    if (deletePending || onDelete === undefined) return;
+    setDeletePending(true);
+    setDeleteError(false);
+    try {
+      const deleted = await onDelete();
+      setDeleteError(deleted === false);
+    } finally { setDeletePending(false); }
+  };
   const onExitRef = useRef(onExit);
   onExitRef.current = onExit;
   const submitRename = async () => {
@@ -4222,17 +4295,23 @@ function TerminalPane({ worktreeId, paneId, name, onClose, onExit, onRename, mob
       handle.dispose();
     };
   }, [worktreeId, paneId]);
-  return <section className={`terminal-pane${focused ? ' focused' : ''}${mobileHidden ? ' mobile-hidden' : ''}`} data-panel-key={paneId}>
-    <header className="pane-head"><span className="pane-dot" aria-hidden="true" />{renaming
+  return <section className={`terminal-pane${expanded ? ' expanded' : ''}${focused ? ' focused' : ''}${mobileHidden ? ' mobile-hidden' : ''}`} data-panel-key={paneId}>
+    <header className="pane-head" onKeyDown={handleHeaderKeyDown}>
+      <span className={`pane-status${deleteError ? ' error' : ''}`} role={deleteError ? 'alert' : 'status'} title={deleteError ? 'Could not delete shell. Try again.' : undefined}>{deleteError ? 'Delete failed' : 'Live'}</span>
+      {renaming
       ? <form className="pane-rename" onSubmit={event => { event.preventDefault(); void submitRename(); }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); setRenaming(false); } }}><input aria-label={`Name for terminal ${name}`} value={renameDraft} maxLength={maxTerminalNameLength} autoFocus disabled={renamePending} onChange={event => setRenameDraft(event.target.value)} /><button type="submit" disabled={renamePending || renameDraft.trim() === ''} aria-label="Save terminal name" title="Save terminal name"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={renamePending} aria-label="Cancel terminal rename" title="Cancel" onClick={() => setRenaming(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form>
-      : <><span className="pane-title" title={name}>{name}</span>{onRename !== undefined && <button type="button" className="pane-rename-toggle" aria-label={`Rename terminal ${name}`} title="Rename terminal" onClick={() => { setRenameDraft(name); setRenaming(true); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button>}</>}<span className="pane-live" aria-hidden="true">live</span><button type="button" aria-label={`Close terminal ${name}`} title="Close terminal (the shell keeps running)" onClick={onClose}>×</button></header>
+      : <><span className="pane-title" title={name}>{name}</span>{onRename !== undefined && <button type="button" className="pane-rename-toggle" disabled={deletePending} aria-label={`Rename terminal ${name}`} title="Rename terminal" onClick={() => { /* edit the shell name */ setRenameDraft(name); setRenaming(true); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3" /></svg></button>}</>}
+      {onDelete !== undefined && <button type="button" className="pane-delete" disabled={deletePending || renamePending} aria-label={`Delete terminal ${name}`} title="Delete shell (ends the running shell)" onClick={deleteShell}>{deletePending ? <span className="spinner" /> : <LauncherRowIcon name="trash" />}</button>}
+      <button type="button" className="pane-expand" disabled={deletePending} aria-label={`${expanded ? 'Exit' : 'Enter'} terminal fullscreen ${name}`} aria-pressed={expanded} title={expanded ? 'Exit fullscreen' : 'Fullscreen'} onClick={toggleExpanded}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button>
+      <button type="button" className="pane-minimize" disabled={deletePending} aria-label={`Minimize terminal ${name}`} title="Minimize terminal (the shell keeps running)" onClick={onMinimize}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg></button>
+    </header>
     <div className="terminal-canvas" ref={canvas} aria-label={`Terminal ${name}`} />
   </section>;
 }
 
 // render the terminal icon button and worktree pane picker
 function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; terminals: WorktreeTerminals }) {
-  const { open, panes, refreshPanes, openPane, closePane } = terminals;
+  const { open, panes, refreshPanes, openPane, endPane } = terminals;
   const [menuOpen, setMenuOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const { anchorRef, flyoutRef, style } = useViewportFlyout<HTMLSpanElement>(menuOpen, { placement: 'above' });
@@ -4254,20 +4333,20 @@ function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; termina
       setMenuOpen(false);
     } finally { setBusy(false); }
   };
+  // reuse the header's managed-shell deletion and busy confirmation
   const endShell = async (pane: WorktreePane) => {
-    if (pane.busy && !window.confirm(`End ${terminalPaneLabel(pane)}? It is running a command.`)) return;
     setBusy(true);
-    try {
-      const suffix = pane.busy ? '?confirm=1' : '';
-      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/panes/${encodeURIComponent(pane.paneId)}${suffix}`, { method: 'DELETE' });
-      if (response.ok) { closePane(pane.paneId); await refreshPanes(); }
-    } finally { setBusy(false); }
+    try { await endPane(pane); }
+    finally { setBusy(false); }
   };
   const choose = (pane: WorktreePane) => { openPane(pane.paneId, terminalPaneLabel(pane)); setMenuOpen(false); };
   // the Agent's own pane and any hand-split siblings; a hidden Console shell (created but not
   // currently a Panel) is listed separately, with an End action
   const sessionPanes = panes.filter(pane => pane.role !== 'shell');
   const hiddenShells = panes.filter(pane => pane.role === 'shell' && !openIds.has(pane.paneId));
+  // count only minimized managed shells, not agent panes or phone-hidden open panels
+  const minimizedCount = hiddenShells.filter(pane => !pane.agent).length;
+  const minimizedDescription = minimizedCount > 0 ? `${minimizedCount} minimized shell${minimizedCount === 1 ? '' : 's'}` : undefined;
   const paneRow = (pane: WorktreePane, showEnd: boolean) => {
     const claimed = pane.window !== undefined && claimedWindows.has(pane.window) && !openIds.has(pane.paneId);
     const disabled = pane.agent || openIds.has(pane.paneId) || claimed;
@@ -4277,7 +4356,7 @@ function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; termina
       {showEnd && <button type="button" className="terminal-picker-end" aria-label={`End ${terminalPaneLabel(pane)}`} title="End this shell" disabled={busy} onClick={() => void endShell(pane)}>🗑</button>}
     </div>;
   };
-  return <><span className="terminal-picker-wrap" ref={anchorRef}><button type="button" className="terminal-picker-toggle icon-button" aria-haspopup="menu" aria-expanded={menuOpen} aria-label="Open a terminal" title="Open a terminal" onClick={toggle}><LauncherRowIcon name="terminal" /></button></span>
+  return <><span className="terminal-picker-wrap" ref={anchorRef}><button type="button" className="terminal-picker-toggle icon-button" aria-haspopup="menu" aria-expanded={menuOpen} aria-label="Open a terminal" aria-description={minimizedDescription} title="Open a terminal" onClick={toggle}><LauncherRowIcon name="terminal" />{minimizedCount > 0 && <span className="saved-prompts-count terminal-minimized-count" aria-hidden="true">{minimizedCount}</span>}</button></span>
     {menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="terminal-picker flyout-menu" ref={flyoutRef} style={style} role="menu" aria-label="Open a terminal">
       {panes.length === 0 && <div className="terminal-picker-empty">No panes yet</div>}
       {sessionPanes.length > 0 && <><div className="terminal-picker-heading">Session panes</div>{sessionPanes.map(pane => paneRow(pane, false))}</>}
@@ -4292,10 +4371,11 @@ function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; termina
 function useTerminalViews(worktreeId: string | undefined): { columns?: TerminalColumn[]; control?: ReactNode } {
   const terminals = useWorktreeTerminals(worktreeId);
   if (worktreeId === undefined) return {};
+  // keep destructive actions limited to managed shells
   const columns = terminals.open.map(terminal => {
-    // only a Console shell (the panes API rename target) offers a rename affordance
-    const renamable = terminals.panes.find(pane => pane.paneId === terminal.paneId)?.role === 'shell';
-    return { key: terminal.paneId, label: terminal.name, node: <TerminalPane key={terminal.paneId} worktreeId={worktreeId} paneId={terminal.paneId} name={terminal.name} onClose={() => terminals.closePane(terminal.paneId)} onExit={() => terminals.closePane(terminal.paneId)} onRename={renamable ? (name => terminals.renamePane(terminal.paneId, name)) : undefined} /> };
+    const pane = terminals.panes.find(pane => pane.paneId === terminal.paneId);
+    const managedShell = pane?.role === 'shell' && !pane.agent;
+    return { key: terminal.paneId, label: terminal.name, node: <TerminalPane key={terminal.paneId} worktreeId={worktreeId} paneId={terminal.paneId} name={terminal.name} onMinimize={() => { /* keep the shell running */ terminals.closePane(terminal.paneId); }} onExit={() => { /* remove ended shells from the count */ terminals.forgetPane(terminal.paneId); }} onRename={managedShell ? (name => terminals.renamePane(terminal.paneId, name)) : undefined} onDelete={managedShell ? (() => terminals.endPane(pane)) : undefined} /> };
   });
   return { columns, control: <TerminalPicker worktreeId={worktreeId} terminals={terminals} /> };
 }
