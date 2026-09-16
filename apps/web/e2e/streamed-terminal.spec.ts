@@ -48,6 +48,18 @@ test('applies the seed then live bytes in order after the first size', async ({ 
   expect(text.indexOf('SEED-LINE')).toBeLessThan(text.indexOf('LIVE-LINE'));
 });
 
+test('masks the terminal with the themed background until the first seed renders', async ({ page }) => {
+  await setup(page);
+  // Pre-seed: a cover sits over the terminal so the operator never sees an empty grid or
+  // xterm's pre-paint flash before content arrives.
+  await expect(page.locator('#term .streamed-terminal-cover')).toBeVisible();
+  await drive(page, 'pushSize', 40, 10);
+  await drive(page, 'pushBytes', 'SEEDED\r\n');
+  await expect.poll(() => drive(page, 'screenText')).toContain('SEEDED');
+  // Once the seed has painted, the cover is removed and never masks the live pane.
+  await expect(page.locator('#term .streamed-terminal-cover')).toHaveCount(0);
+});
+
 test('conforms to the reported size and letterboxes a smaller pane', async ({ page }) => {
   await setup(page, { width: '640px', height: '320px' });
   await drive(page, 'pushSize', 20, 6);

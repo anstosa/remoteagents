@@ -111,6 +111,19 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
   );
 
   let disposed = false;
+  // Cover the terminal with the themed background until the first seed has rendered, so the
+  // operator never sees xterm's brief pre-paint frame or its hardcoded-black viewport before
+  // content arrives — the pane appears already populated instead of flashing empty. Only the
+  // initial mount is covered; a reconnect keeps the existing screen, and the cover is long
+  // gone by then, so it never masks a live pane.
+  const cover = document.createElement('div');
+  cover.className = 'streamed-terminal-cover';
+  Object.assign(cover.style, { position: 'absolute', inset: '0', zIndex: '2', pointerEvents: 'none' });
+  const applyCoverBackground = (background: string | undefined) => { cover.style.background = background ?? ''; };
+  applyCoverBackground(computeTerminalTheme().background);
+  container.append(cover);
+  let revealed = false;
+  const revealTerminal = () => { if (revealed) return; revealed = true; cover.remove(); };
   let connection: PaneConnection | undefined;
   let sizeApplied = false;
   // The next bytes are a fresh seed: clear the scrollback right before writing them, so
@@ -168,6 +181,7 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
   // SGR-only. Ack the consumed count from the write callback so the server's
   // drop-while-behind flow control can advance.
   const writeBytes = (bytes: Uint8Array) => {
+    const wasSeed = awaitingSeed;
     if (awaitingSeed) {
       // Clear the placeholder/scrollback and its stale link overlays the instant the
       // fresh seed starts; the registered safety handlers survive the reset.
@@ -181,6 +195,9 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
       connection?.send({ type: 'ack', bytes: bytes.length });
       scheduleOverlayRender();
       syncFollowState();
+      // Uncover once the fresh seed has painted, so the first frame the operator sees is
+      // already populated rather than an empty grid.
+      if (wasSeed) revealTerminal();
     });
   };
 
@@ -306,6 +323,7 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
     const theme = computeTerminalTheme();
     terminal.options.theme = theme;
     applyContainerBackground(theme.background);
+    applyCoverBackground(theme.background);
     scheduleOverlayRender();
   });
 
@@ -343,6 +361,7 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
       overlays.clear();
       terminal.dispose();
       host.remove();
+      cover.remove();
       status.remove();
       jump.remove();
       // Leave the caller's container as we found it, so a later re-mount starts clean.

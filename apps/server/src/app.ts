@@ -2421,6 +2421,15 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       const ticket = String(request.headers['sec-websocket-protocol'] ?? '').split(',').map(x => x.trim())[1];
       const id = (request.params as { id: string }).id;
       if (!tickets.consume(ticket, s.id, 'pane', id)) throw new Error();
+      // Buffer client frames from the instant the socket is up: ws drops any 'message' that
+      // arrives before a listener is attached, and the browser sends its first (and, until a
+      // resize, only) `viewport` right on open — while the target/membership resolution below
+      // still awaits (a Worktree pane spawns `list-panes`). Losing that one frame means no
+      // size, no seed, a blank pane that still takes input. `handleRaw` buffers until setup
+      // swaps in the real processor and replays what queued.
+      const earlyFrames: unknown[] = [];
+      let handleRaw: (raw: unknown) => void = raw => { earlyFrames.push(raw); };
+      socket.on('message', (raw: unknown) => handleRaw(raw));
       // Resolve the pane target: an Agent (default pane = the Agent's own, membership = every
       // pane of its tmux session, derive + mutation lock on its own pane) or a Worktree (an
       // explicit pane required, membership = the Worktree's pane set — every pane of every
@@ -2583,8 +2592,14 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
           reclamping = false;
         }
       };
+      // Seed only after this task has reported the size, so the browser always gets its
+      // `size` before the seed bytes (the client buffers only a small pre-size window and
+      // silently drops a large seed that arrives first — a blank pane). Chaining the seed on
+      // schedule()'s promise is wrong: a superseded viewport's promise fulfils via the
+      // early-return path without ever reporting a size, firing the seed ahead of the winning
+      // viewport's size when a mount-time viewport burst coalesces into one read.
       const viewport = new LatestViewportScheduler(
-        async (nextCols, nextRows) => { await windowKeyReady; const resized = await viewportLease().resize(nextCols, nextRows); await reportSize(); return resized; },
+        async (nextCols, nextRows) => { await windowKeyReady; const resized = await viewportLease().resize(nextCols, nextRows); await reportSize(); if (resized) seedOnce(); return resized; },
         () => {}
       );
       const unsubscribePane = paneClient.subscribe(pane, {
@@ -2613,7 +2628,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         }
       };
       const lease = leaseHeartbeat(socket, s.id, config.pollIntervalMs);
-      socket.on('message', (raw: unknown) => {
+      const processFrame = (raw: unknown) => {
         try {
           const frame = JSON.parse(String(raw));
           if (typeof frame?.type !== 'string') throw new Error();
@@ -2623,7 +2638,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
             if (Number.isInteger(frame.scrollback) && frame.scrollback >= 1 && frame.scrollback <= 5_000) seedDepth = frame.scrollback;
             ({ cols, rows } = bounded);
             viewportEstablished = true;
-            void viewport.schedule({ cols, rows, history: 0, onFailure: () => socket.close(1011) }).then(seedOnce);
+            void viewport.schedule({ cols, rows, history: 0, onFailure: () => socket.close(1011) });
             return;
           }
           if (frame.type === 'input') {
@@ -2647,7 +2662,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
           }
           throw new Error();
         } catch { socket.close(1008); }
-      });
+      };
+      // Setup is done: process anything that queued during it (in arrival order), then send
+      // every later frame straight through. No `await` runs between here and the swap, so no
+      // frame can slip past unbuffered.
+      for (const raw of earlyFrames.splice(0)) processFrame(raw);
+      handleRaw = processFrame;
       socket.on('close', () => { clearInterval(lease); if (quietTimer !== undefined) clearTimeout(quietTimer); unsubscribePane(); if (paneViewport !== undefined) void paneViewport.release(); });
       // carry the derive once at subscribe, before any %output
       if (derives) void runDerive(true);

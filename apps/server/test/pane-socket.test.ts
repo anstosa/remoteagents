@@ -127,7 +127,9 @@ async function freePort(): Promise<number> {
   });
 }
 
-type Deps = { kind?: string; controlActive?: () => boolean; controlConnect?: () => boolean; tmux?: unknown; prompts?: unknown; query?: string };
+type Deps = { kind?: string; controlActive?: () => boolean; controlConnect?: () => boolean; tmux?: unknown; prompts?: unknown; query?: string; discovery?: unknown; sendOnOpen?: unknown };
+
+const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
 async function connect(paneStream: PaneStreamProvider, deps: Deps = {}) {
   const kind = deps.kind ?? 'claude';
@@ -136,7 +138,7 @@ async function connect(paneStream: PaneStreamProvider, deps: Deps = {}) {
   const tickets = new TicketStore();
   const app = await buildApp(
     testConfig({ publicOrigin: new URL(`http://127.0.0.1:${port}`), projects: [testProject({ id: 'proj' })] as never }),
-    { auth, control, dashboardUpdates, discovery: discoveryOf(kind), tickets, paneStream, ...(deps.tmux === undefined ? {} : { tmux: deps.tmux }), ...(deps.prompts === undefined ? {} : { prompts: deps.prompts }) } as never
+    { auth, control, dashboardUpdates, discovery: deps.discovery ?? discoveryOf(kind), tickets, paneStream, ...(deps.tmux === undefined ? {} : { tmux: deps.tmux }), ...(deps.prompts === undefined ? {} : { prompts: deps.prompts }) } as never
   );
   await app.listen({ host: '127.0.0.1', port });
   const ticket = tickets.mint('session', 'pane', 'agent-1').id;
@@ -145,21 +147,25 @@ async function connect(paneStream: PaneStreamProvider, deps: Deps = {}) {
   open.push({ app, ws });
   const frames: Record<string, unknown>[] = [];
   const binary: Buffer[] = [];
+  // every message in arrival order, so a test can assert the seed never precedes its size
+  const order: string[] = [];
   let closeCode: number | undefined;
   ws.addEventListener('message', event => {
     const data = (event as MessageEvent).data;
-    if (typeof data === 'string') frames.push(JSON.parse(data) as Record<string, unknown>);
-    else binary.push(Buffer.from(data as ArrayBuffer));
+    if (typeof data === 'string') { const frame = JSON.parse(data) as Record<string, unknown>; frames.push(frame); order.push(`frame:${String(frame.type)}`); }
+    else { binary.push(Buffer.from(data as ArrayBuffer)); order.push('binary'); }
   });
   ws.addEventListener('close', event => { closeCode = (event as CloseEvent).code; });
   await new Promise<void>((resolve) => {
-    ws.addEventListener('open', () => resolve());
+    // Optionally fire a frame synchronously inside the 'open' event — i.e. while the server
+    // handler may still be mid-setup — to exercise the early-frame buffering.
+    ws.addEventListener('open', () => { if (deps.sendOnOpen !== undefined) ws.send(JSON.stringify(deps.sendOnOpen)); resolve(); });
     ws.addEventListener('close', () => resolve());
     ws.addEventListener('error', () => resolve());
   });
   const send = (frame: unknown) => ws.send(JSON.stringify(frame));
   const viewport = (cols = 100, rows = 30, scrollback = 500) => send({ type: 'viewport', cols, rows, scrollback });
-  return { frames, binary, send, viewport, closeCode: () => closeCode };
+  return { frames, binary, order, send, viewport, closeCode: () => closeCode };
 }
 
 const encode = (data: string) => Buffer.from(data, 'utf8').toString('base64url');
@@ -189,6 +195,44 @@ describe('/ws/pane seed and size', () => {
     expect(resizes).toContainEqual({ cols: 80, rows: 24 });
     // the seed was captured to the depth the browser asked for
     expect(stream.seedDepths).toContain(500);
+  });
+
+  it('sends size before the seed even when two viewports arrive together', async () => {
+    const stream = fakePaneStream();
+    stream.setSeed(Buffer.from('SEEDBYTES'));
+    const { tmux } = fakeTmux(stream);
+    const conn = await connect(stream.provider, { tmux });
+    // A mount-time viewport burst: the browser's onOpen and ResizeObserver both propose a
+    // grid, so two viewport frames arrive back to back (often in one socket read). The seed
+    // must still follow the size frame — the client buffers only a small pre-size window and
+    // silently drops a large seed that arrives before its size, leaving the pane blank.
+    conn.viewport(100, 30);
+    conn.viewport(80, 24);
+
+    await waitFor(() => conn.binary.length > 0);
+    // wait for at least one size frame too, so the ordering assertion is not vacuous
+    await waitFor(() => conn.order.includes('frame:size'));
+    expect(conn.order.indexOf('frame:size')).toBeLessThan(conn.order.indexOf('binary'));
+  });
+
+  it('does not lose the first viewport that arrives during async setup', async () => {
+    const stream = fakePaneStream();
+    stream.setSeed(Buffer.from('SEEDBYTES'));
+    const { tmux } = fakeTmux(stream);
+    // The browser sends its first (and, until a resize, only) viewport right on open, while
+    // the handler is still resolving the target/membership. A slow resolution here stands in
+    // for a Worktree pane's `list-panes` spawn: the frame must be buffered, not dropped —
+    // otherwise no size, no seed, and the pane stays blank while still taking input.
+    const slowDiscovery = {
+      target: async (id: string) => { await delay(120); return id === 'agent-1' ? { agent: agentOf('claude'), socket } : undefined; },
+      worktreesNow: () => []
+    };
+    const conn = await connect(stream.provider, { tmux, discovery: slowDiscovery, sendOnOpen: { type: 'viewport', cols: 100, rows: 30, scrollback: 500 } });
+
+    // No further viewport is ever sent; the one buffered during setup must drive size + seed.
+    await waitFor(() => conn.binary.length > 0);
+    expect(conn.frames.find(frame => frame.type === 'size')).toEqual({ type: 'size', cols: 80, rows: 24 });
+    expect(conn.binary[0]!.toString()).toBe('SEEDBYTES');
   });
 
   it('closes 1008 for a pane id outside the Agent\'s session', async () => {
