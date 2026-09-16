@@ -4225,9 +4225,7 @@ function TerminalPane({ worktreeId, paneId, name, onClose, onExit, onRename, mob
   </section>;
 }
 
-// The composer's `＋ terminal` button and its fly-out: every pane of the Worktree, one row
-// each (the Agent's own pane and any pane sharing a window with an open Terminal disabled),
-// plus New shell and, for a hidden Console shell, End (spec, Terminals as Panels).
+// render the terminal icon button and worktree pane picker
 function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; terminals: WorktreeTerminals }) {
   const { open, panes, refreshPanes, openPane, closePane } = terminals;
   const [menuOpen, setMenuOpen] = useState(false);
@@ -4274,7 +4272,7 @@ function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; termina
       {showEnd && <button type="button" className="terminal-picker-end" aria-label={`End ${terminalPaneLabel(pane)}`} title="End this shell" disabled={busy} onClick={() => void endShell(pane)}>🗑</button>}
     </div>;
   };
-  return <><span className="terminal-picker-wrap" ref={anchorRef}><button type="button" className="terminal-picker-toggle" aria-haspopup="menu" aria-expanded={menuOpen} aria-label="Open a terminal" title="Open a terminal" onClick={toggle}><span aria-hidden="true">＋</span> terminal</button></span>
+  return <><span className="terminal-picker-wrap" ref={anchorRef}><button type="button" className="terminal-picker-toggle icon-button" aria-haspopup="menu" aria-expanded={menuOpen} aria-label="Open a terminal" title="Open a terminal" onClick={toggle}><LauncherRowIcon name="terminal" /></button></span>
     {menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="terminal-picker flyout-menu" ref={flyoutRef} style={style} role="menu" aria-label="Open a terminal">
       {panes.length === 0 && <div className="terminal-picker-empty">No panes yet</div>}
       {sessionPanes.length > 0 && <><div className="terminal-picker-heading">Session panes</div>{sessionPanes.map(pane => paneRow(pane, false))}</>}

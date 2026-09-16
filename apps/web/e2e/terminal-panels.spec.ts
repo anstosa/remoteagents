@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { installPaneMock, seedPaneSize, pushBytes, pushExit, paneInputText } from './pane-stream-mock.js';
 
-// Terminal panels (First-class terminal panes, Console shells): the composer's `＋ terminal`
+// Terminal panels (First-class terminal panes, Console shells): the composer's terminal icon
 // picker lists a Worktree's panes, opening one adds a resizable column beside the agent, a
 // focused Terminal takes typed keys while the composer stays the Agent's, closing hides the
 // panel and an `exit` frame removes it, New shell creates a Console shell, storage reopens
@@ -55,6 +55,46 @@ const routeApi = (page: Page, options: { panes: () => Pane[]; onShell?: () => st
   });
 
 const openPicker = (page: Page) => page.getByRole('button', { name: 'Open a terminal' }).click();
+
+// preserve the accessible icon trigger across desktop and phone layouts
+test('terminal picker uses a standard icon button on desktop and phone', async ({ page }) => {
+  await installPaneMock(page);
+  await routeApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+
+  // check both composer layouts
+  for (const viewport of [{ width: 1400, height: 900 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    const trigger = page.getByRole('button', { name: 'Open a terminal', exact: true });
+    await expect(trigger).toBeVisible();
+    await expect(trigger).toHaveClass(/\bicon-button\b/u);
+    await expect(trigger).toHaveAttribute('title', 'Open a terminal');
+    await expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    await expect(trigger).toHaveText('');
+    await expect(trigger.locator('svg[aria-hidden="true"]')).toBeVisible();
+    // enlarge the glyph without changing its button
+    await expect(trigger.locator('svg')).toHaveCSS('width', '20px');
+    await expect(trigger.locator('svg')).toHaveCSS('height', '20px');
+
+    const more = page.getByRole('button', { name: 'More options', exact: true });
+    const referenceBox = await more.boundingBox();
+    const triggerBox = await trigger.boundingBox();
+    expect(triggerBox).not.toBeNull();
+    expect(referenceBox).not.toBeNull();
+    expect(triggerBox!.width).toBeCloseTo(referenceBox!.width, 1);
+    expect(triggerBox!.height).toBeCloseTo(referenceBox!.height, 1);
+    expect(triggerBox!.width).toBeCloseTo(triggerBox!.height, 1);
+
+    await trigger.click();
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByRole('menu', { name: 'Open a terminal' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByRole('menu', { name: 'Open a terminal' })).toHaveCount(0);
+  }
+});
 
 test('lists panes with the agent and a claimed window disabled, and opens a column with a resizer', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
