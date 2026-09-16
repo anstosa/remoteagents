@@ -58,7 +58,7 @@ export type PaneClient = {
   // so tmux orders it exactly against `%output` (the browser applies the seed, then only
   // bytes after the reply's end). Alternate screen: each row painted with absolute
   // positioning and the cursor restored. Normal screen: history joined with CRLF, cleared
-  // first. An empty buffer on failure.
+  // first and the cursor restored. An empty buffer on failure.
   seed(pane: string, depth: number): Promise<Buffer>;
 };
 export type PaneStreamProvider = {
@@ -231,8 +231,8 @@ export class TmuxControlClient implements PaneClient {
    * A full-screen program (alternate screen) is painted with each row placed absolutely
    * (`CSI row;1H`, no newline, so a full-width line can never wrap and scroll a row off)
    * with `-N` to keep trailing cells, and the cursor restored from `#{cursor_x/y}`. The
-   * normal buffer is the history to `depth`, joined with CRLF, cleared first. Reply lines
-   * are byte-preserving (latin1); the ASCII control prefixes stay ASCII, so latin1
+   * normal buffer is the history to `depth`, joined with CRLF, cleared first and followed
+   * by the cursor position. Reply lines are byte-preserving (latin1); the ASCII control prefixes stay ASCII, so latin1
    * reproduces the exact bytes a spawned capture would print.
    */
   async seed(pane: string, depth: number): Promise<Buffer> {
@@ -242,19 +242,20 @@ export class TmuxControlClient implements PaneClient {
     const meta = await this.command(`display-message -p -t ${pane} '#{alternate_on} #{cursor_x} #{cursor_y}'`).catch(() => undefined);
     if (meta?.ok !== true) return Buffer.alloc(0);
     const [alt, cursorX, cursorY] = (meta.lines[0] ?? '').trim().split(' ');
+    // restore the live cursor after either screen capture
+    const x = Number(cursorX);
+    const y = Number(cursorY);
+    const cursor = Number.isInteger(x) && Number.isInteger(y) ? `\x1b[${y + 1};${x + 1}H` : '';
     if (alt === '1') {
       const capture = await this.command(`capture-pane -e -p -N -t ${pane}`).catch(() => undefined);
       if (capture?.ok !== true) return Buffer.alloc(0);
       let out = '\x1b[?1049h\x1b[H\x1b[2J';
       capture.lines.forEach((line, index) => { out += `\x1b[${index + 1};1H${line}`; });
-      const x = Number(cursorX);
-      const y = Number(cursorY);
-      if (Number.isInteger(x) && Number.isInteger(y)) out += `\x1b[${y + 1};${x + 1}H`;
-      return Buffer.from(out, 'latin1');
+      return Buffer.from(out + cursor, 'latin1');
     }
     const capture = await this.command(`capture-pane -e -p -J -t ${pane} -S -${depth}`).catch(() => undefined);
     if (capture?.ok !== true) return Buffer.alloc(0);
-    return Buffer.from(`\x1b[H\x1b[2J${capture.lines.join('\r\n')}`, 'latin1');
+    return Buffer.from(`\x1b[H\x1b[2J${capture.lines.join('\r\n')}${cursor}`, 'latin1');
   }
 
   private async continuePane(pane: string): Promise<void> {

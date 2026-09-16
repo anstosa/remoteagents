@@ -48,6 +48,23 @@ test('applies the seed then live bytes in order after the first size', async ({ 
   expect(text.indexOf('SEED-LINE')).toBeLessThan(text.indexOf('LIVE-LINE'));
 });
 
+// keep first-command output beside a restored shell prompt
+test('restores the prompt cursor after blank seed rows and on reseed', async ({ page }) => {
+  await setup(page);
+  await drive(page, 'pushSize', 40, 10);
+  const seed = `\x1b[H\x1b[2J$ ${'\r\n'.repeat(9)}\x1b[1;3H`;
+
+  // exercise the initial snapshot and a fresh snapshot on reseed
+  for (const reseed of [false, true]) {
+    // discard the previous shell display on reseed
+    if (reseed) await drive(page, 'pushReseed');
+    await drive(page, 'pushBytes', seed);
+    await drive(page, 'pushBytes', 'echo first\r\nfirst\r\n$ ');
+    // read the rendered lines after all stream bytes are consumed
+    await expect.poll(() => drive(page, 'screenText')).toBe(`$ echo first\nfirst\n$ ${'\n'.repeat(7)}`);
+  }
+});
+
 test('masks the terminal with the themed background until the first seed renders', async ({ page }) => {
   await setup(page);
   // Pre-seed: a cover sits over the terminal so the operator never sees an empty grid or
@@ -233,20 +250,36 @@ test('a socket loss reconnects and re-seeds without keeping a stale line', async
   expect(await drive<string>(page, 'screenText')).not.toContain('STALE-LINE');
 });
 
-test('the jump-to-latest control appears when scrolled up and returns to following', async ({ page }) => {
-  await setup(page, { scrollback: 500 });
+// keep the jump control centered and clickable across viewport sizes
+test('the jump-to-latest control stays bottom-centered and returns to following', async ({ page }) => {
+  await setup(page, { scrollback: 500, width: '100%' });
   await drive(page, 'pushSize', 40, 10);
   let payload = '';
+  // fill enough scrollback to reveal the jump control
   for (let line = 1; line <= 60; line += 1) payload += `row-${line}\r\n`;
   await drive(page, 'pushBytes', payload);
+  // wait for scrollback before scrolling
   await expect.poll(() => drive(page, 'baseY')).toBeGreaterThan(0);
-  expect(await drive(page, 'jumpHidden')).toBe(true); // pinned to the bottom
-  await drive(page, 'scrollUp', 20);
-  await expect.poll(() => drive(page, 'jumpHidden')).toBe(false); // scrolled into history
-  await drive(page, 'clickJump');
-  const base = await drive<number>(page, 'baseY');
-  await expect.poll(() => drive(page, 'viewportY')).toBe(base);
   expect(await drive(page, 'jumpHidden')).toBe(true);
+
+  // check desktop and phone placement with real pointer clicks
+  for (const viewport of [{ width: 1400, height: 900 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    await drive(page, 'scrollUp', 20);
+    const jump = page.getByRole('button', { name: 'Jump to latest' });
+    await expect(jump).toBeVisible();
+    const panelBox = await page.locator('#term').boundingBox();
+    const jumpBox = await jump.boundingBox();
+    expect(panelBox).not.toBeNull();
+    expect(jumpBox).not.toBeNull();
+    expect(jumpBox!.x + jumpBox!.width / 2).toBeCloseTo(panelBox!.x + panelBox!.width / 2, 0);
+    expect(panelBox!.y + panelBox!.height - jumpBox!.y - jumpBox!.height).toBeCloseTo(12, 0);
+    await jump.click();
+    const base = await drive<number>(page, 'baseY');
+    // wait for the viewport to follow the latest output
+    await expect.poll(() => drive(page, 'viewportY')).toBe(base);
+    await expect(jump).toBeHidden();
+  }
 });
 
 test('server question and metadata frames reach their callbacks, and metadata can be requested', async ({ page }) => {

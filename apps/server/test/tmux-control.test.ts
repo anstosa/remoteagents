@@ -244,19 +244,22 @@ describe.skipIf(!tmuxSocketsWork)('tmux control client (real tmux)', () => {
     }
   });
 
-  it('reconstructs a normal-screen seed matching a CRLF-joined capture', async () => {
+  // restore the first input position after painting trailing blank rows
+  it('reconstructs a normal-screen seed and restores its prompt cursor', async () => {
     const { ref, socket, pane } = await fixtureSession();
     const client = new TmuxControlClient(tmux, ref.path, 'fixture', () => {});
     try {
       await client.ready;
       let seen = false;
-      client.subscribe(pane, { onOutput: () => { seen = true; }, onReseed: () => {}, onResize: () => {}, onExit: () => {} });
+      client.subscribe(pane, { onOutput: () => { /* observe prompt output */ seen = true; }, onReseed: () => {}, onResize: () => {}, onExit: () => {} });
       expect((await run(tmux, ['-S', socket, 'send-keys', '-t', pane, '-l', 'hello seed'])).code).toBe(0);
       await eventually(() => seen);
       const seed = (await client.seed(pane, 100)).toString('latin1');
-      // clears the browser, then the history joined with CRLF — byte-identical to a spawned -J capture
+      // paint the capture then return to the first-row prompt
       const capture = await run(tmux, ['-S', socket, 'capture-pane', '-e', '-p', '-J', '-t', pane, '-S', '-100']);
-      const expected = `\x1b[H\x1b[2J${capture.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u).join('\r\n')}`;
+      const cursor = await run(tmux, ['-S', socket, 'display-message', '-p', '-t', pane, '#{cursor_x} #{cursor_y}']);
+      expect(cursor.stdout.trim()).toBe('10 0');
+      const expected = `\x1b[H\x1b[2J${capture.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u).join('\r\n')}\x1b[1;11H`;
       expect(seed).toBe(expected);
       expect(seed).toContain('hello seed');
     } finally {
@@ -264,16 +267,19 @@ describe.skipIf(!tmuxSocketsWork)('tmux control client (real tmux)', () => {
     }
   });
 
+  // verify cursor restoration without confusing tty echo with program output
   it('paints an alternate-screen seed with absolute positioning and the cursor restored', async () => {
-    const { ref, pane } = await fixtureSession();
+    const { ref, socket, pane } = await fixtureSession();
     const client = new TmuxControlClient(tmux, ref.path, 'fixture', () => {});
     try {
       await client.ready;
       let bytes = 0;
       client.subscribe(pane, { onOutput: chunk => { bytes += chunk.length; }, onReseed: () => {}, onResize: () => {}, onExit: () => {} });
-      // `cat` echoes these bytes to its tty, so tmux's pane parser enters the alternate screen
-      expect(await client.sendInput(pane, Buffer.from('\x1b[?1049hALT SCREEN'))).toBe(true);
+      // submit the line so cat emits real escapes rather than only the tty's visible echo
+      expect(await client.sendInput(pane, Buffer.from('\x1b[?1049hALT SCREEN\n'))).toBe(true);
       await eventually(() => bytes > 0);
+      // wait for tmux to parse the alternate-screen switch
+      await expect.poll(async () => (await run(tmux, ['-S', socket, 'display-message', '-p', '-t', pane, '#{alternate_on}'])).stdout.trim()).toBe('1');
       const seed = (await client.seed(pane, 100)).toString('latin1');
       // enters the alt screen, clears, paints row one absolutely and restores the cursor
       expect(seed.startsWith('\x1b[?1049h\x1b[H\x1b[2J')).toBe(true);
