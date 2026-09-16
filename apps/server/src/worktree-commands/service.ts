@@ -20,6 +20,9 @@ const maxStackLogBytes = 128 * 1024;
 // a worktree `setup` runs once at creation and may install dependencies, so the creation
 // flow waits far longer on it than on a status probe before giving up
 const defaultSetupTiming = { timeoutMs: 5 * 60_000, pollMs: 250 };
+// a status probe must be quick: the dashboard rebuilds ~once a second, so a probe that has
+// not answered within this budget is abandoned (and its session killed) rather than waited on
+const defaultStatusTiming = { timeoutMs: 2_000, pollMs: 100 };
 
 // prepend an explicitly configured host executable path
 const hostPathExport = () => {
@@ -66,7 +69,7 @@ export class WorktreeCommandService {
   private readonly tunnelCache = new Map<string, { value: boolean; expiresAt: number }>();
   private readonly tunnelRefreshes = new Map<string, Promise<void>>();
 
-  constructor(config: ValidatedConfig, private readonly discovery: DiscoveryService, private readonly command: Command = run, private readonly checkout: string = serverCheckout(), private readonly setupTiming: { timeoutMs: number; pollMs: number } = defaultSetupTiming) {
+  constructor(config: ValidatedConfig, private readonly discovery: DiscoveryService, private readonly command: Command = run, private readonly checkout: string = serverCheckout(), private readonly setupTiming: { timeoutMs: number; pollMs: number } = defaultSetupTiming, private readonly statusTiming: { timeoutMs: number; pollMs: number } = defaultStatusTiming) {
     // status and log files live under the server's own checkout (see server-checkout.ts). A
     // native deployment runs commands on its own host, so that checkout is already the host
     // view; only a bridged one translates through the Project declared at the checkout.
@@ -101,17 +104,19 @@ export class WorktreeCommandService {
     const command = worktree.commands?.setup;
     if (command === undefined || this.hostWorkspace === undefined) return { ok: true };
     const token = `${worktreeToken(worktree)}-${randomBytes(9).toString('hex')}`;
+    const session = `rac-setup-${token}`;
     const logFile = join(this.checkout, '.data', 'stack-logs', `setup-${token}.log`);
     const hostLogFile = join(this.hostWorkspace, '.data', 'stack-logs', `setup-${token}.log`);
     const markerFile = join(this.checkout, '.data', 'stack-status', `setup-${token}.exit`);
     const hostMarkerFile = join(this.hostWorkspace, '.data', 'stack-status', `setup-${token}.exit`);
     const directory = worktreeHostRoot(worktree);
+    let launched = false;
     try {
       await mkdir(dirname(logFile), { recursive: true, mode: 0o700 });
       await mkdir(dirname(markerFile), { recursive: true, mode: 0o700 });
       // capture combined output to the log and the setup exit code (or a failed cd) to the marker
       const script = `${hostPathExport()}{ cd -- ${quote(directory)} && { ${command}; }; } > ${quote(hostLogFile)} 2>&1; printf '%s' "$?" > ${quote(hostMarkerFile)}`;
-      const launched = (await this.tmux(['new-session', '-d', '-s', `rac-setup-${token}`, '-c', directory, '/bin/bash', '-lc', script])).code === 0;
+      launched = (await this.tmux(['new-session', '-d', '-s', session, '-c', directory, '/bin/bash', '-lc', script])).code === 0;
       if (!launched) return { ok: false, log: logFile };
       const deadline = Date.now() + this.setupTiming.timeoutMs;
       while (Date.now() < deadline) {
@@ -125,7 +130,9 @@ export class WorktreeCommandService {
       // a setup that never finished within the budget is a failure, not a silent hang
       return { ok: false, log: logFile };
     } catch { return { ok: false, log: logFile }; }
-    finally { await unlink(markerFile).catch(() => {}); }
+    // once we stop waiting, kill the session so a setup that timed out or hung cannot linger on
+    // the tmux server after we have reported it failed (a cleanly finished setup already exited)
+    finally { if (launched) await this.tmux(['kill-session', '-t', `=${session}`]); await unlink(markerFile).catch(() => {}); }
   }
 
   // whether an operator-triggered stack operation is running for this Worktree — a Remove
@@ -208,20 +215,32 @@ export class WorktreeCommandService {
     const refresh = (async () => {
       const name = `stack-${worktreeToken(worktree)}-${randomBytes(6).toString('hex')}`;
       const containerFile = join(this.checkout, '.data', 'stack-status', name);
+      let session: string | undefined;
       try {
         const hostFile = join(this.hostWorkspace!, '.data', 'stack-status', name);
         await mkdir(dirname(containerFile), { recursive: true, mode: 0o700 });
         const script = `${hostPathExport()}cd -- ${quote(worktreeHostRoot(worktree))}; { ${command}; }; printf '%s' "$?" > ${quote(hostFile)}`;
-        if (!await this.detached(worktree, script)) return;
-        for (let attempt = 0; attempt < 20; attempt += 1) {
-          await new Promise(resolve => setTimeout(resolve, 100));
+        session = await this.detachedSession(worktree, script);
+        if (session === undefined) return;
+        const deadline = Date.now() + this.statusTiming.timeoutMs;
+        while (Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, this.statusTiming.pollMs));
           const result = await readFile(containerFile, 'utf8').catch(() => undefined);
           if (result === undefined) continue;
           this.statusCache.set(worktree.id, { value: result.trim() === '0', expiresAt: Date.now() + 30_000 });
           return;
         }
       } catch { /* Stack probing must never delay console traffic. */ }
-      finally { await unlink(containerFile).catch(() => {}); }
+      finally {
+        // The probe session self-destructs when its command exits (tmux `remain-on-exit off`),
+        // so a fast status command leaves nothing behind. But a command that hangs, exceeds the
+        // budget, or backgrounds a child that holds the pane keeps the session alive — and since
+        // a timed-out probe never populates the cache, the next dashboard build (roughly every
+        // second) spawns another one beside it. Killing the session here is what stops those
+        // abandoned probes from piling up on the tmux server.
+        if (session !== undefined) await this.tmux(['kill-session', '-t', `=${session}`]);
+        await unlink(containerFile).catch(() => {});
+      }
     })().finally(() => { this.statusRefreshes.delete(worktree.id); });
     this.statusRefreshes.set(worktree.id, refresh);
     return refresh;
@@ -279,10 +298,6 @@ export class WorktreeCommandService {
     // preserve injected command compatibility and explicit absence
     if (result.code === 1 && (result.stderr === undefined || result.stderr.includes("can't find session"))) return 'absent';
     return 'unknown';
-  }
-
-  private async detached(worktree: Worktree, command: string): Promise<boolean> {
-    return await this.detachedSession(worktree, command) !== undefined;
   }
 
   private async detachedSession(worktree: Worktree, command: string): Promise<string | undefined>;

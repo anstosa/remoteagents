@@ -190,6 +190,39 @@ describe('worktree stack commands', () => {
     expect(danaFile).toContain(`/host/checkout/.data/stack-status/stack-${worktreeToken('proj', dana.path)}-`);
   });
 
+  // The probe launches a detached tmux session per refresh. A quick command's session
+  // self-destructs when it exits, but one that hangs (never writing its marker) would linger
+  // while the next dashboard build spawns another beside it — the pile-up this guards against.
+  it('kills a status probe session that never answers, so probes never pile up', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    delete process.env.RAC_HOST_WORKSPACE;
+    checkoutRoot = await mkdtemp(join(tmpdir(), 'rac-checkout-'));
+    const cora = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', path: '/worktrees/cora', commands: { status: 'sleep 999' } });
+    const projectConfig = testConfig({ projects: [testProject({ id: 'proj', path: checkoutRoot, hostPath: '/host/checkout' })] });
+    const created: string[] = [];
+    const killed: string[] = [];
+    const live = new Set<string>();
+    // model a probe whose command hangs: the session is created but never writes its marker,
+    // so only an explicit kill removes it from the tmux server
+    const fake = async (_binary: string, args: string[]) => {
+      if (args.includes('new-session')) { const name = args[args.indexOf('-s') + 1] ?? ''; created.push(name); live.add(name); return { code: 0, stdout: '' }; }
+      if (args.includes('kill-session')) { const name = (args[args.indexOf('-t') + 1] ?? '').replace(/^=/u, ''); killed.push(name); live.delete(name); return { code: 0, stdout: '' }; }
+      return { code: 1, stdout: '' };
+    };
+    // a tight probe budget so the hang is abandoned in milliseconds, not the 2s default
+    const service = new WorktreeCommandService(projectConfig, { worktreesNow: () => [cora] } as never, fake, checkoutRoot, undefined, { timeoutMs: 60, pollMs: 10 });
+
+    // kick a probe; the command hangs, so the bounded poll gives up — and the session must be
+    // killed rather than abandoned, leaving nothing running for a later probe to accumulate on
+    await expect(service.running(cora)).resolves.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(created).toHaveLength(1);
+      expect(killed).toEqual(created);
+      expect(live.size).toBe(0);
+    });
+    expect(created[0]).toMatch(/^rac-stack-proj-[0-9a-f]{12}-[0-9a-f]{18}$/);
+  });
+
   // the preview health probe reads each Worktree record's Project URL
   it('probes the Project preview from each Worktree record', async () => {
     const upstream = createServer((_request, response) => { response.end('ok'); });
@@ -319,5 +352,24 @@ describe('worktree setup command', () => {
     // it launches but never writes a marker, so the bounded poll gives up
     const service = setupService(cora, async () => ({ code: 0, stdout: '' }), { timeoutMs: 120, pollMs: 10 });
     await expect(service.runSetup(cora)).resolves.toMatchObject({ ok: false });
+  });
+
+  it('kills a setup session that never finishes, so it cannot linger on the tmux server', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    delete process.env.RAC_HOST_WORKSPACE;
+    checkoutRoot = await mkdtemp(join(tmpdir(), 'rac-checkout-'));
+    const cora = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', path: '/worktrees/cora', hostPath: '/host/cora', commands: { setup: 'sleep 999' } });
+    const created: string[] = [];
+    const killed: string[] = [];
+    const command: FakeCommand = async (_binary, args) => {
+      if (args.includes('new-session')) { created.push(args[args.indexOf('-s') + 1] ?? ''); return { code: 0, stdout: '' }; }
+      if (args.includes('kill-session')) { killed.push((args[args.indexOf('-t') + 1] ?? '').replace(/^=/u, '')); return { code: 0, stdout: '' }; }
+      return { code: 1, stdout: '' };
+    };
+    // it launches but never writes a marker; when the bounded poll gives up the session is killed
+    const service = setupService(cora, command, { timeoutMs: 120, pollMs: 10 });
+    await expect(service.runSetup(cora)).resolves.toMatchObject({ ok: false });
+    expect(created).toHaveLength(1);
+    expect(killed).toEqual(created);
   });
 });
