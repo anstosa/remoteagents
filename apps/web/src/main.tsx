@@ -4045,8 +4045,13 @@ function ResizableLogSplit({ worktreeId, output, note, browser, terminals, onPho
   const resizer = (left: string, right: string) => <div key={`resizer:${left}:${right}`} className={`split-resizer ${splitPanelKind(right)}-resizer`} role="separator" aria-label={`Resize ${splitPanelKind(left)} and ${splitPanelKind(right)} panels`} aria-orientation="vertical" tabIndex={0} data-left={left} data-right={right} onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={stopResize} onPointerCancel={stopResize} onKeyDown={keyboardResize} />;
   const style: SplitStyle = {
     '--agent-split': `${sizes.agent ?? 1}fr`, '--note-split': `${sizes.note ?? 1}fr`, '--browser-split': `${sizes.browser ?? 1}fr`,
-    // the generic column template the `.has-terminals` grid uses (agent, terminals, note, browser)
-    '--split-cols': columns.map(column => `minmax(var(--split-pane-min-width), ${sizes[column.key] ?? 1}fr)`).join(' .45rem ')
+    // keep the browser's removable divider inside its column group
+    '--split-cols': columns.map((column, index) => {
+      // let mobile preview replace both tracks with one fixed-width column
+      if (column.key === 'browser') return 'var(--browser-split-cols, .45rem minmax(var(--split-pane-min-width), var(--browser-split)))';
+      // retain dividers between the remaining resizable panels
+      return `${index === 0 ? '' : '.45rem '}minmax(var(--split-pane-min-width), ${sizes[column.key] ?? 1}fr)`;
+    }).join(' ')
   };
   // the panel columns interleaved with resizers; a Terminal hidden on phone carries `mobileHidden`
   const laidOut = columns.flatMap((column, index) => {

@@ -236,8 +236,9 @@ html.software-keyboard-open .tabs { display: none; }
 .log-shell { display: grid; grid-template: minmax(0, 1fr) auto / minmax(0, 1fr); width: 100%; min-width: 0; min-height: 0; }
 .log { position: relative; width: 100vw; height: 100%; min-height: 0; margin-left: calc(50% - 50vw); overflow: hidden; container: output-area / size; background: var(--base); border: 0; border-bottom: 1px solid color-mix(in srgb, var(--lavender) 28%, var(--surface-1)); border-radius: 0; padding: 0; box-shadow: inset 0 0 1.25rem #00000040; }
 .log-split { position: relative; display: grid; width: 100%; height: 100%; min-width: 0; min-height: 0; grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
-.log-split.has-note:not(.has-browser), .log-split.has-browser:not(.has-note) { grid-template-rows: repeat(2, minmax(8rem, 1fr)); }
-.log-split.has-note.has-browser { grid-template-rows: repeat(3, minmax(8rem, 1fr)); }
+/* exclude terminal layouts without outranking the phone's single-row override */
+.log-split.has-note:not(.has-browser):where(:not(.has-terminals)), .log-split.has-browser:not(.has-note):where(:not(.has-terminals)) { grid-template-rows: repeat(2, minmax(8rem, 1fr)); }
+.log-split.has-note.has-browser:where(:not(.has-terminals)) { grid-template-rows: repeat(3, minmax(8rem, 1fr)); }
 /* Terminals make the split a list of panels; in a portrait area they stack as rows, in a
    wide area they become columns (below), and on a phone one panel shows at a time. */
 .log-split.has-terminals { grid-template: none; grid-template-columns: minmax(0, 1fr); grid-auto-flow: row; grid-auto-rows: minmax(8rem, 1fr); }
@@ -623,6 +624,8 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
   /* With one or more Terminals the split is a generic list of columns (agent, terminals,
      note, browser), each `minmax(390px, <weight>fr)`, built in JS as `--split-cols`. */
   .log-split.has-terminals { grid-template: minmax(0, 1fr) / var(--split-cols); }
+  /* remove the hidden browser divider's track when fixing the mobile preview width */
+  .log-split.has-terminals:has(> .browser-pane.mobile:not(.expanded)) { --browser-split-cols: var(--split-pane-min-width); }
   .log-split.has-browser:not(.has-note):not(.has-terminals):has(> .browser-pane.mobile:not(.expanded)) { grid-template-columns: minmax(var(--split-pane-min-width), var(--agent-split)) var(--split-pane-min-width); }
   .log-split.has-note.has-browser:not(.has-terminals):has(> .browser-pane.mobile:not(.expanded)) { grid-template-columns: minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)) var(--split-pane-min-width); }
   .split-resizer { position: relative; z-index: 5; display: block; width: .45rem; min-width: .45rem; height: 100%; cursor: col-resize; touch-action: none; outline: 0; }

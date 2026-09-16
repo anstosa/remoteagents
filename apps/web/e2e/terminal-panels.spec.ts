@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { installPaneMock, seedPaneSize, pushBytes, pushExit, paneInputText } from './pane-stream-mock.js';
 
 // Terminal panels (First-class terminal panes, Console shells): the composer's terminal icon
@@ -55,6 +55,16 @@ const routeApi = (page: Page, options: { panes: () => Pane[]; onShell?: () => st
   });
 
 const openPicker = (page: Page) => page.getByRole('button', { name: 'Open a terminal' }).click();
+
+// measure parent and panel together after responsive footer changes settle
+const expectFullSplitHeight = async (panel: Locator) => {
+  // retry against one consistent browser layout
+  await expect.poll(() => panel.evaluate(element => {
+    const panelBox = element.getBoundingClientRect();
+    const splitBox = element.parentElement!.getBoundingClientRect();
+    return { top: Math.round(panelBox.y - splitBox.y), height: Math.round(panelBox.height - splitBox.height) };
+  })).toEqual({ top: 0, height: 0 });
+};
 
 // preserve the accessible icon trigger across desktop and phone layouts
 test('terminal picker uses a standard icon button on desktop and phone', async ({ page }) => {
@@ -290,6 +300,76 @@ test('two Terminals plus the agent resize independently within the minimum width
   const clamped = await widths();
   expect(clamped.b).toBeGreaterThanOrEqual(389);
 });
+
+// cover every combination that previously left empty grid rows
+for (const panels of ['note', 'browser', 'note and browser']) {
+  // keep mixed desktop panels and the selected phone panel full-height
+  test(`a shell with ${panels} uses the full split height`, async ({ page }) => {
+    await page.setViewportSize({ width: 1800, height: 900 });
+    await installPaneMock(page);
+    await routeApi(page);
+    // provide a browser target alongside the existing pane fixture
+    await page.route('**/api/dashboard', route => route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Working', attention: 'working', queuedPromptCount: 0, projectUrl: 'https://preview.example/', projectProxied: false }], projects: [] } }));
+    // provide one saved note
+    await page.route('**/api/worktrees/cora/notes', route => route.fulfill({ json: { notes: [{ id: 'note-cora-000001', text: 'Mixed split note' }] } }));
+    // avoid external navigation in the embedded browser
+    await page.route('https://preview.example/**', route => route.fulfill({ contentType: 'text/html', body: '<main>Split preview</main>' }));
+    await page.goto('/');
+    await seedPaneSize(page, 'agent-1', 80, 24);
+    await pushBytes(page, 'agent-1', 'agent ready\r\n');
+
+    // open the requested supplemental panels before the shell
+    if (panels.includes('browser')) await page.getByRole('button', { name: 'Open project in split view' }).click();
+    // select the saved note when this combination includes it
+    if (panels.includes('note')) {
+      await page.getByRole('button', { name: 'Notes (1)' }).click();
+      await page.getByRole('button', { name: 'Mixed split note…', exact: true }).click();
+    }
+    await openPicker(page);
+    await page.getByRole('menuitem', { name: /build/u }).click();
+    await seedPaneSize(page, '%5', 80, 24);
+    await pushBytes(page, '%5', 'shell ready\r\n');
+
+    const split = page.locator('.log-split.has-terminals');
+    const visiblePanels = split.locator(':scope > :is(.log-output, .terminal-pane, .note-pane, .browser-pane):visible');
+    await expect(visiblePanels).toHaveCount(panels === 'note and browser' ? 4 : 3);
+    // every desktop column fills the same available output area
+    for (const panel of await visiblePanels.all()) await expectFullSplitHeight(panel);
+
+    // remove the browser divider and its grid track together in mobile preview mode
+    if (panels.includes('browser')) {
+      const browser = split.locator('.browser-pane');
+      const divider = split.locator('.browser-resizer');
+      await browser.getByRole('button', { name: 'Use mobile viewport', exact: true }).click();
+      await expect(divider).toBeHidden();
+      await expect(browser).toHaveCSS('width', '390px');
+      const frameBox = (await browser.locator('iframe').boundingBox())!;
+      expect(frameBox.width).toBeGreaterThanOrEqual(388);
+      expect(frameBox.width).toBeLessThanOrEqual(390);
+      const mobileBrowserBox = (await browser.boundingBox())!;
+      const mobilePreviewSplit = (await split.boundingBox())!;
+      expect(mobileBrowserBox.height).toBeCloseTo(mobilePreviewSplit.height, 0);
+      expect(mobileBrowserBox.x + mobileBrowserBox.width).toBeCloseTo(mobilePreviewSplit.x + mobilePreviewSplit.width, 0);
+
+      await browser.getByRole('button', { name: 'Enter browser fullscreen' }).click();
+      await expect(browser).toHaveCSS('width', '1800px');
+      await browser.getByRole('button', { name: 'Exit browser fullscreen' }).click();
+      await expect(browser).toHaveCSS('width', '390px');
+
+      await browser.getByRole('button', { name: 'Use desktop viewport', exact: true }).click();
+      await expect(divider).toBeVisible();
+      const desktopBrowserBox = (await browser.boundingBox())!;
+      expect(desktopBrowserBox.width).toBeGreaterThanOrEqual(390);
+    }
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(visiblePanels).toHaveCount(1);
+    await expectFullSplitHeight(split.locator('.terminal-pane:visible'));
+    await page.getByRole('button', { name: 'Show agent output' }).click();
+    await expect(split.locator('.log-output')).toBeVisible();
+    await expectFullSplitHeight(split.locator('.log-output'));
+  });
+}
 
 test('on a phone the split switcher gains a chip for the Terminal', async ({ page }) => {
   await page.setViewportSize({ width: 428, height: 880 });
