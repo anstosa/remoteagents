@@ -697,8 +697,11 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .terminal-picker-newshell:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 15%, transparent); }
 .terminal-picker-newshell:disabled { color: var(--overlay-0); cursor: progress; }
 /* The streamed terminal drives its own scroll and jump-to-latest, so the native
-   xterm scrollbar stays hidden. */
-.xterm .xterm-viewport { overflow: hidden !important; scrollbar-width: none; }
+   xterm scrollbar stays hidden. xterm hardcodes the viewport to solid black and
+   stretches it to the full panel height, so a pane shorter than the panel shows a
+   black bar below the last row; repaint it in the terminal background so the
+   letterbox matches the pane instead. */
+.xterm .xterm-viewport { overflow: hidden !important; scrollbar-width: none; background-color: var(--base); }
 .xterm .xterm-viewport::-webkit-scrollbar { display: none; }
 /* A streamed pane renders at its natural grid top-left; a pane smaller than the panel
    is letterboxed against the terminal background rather than stretched. */

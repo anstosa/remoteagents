@@ -72,6 +72,20 @@ test('conforms to the reported size and letterboxes a smaller pane', async ({ pa
   expect(screenWidth).toBeLessThan(hostWidth);
 });
 
+test('letterboxes the smaller pane in the terminal background, not xterm black', async ({ page }) => {
+  // A pane shorter than the panel leaves a strip below the last row. xterm's own
+  // `.xterm-viewport` is a full-height, hardcoded-black overlay, so without an override
+  // that strip shows solid black instead of the themed background — the "black bar at
+  // the bottom" operators saw. The strip must paint `--base` like the rest of the pane.
+  await setup(page, { width: '640px', height: '320px' });
+  await drive(page, 'pushSize', 20, 6);
+  await drive(page, 'pushBytes', 'TOP-ROW\r\n');
+  await expect.poll(() => drive(page, 'screenText')).toContain('TOP-ROW');
+  const strip = await drive<string>(page, 'letterboxStripColor');
+  expect(strip).not.toBe('rgb(0, 0, 0)');
+  expect(strip).toBe(await drive<string>(page, 'themeBaseColor'));
+});
+
 test('a reseed clears the scrollback and re-renders from the fresh seed', async ({ page }) => {
   await setup(page);
   await drive(page, 'pushSize', 40, 10);

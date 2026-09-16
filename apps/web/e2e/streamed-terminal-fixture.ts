@@ -96,6 +96,28 @@ export const screenText = (): string => {
 
 export const screenWidth = () => host?.querySelector<HTMLElement>('.xterm-screen')?.clientWidth ?? 0;
 export const hostWidth = () => host?.clientWidth ?? 0;
+// The colour an operator actually sees in the letterbox strip below the last row: the
+// topmost opaque element at the host's bottom-centre. When the pane is shorter than the
+// panel this is the letterbox; it must show the terminal background, not xterm's
+// hardcoded-black `.xterm-viewport`.
+export const letterboxStripColor = (): string => {
+  const rect = host!.getBoundingClientRect();
+  const stack = document.elementsFromPoint(rect.left + rect.width / 2, rect.bottom - 4);
+  for (const element of stack) {
+    const color = getComputedStyle(element).backgroundColor;
+    if (color !== 'transparent' && !/rgba\([^)]*,\s*0\s*\)/u.test(color)) return color;
+  }
+  return '(none opaque)';
+};
+// The palette's `--base`, resolved — the terminal-theme background every pane paints.
+export const themeBaseColor = (): string => {
+  const probe = document.createElement('div');
+  probe.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--base').trim();
+  document.body.append(probe);
+  const resolved = getComputedStyle(probe).backgroundColor;
+  probe.remove();
+  return resolved;
+};
 // xterm 6.0 paints the theme background onto `.xterm-scrollable-element`'s inline style
 // (`.xterm-viewport` is now a static-black overview-ruler sibling), so read that.
 export const scrollableBackground = () => host?.querySelector<HTMLElement>('.xterm-scrollable-element')?.style.backgroundColor ?? '';
