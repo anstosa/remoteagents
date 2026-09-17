@@ -168,12 +168,12 @@ describe('worktree stack commands', () => {
     const statusFiles: string[] = [];
     const fake = async (_binary: string, args: string[]) => {
       // the host-side probe writes its exit code; mirror it through the mount
-      if (!args.includes('new-session')) return { code: 1, stdout: '' };
+      if (!args.includes('new-window')) return { code: 1, stdout: '' };
       const hostFile = /> '(\/host\/checkout\/[^']+)'/u.exec(args.at(-1) ?? '')?.[1];
       if (hostFile === undefined) return { code: 1, stdout: '' };
       statusFiles.push(hostFile);
       await writeFile(join(checkoutRoot!, hostFile.slice('/host/checkout/'.length)), hostFile.includes(worktreeToken('proj', cora.path)) ? '0' : '1');
-      return { code: 0, stdout: '' };
+      return { code: 0, stdout: `@${statusFiles.length}\n` };
     };
     const service = new WorktreeCommandService(projectConfig, { worktreesNow: () => [cora, dana] } as never, fake, checkoutRoot);
 
@@ -190,10 +190,49 @@ describe('worktree stack commands', () => {
     expect(danaFile).toContain(`/host/checkout/.data/stack-status/stack-${worktreeToken('proj', dana.path)}-`);
   });
 
-  // The probe launches a detached tmux session per refresh. A quick command's session
-  // self-destructs when it exits, but one that hangs (never writing its marker) would linger
-  // while the next dashboard build spawns another beside it — the pile-up this guards against.
-  it('kills a status probe session that never answers, so probes never pile up', async () => {
+  // Regression (2026-09-17): a session per probe closed a session on every refresh, firing the
+  // operator's tmux `session-closed` hook — a `choose-tree` hook then opened the session picker
+  // over the pane in use every ~30s, where it also swallowed a submitted prompt's Enter. Probes
+  // must run as windows of one holder session, so refreshing never creates or closes a session.
+  it('runs status probes as windows of one holder session, never a session per probe', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    delete process.env.RAC_HOST_WORKSPACE;
+    checkoutRoot = await mkdtemp(join(tmpdir(), 'rac-checkout-'));
+    const cora = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', path: '/worktrees/cora', commands: { status: 'stack status' } });
+    const projectConfig = testConfig({ projects: [testProject({ id: 'proj', path: checkoutRoot, hostPath: '/host/checkout' })] });
+    const sessions: string[] = [];
+    const closedSessions: string[][] = [];
+    let windows = 0;
+    const fake = async (_binary: string, args: string[]) => {
+      if (args.includes('kill-session')) { closedSessions.push(args); return { code: 0, stdout: '' }; }
+      if (args.includes('new-session')) { sessions.push(args[args.indexOf('-s') + 1] ?? ''); return { code: 0, stdout: '' }; }
+      if (!args.includes('new-window')) return { code: 1, stdout: '' };
+      // the holder does not exist until the service creates it
+      if (sessions.length === 0) return { code: 1, stdout: '', stderr: "can't find session: rac-stack-probes" };
+      expect(args[args.indexOf('-t') + 1]).toBe('=rac-stack-probes:');
+      const hostFile = /> '(\/host\/checkout\/[^']+)'/u.exec(args.at(-1) ?? '')?.[1];
+      await writeFile(join(checkoutRoot!, hostFile!.slice('/host/checkout/'.length)), '0');
+      windows += 1;
+      return { code: 0, stdout: `@${windows}\n` };
+    };
+    const service = new WorktreeCommandService(projectConfig, { worktreesNow: () => [cora] } as never, fake, checkoutRoot);
+    const cache = (service as unknown as { statusCache: Map<string, unknown> }).statusCache;
+
+    // three full refreshes (the cache expired between each)
+    for (let round = 1; round <= 3; round += 1) {
+      cache.clear();
+      await service.running(cora);
+      await vi.waitFor(async () => { expect(windows).toBe(round); expect(await service.running(cora)).toBe(true); });
+    }
+    // one holder session for all of them, and no session was ever closed
+    expect(sessions).toEqual(['rac-stack-probes']);
+    expect(closedSessions).toEqual([]);
+  });
+
+  // A quick command's window closes itself when it exits, but one that hangs (never writing
+  // its marker) would linger while the next dashboard build spawns another beside it — the
+  // pile-up this guards against.
+  it('kills a status probe window that never answers, so probes never pile up', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     delete process.env.RAC_HOST_WORKSPACE;
     checkoutRoot = await mkdtemp(join(tmpdir(), 'rac-checkout-'));
@@ -202,17 +241,17 @@ describe('worktree stack commands', () => {
     const created: string[] = [];
     const killed: string[] = [];
     const live = new Set<string>();
-    // model a probe whose command hangs: the session is created but never writes its marker,
+    // model a probe whose command hangs: the window is created but never writes its marker,
     // so only an explicit kill removes it from the tmux server
     const fake = async (_binary: string, args: string[]) => {
-      if (args.includes('new-session')) { const name = args[args.indexOf('-s') + 1] ?? ''; created.push(name); live.add(name); return { code: 0, stdout: '' }; }
-      if (args.includes('kill-session')) { const name = (args[args.indexOf('-t') + 1] ?? '').replace(/^=/u, ''); killed.push(name); live.delete(name); return { code: 0, stdout: '' }; }
+      if (args.includes('new-window')) { const id = `@${created.length + 1}`; created.push(id); live.add(id); return { code: 0, stdout: `${id}\n` }; }
+      if (args.includes('kill-window')) { const id = args[args.indexOf('-t') + 1] ?? ''; killed.push(id); live.delete(id); return { code: 0, stdout: '' }; }
       return { code: 1, stdout: '' };
     };
     // a tight probe budget so the hang is abandoned in milliseconds, not the 2s default
     const service = new WorktreeCommandService(projectConfig, { worktreesNow: () => [cora] } as never, fake, checkoutRoot, undefined, { timeoutMs: 60, pollMs: 10 });
 
-    // kick a probe; the command hangs, so the bounded poll gives up — and the session must be
+    // kick a probe; the command hangs, so the bounded poll gives up — and the window must be
     // killed rather than abandoned, leaving nothing running for a later probe to accumulate on
     await expect(service.running(cora)).resolves.toBeUndefined();
     await vi.waitFor(() => {
@@ -220,7 +259,6 @@ describe('worktree stack commands', () => {
       expect(killed).toEqual(created);
       expect(live.size).toBe(0);
     });
-    expect(created[0]).toMatch(/^rac-stack-proj-[0-9a-f]{12}-[0-9a-f]{18}$/);
   });
 
   // the preview health probe reads each Worktree record's Project URL

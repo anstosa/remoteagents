@@ -21,8 +21,11 @@ const maxStackLogBytes = 128 * 1024;
 // flow waits far longer on it than on a status probe before giving up
 const defaultSetupTiming = { timeoutMs: 5 * 60_000, pollMs: 250 };
 // a status probe must be quick: the dashboard rebuilds ~once a second, so a probe that has
-// not answered within this budget is abandoned (and its session killed) rather than waited on
+// not answered within this budget is abandoned (and its window killed) rather than waited on
 const defaultStatusTiming = { timeoutMs: 2_000, pollMs: 100 };
+// the one long-lived session whose windows host status probes (see `probeWindow`); the
+// `rac-stack-` prefix keeps its panes out of launch reuse like every other stack session
+const probeSession = 'rac-stack-probes';
 
 // prepend an explicitly configured host executable path
 const hostPathExport = () => {
@@ -137,8 +140,8 @@ export class WorktreeCommandService {
 
   // whether an operator-triggered stack operation is running for this Worktree — a Remove
   // blocker, so nothing is pulled out from under a build/migrate/etc. Only the exclusive
-  // operation session counts; the transient `rac-stack-<token>-<hex>` status probes that fire
-  // on every dashboard build are not operations, so they never spuriously block Remove.
+  // operation session counts; the shared `rac-stack-probes` holder whose windows run the status
+  // probes is not an operation, so it never spuriously blocks Remove.
   // The session list comes from the host tmux socket when bridged, else tmux's default socket.
   async sessionRunning(worktree: Worktree): Promise<boolean> {
     const listed = await this.tmux(['list-sessions', '-F', '#{session_name}']);
@@ -215,13 +218,13 @@ export class WorktreeCommandService {
     const refresh = (async () => {
       const name = `stack-${worktreeToken(worktree)}-${randomBytes(6).toString('hex')}`;
       const containerFile = join(this.checkout, '.data', 'stack-status', name);
-      let session: string | undefined;
+      let probe: string | undefined;
       try {
         const hostFile = join(this.hostWorkspace!, '.data', 'stack-status', name);
         await mkdir(dirname(containerFile), { recursive: true, mode: 0o700 });
         const script = `${hostPathExport()}cd -- ${quote(worktreeHostRoot(worktree))}; { ${command}; }; printf '%s' "$?" > ${quote(hostFile)}`;
-        session = await this.detachedSession(worktree, script);
-        if (session === undefined) return;
+        probe = await this.probeWindow(worktree, script);
+        if (probe === undefined) return;
         const deadline = Date.now() + this.statusTiming.timeoutMs;
         while (Date.now() < deadline) {
           await new Promise(resolve => setTimeout(resolve, this.statusTiming.pollMs));
@@ -232,13 +235,13 @@ export class WorktreeCommandService {
         }
       } catch { /* Stack probing must never delay console traffic. */ }
       finally {
-        // The probe session self-destructs when its command exits (tmux `remain-on-exit off`),
+        // The probe window closes itself when its command exits (tmux `remain-on-exit off`),
         // so a fast status command leaves nothing behind. But a command that hangs, exceeds the
-        // budget, or backgrounds a child that holds the pane keeps the session alive — and since
+        // budget, or backgrounds a child that holds the pane keeps the window alive — and since
         // a timed-out probe never populates the cache, the next dashboard build (roughly every
-        // second) spawns another one beside it. Killing the session here is what stops those
+        // second) spawns another one beside it. Killing the window here is what stops those
         // abandoned probes from piling up on the tmux server.
-        if (session !== undefined) await this.tmux(['kill-session', '-t', `=${session}`]);
+        if (probe !== undefined) await this.tmux(['kill-window', '-t', probe]);
         await unlink(containerFile).catch(() => {});
       }
     })().finally(() => { this.statusRefreshes.delete(worktree.id); });
@@ -300,16 +303,33 @@ export class WorktreeCommandService {
     return 'unknown';
   }
 
-  private async detachedSession(worktree: Worktree, command: string): Promise<string | undefined>;
-  private async detachedSession(worktree: Worktree, command: string, action: StackAction): Promise<StackOperation | undefined>;
-  // launch a detached command with optional durable output
-  private async detachedSession(worktree: Worktree, command: string, action?: StackAction): Promise<string | StackOperation | undefined> {
-    const session = action === undefined ? `rac-stack-${worktreeToken(worktree)}-${randomBytes(9).toString('hex')}` : this.operationSession(worktree);
+  // Run a status probe as a detached window of the shared holder session and return its
+  // window id. A session per probe would close a session on every refresh, and a closing
+  // session fires the operator's tmux `session-closed` hook — a common `choose-tree` hook then
+  // opens the session picker over whatever pane they (or an Agent) are using, where it also
+  // swallows a submitted prompt's Enter. A closing window of a session that lives on fires
+  // nothing, so the holder is created once (on first use, or after a tmux server restart).
+  private async probeWindow(worktree: Worktree, script: string): Promise<string | undefined> {
+    const directory = worktreeHostRoot(worktree);
+    const open = () => this.tmux(['new-window', '-d', '-t', `=${probeSession}:`, '-c', directory, '-P', '-F', '#{window_id}', '/bin/bash', '-lc', script]);
+    let opened = await open();
+    if (opened.code !== 0) {
+      // no holder yet; a concurrent probe may win the race to create it, so just retry
+      await this.tmux(['new-session', '-d', '-s', probeSession, '-n', 'holder', '/bin/sh', '-c', 'while :; do sleep 3600; done']);
+      opened = await open();
+    }
+    const window = opened.stdout.trim();
+    return opened.code === 0 && window !== '' ? window : undefined;
+  }
+
+  // launch a detached operation session with durable output when the host workspace resolves
+  private async detachedSession(worktree: Worktree, command: string, action: StackAction): Promise<StackOperation | undefined> {
+    const session = this.operationSession(worktree);
     const directory = worktreeHostRoot(worktree);
     let logFile: string | undefined;
     let hostLogFile: string | undefined;
     // prepare durable output for user-triggered actions
-    if (action !== undefined && this.hostWorkspace !== undefined) {
+    if (this.hostWorkspace !== undefined) {
       const name = `${worktreeToken(worktree)}-${randomBytes(9).toString('hex')}.log`;
       logFile = join(this.checkout, '.data', 'stack-logs', name);
       hostLogFile = join(this.hostWorkspace, '.data', 'stack-logs', name);
@@ -318,8 +338,7 @@ export class WorktreeCommandService {
     const invocation = hostLogFile === undefined ? command : `{ ${command}; } > ${quote(hostLogFile)} 2>&1`;
     const script = `${hostPathExport()}cd -- ${quote(directory)} && ${invocation}`;
     const launched = (await this.tmux(['new-session', '-d', '-s', session, '-c', directory, '/bin/bash', '-lc', script])).code === 0;
-    // return simple status probes without operation metadata
-    if (!launched || action === undefined) return launched ? session : undefined;
+    if (!launched) return undefined;
     return { action, session, startedAt: new Date().toISOString(), ...(logFile === undefined ? {} : { logFile }) };
   }
 }
