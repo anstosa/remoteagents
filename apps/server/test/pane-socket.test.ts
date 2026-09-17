@@ -345,6 +345,51 @@ describe('/ws/pane flow control', () => {
 describe('/ws/pane derive (Codex)', () => {
   const question = { id: 'q', text: 'Pick one', choices: ['1. keep', '2. drop'], source: 'parsed' as const };
 
+  // open native follow-up chrome before the existing question frame enters answer mode
+  it.each(['codex', 'omx'])('opens a queued %s question once and frames its choices', async kind => {
+    const banner = '• Queued follow-up inputs\n  ? 1 question\n    shift + ← to answer\n\n› Ask Codex to do anything\n  gpt-6-astra · /repo · main';
+    const expanded = '• Queued follow-up inputs\n\nWhich approach?\n\n› 1. Small\n  2. Other\n\nenter submit   ctrl + ] skip   alt + ↓ main prompt';
+    const stream = fakePaneStream();
+    stream.setCapture(banner);
+    const sendKeys = vi.fn(async () => true);
+    const { tmux } = fakeTmux(stream, {
+      // omit queued chrome from the isolated assistant text
+      captureWindow: async () => ({ text: await stream.provider.get(socket, '$1').capture('%1', 100), latestAgentMessage: 'Working on the task', older: false }),
+      capture: async () => stream.provider.get(socket, '$1').capture('%1', 100),
+      sendKeys
+    });
+    const conn = await connect(stream.provider, { kind, tmux });
+    await waitFor(() => sendKeys.mock.calls.length === 1);
+    expect(sendKeys.mock.calls).toEqual([[socket, '%1', ['S-Left']]]);
+    conn.send({ type: 'metadata' });
+    await delay(350);
+    expect(sendKeys).toHaveBeenCalledTimes(1);
+
+    // the native redraw exposes choices without any automatic answer
+    stream.setCapture(expanded);
+    // use the real capture enrichment after the popup replaces the composer
+    Object.assign(tmux, fakeTmux(stream).tmux);
+    stream.activity();
+    await waitFor(() => conn.frames.some(frame => frame.type === 'question' && (frame.question as { text?: string })?.text === 'Which approach?'));
+    expect(conn.frames.find(frame => (frame.question as { text?: string })?.text === 'Which approach?')?.question).toMatchObject({ choices: ['Small', 'Other'], selectedIndex: 0 });
+    expect(sendKeys).toHaveBeenCalledTimes(1);
+
+    // do not override a deliberate return to the main prompt
+    stream.setCapture(banner);
+    stream.activity();
+    await delay(350);
+    expect(sendKeys).toHaveBeenCalledTimes(1);
+
+    // a completed question rearms the next follow-up
+    stream.setCapture('› Ask Codex to do anything');
+    stream.activity();
+    await delay(350);
+    stream.setCapture(banner);
+    stream.activity();
+    await waitFor(() => sendKeys.mock.calls.length === 2);
+    expect(sendKeys.mock.calls[1]).toEqual([socket, '%1', ['S-Left']]);
+  });
+
   it('frames a question and metadata on change, and never re-parses an unchanged pane', async () => {
     const questions = codexAdapter.questions as { parse: (capture: string) => typeof question | undefined };
     const parse = vi.spyOn(questions, 'parse').mockImplementation(capture => capture.includes('CHOOSE') ? question : undefined);

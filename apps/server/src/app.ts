@@ -2552,6 +2552,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
           if (!control.active(s.id)) return socket.close(1008);
           const captured = await tmux.captureWindow(socketRef, pane, rows, captureVia);
           if (captured === undefined) return;
+          // reveal native follow-up questions from live chrome, not isolated assistant text
+          if (adapter?.questions?.queued !== undefined) {
+            await prompts.openQueuedQuestion(id, captured.text, () => control.active(s.id) && socket.readyState === socket.OPEN).catch(() => false);
+          }
           const parseInput = captured.latestAgentMessage ?? captured.text;
           if (parseInput !== lastParseInput) { lastParseInput = parseInput; lastQuestion = adapter?.questions?.parse?.(parseInput); }
           const question = lastQuestion;

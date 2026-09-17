@@ -65,6 +65,7 @@ export class PromptService {
   private readonly restartLocks = new Set<string>();
   private readonly lockedAgentIds = new Set<string>();
   private readonly activeMutations = new Map<string, number>();
+  private readonly openedQueuedQuestions = new Set<string>();
   private readonly mutationVersions = new Map<string, number>();
   private lifecycleMutationVersion = 0;
 
@@ -786,6 +787,44 @@ export class PromptService {
     if (relativeRoot) await rm(join(workspace, relativeRoot), { recursive: true, force: true });
   }
 
+
+  // reveal a collapsed native question without choosing or submitting an answer
+  async openQueuedQuestion(agentId: string, observedCapture: string, mayOpen: () => boolean): Promise<boolean> {
+    const first = await this.discovery.target(agentId);
+    const queued = first === undefined ? undefined : this.resolveAdapter(first.agent.kind)?.questions?.queued;
+    // unsupported adapters never receive automatic keystrokes
+    if (first === undefined || queued === undefined) return false;
+    const question = queued(observedCapture);
+    // rearm after completion, not when the operator merely collapses the editor
+    if (question === undefined) {
+      this.openedQueuedQuestions.delete(agentId);
+      return false;
+    }
+    const key = question.key;
+    // leave an expanded editor untouched
+    if (key === undefined) return false;
+    // coalesce viewers and avoid racing a newly started manual operation
+    if (this.openedQueuedQuestions.has(agentId) || !mayOpen() || (this.activeMutations.get(agentId) ?? 0) > 0) return false;
+    const release = this.beginAgentMutation(agentId);
+    // respect a restart reservation acquired during discovery
+    if (release === undefined) return false;
+    const version = this.mutationVersion(agentId);
+    try {
+      const capture = await this.tmux.capture(first.socket, first.agent.paneId).catch(() => undefined);
+      // never act on a footer that changed since the pane derive
+      if (capture === undefined || queued(capture)?.key !== key) return false;
+      const second = await this.discovery.target(agentId);
+      // require the same live target, viewer lease, and untouched input generation
+      if (second === undefined || second.socket.fingerprint !== first.socket.fingerprint || second.agent.paneId !== first.agent.paneId
+        || second.agent.kind !== first.agent.kind || !mayOpen() || this.mutationVersion(agentId) !== version) return false;
+      const opened = await this.tmux.sendKeys(second.socket, second.agent.paneId, [key]);
+      // suppress duplicate opening shortcuts until the native dialog changes the footer
+      if (opened) this.openedQueuedQuestions.add(agentId);
+      return opened;
+    } finally {
+      release();
+    }
+  }
 
   // answer one still-current Inline question through the Adapter's selectOption.
   // The id (a hash of the question's text and choices) is re-derived from the

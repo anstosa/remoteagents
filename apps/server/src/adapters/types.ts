@@ -17,7 +17,7 @@ import type { CleanupTarget, Pane } from '../domain/models.js';
 export const agentKinds = ['codex', 'omx', 'claude', 'pi', 'opencode'] as const;   // closed union in resolution order; the registry is code, not plugins
 export type AgentKind = typeof agentKinds[number];
 export type AttentionState = 'working' | 'finished' | 'question';
-export type TmuxKey = 'Enter' | 'Tab' | 'Escape' | 'C-c' | 'Up' | 'Down' | 'M-Enter';
+export type TmuxKey = 'Enter' | 'Tab' | 'Escape' | 'C-c' | 'Up' | 'Down' | 'M-Enter' | 'M-Up' | 'S-Left';
 
 export type SubmissionMode = 'prompt' | 'shell';
 export type SubmissionDraftState = 'visible' | 'cleared' | 'unknown';
@@ -184,6 +184,8 @@ export interface Adapter {
   };
   readonly questions?: {
     parse?(capture: string): InlineQuestion | undefined;
+    /** native follow-up presence, with an opening-only shortcut when collapsed */
+    queued?(capture: string): { key?: TmuxKey } | undefined;
     pending?(workspace: string, paneId: string): Promise<InlineQuestion | undefined>;
     /**
      * The Inline question an Agent reported on its own pane (`@rac_question`),

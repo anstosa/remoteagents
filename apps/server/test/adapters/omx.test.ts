@@ -72,6 +72,7 @@ describe('omx adapter shares the Codex TUI behaviour', () => {
     expect(omxAdapter.conversations).toBe(codexAdapter.conversations);
     expect(omxAdapter.completion).toBe(codexAdapter.completion);
     expect(omxAdapter.questions?.parse).toBe(codexAdapter.questions?.parse);
+    expect(omxAdapter.questions?.queued).toBe(codexAdapter.questions?.queued);
   });
 
   it('keeps the structured question files to OMX: plain Codex no longer reads them', () => {

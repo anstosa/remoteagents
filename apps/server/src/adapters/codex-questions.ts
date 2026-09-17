@@ -1,5 +1,29 @@
 import { inlineQuestionId } from './inline-questions.js';
-import type { InlineQuestion } from './types.js';
+import { normalizedLines } from './capture-text.js';
+import type { InlineQuestion, TmuxKey } from './types.js';
+
+// open only the live question footer with an explicitly supported advertised binding
+export function queuedCodexQuestion(capture: string): { key?: TmuxKey } | undefined {
+  const lines = normalizedLines(capture).filter(Boolean);
+  const header = lines.lastIndexOf('• Queued follow-up inputs');
+  // ignore ordinary queued messages and historical banners above newer output
+  if (header < 0) return undefined;
+  const footer = lines.slice(header + 1);
+  // keep an opened question remembered when the operator returns to the main prompt
+  const editorHint = footer.findIndex(line => /^enter submit(?:\s|$)/u.test(line));
+  // navigation hints may wrap on a narrow terminal
+  if (editorHint >= 0 && /^enter submit\s+ctrl \+ \] skip(?:\s+(?:alt|⌥|shift) \+ [↑↓←→] (?:main prompt|prev question|next question|queued messages))*$/u.test(footer.slice(editorHint).join(' '))) return {};
+  const summary = footer.findIndex(line => /^\? [1-9]\d* questions?(?: · \d+s)?$/u.test(line));
+  // require the collapsed summary directly followed by its answer shortcut
+  if (summary < 0) return undefined;
+  const hint = footer[summary + 1];
+  const key = /^(?:alt|⌥) \+ ↑ to answer$/u.test(hint ?? '') ? 'M-Up'
+    : /^shift \+ ← to answer$/u.test(hint ?? '') ? 'S-Left' : undefined;
+  // reject a newer turn, open choice list, or modal below the queued footer
+  if (key === undefined || footer.slice(summary + 2).some(line => !/^›(?: |$)/u.test(line)
+    && !/^(?![•■])\S.* · \S/u.test(line) && !/^(?:\? for shortcuts(?:\s|$)|\d+% context left$)/u.test(line))) return undefined;
+  return { key };
+}
 
 /**
  * The Codex inline-question logic, moved server-side (chunk 1 commit 5). An

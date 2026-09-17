@@ -1,5 +1,6 @@
 import { classifyCodexPane } from './codex-panes.js';
 import { isCodexCommand } from './codex-processes.js';
+import { queuedCodexQuestion } from './codex-questions.js';
 import { codexCommands, codexCompletion, codexConversations, codexInferState, codexNewConversation, codexSubmission, codexTurns, parseCodexQuestion } from './codex-tui.js';
 import type { Adapter } from './types.js';
 
@@ -25,7 +26,7 @@ export const codexAdapter: Adapter = {
   submission: codexSubmission,
   turns: codexTurns,
   // plain Codex draws its questions on the pane; the structured question files are OMX's
-  questions: { parse: parseCodexQuestion },
+  questions: { parse: parseCodexQuestion, queued: queuedCodexQuestion },
   commands: codexCommands,
   conversations: codexConversations,
   completion: codexCompletion,
