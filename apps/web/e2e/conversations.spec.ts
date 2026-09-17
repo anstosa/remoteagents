@@ -34,6 +34,29 @@ async function mockConsole(page: import('@playwright/test').Page, onConversation
   });
 }
 
+// keep the opposing conversation bubbles distinct from the note sheet
+test('shows two opposing conversation bubbles on desktop and phone', async ({ page }) => {
+  await mockConsole(page);
+  await page.goto('/');
+  // preserve the icon and its interaction in both layouts
+  for (const viewport of [{ width: 900, height: 780 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    const control = page.getByRole('button', { name: 'Conversations (0)', exact: true });
+    const icon = control.locator('svg');
+    await expect(icon).toBeVisible();
+    await expect(icon).toHaveAttribute('aria-hidden', 'true');
+    await expect(icon).toHaveCSS('fill', 'none');
+    await expect(icon.locator('path')).toHaveCount(2);
+    await expect(icon.locator('path').nth(0)).toHaveAttribute('d', 'M4 3h11a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H7l-5 4V5a2 2 0 0 1 2-2Z');
+    await expect(icon.locator('path').nth(1)).toHaveAttribute('d', 'M20 8a2 2 0 0 1 2 2v11l-4-3h-7a2 2 0 0 1-2-2');
+    await control.click();
+    await expect(control).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('.conversations-menu')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(control).toHaveAttribute('aria-expanded', 'false');
+  }
+});
+
 test('lists named conversations in a searchable dialog on the desktop', async ({ page }) => {
   let listedWithAgent = false;
   await mockConsole(page, url => { listedWithAgent = url.searchParams.get('agentId') === 'agent-1'; });

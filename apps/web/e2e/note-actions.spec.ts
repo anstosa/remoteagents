@@ -1,5 +1,9 @@
 import { expect, test } from '@playwright/test';
 
+const sendPath = 'M22 2 11 13M22 2l-7 20-4-9-9-4Z';
+const pencilPath = 'm4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3';
+const trashPath = 'M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6';
+
 test('copies a note and sends its current contents as a prompt', async ({ page }) => {
   let copied = '';
   let queuedPrompt: { prompt: string; attachments: unknown[] } | undefined;
@@ -16,7 +20,7 @@ test('copies a note and sends its current contents as a prompt', async ({ page }
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready' }], projects: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', projectId: 'repo', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready' }], projects: [{ id: 'repo', label: 'Repo', available: true, worktrees: [{ id: 'cora', projectId: 'repo', label: 'Cora', path: '/worktrees/cora', main: true, detached: false, locked: false, available: true, pinned: true, order: 0, branch: 'main' }] }] } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
     if (url.pathname === '/api/agents/agent-1/saved-prompts') return route.fulfill({ json: { prompts: [] } });
@@ -53,9 +57,37 @@ test('copies a note and sends its current contents as a prompt', async ({ page }
   await expect(dialog.getByRole('button', { name: 'Copy note' })).toBeVisible({ timeout: 3_000 });
 
   const send = dialog.getByRole('button', { name: 'Send note as prompt' });
+  await expect(send).toHaveAttribute('title', 'Send note as prompt');
   await expect(send.locator('svg')).toBeVisible();
+  await expect(send.locator('path')).toHaveAttribute('d', sendPath);
+  await expect(send.locator('svg')).toHaveCSS('fill', 'none');
   await expect(send).toHaveCSS('background-image', /linear-gradient/);
   await send.click();
   await expect.poll(() => queuedPrompt).toEqual({ prompt: 'Use this exact note as the next prompt.', attachments: [] });
   await expect(dialog.getByText('Queued', { exact: true })).toBeVisible();
+
+  const paneEdit = dialog.getByRole('button', { name: 'Rename note', exact: true });
+  const paneDelete = dialog.getByRole('button', { name: 'Delete note', exact: true });
+  await expect(paneEdit.locator('path')).toHaveAttribute('d', pencilPath);
+  await expect(paneDelete.locator('path')).toHaveAttribute('d', trashPath);
+  await expect(paneEdit.locator('svg')).toHaveCSS('fill', 'none');
+  await expect(paneDelete.locator('svg')).toHaveCSS('fill', 'none');
+
+  // reuse canonical menu actions
+  await page.getByRole('button', { name: 'Notes (1)' }).click();
+  const menu = page.locator('.notes-menu');
+  const menuEdit = menu.getByRole('button', { name: /^Rename note:/u });
+  const menuDelete = menu.getByRole('button', { name: /^Delete note:/u });
+  await expect(menuEdit.locator('path')).toHaveAttribute('d', pencilPath);
+  await expect(menuDelete.locator('path')).toHaveAttribute('d', trashPath);
+  await expect(menuEdit.locator('svg')).toHaveCSS('fill', 'none');
+  await expect(menuDelete.locator('svg')).toHaveCSS('fill', 'none');
+
+  // reuse the pencil in More
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await page.getByRole('button', { name: 'More options' }).click();
+  const moreEdit = page.getByRole('button', { name: 'Rename worktree', exact: true });
+  await expect(moreEdit.locator('path')).toHaveAttribute('d', pencilPath);
+  await expect(moreEdit.locator('svg')).toHaveCSS('fill', 'none');
 });
