@@ -1,4 +1,4 @@
-import { lstat, open, realpath, readFile, readdir } from 'node:fs/promises';
+import { lstat, realpath, readFile, readdir } from 'node:fs/promises';
 import { getuid } from 'node:process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
@@ -13,8 +13,8 @@ import { gitCommonDir, listWorktrees, type WorktreeEntry } from '../git/worktree
 import { worktreeManagementAvailability } from '../worktrees/management.js';
 import type { WorktreeLaunchStore } from '../worktrees/store.js';
 import type { Adapter, AdapterConfigs, AgentKind, AttentionState, Conversation, ConversationSummary, InlineQuestion } from '../adapters/types.js';
-import type { Agent, Dashboard, DashboardProject, DashboardWorktree, GitComparisonSummary, GitStatusChange, GitStatusSummary, GitUpstreamSummary, Project, SocketRef, Worktree } from '../domain/models.js';
-import { classifyReviewPath } from '../git/change-classification.js';
+import type { Agent, Dashboard, DashboardProject, DashboardWorktree, GitComparisonSummary, GitStatusSummary, GitUpstreamSummary, Project, SocketRef, Worktree } from '../domain/models.js';
+import { addUntrackedLineStats, comparisonAgainst, prComparisonCandidates, workingStatus } from '../git/comparison.js';
 import { isUpdateAdvisorLabel } from '../update-advisor.js';
 
 export interface SocketFinder { find(): Promise<SocketRef[]>; }
@@ -61,184 +61,11 @@ export class ProcSocketFinder implements SocketFinder {
     return sockets;
   }
 }
-const conflictCodes = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
-type GitLineStats = { additions: number; deletions: number };
-function gitNumstat(output: string): Map<string, GitLineStats> {
-  const stats = new Map<string, GitLineStats>();
-  const records = output.split('\0');
-  for (let index = 0; index < records.length; index += 1) {
-    const record = records[index]!;
-    if (!record) continue;
-    const firstTab = record.indexOf('\t');
-    const secondTab = record.indexOf('\t', firstTab + 1);
-    if (firstTab < 0 || secondTab < 0) continue;
-    const additions = Number(record.slice(0, firstTab));
-    const deletions = Number(record.slice(firstTab + 1, secondTab));
-    let path = record.slice(secondTab + 1);
-    if (!path) {
-      index += 1;
-      path = records[++index] ?? '';
-    }
-    if (!path || !Number.isInteger(additions) || !Number.isInteger(deletions)) continue;
-    const current = stats.get(path);
-    stats.set(path, { additions: (current?.additions ?? 0) + additions, deletions: (current?.deletions ?? 0) + deletions });
-  }
-  return stats;
-}
-export function gitStatusSummary(output: string, numstatOutputs: string[] = []): GitStatusSummary {
-  const changes: GitStatusChange[] = [];
-  const nulDelimited = output.includes('\0');
-  const records = output.split(nulDelimited ? '\0' : '\n');
-  for (let index = 0; index < records.length; index += 1) {
-    const record = records[index]!;
-    if (record.length < 3) continue;
-    const code = record.slice(0, 2);
-    let path = record.slice(3);
-    let originalPath: string | undefined;
-    if (code[0] === 'R' || code[0] === 'C') {
-      if (nulDelimited) originalPath = records[++index] || undefined;
-      else {
-        const separator = path.indexOf(' -> ');
-        if (separator >= 0) {
-          originalPath = path.slice(0, separator);
-          path = path.slice(separator + 4);
-        }
-      }
-    }
-    changes.push({ code, path, ...(originalPath === undefined ? {} : { originalPath }), category: classifyReviewPath(path) });
-  }
-  const lineStats = numstatOutputs.reduce((combined, numstat) => {
-    for (const [path, stats] of gitNumstat(numstat)) {
-      const current = combined.get(path);
-      combined.set(path, { additions: (current?.additions ?? 0) + stats.additions, deletions: (current?.deletions ?? 0) + stats.deletions });
-    }
-    return combined;
-  }, new Map<string, GitLineStats>());
-  for (const change of changes) Object.assign(change, lineStats.get(change.path));
-  const summary: GitStatusSummary = { files: changes.length, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, changes };
-  for (const { code } of changes) {
-    if (code === '??') { summary.untracked += 1; continue; }
-    if (conflictCodes.has(code)) { summary.conflicted += 1; continue; }
-    if (code[0] !== ' ') summary.staged += 1;
-    if (code[1] !== ' ') summary.unstaged += 1;
-  }
-  return summary;
-}
-// summarize changes from the merge base
-export function gitComparisonSummary(base: string, nameStatusOutput: string, numstatOutput: string, untrackedChanges: GitStatusChange[] = []): GitComparisonSummary {
-  const changes: GitStatusChange[] = [];
-  const nulDelimited = nameStatusOutput.includes('\0');
-  const records = nameStatusOutput.split(nulDelimited ? '\0' : '\n');
-  // parse name-status records
-  for (let index = 0; index < records.length; index += 1) {
-    const record = records[index]!;
-    // skip empty records
-    if (!record) continue;
-    let status: string;
-    let path: string;
-    let originalPath: string | undefined;
-    // parse nul-delimited output
-    if (nulDelimited) {
-      status = record;
-      path = records[++index] ?? '';
-      // preserve rename origins
-      if (status[0] === 'R' || status[0] === 'C') {
-        originalPath = path;
-        path = records[++index] ?? '';
-      }
-    } else {
-      const parts = record.split('\t');
-      status = parts[0] ?? '';
-      path = parts[1] ?? '';
-      // preserve rename origins
-      if (status[0] === 'R' || status[0] === 'C') {
-        originalPath = path;
-        path = parts[2] ?? '';
-      }
-    }
-    // ignore malformed records
-    if (!status || !path) continue;
-    const code = status[0] === 'U' ? 'UU' : `${status[0]} `;
-    changes.push({ code, path, ...(originalPath === undefined ? {} : { originalPath }), category: classifyReviewPath(path) });
-  }
-  const lineStats = gitNumstat(numstatOutput);
-  // attach line totals
-  for (const change of changes) Object.assign(change, lineStats.get(change.path));
-  const trackedPaths = new Set(changes.map(change => change.path));
-  // include current untracked files
-  for (const change of untrackedChanges) {
-    // avoid duplicate paths
-    if (!trackedPaths.has(change.path)) changes.push({ ...change });
-  }
-  return { base, files: changes.length, changes };
-}
-export async function addUntrackedLineStats(workspace: string, summary: GitStatusSummary, limits = { files: 256, bytes: 20 * 1024 * 1024, bytesPerFile: 5 * 1024 * 1024 }) {
-  let inspectedFiles = 0;
-  let inspectedBytes = 0;
-  for (const change of summary.changes ?? []) {
-    if (change.code !== '??') continue;
-    if (inspectedFiles >= limits.files || inspectedBytes >= limits.bytes) break;
-    inspectedFiles += 1;
-    try {
-      const path = join(workspace, change.path);
-      const info = await lstat(path);
-      if (info.isSymbolicLink()) { change.additions = 1; change.deletions = 0; continue; }
-      if (!info.isFile() || info.size > limits.bytesPerFile || inspectedBytes + info.size > limits.bytes) continue;
-      inspectedBytes += info.size;
-      const handle = await open(path, 'r');
-      const content = Buffer.allocUnsafe(info.size);
-      let offset = 0;
-      try {
-        while (offset < content.length) {
-          const { bytesRead } = await handle.read(content, offset, content.length - offset, offset);
-          if (bytesRead === 0) break;
-          offset += bytesRead;
-        }
-      } finally { await handle.close(); }
-      const inspected = content.subarray(0, offset);
-      if (inspected.subarray(0, 8_000).includes(0)) continue;
-      let lines = 0;
-      for (const byte of inspected) if (byte === 10) lines += 1;
-      change.additions = lines + (inspected.length > 0 && inspected[inspected.length - 1] !== 10 ? 1 : 0);
-      change.deletions = 0;
-    } catch { /* The worktree may change between status and file inspection. */ }
-  }
-}
 // compare the working tree with its merge target
 async function gitPrComparison(workspace: string, branch: string | undefined, working: GitStatusSummary | undefined, preferredBase?: string, exactBase = false): Promise<GitComparisonSummary | undefined> {
-  const [configured, remoteHead] = await Promise.all([
-    branch === undefined ? Promise.resolve({ code: 1, stdout: '' }) : run('/usr/bin/git', ['-C', workspace, 'config', '--get', `branch.${branch}.gh-merge-base`]),
-    run('/usr/bin/git', ['-C', workspace, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
-  ]);
-  const configuredBase = configured.code === 0 ? configured.stdout.trim() : '';
-  const preferred = preferredBase === undefined ? undefined : preferredBase.startsWith('origin/') || preferredBase.startsWith('refs/') ? preferredBase : `origin/${preferredBase}`;
-  const candidates = (exactBase ? [preferred] : [
-    preferred,
-    configuredBase === '' ? undefined : configuredBase.includes('/') ? configuredBase : `origin/${configuredBase}`,
-    remoteHead.code === 0 ? remoteHead.stdout.trim() : undefined,
-    'origin/main',
-    'origin/master'
-  ]).filter((candidate): candidate is string => candidate !== undefined && candidate !== '');
-  const seen = new Set<string>();
-  // try merge-target fallbacks
-  for (const candidate of candidates) {
-    // skip duplicate fallbacks
-    if (seen.has(candidate)) continue;
-    seen.add(candidate);
-    const mergeBase = await run('/usr/bin/git', ['-C', workspace, 'merge-base', 'HEAD', candidate]);
-    // skip unavailable targets
-    if (mergeBase.code !== 0 || mergeBase.stdout.trim() === '') continue;
-    const base = mergeBase.stdout.trim();
-    const [names, lines] = await Promise.all([
-      run('/usr/bin/git', ['--no-optional-locks', '-C', workspace, 'diff', '--name-status', '-z', '--find-renames', base, '--']),
-      run('/usr/bin/git', ['--no-optional-locks', '-C', workspace, 'diff', '--numstat', '-z', base, '--'])
-    ]);
-    // require both comparison views
-    if (names.code !== 0 || lines.code !== 0) continue;
-    const untracked = working?.changes?.filter(change => change.code === '??') ?? [];
-    return gitComparisonSummary(candidate, names.stdout, lines.stdout, untracked);
-  }
-  return undefined;
+  const candidates = await prComparisonCandidates(workspace, branch, preferredBase, exactBase);
+  const untracked = working?.changes?.filter(change => change.code === '??') ?? [];
+  return (await comparisonAgainst(workspace, candidates, untracked))?.comparison;
 }
 type GitCommand = (binary: string, args: string[]) => Promise<{ code: number; stdout: string }>;
 // compare HEAD with the current branch's configured upstream
@@ -274,20 +101,10 @@ export async function workspaceRoot(path: string): Promise<string> {
 // collect branch metadata
 async function gitMeta(path: string, rootKnown = false): Promise<GitMeta> {
   const workspace = rootKnown ? path : await workspaceRoot(path);
-  const [symbolicBranch, status, diff] = await Promise.all([
+  const [symbolicBranch, gitStatus] = await Promise.all([
     run('/usr/bin/git', ['-C', workspace, 'symbolic-ref', '--short', 'HEAD']),
-    run('/usr/bin/git', ['--no-optional-locks', '-C', workspace, 'status', '--porcelain=v1', '-z', '--untracked-files=all']),
-    run('/usr/bin/git', ['--no-optional-locks', '-C', workspace, 'diff', '--numstat', '-z', 'HEAD', '--'])
+    workingStatus(workspace, { lineStats: true })
   ]);
-  let numstatOutputs = diff.code === 0 ? [diff.stdout] : [];
-  if (diff.code !== 0) {
-    const [staged, unstaged] = await Promise.all([
-      run('/usr/bin/git', ['--no-optional-locks', '-C', workspace, 'diff', '--cached', '--numstat', '-z', '--']),
-      run('/usr/bin/git', ['--no-optional-locks', '-C', workspace, 'diff', '--numstat', '-z', '--'])
-    ]);
-    numstatOutputs = [staged, unstaged].filter(result => result.code === 0).map(result => result.stdout);
-  }
-  const gitStatus = status.code === 0 ? gitStatusSummary(status.stdout, numstatOutputs) : undefined;
   // enrich untracked line counts
   if (gitStatus !== undefined) await addUntrackedLineStats(workspace, gitStatus);
   const branch = symbolicBranch.code === 0 ? symbolicBranch.stdout.trim() : undefined;

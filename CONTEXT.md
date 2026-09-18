@@ -147,3 +147,21 @@ _Avoid_: Execution, job, invocation
 **Stack commands**:
 The Project's trusted start/stop/build/restart/migrate/status commands, run in their own tmux session.
 _Avoid_: Scripts, tasks
+
+### Reviewing changes
+
+**Change**:
+One changed path in a Comparison, carrying its status code and, where git reports them, its line counts.
+_Avoid_: File change, diff entry, hunk (a hunk is one span inside a Change)
+
+**Comparison**:
+A base, a head, and the Changes between them. Two exist: Working (HEAD versus the working tree, staged and unstaged folded together, untracked included) and All PR (the merge base of HEAD and the branch's target versus the working tree). The base is always a parameter, so per-commit Comparisons stay cheap to add.
+_Avoid_: Diff, scope, snapshot
+
+**Code panel**:
+The Panel kind that shows a Comparison's Changes — all files in one scroll or one file — or a whole file.
+_Avoid_: Diff view, file viewer, review panel
+
+**Review tour**:
+The existing guided review of a Comparison's Changes; the user-facing name is kept.
+_Avoid_: Snapshot, walkthrough

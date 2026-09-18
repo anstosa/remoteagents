@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { addUntrackedLineStats, DiscoveryService, gitComparisonSummary, gitStatusSummary, gitUpstreamSummary, ProcSocketFinder } from '../src/discovery/service.js';
+import { DiscoveryService, gitUpstreamSummary, ProcSocketFinder } from '../src/discovery/service.js';
 import { inlineQuestionId } from '../src/adapters/inline-questions.js';
 import { pendingOmxQuestion } from '../src/adapters/omx-questions.js';
 import type { SocketRef } from '../src/domain/models.js';
@@ -46,50 +46,6 @@ async function buildProc(proc: string, holdings: Record<number, string[]>): Prom
 }
 
 describe('DiscoveryService dashboard', () => {
-  it('summarizes staged, unstaged, untracked, and conflicted worktree files', () => {
-    expect(gitStatusSummary(' M modified.ts\nM  staged.ts\nMM both.ts\n?? new.ts\nUU conflict.ts\nR  old.ts -> renamed.ts\n')).toEqual({
-      files: 6,
-      staged: 3,
-      unstaged: 2,
-      untracked: 1,
-      conflicted: 1,
-      changes: [
-        { code: ' M', path: 'modified.ts', category: 'implementation' },
-        { code: 'M ', path: 'staged.ts', category: 'implementation' },
-        { code: 'MM', path: 'both.ts', category: 'implementation' },
-        { code: '??', path: 'new.ts', category: 'implementation' },
-        { code: 'UU', path: 'conflict.ts', category: 'implementation' },
-        { code: 'R ', path: 'renamed.ts', originalPath: 'old.ts', category: 'implementation' }
-      ]
-    });
-    expect(gitStatusSummary('')).toEqual({ files: 0, staged: 0, unstaged: 0, untracked: 0, conflicted: 0, changes: [] });
-  });
-
-  it('preserves spaces and rename origins from nul-delimited porcelain output', () => {
-    expect(gitStatusSummary(
-      'R  new name.ts\0old name.ts\0?? untracked file.md\0',
-      ['4\t2\t\0old name.ts\0new name.ts\0']
-    )).toMatchObject({
-      files: 2,
-      staged: 1,
-      untracked: 1,
-      changes: [
-        { code: 'R ', path: 'new name.ts', originalPath: 'old name.ts', additions: 4, deletions: 2 },
-        { code: '??', path: 'untracked file.md' }
-      ]
-    });
-  });
-
-  it('combines line changes from multiple numstat passes and leaves binary counts unavailable', () => {
-    expect(gitStatusSummary(
-      'MM mixed.ts\0 M binary.png\0',
-      ['3\t1\tmixed.ts\0-\t-\tbinary.png\0', '2\t4\tmixed.ts\0']
-    ).changes).toEqual([
-      { code: 'MM', path: 'mixed.ts', additions: 5, deletions: 5, category: 'implementation' },
-      { code: ' M', path: 'binary.png', category: 'implementation' }
-    ]);
-  });
-
   it('reports commits available from the configured branch upstream', async () => {
     const command = vi.fn(async (_binary: string, args: string[]) => args.includes('rev-parse')
       ? { code: 0, stdout: 'origin/feature\n' }
@@ -104,45 +60,6 @@ describe('DiscoveryService dashboard', () => {
 
     await expect(gitUpstreamSummary('/worktrees/cora', command)).resolves.toBeUndefined();
     expect(command).toHaveBeenCalledTimes(1);
-  });
-
-  // cover PR comparison parsing
-  it('summarizes merge-base changes with renames and current untracked files', () => {
-    expect(gitComparisonSummary(
-      'origin/main',
-      'M\x00src/changed.ts\x00R100\x00docs/old.md\x00docs/new.md\x00A\x00assets/image.png\x00',
-      '3\t1\tsrc/changed.ts\x002\t2\t\x00docs/old.md\x00docs/new.md\x00-\t-\tassets/image.png\x00',
-      [{ code: '??', path: 'notes/local.txt', additions: 4, deletions: 0 }]
-    )).toEqual({
-      base: 'origin/main',
-      files: 4,
-      changes: [
-        { code: 'M ', path: 'src/changed.ts', additions: 3, deletions: 1, category: 'implementation' },
-        { code: 'R ', path: 'docs/new.md', originalPath: 'docs/old.md', additions: 2, deletions: 2, category: 'doc' },
-        { code: 'A ', path: 'assets/image.png', category: 'implementation' },
-        { code: '??', path: 'notes/local.txt', additions: 4, deletions: 0 }
-      ]
-    });
-  });
-
-  it('bounds untracked line-stat enrichment by file count and aggregate bytes', async () => {
-    const workspace = await mkdtemp(join(tmpdir(), 'rac-untracked-stats-'));
-    try {
-      await Promise.all([
-        writeFile(join(workspace, 'one.txt'), 'one\ntwo\n'),
-        writeFile(join(workspace, 'two.txt'), 'three\nfour\n'),
-        writeFile(join(workspace, 'three.txt'), 'five\nsix\n')
-      ]);
-      const summary = gitStatusSummary('?? one.txt\n?? two.txt\n?? three.txt\n');
-
-      await addUntrackedLineStats(workspace, summary, { files: 2, bytes: 16, bytesPerFile: 16 });
-
-      expect(summary.changes).toEqual([
-        { code: '??', path: 'one.txt', additions: 2, deletions: 0, category: 'implementation' },
-        { code: '??', path: 'two.txt', category: 'implementation' },
-        { code: '??', path: 'three.txt', category: 'implementation' }
-      ]);
-    } finally { await rm(workspace, { recursive: true, force: true }); }
   });
 
   it('discovers tmux sockets directly from the mounted socket directory', async () => {
