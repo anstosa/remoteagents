@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DashboardUpdates } from '../src/dashboard/updates.js';
+import { dashboardFingerprint, DashboardUpdates, type DashboardPayload } from '../src/dashboard/updates.js';
 
 describe('dashboard updates', () => {
   it('publishes changed snapshots, replays the current value, and coalesces concurrent refreshes', async () => {
@@ -50,5 +50,20 @@ describe('dashboard updates', () => {
     value = { agents: [{ id: 'agent-2' }], worktrees: [] };
     await expect(updates.refresh()).resolves.toEqual(value);
     expect(seen).toEqual([{ agents: [{ id: 'agent-1' }], worktrees: [] }, value]);
+  });
+
+  it('publishes a queued-note revision without an agent status change', async () => {
+    const base = { generation: 1, adapters: {}, agents: [], projects: [], cleanupPending: 0, reviewTour: { available: false, reason: 'generator_unavailable' }, reviews: [] } satisfies DashboardPayload;
+    let value: DashboardPayload = { ...base, notesRevision: 0 };
+    const updates = new DashboardUpdates<DashboardPayload>(dashboardFingerprint);
+    updates.setLoader(async () => value);
+    const seen: DashboardPayload[] = [];
+    updates.subscribe(snapshot => seen.push(snapshot));
+
+    await updates.refresh();
+    value = { ...value, notesRevision: 1 };
+    await updates.refresh();
+
+    expect(seen.map(snapshot => snapshot.notesRevision)).toEqual([0, 1]);
   });
 });

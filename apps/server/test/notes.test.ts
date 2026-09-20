@@ -93,13 +93,14 @@ describe('worktree notes', () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-note-with-text-'));
     try {
       const service = new WorktreeNoteService(join(directory, 'notes.json'));
-      const note = await service.createWithText('cora', 'Queued prompt · 09:41', 'Draft the release notes.');
-      expect(note).toMatchObject({ title: 'Queued prompt · 09:41', text: 'Draft the release notes.' });
+      const note = await service.createWithText('cora', 'Queued prompt in Cora · 9:41 AM', 'Draft the release notes.', 'queued-prompt');
+      expect(note).toMatchObject({ title: 'Queued prompt in Cora · 9:41 AM', text: 'Draft the release notes.', source: 'queued-prompt' });
       await expect(new WorktreeNoteService(join(directory, 'notes.json')).list('cora')).resolves.toEqual([note]);
+      await expect(service.rename('cora', note!.id, 'Release draft')).resolves.toMatchObject({ title: 'Release draft', source: 'queued-prompt' });
       // a blank title or over-budget text is refused, writing nothing
       await expect(service.createWithText('cora', '   ', 'text')).resolves.toBeUndefined();
       await expect(service.createWithText('cora', 'Too big', 'x'.repeat(300_000))).resolves.toBeUndefined();
-      await expect(service.list('cora')).resolves.toEqual([note]);
+      await expect(service.list('cora')).resolves.toEqual([{ ...note, title: 'Release draft' }]);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 

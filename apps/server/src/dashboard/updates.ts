@@ -15,10 +15,14 @@ export type DashboardPayload = Omit<Dashboard, 'agents' | 'projects'> & {
   // a Project-level Launch button (it has no Worktrees to launch through); omitted otherwise
   projects: Array<Omit<DashboardProject, 'worktrees'> & { worktrees: PayloadWorktree[]; launch?: LaunchResolution }>;
   cleanupPending: number;
+  notesRevision?: number;
   scratchLaunch?: LaunchResolution;
   reviewTour: ReviewTourCapability;
   reviews: StoredReviewTourSummary[];
 };
+
+// fingerprint every dashboard field that drives browser refreshes
+export const dashboardFingerprint = (dashboard: DashboardPayload): string => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.notesRevision, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews]);
 
 export class DashboardUpdates<T = DashboardPayload> {
   private loader?: () => Promise<T>;

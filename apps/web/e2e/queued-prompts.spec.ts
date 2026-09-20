@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 
+// verify queue editing, persistence and unread notes feedback
 test('manages waiting prompts from the queue-add control connected to Queue', async ({ page }) => {
   const requested: string[] = [];
   const queued = [
@@ -41,7 +42,7 @@ test('manages waiting prompts from the queue-add control connected to Queue', as
       const index = queued.findIndex(prompt => prompt.id === saveMatch[1]);
       if (index < 0) return route.fulfill({ status: 404, json: { error: 'missing' } });
       const [prompt] = queued.splice(index, 1);
-      const note = { id: `note-${prompt!.id}`, title: 'Queued prompt · 09:41', text: prompt!.text };
+      const note = { id: `note-${prompt!.id}`, title: 'Queued prompt in Cora · 9:41 AM', text: prompt!.text, source: 'queued-prompt' };
       notes.unshift(note);
       return route.fulfill({ status: 201, json: note });
     }
@@ -116,8 +117,12 @@ test('manages waiting prompts from the queue-add control connected to Queue', as
   expect(requested).toContain('POST /api/agents/agent-1/queued-prompts/queued-prompt-002/save');
   // dismiss through the click-blocking backdrop, then open Notes: the saved prompt is now a note
   await page.locator('.flyout-backdrop').click({ position: { x: 4, y: 4 } });
+  const notesBadge = page.locator('.notes-count');
+  await expect(notesBadge).toHaveClass(/unread/u);
+  await expect(notesBadge).toHaveCSS('background-color', 'rgb(243, 139, 168)');
   await page.getByRole('button', { name: /^Notes \(/u }).click();
-  await expect(page.getByLabel('Worktree notes')).toContainText('Queued prompt · 09:41');
+  await expect(page.getByLabel('Worktree notes')).toContainText('Queued prompt in Cora · 9:41 AM');
+  await expect(notesBadge).not.toHaveClass(/unread/u);
 
   await page.locator('.flyout-backdrop').click({ position: { x: 4, y: 4 } });
   await page.getByRole('textbox', { name: 'Prompt' }).fill('Third queued prompt');

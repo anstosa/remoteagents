@@ -15,6 +15,7 @@ import { WorktreeNoteService } from '../src/notes/service.js';
 import { ReviewTourStore } from '../src/review-tour/store.js';
 import type { ReviewTour } from '../src/review-tour/contracts.js';
 import { PullRequestLookupError } from '../src/pull-requests/service.js';
+import { dashboardFingerprint, DashboardUpdates, type DashboardPayload } from '../src/dashboard/updates.js';
 const config: ValidatedConfig = { name: 'Remote Agents', remoteServers: [], listen:{host:'127.0.0.1',port:8787},publicOrigin:new URL('https://agents.example.com'),trustedProxyIps:new Set(['127.0.0.1']),pollIntervalMs:500,adapters:{},projects:[] };
 // reset environment overrides
 afterEach(() => { vi.unstubAllEnvs(); });
@@ -1168,14 +1169,17 @@ describe('queued prompt API', () => {
   it('saves a queued prompt as a note, consuming the queued copy and naming its dropped attachments', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-save-queued-prompt-api-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
+    const worktree = { id: 'cora', projectId: 'cora', label: 'Renamed Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
     const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '⠋ Working' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    const dashboardUpdates = { setLoader: () => {}, refresh: async () => { throw new Error('refresh unavailable'); }, close: () => {} };
     const queuedApp = await buildApp({ ...config }, {
       auth: new AuthService(hash, Buffer.alloc(32, 12).toString('base64url')),
       discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined, worktreesNow: () => [worktree] } as never,
       queuedPrompts: new QueuedPromptService(join(directory, 'queue.json')),
-      notes: new WorktreeNoteService(join(directory, 'notes.json'))
+      notes: new WorktreeNoteService(join(directory, 'notes.json')),
+      // keep the durable save successful when publication fails
+      dashboardUpdates: dashboardUpdates as never
     });
     try {
       const boot = await queuedApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
@@ -1190,9 +1194,56 @@ describe('queued prompt API', () => {
       const worktreeNotes = await queuedApp.inject({ method: 'GET', url: '/api/worktrees/cora/notes', headers: { host: headers.host, cookie: headers.cookie } });
 
       expect(saved.statusCode).toBe(201);
-      expect(saved.json()).toMatchObject({ title: expect.stringMatching(/^Queued prompt · \d\d:\d\d$/u), text: 'Save this prompt\n\nDropped attachments: context.txt' });
+      expect(saved.json()).toMatchObject({ title: expect.stringMatching(/^Queued prompt in Renamed Cora · (?:1[0-2]|[1-9]):[0-5]\d (?:AM|PM)$/u), text: 'Save this prompt\n\nDropped attachments: context.txt', source: 'queued-prompt' });
       expect(remaining.json()).toEqual({ prompts: [] });
-      expect(worktreeNotes.json().notes).toMatchObject([{ title: expect.stringMatching(/^Queued prompt · \d\d:\d\d$/u), text: 'Save this prompt\n\nDropped attachments: context.txt' }]);
+      expect(worktreeNotes.json().notes).toMatchObject([{ title: expect.stringMatching(/^Queued prompt in Renamed Cora · (?:1[0-2]|[1-9]):[0-5]\d (?:AM|PM)$/u), text: 'Save this prompt\n\nDropped attachments: context.txt', source: 'queued-prompt' }]);
+    } finally {
+      await queuedApp.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  // publish the note revision without waiting for dashboard polling
+  it('publishes a dashboard update after explicitly saving a queued prompt as a note', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-save-queued-prompt-update-'));
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = testWorktree({ id: 'cora', projectId: 'cora', label: 'Renamed Cora', path: '/worktrees/cora', identity: '/worktrees/cora' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: worktree.path, worktreeId: worktree.id, projectId: worktree.projectId, title: '⠋ Working' });
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    const dashboardUpdates = new DashboardUpdates<DashboardPayload>(dashboardFingerprint);
+    const dashboardProject = {
+      id: 'cora', label: 'Cora', mode: 'repository' as const, available: true, manageWorktrees: true, stalePaths: [],
+      worktrees: [{ id: worktree.id, projectId: worktree.projectId, label: worktree.label, path: worktree.path, available: true, pinned: true, main: true, detached: false, locked: false, order: 0 }]
+    };
+    const queuedApp = await buildApp({ ...config, projects: [testProject({ id: 'cora', label: 'Cora', path: worktree.path, identity: worktree.identity })] }, {
+      auth: new AuthService(hash, Buffer.alloc(32, 35).toString('base64url')),
+      discovery: {
+        target: async (id: string) => id === agent.id ? { agent, socket } : undefined,
+        worktreesNow: () => [worktree],
+        // expose the same agent and worktree represented by the save route
+        dashboard: async () => ({ generation: 1, adapters: {}, agents: [agent], projects: [dashboardProject] })
+      } as never,
+      queuedPrompts: new QueuedPromptService(join(directory, 'queue.json')),
+      notes: new WorktreeNoteService(join(directory, 'notes.json')),
+      dashboardUpdates
+    });
+    try {
+      const boot = await queuedApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await queuedApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      await queuedApp.inject({ method: 'POST', url: '/api/agents/agent-1/prompt', headers, payload: { prompt: 'Publish this note' } });
+      const listed = await queuedApp.inject({ method: 'GET', url: '/api/agents/agent-1/queued-prompts', headers: { host: headers.host, cookie: headers.cookie } });
+      const [queued] = listed.json().prompts as Array<{ id: string }>;
+      const revisions: Array<number | undefined> = [];
+      // record dashboard publications directly
+      dashboardUpdates.subscribe(snapshot => { revisions.push(snapshot.notesRevision); });
+      await dashboardUpdates.refresh();
+
+      const saved = await queuedApp.inject({ method: 'POST', url: `/api/agents/agent-1/queued-prompts/${queued!.id}/save`, headers });
+
+      expect(saved.statusCode).toBe(201);
+      // allow the best-effort refresh to publish asynchronously
+      await vi.waitFor(() => { expect(revisions).toEqual([0, 1]); });
     } finally {
       await queuedApp.close();
       await rm(directory, { recursive: true, force: true });
@@ -1231,11 +1282,11 @@ describe('queued prompt API', () => {
     }
   }, 15_000);
 
-  it('drains a halted queue into Undelivered notes when active work fails', async () => {
+  it('drains a halted queue into queued prompt notes when active work fails', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-drain-queue-api-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     // a realistic `<projectId>:<realpath>` wire id, so the drain's projectId collapse is exercised
-    const worktree = { id: 'cora:/worktrees/cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
+    const worktree = { id: 'cora:/worktrees/cora', projectId: 'cora', label: 'Release Lane', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
     const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '⠋ Working' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     let capture = ['› Earlier prompt', '', '• Earlier answer', '', '─ Worked for 1s', '', '› Active prompt', '', '• Working'].join('\n');
@@ -1257,7 +1308,7 @@ describe('queued prompt API', () => {
       // the active turn fails: observing the pane halts the queue and drains it into Notes
       capture = ['› Active prompt', '', '■ Request failed', ''].join('\n');
       agent.title = 'Ready';
-      await drainApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: headers.host, cookie: headers.cookie } });
+      const dashboard = await drainApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: headers.host, cookie: headers.cookie } });
 
       const remaining = await drainApp.inject({ method: 'GET', url: '/api/agents/agent-1/queued-prompts', headers: { host: headers.host, cookie: headers.cookie } });
       // read back through the same worktree wire id the fly-out uses: both the drain key and the read
@@ -1265,10 +1316,12 @@ describe('queued prompt API', () => {
       const worktreeNotes = await drainApp.inject({ method: 'GET', url: `/api/worktrees/${encodeURIComponent('cora:/worktrees/cora')}/notes`, headers: { host: headers.host, cookie: headers.cookie } });
 
       expect(remaining.json()).toEqual({ prompts: [] });
-      const drained = worktreeNotes.json().notes as Array<{ title: string; text: string }>;
+      const drained = worktreeNotes.json().notes as Array<{ title: string; text: string; source?: string }>;
       // one note per prompt, drained front-of-queue first (so the notes list, newest first, reverses them)
       expect(drained.map(note => note.text)).toEqual(['Second undelivered', 'First undelivered\n\nDropped attachments: context.txt']);
-      expect(drained.every(note => /^Undelivered prompt · \d\d:\d\d$/u.test(note.title))).toBe(true);
+      expect(drained.every(note => /^Queued prompt in Release Lane · (?:1[0-2]|[1-9]):[0-5]\d (?:AM|PM)$/u.test(note.title))).toBe(true);
+      expect(drained.every(note => note.source === 'queued-prompt')).toBe(true);
+      expect(dashboard.json().notesRevision).toBe(2);
     } finally {
       await drainApp.close();
       await rm(directory, { recursive: true, force: true });
@@ -1301,9 +1354,9 @@ describe('queued prompt API', () => {
       const agentNotes = await queuedApp.inject({ method: 'GET', url: '/api/agents/agent-1/notes', headers: { host: headers.host, cookie: headers.cookie } });
 
       expect(saved.statusCode).toBe(201);
-      expect(saved.json()).toMatchObject({ title: expect.stringMatching(/^Queued prompt · \d\d:\d\d$/u), text: 'Scratch prompt' });
+      expect(saved.json()).toMatchObject({ title: expect.stringMatching(/^Queued prompt in scratch · (?:1[0-2]|[1-9]):[0-5]\d (?:AM|PM)$/u), text: 'Scratch prompt', source: 'queued-prompt' });
       expect(remaining.json()).toEqual({ prompts: [] });
-      expect(agentNotes.json().notes).toMatchObject([{ title: expect.stringMatching(/^Queued prompt · \d\d:\d\d$/u), text: 'Scratch prompt' }]);
+      expect(agentNotes.json().notes).toMatchObject([{ title: expect.stringMatching(/^Queued prompt in scratch · (?:1[0-2]|[1-9]):[0-5]\d (?:AM|PM)$/u), text: 'Scratch prompt', source: 'queued-prompt' }]);
     } finally {
       await queuedApp.close();
       await rm(directory, { recursive: true, force: true });
@@ -1338,7 +1391,7 @@ describe('queued prompt API', () => {
       const agentNotes = await drainApp.inject({ method: 'GET', url: '/api/agents/agent-1/notes', headers: { host: headers.host, cookie: headers.cookie } });
 
       expect(remaining.json()).toEqual({ prompts: [] });
-      expect(agentNotes.json().notes).toMatchObject([{ title: expect.stringMatching(/^Undelivered prompt · \d\d:\d\d$/u), text: 'Scratch undelivered' }]);
+      expect(agentNotes.json().notes).toMatchObject([{ title: expect.stringMatching(/^Queued prompt in scratch · (?:1[0-2]|[1-9]):[0-5]\d (?:AM|PM)$/u), text: 'Scratch undelivered', source: 'queued-prompt' }]);
     } finally {
       await drainApp.close();
       await rm(directory, { recursive: true, force: true });

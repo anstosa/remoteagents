@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { type Schedule, type ScheduleLastRun, validSchedule } from '../schedule/types.js';
 
-export type WorktreeNote = { id: string; text: string; title?: string; schedule?: Schedule };
+export type WorktreeNote = { id: string; text: string; title?: string; source?: 'queued-prompt'; schedule?: Schedule };
 type StoredNotes = Record<string, WorktreeNote[]>;
 
 const maxNotesPerWorktree = 50;
@@ -19,8 +19,8 @@ const validTitle = (value: string) => value.trim().length > 0 && value.length <=
 // validate persisted note data
 const validNote = (value: unknown): value is WorktreeNote => {
   if (value === null || typeof value !== 'object') return false;
-  const note = value as { id?: unknown; text?: unknown; title?: unknown; schedule?: unknown };
-  return typeof note.id === 'string' && validNoteId(note.id) && typeof note.text === 'string' && validText(note.text) && (note.title === undefined || typeof note.title === 'string' && validTitle(note.title)) && (note.schedule === undefined || validSchedule(note.schedule));
+  const note = value as { id?: unknown; text?: unknown; title?: unknown; source?: unknown; schedule?: unknown };
+  return typeof note.id === 'string' && validNoteId(note.id) && typeof note.text === 'string' && validText(note.text) && (note.title === undefined || typeof note.title === 'string' && validTitle(note.title)) && (note.source === undefined || note.source === 'queued-prompt') && (note.schedule === undefined || validSchedule(note.schedule));
 };
 const totalNoteLength = (stored: StoredNotes) => Object.values(stored).flat().reduce((total, note) => total + note.text.length + (note.title?.length ?? 0), 0);
 
@@ -61,14 +61,14 @@ export class WorktreeNoteService {
   // create a titled note with initial text in one mutation — the save-as-note and halt-drain
   // paths write the note atomically before consuming the queued prompt, so a two-step
   // create-then-update (which could leave a blank titled note on failure) will not do
-  async createWithText(worktreeId: string, title: string, text: string): Promise<WorktreeNote | undefined> {
+  async createWithText(worktreeId: string, title: string, text: string, source?: 'queued-prompt'): Promise<WorktreeNote | undefined> {
     if (!validWorktreeId(worktreeId) || !validTitle(title) || !validText(text)) return undefined;
     return await this.mutate(stored => {
       const notes = stored[worktreeId] ?? [];
       if (notes.length >= maxNotesPerWorktree) return undefined;
       if (stored[worktreeId] === undefined && Object.keys(stored).length >= maxWorktrees) return undefined;
       if (totalNoteLength(stored) + title.length + text.length > maxTotalNoteLength) return undefined;
-      const note: WorktreeNote = { id: randomBytes(18).toString('base64url'), text, title };
+      const note: WorktreeNote = { id: randomBytes(18).toString('base64url'), text, title, ...(source === undefined ? {} : { source }) };
       stored[worktreeId] = [note, ...notes];
       return note;
     });

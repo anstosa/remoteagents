@@ -71,7 +71,7 @@ type RemovalFacts = { main: boolean; detached: boolean; locked: boolean; lockedR
 type ReviewTourCapability = { available: true } | { available: false; reason: 'generator_unavailable'|'unsupported_cli'|'configuration_invalid'|'authentication_required' };
 type StoredReviewSummary = { worktreeId: string; branch: string; savedAt: string; title: string; scope: ReviewScope; includeTests: boolean; includeDocs: boolean; fingerprint: string };
 type ReviewButtonState = ReviewTourIndicator & { onOpen: () => void };
-type Dashboard = { generation?: number; serverStartedAt?: number; adapters?: AdapterCapabilities; agents: Agent[]; projects: Project[]; cleanupPending?: number; scratchLaunch?: LaunchResolution; reviewTour?: ReviewTourCapability; reviews?: StoredReviewSummary[] };
+type Dashboard = { notesRevision?: number; generation?: number; serverStartedAt?: number; adapters?: AdapterCapabilities; agents: Agent[]; projects: Project[]; cleanupPending?: number; scratchLaunch?: LaunchResolution; reviewTour?: ReviewTourCapability; reviews?: StoredReviewSummary[] };
 // every Worktree across the dashboard's Projects, flattened for tab and launcher rendering
 const allWorktrees = (dashboard: Pick<Dashboard, 'projects'>): Worktree[] => dashboard.projects.flatMap(project => project.worktrees);
 // why a Worktree's Remove is disabled (it is the Project's Main checkout, git holds a lock,
@@ -170,7 +170,7 @@ const isQueuedPrompt = (value: unknown): value is QueuedPrompt => value !== null
   && typeof (value as QueuedPrompt).text === 'string'
   && typeof (value as QueuedPrompt).createdAt === 'string'
   && ((value as QueuedPrompt).attachments === undefined || Array.isArray((value as QueuedPrompt).attachments) && (value as QueuedPrompt).attachments!.every(attachment => attachment !== null && typeof attachment === 'object' && typeof attachment.name === 'string' && Number.isInteger(attachment.size) && attachment.size >= 0));
-type WorktreeNote = { id: string; text: string; title?: string; schedule?: Schedule; nextRun?: string };
+type WorktreeNote = { id: string; text: string; title?: string; source?: 'queued-prompt'; schedule?: Schedule; nextRun?: string };
 // the Adapter and target a new Schedule pre-fills with, plus the launcher rows the note pane's
 // Adapter and target pickers offer, all resolved from the dashboard for the active tab's context
 type SchedulePrefill = { kind: AgentKind; target: ScheduleTarget; runsOnText: string; adapters: ScheduleAdapterOption[]; targets: ScheduleTargetOption[]; liveAgentIds: string[] };
@@ -342,6 +342,56 @@ const retainedWorktreeNoteViews = new Map<string, WorktreeNoteView>();
 // force a note view's list to refetch from a sibling component (the queued panel's Save as note
 // lives in Prompt, while the notes hook lives in the sibling Log), keyed by note view id
 const noteReloadRequests = new Map<string, () => void>();
+const queuedNoteSeenKey = 'rac.seen-queued-notes';
+// validate optional browser acknowledgements
+const parseSeenQueuedNotes = (serialized: string | null): Set<string> => {
+  try {
+    const stored: unknown = JSON.parse(serialized ?? '[]');
+    return new Set(Array.isArray(stored) ? stored.filter(id => typeof id === 'string') : []);
+  } catch { return new Set(); }
+};
+// retain acknowledgements when browser storage is unavailable
+const seenQueuedNoteIds = (() => {
+  try { return parseSeenQueuedNotes(localStorage.getItem(queuedNoteSeenKey)); }
+  catch { return new Set<string>(); }
+})();
+const queuedNoteSeenListeners = new Set<() => void>();
+// merge concurrent acknowledgements without echoing already converged storage
+const persistSeenQueuedNotes = () => {
+  try {
+    const stored = parseSeenQueuedNotes(localStorage.getItem(queuedNoteSeenKey));
+    // retain acknowledgements made by another tab before this write
+    for (const id of stored) seenQueuedNoteIds.add(id);
+    // write only when this tab knows additional acknowledgements
+    if (stored.size !== seenQueuedNoteIds.size) localStorage.setItem(queuedNoteSeenKey, JSON.stringify([...seenQueuedNoteIds]));
+  } catch { /* browser storage is optional */ }
+};
+// converge overlapping writes and refresh badges in other browser tabs
+window.addEventListener('storage', event => {
+  // ignore unrelated preferences and explicit storage removal
+  if (event.storageArea !== localStorage || event.key !== queuedNoteSeenKey || event.newValue === null) return;
+  // preserve event data even if a newer write has already reached storage
+  for (const id of parseSeenQueuedNotes(event.newValue)) seenQueuedNoteIds.add(id);
+  persistSeenQueuedNotes();
+  // notify every notes control after merging
+  queuedNoteSeenListeners.forEach(listener => listener());
+});
+// share acknowledgements with every mounted notes control
+const subscribeToQueuedNoteSeen = (listener: () => void) => {
+  queuedNoteSeenListeners.add(listener);
+  return () => { queuedNoteSeenListeners.delete(listener); };
+};
+// acknowledge only queued notes actually shown in the notes list
+const markQueuedNotesSeen = (notes: WorktreeNote[]) => {
+  const unread = notes.filter(note => note.source === 'queued-prompt' && !seenQueuedNoteIds.has(note.id));
+  // avoid duplicate writes during background refreshes
+  if (unread.length === 0) return;
+  // keep acknowledgement independent of editable titles and worktree tabs
+  for (const note of unread) seenQueuedNoteIds.add(note.id);
+  persistSeenQueuedNotes();
+  // refresh every badge sharing these notes
+  queuedNoteSeenListeners.forEach(listener => listener());
+};
 const worktreeNoteViewKey = (worktreeId: string) => `rac.note-view:${worktreeId}`;
 const getWorktreeNoteView = (worktreeId: string) => {
   const retained = retainedWorktreeNoteViews.get(worktreeId);
@@ -643,9 +693,8 @@ const voiceHoldDelayMs = 450;
 const ServerContext = createContext<ServerInfo | undefined>(undefined);
 const ServerStatusContext = createContext<Readonly<Record<string, InstanceAttention>>>({});
 const VoiceTriggerContext = createContext<{ open: () => void; active: boolean; visible: boolean; name: string } | undefined>(undefined);
-// the current dashboard generation, so an open notes fly-out or note pane can refetch its notes when the
-// server advances the dashboard after a Run — its lastRun and nextRun are REST-only, not on the dashboard
-const DashboardGenerationContext = createContext<number | undefined>(undefined);
+// refresh open schedules on dashboard advances and closed badges on queued-note additions
+const DashboardGenerationContext = createContext<{ generation?: number; notesRevision?: number; serverStartedAt?: number }>({});
 type ServerUpdateState = 'queued' | 'running' | 'complete' | 'failed';
 type ServerUpdateAvailability = { available: boolean; commitCount?: number; targetSha?: string };
 type ServerRevision = { sha: string; committedAt: string };
@@ -2485,6 +2534,16 @@ function MobileKeyIcon({ name }: { name: MobileKeyIconName }) {
 }
 
 const isWorktreeNote = (value: unknown): value is WorktreeNote => value !== null && typeof value === 'object' && typeof (value as WorktreeNote).id === 'string' && typeof (value as WorktreeNote).text === 'string' && ((value as WorktreeNote).title === undefined || typeof (value as WorktreeNote).title === 'string');
+// validate note lists consistently across mount, manual and dashboard refreshes
+const fetchWorktreeNotes = async (resourceBase: string): Promise<WorktreeNote[]> => {
+  const response = await request(`${resourceBase}/notes`);
+  // leave transport failures to the caller's foreground or background policy
+  if (!response.ok) throw new Error('notes unavailable');
+  const payload: unknown = await response.json();
+  // reject malformed collections before updating any note state
+  if (payload === null || typeof payload !== 'object' || !Array.isArray((payload as { notes?: unknown }).notes)) throw new Error('invalid notes');
+  return (payload as { notes: unknown[] }).notes.filter(isWorktreeNote);
+};
 // derive an assistant response title
 const assistantNoteTitle = (text: string) => {
   const firstLine = text.split(/\r?\n/u).map(line => line.trim()).find(Boolean) ?? 'Assistant response';
@@ -2906,8 +2965,20 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   const [scheduleRunning, setScheduleRunning] = useState(false);
   const resourceBase = persistenceResourceBase(worktreeId, agentId);
   const noteViewId = worktreeId ?? (agentId === undefined ? undefined : `agent:${agentId}`);
-  const dashboardGeneration = useContext(DashboardGenerationContext);
+  const { generation: dashboardGeneration, notesRevision, serverStartedAt } = useContext(DashboardGenerationContext);
+  // scope the in-memory revision to its server process
+  const notesRevisionKey = `${serverStartedAt ?? ''}:${notesRevision ?? ''}`;
   const seenGeneration = useRef<number | undefined>(undefined);
+  const seenNotesRevision = useRef(notesRevisionKey);
+  // order mount, manual and dashboard note loads through one request sequence
+  const noteLoadSequence = useRef(0);
+  // distinguish queue recovery from ordinary note creation without relying on titles
+  const unreadQueuedNotes = useSyncExternalStore(subscribeToQueuedNoteSeen, () => notes?.some(note => note.source === 'queued-prompt' && !seenQueuedNoteIds.has(note.id)) ?? false);
+  // opening the list acknowledges its queued notes, including arrivals while it remains open
+  useEffect(() => {
+    // background refreshes and restored note panes do not acknowledge unseen list entries
+    if (menuOpen && notes !== undefined) markQueuedNotesSeen(notes);
+  }, [menuOpen, notes]);
   const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen, { placement: 'left', boundarySelector: '.log', boundaryRootSelector: '.agent-view, .worktree-view', contentSized: true });
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
@@ -3022,9 +3093,15 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
     if (actionStatusTimer.current !== undefined) window.clearTimeout(actionStatusTimer.current);
     if (selectionCopiedTimer.current !== undefined) window.clearTimeout(selectionCopiedTimer.current);
   }, []);
+  // reset note editing and refresh state when the selected view changes
   useEffect(() => {
     const retained = noteViewId === undefined ? undefined : getWorktreeNoteView(noteViewId);
     setNotes(undefined);
+    noteLoadSequence.current += 1;
+    setLoading(false);
+    // reset refresh boundaries with the persistence context
+    seenGeneration.current = undefined;
+    seenNotesRevision.current = notesRevisionKey;
     setMenuOpen(false);
     setActiveNote(undefined);
     setExpanded(retained?.expanded ?? false);
@@ -3047,17 +3124,16 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
     setSendState('idle');
     setDirtyCount(0);
   }, [noteViewId]);
+  // load and restore the current view without allowing older reads to overwrite newer ones
   useEffect(() => {
     // require one configured or scratch persistence context
     if (resourceBase === undefined || noteViewId === undefined) return;
     let cancelled = false;
+    const sequence = ++noteLoadSequence.current;
     setLoading(true);
-    void request(`${resourceBase}/notes`).then(async response => {
-      if (!response.ok) throw new Error();
-      const payload: unknown = await response.json();
-      if (payload === null || typeof payload !== 'object' || !Array.isArray((payload as { notes?: unknown }).notes)) throw new Error();
-      const loaded = (payload as { notes: unknown[] }).notes.filter(isWorktreeNote);
-      if (cancelled) return;
+    void fetchWorktreeNotes(resourceBase).then(loaded => {
+      // discard every mutation from a superseded response
+      if (cancelled || sequence !== noteLoadSequence.current) return;
       for (const note of loaded) acknowledgedTexts.current.set(note.id, note.text);
       setNotes(loaded);
       const retained = getWorktreeNoteView(noteViewId);
@@ -3074,44 +3150,52 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
         }
       }
     }).catch(() => {
-      if (!cancelled) setSaveStatus('error');
+      // surface only the latest load's failure
+      if (!cancelled && sequence === noteLoadSequence.current) setSaveStatus('error');
     }).finally(() => {
-      if (!cancelled) setLoading(false);
+      // let the latest foreground request own its loading indicator
+      if (!cancelled && sequence === noteLoadSequence.current) setLoading(false);
     });
     return () => { cancelled = true; };
   }, [noteViewId, resourceBase]);
-  // when the dashboard advances (the server refreshes it after every Run outcome), refetch this tab's
-  // notes so a scheduled Run's lastRun and nextRun surface without a reload — but only while the fly-out
-  // or a note pane is open. The active note's live text is preserved; only its Schedule fields refresh.
+  // refresh queued-note badges even while closed; schedule-only changes wait until notes are visible
   useEffect(() => {
+    // require a current snapshot and persistence context
     if (resourceBase === undefined || noteViewId === undefined || dashboardGeneration === undefined) return;
+    // let foreground loads settle before consuming background revisions
+    if (loading) return;
     const previous = seenGeneration.current;
+    const queuedNotesChanged = notesRevisionKey !== seenNotesRevision.current;
     // establish the baseline on the first snapshot without refetching (the mount load already fetched)
-    if (previous === undefined) { seenGeneration.current = dashboardGeneration; return; }
-    if (previous === dashboardGeneration) return;
-    // while closed, leave the baseline stale so reopening the fly-out or pane catches up on the advance;
-    // consume the generation only when we actually refetch
-    if (!menuOpen && activeNote === undefined) return;
-    seenGeneration.current = dashboardGeneration;
+    if (previous === undefined && !queuedNotesChanged) { seenGeneration.current = dashboardGeneration; return; }
+    // skip snapshots whose notes have already been fetched
+    if (previous === dashboardGeneration && !queuedNotesChanged) return;
+    // keep ordinary schedule refreshes lazy without hiding new queued notes
+    if (!menuOpen && activeNote === undefined && !queuedNotesChanged) return;
     let cancelled = false;
-    void request(`${resourceBase}/notes`).then(async response => {
-      if (!response.ok) return;
-      const payload: unknown = await response.json();
-      if (payload === null || typeof payload !== 'object' || !Array.isArray((payload as { notes?: unknown }).notes)) return;
-      const loaded = (payload as { notes: unknown[] }).notes.filter(isWorktreeNote);
-      if (cancelled) return;
+    const sequence = ++noteLoadSequence.current;
+    // preserve drafts while refreshing server-owned note metadata
+    void fetchWorktreeNotes(resourceBase).then(loaded => {
+      // discard obsolete requests without consuming their refresh boundary
+      if (cancelled || sequence !== noteLoadSequence.current) return;
+      seenGeneration.current = dashboardGeneration;
+      seenNotesRevision.current = notesRevisionKey;
       setNotes(loaded);
       // refresh the open note's Schedule display without disturbing its live text or draft
       const current = activeNoteRef.current;
       const fresh = current === undefined ? undefined : loaded.find(candidate => candidate.id === current.id);
+      // keep the active editor attached to refreshed metadata
       if (current !== undefined && fresh !== undefined) {
         const updated = { ...current, schedule: fresh.schedule, nextRun: fresh.nextRun, ...(fresh.title === undefined ? {} : { title: fresh.title }) };
         activeNoteRef.current = updated;
         setActiveNote(updated);
       }
-    }).catch(() => undefined);
+    }).catch(() => undefined).finally(() => {
+      // the latest read also releases any foreground indicator it superseded
+      if (!cancelled && sequence === noteLoadSequence.current) setLoading(false);
+    });
     return () => { cancelled = true; };
-  }, [dashboardGeneration, resourceBase, noteViewId, menuOpen, activeNote]);
+  }, [dashboardGeneration, notesRevisionKey, resourceBase, noteViewId, menuOpen, activeNote, loading]);
   // let a sibling component (the queued panel's Save as note, which lives in Prompt) force this
   // note view's list to refetch, so a newly saved Note appears when the fly-out is next opened
   useEffect(() => {
@@ -3197,24 +3281,29 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
       persist(note.id, dirtyTexts.current.get(note.id) ?? draftRef.current);
     }, 500);
   };
+  // refresh on demand without publishing responses superseded by another note read
   const load = async (force = false) => {
     // require one persistence context
     if (resourceBase === undefined) return undefined;
+    // reuse the current snapshot unless explicitly refreshing
     if (!force && notes !== undefined) return notes;
+    const sequence = ++noteLoadSequence.current;
     setLoading(true);
     try {
-      const response = await request(`${resourceBase}/notes`);
-      if (!response.ok) throw new Error();
-      const payload: unknown = await response.json();
-      if (payload === null || typeof payload !== 'object' || !Array.isArray((payload as { notes?: unknown }).notes)) throw new Error();
-      const loaded = (payload as { notes: unknown[] }).notes.filter(isWorktreeNote);
+      const loaded = await fetchWorktreeNotes(resourceBase);
+      // stale reads must not change text acknowledgements or visible notes
+      if (sequence !== noteLoadSequence.current) return undefined;
       for (const note of loaded) acknowledgedTexts.current.set(note.id, note.text);
       setNotes(loaded);
       return loaded;
     } catch {
-      setSaveStatus('error');
+      // ignore failures from replaced requests
+      if (sequence === noteLoadSequence.current) setSaveStatus('error');
       return undefined;
-    } finally { setLoading(false); }
+    } finally {
+      // preserve a newer request's loading indicator
+      if (sequence === noteLoadSequence.current) setLoading(false);
+    }
   };
   // create an optionally titled note
   const create = async (text = '', title?: string) => {
@@ -3540,7 +3629,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   const notesLabel = dirtyCount === 0 ? `Notes (${noteCount})` : `Notes (${noteCount}; ${dirtyCount} unsaved)`;
   const noteMenuBusy = menuRenamingId !== undefined || menuDeletingId !== undefined || menuRunningId !== undefined;
   const control = <div className="notes-control" ref={anchorRef}>
-    <button ref={triggerRef} className={`log-control page-arrow notes-toggle${menuOpen || activeNote !== undefined ? ' active' : ''}${dirtyCount > 0 ? ' unsaved' : ''}${highlightLatestResponse ? ' latest-response-available' : ''}`} aria-label={notesLabel} title={notesLabel} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}{noteCount > 0 && <span className="saved-prompts-count notes-count" aria-hidden="true">{noteCount}</span>}</button>
+    <button ref={triggerRef} className={`log-control page-arrow notes-toggle${menuOpen || activeNote !== undefined ? ' active' : ''}${dirtyCount > 0 ? ' unsaved' : ''}${highlightLatestResponse ? ' latest-response-available' : ''}`} aria-label={notesLabel} title={`${notesLabel}${unreadQueuedNotes ? ' — unread queued prompts' : ''}`} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}{noteCount > 0 && <span className={`saved-prompts-count notes-count${unreadQueuedNotes ? ' unread' : ''}`} aria-hidden="true">{noteCount}</span>}</button>
     {menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div ref={flyoutRef} className="notes-menu" style={flyoutStyle} aria-label={worktreeId === undefined ? 'Scratch notes' : 'Worktree notes'}>
       <button className="log-control save-latest-response" disabled={!latestResponseAvailable || noteMenuBusy || menuRenameDraft !== undefined} onClick={() => {
         // save only an available response
@@ -6316,7 +6405,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       // preserve newer navigation choices
       if (shouldActivate) setActivateAgentId(replacement.id);
     }
-    const content = JSON.stringify([nextPayload.agents, nextPayload.projects, nextPayload.cleanupPending ?? 0, nextPayload.reviewTour, nextPayload.reviews]);
+    const content = JSON.stringify([nextPayload.agents, nextPayload.projects, nextPayload.cleanupPending ?? 0, nextPayload.reviewTour, nextPayload.reviews, nextPayload.notesRevision, nextPayload.serverStartedAt]);
     if (content !== dashboardContent.current || pendingCompletions.current.size > 0) {
       dashboardContent.current = content;
       setData(nextPayload);
@@ -7087,8 +7176,8 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === visibleActive} aria-controls={`panel-${index}`} tabIndex={index === visibleActive ? 0 : -1} className={`${index === visibleActive ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{kind !== undefined && <LaunchTabBadge kind={kind} sandboxed={sandboxed} />}{entry.worktree?.locked === true && <span className="tab-git-lock" aria-hidden="true" title="Git has locked this worktree">🔒</span>}{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
   })}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label launcher-symbol-label"><LauncherLabelIcon name="scratch" /><span>Scratch</span></span><LaunchSplitButton label="~ Scratch" resolution={data.scratchLaunch} compact disabled={creatingAgent} onLaunch={choice => void createAgent(choice)} /></div>{data.projects.map(launcherProject)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav><ToastRegion feedback={visibleOperationFeedback} onDismissFeedback={() => setOperationFeedback(undefined)} launchErrorMessage={launchErrorMessage} /></>;
   const consoleClass = `console${davo.enabled && voiceOpen ? ' voice-visible' : ''}`;
-  if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={dashboardGeneration}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view"><ServerSwitcher className="output-server-switcher" />{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
-  return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={dashboardGeneration}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${visibleActive}`} aria-labelledby={`tab-${visibleActive}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onNavigateWorktree={navigateToWorktree} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: item.agent.projectId })} {...(activeWorktree === undefined ? {} : { pinned: activeWorktree.pinned, onTogglePin: () => void togglePin(activeWorktree), onRenameWorktree: () => setRenameWorktreeId(activeWorktree.id), worktreeLabel: activeWorktree.label })} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} onNavigateWorktree={navigateToWorktree} onRename={() => setRenameWorktreeId(item.worktree!.id)} schedulePrefill={resolveSchedulePrefill({ projectId: item.worktree.projectId })} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}{item?.pendingLaunch && <PendingSessionCard key={item.pendingLaunch.id} launch={item.pendingLaunch} tabBar={tabBar} cleanupControl={cleanupControl} retrying={creatingAgent} onRetry={choice => { /* retain the same pending draft on retry */ void runPendingSessionLaunch(item.pendingLaunch!, choice); }} onDiscard={() => { /* discard only the selected failed placeholder */ discardPendingSessionLaunch(item.pendingLaunch!.id); }} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
+  if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view"><ServerSwitcher className="output-server-switcher" />{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
+  return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${visibleActive}`} aria-labelledby={`tab-${visibleActive}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onNavigateWorktree={navigateToWorktree} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: item.agent.projectId })} {...(activeWorktree === undefined ? {} : { pinned: activeWorktree.pinned, onTogglePin: () => void togglePin(activeWorktree), onRenameWorktree: () => setRenameWorktreeId(activeWorktree.id), worktreeLabel: activeWorktree.label })} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onTurnedOff={refresh} onOperationFeedback={showOperationFeedback} onNavigateWorktree={navigateToWorktree} onRename={() => setRenameWorktreeId(item.worktree!.id)} schedulePrefill={resolveSchedulePrefill({ projectId: item.worktree.projectId })} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}{item?.pendingLaunch && <PendingSessionCard key={item.pendingLaunch.id} launch={item.pendingLaunch} tabBar={tabBar} cleanupControl={cleanupControl} retrying={creatingAgent} onRetry={choice => { /* retain the same pending draft on retry */ void runPendingSessionLaunch(item.pendingLaunch!, choice); }} onDiscard={() => { /* discard only the selected failed placeholder */ discardPendingSessionLaunch(item.pendingLaunch!.id); }} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
 }
 
 // coordinate console session and update lifecycle

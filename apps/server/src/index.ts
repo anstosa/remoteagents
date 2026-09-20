@@ -8,7 +8,7 @@ import { DiscoveryService } from './discovery/service.js';
 import { TmuxAdapter } from './tmux/adapter.js';
 import { PushService } from './push-service.js';
 import { AgentNotificationCoordinator } from './notifications.js';
-import { DashboardUpdates, type DashboardPayload } from './dashboard/updates.js';
+import { dashboardFingerprint, DashboardUpdates, type DashboardPayload } from './dashboard/updates.js';
 import { CleanupService } from './cleanup/service.js';
 import { CleanupMonitor } from './cleanup/monitor.js';
 import { WorktreeLaunchStore } from './worktrees/store.js';
@@ -29,7 +29,7 @@ await retireBookmarks();
 const tmux = new TmuxAdapter(); const worktreeStore = new WorktreeLaunchStore(); const discovery = new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const push = new PushService(); const worktreeManagement = new WorktreeManagementService(() => config.projects); const cleanup = new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement);
 const notificationPollMs = Math.max(1_000, config.pollIntervalMs);
 const notifications = new AgentNotificationCoordinator(notification => push.notify(notification), Math.max(2_000, notificationPollMs * 2));
-const dashboardUpdates = new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.reviewTour, dashboard.reviews]));
+const dashboardUpdates = new DashboardUpdates<DashboardPayload>(dashboardFingerprint);
 // carry any legacy saved prompts into Notes before the app builds, then hand buildApp the same
 // notes service; the source file is moved aside so a second boot is a no-op. This must run AFTER
 // acquireConfig (above), which re-keys a legacy saved-prompts file onto `<projectId>:<realpath>`

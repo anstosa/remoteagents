@@ -5,7 +5,7 @@ import websocket from '@fastify/websocket';
 import staticPlugin from '@fastify/static';
 import { fileURLToPath } from 'node:url';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import type { ValidatedConfig } from './config/schema.js';
 import { AuthService, type Session } from './auth/service.js';
 import { ControlService } from './auth/control.js';
@@ -33,7 +33,7 @@ import { CommandCatalogService } from './commands/service.js';
 import { LatestViewportScheduler, PaneViewportCoordinator } from './logs/viewport-scheduler.js';
 import { boundedViewport } from './logs/viewport.js';
 import { PaneStreamRegistry, type PaneStreamProvider } from './tmux/control.js';
-import { DashboardUpdates, type DashboardPayload } from './dashboard/updates.js';
+import { dashboardFingerprint, DashboardUpdates, type DashboardPayload } from './dashboard/updates.js';
 import { WorktreeNoteService, type WorktreeNote } from './notes/service.js';
 import { promptNoteContent } from './notes/from-prompt.js';
 import { cronError, previewRuns, scheduleNextRun } from './schedule/cron.js';
@@ -100,7 +100,7 @@ const promptAttachments = (value: unknown): PromptAttachment[] | undefined => {
 };
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow(), () => paneStream.openPaneKeys()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const prompts = deps.prompts ?? new PromptService(discovery, tmux, promptHistory, queuedPrompts, (scope: string, prompt: QueuedPrompt) => drainUndelivered(scope, prompt), undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const consoleNamed = deps.consoleNamed ?? new ConsoleNamedConversationService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboard => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews])); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow(), () => paneStream.openPaneKeys()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const prompts = deps.prompts ?? new PromptService(discovery, tmux, promptHistory, queuedPrompts, (scope: string, prompt: QueuedPrompt) => drainUndelivered(scope, prompt), undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const consoleNamed = deps.consoleNamed ?? new ConsoleNamedConversationService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboardFingerprint); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
   const temporaryPreviews = deps.temporaryPreviews ?? new TemporaryPreviewService();
   // freeze the checkout identity serving this process
   const deployedRevision = serverAdmin.revision();
@@ -144,6 +144,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // retain sleeping tabs during this server session
   const sleepingWorktrees = new Set<string>();
   let accountSwitching = false;
+  let queuedPromptRevision = 0;
   const integrationConfig = structuredClone(config.integrations ?? defaultIntegrationConfig);
   const davoAvailable = integrationConfig.enabled && Boolean(process.env.RAC_OPENAI_API_KEY?.trim());
   // expose one secret-free voice settings snapshot
@@ -341,7 +342,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // Project (launched in place), and the Scratch group
     const launchResolutions = await launch.launchResolutions([scratchLaunchKey, ...worktreeViews.map(view => view.id), ...discovered.agents.flatMap(agent => agent.worktreeId === undefined ? [] : [agent.worktreeId]), ...discovered.projects.flatMap(project => project.mode === 'directory' ? [project.id] : [])]);
     const launchFor = (worktreeId: string | undefined) => launchResolutions.get(worktreeId ?? scratchLaunchKey);
-    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }), ...(launchFor(agent.worktreeId) === undefined ? {} : { launch: launchFor(agent.worktreeId) }) })), projects: discovered.projects.map(project => ({ ...project, ...(project.mode === 'directory' && launchResolutions.get(project.id) !== undefined ? { launch: launchResolutions.get(project.id) } : {}), worktrees: project.worktrees.map(worktree => ({ ...worktree, ...(sleepingWorktrees.has(worktree.id) ? { sleeping: true } : {}), ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }), ...(launchFor(worktree.id) === undefined ? {} : { launch: launchFor(worktree.id) }) })) })), cleanupPending: cleanup.pending().length, scratchLaunch: launchResolutions.get(scratchLaunchKey), reviewTour: reviewTourCapability, reviews };
+    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }), ...(launchFor(agent.worktreeId) === undefined ? {} : { launch: launchFor(agent.worktreeId) }) })), projects: discovered.projects.map(project => ({ ...project, ...(project.mode === 'directory' && launchResolutions.get(project.id) !== undefined ? { launch: launchResolutions.get(project.id) } : {}), worktrees: project.worktrees.map(worktree => ({ ...worktree, ...(sleepingWorktrees.has(worktree.id) ? { sleeping: true } : {}), ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }), ...(launchFor(worktree.id) === undefined ? {} : { launch: launchFor(worktree.id) }) })) })), cleanupPending: cleanup.pending().length, notesRevision: queuedPromptRevision, scratchLaunch: launchResolutions.get(scratchLaunchKey), reviewTour: reviewTourCapability, reviews };
   };
   // observe only agent state needed by cross-instance attention
   const localInstanceAttention = async () => {
@@ -736,22 +737,30 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // require one current agent target
     if (target === undefined) return undefined;
     const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
-    return { agent: target.agent, worktree, saveKey: worktree?.projectId ?? scratchSaveKey(target.agent.workspace) };
+    return { agent: target.agent, worktree, saveKey: worktree?.projectId ?? scratchSaveKey(target.agent.workspace), noteLabel: worktree?.label ?? (basename(target.agent.workspace) || 'workspace') };
   };
-  // map a halted queue's scope to its Notes key (the Project id, or the hashed Scratch key), so a
-  // drained prompt lands in the same note group the agent's own notes use. A Worktree scope
-  // `<projectId>:<realpath>` collapses to its Project id; a Scratch scope resolves through the live
-  // agent. A gone agent yields no key, leaving the prompt queued and the queue halted.
-  const noteKeyForQueueScope = async (scope: string): Promise<string | undefined> =>
-    scope.startsWith('agent:') ? (await agentPersistence(scope.slice('agent:'.length)))?.saveKey : projectIdOf(scope);
-  // the PromptService's drain sink: each prompt from a halted queue becomes an "Undelivered prompt"
-  // Note (attachments named in the text, not kept). A false return keeps the prompt queued and the
-  // queue halted, exactly as the retired saved-prompts hand-off did.
+  // resolve one queue scope to its note key and current operator-facing label
+  const notePersistenceForQueueScope = async (scope: string): Promise<{ saveKey: string; noteLabel: string } | undefined> => {
+    // scratch scopes still require their live agent workspace
+    if (scope.startsWith('agent:')) return await agentPersistence(scope.slice('agent:'.length));
+    const worktree = configuredWorktree(scope);
+    const fallbackPath = worktreePathOf(scope) ?? scope;
+    return { saveKey: projectIdOf(scope), noteLabel: worktree?.label ?? (basename(fallbackPath) || 'workspace') };
+  };
+  // create one queued prompt note and advance its dashboard revision
+  const createQueuedPromptNote = async (persistence: { saveKey: string; noteLabel: string }, prompt: QueuedPrompt): Promise<WorktreeNote | undefined> => {
+    const content = promptNoteContent(persistence.noteLabel, new Date(), prompt);
+    const note = await notes.createWithText(persistence.saveKey, content.title, content.text, 'queued-prompt');
+    // publish only durable queue-created notes
+    if (note !== undefined) queuedPromptRevision += 1;
+    return note;
+  };
+  // the PromptService's drain sink creates the same queued prompt notes as explicit Save
   const drainUndelivered = async (scope: string, prompt: QueuedPrompt): Promise<boolean> => {
-    const key = await noteKeyForQueueScope(scope);
-    if (key === undefined) return false;
-    const { title, text } = promptNoteContent('Undelivered prompt', new Date(), prompt);
-    return await notes.createWithText(key, title, text) !== undefined;
+    const persistence = await notePersistenceForQueueScope(scope);
+    // retain the prompt when scratch persistence disappeared
+    if (persistence === undefined) return false;
+    return await createQueuedPromptNote(persistence, prompt) !== undefined;
   };
   // resolve the observed branch for one configured worktree
   const reviewBranch = async (id: string): Promise<string | undefined> => {
@@ -1194,12 +1203,15 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (queueKey === undefined || persistence === undefined) return reply.code(404).send({ error: 'target unavailable' });
     let note: WorktreeNote | undefined;
     const result = await queuedPrompts.consumeOnSuccess(queueKey, promptId, async queued => {
-      const content = promptNoteContent('Queued prompt', new Date(), queued);
-      note = await notes.createWithText(persistence.saveKey, content.title, content.text);
+      // create before consuming the queue entry
+      note = await createQueuedPromptNote(persistence, queued);
       return note !== undefined;
     });
+    // distinguish missing prompts from note-store refusal
     if (result === 'missing') return reply.code(404).send({ error: 'queued prompt unavailable' });
     if (result === 'failed' || note === undefined) return reply.code(409).send({ error: 'unable to save queued prompt' });
+    // publish the revision without delaying a durable save response
+    void dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(201).send(note);
   });
   app.post('/api/agents/:id/cancel', async (request, reply) => { controlled(request, true); const outcome = await prompts.cancel((request.params as { id: string }).id); if (outcome === 'unavailable') return reply.code(404).send({ error: 'target unavailable' }); if (outcome === 'not-working') return reply.code(409).send({ error: 'The agent is not working; there is nothing to interrupt.' }); return reply.code(204).send(); });
