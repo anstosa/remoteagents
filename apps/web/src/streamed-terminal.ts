@@ -41,6 +41,8 @@ export interface StreamedTerminalHandle {
   sendInput: (data: string) => boolean;
   // Ask the Agent pane's derive to resend its question and metadata (on-demand).
   requestMetadata: () => void;
+  // freeze visual updates while output text is selected
+  setOutputPaused: (paused: boolean) => void;
   dispose: () => void;
 }
 
@@ -136,6 +138,16 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
   const pendingBytes: Uint8Array[] = [];
   let pendingByteCount = 0;
   const maxPendingSeedBytes = 256 * 1024;
+  type VisualFrame = Extract<PaneServerFrame, { type: 'size' | 'reseed' }>;
+  const queuedOutput: Array<Uint8Array | VisualFrame> = [];
+  let outputPaused = false;
+  let writePending = false;
+  let queuedByteCount = 0;
+  let queuedSize: Extract<VisualFrame, { type: 'size' }> | undefined;
+  let needsFreshSeed = false;
+  // match the server's byte window and bound tiny-frame overhead separately
+  const maxQueuedBytes = 256 * 1024;
+  const maxQueuedFrames = 1024;
   let reconnectTimer: number | undefined;
   let overlayFrame: number | undefined;
   let viewportFrame: number | undefined;
@@ -177,6 +189,50 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
   // grid again on each render until one carries (sendViewport drops this listener then).
   firstViewportSub = terminal.onRender(() => sendViewport());
 
+  // release buffered output at stream boundaries and after replay
+  const clearQueuedOutput = () => {
+    queuedOutput.length = 0;
+    queuedByteCount = 0;
+    queuedSize = undefined;
+    needsFreshSeed = false;
+  };
+  // retain visual events without acknowledging bytes the terminal has not consumed
+  const queueOutput = (output: Uint8Array | VisualFrame) => {
+    // retain the latest grid even if an earlier burst overflowed
+    if (!(output instanceof Uint8Array) && output.type === 'size') queuedSize = output;
+    // a new snapshot supersedes older bytes and resets server acknowledgement accounting
+    if (!(output instanceof Uint8Array) && output.type === 'reseed') {
+      queuedOutput.length = 0;
+      queuedByteCount = 0;
+      pendingBytes.length = 0;
+      pendingByteCount = 0;
+      needsFreshSeed = false;
+      // apply the latest deferred grid before the new snapshot
+      if (queuedSize !== undefined) queuedOutput.push(queuedSize);
+    }
+    const byteCount = output instanceof Uint8Array ? output.length : 0;
+    // a ready live snapshot may exceed the backlog cap and must not reconnect forever
+    let readyBytes = 0;
+    // exempt only the next immediately consumable live chunk
+    if (!outputPaused && sizeApplied) {
+      const head = queuedOutput[0];
+      // an existing byte head will reach the parser first
+      if (head instanceof Uint8Array) readyBytes = head.length;
+      // an empty queue lets the incoming chunk become the head
+      else if (queuedOutput.length === 0) readyBytes = byteCount;
+    }
+    // recover with a fresh connection rather than replaying an incomplete byte stream
+    if (needsFreshSeed || queuedByteCount + pendingByteCount + byteCount - readyBytes > maxQueuedBytes || queuedOutput.length + pendingBytes.length >= maxQueuedFrames) {
+      queuedOutput.length = 0;
+      queuedByteCount = 0;
+      needsFreshSeed = true;
+    } else {
+      queuedOutput.push(output);
+      queuedByteCount += byteCount;
+    }
+    drainOutput();
+  };
+
   // Every byte — the seed included — goes through the hooked parser; the seed is not
   // SGR-only. Ack the consumed count from the write callback so the server's
   // drop-while-behind flow control can advance.
@@ -190,14 +246,36 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
       awaitingSeed = false;
       hideStatus();
     }
-    terminal.write(bytes, () => {
+    writePending = true;
+    const source = connection;
+    // gate at the parser task boundary before handing xterm any mutable output
+    terminal.write('', () => {
+      // an unmounted terminal must not accept another write
       if (disposed) return;
-      connection?.send({ type: 'ack', bytes: bytes.length });
-      scheduleOverlayRender();
-      syncFollowState();
-      // Uncover once the fresh seed has painted, so the first frame the operator sees is
-      // already populated rather than an empty grid.
-      if (wasSeed) revealTerminal();
+      // selection or a replacement snapshot can supersede a scheduled write
+      if (outputPaused || connection !== source || queuedOutput[0] !== bytes) {
+        writePending = false;
+        // a postponed first seed must still uncover the terminal when eventually parsed
+        if (wasSeed && connection === source && queuedOutput[0] === bytes) awaitingSeed = true;
+        queueMicrotask(drainOutput);
+        return;
+      }
+      queuedOutput.shift();
+      queuedByteCount -= bytes.length;
+      // xterm drains callback-enqueued bytes in this parser task without an input-event gap
+      terminal.write(bytes, () => {
+        writePending = false;
+        // ignore completion after unmount
+        if (disposed) return;
+        // acknowledge only the connection that supplied these bytes
+        if (connection === source) source?.send({ type: 'ack', bytes: bytes.length });
+        scheduleOverlayRender();
+        syncFollowState();
+        // uncover the first populated frame
+        if (wasSeed) revealTerminal();
+        // let xterm finish its parser turn before scheduling the next visual event
+        queueMicrotask(drainOutput);
+      });
     });
   };
 
@@ -208,8 +286,9 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
     if (!sizeApplied) {
       sizeApplied = true;
       // Flush anything that arrived before the first size, in order, behind it.
+      queuedOutput.unshift(...pendingBytes.splice(0));
+      queuedByteCount += pendingByteCount;
       pendingByteCount = 0;
-      for (const chunk of pendingBytes.splice(0)) writeBytes(chunk);
     }
     scheduleOverlayRender();
   };
@@ -238,11 +317,8 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
 
   const handleFrame = (frame: PaneServerFrame) => {
     switch (frame.type) {
-      case 'size': applySize(frame.cols, frame.rows); break;
-      // Await a fresh seed: the grid is unchanged, so the next bytes are the fresh seed
-      // (which clears the scrollback as it lands) followed by live output. Discard any
-      // bytes still buffered from before the first size so they cannot flush stale.
-      case 'reseed': awaitingSeed = true; pendingBytes.length = 0; pendingByteCount = 0; break;
+      // serialize visual control frames with bytes so resizing cannot overtake parsing
+      case 'size': case 'reseed': queueOutput(frame); break;
       // A pane that ended closes a Terminal panel (its onExit); the Agent panel supplies
       // none and shows the status + reconnects on a fresh control client, as before.
       case 'exit': if (options.onExit) options.onExit(frame.reason); else handleDisconnect(frame.reason); break;
@@ -253,6 +329,8 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
 
   function subscribe(): void {
     if (disposed) return;
+    // a replacement stream supplies its own size and seed
+    clearQueuedOutput();
     sizeApplied = false;
     pendingBytes.length = 0;
     pendingByteCount = 0;
@@ -260,16 +338,81 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
     awaitingSeed = true;
     connection = options.connect({
       onOpen: () => sendViewport(),
-      onBytes: bytes => {
-        if (sizeApplied) { writeBytes(bytes); return; }
-        if (pendingByteCount + bytes.length > maxPendingSeedBytes) return;
-        pendingBytes.push(bytes);
-        pendingByteCount += bytes.length;
-      },
+      onBytes: queueOutput,
       onFrame: handleFrame,
       onClose: info => handleDisconnect(`Reconnecting… (${info.code})`)
     });
   }
+
+  // consume one byte chunk at a time with control frames between completed writes
+  const drainOutput = () => {
+    // pause before parsing and wait for the previous write to finish
+    if (disposed || outputPaused || writePending) return;
+    // an incomplete stream must restart before rendering any more bytes
+    if (needsFreshSeed) {
+      handleDisconnect('Refreshing output…');
+      // refresh immediately rather than waiting for the normal reconnect delay
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+      reconnectTimer = undefined;
+      subscribe();
+      return;
+    }
+    // synchronous control frames may precede the next asynchronous byte write
+    while (queuedOutput.length > 0) {
+      const event = queuedOutput[0]!;
+      // retain the head until its parser gate accepts the write
+      if (event instanceof Uint8Array && sizeApplied) {
+        let byteCount = event.length;
+        let chunkCount = 1;
+        // combine adjacent bytes without crossing a resize or snapshot boundary
+        while (queuedOutput[chunkCount] instanceof Uint8Array) {
+          byteCount += (queuedOutput[chunkCount] as Uint8Array).length;
+          chunkCount += 1;
+        }
+        // amortize parser scheduling when a selected pane accumulated many small frames
+        if (chunkCount > 1) {
+          const bytes = new Uint8Array(byteCount);
+          let offset = 0;
+          // preserve the exact byte order within the combined chunk
+          for (const chunk of queuedOutput.splice(0, chunkCount) as Uint8Array[]) {
+            bytes.set(chunk, offset);
+            offset += chunk.length;
+          }
+          queuedOutput.unshift(bytes);
+        }
+        writeBytes(queuedOutput[0] as Uint8Array);
+        return;
+      }
+      queuedOutput.shift();
+      // preserve the existing size-before-seed boundary for unexpected early bytes
+      if (event instanceof Uint8Array) {
+        queuedByteCount -= event.length;
+        // keep the pre-size buffer bounded
+        if (pendingByteCount + event.length > maxPendingSeedBytes) continue;
+        pendingBytes.push(event);
+        pendingByteCount += event.length;
+      } else if (event.type === 'size') {
+        applySize(event.cols, event.rows);
+      } else {
+        awaitingSeed = true;
+        pendingBytes.length = 0;
+        pendingByteCount = 0;
+      }
+    }
+  };
+
+  // resume the serialized stream when both native and terminal selections clear
+  const setOutputPaused = (paused: boolean) => {
+    // ignore repeated selection notifications and calls after unmount
+    if (disposed || outputPaused === paused) return;
+    outputPaused = paused;
+    // a large live seed awaiting its parser gate cannot become an unbounded paused backlog
+    if (paused && queuedByteCount + pendingByteCount > maxQueuedBytes) {
+      clearQueuedOutput();
+      needsFreshSeed = true;
+    }
+    drainOutput();
+  };
 
   // Send bytes to the pane, split past the frame cap into byte-bounded frames; the
   // server replays them in order, so a boundary mid-UTF-8 is harmless.
@@ -345,9 +488,11 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
     focus: () => terminal.focus(),
     sendInput,
     requestMetadata: () => connection?.send({ type: 'metadata' }),
+    setOutputPaused,
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      clearQueuedOutput();
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
       if (overlayFrame !== undefined) window.cancelAnimationFrame(overlayFrame);
       if (viewportFrame !== undefined) window.cancelAnimationFrame(viewportFrame);

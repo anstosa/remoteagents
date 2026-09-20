@@ -4897,9 +4897,20 @@ function Log({ id, agentWorking = false, worktreeId, branch, gitStatus, gitPrSta
     };
     const copyOutputSelection = async (value: string) => { await copyText(value); if (!disposed) flashCopiedOutputSelection(); };
     copyOutputSelectionRef.current = copyOutputSelection;
+    let nativeSelectionWasActive = false;
+    let mouseSelectionGesture = false;
+    // freeze streamed output for either terminal or native text selection
     const syncSelectionMode = () => {
       const nativeActive = nativeSelectionActive();
+      // clear xterm's mirror when the browser selection leaves output
+      if (!nativeActive && nativeSelectionWasActive) {
+        nativeSelectionWasActive = false;
+        // let the nested xterm event finish the state transition
+        if (terminal.hasSelection()) { terminal.clearSelection(); return; }
+      }
+      nativeSelectionWasActive = nativeActive;
       const hasTerminalSelection = terminal.hasSelection();
+      handle.setOutputPaused(mouseSelectionGesture || hasTerminalSelection || nativeActive);
       setSelectionActive(hasTerminalSelection || nativeActive);
       if (nativeActive) {
         const selection = window.getSelection();
@@ -4918,6 +4929,32 @@ function Log({ id, agentWorking = false, worktreeId, branch, gitStatus, gitPrSta
       const selectionBottom = screenBounds.top + viewportRow * (screenBounds.height / terminal.rows);
       setSelectionToolbar({ text, top: Math.min(window.innerHeight - 48, selectionBottom + 8) });
     };
+    // freeze before xterm commits desktop drag selections on mouseup
+    const beginOutputSelection = (event: PointerEvent) => {
+      // leave touch scrolling, secondary clicks, and scrollbar drags alone
+      if (event.pointerType !== 'mouse' || event.button !== 0 || !(event.target instanceof Element) || !event.target.closest('.xterm-screen')) return;
+      // mouse-reporting applications select only with xterm's platform override
+      if (terminal.modes.mouseTrackingMode !== 'none') {
+        const forceSelection = navigator.platform.startsWith('Mac')
+          ? event.altKey && terminal.options.macOptionClickForcesSelection
+          : event.shiftKey;
+        // preserve live application mouse gestures
+        if (!forceSelection) return;
+      }
+      mouseSelectionGesture = true;
+      handle.setOutputPaused(true);
+    };
+    // keep completed selections frozen but release empty or cancelled drags
+    const endOutputSelection = () => {
+      // ignore unrelated pointer releases and window focus changes
+      if (!mouseSelectionGesture) return;
+      mouseSelectionGesture = false;
+      syncSelectionMode();
+    };
+    canvas.current!.addEventListener('pointerdown', beginOutputSelection, true);
+    window.addEventListener('pointerup', endOutputSelection, true);
+    window.addEventListener('pointercancel', endOutputSelection, true);
+    window.addEventListener('blur', endOutputSelection);
     const selectionSub = terminal.onSelectionChange(syncSelectionMode);
     document.addEventListener('selectionchange', syncSelectionMode);
     const nativeOutputCopied = () => { if (nativeSelectionActive()) flashCopiedOutputSelection(); };
@@ -4966,6 +5003,10 @@ function Log({ id, agentWorking = false, worktreeId, branch, gitStatus, gitPrSta
       if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer);
       renderSub.dispose();
       selectionSub.dispose();
+      canvas.current?.removeEventListener('pointerdown', beginOutputSelection, true);
+      window.removeEventListener('pointerup', endOutputSelection, true);
+      window.removeEventListener('pointercancel', endOutputSelection, true);
+      window.removeEventListener('blur', endOutputSelection);
       canvas.current?.removeEventListener('focusin', onFocusIn);
       canvas.current?.removeEventListener('focusout', onFocusOut);
       document.removeEventListener('selectionchange', syncSelectionMode);

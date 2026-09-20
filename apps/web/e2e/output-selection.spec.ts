@@ -1,5 +1,5 @@
-import { expect, test } from '@playwright/test';
-import { installPaneMock, seedPaneSize, pushBytes } from './pane-stream-mock.js';
+import { expect, test, type Locator, type Page } from '@playwright/test';
+import { installPaneMock, paneAckTotal, seedPaneSize, pushBytes } from './pane-stream-mock.js';
 
 // The selection toolbar over the streamed pane: selecting output (a terminal drag on
 // desktop, a native long-press selection on a phone) reveals the create-note / append /
@@ -7,19 +7,39 @@ import { installPaneMock, seedPaneSize, pushBytes } from './pane-stream-mock.js'
 // composer keeps its own copy shortcuts. The component owns the terminal, touch scroll
 // and tap-to-focus; this asserts the app wiring around a pane selection.
 
+// serve the minimal agent panel contract for selection-only regressions
+const routeSelectionApi = (page: Page) => page.route('**/api/**', async route => {
+  const request = route.request();
+  const url = new URL(request.url());
+  // authenticate the test console
+  if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+  // expose one selectable agent
+  if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/workspace', title: 'Ready', queuedPromptCount: 0 }], projects: [] } });
+  // disable optional push setup
+  if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+  // authorize the mocked pane
+  if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'pane-ticket' } });
+  // return no saved prompts
+  if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
+  // return no prompt history
+  if (url.pathname === '/api/agents/agent-1/prompt-history') return route.fulfill({ json: { prompts: [] } });
+  return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+});
+
+// create the browser range left by a native long press
+const selectNativeRange = (row: Locator, start: number, end: number) => row.evaluate((element, offsets) => {
+  const range = document.createRange();
+  range.setStart(element.firstChild!, offsets.start);
+  range.setEnd(element.firstChild!, offsets.end);
+  const selection = window.getSelection()!;
+  selection.removeAllRanges();
+  selection.addRange(range);
+  document.dispatchEvent(new Event('selectionchange'));
+}, { start, end });
+
 test('shows selection actions for a terminal drag selection and adds to the prompt', async ({ page }) => {
   await installPaneMock(page);
-  await page.route('**/api/**', async route => {
-    const request = route.request();
-    const url = new URL(request.url());
-    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/workspace', title: 'Ready', queuedPromptCount: 0 }], projects: [] } });
-    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
-    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'pane-ticket' } });
-    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
-    if (url.pathname === '/api/agents/agent-1/prompt-history') return route.fulfill({ json: { prompts: [] } });
-    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
-  });
+  await routeSelectionApi(page);
 
   await page.goto('/');
   await seedPaneSize(page, 'agent-1', 80, 24);
@@ -103,17 +123,8 @@ test('a native output selection creates and appends notes, copies, and guards th
   // exactly as a native long-press would leave the browser range.
   const selectableRow = page.locator('.log-canvas .xterm-accessibility-tree [role="listitem"]', { hasText: 'Prefix text before Selectable output text' });
   await expect(selectableRow).toHaveText('Prefix text before Selectable output text');
-  const selectWord = () => selectableRow.evaluate(row => {
-    const text = row.firstChild!;
-    const start = 'Prefix text before '.length;
-    const range = document.createRange();
-    range.setStart(text, start);
-    range.setEnd(text, start + 'Selectable'.length);
-    const selection = window.getSelection()!;
-    selection.removeAllRanges();
-    selection.addRange(range);
-    document.dispatchEvent(new Event('selectionchange'));
-  });
+  // restore the same word after note and prompt actions
+  const selectWord = () => selectNativeRange(selectableRow, 'Prefix text before '.length, 'Prefix text before Selectable'.length);
   await selectWord();
   await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Selectable');
 
@@ -178,6 +189,185 @@ test('a native output selection creates and appends notes, copies, and guards th
   await page.keyboard.press('Control+Shift+C');
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('Selectable');
   await expect(log).toHaveClass(/selection-copied/u);
+
+  await context.close();
+});
+
+// exercise platform-specific xterm selection notification paths
+for (const platform of ['Linux x86_64', 'Win32', 'MacIntel']) {
+  // preserve terminal selection while live output waits behind it
+  test(`freezes desktop output while a terminal selection is active on ${platform}`, async ({ context, page }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    // choose xterm's platform behavior before loading the application
+    await page.addInitScript(value => Object.defineProperty(navigator, 'platform', { get: () => value }), platform);
+    await installPaneMock(page);
+    await routeSelectionApi(page);
+    await page.goto('/');
+    await seedPaneSize(page, 'agent-1', 80, 24);
+    await pushBytes(page, 'agent-1', `${'\r\n'.repeat(8)}Freeze selected output`);
+    await expect(page.locator('.log-status')).toHaveText('Live');
+
+    const selectedRow = page.locator('.log-canvas .xterm-rows > div', { hasText: 'Freeze selected output' });
+    await expect(selectedRow).toBeVisible();
+    // settle focus changes before beginning the drag
+    await page.locator('.log-canvas .xterm-helper-textarea').focus();
+    await page.waitForTimeout(100);
+    const selectedRowBounds = await selectedRow.boundingBox();
+    const selectedY = selectedRowBounds!.y + selectedRowBounds!.height / 2;
+    await page.mouse.move(selectedRowBounds!.x + 1, selectedY);
+    await page.mouse.down();
+    await page.mouse.move(selectedRowBounds!.x + selectedRowBounds!.width / 8, selectedY, { steps: 4 });
+    const renderedBeforeMouseUp = await selectedRow.textContent();
+    const acknowledgedBeforeMouseUp = await paneAckTotal(page, 'agent-1');
+    await pushBytes(page, 'agent-1', '\r\x1b[2Karrived during drag');
+    // give the real parser a chance to overwrite the row while the mouse stays down
+    await page.waitForTimeout(100);
+    await expect(selectedRow).toHaveText(renderedBeforeMouseUp!);
+    expect(await paneAckTotal(page, 'agent-1')).toBe(acknowledgedBeforeMouseUp);
+    await page.mouse.up();
+
+    const toolbar = page.getByRole('toolbar', { name: 'Output selection actions' });
+    await expect(page.locator('.log')).toHaveClass(/selection-active/u);
+    await expect(toolbar).toBeVisible();
+    await toolbar.getByRole('button', { name: 'Copy' }).click();
+    // read the first copied selection
+    const selectedText = await page.evaluate(() => navigator.clipboard.readText());
+    expect(selectedText).not.toBe('');
+    const renderedText = await selectedRow.textContent();
+    const acknowledgedBeforePause = await paneAckTotal(page, 'agent-1');
+
+    await pushBytes(page, 'agent-1', '\r\x1b[2Kbuffered first');
+    await pushBytes(page, 'agent-1', ' + second\r\n');
+    await toolbar.getByRole('button', { name: 'Copy' }).click();
+
+    await expect(selectedRow).toHaveText(renderedText!);
+    // read the selection copied after output arrived
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(selectedText);
+    expect(await paneAckTotal(page, 'agent-1')).toBe(acknowledgedBeforePause);
+
+    await page.mouse.click(selectedRowBounds!.x + selectedRowBounds!.width * .75, selectedY);
+    await expect(toolbar).toBeHidden();
+    await expect(page.locator('.log-canvas .xterm-rows > div', { hasText: 'buffered first + second' })).toBeVisible();
+    // wait for the ordered flush to be acknowledged
+    await expect.poll(() => paneAckTotal(page, 'agent-1')).toBeGreaterThan(acknowledgedBeforePause);
+  });
+}
+
+// release temporary pauses even when a mouse gesture never creates selected text
+for (const ending of ['pointerup', 'pointercancel', 'blur']) {
+  // exercise each gesture completion path without an existing selection
+  test(`resumes output after an empty selection gesture ends with ${ending}`, async ({ page }) => {
+    await installPaneMock(page);
+    await routeSelectionApi(page);
+    await page.goto('/');
+    await seedPaneSize(page, 'agent-1', 80, 24);
+    await pushBytes(page, 'agent-1', `${'\r\n'.repeat(8)}Original output`);
+    const row = page.locator('.log-canvas .xterm-rows > div', { hasText: 'Original output' });
+    await expect(row).toBeVisible();
+    const bounds = (await row.boundingBox())!;
+    await page.mouse.move(bounds.x + 1, bounds.y + bounds.height / 2);
+    await page.mouse.down();
+    await pushBytes(page, 'agent-1', '\r\x1b[2KReleased output');
+    // finish normally or reproduce the browser's cancellation/focus-loss signal
+    if (ending === 'pointerup') await page.mouse.up();
+    else await page.evaluate(type => window.dispatchEvent(new Event(type)), ending);
+    await expect(page.locator('.log-canvas .xterm-rows > div', { hasText: 'Released output' })).toBeVisible();
+    await expect(page.getByRole('toolbar', { name: 'Output selection actions' })).toBeHidden();
+    await page.mouse.up();
+  });
+}
+
+// leave application-owned mouse gestures live rather than treating them as selection
+test('keeps output live during a mouse-reporting drag', async ({ page }) => {
+  await installPaneMock(page);
+  await routeSelectionApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await pushBytes(page, 'agent-1', `${'\r\n'.repeat(8)}Mouse reporting\x1b[?1000h`);
+  const row = page.locator('.log-canvas .xterm-rows > div', { hasText: 'Mouse reporting' });
+  await expect(row).toBeVisible();
+  const bounds = (await row.boundingBox())!;
+  await page.mouse.move(bounds.x + 1, bounds.y + bounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + 90, bounds.y + bounds.height / 2);
+  await pushBytes(page, 'agent-1', '\r\x1b[2KLive application output');
+  await expect(page.locator('.log-canvas .xterm-rows > div', { hasText: 'Live application output' })).toBeVisible();
+  await page.mouse.up();
+  await expect(page.getByRole('toolbar', { name: 'Output selection actions' })).toBeHidden();
+});
+
+// preserve native phone selection while live output waits behind it
+test('freezes coarse-pointer output while a native selection is active', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({
+    baseURL,
+    hasTouch: true,
+    isMobile: true,
+    userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36',
+    viewport: { width: 428, height: 952 }
+  });
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const page = await context.newPage();
+  await installPaneMock(page);
+  await routeSelectionApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await pushBytes(page, 'agent-1', 'Freeze native selected output');
+  expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+
+  const selectedRow = page.locator('.log-canvas .xterm-accessibility-tree [role="listitem"]', { hasText: 'Freeze native selected output' });
+  await expect(selectedRow).toHaveText('Freeze native selected output');
+  await selectNativeRange(selectedRow, 0, 'Freeze'.length);
+
+  const toolbar = page.getByRole('toolbar', { name: 'Output selection actions' });
+  await expect(page.locator('.log')).toHaveClass(/selection-active/u);
+  await expect(toolbar).toBeVisible();
+  await toolbar.getByRole('button', { name: 'Copy' }).click();
+  // read the native selection before output arrives
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('Freeze');
+  const acknowledgedBeforePause = await paneAckTotal(page, 'agent-1');
+
+  await pushBytes(page, 'agent-1', '\r\x1b[2Kbuffered first');
+  await pushBytes(page, 'agent-1', ' + second\r\n');
+  await toolbar.getByRole('button', { name: 'Copy' }).click();
+
+  expect(await paneAckTotal(page, 'agent-1')).toBe(acknowledgedBeforePause);
+  await expect(selectedRow).toHaveText('Freeze native selected output');
+  // read the live browser selection after output arrives
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Freeze');
+  // read the copy action after output arrives
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('Freeze');
+
+  // clear the browser range without relying on xterm's inside-row collapse
+  await page.evaluate(() => {
+    window.getSelection()?.removeAllRanges();
+    document.dispatchEvent(new Event('selectionchange'));
+  });
+  await expect(toolbar).toBeHidden();
+  const flushedRow = page.locator('.log-canvas .xterm-accessibility-tree [role="listitem"]', { hasText: 'buffered first + second' });
+  await expect(flushedRow).toBeVisible();
+  // wait for the ordered flush to be acknowledged
+  await expect.poll(() => paneAckTotal(page, 'agent-1')).toBeGreaterThan(acknowledgedBeforePause);
+
+  // restore native selection after the first flush
+  await selectNativeRange(flushedRow, 0, 'buffered'.length);
+  await expect(toolbar).toBeVisible();
+  // read the restored native selection
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('buffered');
+  const acknowledgedBeforeOutsideClear = await paneAckTotal(page, 'agent-1');
+  await pushBytes(page, 'agent-1', '\x1b[1A\r\x1b[2Koutside clear released\r\n');
+  expect(await paneAckTotal(page, 'agent-1')).toBe(acknowledgedBeforeOutsideClear);
+  await expect(flushedRow).toHaveText('buffered first + second');
+
+  const prompt = page.getByRole('textbox', { name: 'Prompt' });
+  // move the collapsed browser selection outside the output
+  await prompt.evaluate(element => {
+    window.getSelection()?.collapse(element, 0);
+    document.dispatchEvent(new Event('selectionchange'));
+  });
+  await expect(toolbar).toBeHidden();
+  await expect(page.locator('.log-canvas .xterm-accessibility-tree [role="listitem"]', { hasText: 'outside clear released' })).toBeVisible();
+  // wait for the outside clear to release output
+  await expect.poll(() => paneAckTotal(page, 'agent-1')).toBeGreaterThan(acknowledgedBeforeOutsideClear);
 
   await context.close();
 });

@@ -121,6 +121,137 @@ test('acks the bytes it consumes', async ({ page }) => {
   await expect.poll(() => drive(page, 'ackedBytes')).toContain(5);
 });
 
+// freeze visual events while keeping nonvisual pane notifications live
+test('selection pause defers bytes, sizes, and acknowledgements until replay', async ({ page }) => {
+  await setup(page);
+  await drive(page, 'pushSize', 40, 10);
+  await drive(page, 'pushBytes', 'ORIGINAL');
+  await expect.poll(() => drive(page, 'screenText')).toContain('ORIGINAL');
+  const acknowledgements = await drive<number[]>(page, 'ackedBytes');
+  await drive(page, 'setOutputPaused', true);
+  await drive(page, 'pushSize', 30, 8);
+  await drive(page, 'pushBytes', '\r\x1b[2KBUFFERED');
+  await drive(page, 'pushBytes', '-AFTER');
+  await drive(page, 'pushFrame', { type: 'question', question: { prompt: 'Still live' } });
+  await expect.poll(() => drive(page, 'questionsSeen')).toContainEqual({ prompt: 'Still live' });
+  await page.waitForTimeout(100);
+  expect(await drive(page, 'cols')).toBe(40);
+  expect(await drive<string>(page, 'screenText')).toContain('ORIGINAL');
+  expect(await drive<string>(page, 'screenText')).not.toContain('BUFFERED');
+  expect(await drive(page, 'ackedBytes')).toEqual(acknowledgements);
+  await drive(page, 'setOutputPaused', false);
+  await expect.poll(() => drive(page, 'screenText')).toContain('BUFFERED-AFTER');
+  expect(await drive(page, 'cols')).toBe(30);
+  expect(await drive(page, 'rows')).toBe(8);
+  await expect.poll(() => drive(page, 'ackedBytes')).toEqual([...acknowledgements, '\r\x1b[2KBUFFERED-AFTER'.length]);
+});
+
+// pause before xterm's asynchronous parser consumes an already received chunk
+test('selection pause gates a write already scheduled for parsing', async ({ page }) => {
+  await setup(page);
+  await drive(page, 'pushSize', 40, 10);
+  await drive(page, 'pushBytes', 'ORIGINAL');
+  await expect.poll(() => drive(page, 'screenText')).toContain('ORIGINAL');
+  // deliver output and start selection within the same browser task
+  await page.evaluate(async () => {
+    const fixture = await import('/e2e/streamed-terminal-fixture.ts');
+    fixture.pushBytes('\r\x1b[2KBUFFERED');
+    fixture.setOutputPaused(true);
+  });
+  await page.waitForTimeout(100);
+  expect(await drive<string>(page, 'screenText')).toContain('ORIGINAL');
+  expect(await drive<string>(page, 'screenText')).not.toContain('BUFFERED');
+  await drive(page, 'setOutputPaused', false);
+  await expect.poll(() => drive(page, 'screenText')).toContain('BUFFERED');
+});
+
+// parse bytes at their original grid before applying the following resize
+test('selection replay preserves bytes-before-size ordering', async ({ page }) => {
+  await setup(page);
+  await drive(page, 'pushSize', 40, 10);
+  await drive(page, 'pushBytes', 'ORIGINAL');
+  await expect.poll(() => drive(page, 'screenText')).toContain('ORIGINAL');
+  await drive(page, 'setOutputPaused', true);
+  await drive(page, 'pushBytes', '\r\x1b[2K\x1b[1;80HX');
+  await drive(page, 'pushSize', 80, 10);
+  await drive(page, 'pushBytes', '\x1b[2;1HY');
+  await drive(page, 'setOutputPaused', false);
+  // inspect the complete row so a wider-grid cursor cannot match as a suffix
+  await expect.poll(async () => (await drive<string>(page, 'screenText')).split('\n').slice(0, 2)).toEqual([`${' '.repeat(39)}X`, 'Y']);
+  expect(await drive(page, 'cols')).toBe(80);
+});
+
+// discard obsolete bytes when the server replaces its snapshot during selection
+test('a paused reseed supersedes queued output without losing the latest grid', async ({ page }) => {
+  await setup(page);
+  await drive(page, 'pushSize', 40, 10);
+  await drive(page, 'pushBytes', 'ORIGINAL');
+  await expect.poll(() => drive(page, 'screenText')).toContain('ORIGINAL');
+  const acknowledgements = await drive<number[]>(page, 'ackedBytes');
+  await drive(page, 'setOutputPaused', true);
+  await drive(page, 'pushBytes', 'DISCARDED-PRE-SEED');
+  await drive(page, 'pushSize', 30, 8);
+  await drive(page, 'pushReseed');
+  await drive(page, 'pushBytes', 'FRESH-SEED');
+  await drive(page, 'pushBytes', '-LIVE');
+  await page.waitForTimeout(100);
+  expect(await drive<string>(page, 'screenText')).toContain('ORIGINAL');
+  expect(await drive(page, 'ackedBytes')).toEqual(acknowledgements);
+  await drive(page, 'setOutputPaused', false);
+  await expect.poll(() => drive(page, 'screenText')).toContain('FRESH-SEED-LIVE');
+  expect(await drive<string>(page, 'screenText')).not.toContain('ORIGINAL');
+  expect(await drive<string>(page, 'screenText')).not.toContain('DISCARDED');
+  expect(await drive(page, 'cols')).toBe(30);
+  await expect.poll(() => drive(page, 'ackedBytes')).toEqual([...acknowledgements, 'FRESH-SEED-LIVE'.length]);
+});
+
+// an oversized burst must not force selection to end or replay a truncated stream
+test('paused output overflow refreshes from a new seed after selection ends', async ({ page }) => {
+  await setup(page);
+  await drive(page, 'pushSize', 40, 10);
+  await drive(page, 'pushBytes', 'ORIGINAL');
+  await expect.poll(() => drive(page, 'screenText')).toContain('ORIGINAL');
+  const acknowledgements = await drive<number[]>(page, 'ackedBytes');
+  await drive(page, 'setOutputPaused', true);
+  await drive(page, 'pushBytes', 'x'.repeat(300 * 1024));
+  await drive(page, 'pushBytes', 'INCOMPLETE-TAIL');
+  await page.waitForTimeout(100);
+  expect(await drive<string>(page, 'screenText')).toContain('ORIGINAL');
+  expect(await drive(page, 'ackedBytes')).toEqual(acknowledgements);
+  expect(await drive(page, 'connectCalls')).toBe(1);
+  await drive(page, 'setOutputPaused', false);
+  await expect.poll(() => drive(page, 'connectCalls')).toBe(2);
+  await drive(page, 'pushSize', 40, 10);
+  // a fresh live snapshot can itself exceed the selection backlog cap
+  await drive(page, 'pushBytes', `${' \r'.repeat(150 * 1024)}RECOVERED`);
+  await expect.poll(() => drive(page, 'screenText')).toContain('RECOVERED');
+  expect(await drive<string>(page, 'screenText')).not.toContain('ORIGINAL');
+  expect(await drive<string>(page, 'screenText')).not.toContain('INCOMPLETE-TAIL');
+  expect(await drive(page, 'connectCalls')).toBe(2);
+});
+
+// reconnects can refresh the pending snapshot without disturbing the frozen display
+test('selection remains frozen across a reconnect until the replacement seed is released', async ({ page }) => {
+  await setup(page, { reconnectDelayMs: 10 });
+  await drive(page, 'pushSize', 40, 10);
+  await drive(page, 'pushBytes', 'ORIGINAL');
+  await expect.poll(() => drive(page, 'screenText')).toContain('ORIGINAL');
+  await drive(page, 'setOutputPaused', true);
+  await drive(page, 'pushBytes', 'STALE-QUEUED');
+  await drive(page, 'pushClose', 1006, 'lost');
+  await expect.poll(() => drive(page, 'connectCalls')).toBe(2);
+  await drive(page, 'pushSize', 30, 8);
+  await drive(page, 'pushBytes', 'RECONNECTED');
+  await page.waitForTimeout(100);
+  expect(await drive<string>(page, 'screenText')).toContain('ORIGINAL');
+  expect(await drive<string>(page, 'screenText')).not.toContain('RECONNECTED');
+  await drive(page, 'setOutputPaused', false);
+  await expect.poll(() => drive(page, 'screenText')).toContain('RECONNECTED');
+  expect(await drive<string>(page, 'screenText')).not.toContain('ORIGINAL');
+  expect(await drive<string>(page, 'screenText')).not.toContain('STALE-QUEUED');
+  expect(await drive(page, 'cols')).toBe(30);
+});
+
 test('typed keys are sent as input frames through the panel modifier transform', async ({ page }) => {
   await setup(page, { upperCaseInput: true });
   await drive(page, 'pushSize', 40, 10);

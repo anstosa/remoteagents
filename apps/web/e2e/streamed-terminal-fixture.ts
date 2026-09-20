@@ -77,6 +77,8 @@ export const connectCalls = () => connectCount;
 export const questionsSeen = () => questions;
 export const sendInputRaw = (text: string) => handle!.sendInput(text);
 export const requestMetadata = () => handle!.requestMetadata();
+// mirror the app's selection-mode signal without replacing the terminal renderer
+export const setOutputPaused = (paused: boolean) => handle!.setOutputPaused(paused);
 export const scrollUp = (lines: number) => terminal().scrollLines(-lines);
 export const jumpHidden = () => root?.querySelector<HTMLButtonElement>('.streamed-terminal-jump')?.hidden ?? true;
 export const clickJump = () => root?.querySelector<HTMLButtonElement>('.streamed-terminal-jump')?.click();
