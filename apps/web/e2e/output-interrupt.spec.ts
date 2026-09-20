@@ -112,3 +112,43 @@ test('the mobile terminal keys drive the pane, including the Ctrl latch', async 
   await page.getByRole('button', { name: 'Ctrl+C', exact: true }).click();
   await expect.poll(() => paneInputText(page, 'agent-1')).toBe('\x03\x1b\x03');
 });
+
+// preserve the current mode for desktop clicks and mobile taps
+for (const touch of [false, true]) {
+  // give touch activation a real touch-capable browser context
+  test.describe(`jump to latest with ${touch ? 'touch' : 'mouse'}`, () => {
+    test.use({ hasTouch: touch, viewport: touch ? { width: 390, height: 844 } : { width: 1400, height: 900 } });
+    // cover both reading/composer and terminal-input modes
+    for (const inputActive of [false, true]) {
+      // jump changes scroll position without moving keyboard focus or changing modes
+      test(`preserves ${inputActive ? 'terminal input' : 'reading'} mode`, async ({ page }) => {
+        await installPaneMock(page);
+        await routeApi(page);
+        await page.goto('/');
+        await seedPaneSize(page, 'agent-1', 80, 24);
+        // create enough history to expose the jump control
+        await pushBytes(page, 'agent-1', Array.from({ length: 160 }, (_, index) => `output row ${index}\r\n`).join(''));
+        const log = page.locator('.log');
+        const focusTarget = inputActive ? log.locator('.xterm-helper-textarea') : page.getByRole('textbox', { name: 'Prompt', exact: true });
+        await focusTarget.focus();
+        // wheel over the scrollbar to avoid letterboxing and mobile text-selection overlays
+        await log.locator('.xterm-scrollable-element > .scrollbar.vertical').hover();
+        await page.mouse.wheel(0, -800);
+        const jump = page.getByRole('button', { name: 'Jump to latest', exact: true });
+        await expect(jump).toBeVisible();
+        await expect(focusTarget).toBeFocused();
+        // exercise the native pointer activation for this device
+        if (touch) await jump.tap();
+        else await jump.click();
+        await expect(jump).toBeHidden();
+        await expect(focusTarget).toBeFocused();
+        // preserve the mode that controls the output border and mobile composer
+        if (inputActive) await expect(log).toHaveClass(/input-active/u);
+        else await expect(log).not.toHaveClass(/input-active/u);
+        // keep subsequent output pinned to the latest line
+        await pushBytes(page, 'agent-1', 'new output after jump\r\n');
+        await expect(jump).toBeHidden();
+      });
+    }
+  });
+}

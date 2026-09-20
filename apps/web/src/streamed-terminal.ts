@@ -306,8 +306,12 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
   // click (preserveOutputLongPressSelection), and suppressFocusUntil covers link taps and
   // long-press selection.
   const focusOnClick = () => { if (performance.now() >= suppressFocusUntil) terminal.focus(); };
-  const jumpToBottom = () => { terminal.scrollToBottom(); syncFollowState(); terminal.focus(); };
+  // keep the current input target and output mode when clicking or tapping jump
+  const preserveJumpFocus = (event: PointerEvent) => event.preventDefault();
+  // resume following without entering or leaving terminal input mode
+  const jumpToBottom = () => { terminal.scrollToBottom(); syncFollowState(); };
   host.addEventListener('click', focusOnClick);
+  jump.addEventListener('pointerdown', preserveJumpFocus);
   jump.addEventListener('click', jumpToBottom);
 
   const unsubscribeFont = subscribeTerminalFontSize(() => {
@@ -355,6 +359,7 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
       releaseTouchScroll();
       releaseLongPress();
       host.removeEventListener('click', focusOnClick);
+      jump.removeEventListener('pointerdown', preserveJumpFocus);
       jump.removeEventListener('click', jumpToBottom);
       unsubscribeFont();
       unsubscribeTheme();

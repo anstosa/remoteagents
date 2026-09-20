@@ -726,8 +726,8 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
    is letterboxed against the terminal background rather than stretched. */
 .streamed-terminal { position: relative; overflow: hidden; background: var(--base); }
 .streamed-terminal-status { position: absolute; top: .5rem; left: 50%; transform: translateX(-50%); z-index: 3; padding: .2rem .6rem; border-radius: var(--control-radius); background: color-mix(in srgb, var(--surface-1) 90%, transparent); color: var(--subtext-1); font-size: .8rem; pointer-events: none; }
-/* center the jump control away from the right-side toolbar */
-.streamed-terminal-jump { position: absolute; left: 50%; bottom: .75rem; transform: translateX(-50%); z-index: 3; padding: .3rem .7rem; border: 1px solid color-mix(in srgb, var(--sky) 40%, var(--surface-1)); border-radius: 999px; background: color-mix(in srgb, var(--sky) 7%, var(--mantle)); color: var(--sky); font: inherit; font-size: .8rem; cursor: pointer; box-shadow: 0 1px 4px #00000040; }
+/* center the jump control above terminal selection and link overlays */
+.streamed-terminal-jump { position: absolute; left: 50%; bottom: .75rem; transform: translateX(-50%); z-index: 11; padding: .3rem .7rem; border: 1px solid color-mix(in srgb, var(--sky) 40%, var(--surface-1)); border-radius: 999px; background: color-mix(in srgb, var(--sky) 7%, var(--mantle)); color: var(--sky); font: inherit; font-size: .8rem; cursor: pointer; box-shadow: 0 1px 4px #00000040; }
 .streamed-terminal-jump:hover { background: color-mix(in srgb, var(--sky) 15%, var(--mantle)); }
 /* Restore the hidden state: the global `button` display rule otherwise overrides `[hidden]`,
    which would leave Jump-to-latest showing even while following the live tail. */
