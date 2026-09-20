@@ -2,7 +2,7 @@ import { codexCommands, codexCompletion, codexConversations, codexInferState, co
 import { classifyOmxPane, classifyOmxProcess, isOmxWorkerPane } from './omx-panes.js';
 import { isOmxLeaderCommand } from './omx-processes.js';
 import { pendingOmxQuestion } from './omx-questions.js';
-import { queuedCodexQuestion } from './codex-questions.js';
+import { codexQuestionTextEntry, queuedCodexQuestion } from './codex-questions.js';
 import type { Adapter } from './types.js';
 
 /**
@@ -37,7 +37,7 @@ export const omxAdapter: Adapter = {
   },
   submission: codexSubmission,
   turns: codexTurns,
-  questions: { parse: parseCodexQuestion, pending: pendingOmxQuestion, queued: queuedCodexQuestion },
+  questions: { parse: parseCodexQuestion, pending: pendingOmxQuestion, queued: queuedCodexQuestion, textEntry: codexQuestionTextEntry },
   commands: codexCommands,
   conversations: codexConversations,
   completion: codexCompletion,

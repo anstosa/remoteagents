@@ -43,6 +43,8 @@ test('renders inline questions from the pane stream and answers through one endp
   let selectedIndex: number | undefined;
   let selectedQuestionId: string | undefined;
   let answerCount = 0;
+  const textAnswers: Array<{ questionId: string; text: string }> = [];
+  let rejectTextAnswer = true;
   const submittedPrompts: Array<{ prompt: string; attachments: unknown[] }> = [];
   await installPaneMock(page);
   await page.route('**/api/**', async route => {
@@ -60,7 +62,13 @@ test('renders inline questions from the pane stream and answers through one endp
       return route.fulfill({ status: 204 });
     }
     if (url.pathname === '/api/agents/agent-1/question' && request.method() === 'POST') {
-      const body = request.postDataJSON() as { index: number; questionId: string };
+      const body = request.postDataJSON() as { index: number; questionId: string; text?: string };
+      // refuse the first text answer without falling back to the prompt queue
+      if (body.text !== undefined) {
+        if (rejectTextAnswer) return route.fulfill({ status: 409, json: { error: 'question unavailable' } });
+        textAnswers.push({ questionId: body.questionId, text: body.text });
+        return route.fulfill({ status: 204 });
+      }
       selectedIndex = body.index;
       selectedQuestionId = body.questionId;
       answerCount += 1;
@@ -107,7 +115,7 @@ test('renders inline questions from the pane stream and answers through one endp
     expect(choice.answerCenter).toBeCloseTo(0, 1);
   }
 
-  // expanded notes use the existing prompt submission path
+  // text answers stay attached to the active question rather than queueing a turn
   const notesToggle = page.getByRole('button', { name: 'Add notes' });
   await expect(notesToggle).toHaveAttribute('aria-expanded', 'false');
   await notesToggle.click();
@@ -116,9 +124,23 @@ test('renders inline questions from the pane stream and answers through one endp
   await expect(page.getByRole('button', { name: 'Hide notes' })).toHaveAttribute('aria-expanded', 'true');
   await notes.fill('Keep the cleanup scoped to the selected option.');
   await page.getByRole('button', { name: 'Submit notes' }).click();
-  await expect.poll(() => submittedPrompts.length).toBe(1);
-  expect(submittedPrompts[0]).toEqual({ prompt: 'Keep the cleanup scoped to the selected option.', attachments: [] });
-  await expect(notes).toHaveValue('');
+  await expect(page.getByRole('alert')).toContainText('Unable to send this answer.');
+  await expect(notes).toHaveValue('Keep the cleanup scoped to the selected option.');
+  await expect(page.getByRole('region', { name: 'Agent question' })).toBeVisible();
+  expect(submittedPrompts).toEqual([]);
+  expect(textAnswers).toEqual([]);
+
+  // a successful retry delivers text directly and clears the accepted draft
+  rejectTextAnswer = false;
+  await page.getByRole('button', { name: 'Submit notes' }).click();
+  await expect.poll(() => textAnswers).toEqual([{ questionId: strictQuestion.id, text: 'Keep the cleanup scoped to the selected option.' }]);
+  await expect(page.getByRole('region', { name: 'Agent question' })).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: 'Prompt' })).toHaveValue('');
+  expect(submittedPrompts).toEqual([]);
+  await pushQuestion(page, 'agent-1', strictQuestion);
+  await expect(page.getByRole('region', { name: 'Agent question' })).toHaveCount(0);
+  await pushQuestion(page, 'agent-1', null);
+  await pushQuestion(page, 'agent-1', strictQuestion);
   await expect(page.getByRole('button', { name: 'Switch to normal prompt mode' })).toBeVisible();
 
   // normal mode remains available when detection is a false positive
@@ -127,8 +149,8 @@ test('renders inline questions from the pane stream and answers through one endp
   const prompt = page.getByRole('textbox', { name: 'Prompt' });
   await prompt.fill('Treat the detected question as ordinary output.');
   await page.getByRole('button', { name: 'Queue', exact: true }).click();
-  await expect.poll(() => submittedPrompts.length).toBe(2);
-  expect(submittedPrompts[1]).toEqual({ prompt: 'Treat the detected question as ordinary output.', attachments: [] });
+  await expect.poll(() => submittedPrompts.length).toBe(1);
+  expect(submittedPrompts[0]).toEqual({ prompt: 'Treat the detected question as ordinary output.', attachments: [] });
   await page.getByRole('button', { name: 'Switch to answer mode' }).click();
   await expect(page.getByRole('button', { name: 'Switch to normal prompt mode' })).toBeVisible();
 

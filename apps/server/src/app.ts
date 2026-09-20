@@ -1290,7 +1290,17 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(204).send();
   });
-  app.post('/api/agents/:id/question', async (request, reply) => { controlled(request, true); const data = body(request); if (typeof data.questionId !== 'string' || !Number.isInteger(data.index) || !await prompts.answerQuestion((request.params as { id: string }).id, data.questionId, data.index as number)) return reply.code(404).send({ error: 'question unavailable' }); return reply.code(204).send(); });
+  // deliver either a numbered choice or free text to the active question
+  app.post('/api/agents/:id/question', async (request, reply) => {
+    controlled(request, true);
+    const data = body(request);
+    const answer = typeof data.text === 'string' && data.index === undefined ? data.text
+      : Number.isInteger(data.index) && data.text === undefined ? data.index as number : undefined;
+    // reject ambiguous payloads and stale or unsupported question answers
+    if (typeof data.questionId !== 'string' || answer === undefined
+      || !await prompts.answerQuestion((request.params as { id: string }).id, data.questionId, answer)) return reply.code(404).send({ error: 'question unavailable' });
+    return reply.code(204).send();
+  });
   // delay between launch checks
   const launchPollDelay = deps.launchPollDelay ?? defaultLaunchPollDelay;
   // read-back after a console rename: poll the agent's own store every 200 ms for ~1.5 s until

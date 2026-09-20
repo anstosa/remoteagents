@@ -826,35 +826,67 @@ export class PromptService {
     }
   }
 
-  // answer one still-current Inline question through the Adapter's selectOption.
-  // The id (a hash of the question's text and choices) is re-derived from the
-  // live pane, so a stale click on a question the agent already moved past is
-  // refused. Structured OMX questions read authoritatively from their files;
-  // parsed numbered lists are re-parsed from the pane capture.
-  async answerQuestion(agentId: string, questionId: string, index: number): Promise<boolean> {
-    if (questionId.length === 0 || !Number.isInteger(index) || index < 0 || index > 15) return false;
-    const first = await this.discovery.target(agentId); if (!first) return false;
-    const adapter = this.resolveAdapter(first.agent.kind); if (adapter?.questions === undefined) return false;
-    const workspace = this.workspaceFor(first.agent.workspace);
-    let question = await adapter.questions.pending?.(workspace, first.agent.paneId);
-    // a reported question is re-derived from a fresh payload and capture: a payload
-    // cleared by PostToolUse, a cancelled dialog, or one that advanced since the tap
-    // yields a different id or nothing, and the id check below refuses it
-    if (question === undefined && adapter.questions.reported !== undefined) {
-      const payload = this.reportedQuestionPayload(agentId);
-      const capture = payload === undefined ? undefined : await this.tmux.capture(first.socket, first.agent.paneId).catch(() => undefined);
-      question = capture === undefined ? undefined : adapter.questions.reported(payload!, capture);
-    }
-    if (question === undefined && adapter.questions.parse !== undefined) {
-      const capture = await this.tmux.capture(first.socket, first.agent.paneId).catch(() => undefined);
-      question = capture === undefined ? undefined : adapter.questions.parse(capture);
-    }
-    if (question === undefined || question.id !== questionId || index >= question.choices.length) return false;
-    // an OMX question is answered on its renderer pane, a parsed list on the agent's own
-    const targetPane = question.targetPaneId ?? first.agent.paneId;
-    const second = await this.discovery.target(agentId); if (!second || second.socket.fingerprint !== first.socket.fingerprint || second.agent.paneId !== first.agent.paneId) return false;
-    // use the freshly captured cursor rather than the browser's earlier snapshot
-    return await this.tmux.sendKeys(second.socket, targetPane, adapter.submission.selectOption(index, question.selectedIndex));
+  // answer the current question directly without queueing a new agent turn
+  async answerQuestion(agentId: string, questionId: string, answer: number | string): Promise<boolean> {
+    const textAnswer = typeof answer === 'string';
+    // reject empty text, oversized input, and terminal control sequences
+    if (questionId.length === 0 || (textAnswer
+      ? !validPrompt(answer) || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/u.test(answer)
+      : !Number.isInteger(answer) || answer < 0 || answer > 15)) return false;
+    // serialize question delivery with active input and restart handoffs
+    if (this.activeMutations.has(agentId)) return false;
+    const release = this.beginAgentMutation(agentId);
+    // respect an existing lifecycle reservation
+    if (release === undefined) return false;
+    const version = this.mutationVersion(agentId);
+    try {
+      const first = await this.discovery.target(agentId);
+      // require a live question-capable agent
+      if (!first) return false;
+      const adapter = this.resolveAdapter(first.agent.kind);
+      if (adapter?.questions === undefined) return false;
+      const workspace = this.workspaceFor(first.agent.workspace);
+      let question = await adapter.questions.pending?.(workspace, first.agent.paneId);
+      let capture: string | undefined;
+      // re-derive reported questions from their current hook payload and pane
+      if (question === undefined && adapter.questions.reported !== undefined) {
+        const payload = this.reportedQuestionPayload(agentId);
+        capture = payload === undefined ? undefined : await this.tmux.capture(first.socket, first.agent.paneId).catch(() => undefined);
+        question = capture === undefined ? undefined : adapter.questions.reported(payload!, capture);
+      }
+      // re-derive native questions from the current terminal capture
+      if (question === undefined && adapter.questions.parse !== undefined) {
+        capture = await this.tmux.capture(first.socket, first.agent.paneId).catch(() => undefined);
+        question = capture === undefined ? undefined : adapter.questions.parse(capture);
+      }
+      // refuse stale answers and out-of-range choices
+      if (question === undefined || question.id !== questionId || (!textAnswer && answer >= question.choices.length)) return false;
+      const targetPane = question.targetPaneId ?? first.agent.paneId;
+      // verify the target and manual-input generation before each delivery stage
+      const stillCurrent = async () => {
+        const current = await this.discovery.target(agentId);
+        return current !== undefined && current.socket.fingerprint === first.socket.fingerprint
+          && current.agent.paneId === first.agent.paneId && current.agent.kind === first.agent.kind
+          && this.mutationVersion(agentId) === version;
+      };
+      // refuse replacement panes or intervening operator input
+      if (!await stillCurrent()) return false;
+      // preserve cursor-aware numbered selection
+      if (!textAnswer) return await this.tmux.sendKeys(first.socket, targetPane, adapter.submission.selectOption(answer, question.selectedIndex));
+      const keys = capture === undefined ? undefined : adapter.questions.textEntry?.(question, capture);
+      // unsupported menus must not receive a normal prompt or an implicit default
+      if (keys === undefined) return false;
+      // navigate without submitting a recommended option
+      if (keys.length > 0 && !await this.tmux.sendKeys(first.socket, targetPane, keys)) return false;
+      // recheck after navigation before inserting the answer
+      if (!await stillCurrent()) return false;
+      const buffer = `rac-${randomBytes(18).toString('base64url')}`;
+      // bracketed paste keeps multiline answers and leading digits out of menu shortcuts
+      if (!await this.tmux.pastePrompt(first.socket, targetPane, buffer, answer)) return false;
+      // never submit into a replacement pane after a slow paste
+      if (!await stillCurrent()) return false;
+      return await this.tmux.sendKeys(first.socket, targetPane, ['Enter']);
+    } finally { release(); }
   }
 
   // interrupt a working Agent; a stray interrupt on a finished pane is refused so

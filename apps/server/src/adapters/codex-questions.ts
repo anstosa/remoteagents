@@ -2,6 +2,24 @@ import { inlineQuestionId } from './inline-questions.js';
 import { normalizedLines } from './capture-text.js';
 import type { InlineQuestion, TmuxKey } from './types.js';
 
+// admit text only in native question editors, never in arbitrary numbered menus
+export function codexQuestionTextEntry(question: InlineQuestion, capture: string): TmuxKey[] | undefined {
+  // structured OMX renderers have a different text-entry protocol
+  if (question.targetPaneId !== undefined) return undefined;
+  const lines = normalizedLines(capture).filter(Boolean);
+  const footer = lines.slice(-8).join(' ');
+  // the asynchronous editor moves bracketed pastes directly into its other field
+  const queued = queuedCodexQuestion(capture);
+  if (queued !== undefined && queued.key === undefined) return [];
+  // the blocking editor retains its selected option when notes are pasted
+  if (!/\benter to submit answer\b/u.test(footer) || question.selectedIndex === undefined) return undefined;
+  const other = question.choices.findIndex(choice => /^None of the above(?:\s|$)/u.test(choice));
+  // custom text must not silently endorse the preselected recommendation
+  if (other < 0) return undefined;
+  const distance = other - question.selectedIndex;
+  return Array.from({ length: Math.abs(distance) }, () => distance < 0 ? 'Up' : 'Down');
+}
+
 // open only the live question footer with an explicitly supported advertised binding
 export function queuedCodexQuestion(capture: string): { key?: TmuxKey } | undefined {
   const lines = normalizedLines(capture).filter(Boolean);

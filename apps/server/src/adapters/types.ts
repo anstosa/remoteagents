@@ -184,6 +184,8 @@ export interface Adapter {
   };
   readonly questions?: {
     parse?(capture: string): InlineQuestion | undefined;
+    /** navigate to a verified text editor before bracketed paste and enter */
+    textEntry?(question: InlineQuestion, capture: string): TmuxKey[] | undefined;
     /** native follow-up presence, with an opening-only shortcut when collapsed */
     queued?(capture: string): { key?: TmuxKey } | undefined;
     pending?(workspace: string, paneId: string): Promise<InlineQuestion | undefined>;
