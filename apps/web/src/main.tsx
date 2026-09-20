@@ -5,6 +5,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { pollWhileVisible } from './client-scheduling.js';
 import { outputUrlMatchesHost } from './output-links.js';
+import { attachOutputScrollbar } from './output-scrollbar.js';
 import { mountStreamedTerminal } from './streamed-terminal.js';
 import { createAgentPaneConnector, createWorktreePaneConnector } from './pane-socket-client.js';
 import { FlyoutPortal } from './flyout-portal.js';
@@ -4863,6 +4864,8 @@ function Log({ id, agentWorking = false, worktreeId, branch, gitStatus, gitPrSta
         onMetadataRef.current?.(message);
       }
     });
+    // size the handle around the current output controls
+    const releaseOutputScrollbar = attachOutputScrollbar(canvas.current!);
     const terminal = handle.terminal;
     terminalRef.current = terminal;
     // Helper keys, paste and the composer's blank-Enter forward reach the pane through
@@ -4974,6 +4977,7 @@ function Log({ id, agentWorking = false, worktreeId, branch, gitStatus, gitPrSta
       if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id);
       if (answeredQuestionActions.get(id) === answeredQuestion) answeredQuestionActions.delete(id);
       if (terminalRef.current === terminal) terminalRef.current = undefined;
+      releaseOutputScrollbar();
       handle.dispose();
     };
   }, [embedded, id, onQuestion]);

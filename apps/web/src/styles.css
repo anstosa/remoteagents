@@ -80,6 +80,8 @@
   --edge: 1rem;
   --control-radius: .3rem;
   --standard-control-size: 2.6rem;
+  /* share the output toolbar inset with the visible scroll handle */
+  --output-control-inset: .375rem;
   --output-font-size: 11px;
   --layer-popover: 300;
   --layer-dialog: 500;
@@ -381,7 +383,7 @@ html.software-keyboard-open .tabs { display: none; }
 .log-controls-bottom { position: relative; display: flex; align-items: end; padding: 0 var(--edge) .45rem; pointer-events: none; }
 .log-controls-bottom button { pointer-events: auto; }
 .mobile-terminal-keys { display: none; }
-.page-controls { position: relative; z-index: 0; display: grid; gap: .375rem; margin-left: auto; margin-right: calc(.375rem - var(--edge)); pointer-events: auto; }
+.page-controls { position: relative; z-index: 0; display: grid; gap: .375rem; margin-left: auto; margin-right: calc(var(--output-control-inset) - var(--edge)); pointer-events: auto; }
 /* Absorb near-misses around paging controls instead of focusing the terminal underneath. */
 .page-controls::before { position: absolute; inset: -.375rem; z-index: 0; content: ''; }
 .page-controls > * { justify-self: end; }
@@ -716,6 +718,10 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
    letterbox matches the pane instead. */
 .xterm .xterm-viewport { overflow: hidden !important; scrollbar-width: none; background-color: var(--base); }
 .xterm .xterm-viewport::-webkit-scrollbar { display: none; }
+/* keep both handle widths right-aligned inside xterm's native drag target */
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider { left: auto !important; right: 0; }
+/* use the toolbar inset only while any part of the handle overlaps its controls */
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider.output-controls-overlap { width: var(--output-control-inset) !important; }
 /* A streamed pane renders at its natural grid top-left; a pane smaller than the panel
    is letterboxed against the terminal background rather than stretched. */
 .streamed-terminal { position: relative; overflow: hidden; background: var(--base); }
