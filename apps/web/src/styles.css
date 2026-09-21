@@ -194,8 +194,11 @@ main { max-width: 1100px; margin: auto; padding: var(--edge); }
 .auth-submit { justify-content: space-between; width: 100%; margin-top: .15rem; background: linear-gradient(115deg, var(--mauve), var(--lavender), var(--blue)); }
 .auth-error { margin: -.25rem 0 0; color: var(--red); font-size: .78rem; }
 .loading-screen { color: var(--subtext-0); }
-.reconnecting-overlay { position: fixed; inset: 0; z-index: 1000; isolation: isolate; display: grid; place-items: center; overflow: hidden; color: var(--subtext-0); background: radial-gradient(circle at 50% 42%, var(--surface-0) 0, var(--mantle) 26rem, var(--crust) 70rem); }
-.reconnecting-overlay::before { position: absolute; inset: 0; z-index: -1; content: ''; opacity: .28; background-image: linear-gradient(color-mix(in srgb, var(--surface-2) 8%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--surface-2) 8%, transparent) 1px, transparent 1px); background-size: 2rem 2rem; mask-image: radial-gradient(circle at center, #000 0, transparent 68%); }
+/* retain the console beneath the shared cached-output treatment */
+.reconnecting-overlay { position: fixed; inset: 0; z-index: 1000; isolation: isolate; display: grid; place-items: center; overflow: hidden; color: var(--yellow); }
+.reconnecting-message { position: relative; z-index: 15; display: flex; align-items: center; justify-content: center; gap: .65rem; padding: 1rem; font: 700 .85rem var(--font-mono); text-align: center; }
+/* show one reconnect notice and veil during a console-wide outage */
+body:has(.reconnecting-overlay) :is(.streamed-terminal-status, .log-output > .log-loading, .log-output > .log-stale-overlay) { visibility: hidden; }
 .loading-console { display: grid; gap: .8rem; min-width: min(20rem, calc(100vw - 2rem)); padding: 1rem 1.2rem; border: 1px solid color-mix(in srgb, var(--surface-1) 85%, transparent); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 72%, transparent); box-shadow: 0 1rem 3rem color-mix(in srgb, var(--crust) 65%, transparent); }
 .loading-line { display: flex; align-items: center; gap: .65rem; color: var(--text); font: 600 .75rem var(--font-mono); letter-spacing: .06em; }
 .loading-bars { display: flex; gap: .22rem; height: .2rem; overflow: hidden; border-radius: var(--control-radius); }
@@ -273,6 +276,8 @@ html.software-keyboard-open .tabs { display: none; }
 .log-loading .wake-agent svg { width: 1rem; height: 1rem; fill: currentColor; stroke: none; }
 .log-stale-overlay { position: absolute; inset: 0; z-index: 14; overflow: hidden; pointer-events: none; background: linear-gradient(120deg, color-mix(in srgb, var(--crust) 50%, transparent), color-mix(in srgb, var(--mantle) 26%, transparent)), repeating-linear-gradient(0deg, color-mix(in srgb, var(--crust) 10%, transparent) 0 1px, transparent 1px 5px); box-shadow: inset 0 0 5rem color-mix(in srgb, var(--crust) 72%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--surface-2) 42%, transparent); backdrop-filter: blur(1.75px) saturate(.72) brightness(.82); }
 .log-stale-overlay::after { position: absolute; inset: -20%; content: ''; background: radial-gradient(ellipse at 50% 48%, transparent 25%, color-mix(in srgb, var(--crust) 36%, transparent) 76%); filter: blur(1rem); }
+/* reuse the original cached-output border and hatching without blurring text */
+.log-cached-treatment, .streamed-terminal-status::before { position: absolute; inset: 0; z-index: 13; overflow: hidden; border: 2px solid color-mix(in srgb, var(--yellow) 58%, transparent); pointer-events: none; background: repeating-linear-gradient(135deg, transparent 0 18px, color-mix(in srgb, var(--yellow) 5%, transparent) 18px 20px); box-shadow: inset 0 0 3.5rem color-mix(in srgb, var(--yellow) 8%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--crust) 75%, transparent); }
 .log-footer { position: absolute; right: 0; bottom: 0; left: 0; z-index: 20; display: grid; pointer-events: none; }
 /* the status chip and prompt-history control portal into these slots in the bottom composer row */
 .prompt-status-slot, .prompt-history-slot { display: contents; }
@@ -727,7 +732,11 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 /* A streamed pane renders at its natural grid top-left; a pane smaller than the panel
    is letterboxed against the terminal background rather than stretched. */
 .streamed-terminal { position: relative; overflow: hidden; background: var(--base); }
-.streamed-terminal-status { position: absolute; top: .5rem; left: 50%; transform: translateX(-50%); z-index: 3; padding: .2rem .6rem; border-radius: var(--control-radius); background: color-mix(in srgb, var(--surface-1) 90%, transparent); color: var(--subtext-1); font-size: .8rem; pointer-events: none; }
+/* center reconnect status over the retained terminal frame */
+.streamed-terminal-status { position: absolute; inset: 0; z-index: 12; isolation: isolate; display: grid; place-content: center; padding: 1rem; color: var(--yellow); font: 700 .85rem var(--font-mono); text-align: center; pointer-events: none; }
+.streamed-terminal-status::before { z-index: -1; content: ''; }
+/* preserve the terminal's native status visibility lifecycle */
+.streamed-terminal-status[hidden] { display: none; }
 /* center the jump control above terminal selection and link overlays */
 .streamed-terminal-jump { position: absolute; left: 50%; bottom: .75rem; transform: translateX(-50%); z-index: 11; padding: .3rem .7rem; border: 1px solid color-mix(in srgb, var(--sky) 40%, var(--surface-1)); border-radius: 999px; background: color-mix(in srgb, var(--sky) 7%, var(--mantle)); color: var(--sky); font: inherit; font-size: .8rem; cursor: pointer; box-shadow: 0 1px 4px #00000040; }
 .streamed-terminal-jump:hover { background: color-mix(in srgb, var(--sky) 15%, var(--mantle)); }

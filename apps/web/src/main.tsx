@@ -1886,8 +1886,9 @@ function LoadingScreen({ label = 'Restoring secure session' }: { label?: string 
   return <main className="auth-screen loading-screen" aria-live="polite"><div className="auth-glow" /><div className="loading-console"><div className="loading-line"><span className="spinner" />{label}</div><div className="loading-bars" aria-hidden="true"><i /><i /><i /><i /><i /></div></div></main>;
 }
 
+// retain cached output beneath the reconnect notice
 function ReconnectingOverlay() {
-  return <div className="reconnecting-overlay" role="alert" aria-label="Reconnecting to console"><div className="auth-glow" /><div className="loading-console"><div className="loading-line"><span className="spinner" />Reconnecting to console</div><div className="loading-bars" aria-hidden="true"><i /><i /><i /><i /><i /></div></div></div>;
+  return <div className="reconnecting-overlay" role="alert" aria-label="Reconnecting to console"><div className="log-cached-treatment" aria-hidden="true" /><div className="reconnecting-message"><span className="spinner" aria-hidden="true" />Reconnecting…</div></div>;
 }
 
 function ControlScreen({ session, claimed }: { session: SessionInfo; claimed: (next: SessionInfo) => void }) {
