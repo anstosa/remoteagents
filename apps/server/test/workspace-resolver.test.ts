@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { configuredWorktreeForWorkspace, worktreeHostRoot, worktreeMatchesWorkspace } from '../src/workspaces/resolver.js';
-import type { Worktree } from '../src/domain/models.js';
+import { configuredWorktreeForWorkspace, worktreeHostRoot, worktreeMatchesWorkspace, worktreePrBase } from '../src/workspaces/resolver.js';
+import type { Dashboard, Worktree } from '../src/domain/models.js';
 
 const worktree = (over: Partial<Worktree> = {}): Worktree => ({ id: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false, command: 'codex', ...over });
 
@@ -35,6 +35,33 @@ describe('configuredWorktreeForWorkspace', () => {
   it('returns undefined for a workspace no configured worktree owns', () => {
     expect(configuredWorktreeForWorkspace(worktrees, '/worktrees/cora/src')).toBeUndefined();
     expect(configuredWorktreeForWorkspace(worktrees, '/some/scratch/dir')).toBeUndefined();
+  });
+});
+
+describe('worktreePrBase', () => {
+  const dashboard = (over: Partial<Dashboard> = {}): Dashboard => ({ generation: 0, adapters: {}, agents: [], projects: [], ...over });
+  const idleProject = (base?: string) => ({ id: 'p1', label: 'P', mode: 'repository' as const, available: true, manageWorktrees: false, stalePaths: [], worktrees: [{ id: 'w1', projectId: 'p1', label: 'W', path: '/w1', available: true, pinned: false, main: false, detached: false, locked: false, order: 0, ...(base === undefined ? {} : { gitPrStatus: { base, files: 0 } }) }] });
+
+  it('reads a live agent resolved base for its worktree', () => {
+    const board = dashboard({ agents: [{ id: 'a1', paneId: '%1', sessionId: 's', socketFingerprint: 'sf', workspace: '/w1', kind: 'codex', attention: 'finished', title: 'Ready', worktreeId: 'w1', gitPrStatus: { base: 'origin/main', files: 0 } }] });
+    expect(worktreePrBase(board, 'w1')).toBe('origin/main');
+  });
+
+  it('falls back to the idle worktree view when no agent carries the base', () => {
+    expect(worktreePrBase(dashboard({ projects: [idleProject('origin/dev')] }), 'w1')).toBe('origin/dev');
+  });
+
+  it('prefers the live agent base over the idle worktree view', () => {
+    const board = dashboard({
+      agents: [{ id: 'a1', paneId: '%1', sessionId: 's', socketFingerprint: 'sf', workspace: '/w1', kind: 'codex', attention: 'finished', title: 'Ready', worktreeId: 'w1', gitPrStatus: { base: 'origin/main', files: 0 } }],
+      projects: [idleProject('origin/dev')]
+    });
+    expect(worktreePrBase(board, 'w1')).toBe('origin/main');
+  });
+
+  it('returns undefined when neither the agent nor the worktree view resolved a base', () => {
+    expect(worktreePrBase(dashboard({ projects: [idleProject()] }), 'w1')).toBeUndefined();
+    expect(worktreePrBase(dashboard(), 'missing')).toBeUndefined();
   });
 });
 

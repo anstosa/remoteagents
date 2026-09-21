@@ -1,4 +1,4 @@
-import type { Agent, Worktree } from '../domain/models.js';
+import type { Agent, Dashboard, Worktree } from '../domain/models.js';
 import type { DiscoveryService } from '../discovery/service.js';
 
 export type ResolvedWorkspace = { agent: Agent; worktree: Worktree; workspace: string };
@@ -41,6 +41,19 @@ export function worktreeById(worktrees: readonly Worktree[], id: string): Worktr
 // the worktree is mounted from the host, else the console's own git toplevel
 export function worktreeHostRoot(worktree: Pick<Worktree, 'identity' | 'hostPath'>): string {
   return worktree.hostPath ?? worktree.identity;
+}
+
+// the merge target the dashboard already resolved for one Worktree — from its live Agent when it has
+// one, else from the idle Worktree view — so a worktree-scoped consumer's All PR base equals what the
+// dashboard flyout shows. The single place that reads a worktree's resolved PR base off the dashboard.
+export function worktreePrBase(dashboard: Dashboard, worktreeId: string): string | undefined {
+  const agent = dashboard.agents.find(candidate => candidate.worktreeId === worktreeId && candidate.gitPrStatus !== undefined);
+  if (agent?.gitPrStatus !== undefined) return agent.gitPrStatus.base;
+  for (const project of dashboard.projects) {
+    const view = project.worktrees.find(candidate => candidate.id === worktreeId);
+    if (view?.gitPrStatus !== undefined) return view.gitPrStatus.base;
+  }
+  return undefined;
 }
 
 // resolve one unambiguous configured workspace

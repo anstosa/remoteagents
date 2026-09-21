@@ -1770,3 +1770,82 @@ describe('workspace files API', () => {
     } finally { await filesApp.close(); }
   }, 15_000);
 });
+
+describe('comparison API', () => {
+  const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false, main: true, detached: false, locked: false, branch: 'feature' };
+  const discovery = { worktreesNow: () => [worktree] };
+  // a comparison service faked to the route seam: Working resolves with a capped file, All PR has no base
+  const comparison = {
+    patch: async (_worktree: unknown, kind: 'working' | 'pr') => kind === 'working'
+      ? { ok: true, kind, patch: { base: 'HEAD', gitBase: 'abc123', truncated: false, fingerprint: 'fp-passed-through', files: [
+          { change: { code: ' M', path: 'src/a.ts' }, kind: 'tracked', patch: '@@ -1 +1 @@\n', capped: false },
+          { change: { code: ' M', path: 'big.bin' }, kind: 'tracked', patch: '', capped: true }
+        ] } }
+      : { ok: false, reason: 'no_base' },
+    file: async (_worktree: unknown, _kind: unknown, path: string) => path === 'src/a.ts'
+      ? { ok: true, path, base: { path, size: 3, binary: false, truncated: false, content: 'old' }, working: { path, size: 3, binary: false, truncated: false, content: 'new' } }
+      : path === 'added.ts'
+        ? { ok: true, path, working: { path, size: 4, binary: false, truncated: false, content: 'new\n' } }
+        : path === 'unresolved.ts'
+          ? { ok: false, reason: 'no_base' }
+          : { ok: false, reason: 'not_in_comparison' }
+  };
+
+  async function comparisonApp() {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const app = await buildApp({ ...config }, { auth: new AuthService(hash, Buffer.alloc(32, 17).toString('base64url')), discovery: discovery as never, comparison: comparison as never });
+    const boot = await app.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+    const login = await app.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+    const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+    return { app, headers };
+  }
+
+  it('serves a Comparison patch with its fingerprint and per-file cap markers', async () => {
+    const { app, headers } = await comparisonApp();
+    try {
+      const patched = await app.inject({ method: 'POST', url: '/api/worktrees/cora/comparison', headers, payload: { kind: 'working' } });
+      expect(patched.statusCode).toBe(200);
+      expect(patched.json()).toEqual({ kind: 'working', base: 'HEAD', gitBase: 'abc123', truncated: false, fingerprint: 'fp-passed-through', files: [
+        { change: { code: ' M', path: 'src/a.ts' }, kind: 'tracked', patch: '@@ -1 +1 @@\n', capped: false },
+        { change: { code: ' M', path: 'big.bin' }, kind: 'tracked', patch: '', capped: true }
+      ] });
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('validates the kind, requires the worktree, and surfaces an unresolvable base', async () => {
+    const { app, headers } = await comparisonApp();
+    try {
+      const invalidKind = await app.inject({ method: 'POST', url: '/api/worktrees/cora/comparison', headers, payload: { kind: 'staged' } });
+      const missingWorktree = await app.inject({ method: 'POST', url: '/api/worktrees/missing/comparison', headers, payload: { kind: 'working' } });
+      const noBase = await app.inject({ method: 'POST', url: '/api/worktrees/cora/comparison', headers, payload: { kind: 'pr' } });
+      const unauthenticated = await app.inject({ method: 'POST', url: '/api/worktrees/cora/comparison', headers: { host: 'agents.example.com', origin: 'https://agents.example.com' }, payload: { kind: 'working' } });
+      expect(invalidKind.statusCode).toBe(400);
+      expect(missingWorktree.statusCode).toBe(404);
+      expect(noBase.statusCode).toBe(404);
+      expect(unauthenticated.statusCode).toBe(401);
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it('serves a changed file at the base and working tree, nulling an absent side', async () => {
+    const { app, headers } = await comparisonApp();
+    try {
+      const modified = await app.inject({ method: 'POST', url: '/api/worktrees/cora/comparison/file', headers, payload: { kind: 'working', path: 'src/a.ts' } });
+      const added = await app.inject({ method: 'POST', url: '/api/worktrees/cora/comparison/file', headers, payload: { kind: 'pr', path: 'added.ts' } });
+      const outside = await app.inject({ method: 'POST', url: '/api/worktrees/cora/comparison/file', headers, payload: { kind: 'working', path: 'src/other.ts' } });
+      const unresolved = await app.inject({ method: 'POST', url: '/api/worktrees/cora/comparison/file', headers, payload: { kind: 'pr', path: 'unresolved.ts' } });
+      const invalidPath = await app.inject({ method: 'POST', url: '/api/worktrees/cora/comparison/file', headers, payload: { kind: 'working', path: '' } });
+      const invalidKind = await app.inject({ method: 'POST', url: '/api/worktrees/cora/comparison/file', headers, payload: { kind: 'staged', path: 'src/a.ts' } });
+      const unauthenticated = await app.inject({ method: 'POST', url: '/api/worktrees/cora/comparison/file', headers: { host: 'agents.example.com', origin: 'https://agents.example.com' }, payload: { kind: 'working', path: 'src/a.ts' } });
+      expect(modified.json()).toEqual({ path: 'src/a.ts', base: { path: 'src/a.ts', size: 3, binary: false, truncated: false, content: 'old' }, working: { path: 'src/a.ts', size: 3, binary: false, truncated: false, content: 'new' } });
+      expect(added.json()).toEqual({ path: 'added.ts', base: null, working: { path: 'added.ts', size: 4, binary: false, truncated: false, content: 'new\n' } });
+      // a path outside the Comparison and an unresolvable Comparison are both 404, but with distinct reasons
+      expect(outside.statusCode).toBe(404);
+      expect(outside.json()).toEqual({ error: 'file unavailable' });
+      expect(unresolved.statusCode).toBe(404);
+      expect(unresolved.json()).toEqual({ error: 'comparison unavailable' });
+      expect(invalidPath.statusCode).toBe(400);
+      expect(invalidKind.statusCode).toBe(400);
+      expect(unauthenticated.statusCode).toBe(401);
+    } finally { await app.close(); }
+  }, 15_000);
+});
