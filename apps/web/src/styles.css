@@ -246,7 +246,7 @@ html.software-keyboard-open .tabs { display: none; }
 .log-split.has-note.has-browser:where(:not(.has-terminals)) { grid-template-rows: repeat(3, minmax(8rem, 1fr)); }
 /* Terminals make the split a list of panels; in a portrait area they stack as rows, in a
    wide area they become columns (below), and on a phone one panel shows at a time. */
-.log-split.has-terminals { grid-template: none; grid-template-columns: minmax(0, 1fr); grid-auto-flow: row; grid-auto-rows: minmax(8rem, 1fr); }
+.log-split.has-terminals, .log-split.has-code { grid-template: none; grid-template-columns: minmax(0, 1fr); grid-auto-flow: row; grid-auto-rows: minmax(8rem, 1fr); }
 .split-resizer { display: none; }
 .mobile-split-switches { display: none; }
 .log-output { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
@@ -318,6 +318,8 @@ html.software-keyboard-open .tabs { display: none; }
 .git-status-actions { display: flex; min-width: 0; align-items: center; gap: .4rem; }
 .git-status-review { min-height: 2rem; padding: .35rem .7rem; border-color: color-mix(in srgb, var(--blue) 58%, var(--surface-2)); background: color-mix(in srgb, var(--blue) 15%, var(--crust)); color: var(--blue); font: 800 .62rem var(--font-mono); }
 .git-status-review:disabled { border-color: var(--surface-1); background: transparent; color: var(--surface-2); }
+.git-status-view-changes { min-height: 2rem; padding: .35rem .7rem; border-color: color-mix(in srgb, var(--mauve) 58%, var(--surface-2)); background: color-mix(in srgb, var(--mauve) 15%, var(--crust)); color: var(--mauve); font: 800 .62rem var(--font-mono); white-space: nowrap; }
+.git-status-view-changes:disabled { border-color: var(--surface-1); background: transparent; color: var(--surface-2); }
 .git-status-push { display: inline-flex; min-height: 2rem; align-items: center; gap: .35rem; padding: .35rem .7rem; border-color: color-mix(in srgb, var(--mauve) 58%, var(--surface-2)); background: color-mix(in srgb, var(--mauve) 15%, var(--crust)); color: var(--mauve); font: 800 .62rem var(--font-mono); white-space: nowrap; }
 .git-status-push:disabled { border-color: var(--surface-1); background: transparent; color: var(--surface-2); }
 .git-status-push :is(svg, .spinner) { width: .85rem; height: .85rem; }
@@ -330,7 +332,7 @@ html.software-keyboard-open .tabs { display: none; }
 .git-status-panel-footer > .pull-request-card { flex: 1 1 0; min-width: 0; margin: 0; }
 .git-status-panel-footer .git-status-actions, .git-status-panel-footer .git-status-mode { flex: 0 0 auto; }
 /* keep branch actions aligned at the standard control height */
-.git-status-panel-footer :is(.git-status-review, .git-status-push, .pull-request-fixup, .git-status-mode button) { height: var(--standard-control-size); min-height: var(--standard-control-size); padding: .5rem .7rem; font-size: .75rem; line-height: 1.2; }
+.git-status-panel-footer :is(.git-status-view-changes, .git-status-review, .git-status-push, .pull-request-fixup, .git-status-mode button) { height: var(--standard-control-size); min-height: var(--standard-control-size); padding: .5rem .7rem; font-size: .75rem; line-height: 1.2; }
 /* keep the single-line pr readable beside the additional action */
 @media (max-width: 900px) {
   .git-status-panel-footer { flex-direction: column; align-items: stretch; }
@@ -644,14 +646,44 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
 .browser-frame-shell { display: grid; min-width: 0; min-height: 0; overflow: auto; place-items: stretch center; background: color-mix(in srgb, var(--crust) 84%, black); }
 .browser-frame-shell iframe { display: block; width: 100%; height: 100%; min-height: 0; border: 0; background: white; }
 .browser-frame-shell.mobile iframe { width: min(var(--split-pane-min-width), 100%); border-right: 1px solid var(--surface-1); border-left: 1px solid var(--surface-1); }
+/* The Code panel: a Comparison's Changes rendered by @pierre/diffs. Shiki's Catppuccin themes
+   already equal RAC's tokens, so only the font variables and the mauve line-selection override are
+   set here; they inherit through the library's open shadow root (no unsafeCSS). The virtualiser's
+   itemMetrics (set in JS) track --diffs-line-height. */
+.code-pane { position: relative; z-index: 1; display: grid; min-width: 0; min-height: 0; grid-template-rows: auto minmax(0, 1fr); border-top: 1px solid color-mix(in srgb, var(--mauve) 52%, var(--surface-1)); background: var(--crust); box-shadow: inset 0 1px color-mix(in srgb, var(--text) 4%, transparent); animation: note-pane-appear .15s ease-out;
+  --diffs-font-family: var(--font-mono); --diffs-header-font-family: var(--font-mono);
+  --diffs-bg-selection-override: var(--mauve); --diffs-bg-selection-number-override: var(--mauve); }
+.code-pane-toolbar { display: flex; min-height: 2.8rem; align-items: center; gap: .55rem; padding: .4rem .55rem; border-bottom: 1px solid var(--surface-1); color: var(--mauve); }
+.code-pane-title { min-width: 0; overflow: hidden; color: var(--mauve); font-size: .85rem; text-overflow: ellipsis; white-space: nowrap; }
+.code-pane-count { flex: 0 0 auto; color: var(--subtext-0); font-size: .72rem; }
+.code-pane-group-toggle { margin-left: auto; height: 2rem; padding: 0 .6rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: transparent; color: var(--subtext-0); font: inherit; font-size: .72rem; }
+.code-pane-group-toggle:hover { border-color: var(--mauve); color: var(--text); }
+.code-pane-group-toggle[aria-pressed='true'] { border-color: var(--mauve); color: var(--mauve); }
+.code-pane-close { display: grid; flex: 0 0 2rem; width: 2rem; height: 2rem; padding: 0; place-items: center; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: transparent; color: var(--subtext-0); box-shadow: none; }
+.code-pane-close:hover { border-color: var(--mauve); color: var(--text); }
+.code-pane-close svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.code-pane-toolbar :not(.code-pane-group-toggle) + .code-pane-close { margin-left: auto; }
+.code-pane-body { display: flex; min-width: 0; min-height: 0; flex-direction: column; }
+.code-pane-status { margin: 0; padding: 1rem .75rem; color: var(--subtext-0); font-size: .8rem; }
+.code-pane-retry { padding: .15rem .5rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: transparent; color: var(--text); font: inherit; font-size: .75rem; }
+.code-pane-notice { margin: 0; padding: .5rem .75rem; border-bottom: 1px solid var(--surface-0); color: var(--peach); font-size: .72rem; }
+.code-pane-placeholders { margin: 0; padding: .4rem .5rem; list-style: none; border-bottom: 1px solid var(--surface-0); display: flex; flex-direction: column; gap: .3rem; }
+.code-pane-placeholder { display: flex; min-width: 0; align-items: center; gap: .5rem; font-size: .74rem; }
+.code-pane-placeholder-path { min-width: 0; overflow: hidden; color: var(--text); font-family: var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.code-pane-placeholder-note { flex: 0 0 auto; color: var(--subtext-0); }
+.code-pane-placeholder-error { flex: 0 0 auto; color: var(--red); }
+.code-pane-load { flex: 0 0 auto; margin-left: auto; padding: .15rem .5rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: transparent; color: var(--mauve); font: inherit; font-size: .72rem; }
+.code-pane-load:hover:not(:disabled) { border-color: var(--mauve); }
+.code-pane-load:disabled { opacity: .6; }
+.code-pane-view { min-width: 0; min-height: 0; flex: 1; overflow: auto; }
 @keyframes note-pane-appear { from { opacity: 0; } to { opacity: 1; } }
 @container output-area (min-aspect-ratio: 1 / 1) {
-  .log-split.has-note:not(.has-browser):not(.has-terminals) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)); }
-  .log-split.has-browser:not(.has-note):not(.has-terminals) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--browser-split)); }
-  .log-split.has-note.has-browser:not(.has-terminals) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)) .45rem minmax(var(--split-pane-min-width), var(--browser-split)); }
-  /* With one or more Terminals the split is a generic list of columns (agent, terminals,
-     note, browser), each `minmax(390px, <weight>fr)`, built in JS as `--split-cols`. */
-  .log-split.has-terminals { grid-template: minmax(0, 1fr) / var(--split-cols); }
+  .log-split.has-note:not(.has-browser):not(.has-terminals):not(.has-code) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)); }
+  .log-split.has-browser:not(.has-note):not(.has-terminals):not(.has-code) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--browser-split)); }
+  .log-split.has-note.has-browser:not(.has-terminals):not(.has-code) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)) .45rem minmax(var(--split-pane-min-width), var(--browser-split)); }
+  /* With one or more Terminals or a Code panel the split is a generic list of columns (agent,
+     terminals, note, browser, code), each `minmax(390px, <weight>fr)`, built in JS as `--split-cols`. */
+  .log-split.has-terminals, .log-split.has-code { grid-template: minmax(0, 1fr) / var(--split-cols); }
   /* remove the hidden browser divider's track when fixing the mobile preview width */
   .log-split.has-terminals:has(> .browser-pane.mobile:not(.expanded)) { --browser-split-cols: var(--split-pane-min-width); }
   .log-split.has-browser:not(.has-note):not(.has-terminals):has(> .browser-pane.mobile:not(.expanded)) { grid-template-columns: minmax(var(--split-pane-min-width), var(--agent-split)) var(--split-pane-min-width); }
@@ -660,8 +692,9 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
   .split-resizer::after { position: absolute; inset: 0 calc(50% - .5px); background: var(--surface-1); content: ''; transition: background .12s ease, box-shadow .12s ease; }
   .split-resizer:is(:hover, :focus-visible)::after { background: var(--blue); box-shadow: 0 0 .5rem color-mix(in srgb, var(--blue) 48%, transparent); }
   .log-split:has(> .browser-pane.mobile:not(.expanded)) > .browser-resizer { display: none; }
-  .note-pane, .browser-pane { border-top: 0; border-left: 1px solid color-mix(in srgb, var(--yellow) 52%, var(--surface-1)); box-shadow: inset 1px 0 color-mix(in srgb, var(--text) 4%, transparent); }
+  .note-pane, .browser-pane, .code-pane { border-top: 0; border-left: 1px solid color-mix(in srgb, var(--yellow) 52%, var(--surface-1)); box-shadow: inset 1px 0 color-mix(in srgb, var(--text) 4%, transparent); }
   .browser-pane { border-left-color: color-mix(in srgb, var(--blue) 58%, var(--surface-1)); }
+  .code-pane { border-left-color: color-mix(in srgb, var(--mauve) 52%, var(--surface-1)); }
   :is(.note-pane, .browser-pane, .terminal-pane).expanded { border: 0; }
   .terminal-pane { border-left: 1px solid color-mix(in srgb, var(--green) 46%, var(--surface-1)); box-shadow: inset 1px 0 color-mix(in srgb, var(--text) 4%, transparent); }
 }
@@ -671,28 +704,29 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
   .browser-frame-shell.mobile iframe { width: 100%; }
   .browser-frame-shell.desktop { overflow: hidden; place-items: start; }
   .browser-frame-shell.desktop iframe { width: var(--browser-desktop-width, 980px); height: var(--browser-desktop-height, 100%); transform: scale(var(--browser-desktop-scale, 1)); transform-origin: top left; }
-  .log-split:is(.has-note, .has-browser):is(.mobile-agent-view, .mobile-note-view, .mobile-browser-view) { grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
-  .log-split.mobile-agent-view > :is(.note-pane, .browser-pane, .split-resizer), .log-split.mobile-note-view > :is(.log-output, .browser-pane, .split-resizer), .log-split.mobile-browser-view > :is(.log-output, .note-pane, .split-resizer) { display: none; }
+  .log-split:is(.has-note, .has-browser, .has-code):is(.mobile-agent-view, .mobile-note-view, .mobile-browser-view, .mobile-code-view) { grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
+  .log-split.mobile-agent-view > :is(.note-pane, .browser-pane, .code-pane, .split-resizer), .log-split.mobile-note-view > :is(.log-output, .browser-pane, .code-pane, .split-resizer), .log-split.mobile-browser-view > :is(.log-output, .note-pane, .code-pane, .split-resizer), .log-split.mobile-code-view > :is(.log-output, .note-pane, .browser-pane, .split-resizer) { display: none; }
   .log-split.mobile-agent-view > .log-output { display: block; }
-  .log-split.mobile-note-view > .note-pane, .log-split.mobile-browser-view > .browser-pane { display: grid; }
+  .log-split.mobile-note-view > .note-pane, .log-split.mobile-browser-view > .browser-pane, .log-split.mobile-code-view > .code-pane { display: grid; }
   /* Terminals on a phone: one panel shows at a time. Every Terminal is hidden unless it is
      the visible one (mobile-terminal-view + no mobile-hidden), and the agent/note/browser
      are hidden while a Terminal shows. */
   .log-split.has-terminals { grid-template: minmax(0, 1fr) / minmax(0, 1fr); grid-auto-flow: row; }
   .log-split.has-terminals > .split-resizer { display: none; }
-  .log-split.mobile-agent-view.has-terminals > .terminal-pane, .log-split.mobile-note-view.has-terminals > .terminal-pane, .log-split.mobile-browser-view.has-terminals > .terminal-pane { display: none; }
-  .log-split.mobile-terminal-view > :is(.log-output, .note-pane, .browser-pane) { display: none; }
+  .log-split.mobile-agent-view.has-terminals > .terminal-pane, .log-split.mobile-note-view.has-terminals > .terminal-pane, .log-split.mobile-browser-view.has-terminals > .terminal-pane, .log-split.mobile-code-view.has-terminals > .terminal-pane { display: none; }
+  .log-split.mobile-terminal-view > :is(.log-output, .note-pane, .browser-pane, .code-pane) { display: none; }
   .log-split.mobile-terminal-view > .terminal-pane.mobile-hidden { display: none; }
-  .log-split:is(.has-note, .has-browser, .has-terminals) > .mobile-split-switches { position: absolute; bottom: .45rem; left: .375rem; z-index: 45; display: flex; gap: .35rem; }
+  .log-split:is(.has-note, .has-browser, .has-code, .has-terminals) > .mobile-split-switches { position: absolute; bottom: .45rem; left: .375rem; z-index: 45; display: flex; gap: .35rem; }
   .mobile-split-switches button { display: grid; width: 2.6rem; height: 2.6rem; padding: 0; place-items: center; border-color: var(--blue); background: color-mix(in srgb, var(--blue) 22%, var(--mantle)); color: var(--blue); box-shadow: 0 .45rem 1rem color-mix(in srgb, var(--crust) 65%, transparent), inset 0 0 1rem color-mix(in srgb, var(--blue) 18%, transparent); }
   .mobile-split-switches .mobile-note-switch { border-color: var(--yellow); background: color-mix(in srgb, var(--yellow) 18%, var(--mantle)); color: var(--yellow); box-shadow: 0 .45rem 1rem color-mix(in srgb, var(--crust) 65%, transparent), inset 0 0 1rem color-mix(in srgb, var(--yellow) 15%, transparent); }
   .mobile-split-switches .mobile-terminal-switch { border-color: var(--green); background: color-mix(in srgb, var(--green) 18%, var(--mantle)); color: var(--green); box-shadow: 0 .45rem 1rem color-mix(in srgb, var(--crust) 65%, transparent), inset 0 0 1rem color-mix(in srgb, var(--green) 15%, transparent); }
+  .mobile-split-switches .mobile-code-switch { border-color: var(--mauve); background: color-mix(in srgb, var(--mauve) 18%, var(--mantle)); color: var(--mauve); box-shadow: 0 .45rem 1rem color-mix(in srgb, var(--crust) 65%, transparent), inset 0 0 1rem color-mix(in srgb, var(--mauve) 15%, transparent); }
   .mobile-split-switches svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 }
 /* preserve output width above software keyboards */
-html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:is(.has-note, .has-browser) { grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
-html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:is(.has-note, .has-browser) > :is(.note-pane, .browser-pane, .split-resizer, .mobile-split-switches) { display: none; }
-html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:is(.has-note, .has-browser) > .log-output { display: block; }
+html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:is(.has-note, .has-browser, .has-code) { grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
+html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:is(.has-note, .has-browser, .has-code) > :is(.note-pane, .browser-pane, .code-pane, .split-resizer, .mobile-split-switches) { display: none; }
+html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:is(.has-note, .has-browser, .has-code) > .log-output { display: block; }
 .xterm { height: 100%; }
 /* A Terminal panel: a titled head over a streamed pane, focusable, with a sky inset ring
    marking the panel that receives keys (First-class terminal panes, composition A). */
