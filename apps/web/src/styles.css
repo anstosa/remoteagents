@@ -705,6 +705,19 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
 .code-pane-file-name { min-width: 0; overflow: hidden; font-family: var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .code-pane-drawer { position: absolute; inset: 0 auto 0 0; z-index: 20; display: flex; width: min(80%, 18rem); flex-direction: column; border-right: 1px solid var(--surface-1); background: var(--mantle); box-shadow: .4rem 0 1.4rem #0007; animation: note-pane-appear .12s ease-out; }
 .code-pane-drawer-head { display: flex; align-items: center; justify-content: space-between; padding: .4rem .4rem .4rem .6rem; border-bottom: 1px solid var(--surface-1); color: var(--subtext-0); font-size: .7rem; letter-spacing: .04em; text-transform: uppercase; }
+/* narrow-panel view-options control + its right-side fly-out */
+.code-pane-options-open { display: inline-flex; flex: 0 0 auto; align-items: center; gap: .3rem; height: 2rem; padding: 0 .5rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: transparent; color: var(--subtext-0); font: inherit; font-size: .72rem; }
+.code-pane-options-open:hover { border-color: var(--mauve); color: var(--text); }
+.code-pane-options-open[aria-expanded='true'] { border-color: var(--mauve); color: var(--mauve); }
+.code-pane-options-open svg { width: .95rem; height: .95rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 2; }
+.code-pane-options { position: absolute; inset: 0 0 0 auto; z-index: 20; display: flex; width: min(82%, 17rem); flex-direction: column; border-left: 1px solid var(--surface-1); background: var(--mantle); box-shadow: -.4rem 0 1.4rem #0007; animation: note-pane-appear .12s ease-out; }
+.code-pane-options-head { display: flex; align-items: center; justify-content: space-between; padding: .4rem .4rem .4rem .6rem; border-bottom: 1px solid var(--surface-1); color: var(--subtext-0); font-size: .7rem; letter-spacing: .04em; text-transform: uppercase; }
+.code-pane-options-body { display: flex; min-height: 0; flex-direction: column; gap: .9rem; overflow-y: auto; padding: .8rem .6rem; }
+.code-pane-options-group { display: flex; flex-direction: column; gap: .35rem; }
+.code-pane-options-label { color: var(--subtext-0); font-size: .66rem; letter-spacing: .04em; text-transform: uppercase; }
+.code-pane-options-group .code-pane-segment { align-self: start; }
+.code-pane-options-group .code-pane-segment button { height: 2.2rem; padding: 0 .8rem; font-size: .78rem; }
+.code-pane-options-group .code-pane-group-toggle { align-self: start; height: 2.2rem; }
 .code-pane-status { margin: 0; padding: 1rem .75rem; color: var(--subtext-0); font-size: .8rem; }
 .code-pane-retry { padding: .15rem .5rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: transparent; color: var(--text); font: inherit; font-size: .75rem; }
 .code-pane-notice { margin: 0; padding: .5rem .75rem; border-bottom: 1px solid var(--surface-0); color: var(--peach); font-size: .72rem; }

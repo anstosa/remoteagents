@@ -22,6 +22,12 @@ type PanelHandle = CodeViewHandle<undefined, undefined>;
 // both come down to.
 const RAIL_BREAKPOINT = 640;
 
+// Below this (narrower) width the toolbar's segmented controls no longer fit beside the file title,
+// so they move into the right-side fly-out. It is well under RAIL_BREAKPOINT because a desktop split
+// column is routinely 500–640 px wide and the inline controls still fit there — only a phone-width
+// panel (single column, ~390 px) needs the fly-out.
+const TOOLBAR_FLYOUT_BREAKPOINT = 480;
+
 // The app-wide phone breakpoint (styles.css hides every panel's full-screen control below it, so a
 // promote is a no-op on phones). Used to gate the no-agent Worktree's auto-promote to desktop.
 const PHONE_BREAKPOINT = 768;
@@ -142,7 +148,14 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
   const [split, setSplit] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [narrow, setNarrow] = useState(false);
+  // On a narrow panel the toolbar's segmented controls (Comparison, diff mode, tests & docs) do not
+  // fit beside the file title, so they move into a right-side fly-out this toggles; it closes as soon
+  // as a control is chosen.
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  // The panel's own width (not the viewport's), so the file list and toolbar adapt to a squeezed
+  // column, not just a narrow phone. `narrow` folds the file list into a drawer and forces unified;
+  // `compact` (narrower still) folds the toolbar's segmented controls into the fly-out.
+  const [panelWidth, setPanelWidth] = useState(Number.POSITIVE_INFINITY);
   // Changes the reviewer pulled in with "Load anyway", keyed by path; they render as ordinary diff
   // items alongside the rest.
   const [loaded, setLoaded] = useState<Record<string, PanelItem>>({});
@@ -208,9 +221,11 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
   const panelRef = useCallback((node: HTMLElement | null) => {
     panelObserver.current?.disconnect();
     if (node === null) { panelObserver.current = undefined; return; }
-    panelObserver.current = new ResizeObserver(entries => setNarrow((entries[0]?.contentRect.width ?? node.clientWidth) < RAIL_BREAKPOINT));
+    panelObserver.current = new ResizeObserver(entries => setPanelWidth(entries[0]?.contentRect.width ?? node.clientWidth));
     panelObserver.current.observe(node);
   }, []);
+  const narrow = panelWidth < RAIL_BREAKPOINT;
+  const compact = panelWidth < TOOLBAR_FLYOUT_BREAKPOINT;
 
   // Plain view is single-file only; fall back to Hunks in the all-files scroll. Split needs a wide
   // column, so a narrow panel (a phone, or a squeezed column) is always unified.
@@ -341,8 +356,12 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
     ...codeViewBaseOptions(theme === 'latte' ? 'light' : 'dark'),
     diffStyle: effectiveSplit ? 'split' : 'unified',
     // Full context expands the unchanged lines, hydrating each partial patch through loadDiffFiles.
+    // Full context auto-expands every unchanged line; Hunks leaves the gaps collapsed. Either way the
+    // gap ("N unmodified lines") must be expandable on click, which the library only offers when it can
+    // hydrate the partial patch — so `loadDiffFiles` is always provided, not just in Full context. (It
+    // is lazy: nothing is fetched until a gap is actually expanded.)
     expandUnchanged: effectiveMode === 'full',
-    loadDiffFiles: effectiveMode === 'full' ? loadDiffFiles : undefined
+    loadDiffFiles
   }), [theme, effectiveSplit, effectiveMode, loadDiffFiles]);
 
   // Remember the topmost item and how far into it we had scrolled, before leaving the all-files
@@ -431,34 +450,42 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
                 <span className="code-pane-crumb-current" title={selectedPath}>{basename(selectedPath)}</span>
               </>}
         </nav>
-        {state === 'ready' && selectedPath === undefined && <span className="code-pane-count">{fileCount === 1 ? '1 file' : `${fileCount} files`}</span>}
-        {state === 'ready' && selectedPath === undefined && groups.supporting.length > 0 && (
+        {!compact && state === 'ready' && selectedPath === undefined && <span className="code-pane-count">{fileCount === 1 ? '1 file' : `${fileCount} files`}</span>}
+        {!compact && state === 'ready' && selectedPath === undefined && groups.supporting.length > 0 && (
           <button type="button" className="code-pane-group-toggle" aria-pressed={supportingExpanded} onClick={() => setSupportingExpanded(value => !value)}>
             {supportingExpanded ? 'Hide' : 'Show'} tests &amp; docs ({groups.supporting.length})
           </button>
         )}
         <span className="code-pane-spacer" />
-        {state === 'ready' && fileCount > 0 && <>
-          <span className="code-pane-segment" role="group" aria-label="Diff mode">
-            <button type="button" aria-pressed={effectiveMode === 'hunks'} onClick={() => setViewMode('hunks')}>Hunks</button>
-            <button type="button" aria-pressed={effectiveMode === 'full'} onClick={() => setViewMode('full')}>Full ctx</button>
-            <button type="button" aria-pressed={effectiveMode === 'plain'} disabled={selectedPath === undefined} title={selectedPath === undefined ? 'Open a file for the plain view' : undefined} onClick={() => setViewMode('plain')}>Plain file</button>
-          </span>
-          {!narrow && effectiveMode !== 'plain' && (
-            <span className="code-pane-segment" role="group" aria-label="Diff layout">
-              <button type="button" aria-pressed={!effectiveSplit} onClick={() => setSplit(false)}>Unified</button>
-              <button type="button" aria-pressed={effectiveSplit} onClick={() => setSplit(true)}>Split</button>
+        {/* Panels wide enough show the segmented controls inline; a compact one (a phone-width column)
+            folds them into the fly-out below so the file title stays readable. The Working / All PR
+            toggle stays available whenever the Comparison has settled — including when it resolved
+            empty — so switching to an empty Comparison never strands the reviewer. */}
+        {!compact ? <>
+          {state === 'ready' && fileCount > 0 && <>
+            <span className="code-pane-segment" role="group" aria-label="Diff mode">
+              <button type="button" aria-pressed={effectiveMode === 'hunks'} onClick={() => setViewMode('hunks')}>Hunks</button>
+              <button type="button" aria-pressed={effectiveMode === 'full'} onClick={() => setViewMode('full')}>Full ctx</button>
+              <button type="button" aria-pressed={effectiveMode === 'plain'} disabled={selectedPath === undefined} title={selectedPath === undefined ? 'Open a file for the plain view' : undefined} onClick={() => setViewMode('plain')}>Plain file</button>
+            </span>
+            {!narrow && effectiveMode !== 'plain' && (
+              <span className="code-pane-segment" role="group" aria-label="Diff layout">
+                <button type="button" aria-pressed={!effectiveSplit} onClick={() => setSplit(false)}>Unified</button>
+                <button type="button" aria-pressed={effectiveSplit} onClick={() => setSplit(true)}>Split</button>
+              </span>
+            )}
+          </>}
+          {state !== 'loading' && (
+            <span className="code-pane-segment" role="group" aria-label="Comparison">
+              <button type="button" aria-pressed={mode === 'working'} onClick={() => onSetMode('working')}>Working</button>
+              <button type="button" aria-pressed={mode === 'pr'} disabled={!prAvailable} title={prAvailable ? 'Compare the whole PR' : 'Merge target unavailable'} onClick={() => onSetMode('pr')}>All PR</button>
             </span>
           )}
-        </>}
-        {/* The Working / All PR toggle stays available whenever the Comparison has settled — including
-            when it resolved empty — so switching to an empty Comparison never strands the reviewer
-            with no way back to the one that had changes. */}
-        {state !== 'loading' && (
-          <span className="code-pane-segment" role="group" aria-label="Comparison">
-            <button type="button" aria-pressed={mode === 'working'} onClick={() => onSetMode('working')}>Working</button>
-            <button type="button" aria-pressed={mode === 'pr'} disabled={!prAvailable} title={prAvailable ? 'Compare the whole PR' : 'Merge target unavailable'} onClick={() => onSetMode('pr')}>All PR</button>
-          </span>
+        </> : state !== 'loading' && (
+          <button type="button" className="code-pane-options-open" aria-label="View options" aria-expanded={optionsOpen} title="View options" onClick={() => setOptionsOpen(value => !value)}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /><circle cx="9" cy="6" r="2" /><circle cx="15" cy="12" r="2" /><circle cx="9" cy="18" r="2" /></svg>
+            <span>Options</span>
+          </button>
         )}
         <FullscreenToggle expanded={expanded} onToggle={toggleExpanded} className="code-pane-expand" />
         <button type="button" className="code-pane-close" aria-label="Close code changes" title="Close" onClick={onClose}>
@@ -518,6 +545,46 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
               </button>
             </div>
             {fileList}
+          </div>
+        )}
+        {/* The narrow-panel controls fly-out: the segmented controls that don't fit in the toolbar,
+            each closing the fly-out as soon as it is chosen (so a phone tap picks one option and
+            returns to the diff). */}
+        {compact && optionsOpen && state !== 'loading' && (
+          <div className="code-pane-options" role="dialog" aria-label="View options" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setOptionsOpen(false); } }}>
+            <div className="code-pane-options-head">
+              <span>View options</span>
+              <button type="button" className="code-pane-close" aria-label="Close view options" title="Close" onClick={() => setOptionsOpen(false)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+              </button>
+            </div>
+            <div className="code-pane-options-body">
+              <div className="code-pane-options-group">
+                <span className="code-pane-options-label">Comparison</span>
+                <span className="code-pane-segment" role="group" aria-label="Comparison">
+                  <button type="button" aria-pressed={mode === 'working'} onClick={() => { onSetMode('working'); setOptionsOpen(false); }}>Working</button>
+                  <button type="button" aria-pressed={mode === 'pr'} disabled={!prAvailable} title={prAvailable ? undefined : 'Merge target unavailable'} onClick={() => { onSetMode('pr'); setOptionsOpen(false); }}>All PR</button>
+                </span>
+              </div>
+              {state === 'ready' && fileCount > 0 && (
+                <div className="code-pane-options-group">
+                  <span className="code-pane-options-label">Diff mode</span>
+                  <span className="code-pane-segment" role="group" aria-label="Diff mode">
+                    <button type="button" aria-pressed={effectiveMode === 'hunks'} onClick={() => { setViewMode('hunks'); setOptionsOpen(false); }}>Hunks</button>
+                    <button type="button" aria-pressed={effectiveMode === 'full'} onClick={() => { setViewMode('full'); setOptionsOpen(false); }}>Full ctx</button>
+                    <button type="button" aria-pressed={effectiveMode === 'plain'} disabled={selectedPath === undefined} title={selectedPath === undefined ? 'Open a file for the plain view' : undefined} onClick={() => { setViewMode('plain'); setOptionsOpen(false); }}>Plain file</button>
+                  </span>
+                </div>
+              )}
+              {state === 'ready' && selectedPath === undefined && groups.supporting.length > 0 && (
+                <div className="code-pane-options-group">
+                  <span className="code-pane-options-label">Tests &amp; docs</span>
+                  <button type="button" className="code-pane-group-toggle" aria-pressed={supportingExpanded} onClick={() => { setSupportingExpanded(value => !value); setOptionsOpen(false); }}>
+                    {supportingExpanded ? 'Hide' : 'Show'} ({groups.supporting.length})
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>

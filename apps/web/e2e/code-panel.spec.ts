@@ -136,6 +136,45 @@ test('keeps the Working / All PR toggle when a Comparison resolves with no files
   await expect(panel(page).getByRole('button', { name: 'Hunks' })).toHaveCount(0);
 });
 
+test('expands a collapsed hunk gap in Hunks mode without first visiting Full context', async ({ page }) => {
+  // two hunks far apart leave a large collapsed gap between them in Hunks mode
+  const baseLines = Array.from({ length: 60 }, (_, index) => `line ${index + 1}`);
+  const workingLines = baseLines.map((line, index) => (index === 1 ? 'line 2 changed' : index === 49 ? 'line 50 changed' : line));
+  const base = `${baseLines.join('\n')}\n`;
+  const working = `${workingLines.join('\n')}\n`;
+  const twoHunkPatch = ['diff --git a/src/big.ts b/src/big.ts', 'index 1111111..2222222 100644', '--- a/src/big.ts', '+++ b/src/big.ts', '@@ -1,5 +1,5 @@', ' line 1', '-line 2', '+line 2 changed', ' line 3', ' line 4', ' line 5', '@@ -47,7 +47,7 @@', ' line 47', ' line 48', ' line 49', '-line 50', '+line 50 changed', ' line 51', ' line 52', ' line 53'].join('\n') + '\n';
+  const bigFile: ComparisonFile = { change: { code: ' M', path: 'src/big.ts', additions: 2, deletions: 2 }, kind: 'tracked', patch: twoHunkPatch, capped: false };
+  const contents: ComparisonFileContents = { path: 'src/big.ts', base: revision('src/big.ts', base), working: revision('src/big.ts', working) };
+  await mountPanel(page, patchOf([bigFile]), { 'src/big.ts': contents });
+  await panel(page).getByRole('button', { name: 'big.ts' }).click();
+
+  // Hunks (default): a line inside the gap is hidden
+  await expect(panel(page).getByText('line 25', { exact: true })).toHaveCount(0);
+  // the gap is expandable straight away — previously it only worked after a Full-context round trip
+  // hydrated the partial patch (loadDiffFiles is now provided in every mode, not just Full context)
+  const gap = panel(page).locator('diffs-container').getByText(/unmodified lines/iu).first();
+  await expect(gap).toBeVisible();
+  await gap.click();
+  await expect(panel(page).getByText('line 25', { exact: true })).toBeVisible();
+});
+
+test('folds the toolbar controls into a fly-out on a narrow panel and closes it on selection', async ({ page }) => {
+  // a narrow root (below RAIL_BREAKPOINT) stands in for a phone / squeezed column
+  await mountPanel(page, patchOf([trackedFile('src/app.ts'), trackedFile('src/widget.ts')]), {}, false, 380);
+
+  // the segmented controls are not inline; one Options control gathers them so the file title fits
+  await expect(panel(page).getByRole('button', { name: 'Hunks' })).toHaveCount(0);
+  const options = panel(page).getByRole('button', { name: 'View options' });
+  await expect(options).toBeVisible();
+  await options.click();
+  const flyout = panel(page).getByRole('dialog', { name: 'View options' });
+  await expect(flyout.getByRole('button', { name: 'Working', exact: true })).toBeVisible();
+  await expect(flyout.getByRole('button', { name: 'Hunks' })).toBeVisible();
+  // choosing an option applies it and closes the fly-out
+  await flyout.getByRole('button', { name: 'All PR' }).click();
+  await expect(flyout).toBeHidden();
+});
+
 test('covers a size-capped file with a Load anyway placeholder instead of a diff', async ({ page }) => {
   await mountPanel(page, patchOf([trackedFile('src/app.ts'), cappedFile('src/generated.ts')]));
 
