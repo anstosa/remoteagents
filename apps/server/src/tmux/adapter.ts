@@ -9,7 +9,8 @@ const attentionStates: ReadonlySet<string> = new Set(['working', 'finished', 'qu
 const postEscapeDelayMs = 120;
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
-function safeSnapshot(value: string): string {
+// sanitize terminal controls without rewriting semantic SGR state
+function safeTerminalText(value: string): string {
   let result = '';
   for (let index = 0; index < value.length; index += 1) {
     const character = value[index]!;
@@ -33,7 +34,12 @@ function safeSnapshot(value: string): string {
     }
     if (character >= '\x20' || character === '\n' || character === '\r' || character === '\t') result += character;
   }
-  const trimmed = result.replace(/(?:[ \t]*\r?\n)+[ \t]*$/u, '');
+  return result.replace(/(?:[ \t]*\r?\n)+[ \t]*$/u, '');
+}
+
+// prevent background bleed only when preparing a browser snapshot
+function safeSnapshot(value: string): string {
+  const trimmed = safeTerminalText(value);
   return trimmed && `${trimmed.replace(/\r?\n/g, '\x1b[49m\n')}\x1b[49m`;
 }
 
@@ -186,10 +192,12 @@ export class TmuxAdapter {
     return (await run(this.binary, ['-S', socket.path, 'set-option', '-p', '-t', pane, '@rac_display_label', label])).code === 0;
   }
 
+  // preserve original styles for adapter-owned semantic parsing
   async capture(socket: SocketRef, pane: string): Promise<string | undefined> {
+    // reject unsafe pane coordinates
     if (!paneId.test(pane)) return undefined;
     const out = await run(this.binary, ['-S', socket.path, ...capturePaneArgs(pane, 800)]);
-    return out.code === 0 ? safeSnapshot(out.stdout).slice(-96_000) : undefined;
+    return out.code === 0 ? safeTerminalText(out.stdout).slice(-96_000) : undefined;
   }
 
   // capture a pane's scrollback to the given depth, spawning a tmux process unless a

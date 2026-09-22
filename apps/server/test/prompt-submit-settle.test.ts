@@ -7,6 +7,12 @@ import { QueuedPromptService } from '../src/prompts/queue.js';
 import { stated } from './helpers/agent.js';
 
 const socket = { fingerprint: 'socket', path: '/tmp/sock', device: 1, inode: 1 };
+const composerBackground = '\x1b[48;2;24;25;28m';
+const resetBackground = '\x1b[49m';
+// style one codex particle cell
+const animatedSparkle = (dot: string) => `\x1b[38;2;255;220;96m${dot}\x1b[39m`;
+// wrap one rgb composer row
+const composerRow = (text: string) => `${composerBackground}${text}${resetBackground}`;
 
 // Regression for the reported bug: Codex's Tab submit was intermittently swallowed
 // by a composer that had not yet rendered the paste. The prompt then never started,
@@ -66,6 +72,91 @@ describe('interactive submit settle', () => {
 
       expect(sent).toEqual([['Enter']]);
       await expect(service.listQueued(agent.id)).resolves.toEqual([]);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  // accept the draft and acknowledgement throughout composer animation
+  it('submits a queued prompt through Codex animated sparkle frames', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-submit-sparkles-'));
+    const queue = new QueuedPromptService(join(directory, 'queue.json'));
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/tmp', title: 'Ready' });
+    const prompt = 'Explain the cached weather output';
+    const sparkles = ['⠁', '⠂', '⠄', '⠈', '⠐', '⠠', '⡀', '⢀'];
+    const pasted: string[] = [];
+    const sent: string[][] = [];
+    const drained: string[] = [];
+    let captures = 0;
+    let submitted = false;
+    // keep one stable target
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
+    const tmux = {
+      // retain the single bracketed paste
+      pastePrompt: async (_socket: unknown, _pane: string, _buffer: string, text: string) => { pasted.push(text.trimEnd()); return true; },
+      // animate particles across semantic blank cells on every poll
+      capture: async () => {
+        const first = animatedSparkle(sparkles[captures % sparkles.length]!);
+        const second = animatedSparkle(sparkles[(captures + 3) % sparkles.length]!);
+        const third = animatedSparkle(sparkles[(captures + 6) % sparkles.length]!);
+        captures += 1;
+        // show the sparkled placeholder after Codex accepts the prompt
+        if (submitted) return [
+          '• Working',
+          '',
+          composerRow(`    ${second}             ${third}`),
+          composerRow(`›${first}Ask${second}Codex${third}to do${first}anything`),
+          composerRow(`       ${third} ${first}`),
+          '  gpt-6-astra xhigh fast · ~/weather · main'
+        ].join('\n');
+        return [
+          composerRow(`    ${second}             ${third}`),
+          composerRow(`›${first}Explain${second}the cached${third}weather output`),
+          composerRow(`       ${third} ${first}`),
+          '  gpt-6-astra xhigh fast · ~/weather · main'
+        ].join('\n');
+      },
+      // accept the rendered prompt once
+      sendKeys: async (_socket: unknown, _pane: string, keys: string[]) => { sent.push(keys); submitted = true; return true; }
+    };
+    // record any false undelivered transfer
+    const drain = async (_scope: string, queued: { text: string }) => { drained.push(queued.text); return true; };
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue, drain as never);
+    try {
+      await expect(service.submit(agent.id, prompt)).resolves.toBe(true);
+
+      expect(pasted).toEqual([prompt]);
+      expect(sent).toEqual([['Enter']]);
+      await expect(service.listQueued(agent.id)).resolves.toEqual([]);
+
+      await service.observe(agent);
+      expect(drained).toEqual([]);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  // preserve literal braille as authored input
+  it('does not submit when literal Braille replaces expected spaces', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-submit-sparkle-mismatch-'));
+    const queue = new QueuedPromptService(join(directory, 'queue.json'));
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/tmp', title: 'Ready' });
+    let submissions = 0;
+    // keep one stable target
+    const discovery = { worktreesNow: () => [], target: async () => ({ agent, socket }) };
+    const tmux = {
+      // accept the bracketed paste
+      pastePrompt: async () => true,
+      // expose literal default-foreground braille in the live draft
+      capture: async () => [
+        composerRow('› review,⠁commit,⠂and⠄push'),
+        '  gpt-6-astra xhigh fast · ~/weather · main'
+      ].join('\n'),
+      // count accidental submissions
+      sendKeys: async () => { submissions += 1; return true; }
+    };
+    const service = new PromptService(discovery as never, tmux as never, undefined, queue);
+    try {
+      await expect(service.submit(agent.id, 'review, commit, and push')).resolves.toBe(true);
+
+      expect(submissions).toBe(0);
+      await expect(service.listQueued(agent.id)).resolves.toMatchObject([{ text: 'review, commit, and push' }]);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 

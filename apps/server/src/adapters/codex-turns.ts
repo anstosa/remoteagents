@@ -15,6 +15,50 @@ import type { SubmissionDraftState } from './types.js';
 const selectedChoice = /^›\s+(?:\[[ xX]\]\s*)?\d+[.)]\s/u;
 // identify Codex's bottom status row
 const composerStatusLine = /^ {2}\S.*(?: · \S.*)+$/u;
+// terminal modifier resets may clear more than one style bit
+const modifierResets: Partial<Record<number, readonly number[]>> = {
+  22: [1, 2], 23: [3], 24: [4, 21], 25: [5, 6], 27: [7], 28: [8], 29: [9]
+};
+
+// codex paints particles with RGB foreground/background and no modifiers; authored text retains its own style
+function withoutComposerSparkles(value: string): string {
+  let rgbForeground = false;
+  let rgbBackground = false;
+  const modifiers = new Set<number>();
+  // preserve OSC payloads while inspecting SGR changes and the eight decorative glyphs
+  return value.replace(/\x1b\](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\)|\x1b\[([0-9;:]*)m|[⠁⠂⠄⠈⠐⠠⡀⢀]/gu, (token: string, parameters: string | undefined) => {
+    // normalize only rendered particles, never unstyled user-authored Braille
+    if (parameters === undefined) return token.length === 1 && rgbForeground && rgbBackground && modifiers.size === 0 ? ' ' : token;
+    const codes = parameters.split(';').map(Number);
+    // track persistent styles across cells, rows, and combined SGR sequences
+    for (let index = 0; index < codes.length; index += 1) {
+      const code = codes[index]!;
+      // clear all styles on a full terminal reset
+      if (code === 0) {
+        rgbForeground = false;
+        rgbBackground = false;
+        modifiers.clear();
+      } else if (code === 38 || code === 48) {
+        const mode = codes[index + 1];
+        const rgb = mode === 2 && codes.length > index + 4;
+        // keep foreground and background color modes independent
+        if (code === 38) rgbForeground = rgb;
+        else rgbBackground = rgb;
+        index += mode === 2 ? 4 : mode === 5 ? 2 : 0;
+      } else if (code === 39 || code >= 30 && code <= 37 || code >= 90 && code <= 97) rgbForeground = false;
+      else if (code === 49 || code >= 40 && code <= 47 || code >= 100 && code <= 107) rgbBackground = false;
+      else if (modifierResets[code] !== undefined) {
+        // clear only the specified modifiers
+        for (const modifier of modifierResets[code]) modifiers.delete(modifier);
+      } else {
+        modifiers.add(code);
+        // unknown SGR formats remain literal until an explicit reset
+        if (!(code >= 1 && code <= 9 || code === 21)) break;
+      }
+    }
+    return token;
+  });
+}
 
 /**
  * Tab is Codex's queue key.  Its completion menu owns Tab while the composer
@@ -31,7 +75,7 @@ const plainTerminalText = (value: string) => value
 
 // read only the bottom-most prompt or shell composer, excluding matching scrollback
 function activeComposerFromCapture(value: string): string | undefined {
-  const lines = plainTerminalText(value).split('\n');
+  const lines = plainTerminalText(withoutComposerSparkles(value)).split('\n');
   let finalVisibleRow = lines.length - 1;
   // locate the terminal footer row above trailing space
   while (finalVisibleRow >= 0 && !lines[finalVisibleRow]!.trim()) finalVisibleRow -= 1;
@@ -69,13 +113,16 @@ export function codexDraftState(capture: string, prompt: string): SubmissionDraf
   if (composer === undefined) return 'unknown';
   const normalizedComposer = composer.replace(/\s+/gu, ' ').trim().replace(/^!\s*/u, '!');
   const normalizedPrompt = prompt.replace(/\s+/gu, ' ').trim().replace(/^!\s*/u, '!');
-  const visibleSuffix = normalizedPrompt.slice(-Math.min(64, normalizedPrompt.length));
-  const collapsedPaste = `[Pasted Content ${prompt.length} chars]`;
+  // keep the visible tail on Unicode character boundaries
+  const promptCharacters = [...normalizedPrompt];
+  const visibleSuffix = promptCharacters.slice(-64).join('');
+  // codex counts pasted Unicode scalar values rather than UTF-16 units
+  const collapsedPaste = `[Pasted Content ${[...prompt].length} chars]`;
   // accept Codex's exact long-paste placeholder
   if (normalizedComposer.includes(collapsedPaste)) return 'visible';
   // anchor short prompts at the composer start so footer text cannot match
-  if (normalizedPrompt.length <= 64) return normalizedComposer.startsWith(normalizedPrompt) ? 'visible' : 'cleared';
-  // match the visible tail when a long composer scrolls its prefix away
+  if (promptCharacters.length <= 64) return normalizedComposer.startsWith(normalizedPrompt) ? 'visible' : 'cleared';
+  // match only the visible tail when a long composer scrolls its prefix away
   return normalizedComposer.includes(visibleSuffix) ? 'visible' : 'cleared';
 }
 

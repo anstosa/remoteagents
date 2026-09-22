@@ -5,7 +5,7 @@ const { run } = vi.hoisted(() => ({ run: vi.fn() }));
 vi.mock('../src/tmux/command.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../src/tmux/command.js')>()), run }));
 
 import { TmuxAdapter } from '../src/tmux/adapter.js';
-import { latestAgentMessageFromHistory, latestCompletedAssistantMessage, latestCompletedAssistantTurn } from '../src/adapters/codex-turns.js';
+import { codexDraftState, latestAgentMessageFromHistory, latestCompletedAssistantMessage, latestCompletedAssistantTurn } from '../src/adapters/codex-turns.js';
 
 describe('TmuxAdapter capture', () => {
   beforeEach(() => {
@@ -18,9 +18,20 @@ describe('TmuxAdapter capture', () => {
 
     run.mockResolvedValueOnce({ code: 0, stdout: '\x1b[38;2;137;180;250mCodex UI\x1b[0m\n\x1b[?1049hmenu\x1b[?1049l\x1b]8;;https://example.com\x07link\x1b]8;;\x07', stderr: '' });
 
-    await expect(new TmuxAdapter().capture(socket, '%1')).resolves.toBe('\x1b[38;2;137;180;250mCodex UI\x1b[0m\x1b[49m\nmenulink\x1b[49m');
+    await expect(new TmuxAdapter().capture(socket, '%1')).resolves.toBe('\x1b[38;2;137;180;250mCodex UI\x1b[0m\nmenulink');
 
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'capture-pane', '-e', '-p', '-t', '%1', '-S', '-800']);
+  });
+
+  // preserve semantic color state while browser snapshots retain their own row resets
+  it('preserves composer background across wrapped rows for draft observation', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    const rendered = '\x1b[48;2;30;30;30m› First paragraph\n  second\x1b[38;2;20;20;20m⠁\x1b[39mparagraph\x1b[49m';
+    run.mockResolvedValueOnce({ code: 0, stdout: rendered, stderr: '' });
+
+    const captured = await new TmuxAdapter().capture(socket, '%1');
+    expect(captured).toBe(rendered);
+    expect(codexDraftState(captured!, 'First paragraph second paragraph')).toBe('visible');
   });
 
   it('reports the tmux session name used to distinguish internal command panes', async () => {
