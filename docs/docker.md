@@ -18,6 +18,14 @@ Host tmux integration and Cloudflare are independent opt-in layers.
    Wrap the Argon2 value in single quotes because its `$` characters otherwise
    trigger Compose interpolation.
 
+   Set `TZ` in the same ignored `.env` to the server's IANA timezone. On a
+   systemd host, `timedatectl show --property=Timezone --value` prints that value.
+   Compose passes it to the server through `env_file`; without it, the image
+   uses UTC rather than the host's local timezone. Queued/unsent-prompt note
+   titles and scheduled prompts use this server-local timezone, including
+   daylight-saving changes. Choose it before creating schedules. Existing note
+   titles are saved text and are not rewritten when the timezone changes.
+
 3. Validate the configuration before building:
 
    ```bash

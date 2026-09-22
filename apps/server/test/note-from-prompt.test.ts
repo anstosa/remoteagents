@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { promptNoteContent } from '../src/notes/from-prompt.js';
 
@@ -13,6 +14,23 @@ describe('promptNoteContent', () => {
       .toBe('Queued prompt in Renamed Cora · 12:05 PM');
     expect(promptNoteContent('Renamed Cora', new Date(2026, 8, 7, 0, 5), { text: 'Midnight prompt.' }).title)
       .toBe('Queued prompt in Renamed Cora · 12:05 AM');
+  });
+
+  // exercise the real process timezone independently of the test worker's zone
+  it.each([
+    ['UTC', '2026-09-22T15:05:00Z', '3:05 PM'],
+    ['America/Los_Angeles', '2026-09-22T15:05:00Z', '8:05 AM'],
+    ['America/Los_Angeles', '2026-01-22T15:05:00Z', '7:05 AM'],
+    ['Asia/Tokyo', '2026-09-22T15:05:00Z', '12:05 AM']
+  ])('formats %s server-local time for %s', (timeZone, instant, expected) => {
+    const script = `import { promptNoteContent } from './src/notes/from-prompt.ts';
+      console.log(promptNoteContent('workspace', new Date(process.argv[1]), { text: 'Queued prompt' }).title);`;
+    const title = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script, instant], {
+      cwd: new URL('..', import.meta.url),
+      env: { ...process.env, TZ: timeZone },
+      encoding: 'utf8'
+    }).trim();
+    expect(title).toBe(`Queued prompt in workspace · ${expected}`);
   });
 
   it('lists dropped attachment names after the text', () => {
