@@ -123,6 +123,19 @@ test('renders implementation changes and collapses tests & docs by default', asy
   await expect(diffHeaders(page)).toHaveCount(3);
 });
 
+test('keeps the Working / All PR toggle when a Comparison resolves with no files', async ({ page }) => {
+  // an empty Comparison (e.g. switching to Working when everything is committed) must not strand the
+  // reviewer: the mode/layout controls hide with no files, but the Working / All PR toggle stays so
+  // they can switch back to the Comparison that had changes
+  await mountPanel(page, patchOf([]));
+
+  await expect(panel(page).getByText('No changes to show.')).toBeVisible();
+  await expect(panel(page).getByRole('button', { name: 'Working', exact: true })).toBeVisible();
+  await expect(panel(page).getByRole('button', { name: 'All PR' })).toBeVisible();
+  // the file-dependent controls are correctly absent
+  await expect(panel(page).getByRole('button', { name: 'Hunks' })).toHaveCount(0);
+});
+
 test('covers a size-capped file with a Load anyway placeholder instead of a diff', async ({ page }) => {
   await mountPanel(page, patchOf([trackedFile('src/app.ts'), cappedFile('src/generated.ts')]));
 

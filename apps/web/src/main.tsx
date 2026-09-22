@@ -4394,7 +4394,7 @@ function ResizableLogSplit({ worktreeId, output, note, browser, code, terminals,
     saveSplitSizes(worktreeId, signature, resized);
     event.preventDefault();
   };
-  const hasSplit = hasNote || hasBrowser || hasTerminals;
+  const hasSplit = hasNote || hasBrowser || hasCode || hasTerminals;
   // fall back to the agent when the chosen mobile panel is no longer open
   const visibleMobilePanel = keys.includes(mobilePanel) ? mobilePanel : 'agent';
   // Report the visible phone Terminal so the footer swaps the Agent's composer for that pane's

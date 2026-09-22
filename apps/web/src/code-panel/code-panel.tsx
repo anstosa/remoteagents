@@ -450,11 +450,16 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
               <button type="button" aria-pressed={effectiveSplit} onClick={() => setSplit(true)}>Split</button>
             </span>
           )}
+        </>}
+        {/* The Working / All PR toggle stays available whenever the Comparison has settled — including
+            when it resolved empty — so switching to an empty Comparison never strands the reviewer
+            with no way back to the one that had changes. */}
+        {state !== 'loading' && (
           <span className="code-pane-segment" role="group" aria-label="Comparison">
             <button type="button" aria-pressed={mode === 'working'} onClick={() => onSetMode('working')}>Working</button>
             <button type="button" aria-pressed={mode === 'pr'} disabled={!prAvailable} title={prAvailable ? 'Compare the whole PR' : 'Merge target unavailable'} onClick={() => onSetMode('pr')}>All PR</button>
           </span>
-        </>}
+        )}
         <FullscreenToggle expanded={expanded} onToggle={toggleExpanded} className="code-pane-expand" />
         <button type="button" className="code-pane-close" aria-label="Close code changes" title="Close" onClick={onClose}>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
