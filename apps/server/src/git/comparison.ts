@@ -321,7 +321,12 @@ export async function synthesizeUntrackedPatch(workspace: string, change: GitSta
 // capture the unified patch for one tracked Change against `base`; `ok: false` means git failed
 export async function capturePatch(workspace: string, base: string, change: GitStatusChange): Promise<{ ok: true; patch: string } | { ok: false }> {
   const paths = [change.originalPath, change.path].filter((path): path is string => path !== undefined);
-  const result = await run(git, ['--no-optional-locks', '-C', workspace, 'diff', '--binary', '--no-ext-diff', '--no-color', '--unified=3', '--find-renames', base, '--', ...paths], undefined, 20_000);
+  // Force the standard a/ b/ path prefixes so the patch parses regardless of the user's git config:
+  // diff.mnemonicPrefix (c/ w/ i/ …), diff.noprefix, and custom diff.srcPrefix/dstPrefix would
+  // otherwise flow into the header, and @pierre/diffs' parser rejects a non-a/b header ("invalid git
+  // diff header") — leaving the diff nameless, which breaks file-at-revision loads (full context,
+  // Load anyway) and the Review tour. Explicit --src-prefix/--dst-prefix override every prefix config.
+  const result = await run(git, ['--no-optional-locks', '-C', workspace, 'diff', '--binary', '--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/', '--unified=3', '--find-renames', base, '--', ...paths], undefined, 20_000);
   // surface git failures to the caller
   if (result.code !== 0) return { ok: false };
   return { ok: true, patch: result.stdout || `${change.code.trim() || 'metadata'} ${change.originalPath === undefined ? change.path : `${change.originalPath} -> ${change.path}`}` };

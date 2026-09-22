@@ -302,6 +302,22 @@ describe('comparison patch capture', () => {
     expect(patch.truncated).toBe(false);
   });
 
+  it('captures standard a/ b/ prefixes regardless of the user git prefix config', async () => {
+    const { root, comparison } = await scenario();
+    // A reviewer with diff.mnemonicPrefix (c/ w/ i/ …) or diff.noprefix set would otherwise get a
+    // header the diff library rejects, leaving the file nameless and breaking file-at-revision loads
+    // (full context, Load anyway) and the Review tour.
+    await git(root, 'config', 'diff.mnemonicPrefix', 'true');
+    await git(root, 'config', 'diff.noprefix', 'true');
+    const patch = await captureComparisonPatch(root, comparison, bigLimits);
+    const keep = fileFor(patch, 'keep.ts');
+    expect(keep?.patch).toContain('diff --git a/keep.ts b/keep.ts');
+    expect(keep?.patch).toContain('--- a/keep.ts');
+    expect(keep?.patch).toContain('+++ b/keep.ts');
+    // no mnemonic/no-prefix header leaked through
+    expect(keep?.patch).not.toMatch(/ [cwio]\/keep\.ts/u);
+  });
+
   it('marks files past the per-file cap and truncates past the total cap', async () => {
     const { root, comparison } = await scenario();
 
