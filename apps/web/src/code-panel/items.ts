@@ -2,7 +2,7 @@
 // CodeView items. Importing the library here (not in comparison.ts) is what keeps it out of the
 // eager bundle — only code-panel.tsx, which main.tsx lazy-imports, pulls this in. Kept side-effect
 // free so the isolated-component fixture can exercise item derivation without the dashboard.
-import { parseDiffFromFile, parsePatchFiles, type CodeViewDiffItem } from '@pierre/diffs';
+import { parseDiffFromFile, parsePatchFiles, type CodeViewDiffItem, type CodeViewFileItem, type FileDiffLoadedChangedFiles } from '@pierre/diffs';
 import type { ComparisonFile, ComparisonFileContents } from './comparison.js';
 
 // Line cap for syntax tokenization: past this a file renders as plain (un-highlighted) text so a
@@ -53,4 +53,27 @@ export const diffItemForContents = (contents: ComparisonFileContents): CodeViewD
   const newFile = contents.working === null ? null : { name: contents.path, contents: newText ?? '', cacheKey: `new:${contents.path}#${version}` };
   const fileDiff = parseDiffFromFile(oldFile, newFile, undefined, false);
   return { id: `diff:${contents.path}`, type: 'diff', fileDiff, version };
+};
+
+// Build a plain (non-diff) file item from the working-tree contents, for the single-file "Plain
+// file" mode. The id namespace (`file:`) is disjoint from `diff:` so switching a file between diff
+// and plain modes swaps the item cleanly, and `version` moves only when the contents change.
+export const fileItemForContents = (path: string, contents: string): CodeViewFileItem => {
+  const version = contentHash(contents);
+  return { id: `file:${path}`, type: 'file', file: { name: path, contents, cacheKey: `file:${path}#${version}` }, version };
+};
+
+// Map a changed file's two sides (the /comparison/file payload) into the `loadDiffFiles` result the
+// diff library hydrates a partial patch with, so Full-context mode can expand the surrounding lines.
+// Returns undefined when either side has no text (a binary side), which cannot be expanded as text.
+export const loadedFilesFromContents = (contents: ComparisonFileContents): FileDiffLoadedChangedFiles | undefined => {
+  const oldText = contents.base?.content;
+  const newText = contents.working?.content;
+  if (oldText === undefined || newText === undefined) return undefined;
+  const oldName = contents.base?.path ?? contents.path;
+  const version = sidesHash(oldText, newText);
+  return {
+    oldFile: { name: oldName, contents: oldText, cacheKey: `old:${contents.path}#${version}` },
+    newFile: { name: contents.path, contents: newText, cacheKey: `new:${contents.path}#${version}` }
+  };
 };

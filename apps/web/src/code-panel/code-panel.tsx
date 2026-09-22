@@ -1,27 +1,49 @@
-// The Code panel view: one virtualized scroll of a Comparison's Changes, rendered with
-// `@pierre/diffs`. This module is the app's only importer of the library, and main.tsx pulls it in
-// with a dynamic `import()` so the ~177 kB (plus lazy shiki chunks) never lands in the eager
-// dashboard bundle. It is a controlled view — main.tsx (or the test fixture) owns the Comparison
-// and hands it in — so it stays free of any network code and easy to drive in isolation.
-import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
-import { CodeView, type CodeViewItem, type CodeViewReactOptions } from '@pierre/diffs/react';
+// The Code panel view: a Comparison's Changes rendered with `@pierre/diffs`, either as one
+// virtualized scroll of every file or filtered to a single file. This module is the app's only
+// importer of the library, and main.tsx pulls it in with a dynamic `import()` so the ~177 kB (plus
+// lazy shiki chunks) never lands in the eager dashboard bundle. It is a controlled view — the
+// controller (main.tsx) or the test fixture owns which Comparison and which file it shows and hands
+// them in — so it stays free of any network code and easy to drive in isolation. What the view owns
+// itself is purely visual: the diff mode (Hunks / Full context / Plain file), unified vs split, and
+// the changed-file rail/drawer.
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CodeView, type CodeViewHandle, type CodeViewItem, type CodeViewReactOptions, type FileDiffMetadata } from '@pierre/diffs/react';
 import { useColorTheme } from '../color-theme.js';
-import { groupComparisonFiles, type CodePanelMode, type CodePanelState, type ComparisonFile, type ComparisonFileContents, type ComparisonPatch } from './comparison.js';
-import { CODE_TOKENIZE_MAX_LINES, diffItemForContents, diffItemForFile } from './items.js';
+import { groupComparisonFiles, type CodePanelMode, type CodePanelState, type ComparisonChange, type ComparisonFile, type ComparisonFileContents, type ComparisonPatch } from './comparison.js';
+import { CODE_TOKENIZE_MAX_LINES, diffItemForContents, diffItemForFile, fileItemForContents, loadedFilesFromContents } from './items.js';
 
 type PanelItem = CodeViewItem<undefined>;
 type PanelOptions = CodeViewReactOptions<undefined, undefined>;
+type PanelHandle = CodeViewHandle<undefined, undefined>;
 
 // The font metrics the diffs render at. Kept as constants so the CSS variables the shadow DOM reads
 // and the virtualiser's `itemMetrics` stay in lockstep — a mismatch mis-measures every row's height.
 const FONT_SIZE = 13;
 const LINE_HEIGHT = 20;
 
+// Below this panel width the changed-file list is a slide-over drawer rather than a persistent left
+// rail, and the split layout is unavailable — one width rule covers both phones (always narrow) and
+// a narrow desktop column, which is what "phones force unified" and "narrow panels auto-collapse"
+// both come down to.
+const RAIL_BREAKPOINT = 640;
+
+// Which context a diff shows: only the patched hunks, the whole file with unchanged lines expanded,
+// or the current file as plain text (no diff — single-file only).
+type ViewMode = 'hunks' | 'full' | 'plain';
+
 export type CodePanelProps = {
+  // the Comparison the panel shows: Working tree vs HEAD, or the whole PR
   mode: CodePanelMode;
   state: CodePanelState;
   patch: ComparisonPatch | undefined;
+  // the one file the panel is filtered to, or undefined for the all-files scroll
+  selectedPath: string | undefined;
+  // whether an All PR Comparison exists to toggle to (disables the header toggle when it does not)
+  prAvailable: boolean;
   loadFile: (path: string) => Promise<ComparisonFileContents | undefined>;
+  onSelectFile: (path: string) => void;
+  onClearFile: () => void;
+  onSetMode: (mode: CodePanelMode) => void;
   onClose: () => void;
   onRetry?: () => void;
 };
@@ -31,29 +53,116 @@ type PlaceholderReason = 'capped' | 'binary' | 'metadata' | 'unrenderable';
 type Placeholder = { path: string; reason: PlaceholderReason; note?: string };
 // The per-Change load status of the "Load anyway" affordance.
 type LoadStatus = 'loading' | 'error';
+// Where the reviewer was when they left the all-files scroll, so returning restores their place: the
+// topmost item and how far into that item they had scrolled. Anchored to an item id — not a raw
+// scrollTop — so it survives the single-file layout that replaces the item list in between, and (the
+// offset being into one item, bounded by its height) restores exactly when the same list returns.
+type ScrollAnchor = { id: string; offset: number };
 
-export default function CodePanel({ mode, state, patch, loadFile, onClose, onRetry }: CodePanelProps) {
+const basename = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
+
+// The placeholder a diffable-in-principle file falls back to when its patch cannot be rendered
+// (withheld for size, binary, or a metadata-only change); undefined means it renders as a real diff.
+const placeholderFor = (file: ComparisonFile): Placeholder | undefined => {
+  if (file.capped) return { path: file.change.path, reason: 'capped' };
+  if (file.kind === 'binary') return { path: file.change.path, reason: 'binary' };
+  if (file.kind === 'metadata') return { path: file.change.path, reason: 'metadata', note: file.patch };
+  return undefined;
+};
+
+export default function CodePanel({ mode, state, patch, selectedPath, prAvailable, loadFile, onSelectFile, onClearFile, onSetMode, onClose, onRetry }: CodePanelProps) {
   const theme = useColorTheme();
   const [supportingExpanded, setSupportingExpanded] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>('hunks');
+  const [split, setSplit] = useState(false);
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [narrow, setNarrow] = useState(false);
   // Changes the reviewer pulled in with "Load anyway", keyed by path; they render as ordinary diff
   // items alongside the rest.
   const [loaded, setLoaded] = useState<Record<string, PanelItem>>({});
   const [loadStatus, setLoadStatus] = useState<Record<string, LoadStatus>>({});
+  // The working-tree contents for the selected file in Plain mode, fetched on demand.
+  const [plain, setPlain] = useState<{ path: string; contents?: string; error?: boolean }>();
 
-  // "Load anyway" results belong to one Comparison; drop them when the patch changes (a mode switch
-  // or refetch) so a withheld file from the old Comparison never lingers in the new one.
-  useEffect(() => { setLoaded({}); setLoadStatus({}); }, [patch?.fingerprint]);
+  const panelRef = useRef<HTMLElement>(null);
+  const viewRef = useRef<PanelHandle>(null);
+  // The place to return to when the reviewer leaves the all-files scroll for one file.
+  const anchorRef = useRef<ScrollAnchor | undefined>(undefined);
+
+  // "Load anyway" results and Plain contents belong to one Comparison; drop them when the patch
+  // changes (a mode switch or refetch) so a withheld file from the old Comparison never lingers. A
+  // captured scroll anchor points at an item in the old list, so it is stale too.
+  useEffect(() => { setLoaded({}); setLoadStatus({}); setPlain(undefined); anchorRef.current = undefined; }, [patch?.fingerprint]);
   // The current Comparison's fingerprint, tracked in a ref so an in-flight "Load anyway" can tell
   // the Comparison changed under it (a stale resolve must not write into the new patch's map).
   const fingerprintRef = useRef(patch?.fingerprint);
   fingerprintRef.current = patch?.fingerprint;
 
+  // Track the panel's own width so the file list and layout adapt to a narrow column, not just a
+  // narrow viewport — a Code panel is one column in the split and can be much narrower than the tab.
+  useEffect(() => {
+    const el = panelRef.current;
+    if (el === null) return;
+    const observer = new ResizeObserver(entries => setNarrow((entries[0]?.contentRect.width ?? el.clientWidth) < RAIL_BREAKPOINT));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // Plain view is single-file only; fall back to Hunks in the all-files scroll. Split needs a wide
+  // column, so a narrow panel (a phone, or a squeezed column) is always unified.
+  const effectiveMode: ViewMode = selectedPath === undefined && viewMode === 'plain' ? 'hunks' : viewMode;
+  const effectiveSplit = split && !narrow && effectiveMode !== 'plain';
+
   const groups = useMemo(() => patch === undefined ? { implementation: [], supporting: [] } : groupComparisonFiles(patch.files), [patch]);
 
-  // One pass over the visible files, in Implementation-then-Tests&docs order, splitting each into a
-  // rendered diff item (in the scroll) or a placeholder (in the list above it). "Load anyway" moves a
-  // file out of the placeholder list and into the diff scroll, in its group order.
-  const { items, placeholders } = useMemo(() => {
+  // Fetch the working-tree contents for the selected file when Plain mode needs them.
+  useEffect(() => {
+    if (patch === undefined || selectedPath === undefined || effectiveMode !== 'plain') { setPlain(undefined); return; }
+    if (patch.files.every(file => file.change.path !== selectedPath)) return;
+    let cancelled = false;
+    const path = selectedPath;
+    setPlain({ path });
+    void (async () => {
+      const contents = await loadFile(path);
+      if (cancelled) return;
+      const text = contents?.working?.content;
+      setPlain(text === undefined ? { path, error: true } : { path, contents: text });
+    })();
+    return () => { cancelled = true; };
+  }, [patch, selectedPath, effectiveMode, loadFile]);
+
+  // Full-context mode hydrates a partial patch with the file's two revisions so the diff library can
+  // expand the unchanged lines around each hunk.
+  const loadDiffFiles = useCallback(async (fileDiff: FileDiffMetadata) => {
+    const contents = await loadFile(fileDiff.name);
+    const loadedFiles = contents === undefined ? undefined : loadedFilesFromContents(contents);
+    if (loadedFiles === undefined) throw new Error('file contents unavailable');
+    return loadedFiles;
+  }, [loadFile]);
+
+  // One pass building the CodeView items (in the scroll) and placeholders (in the list above it) for
+  // the current view: a single selected file, or every visible file in Implementation-then-Tests&docs
+  // order. "Load anyway" moves a withheld file out of the placeholder list and into the diff scroll.
+  const { items, placeholders, missing } = useMemo(() => {
+    if (patch === undefined) return { items: [] as PanelItem[], placeholders: [] as Placeholder[], missing: false };
+    if (selectedPath !== undefined) {
+      const file = patch.files.find(candidate => candidate.change.path === selectedPath);
+      if (file === undefined) return { items: [], placeholders: [], missing: true };
+      // Plain mode always renders the whole current file, even for a file the reviewer earlier
+      // pulled in with "Load anyway" — so it wins over the cached diff item.
+      if (effectiveMode === 'plain') {
+        return plain?.path === selectedPath && plain.contents !== undefined
+          ? { items: [fileItemForContents(selectedPath, plain.contents)], placeholders: [], missing: false }
+          : { items: [], placeholders: [], missing: false };
+      }
+      const already = loaded[selectedPath];
+      if (already !== undefined) return { items: [already], placeholders: [], missing: false };
+      const placeholder = placeholderFor(file);
+      if (placeholder !== undefined) return { items: [], placeholders: [placeholder], missing: false };
+      const item = diffItemForFile(file);
+      return item !== undefined ? { items: [item], placeholders: [], missing: false } : { items: [], placeholders: [{ path: selectedPath, reason: 'unrenderable' as const }], missing: false };
+    }
     const ordered: ComparisonFile[] = [...groups.implementation, ...(supportingExpanded ? groups.supporting : [])];
     const nextItems: PanelItem[] = [];
     const nextPlaceholders: Placeholder[] = [];
@@ -61,29 +170,65 @@ export default function CodePanel({ mode, state, patch, loadFile, onClose, onRet
       const path = file.change.path;
       const already = loaded[path];
       if (already !== undefined) { nextItems.push(already); continue; }
-      if (file.capped) { nextPlaceholders.push({ path, reason: 'capped' }); continue; }
-      if (file.kind === 'binary') { nextPlaceholders.push({ path, reason: 'binary' }); continue; }
-      if (file.kind === 'metadata') { nextPlaceholders.push({ path, reason: 'metadata', note: file.patch }); continue; }
+      const placeholder = placeholderFor(file);
+      if (placeholder !== undefined) { nextPlaceholders.push(placeholder); continue; }
       const item = diffItemForFile(file);
       if (item !== undefined) nextItems.push(item); else nextPlaceholders.push({ path, reason: 'unrenderable' });
     }
-    return { items: nextItems, placeholders: nextPlaceholders };
-  }, [groups, supportingExpanded, loaded]);
+    return { items: nextItems, placeholders: nextPlaceholders, missing: false };
+  }, [patch, selectedPath, effectiveMode, plain, groups, supportingExpanded, loaded]);
 
   const options = useMemo<PanelOptions>(() => ({
     theme: { dark: 'catppuccin-mocha', light: 'catppuccin-latte' },
     themeType: theme === 'latte' ? 'light' : 'dark',
     preferredHighlighter: 'shiki-js',
-    // one readable column, no split; the split/unified toggle arrives with the single-file toolbar
-    diffStyle: 'unified',
+    diffStyle: effectiveSplit ? 'split' : 'unified',
     overflow: 'scroll',
     hunkSeparators: 'line-info',
     stickyHeaders: true,
     enableLineSelection: true,
+    // Full context expands the unchanged lines, hydrating each partial patch through loadDiffFiles.
+    expandUnchanged: effectiveMode === 'full',
+    loadDiffFiles: effectiveMode === 'full' ? loadDiffFiles : undefined,
     // past the cap a file renders as plain text so a huge diff never freezes the tab
     tokenizeMaxLength: CODE_TOKENIZE_MAX_LINES,
     itemMetrics: { lineHeight: LINE_HEIGHT, diffHeaderHeight: LINE_HEIGHT + 24 }
-  }), [theme]);
+  }), [theme, effectiveSplit, effectiveMode, loadDiffFiles]);
+
+  // Remember the topmost item and how far into it we had scrolled, before leaving the all-files
+  // scroll for one file: the last rendered item whose top has passed the viewport top.
+  const captureAnchor = () => {
+    const instance = viewRef.current?.getInstance();
+    const container = instance?.getContainerElement();
+    if (instance === undefined || container === undefined) { anchorRef.current = undefined; return; }
+    const scrollTop = container.scrollTop;
+    const tops = instance.getRenderedItems()
+      .map(item => ({ id: item.id, top: instance.getTopForItem(item.id) ?? 0 }))
+      .sort((a, b) => a.top - b.top);
+    let top = tops[0];
+    for (const candidate of tops) { if (candidate.top <= scrollTop) top = candidate; else break; }
+    if (top === undefined) { anchorRef.current = undefined; return; }
+    anchorRef.current = { id: top.id, offset: Math.max(0, scrollTop - top.top) };
+  };
+
+  // Once the all-files scroll is back, jump to the captured item and offset into it (queued if layout
+  // is pending). Anchoring to the item, not a raw scrollTop, keeps the place even when item heights
+  // shift, and restores exactly when — as here — the same file list returns. The scroll target's
+  // offset adds space *above* the item, so scrolling `offset` px further into it takes its negative.
+  useEffect(() => {
+    if (selectedPath !== undefined) return;
+    const anchor = anchorRef.current;
+    if (anchor === undefined) return;
+    anchorRef.current = undefined;
+    viewRef.current?.scrollTo({ type: 'item', id: anchor.id, align: 'start', offset: -anchor.offset });
+  }, [selectedPath]);
+
+  const openFile = (path: string) => {
+    if (selectedPath === undefined) captureAnchor();
+    setDrawerOpen(false);
+    onSelectFile(path);
+  };
+  const backToAll = () => { setDrawerOpen(false); onClearFile(); };
 
   // Pull a withheld or binary Change in on demand: fetch its two sides and diff them in the browser.
   const loadAnyway = async (path: string) => {
@@ -99,52 +244,146 @@ export default function CodePanel({ mode, state, patch, loadFile, onClose, onRet
   };
 
   const fileCount = groups.implementation.length + groups.supporting.length;
-  const title = mode === 'working' ? 'Working changes' : 'All PR changes';
   const style = { '--diffs-font-size': `${FONT_SIZE}px`, '--diffs-line-height': `${LINE_HEIGHT}px` } as CSSProperties;
+  // The rail is a persistent column on a wide panel unless the reviewer collapsed it; a narrow panel
+  // uses the drawer instead.
+  const railVisible = !narrow && !railCollapsed;
+  // The Plain-mode fetch state for the file on screen (undefined unless Plain mode shows this file).
+  const plainForSelected = selectedPath !== undefined && effectiveMode === 'plain' && plain?.path === selectedPath ? plain : undefined;
+
+  const fileList = (
+    <div className="code-pane-file-list" role="tree" aria-label="Changed files">
+      <FileGroup label="Implementation" changes={groups.implementation.map(file => file.change)} selectedPath={selectedPath} onSelect={openFile} />
+      {groups.supporting.length > 0 && <FileGroup label="Tests &amp; docs" changes={groups.supporting.map(file => file.change)} selectedPath={selectedPath} onSelect={openFile} />}
+    </div>
+  );
 
   return (
-    <section className="code-pane" style={style} role="region" aria-label="Code changes">
+    <section className="code-pane" style={style} role="region" aria-label="Code changes" ref={panelRef}>
       <header className="code-pane-toolbar">
-        <strong className="code-pane-title">{title}</strong>
-        {state === 'ready' && <span className="code-pane-count">{fileCount === 1 ? '1 file' : `${fileCount} files`}</span>}
-        {state === 'ready' && groups.supporting.length > 0 && (
+        {state === 'ready' && fileCount > 0 && (narrow || railCollapsed) && (
+          <button type="button" className="code-pane-files-open" aria-label="Show changed files" title="Files" onClick={() => { if (narrow) setDrawerOpen(true); else setRailCollapsed(false); }}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+            <span>Files</span>
+          </button>
+        )}
+        <nav className="code-pane-crumbs" aria-label="Location">
+          {selectedPath === undefined
+            ? <span className="code-pane-crumb-current">All files</span>
+            : <>
+                <button type="button" className="code-pane-crumb-back" onClick={backToAll}>‹ All files</button>
+                <span className="code-pane-crumb-sep" aria-hidden="true">/</span>
+                <span className="code-pane-crumb-current" title={selectedPath}>{basename(selectedPath)}</span>
+              </>}
+        </nav>
+        {state === 'ready' && selectedPath === undefined && <span className="code-pane-count">{fileCount === 1 ? '1 file' : `${fileCount} files`}</span>}
+        {state === 'ready' && selectedPath === undefined && groups.supporting.length > 0 && (
           <button type="button" className="code-pane-group-toggle" aria-pressed={supportingExpanded} onClick={() => setSupportingExpanded(value => !value)}>
             {supportingExpanded ? 'Hide' : 'Show'} tests &amp; docs ({groups.supporting.length})
           </button>
         )}
+        <span className="code-pane-spacer" />
+        {state === 'ready' && fileCount > 0 && <>
+          <span className="code-pane-segment" role="group" aria-label="Diff mode">
+            <button type="button" aria-pressed={effectiveMode === 'hunks'} onClick={() => setViewMode('hunks')}>Hunks</button>
+            <button type="button" aria-pressed={effectiveMode === 'full'} onClick={() => setViewMode('full')}>Full ctx</button>
+            <button type="button" aria-pressed={effectiveMode === 'plain'} disabled={selectedPath === undefined} title={selectedPath === undefined ? 'Open a file for the plain view' : undefined} onClick={() => setViewMode('plain')}>Plain file</button>
+          </span>
+          {!narrow && effectiveMode !== 'plain' && (
+            <span className="code-pane-segment" role="group" aria-label="Diff layout">
+              <button type="button" aria-pressed={!effectiveSplit} onClick={() => setSplit(false)}>Unified</button>
+              <button type="button" aria-pressed={effectiveSplit} onClick={() => setSplit(true)}>Split</button>
+            </span>
+          )}
+          <span className="code-pane-segment" role="group" aria-label="Comparison">
+            <button type="button" aria-pressed={mode === 'working'} onClick={() => onSetMode('working')}>Working</button>
+            <button type="button" aria-pressed={mode === 'pr'} disabled={!prAvailable} title={prAvailable ? 'Compare the whole PR' : 'Merge target unavailable'} onClick={() => onSetMode('pr')}>All PR</button>
+          </span>
+        </>}
         <button type="button" className="code-pane-close" aria-label="Close code changes" title="Close" onClick={onClose}>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
         </button>
       </header>
-      <div className="code-pane-body">
-        {state === 'loading' && <p className="code-pane-status">Loading changes…</p>}
-        {state === 'error' && <p className="code-pane-status" role="alert">Unable to load changes.{onRetry !== undefined && <> <button type="button" className="code-pane-retry" onClick={onRetry}>Retry</button></>}</p>}
-        {state === 'ready' && fileCount === 0 && <p className="code-pane-status">No changes to show.</p>}
-        {state === 'ready' && fileCount > 0 && <>
-          {patch?.truncated === true && <p className="code-pane-notice">Some files were left out because the change set is very large.</p>}
-          {placeholders.length > 0 && (
-            <ul className="code-pane-placeholders">
-              {placeholders.map(placeholder => (
-                <li key={placeholder.path} className={`code-pane-placeholder ${placeholder.reason}`}>
-                  <span className="code-pane-placeholder-path" title={placeholder.path}>{placeholder.path}</span>
-                  <span className="code-pane-placeholder-note">
-                    {placeholder.reason === 'capped' && 'File too large to preview'}
-                    {placeholder.reason === 'binary' && 'Binary file'}
-                    {placeholder.reason === 'metadata' && (placeholder.note ?? 'Not a regular file')}
-                    {placeholder.reason === 'unrenderable' && 'Diff unavailable'}
-                  </span>
-                  {(placeholder.reason === 'capped' || placeholder.reason === 'unrenderable') && (
-                    loadStatus[placeholder.path] === 'error'
-                      ? <span className="code-pane-placeholder-error">Could not load</span>
-                      : <button type="button" className="code-pane-load" disabled={loadStatus[placeholder.path] === 'loading'} onClick={() => void loadAnyway(placeholder.path)}>{loadStatus[placeholder.path] === 'loading' ? 'Loading…' : 'Load anyway'}</button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-          <CodeView className="code-pane-view" options={options} items={items} disableWorkerPool />
-        </>}
+      <div className="code-pane-main">
+        {state === 'ready' && fileCount > 0 && railVisible && (
+          <aside className="code-pane-rail">
+            <div className="code-pane-rail-head">
+              <span>Files</span>
+              <button type="button" className="code-pane-rail-collapse" aria-label="Hide changed files" title="Hide files" onClick={() => setRailCollapsed(true)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6" /></svg>
+              </button>
+            </div>
+            {fileList}
+          </aside>
+        )}
+        <div className="code-pane-body">
+          {state === 'loading' && <p className="code-pane-status">Loading changes…</p>}
+          {state === 'error' && <p className="code-pane-status" role="alert">Unable to load changes.{onRetry !== undefined && <> <button type="button" className="code-pane-retry" onClick={onRetry}>Retry</button></>}</p>}
+          {state === 'ready' && fileCount === 0 && <p className="code-pane-status">No changes to show.</p>}
+          {state === 'ready' && fileCount > 0 && <>
+            {missing && <p className="code-pane-status" role="alert">This file isn't part of the current changes. <button type="button" className="code-pane-retry" onClick={backToAll}>Back to all files</button></p>}
+            {plainForSelected !== undefined && plainForSelected.contents === undefined && plainForSelected.error !== true && <p className="code-pane-status">Loading file…</p>}
+            {plainForSelected?.error === true && <p className="code-pane-status" role="alert">Unable to load this file.</p>}
+            {selectedPath === undefined && patch?.truncated === true && <p className="code-pane-notice">Some files were left out because the change set is very large.</p>}
+            {placeholders.length > 0 && (
+              <ul className="code-pane-placeholders">
+                {placeholders.map(placeholder => (
+                  <li key={placeholder.path} className={`code-pane-placeholder ${placeholder.reason}`}>
+                    <span className="code-pane-placeholder-path" title={placeholder.path}>{placeholder.path}</span>
+                    <span className="code-pane-placeholder-note">
+                      {placeholder.reason === 'capped' && 'File too large to preview'}
+                      {placeholder.reason === 'binary' && 'Binary file'}
+                      {placeholder.reason === 'metadata' && (placeholder.note ?? 'Not a regular file')}
+                      {placeholder.reason === 'unrenderable' && 'Diff unavailable'}
+                    </span>
+                    {(placeholder.reason === 'capped' || placeholder.reason === 'unrenderable') && (
+                      loadStatus[placeholder.path] === 'error'
+                        ? <span className="code-pane-placeholder-error">Could not load</span>
+                        : <button type="button" className="code-pane-load" disabled={loadStatus[placeholder.path] === 'loading'} onClick={() => void loadAnyway(placeholder.path)}>{loadStatus[placeholder.path] === 'loading' ? 'Loading…' : 'Load anyway'}</button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <CodeView ref={viewRef} className="code-pane-view" options={options} items={items} disableWorkerPool />
+          </>}
+        </div>
+        {narrow && drawerOpen && state === 'ready' && fileCount > 0 && (
+          <div className="code-pane-drawer" role="dialog" aria-label="Changed files" onKeyDown={event => { if (event.key === 'Escape') setDrawerOpen(false); }}>
+            <div className="code-pane-drawer-head">
+              <span>Files</span>
+              <button type="button" className="code-pane-close" aria-label="Close changed files" title="Close" onClick={() => setDrawerOpen(false)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+              </button>
+            </div>
+            {fileList}
+          </div>
+        )}
       </div>
     </section>
+  );
+}
+
+// One grouped section of the changed-file rail/drawer: a header with the count, then a clickable row
+// per Change that filters the panel to that file (highlighting the active one).
+function FileGroup({ label, changes, selectedPath, onSelect }: { label: string; changes: ComparisonChange[]; selectedPath: string | undefined; onSelect: (path: string) => void }) {
+  if (changes.length === 0) return null;
+  return (
+    <div className="code-pane-file-group" role="group" aria-label={label}>
+      <div className="code-pane-file-group-head">{label}</div>
+      {changes.map(change => (
+        <button
+          key={change.path}
+          type="button"
+          className={`code-pane-file-row${change.path === selectedPath ? ' active' : ''}`}
+          aria-current={change.path === selectedPath}
+          title={change.originalPath === undefined ? change.path : `${change.originalPath} → ${change.path}`}
+          onClick={() => onSelect(change.path)}
+        >
+          <span className="code-pane-file-code" aria-hidden="true">{change.code.trim() || '·'}</span>
+          <span className="code-pane-file-name">{basename(change.path)}</span>
+        </button>
+      ))}
+    </div>
   );
 }

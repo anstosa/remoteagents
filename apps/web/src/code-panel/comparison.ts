@@ -84,18 +84,29 @@ export const groupComparisonFiles = (files: ComparisonFile[]): GroupedFiles => (
 // The lifecycle of a Comparison fetch, mirroring `useFilePreview`'s loading/ready/error states.
 export type CodePanelState = 'loading' | 'ready' | 'error';
 
-// One Worktree's Code panel: whether it is open, which Comparison it shows, the latest patch, and
-// the actions the flyout and the panel drive. Threaded to `Log`/`WorktreeCard` as a single prop.
+// One Worktree's Code panel: whether it is open, which Comparison it shows, the latest patch, the
+// file it is filtered to (if any), and the actions the flyout and the panel drive. The controller
+// owns exactly what a deep link controls — open, the Working/PR Comparison, and the selected file —
+// while purely visual state (Hunks/Full/Plain, unified/split, the rail) lives in the panel view.
+// Threaded to `Log`/`WorktreeCard` as a single prop.
 export type CodePanelController = {
   open: boolean;
   mode: CodePanelMode;
   state: CodePanelState;
   patch: ComparisonPatch | undefined;
-  // open (or refocus) the panel on the given Comparison, seeded from the flyout's mode
-  openChanges(mode: CodePanelMode): void;
+  // the one file the panel is filtered to, or undefined for the all-files view
+  selectedPath: string | undefined;
+  // open (or refocus) the panel on the given Comparison, seeded from the flyout's mode; a `path`
+  // filters straight to that one Change (a flyout row deep link), otherwise shows all files
+  openChanges(mode: CodePanelMode, path?: string): void;
+  // switch the Comparison in place (the panel-header Working / All PR toggle); refetches
+  setMode(mode: CodePanelMode): void;
+  // filter the open panel to one Change, or return to all files
+  selectFile(path: string): void;
+  clearFile(): void;
   // re-request the current Comparison (used by the retry affordance)
   refresh(): void;
-  // fetch one changed file's two sides, for the "Load anyway" placeholder
+  // fetch one changed file's two sides, for the "Load anyway" placeholder and single-file modes
   loadFile(path: string): Promise<ComparisonFileContents | undefined>;
   close(): void;
 };
@@ -120,13 +131,16 @@ export const useCodePanel = (worktreeId: string | undefined, request: Requester)
   const [mode, setModeState] = useState<CodePanelMode>('working');
   const [state, setState] = useState<CodePanelState>('loading');
   const [patch, setPatch] = useState<ComparisonPatch>();
+  const [selectedPath, setSelectedPath] = useState<string>();
   const [refreshToken, setRefreshToken] = useState(0);
   const requestId = useRef(0);
 
-  // a closed or unscoped panel holds no Comparison; reopening refetches from scratch
+  // a closed or unscoped panel holds no Comparison; reopening refetches from scratch, and a
+  // different Worktree drops any file the previous one was filtered to
   useEffect(() => {
     setOpen(savedCodeOpen(worktreeId));
     setPatch(undefined);
+    setSelectedPath(undefined);
     requestId.current += 1;
   }, [worktreeId]);
 
@@ -149,11 +163,21 @@ export const useCodePanel = (worktreeId: string | undefined, request: Requester)
     })();
   }, [open, worktreeId, mode, refreshToken, request]);
 
-  const openChanges = useCallback((next: CodePanelMode) => {
+  const openChanges = useCallback((next: CodePanelMode, path?: string) => {
     setModeState(next);
+    setSelectedPath(path);
     setOpen(true);
+    // A flyout deep link reflects the live dashboard status, so always refetch — an already-open
+    // panel holds a one-time snapshot that may predate the file being opened, which would otherwise
+    // read as "not part of the current changes".
+    setRefreshToken(token => token + 1);
     saveCodeOpen(worktreeId, true);
   }, [worktreeId]);
+
+  // the panel-header Working / All PR toggle; keep any selected file so the reviewer stays on it
+  const setMode = useCallback((next: CodePanelMode) => setModeState(next), []);
+  const selectFile = useCallback((path: string) => setSelectedPath(path), []);
+  const clearFile = useCallback(() => setSelectedPath(undefined), []);
 
   const refresh = useCallback(() => setRefreshToken(token => token + 1), []);
   const close = useCallback(() => { setOpen(false); saveCodeOpen(worktreeId, false); }, [worktreeId]);
@@ -168,5 +192,5 @@ export const useCodePanel = (worktreeId: string | undefined, request: Requester)
     } catch { return undefined; }
   }, [worktreeId, mode, request]);
 
-  return { open: open && worktreeId !== undefined, mode, state, patch, openChanges, refresh, loadFile, close };
+  return { open: open && worktreeId !== undefined, mode, state, patch, selectedPath, openChanges, setMode, selectFile, clearFile, refresh, loadFile, close };
 };

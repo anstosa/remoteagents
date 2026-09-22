@@ -653,17 +653,49 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
 .code-pane { position: relative; z-index: 1; display: grid; min-width: 0; min-height: 0; grid-template-rows: auto minmax(0, 1fr); border-top: 1px solid color-mix(in srgb, var(--mauve) 52%, var(--surface-1)); background: var(--crust); box-shadow: inset 0 1px color-mix(in srgb, var(--text) 4%, transparent); animation: note-pane-appear .15s ease-out;
   --diffs-font-family: var(--font-mono); --diffs-header-font-family: var(--font-mono);
   --diffs-bg-selection-override: var(--mauve); --diffs-bg-selection-number-override: var(--mauve); }
-.code-pane-toolbar { display: flex; min-height: 2.8rem; align-items: center; gap: .55rem; padding: .4rem .55rem; border-bottom: 1px solid var(--surface-1); color: var(--mauve); }
-.code-pane-title { min-width: 0; overflow: hidden; color: var(--mauve); font-size: .85rem; text-overflow: ellipsis; white-space: nowrap; }
+.code-pane-toolbar { display: flex; min-height: 2.8rem; align-items: center; gap: .4rem; padding: .4rem .55rem; border-bottom: 1px solid var(--surface-1); color: var(--mauve); }
+.code-pane-spacer { flex: 1 1 auto; }
 .code-pane-count { flex: 0 0 auto; color: var(--subtext-0); font-size: .72rem; }
-.code-pane-group-toggle { margin-left: auto; height: 2rem; padding: 0 .6rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: transparent; color: var(--subtext-0); font: inherit; font-size: .72rem; }
+.code-pane-group-toggle { flex: 0 0 auto; height: 2rem; padding: 0 .6rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: transparent; color: var(--subtext-0); font: inherit; font-size: .72rem; white-space: nowrap; }
 .code-pane-group-toggle:hover { border-color: var(--mauve); color: var(--text); }
 .code-pane-group-toggle[aria-pressed='true'] { border-color: var(--mauve); color: var(--mauve); }
 .code-pane-close { display: grid; flex: 0 0 2rem; width: 2rem; height: 2rem; padding: 0; place-items: center; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: transparent; color: var(--subtext-0); box-shadow: none; }
 .code-pane-close:hover { border-color: var(--mauve); color: var(--text); }
 .code-pane-close svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
-.code-pane-toolbar :not(.code-pane-group-toggle) + .code-pane-close { margin-left: auto; }
-.code-pane-body { display: flex; min-width: 0; min-height: 0; flex-direction: column; }
+/* the ☰ Files reopener (collapsed rail) / drawer opener (narrow panel) */
+.code-pane-files-open { display: inline-flex; flex: 0 0 auto; align-items: center; gap: .3rem; height: 2rem; padding: 0 .5rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: transparent; color: var(--subtext-0); font: inherit; font-size: .72rem; }
+.code-pane-files-open:hover { border-color: var(--mauve); color: var(--text); }
+.code-pane-files-open svg { width: .95rem; height: .95rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 2; }
+/* the All files / <name> breadcrumb */
+.code-pane-crumbs { display: flex; min-width: 0; align-items: center; gap: .3rem; font-size: .78rem; }
+.code-pane-crumb-back { flex: 0 0 auto; padding: .15rem .35rem; border: 0; border-radius: var(--control-radius); background: transparent; color: var(--mauve); font: inherit; font-size: .78rem; }
+.code-pane-crumb-back:hover { color: var(--text); text-decoration: underline; }
+.code-pane-crumb-sep { flex: 0 0 auto; color: var(--surface-2); }
+.code-pane-crumb-current { min-width: 0; overflow: hidden; color: var(--text); font-family: var(--font-mono); font-size: .76rem; text-overflow: ellipsis; white-space: nowrap; }
+/* the Diff mode / Diff layout / Comparison segmented controls */
+.code-pane-segment { display: inline-flex; flex: 0 0 auto; align-items: stretch; border: 1px solid var(--surface-1); border-radius: var(--control-radius); overflow: hidden; }
+.code-pane-segment button { height: 1.9rem; padding: 0 .5rem; border: 0; border-left: 1px solid var(--surface-1); background: transparent; color: var(--subtext-0); font: inherit; font-size: .7rem; white-space: nowrap; }
+.code-pane-segment button:first-child { border-left: 0; }
+.code-pane-segment button:hover:not(:disabled) { color: var(--text); }
+.code-pane-segment button[aria-pressed='true'] { background: color-mix(in srgb, var(--mauve) 22%, transparent); color: var(--text); }
+.code-pane-segment button:disabled { opacity: .45; }
+.code-pane-main { position: relative; display: flex; min-width: 0; min-height: 0; }
+.code-pane-body { display: flex; min-width: 0; min-height: 0; flex: 1 1 auto; flex-direction: column; }
+/* the changed-file rail (wide panel) and drawer (narrow panel) share one file list */
+.code-pane-rail { display: flex; flex: 0 0 13rem; min-height: 0; flex-direction: column; border-right: 1px solid var(--surface-1); background: color-mix(in srgb, var(--mantle) 70%, var(--crust)); }
+.code-pane-rail-head { display: flex; align-items: center; justify-content: space-between; padding: .35rem .3rem .35rem .6rem; color: var(--subtext-0); font-size: .68rem; letter-spacing: .04em; text-transform: uppercase; }
+.code-pane-rail-collapse { display: grid; width: 1.6rem; height: 1.6rem; padding: 0; place-items: center; border: 0; border-radius: var(--control-radius); background: transparent; color: var(--subtext-0); }
+.code-pane-rail-collapse:hover { color: var(--text); }
+.code-pane-rail-collapse svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.code-pane-file-list { min-height: 0; padding: 0 .25rem .4rem; overflow: auto; }
+.code-pane-file-group-head { padding: .35rem .35rem .2rem; color: var(--subtext-0); font-size: .62rem; letter-spacing: .05em; text-transform: uppercase; }
+.code-pane-file-row { display: flex; width: 100%; align-items: center; gap: .4rem; padding: .28rem .35rem; border: 0; border-radius: var(--control-radius); background: transparent; color: var(--subtext-1); font: inherit; font-size: .74rem; text-align: left; }
+.code-pane-file-row:hover { background: color-mix(in srgb, var(--surface-0) 70%, transparent); color: var(--text); }
+.code-pane-file-row.active { background: color-mix(in srgb, var(--mauve) 20%, transparent); color: var(--text); }
+.code-pane-file-code { flex: 0 0 1ch; color: var(--subtext-0); font-family: var(--font-mono); font-size: .7rem; text-align: center; }
+.code-pane-file-name { min-width: 0; overflow: hidden; font-family: var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.code-pane-drawer { position: absolute; inset: 0 auto 0 0; z-index: 20; display: flex; width: min(80%, 18rem); flex-direction: column; border-right: 1px solid var(--surface-1); background: var(--mantle); box-shadow: .4rem 0 1.4rem #0007; animation: note-pane-appear .12s ease-out; }
+.code-pane-drawer-head { display: flex; align-items: center; justify-content: space-between; padding: .4rem .4rem .4rem .6rem; border-bottom: 1px solid var(--surface-1); color: var(--subtext-0); font-size: .7rem; letter-spacing: .04em; text-transform: uppercase; }
 .code-pane-status { margin: 0; padding: 1rem .75rem; color: var(--subtext-0); font-size: .8rem; }
 .code-pane-retry { padding: .15rem .5rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: transparent; color: var(--text); font: inherit; font-size: .75rem; }
 .code-pane-notice { margin: 0; padding: .5rem .75rem; border-bottom: 1px solid var(--surface-0); color: var(--peach); font-size: .72rem; }
