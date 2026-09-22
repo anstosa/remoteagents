@@ -50,6 +50,18 @@ type PromptAction = { label: string; prompt: string };
 type GitStatusChange = { code: string; path: string; originalPath?: string; additions?: number; deletions?: number; category?: 'implementation'|'test'|'doc' };
 type GitStatusSummary = { files: number; staged: number; unstaged: number; untracked: number; conflicted: number; changes?: GitStatusChange[] };
 type GitComparisonSummary = { base: string; files: number; changes?: GitStatusChange[] };
+// A value that changes whenever a Worktree's live change summary moves, fed to the Code panel so it
+// refreshes an open Comparison in place. Covers both Comparisons (Working and All PR) so either one
+// updating triggers a refetch. Per-change line counts catch most edits; folding in the Agent's
+// Attention state also refreshes at each turn boundary, which catches an in-place edit that leaves
+// the +/- counts unchanged (numstat reports counts, not content). JSON.stringify keeps it free of
+// delimiter collisions on paths that contain separator characters.
+const comparisonChangeSignal = (status?: GitStatusSummary, pr?: GitComparisonSummary, attention?: AttentionState): string => {
+  const changes = (list?: GitStatusChange[]) => (list ?? []).map(change => [change.code, change.path, change.additions ?? null, change.deletions ?? null]);
+  return JSON.stringify([attention ?? null,
+    status?.files ?? 0, status?.staged ?? 0, status?.unstaged ?? 0, status?.untracked ?? 0, status?.conflicted ?? 0, changes(status?.changes),
+    pr?.files ?? 0, changes(pr?.changes)]);
+};
 type NewTaskAvailability = { enabled: boolean; reason?: string };
 type OperationFeedback = { id: number; tone: 'pending'|'success'|'error'; message: string; detail: string; worktreeId?: string };
 type CleanupTarget = { id: string; kind: 'orphan-worker'|'stale-agent'|'hud-pane'|'hud-process'|'merged-branch'; label: string; detail: string };
@@ -5701,7 +5713,7 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
   const [historySlot, setHistorySlot] = useState<HTMLElement | null>(null);
   const promptHistory = usePromptHistory(agent.id);
   const projectBrowser = useProjectBrowser(agent.projectUrl, agent.worktreeId, agent.projectProxied);
-  const projectCode = useCodePanel(agent.worktreeId, request);
+  const projectCode = useCodePanel(agent.worktreeId, request, comparisonChangeSignal(agent.gitStatus, agent.gitPrStatus, agent.attention));
   // Terminal panels for this Worktree: a column per open pane and the composer's picker.
   const { columns: terminalColumns, control: terminalControl } = useTerminalViews(agent.worktreeId);
   // The Terminal the phone shows as the single panel (Log reports it from the split), so the
@@ -5916,7 +5928,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
     }
   };
   const projectBrowser = useProjectBrowser(worktree.projectUrl, worktree.id, worktree.projectProxied);
-  const projectCode = useCodePanel(worktree.id, request);
+  const projectCode = useCodePanel(worktree.id, request, comparisonChangeSignal(worktree.gitStatus, worktree.gitPrStatus));
   // Terminals work even with no live Agent: an agentless Worktree tab can open a shell.
   const { columns: terminalColumns, control: terminalControl } = useTerminalViews(worktree.id);
   // The Terminal the phone shows as the single panel, so its helper keys replace the composer.

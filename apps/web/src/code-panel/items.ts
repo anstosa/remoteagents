@@ -22,6 +22,11 @@ export const contentHash = (value: string): number => {
 // between them unambiguous, so distinct (old, new) pairs never collide on the split point.
 const sidesHash = (oldText: string, newText: string): number => contentHash(`${oldText.length}:${oldText}:${newText}`);
 
+// A changed file's content version, derived from its captured patch text. This is the single source
+// of that formula: `diffItemForFile` stamps it on the item's `version`, and the Code panel keys its
+// live-update item cache on the same value, so the two cannot drift.
+export const fileVersion = (file: ComparisonFile): number => contentHash(file.patch);
+
 // Which files can render as a real diff. `binary` / `metadata` files carry a human note rather than
 // a unified patch, and a `capped` file has its patch withheld — all of those become placeholders.
 export const isDiffable = (file: ComparisonFile): boolean => !file.capped && (file.kind === 'tracked' || file.kind === 'untracked');
@@ -32,7 +37,7 @@ export const isDiffable = (file: ComparisonFile): boolean => !file.capped && (fi
 // matches it across updates and every line stays addressable as (path, side, line).
 export const diffItemForFile = (file: ComparisonFile): CodeViewDiffItem | undefined => {
   if (!isDiffable(file)) return undefined;
-  const version = contentHash(file.patch);
+  const version = fileVersion(file);
   const parsed = parsePatchFiles(file.patch, `${file.change.path}#${version}`, false);
   const fileDiff = parsed.flatMap(patch => patch.files)[0];
   if (fileDiff === undefined) return undefined;

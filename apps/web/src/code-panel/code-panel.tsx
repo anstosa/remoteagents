@@ -10,7 +10,7 @@ import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState }
 import { CodeView, type CodeViewHandle, type CodeViewItem, type CodeViewReactOptions, type FileDiffMetadata } from '@pierre/diffs/react';
 import { useColorTheme } from '../color-theme.js';
 import { groupComparisonFiles, type CodePanelMode, type CodePanelState, type ComparisonChange, type ComparisonFile, type ComparisonFileContents, type ComparisonPatch } from './comparison.js';
-import { CODE_TOKENIZE_MAX_LINES, diffItemForContents, diffItemForFile, fileItemForContents, loadedFilesFromContents } from './items.js';
+import { CODE_TOKENIZE_MAX_LINES, diffItemForContents, diffItemForFile, fileItemForContents, fileVersion, loadedFilesFromContents } from './items.js';
 
 type PanelItem = CodeViewItem<undefined>;
 type PanelOptions = CodeViewReactOptions<undefined, undefined>;
@@ -59,7 +59,25 @@ type LoadStatus = 'loading' | 'error';
 // offset being into one item, bounded by its height) restores exactly when the same list returns.
 type ScrollAnchor = { id: string; offset: number };
 
+// A CodeView item paired with the patch-derived content version (`fileVersion`) it was built for.
+// The library reconciles controlled items by id + `version`, so a stable version already stops it
+// re-rendering or re-hydrating an unchanged file; caching the item by version on top of that both
+// hands back the identical object (the library's documented identity rule) and — the load-bearing
+// use — lets a changed file keep showing its prior full-context item while its rebuild is fetched.
+// Both the item cache and a resolved full-context override carry the same shape.
+type VersionedItem = { patchVersion: number; item: PanelItem };
+// A file that changed while shown in full context and needs a non-partial rebuild fetched (below).
+type OverrideNeed = { path: string; version: number };
+
 const basename = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
+
+// Return a copy of a path-keyed record with only the keys that pass `keep`; the same reference when
+// nothing was dropped, so a no-op refresh does not force a re-render.
+const keepKeys = <V,>(record: Record<string, V>, keep: (path: string) => boolean): Record<string, V> => {
+  const kept = Object.keys(record).filter(keep);
+  if (kept.length === Object.keys(record).length) return record;
+  return Object.fromEntries(kept.map(path => [path, record[path]]));
+};
 
 // The placeholder a diffable-in-principle file falls back to when its patch cannot be rendered
 // (withheld for size, binary, or a metadata-only change); undefined means it renders as a real diff.
@@ -84,20 +102,56 @@ export default function CodePanel({ mode, state, patch, selectedPath, prAvailabl
   const [loadStatus, setLoadStatus] = useState<Record<string, LoadStatus>>({});
   // The working-tree contents for the selected file in Plain mode, fetched on demand.
   const [plain, setPlain] = useState<{ path: string; contents?: string; error?: boolean }>();
+  // Non-partial rebuilds for files that changed while shown in full context, keyed by path; the item
+  // memo prefers one of these over a fresh partial so a live edit never blinks back to hunks-only.
+  const [fullOverrides, setFullOverrides] = useState<Record<string, VersionedItem>>({});
 
   const panelRef = useRef<HTMLElement>(null);
   const viewRef = useRef<PanelHandle>(null);
   // The place to return to when the reviewer leaves the all-files scroll for one file.
   const anchorRef = useRef<ScrollAnchor | undefined>(undefined);
+  // The rendered item per file id, with the content version it was built for. Kept across live
+  // updates so an unchanged file hands the library the identical object (preserving its scroll and
+  // full-context expansion); a version-mismatch is what marks a file as edited.
+  const itemCacheRef = useRef<Map<string, VersionedItem>>(new Map());
+  // Full-context rebuilds in flight, keyed by path → the version being fetched, so a file is fetched
+  // once per version even as the memo re-emits the need on every render until it resolves.
+  const overrideInflightRef = useRef<Map<string, number>>(new Map());
 
-  // "Load anyway" results and Plain contents belong to one Comparison; drop them when the patch
-  // changes (a mode switch or refetch) so a withheld file from the old Comparison never lingers. A
-  // captured scroll anchor points at an item in the old list, so it is stale too.
-  useEffect(() => { setLoaded({}); setLoadStatus({}); setPlain(undefined); anchorRef.current = undefined; }, [patch?.fingerprint]);
-  // The current Comparison's fingerprint, tracked in a ref so an in-flight "Load anyway" can tell
-  // the Comparison changed under it (a stale resolve must not write into the new patch's map).
+  // Reset the view-local caches when the Comparison changes. A mode switch (Working ↔ All PR) is a
+  // different Comparison entirely, so everything view-local is dropped. A same-mode content refresh
+  // (a live update) is surgical: only entries for files the Comparison no longer has are dropped, plus
+  // resolved overrides whose file changed content — a "Load anyway" view or expansion of an unrelated,
+  // unchanged file survives an edit elsewhere. The id-based scroll anchor and the version-guarded item
+  // cache are kept so unchanged files stay put.
+  const lastModeRef = useRef(mode);
+  useEffect(() => {
+    const modeChanged = lastModeRef.current !== mode;
+    lastModeRef.current = mode;
+    if (modeChanged) {
+      setLoaded({}); setLoadStatus({}); setPlain(undefined); setFullOverrides({});
+      anchorRef.current = undefined;
+      itemCacheRef.current.clear();
+      overrideInflightRef.current.clear();
+      return;
+    }
+    const live = patch?.files;
+    if (live === undefined) { setLoaded({}); setLoadStatus({}); setFullOverrides({}); return; }
+    // keep "Load anyway" results for files the Comparison still has (a capped/binary file the reviewer
+    // pulled in stays put unless it is gone); keep an override only while its file's version is unchanged
+    const present = new Set(live.map(file => file.change.path));
+    const versions = new Map(live.map(file => [file.change.path, fileVersion(file)] as const));
+    setLoaded(current => keepKeys(current, path => present.has(path)));
+    setLoadStatus(current => keepKeys(current, path => present.has(path)));
+    setFullOverrides(current => keepKeys(current, path => versions.get(path) === current[path]?.patchVersion));
+  }, [mode, patch?.fingerprint]);
+  // The current Comparison's fingerprint, tracked in a ref so an in-flight "Load anyway" or override
+  // can tell the Comparison changed under it (a stale resolve must not write into the new patch's map).
   const fingerprintRef = useRef(patch?.fingerprint);
   fingerprintRef.current = patch?.fingerprint;
+  // The latest patch, read by the async override resolver (below) to fall back to a fresh partial.
+  const patchRef = useRef(patch);
+  patchRef.current = patch;
 
   // Track the panel's own width so the file list and layout adapt to a narrow column, not just a
   // narrow viewport — a Code panel is one column in the split and can be much narrower than the tab.
@@ -144,24 +198,52 @@ export default function CodePanel({ mode, state, patch, selectedPath, prAvailabl
   // One pass building the CodeView items (in the scroll) and placeholders (in the list above it) for
   // the current view: a single selected file, or every visible file in Implementation-then-Tests&docs
   // order. "Load anyway" moves a withheld file out of the placeholder list and into the diff scroll.
-  const { items, placeholders, missing } = useMemo(() => {
-    if (patch === undefined) return { items: [] as PanelItem[], placeholders: [] as Placeholder[], missing: false };
+  // Diffable files go through the item cache so an unchanged file keeps its exact object (and so its
+  // scroll and full-context expansion) across a live update, while an edited file rebuilds — and, in
+  // full context, holds its prior expanded item until a non-partial rebuild is fetched (overrideNeeds).
+  const { items, placeholders, missing, overrideNeeds } = useMemo(() => {
+    const cache = itemCacheRef.current;
+    const needs: OverrideNeed[] = [];
+    const fullMode = effectiveMode === 'full';
+    const buildDiff = (file: ComparisonFile): PanelItem | undefined => {
+      const id = `diff:${file.change.path}`;
+      const version = fileVersion(file);
+      const cached = cache.get(id);
+      // unchanged file: reuse the identical object so the library preserves its instance
+      if (cached !== undefined && cached.patchVersion === version) return cached.item;
+      // an edited file already shown in full context keeps its expanded item until a non-partial
+      // rebuild arrives, so it never blinks to hunks-only; ask for one meanwhile
+      if (fullMode && cached !== undefined) {
+        const ready = fullOverrides[file.change.path];
+        if (ready !== undefined && ready.patchVersion === version) { cache.set(id, { patchVersion: version, item: ready.item }); return ready.item; }
+        needs.push({ path: file.change.path, version });
+        return cached.item;
+      }
+      const item = diffItemForFile(file);
+      if (item === undefined) return undefined;
+      cache.set(id, { patchVersion: version, item });
+      return item;
+    };
+    if (patch === undefined) return { items: [] as PanelItem[], placeholders: [] as Placeholder[], missing: false, overrideNeeds: needs };
+    // keep the cache and any resolved overrides bounded to the files the Comparison still has
+    const live = new Set(patch.files.map(file => `diff:${file.change.path}`));
+    for (const id of [...cache.keys()]) if (!live.has(id)) cache.delete(id);
     if (selectedPath !== undefined) {
       const file = patch.files.find(candidate => candidate.change.path === selectedPath);
-      if (file === undefined) return { items: [], placeholders: [], missing: true };
+      if (file === undefined) return { items: [], placeholders: [], missing: true, overrideNeeds: needs };
       // Plain mode always renders the whole current file, even for a file the reviewer earlier
       // pulled in with "Load anyway" — so it wins over the cached diff item.
       if (effectiveMode === 'plain') {
         return plain?.path === selectedPath && plain.contents !== undefined
-          ? { items: [fileItemForContents(selectedPath, plain.contents)], placeholders: [], missing: false }
-          : { items: [], placeholders: [], missing: false };
+          ? { items: [fileItemForContents(selectedPath, plain.contents)], placeholders: [], missing: false, overrideNeeds: needs }
+          : { items: [], placeholders: [], missing: false, overrideNeeds: needs };
       }
       const already = loaded[selectedPath];
-      if (already !== undefined) return { items: [already], placeholders: [], missing: false };
+      if (already !== undefined) return { items: [already], placeholders: [], missing: false, overrideNeeds: needs };
       const placeholder = placeholderFor(file);
-      if (placeholder !== undefined) return { items: [], placeholders: [placeholder], missing: false };
-      const item = diffItemForFile(file);
-      return item !== undefined ? { items: [item], placeholders: [], missing: false } : { items: [], placeholders: [{ path: selectedPath, reason: 'unrenderable' as const }], missing: false };
+      if (placeholder !== undefined) return { items: [], placeholders: [placeholder], missing: false, overrideNeeds: needs };
+      const item = buildDiff(file);
+      return item !== undefined ? { items: [item], placeholders: [], missing: false, overrideNeeds: needs } : { items: [], placeholders: [{ path: selectedPath, reason: 'unrenderable' as const }], missing: false, overrideNeeds: needs };
     }
     const ordered: ComparisonFile[] = [...groups.implementation, ...(supportingExpanded ? groups.supporting : [])];
     const nextItems: PanelItem[] = [];
@@ -172,11 +254,39 @@ export default function CodePanel({ mode, state, patch, selectedPath, prAvailabl
       if (already !== undefined) { nextItems.push(already); continue; }
       const placeholder = placeholderFor(file);
       if (placeholder !== undefined) { nextPlaceholders.push(placeholder); continue; }
-      const item = diffItemForFile(file);
+      const item = buildDiff(file);
       if (item !== undefined) nextItems.push(item); else nextPlaceholders.push({ path, reason: 'unrenderable' });
     }
-    return { items: nextItems, placeholders: nextPlaceholders, missing: false };
-  }, [patch, selectedPath, effectiveMode, plain, groups, supportingExpanded, loaded]);
+    return { items: nextItems, placeholders: nextPlaceholders, missing: false, overrideNeeds: needs };
+  }, [patch, selectedPath, effectiveMode, plain, groups, supportingExpanded, loaded, fullOverrides]);
+
+  // Fetch the non-partial rebuilds the full-context memo asked for: a changed file's two revisions,
+  // diffed in the browser so it renders already expanded (no hunks-only frame). Deduped per version
+  // by the in-flight map, and dropped if the Comparison moved on. On failure fall back to the fresh
+  // partial (one hunks-only frame) — or, if even that is unavailable, the prior item — so the file
+  // still settles and stops being re-requested.
+  const overrideSignature = overrideNeeds.map(need => `${need.path}#${need.version}`).join('|');
+  useEffect(() => {
+    if (overrideNeeds.length === 0) return;
+    const fingerprint = fingerprintRef.current;
+    for (const { path, version } of overrideNeeds) {
+      if (overrideInflightRef.current.get(path) === version) continue;
+      overrideInflightRef.current.set(path, version);
+      void (async () => {
+        const contents = await loadFile(path);
+        if (overrideInflightRef.current.get(path) === version) overrideInflightRef.current.delete(path);
+        if (fingerprintRef.current !== fingerprint) return;
+        const file = patchRef.current?.files.find(candidate => candidate.change.path === path);
+        const item = (contents === undefined ? undefined : diffItemForContents(contents))
+          ?? (file === undefined ? undefined : diffItemForFile(file))
+          ?? itemCacheRef.current.get(`diff:${path}`)?.item;
+        if (item === undefined) return;
+        setFullOverrides(current => ({ ...current, [path]: { patchVersion: version, item } }));
+      })();
+    }
+    // overrideSignature captures which (path, version) rebuilds are outstanding
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overrideSignature, loadFile]);
 
   const options = useMemo<PanelOptions>(() => ({
     theme: { dark: 'catppuccin-mocha', light: 'catppuccin-latte' },

@@ -126,7 +126,12 @@ const saveCodeOpen = (worktreeId: string | undefined, open: boolean) => {
 // Own one Worktree's Code panel: its open/mode state, and the Comparison fetch that refreshes when
 // the Worktree, mode, or an explicit refresh changes. Fetches only while open so a closed panel
 // costs nothing; a request-id guard drops replaced or stale responses like `useFilePreview`.
-export const useCodePanel = (worktreeId: string | undefined, request: Requester): CodePanelController => {
+//
+// `changeSignal` is a value the caller recomputes whenever the Worktree's live change summary moves
+// (the dashboard pushes gitStatus/gitPrStatus on every edit). When it changes the panel does a SOFT
+// refresh: it refetches the current Comparison without tearing down the visible patch, so the diff
+// updates in place — file by file, preserving scroll — instead of blanking to a spinner.
+export const useCodePanel = (worktreeId: string | undefined, request: Requester, changeSignal?: string): CodePanelController => {
   const [open, setOpen] = useState(() => savedCodeOpen(worktreeId));
   const [mode, setModeState] = useState<CodePanelMode>('working');
   const [state, setState] = useState<CodePanelState>('loading');
@@ -134,6 +139,20 @@ export const useCodePanel = (worktreeId: string | undefined, request: Requester)
   const [selectedPath, setSelectedPath] = useState<string>();
   const [refreshToken, setRefreshToken] = useState(0);
   const requestId = useRef(0);
+  // the last change signal we reacted to; the soft-refresh effect fires only on a genuine change,
+  // not on the mount tick or on the open/mode dependencies it also watches
+  const signalRef = useRef(changeSignal);
+
+  // fetch and validate one Comparison patch; returns undefined on any failure so callers decide
+  // whether that means "error" (a hard load) or "leave the current patch untouched" (a soft refresh)
+  const fetchPatch = useCallback(async (id: string, kind: CodePanelMode): Promise<ComparisonPatch | undefined> => {
+    try {
+      const response = await request(`/api/worktrees/${encodeURIComponent(id)}/comparison`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind }) });
+      if (!response.ok) return undefined;
+      const payload: unknown = await response.json();
+      return isComparisonPatch(payload) ? payload : undefined;
+    } catch { return undefined; }
+  }, [request]);
 
   // a closed or unscoped panel holds no Comparison; reopening refetches from scratch, and a
   // different Worktree drops any file the previous one was filtered to
@@ -141,27 +160,47 @@ export const useCodePanel = (worktreeId: string | undefined, request: Requester)
     setOpen(savedCodeOpen(worktreeId));
     setPatch(undefined);
     setSelectedPath(undefined);
+    signalRef.current = changeSignal;
     requestId.current += 1;
+    // the signal belongs to the new Worktree; the open effect below reloads from scratch
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [worktreeId]);
 
+  // hard load: opening the panel, switching Comparison, or an explicit refresh blanks to a spinner
+  // and fetches from scratch
   useEffect(() => {
     if (!open || worktreeId === undefined) return;
     const id = ++requestId.current;
     setState('loading');
     setPatch(undefined);
     void (async () => {
-      try {
-        const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/comparison`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: mode }) });
-        if (!response.ok) throw new Error('comparison unavailable');
-        const payload: unknown = await response.json();
-        if (!isComparisonPatch(payload)) throw new Error('invalid comparison');
-        // drop a response the panel no longer awaits
-        if (requestId.current !== id) return;
-        setPatch(payload);
-        setState('ready');
-      } catch { if (requestId.current === id) setState('error'); }
+      const next = await fetchPatch(worktreeId, mode);
+      // drop a response the panel no longer awaits
+      if (requestId.current !== id) return;
+      if (next === undefined) { setState('error'); return; }
+      setPatch(next);
+      setState('ready');
     })();
-  }, [open, worktreeId, mode, refreshToken, request]);
+  }, [open, worktreeId, mode, refreshToken, fetchPatch]);
+
+  // soft refresh: the live change summary moved, so update the open Comparison in place. Only acts
+  // once a patch is already on screen — while the initial hard load is still in flight (or after an
+  // error) `patch` is undefined and the hard-load/retry path owns the fetch, so a soft refresh never
+  // preempts it and strands the panel at "loading". Keep the visible patch and the ready state
+  // throughout, and swap only when the server fingerprint actually moved — an identical fingerprint
+  // means the change was in the other Comparison, so nothing to repaint.
+  useEffect(() => {
+    const changed = signalRef.current !== changeSignal;
+    signalRef.current = changeSignal;
+    if (!changed || !open || worktreeId === undefined || patch === undefined) return;
+    const id = ++requestId.current;
+    void (async () => {
+      const next = await fetchPatch(worktreeId, mode);
+      if (next === undefined || requestId.current !== id) return;
+      setPatch(current => current !== undefined && current.fingerprint === next.fingerprint ? current : next);
+      setState('ready');
+    })();
+  }, [changeSignal, open, worktreeId, mode, patch, fetchPatch]);
 
   const openChanges = useCallback((next: CodePanelMode, path?: string) => {
     setModeState(next);

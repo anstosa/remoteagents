@@ -4,11 +4,17 @@ import type { ComparisonFile, ComparisonFileContents, ComparisonPatch, RevisionF
 
 // a minimal but valid git unified diff for one modified file, enough for parsePatchFiles
 const modifiedPatch = (path: string) => `diff --git a/${path} b/${path}\nindex 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n@@ -1,3 +1,3 @@\n const a = 1;\n-const b = 2;\n+const b = 3;\n const c = 4;\n`;
+// the same diff shape with a chosen new line, so a live update can change one file's content — and
+// so its content version — without changing its rendered height
+const modifiedPatchTo = (path: string, line: string) => `diff --git a/${path} b/${path}\nindex 1111111..4444444 100644\n--- a/${path}\n+++ b/${path}\n@@ -1,3 +1,3 @@\n const a = 1;\n-const b = 2;\n+${line}\n const c = 4;\n`;
 
 const trackedFile = (path: string): ComparisonFile => ({ change: { code: ' M', path, additions: 1, deletions: 1 }, kind: 'tracked', patch: modifiedPatch(path), capped: false });
+const trackedFileTo = (path: string, line: string): ComparisonFile => ({ change: { code: ' M', path, additions: 1, deletions: 1 }, kind: 'tracked', patch: modifiedPatchTo(path, line), capped: false });
 const cappedFile = (path: string): ComparisonFile => ({ change: { code: ' M', path }, kind: 'tracked', patch: '', capped: true });
 
-const patchOf = (files: ComparisonFile[], truncated = false): ComparisonPatch => ({ kind: 'working', base: 'HEAD', gitBase: 'HEAD', files, fingerprint: files.map(file => file.change.path).join('|'), truncated });
+// the fingerprint tracks path *and* patch text so a live update that edits a file's content — not
+// just the file set — reads as a changed Comparison, the way the server's content-sensitive one does
+const patchOf = (files: ComparisonFile[], truncated = false): ComparisonPatch => ({ kind: 'working', base: 'HEAD', gitBase: 'HEAD', files, fingerprint: files.map(file => `${file.change.path}:${file.patch}`).join('|'), truncated });
 
 // The whole file behind `modifiedPatch`, with lines past the hunk (the `sentinel` line) that only
 // Plain-file and Full-context modes should surface.
@@ -31,6 +37,32 @@ const mountPanel = async (page: Page, patch: ComparisonPatch, loaded: Record<str
     renderCodePanel(root, scripted, files);
   }, { scripted: patch, files: loaded });
 };
+
+// push a fresh Comparison (and optional per-file contents) into the mounted panel, standing in for a
+// live change-summary update from the dashboard
+const updatePanel = async (page: Page, patch: ComparisonPatch, loaded: Record<string, ComparisonFileContents> = {}) => {
+  await page.evaluate(async ({ scripted, files }) => {
+    const { updateCodePanel } = await import('/e2e/code-panel-fixture.tsx');
+    updateCodePanel(scripted, files);
+  }, { scripted: patch, files: loaded });
+};
+
+// mount the REAL useCodePanel controller (with a stubbed comparison fetch) behind the panel, so a spec
+// can drive its soft refresh; `page.evaluate(window.__ctrl…)` reads fetch/patch-change counts and
+// pushes the next Comparison and change signal.
+const mountController = async (page: Page, patch: ComparisonPatch) => {
+  await page.goto('/');
+  await page.evaluate(async ({ scripted }) => {
+    const { renderCodeController } = await import('/e2e/code-panel-fixture.tsx');
+    const root = document.createElement('div');
+    root.style.height = '640px';
+    root.style.display = 'grid';
+    document.body.replaceChildren(root);
+    renderCodeController(root, scripted);
+  }, { scripted: patch });
+};
+type Ctrl = { fetches: number; patchChanges: number; setNext(patch: ComparisonPatch): void; open(): void; bump(signal: string): void };
+const controls = (page: Page) => page.evaluate(() => { const c = (window as unknown as { __ctrl: Ctrl }).__ctrl; return { fetches: c.fetches, patchChanges: c.patchChanges }; });
 
 const panel = (page: Page) => page.getByRole('region', { name: 'Code changes' });
 const diffHeaders = (page: Page) => page.locator('.code-pane diffs-container [data-title]');
@@ -192,4 +224,126 @@ test('deep-links a flyout file row into the panel and toggles Working / All PR',
   // back to every file shows the Working Comparison's own file
   await panel(page).getByRole('button', { name: '‹ All files' }).click();
   await expect(diffHeaders(page)).toHaveText([/app\.ts/u]);
+});
+
+const codeLoads = (page: Page) => page.evaluate(() => (window as unknown as { __codeLoads?: string[] }).__codeLoads ?? []);
+
+test('refreshes a changed file in place and reuses unchanged files without rehydrating them', async ({ page }) => {
+  const contents = { 'src/app.ts': contentsOf('src/app.ts', baseFile, workingFile), 'src/util.ts': contentsOf('src/util.ts', baseFile, workingFile) };
+  await mountPanel(page, patchOf([trackedFile('src/app.ts'), trackedFile('src/util.ts')]), contents);
+  await expect(diffHeaders(page)).toHaveCount(2);
+
+  // Full context hydrates every file from its two revisions — one loadFile per file
+  await panel(page).getByRole('button', { name: 'Full ctx' }).click();
+  await expect.poll(() => codeLoads(page)).toContain('src/app.ts');
+  await expect.poll(() => codeLoads(page)).toContain('src/util.ts');
+  await expect(panel(page).getByText('const sentinel = 999;').first()).toBeVisible();
+
+  // from here watch which files re-fetch; a reused (unchanged) file must not hydrate again
+  await page.evaluate(() => { (window as unknown as { __codeLoads?: string[] }).__codeLoads = []; });
+
+  // a live update where only util.ts changed content and revisions
+  const editedWorking = workingFile.replace('const b = 3;', 'const b = 9;');
+  await updatePanel(page, patchOf([trackedFile('src/app.ts'), trackedFileTo('src/util.ts', 'const b = 9;')]), {
+    'src/app.ts': contentsOf('src/app.ts', baseFile, workingFile),
+    'src/util.ts': contentsOf('src/util.ts', baseFile, editedWorking)
+  });
+
+  // the edited file rebuilds and shows its new content; the untouched file keeps a stable content
+  // version, so the library never re-hydrates it (no fresh fetch) and its expansion survives. (Version
+  // stability, not object identity, is what the library reconciles on; this pins that we hand a stable
+  // version for an unchanged file and a moved one for an edit.)
+  await expect(panel(page).getByText('const b = 9;')).toBeVisible();
+  await expect.poll(() => codeLoads(page)).toContain('src/util.ts');
+  await expect(diffHeaders(page)).toHaveCount(2);
+  expect(await codeLoads(page)).not.toContain('src/app.ts');
+});
+
+// drive the real useCodePanel controller: open it (a hard load), then move its change signal (the
+// production live-update trigger) and read its fetch / patch-change counts
+const openController = async (page: Page) => {
+  await page.waitForFunction(() => Boolean((window as unknown as { __ctrl?: Ctrl }).__ctrl));
+  await page.evaluate(() => (window as unknown as { __ctrl: Ctrl }).__ctrl.open());
+  await expect(diffHeaders(page).first()).toBeVisible();
+};
+const bumpSignal = async (page: Page, next: ComparisonPatch, signal: string) => {
+  await page.evaluate(patch => (window as unknown as { __ctrl: Ctrl }).__ctrl.setNext(patch), next);
+  await page.evaluate(sig => (window as unknown as { __ctrl: Ctrl }).__ctrl.bump(sig), signal);
+};
+
+test('a moved change signal soft-refreshes the open Comparison in place', async ({ page }) => {
+  await mountController(page, patchOf([trackedFile('src/app.ts')]));
+  await openController(page);
+  await expect(panel(page).getByText('const b = 3;')).toBeVisible();
+  const before = await controls(page);
+
+  // the live change signal moves and the next Comparison carries new content
+  await bumpSignal(page, patchOf([trackedFileTo('src/app.ts', 'const b = 9;')]), 's1');
+
+  // the panel refetched and swapped in the new content without a mode switch or reopen
+  await expect(panel(page).getByText('const b = 9;')).toBeVisible();
+  await expect(panel(page).getByText('const b = 3;')).toHaveCount(0);
+  expect((await controls(page)).fetches).toBeGreaterThan(before.fetches);
+});
+
+test('an unchanged-fingerprint refresh refetches but does not repaint', async ({ page }) => {
+  await mountController(page, patchOf([trackedFile('src/app.ts')]));
+  await openController(page);
+  const before = await controls(page);
+
+  // the signal moves but the Comparison is byte-identical (a change confined to the other Comparison)
+  await bumpSignal(page, patchOf([trackedFile('src/app.ts')]), 's1');
+
+  // it did refetch, but the identical fingerprint means the patch reference is reused — no repaint
+  await expect.poll(() => controls(page).then(current => current.fetches)).toBeGreaterThan(before.fetches);
+  expect((await controls(page)).patchChanges).toBe(before.patchChanges);
+});
+
+test('preserves the reviewer scroll position across a soft refresh', async ({ page }) => {
+  const files = Array.from({ length: 8 }, (_, index) => trackedFile(`src/mod${index}.ts`));
+  await mountController(page, patchOf(files));
+  await openController(page);
+  await expect(panel(page).locator('.code-pane-file-row')).toHaveCount(8);
+
+  const view = panel(page).locator('.code-pane-view');
+  await view.evaluate(element => { element.scrollTop = 260; element.dispatchEvent(new Event('scroll')); });
+  await expect.poll(() => view.evaluate(element => element.scrollTop)).toBeGreaterThan(100);
+  const before = await view.evaluate(element => element.scrollTop);
+  const stats = await controls(page);
+
+  // a live edit to one file (same height) arrives via the soft refresh — which keeps the patch mounted
+  // rather than blanking to a spinner, so the reviewer's place holds
+  const updated = files.map((file, index) => index === 3 ? trackedFileTo('src/mod3.ts', 'const b = 9;') : file);
+  await bumpSignal(page, patchOf(updated), 's1');
+
+  // the patch actually swapped (a new fingerprint) and scroll held
+  await expect.poll(() => controls(page).then(current => current.patchChanges)).toBeGreaterThan(stats.patchChanges);
+  await expect.poll(() => view.evaluate((element, left) => Math.abs(element.scrollTop - left), before)).toBeLessThan(24);
+});
+
+test('keeps a full-context file expanded while its live rebuild is in flight', async ({ page }) => {
+  await mountPanel(page, patchOf([trackedFile('src/app.ts')]), { 'src/app.ts': contentsOf('src/app.ts', baseFile, workingFile) });
+  await panel(page).getByRole('button', { name: 'app.ts' }).click();
+  await panel(page).getByRole('button', { name: 'Full ctx' }).click();
+
+  // Full context expands the unchanged lines: the out-of-hunk sentinel shows, alongside the current
+  // changed line (b = 3)
+  await expect(panel(page).getByText('const sentinel = 999;')).toBeVisible();
+  await expect(panel(page).getByText('const b = 3;')).toBeVisible();
+
+  // close the load gate so the non-partial rebuild cannot complete, then push a live edit to app.ts
+  await page.evaluate(async () => { const { holdLoads } = await import('/e2e/code-panel-fixture.tsx'); holdLoads(); });
+  const editedWorking = workingFile.replace('const b = 3;', 'const b = 7;');
+  await updatePanel(page, patchOf([trackedFileTo('src/app.ts', 'const b = 7;')]), { 'src/app.ts': contentsOf('src/app.ts', baseFile, editedWorking) });
+
+  // with the rebuild held, the file holds its prior expanded view — no blink back to hunks-only — so
+  // the expanded sentinel stays and the new (b = 7) content has not yet replaced the old
+  await expect(panel(page).getByText('const sentinel = 999;')).toBeVisible();
+  await expect(panel(page).getByText('const b = 7;')).toHaveCount(0);
+
+  // releasing the gate swaps in the non-partial rebuild: the new content appears and the file is still
+  // fully expanded, never having collapsed to hunks-only
+  await page.evaluate(async () => { const { releaseLoads } = await import('/e2e/code-panel-fixture.tsx'); releaseLoads(); });
+  await expect(panel(page).getByText('const b = 7;')).toBeVisible();
+  await expect(panel(page).getByText('const sentinel = 999;')).toBeVisible();
 });
