@@ -9,7 +9,7 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CodeView, type CodeViewHandle, type CodeViewItem, type CodeViewReactOptions, type FileDiffMetadata } from '@pierre/diffs/react';
 import { useColorTheme } from '../color-theme.js';
-import { groupComparisonFiles, type CodePanelMode, type CodePanelState, type ComparisonChange, type ComparisonFile, type ComparisonFileContents, type ComparisonPatch } from './comparison.js';
+import { groupComparisonFiles, type CodePanelMode, type CodePanelState, type ComparisonChange, type ComparisonFile, type ComparisonFileContents, type ComparisonPatch, type FilePreviewView } from './comparison.js';
 import { CODE_TOKENIZE_MAX_LINES, diffItemForContents, diffItemForFile, fileItemForContents, fileVersion, loadedFilesFromContents } from './items.js';
 
 type PanelItem = CodeViewItem<undefined>;
@@ -38,12 +38,17 @@ export type CodePanelProps = {
   patch: ComparisonPatch | undefined;
   // the one file the panel is filtered to, or undefined for the all-files scroll
   selectedPath: string | undefined;
+  // the File the panel is showing (a response file or terminal link), or undefined for a Comparison;
+  // when set the panel renders the File view instead of the Changes layout
+  filePreview?: FilePreviewView;
   // whether an All PR Comparison exists to toggle to (disables the header toggle when it does not)
   prAvailable: boolean;
   loadFile: (path: string) => Promise<ComparisonFileContents | undefined>;
   onSelectFile: (path: string) => void;
   onClearFile: () => void;
   onSetMode: (mode: CodePanelMode) => void;
+  // leave the File view, returning to the Comparison the panel would otherwise show
+  onCloseFile: () => void;
   onClose: () => void;
   onRetry?: () => void;
 };
@@ -71,6 +76,21 @@ type OverrideNeed = { path: string; version: number };
 
 const basename = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
 
+// Copy text to the clipboard, falling back to a hidden textarea + execCommand when the async
+// Clipboard API is unavailable — RAC is served over LAN http, a non-secure context where
+// `navigator.clipboard` is undefined, so the fallback is what makes copy-path work there.
+const copyToClipboard = async (value: string): Promise<void> => {
+  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value);
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.append(textarea);
+  textarea.select();
+  document.execCommand('copy');
+  textarea.remove();
+};
+
 // Return a copy of a path-keyed record with only the keys that pass `keep`; the same reference when
 // nothing was dropped, so a no-op refresh does not force a re-render.
 const keepKeys = <V,>(record: Record<string, V>, keep: (path: string) => boolean): Record<string, V> => {
@@ -88,7 +108,7 @@ const placeholderFor = (file: ComparisonFile): Placeholder | undefined => {
   return undefined;
 };
 
-export default function CodePanel({ mode, state, patch, selectedPath, prAvailable, loadFile, onSelectFile, onClearFile, onSetMode, onClose, onRetry }: CodePanelProps) {
+export default function CodePanel({ mode, state, patch, selectedPath, filePreview, prAvailable, loadFile, onSelectFile, onClearFile, onSetMode, onCloseFile, onClose, onRetry }: CodePanelProps) {
   const theme = useColorTheme();
   const [supportingExpanded, setSupportingExpanded] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('hunks');
@@ -106,7 +126,6 @@ export default function CodePanel({ mode, state, patch, selectedPath, prAvailabl
   // memo prefers one of these over a fresh partial so a live edit never blinks back to hunks-only.
   const [fullOverrides, setFullOverrides] = useState<Record<string, VersionedItem>>({});
 
-  const panelRef = useRef<HTMLElement>(null);
   const viewRef = useRef<PanelHandle>(null);
   // The place to return to when the reviewer leaves the all-files scroll for one file.
   const anchorRef = useRef<ScrollAnchor | undefined>(undefined);
@@ -155,12 +174,15 @@ export default function CodePanel({ mode, state, patch, selectedPath, prAvailabl
 
   // Track the panel's own width so the file list and layout adapt to a narrow column, not just a
   // narrow viewport — a Code panel is one column in the split and can be much narrower than the tab.
-  useEffect(() => {
-    const el = panelRef.current;
-    if (el === null) return;
-    const observer = new ResizeObserver(entries => setNarrow((entries[0]?.contentRect.width ?? el.clientWidth) < RAIL_BREAKPOINT));
-    observer.observe(el);
-    return () => observer.disconnect();
+  // A callback ref (not a mount-once effect) so the observer re-attaches every time the Comparison
+  // section mounts: the panel can open straight into the File view, whose section carries no ref, and
+  // returning from a File detour remounts this section — a `[]`-effect would never see either.
+  const panelObserver = useRef<ResizeObserver | undefined>(undefined);
+  const panelRef = useCallback((node: HTMLElement | null) => {
+    panelObserver.current?.disconnect();
+    if (node === null) { panelObserver.current = undefined; return; }
+    panelObserver.current = new ResizeObserver(entries => setNarrow((entries[0]?.contentRect.width ?? node.clientWidth) < RAIL_BREAKPOINT));
+    panelObserver.current.observe(node);
   }, []);
 
   // Plain view is single-file only; fall back to Hunks in the all-files scroll. Split needs a wide
@@ -368,6 +390,11 @@ export default function CodePanel({ mode, state, patch, selectedPath, prAvailabl
     </div>
   );
 
+  // A File view (a response-file row or a terminal link) takes over the whole panel as a peer of the
+  // Comparison — text through the same diff library for real highlighting, an image / binary
+  // placeholder / over-cap notice as plain views. It replaces the Changes layout while it is open.
+  if (filePreview !== undefined) return <FileView filePreview={filePreview} options={options} style={style} onBack={onCloseFile} onClose={onClose} />;
+
   return (
     <section className="code-pane" style={style} role="region" aria-label="Code changes" ref={panelRef}>
       <header className="code-pane-toolbar">
@@ -469,6 +496,50 @@ export default function CodePanel({ mode, state, patch, selectedPath, prAvailabl
             {fileList}
           </div>
         )}
+      </div>
+    </section>
+  );
+}
+
+// The panel's File view: one file opened from a response-file row or a terminal link, filling the
+// panel as a peer of the Comparison. A text file renders through the same diff library (a
+// `{type:'file'}` item) so it gets real syntax highlighting; an image (including the agent `/tmp`
+// screenshot bridge), a binary file, and the over-cap truncation notice are plain non-library views.
+// "‹ Changes" returns to the Comparison the panel would otherwise show; the close button dismisses it.
+function FileView({ filePreview, options, style, onBack, onClose }: { filePreview: FilePreviewView; options: PanelOptions; style: CSSProperties; onBack: () => void; onClose: () => void }) {
+  const { path, state, preview } = filePreview;
+  const [copied, setCopied] = useState(false);
+  useEffect(() => setCopied(false), [path]);
+  const copyPath = async () => {
+    try { await copyToClipboard(path); setCopied(true); } catch { setCopied(false); }
+  };
+  // a text file becomes a single plain-file item; an image or binary file renders without the library
+  const items = useMemo<PanelItem[]>(() => state === 'ready' && preview !== undefined && !preview.binary ? [fileItemForContents(path, preview.content)] : [], [state, preview, path]);
+  return (
+    <section className="code-pane code-pane-file" style={style} role="region" aria-label="Code changes">
+      <header className="code-pane-toolbar">
+        <nav className="code-pane-crumbs" aria-label="Location">
+          <button type="button" className="code-pane-crumb-back" onClick={onBack}>‹ Changes</button>
+          <span className="code-pane-crumb-sep" aria-hidden="true">/</span>
+          <span className="code-pane-crumb-current" title={path}>{basename(path)}</span>
+        </nav>
+        <span className="code-pane-spacer" />
+        <button type="button" className="code-pane-copy-path" onClick={() => void copyPath()}>{copied ? 'Path copied' : 'Copy path'}</button>
+        <button type="button" className="code-pane-close" aria-label="Close file" title="Close" onClick={onClose}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+        </button>
+      </header>
+      <div className="code-pane-main">
+        <div className="code-pane-body">
+          {state === 'loading' && <p className="code-pane-status" role="status">Loading file…</p>}
+          {state === 'error' && <p className="code-pane-status" role="alert">Preview unavailable.</p>}
+          {state === 'ready' && preview !== undefined && <>
+            {preview.binary && preview.image !== undefined && <div className="code-pane-file-image"><img src={`data:${preview.image.mediaType};base64,${preview.image.base64}`} alt={`Preview of ${path}`} /></div>}
+            {preview.binary && preview.image === undefined && <p className="code-pane-status">Binary file — no preview available.</p>}
+            {!preview.binary && <CodeView className="code-pane-view" options={options} items={items} disableWorkerPool />}
+            {preview.truncated && <footer className="code-pane-file-truncated">Preview limited to the first 256 KB.</footer>}
+          </>}
+        </div>
       </div>
     </section>
   );

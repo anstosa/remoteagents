@@ -1,7 +1,7 @@
 import { createElement, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import CodePanel from '../src/code-panel/code-panel.js';
-import { useCodePanel, type CodePanelMode, type ComparisonFileContents, type ComparisonPatch } from '../src/code-panel/comparison.js';
+import { useCodePanel, type CodePanelMode, type ComparisonFileContents, type ComparisonPatch, type FilePreviewView } from '../src/code-panel/comparison.js';
 
 // A spec reads the recorded loadFile calls to confirm Plain / Full-context / live-rebuild fetched the file.
 const loadLog = (): { __codeLoads?: string[] } => window as unknown as { __codeLoads?: string[] };
@@ -48,6 +48,7 @@ function Harness({ initialPatch, initialLoaded }: { initialPatch: ComparisonPatc
     onSelectFile: (path: string) => setSelectedPath(path),
     onClearFile: () => setSelectedPath(undefined),
     onSetMode: (next: CodePanelMode) => setMode(next),
+    onCloseFile: () => { /* isolated fixture has no Comparison to return to */ },
     onClose: () => { /* isolated fixture has nothing to close into */ }
   });
 }
@@ -56,6 +57,25 @@ export const renderCodePanel = (root: HTMLElement, patch: ComparisonPatch, loade
   loadLog().__codeLoads = [];
   gate.held = false; gate.waiters = [];
   createRoot(root).render(createElement(Harness, { initialPatch: patch, initialLoaded: loaded }));
+};
+
+// Mount the panel showing a static File view, so a spec can assert each preview state (text through
+// the library, an image, a binary placeholder, an over-cap notice) without a controller or network.
+export const renderFilePreview = (root: HTMLElement, filePreview: FilePreviewView) => {
+  createRoot(root).render(createElement(CodePanel, {
+    mode: 'working' as CodePanelMode,
+    state: 'ready' as const,
+    patch: undefined,
+    selectedPath: undefined,
+    filePreview,
+    prAvailable: false,
+    loadFile: async () => undefined,
+    onSelectFile: () => { /* no rail in the File view */ },
+    onClearFile: () => { /* no rail in the File view */ },
+    onSetMode: () => { /* no Comparison toggle in the File view */ },
+    onCloseFile: () => { /* spec asserts render, not navigation */ },
+    onClose: () => { /* spec asserts render, not navigation */ }
+  }));
 };
 
 // Controls a spec drives on the REAL `useCodePanel` controller (below), so the production trigger —
@@ -71,17 +91,24 @@ type Controls = {
   // open the panel (a hard load) / move the live change signal (a soft refresh)
   open(): void;
   bump(signal: string): void;
+  // open one file in the File view via the real controller (a file-preview fetch), then leave it
+  openFile(path: string, content: string): void;
+  closeFile(): void;
 };
 const controlLog = (): { __ctrl?: Controls } => window as unknown as { __ctrl?: Controls };
 
 function ControllerHarness({ initialPatch }: { initialPatch: ComparisonPatch }) {
   const [signal, setSignal] = useState('s0');
   const nextRef = useRef(initialPatch);
+  // the file-preview payload the next /file-preview fetch resolves with, so the round-trip runs
+  // through the real openFilePreview fetch + isFilePreview guard
+  const nextFileRef = useRef<{ path: string; size: number; truncated: boolean; binary: false; content: string } | undefined>(undefined);
   const stats = useRef({ fetches: 0, patchChanges: 0 });
   const lastPatch = useRef<ComparisonPatch | undefined>(undefined);
-  const request = useCallback(async (_url: string) => {
-    stats.current.fetches += 1;
-    return new Response(JSON.stringify(nextRef.current), { status: 200, headers: { 'content-type': 'application/json' } });
+  const request = useCallback(async (url: string) => {
+    const body = url.includes('/file-preview') ? nextFileRef.current : nextRef.current;
+    if (!url.includes('/file-preview')) stats.current.fetches += 1;
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
   }, []);
   const controller = useCodePanel('cora', request, signal);
   // count each real change of the patch reference — the no-repaint guard returns the same object when
@@ -93,7 +120,9 @@ function ControllerHarness({ initialPatch }: { initialPatch: ComparisonPatch }) 
       get patchChanges() { return stats.current.patchChanges; },
       setNext: patch => { nextRef.current = patch; },
       open: () => controller.openChanges('working'),
-      bump: next => setSignal(next)
+      bump: next => setSignal(next),
+      openFile: (path, content) => { nextFileRef.current = { path, size: content.length, truncated: false, binary: false, content }; controller.openFilePreview(path, `/api/agents/agent-1/file-preview`); },
+      closeFile: () => controller.closeFilePreview()
     };
   });
   return createElement(CodePanel, {
@@ -101,11 +130,13 @@ function ControllerHarness({ initialPatch }: { initialPatch: ComparisonPatch }) 
     state: controller.state,
     patch: controller.patch,
     selectedPath: controller.selectedPath,
+    filePreview: controller.filePreview,
     prAvailable: true,
     loadFile: controller.loadFile,
     onSelectFile: controller.selectFile,
     onClearFile: controller.clearFile,
     onSetMode: controller.setMode,
+    onCloseFile: controller.closeFilePreview,
     onClose: controller.close,
     onRetry: controller.refresh
   });

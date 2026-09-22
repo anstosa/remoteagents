@@ -662,6 +662,12 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
 .code-pane-close { display: grid; flex: 0 0 2rem; width: 2rem; height: 2rem; padding: 0; place-items: center; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: transparent; color: var(--subtext-0); box-shadow: none; }
 .code-pane-close:hover { border-color: var(--mauve); color: var(--text); }
 .code-pane-close svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+/* the File view: one opened file (a response-file row or a pane link), a peer of the Comparison */
+.code-pane-copy-path { flex: 0 0 auto; height: 2rem; padding: .35rem .65rem; border: 1px solid var(--blue); border-radius: var(--control-radius); background: transparent; color: var(--blue); font: 700 .7rem var(--font-mono); box-shadow: none; }
+.code-pane-copy-path:hover { background: color-mix(in srgb, var(--blue) 14%, transparent); color: var(--sky); }
+.code-pane-file-image { display: grid; min-width: 0; min-height: 0; flex: 1 1 auto; overflow: auto; padding: 1rem; place-items: center; background: var(--crust); }
+.code-pane-file-image img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+.code-pane-file-truncated { flex: 0 0 auto; padding: .45rem .7rem; border-top: 1px solid var(--surface-1); color: var(--yellow); font-size: .7rem; }
 /* the ☰ Files reopener (collapsed rail) / drawer opener (narrow panel) */
 .code-pane-files-open { display: inline-flex; flex: 0 0 auto; align-items: center; gap: .3rem; height: 2rem; padding: 0 .5rem; border: 1px solid var(--surface-1); border-radius: var(--control-radius); background: transparent; color: var(--subtext-0); font: inherit; font-size: .72rem; }
 .code-pane-files-open:hover { border-color: var(--mauve); color: var(--text); }

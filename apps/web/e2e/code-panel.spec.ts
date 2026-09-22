@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { installPaneMock, pushBytes, seedPaneSize } from './pane-stream-mock';
-import type { ComparisonFile, ComparisonFileContents, ComparisonPatch, RevisionFile } from '../src/code-panel/comparison';
+import type { ComparisonFile, ComparisonFileContents, ComparisonPatch, FilePreviewView, RevisionFile } from '../src/code-panel/comparison';
 
 // a minimal but valid git unified diff for one modified file, enough for parsePatchFiles
 const modifiedPatch = (path: string) => `diff --git a/${path} b/${path}\nindex 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n@@ -1,3 +1,3 @@\n const a = 1;\n-const b = 2;\n+const b = 3;\n const c = 4;\n`;
@@ -61,11 +61,48 @@ const mountController = async (page: Page, patch: ComparisonPatch) => {
     renderCodeController(root, scripted);
   }, { scripted: patch });
 };
-type Ctrl = { fetches: number; patchChanges: number; setNext(patch: ComparisonPatch): void; open(): void; bump(signal: string): void };
+type Ctrl = { fetches: number; patchChanges: number; setNext(patch: ComparisonPatch): void; open(): void; bump(signal: string): void; openFile(path: string, content: string): void; closeFile(): void };
 const controls = (page: Page) => page.evaluate(() => { const c = (window as unknown as { __ctrl: Ctrl }).__ctrl; return { fetches: c.fetches, patchChanges: c.patchChanges }; });
 
 const panel = (page: Page) => page.getByRole('region', { name: 'Code changes' });
 const diffHeaders = (page: Page) => page.locator('.code-pane diffs-container [data-title]');
+
+// mount the panel showing a static File view (a response file or terminal link), for the render states
+const mountFilePreview = async (page: Page, filePreview: FilePreviewView) => {
+  await page.goto('/');
+  await page.evaluate(async view => {
+    const { renderFilePreview } = await import('/e2e/code-panel-fixture.tsx');
+    const root = document.createElement('div');
+    root.style.height = '640px';
+    root.style.display = 'grid';
+    document.body.replaceChildren(root);
+    renderFilePreview(root, view);
+  }, filePreview);
+};
+
+test('renders each File view state: text through the library, image inline, binary/error placeholders', async ({ page }) => {
+  // a text file is a plain-file view rendered by the diff library (real highlighting), with a back crumb
+  await mountFilePreview(page, { path: 'src/app.ts', state: 'ready', preview: { path: 'src/app.ts', size: 40, truncated: false, binary: false, content: 'export const answer = 42;\n' } });
+  await expect(panel(page).getByRole('button', { name: '‹ Changes' })).toBeVisible();
+  await expect(panel(page).getByText('app.ts', { exact: true })).toBeVisible();
+  await expect(panel(page).getByText('export const answer = 42;')).toBeVisible();
+
+  // an over-cap text file keeps a truncation notice
+  await mountFilePreview(page, { path: 'src/big.ts', state: 'ready', preview: { path: 'src/big.ts', size: 300_000, truncated: true, binary: false, content: 'const head = 1;\n' } });
+  await expect(panel(page).getByText(/Preview limited to the first 256 KB/u)).toBeVisible();
+
+  // an image previews inline as a plain (non-library) view
+  await mountFilePreview(page, { path: 'shot.png', state: 'ready', preview: { path: 'shot.png', size: 68, truncated: false, binary: true, image: { mediaType: 'image/png', base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' } } });
+  await expect(panel(page).getByRole('img', { name: 'Preview of shot.png' })).toBeVisible();
+
+  // a non-image binary file is a placeholder, not garbage
+  await mountFilePreview(page, { path: 'blob.bin', state: 'ready', preview: { path: 'blob.bin', size: 10, truncated: false, binary: true } });
+  await expect(panel(page).getByText(/Binary file/u)).toBeVisible();
+
+  // a failed preview reports it
+  await mountFilePreview(page, { path: 'gone.ts', state: 'error' });
+  await expect(panel(page).getByText(/Preview unavailable/u)).toBeVisible();
+});
 
 test('renders implementation changes and collapses tests & docs by default', async ({ page }) => {
   await mountPanel(page, patchOf([trackedFile('src/app.ts'), trackedFile('src/widget.ts'), trackedFile('src/app.test.ts')]));
@@ -346,4 +383,22 @@ test('keeps a full-context file expanded while its live rebuild is in flight', a
   await page.evaluate(async () => { const { releaseLoads } = await import('/e2e/code-panel-fixture.tsx'); releaseLoads(); });
   await expect(panel(page).getByText('const b = 7;')).toBeVisible();
   await expect(panel(page).getByText('const sentinel = 999;')).toBeVisible();
+});
+
+test('opens a file in the File view through the real controller and returns to the Comparison', async ({ page }) => {
+  await mountController(page, patchOf([trackedFile('src/app.ts')]));
+  await openController(page);
+  await expect(diffHeaders(page)).toHaveText([/app\.ts/u]);
+
+  // open a file via the real controller — a genuine openFilePreview fetch through the isFilePreview guard
+  await page.evaluate(() => (window as unknown as { __ctrl: Ctrl }).__ctrl.openFile('README.md', 'hello from the file view'));
+  await expect(panel(page).getByRole('button', { name: '‹ Changes' })).toBeVisible();
+  await expect(panel(page).getByText('hello from the file view')).toBeVisible();
+  // the File view takes over the panel: only the opened file shows, not the Comparison's app.ts diff
+  await expect(diffHeaders(page)).toHaveText([/README\.md/u]);
+
+  // leaving the File view reveals the Comparison the panel had loaded underneath (no reopen)
+  await panel(page).getByRole('button', { name: '‹ Changes' }).click();
+  await expect(diffHeaders(page)).toHaveText([/app\.ts/u]);
+  await expect(panel(page).getByText('hello from the file view')).toHaveCount(0);
 });

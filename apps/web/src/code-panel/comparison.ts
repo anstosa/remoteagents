@@ -81,8 +81,38 @@ export const groupComparisonFiles = (files: ComparisonFile[]): GroupedFiles => (
   supporting: files.filter(file => supportingChange(file.change))
 });
 
-// The lifecycle of a Comparison fetch, mirroring `useFilePreview`'s loading/ready/error states.
+// The lifecycle of a Comparison fetch, mirroring the old file-preview loading/ready/error states.
 export type CodePanelState = 'loading' | 'ready' | 'error';
+
+// A raster image the file-preview endpoints can inline (the agent `/tmp` screenshot bridge and small
+// working-tree images), mirroring the server's `PreviewImage`.
+export type PreviewImage = { mediaType: 'image/gif' | 'image/jpeg' | 'image/png' | 'image/webp'; base64: string };
+// One bounded workspace-file preview from `POST /api/{agents,worktrees}/:id/file-preview`: a text
+// file's contents, or a binary file (optionally an inlined image), plus whether the 256 KB cap cut it
+// short. Mirrors the server's `WorkspaceFilePreview`. The panel's File view renders text through the
+// diff library and an image / binary placeholder as plain non-library views.
+export type FilePreview = { path: string; size: number; truncated: boolean } & ({ binary: true; image?: PreviewImage } | { binary: false; content: string });
+// The panel's File view: the path a response file or terminal link opened, the fetch lifecycle, and
+// the payload once ready. A peer of the Comparison — a panel shows Changes or one File, not both.
+export type FilePreviewView = { path: string; state: CodePanelState; preview?: FilePreview };
+
+const previewMediaTypes = new Set<PreviewImage['mediaType']>(['image/gif', 'image/jpeg', 'image/png', 'image/webp']);
+const isPreviewImage = (value: unknown): value is PreviewImage =>
+  value !== null && typeof value === 'object'
+  && previewMediaTypes.has((value as PreviewImage).mediaType)
+  && typeof (value as PreviewImage).base64 === 'string'
+  && /^[A-Za-z0-9+/]*={0,2}$/u.test((value as PreviewImage).base64);
+
+// Guard the file-preview payload before trusting it, the way the retired dialog's `isAssistantFilePreview` did.
+export const isFilePreview = (value: unknown): value is FilePreview =>
+  value !== null && typeof value === 'object'
+  && typeof (value as FilePreview).path === 'string'
+  && Number.isInteger((value as FilePreview).size) && (value as FilePreview).size >= 0
+  && typeof (value as FilePreview).truncated === 'boolean'
+  && typeof (value as { binary?: unknown }).binary === 'boolean'
+  && ((value as FilePreview).binary
+    ? (value as { content?: unknown }).content === undefined && ((value as { image?: unknown }).image === undefined || isPreviewImage((value as { image?: unknown }).image))
+    : typeof (value as { content?: unknown }).content === 'string' && (value as { image?: unknown }).image === undefined);
 
 // One Worktree's Code panel: whether it is open, which Comparison it shows, the latest patch, the
 // file it is filtered to (if any), and the actions the flyout and the panel drive. The controller
@@ -96,9 +126,17 @@ export type CodePanelController = {
   patch: ComparisonPatch | undefined;
   // the one file the panel is filtered to, or undefined for the all-files view
   selectedPath: string | undefined;
+  // the File the panel is showing — a response file or terminal link opened via a file-preview
+  // endpoint — or undefined when the panel shows a Comparison. A panel shows Changes or one File.
+  filePreview: FilePreviewView | undefined;
   // open (or refocus) the panel on the given Comparison, seeded from the flyout's mode; a `path`
   // filters straight to that one Change (a flyout row deep link), otherwise shows all files
   openChanges(mode: CodePanelMode, path?: string): void;
+  // open (or refocus) the panel on one file, fetched from the given preview endpoint (agent-keyed for
+  // an agent-context file so the `/tmp` screenshot bridge works, worktree-keyed otherwise)
+  openFilePreview(path: string, previewUrl: string): void;
+  // leave the File view, revealing the Comparison the panel would otherwise show
+  closeFilePreview(): void;
   // switch the Comparison in place (the panel-header Working / All PR toggle); refetches
   setMode(mode: CodePanelMode): void;
   // filter the open panel to one Change, or return to all files
@@ -137,8 +175,12 @@ export const useCodePanel = (worktreeId: string | undefined, request: Requester,
   const [state, setState] = useState<CodePanelState>('loading');
   const [patch, setPatch] = useState<ComparisonPatch>();
   const [selectedPath, setSelectedPath] = useState<string>();
+  const [filePreview, setFilePreview] = useState<FilePreviewView>();
   const [refreshToken, setRefreshToken] = useState(0);
   const requestId = useRef(0);
+  // a separate request id for the file-preview fetch, so a replaced or closed File view drops its
+  // in-flight response the way the Comparison fetch does
+  const previewRequest = useRef(0);
   // the last change signal we reacted to; the soft-refresh effect fires only on a genuine change,
   // not on the mount tick or on the open/mode dependencies it also watches
   const signalRef = useRef(changeSignal);
@@ -160,8 +202,10 @@ export const useCodePanel = (worktreeId: string | undefined, request: Requester,
     setOpen(savedCodeOpen(worktreeId));
     setPatch(undefined);
     setSelectedPath(undefined);
+    setFilePreview(undefined);
     signalRef.current = changeSignal;
     requestId.current += 1;
+    previewRequest.current += 1;
     // the signal belongs to the new Worktree; the open effect below reloads from scratch
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [worktreeId]);
@@ -203,6 +247,9 @@ export const useCodePanel = (worktreeId: string | undefined, request: Requester,
   }, [changeSignal, open, worktreeId, mode, patch, fetchPatch]);
 
   const openChanges = useCallback((next: CodePanelMode, path?: string) => {
+    // opening Changes leaves any File view the panel was showing
+    previewRequest.current += 1;
+    setFilePreview(undefined);
     setModeState(next);
     setSelectedPath(path);
     setOpen(true);
@@ -213,13 +260,40 @@ export const useCodePanel = (worktreeId: string | undefined, request: Requester,
     saveCodeOpen(worktreeId, true);
   }, [worktreeId]);
 
+  // Open (or refocus) the panel on one file, fetched from `previewUrl` — the agent-keyed file-preview
+  // endpoint for an agent-context file (so the `/tmp` screenshot bridge works) or the worktree-keyed
+  // one otherwise. The Comparison the panel would otherwise show keeps loading underneath, so the
+  // File view's "‹ Changes" back button reveals it without a further round trip. A request-id guard
+  // drops a replaced or closed preview, mirroring the Comparison fetch. Unlike opening Changes, a File
+  // preview is transient like the dialog it replaces — it does not persist the open flag, so a reload
+  // does not resurrect a panel opened only to glance at a file.
+  const openFilePreview = useCallback((path: string, previewUrl: string) => {
+    const id = ++previewRequest.current;
+    setFilePreview({ path, state: 'loading' });
+    setOpen(true);
+    void (async () => {
+      try {
+        const response = await request(previewUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path }) });
+        if (!response.ok) throw new Error('preview unavailable');
+        const payload: unknown = await response.json();
+        if (!isFilePreview(payload)) throw new Error('invalid preview');
+        if (previewRequest.current !== id) return;
+        setFilePreview({ path: payload.path, state: 'ready', preview: payload });
+      } catch {
+        if (previewRequest.current === id) setFilePreview({ path, state: 'error' });
+      }
+    })();
+  }, [worktreeId, request]);
+
+  const closeFilePreview = useCallback(() => { previewRequest.current += 1; setFilePreview(undefined); }, []);
+
   // the panel-header Working / All PR toggle; keep any selected file so the reviewer stays on it
   const setMode = useCallback((next: CodePanelMode) => setModeState(next), []);
   const selectFile = useCallback((path: string) => setSelectedPath(path), []);
   const clearFile = useCallback(() => setSelectedPath(undefined), []);
 
   const refresh = useCallback(() => setRefreshToken(token => token + 1), []);
-  const close = useCallback(() => { setOpen(false); saveCodeOpen(worktreeId, false); }, [worktreeId]);
+  const close = useCallback(() => { setOpen(false); saveCodeOpen(worktreeId, false); previewRequest.current += 1; setFilePreview(undefined); }, [worktreeId]);
 
   const loadFile = useCallback(async (path: string): Promise<ComparisonFileContents | undefined> => {
     if (worktreeId === undefined) return undefined;
@@ -231,5 +305,9 @@ export const useCodePanel = (worktreeId: string | undefined, request: Requester,
     } catch { return undefined; }
   }, [worktreeId, mode, request]);
 
-  return { open: open && worktreeId !== undefined, mode, state, patch, selectedPath, openChanges, setMode, selectFile, clearFile, refresh, loadFile, close };
+  // The Comparison needs a Worktree to scope its endpoints, but a File preview rides the agent-keyed
+  // file-preview endpoint, so it can show even for an agent with no Worktree — keep the panel visible
+  // whenever a File is open, or when Changes are open on a real Worktree.
+  const panelVisible = filePreview !== undefined || (open && worktreeId !== undefined);
+  return { open: panelVisible, mode, state, patch, selectedPath, filePreview, openChanges, openFilePreview, closeFilePreview, setMode, selectFile, clearFile, refresh, loadFile, close };
 };

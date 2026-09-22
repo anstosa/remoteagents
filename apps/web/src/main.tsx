@@ -2733,18 +2733,18 @@ function useFilePreview(previewUrl: string) {
   return { dialog, openFile, closePreview };
 }
 
-// manage files referenced by the latest assistant response
-function useLatestAssistantFiles(agentId: string, message?: string) {
+// List the files referenced by the latest assistant response as a flyout control. A row (like a file
+// link in the pane output) opens the file in the Code panel's File view via `onOpenFile`; the modal
+// preview dialog it used to open is retired, so this hook no longer owns any preview state.
+function useLatestAssistantFiles(agentId: string, message: string | undefined, onOpenFile: (path: string) => void) {
   const [files, setFiles] = useState<AssistantFile[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
   const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen, { placement: 'left', boundarySelector: '.log', boundaryRootSelector: '.agent-view', contentSized: true });
-  const filePreview = useFilePreview(`/api/agents/${encodeURIComponent(agentId)}/file-preview`);
 
   useEffect(() => {
     let cancelled = false;
     setFiles([]);
     setMenuOpen(false);
-    filePreview.closePreview();
     // ignore sessions without a completed response
     if (message === undefined) return () => { cancelled = true; };
     void request(`/api/agents/${encodeURIComponent(agentId)}/message-files`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message }) }).then(async response => {
@@ -2761,8 +2761,8 @@ function useLatestAssistantFiles(agentId: string, message?: string) {
   }, [agentId, message]);
 
   const label = `Files from latest response (${files.length})`;
-  const control = files.length === 0 ? null : <div className="response-files-control" ref={anchorRef}><button className={`log-control page-arrow response-files-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} onPointerDown={event => event.preventDefault()} onClick={() => setMenuOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 12 5.7-5.7a3.5 3.5 0 1 1 5 5L11 20a5 5 0 1 1-7-7l8.3-8.3" /></svg><span className="saved-prompts-count response-files-count" aria-hidden="true">{files.length}</span></button>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div ref={flyoutRef} className="response-files-menu" style={flyoutStyle} aria-label="Files from latest response">{files.map(file => <button className="log-control" type="button" key={file.path} title={file.path} onClick={() => { setMenuOpen(false); void filePreview.openFile(file.path); }}><span>{file.path}</span><small>{assistantFileSize(file.size)}</small></button>)}</div></FlyoutPortal>}</div>;
-  return { control, ...filePreview };
+  const control = files.length === 0 ? null : <div className="response-files-control" ref={anchorRef}><button className={`log-control page-arrow response-files-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} onPointerDown={event => event.preventDefault()} onClick={() => setMenuOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 12 5.7-5.7a3.5 3.5 0 1 1 5 5L11 20a5 5 0 1 1-7-7l8.3-8.3" /></svg><span className="saved-prompts-count response-files-count" aria-hidden="true">{files.length}</span></button>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div ref={flyoutRef} className="response-files-menu" style={flyoutStyle} aria-label="Files from latest response">{files.map(file => <button className="log-control" type="button" key={file.path} title={file.path} onClick={() => { setMenuOpen(false); onOpenFile(file.path); }}><span>{file.path}</span><small>{assistantFileSize(file.size)}</small></button>)}</div></FlyoutPortal>}</div>;
+  return { control };
 }
 
 // one Named conversation the server lists (a row of GET …/conversations); `consoleNamed`
@@ -4288,7 +4288,7 @@ const CodePanel = lazy(() => import('./code-panel/code-panel.js'));
 // split does not jump.
 function CodePane({ controller, prAvailable }: { controller: CodePanelController; prAvailable: boolean }) {
   return <Suspense fallback={<section className="code-pane" role="region" aria-label="Code changes"><p className="code-pane-status">Loading changes…</p></section>}>
-    <CodePanel mode={controller.mode} state={controller.state} patch={controller.patch} selectedPath={controller.selectedPath} prAvailable={prAvailable} loadFile={controller.loadFile} onSelectFile={controller.selectFile} onClearFile={controller.clearFile} onSetMode={controller.setMode} onClose={controller.close} onRetry={controller.refresh} />
+    <CodePanel mode={controller.mode} state={controller.state} patch={controller.patch} selectedPath={controller.selectedPath} filePreview={controller.filePreview} prAvailable={prAvailable} loadFile={controller.loadFile} onSelectFile={controller.selectFile} onClearFile={controller.clearFile} onSetMode={controller.setMode} onCloseFile={controller.closeFilePreview} onClose={controller.close} onRetry={controller.refresh} />
   </Suspense>;
 }
 // render ordered resizable output panels: the agent, any Terminals, then note, browser and code
@@ -5110,12 +5110,16 @@ function Log({ id, agentWorking = false, worktreeId, branch, gitStatus, gitPrSta
     // append selected output without queueing a prompt
     addToPrompt: text => setPromptDraft(id, current => appendTextBlock(current, text))
   };
-  const responseFiles = useLatestAssistantFiles(id, embedded ? undefined : latestAssistantMessage);
+  // Open a response-file row or a pane file link in the Code panel's File view, fetched from the
+  // agent-keyed preview endpoint so the `/tmp` screenshot bridge keeps working. A no-op when the panel
+  // is unavailable (the embedded update-advisor pane threads no code controller).
+  const openFileInCode = useCallback((path: string) => code?.openFilePreview(path, `/api/agents/${encodeURIComponent(id)}/file-preview`), [code, id]);
+  const responseFiles = useLatestAssistantFiles(id, embedded ? undefined : latestAssistantMessage, openFileInCode);
   const pushPendingKey = `prompt:${id}`;
   const pushPending = usePendingOperation(pushPendingKey);
-  // retain preview handling across terminal connections
-  const openOutputFileRef = useRef(responseFiles.openFile);
-  openOutputFileRef.current = responseFiles.openFile;
+  // retain the file opener across terminal reconnections (pane file links call it)
+  const openOutputFileRef = useRef(openFileInCode);
+  openOutputFileRef.current = openFileInCode;
   // retain browser routing across terminal connections
   const openOutputUrlRef = useRef<(url: string) => boolean>(() => false);
   // intercept matching links only while preview is open
@@ -5385,7 +5389,7 @@ function Log({ id, agentWorking = false, worktreeId, branch, gitStatus, gitPrSta
   const output = <div className="log-output">{!embedded && <ServerSwitcher className="output-server-switcher" />}<div className="log-canvas" ref={canvas} aria-label="Live log" />{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!embedded && <div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{responseFiles.control}{worktreeConversations.control}{worktreeNotes.control}</div></div>}</div></div>;
   const browserPane = browserUrl === undefined || browserHomeUrl === undefined || onBrowserNavigate === undefined || onBrowserClose === undefined ? null : <ProjectBrowserPane url={browserUrl} homeUrl={browserHomeUrl} proxied={browserProxied} worktreeId={worktreeId} navigationRequest={browserNavigationRequest} onNavigate={onBrowserNavigate} onClose={onBrowserClose} />;
   const codePane = embedded || code === undefined || !code.open ? null : <CodePane controller={code} prAvailable={gitPrStatus !== undefined} />;
-  return <section className={`log-shell${embedded ? ' embedded-log-shell' : ''}`}><div className={`log${embedded ? ' embedded-log' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit worktreeId={worktreeId} output={output} note={embedded ? undefined : worktreeNotes.pane} browser={browserPane} code={codePane} terminals={embedded ? undefined : terminals} terminalSelectionActions={terminalSelectionActions} onPhoneTerminal={onPhoneTerminal} /></div>{selectionActions}{!embedded && responseFiles.dialog}{!embedded && statusSlot && createPortal(gitSection, statusSlot)}{!embedded && historySlot && createPortal(historyToggle, historySlot)}</section>;
+  return <section className={`log-shell${embedded ? ' embedded-log-shell' : ''}`}><div className={`log${embedded ? ' embedded-log' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit worktreeId={worktreeId} output={output} note={embedded ? undefined : worktreeNotes.pane} browser={browserPane} code={codePane} terminals={embedded ? undefined : terminals} terminalSelectionActions={terminalSelectionActions} onPhoneTerminal={onPhoneTerminal} /></div>{selectionActions}{!embedded && statusSlot && createPortal(gitSection, statusSlot)}{!embedded && historySlot && createPortal(historyToggle, historySlot)}</section>;
 }
 
 type MoreMenuIconName = 'actions'|'attachment'|'new-task'|'push'|'rename';
