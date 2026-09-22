@@ -54,6 +54,94 @@ const inlineMarkdownLines = (lines: string[], key: string): ReactNode[] => lines
 
 const startsBlock = (line: string) => /^(?:\s*$|#{1,6}\s+|```|>\s?|[-*+]\s+|\d+[.)]\s+|(?:-{3,}|\*{3,}|_{3,})\s*$)/u.test(line);
 
+type TableAlignment = 'left' | 'center' | 'right' | undefined;
+
+// share safe inline rendering and scrolling across table formats
+const renderTable = (headers: string[], rows: string[][], start: number, alignments: TableAlignment[] = []): ReactNode => (
+  <div className="note-table-scroll" key={`table-${start}`}><table>
+    <thead><tr>{headers.map(
+      // preserve accessible column headers even without body rows
+      (header, column) => <th key={`head-${column}`} scope="col" style={{ textAlign: alignments[column] }}>{inlineMarkdown(header, `table-head-${start}-${column}`)}</th>
+    )}</tr></thead>
+    {/* omit empty body sections */}
+    {rows.length > 0 && <tbody>{rows.map(
+      // retain stable row identities
+      (row, rowIndex) => <tr key={`row-${rowIndex}`}>{row.map(
+        // render cell contents without interpreting html
+        (cell, column) => <td key={`cell-${column}`} style={{ textAlign: alignments[column] }}>{inlineMarkdown(cell, `table-cell-${start}-${rowIndex}-${column}`)}</td>
+      )}</tr>
+    )}</tbody>}
+  </table></div>
+);
+
+// split table cells while respecting escaped separators
+const pipeTableCells = (line: string) => {
+  const row = line.trim();
+  const cells = [''];
+  // consume escaped pipes before considering separators
+  for (let index = 0; index < row.length; index += 1) {
+    const character = row[index]!;
+    const next = row[index + 1];
+    // only the backslash immediately before a pipe escapes it
+    if (character === '\\' && next === '|') {
+      cells[cells.length - 1] += next;
+      index += 1;
+    // start a cell at each unescaped pipe
+    } else if (character === '|') {
+      cells.push('');
+    } else cells[cells.length - 1] += character;
+  }
+  // discard optional outer borders
+  if (cells.length > 1 && cells[0] === '') cells.shift();
+  // retain genuine empty cells between borders
+  if (cells.length > 1 && cells[cells.length - 1] === '') cells.pop();
+  // trim padding without changing inline cell content
+  return cells.map(cell => cell.trim());
+};
+
+// recognize a matching header and delimiter without consuming body rows
+const pipeTableHeader = (lines: string[], start: number) => {
+  const line = lines[start] ?? '';
+  const delimiter = lines[start + 1] ?? '';
+  // keep other blocks and ordinary paragraphs out of table parsing
+  if (startsBlock(line) || !delimiter.includes('|') || !/^[\s|:-]+$/u.test(delimiter)) return undefined;
+  const header = pipeTableCells(line);
+  const rule = pipeTableCells(delimiter);
+  // require matching header and delimiter column counts
+  if (header.length !== rule.length) return undefined;
+  // validate every delimiter before converting the block
+  if (!rule.every(cell => /^:?-+:?$/u.test(cell))) return undefined;
+  // derive each column's optional alignment markers
+  const alignments: TableAlignment[] = rule.map(cell => cell.endsWith(':') ? (cell.startsWith(':') ? 'center' : 'right') : cell.startsWith(':') ? 'left' : undefined);
+  return { headers: header, alignments };
+};
+
+// parse standard markdown pipe tables
+const pipeTable = (lines: string[], start: number, cellBudget: number): { block: ReactNode; next: number; cellCount: number } | undefined => {
+  const header = pipeTableHeader(lines, start);
+  // leave unmatched syntax as ordinary markdown
+  if (header === undefined) return undefined;
+  let next = start + 2;
+  // find the complete table before allocating any padded rows
+  while (next < lines.length && !startsBlock(lines[next]!)) next += 1;
+  const cellCount = header.headers.length * (next - start - 1);
+  // consume oversized tables as text so their rows cannot be reparsed
+  if (cellCount > cellBudget) {
+    return {
+      block: <p key={`table-source-${start}`}>{inlineMarkdownLines(lines.slice(start, next), `table-source-${start}`)}</p>,
+      next,
+      cellCount: 0
+    };
+  }
+  // materialize rows only after the complete table fits the note budget
+  const rows = lines.slice(start + 2, next).map(line => {
+    const row = pipeTableCells(line);
+    // pad missing cells and ignore excess cells
+    return header.headers.map((_, column) => row[column] ?? '');
+  });
+  return { block: renderTable(header.headers, rows, start, header.alignments), next, cellCount };
+};
+
 type TableColumn = { start: number; end?: number };
 
 const tableDividerColumns = (line: string, header = false): TableColumn[] | undefined => {
@@ -69,6 +157,7 @@ const tableCells = (lines: string[], columns: TableColumn[]) => columns.map(colu
   .filter(Boolean)
   .join(' '));
 
+// preserve fixed-width terminal tables alongside markdown tables
 const pseudoTable = (lines: string[], start: number): { block: ReactNode; next: number } | undefined => {
   let headerRule = start + 1;
   while (headerRule < Math.min(lines.length, start + 4) && lines[headerRule]!.trim()) {
@@ -93,7 +182,7 @@ const pseudoTable = (lines: string[], start: number): { block: ReactNode; next: 
       finishRow();
       if (rows.length === 0) return undefined;
       return {
-        block: <div className="note-table-scroll" key={`table-${start}`}><table><thead><tr>{headers.map((header, column) => <th key={`head-${column}`}>{inlineMarkdown(header, `table-head-${start}-${column}`)}</th>)}</tr></thead><tbody>{rows.map((row, rowIndex) => <tr key={`row-${rowIndex}`}>{row.map((cell, column) => <td key={`cell-${column}`}>{inlineMarkdown(cell, `table-cell-${start}-${rowIndex}-${column}`)}</td>)}</tr>)}</tbody></table></div>,
+        block: renderTable(headers, rows, start),
         next: index
       };
     }
@@ -174,14 +263,23 @@ const renderList = (list: ParsedList, key: string): ReactNode => {
 };
 
 // render note markdown blocks
+// render recognized blocks while preserving paragraph boundaries
 function MarkdownBlocks({ text }: { text: string }) {
   const lines = text.replace(/\r\n?/gu, '\n').split('\n');
   const blocks: ReactNode[] = [];
+  // bound generated pipe-table cells across the entire note
+  let remainingPipeTableCells = 10_000;
+  // consume each parsed block once
   for (let index = 0; index < lines.length;) {
     const line = lines[index]!;
     if (!line.trim()) { index += 1; continue; }
-    const table = pseudoTable(lines, index);
+    // recognize markdown and terminal table blocks
+    const parsedPipeTable = pipeTable(lines, index, remainingPipeTableCells);
+    const table = parsedPipeTable ?? pseudoTable(lines, index);
+    // advance past either table format or its bounded fallback
     if (table !== undefined) {
+      // debit only pipe tables that are actually rendered
+      remainingPipeTableCells -= parsedPipeTable?.cellCount ?? 0;
       blocks.push(table.block);
       index = table.next;
       continue;
@@ -219,7 +317,8 @@ function MarkdownBlocks({ text }: { text: string }) {
     }
     const paragraph = [line.trim()];
     index += 1;
-    while (index < lines.length && !startsBlock(lines[index]!)) paragraph.push(lines[index++]!.trim());
+    // let a table header interrupt the current paragraph
+    while (index < lines.length && !startsBlock(lines[index]!) && pipeTableHeader(lines, index) === undefined) paragraph.push(lines[index++]!.trim());
     blocks.push(<p key={`paragraph-${index}`}>{inlineMarkdownLines(paragraph, `paragraph-${index}`)}</p>);
   }
   return <>{blocks}</>;

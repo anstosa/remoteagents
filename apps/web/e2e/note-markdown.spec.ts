@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { installPaneMock } from './pane-stream-mock.js';
 
-test('renders saved notes with stable lists, links, selection actions, and inferred select/edit modes', async ({ page }) => {
+// preserve both table formats and existing note interactions
+test('renders saved notes with stable tables, lists, links, selection actions, and inferred select/edit modes', async ({ page }) => {
   const markdown = [
     '# Release notes',
     '',
@@ -43,7 +44,11 @@ test('renders saved notes with stable lists, links, selection actions, and infer
     '                                          created',
     '───────────────────  ──────────────────  ───────────────────',
     ' Durable history      Notes and saved     Behind',
-    '                      prompts'
+    '                      prompts',
+    '',
+    '| Feature | State |',
+    '| --- | --- |',
+    '| Markdown tables | Rendered |'
   ].join('\n');
   const note = { id: 'note-identifier-001', text: markdown };
 
@@ -107,13 +112,17 @@ test('renders saved notes with stable lists, links, selection actions, and infer
   await expect(preview).toContainText('<script>window.__noteScriptRan = true</script>');
   await expect(page.locator('.note-markdown script')).toHaveCount(0);
   expect(await page.evaluate(() => (window as unknown as { __noteScriptRan?: boolean }).__noteScriptRan)).toBeUndefined();
-  const table = preview.getByRole('table');
+  await expect(preview.getByRole('table')).toHaveCount(2);
+  const table = preview.getByRole('table').first();
   await expect(table).toBeVisible();
   await expect(table.getByRole('columnheader')).toHaveText(['Area', 'Your console', 'Competitive position']);
   await expect(table.getByRole('row')).toHaveCount(4);
   await expect(table.getByRole('row').nth(1).getByRole('cell')).toHaveText(['Remote/mobile supervision', 'Browser, PWA, voice, software keyboard, push alerts', 'Strong; better than most terminal-only tools']);
   await expect(table.getByRole('row').nth(2).getByRole('cell')).toHaveText(['Existing-session discovery', 'Automatically finds Codex/OMX tmux sessions', 'Major advantage; many competitors only understand sessions they created']);
   await expect(table.getByRole('row').nth(3).getByRole('cell')).toHaveText(['Durable history', 'Notes and saved prompts', 'Behind']);
+  const pipeTable = preview.getByRole('table').nth(1);
+  await expect(pipeTable.getByRole('columnheader')).toHaveText(['Feature', 'State']);
+  await expect(pipeTable.getByRole('cell')).toHaveText(['Markdown tables', 'Rendered']);
   const scrollRange = await preview.evaluate(element => element.scrollHeight - element.clientHeight);
   expect(scrollRange).toBeGreaterThan(0);
   await preview.evaluate(element => { element.scrollTop = element.scrollHeight; });
