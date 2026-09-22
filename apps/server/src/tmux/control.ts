@@ -24,6 +24,8 @@ const clientSizeSubscribeArg = `${clientSizeSubscription}::#{L:#{client_width}x#
 // client fails and its viewers reconnect, mirroring run()'s SIGKILL timeout for spawns.
 // Generous because tmux orders a reply behind pending %output.
 const commandTimeoutMs = 10_000;
+const inputBlockingPaneModes: ReadonlySet<string> = new Set(['copy-mode', 'view-mode']);
+const paneModeFormat = '#{pane_in_mode}\t#{pane_mode}';
 
 export type PaneActivitySubscriber = {
   // a %output for the subscribed pane arrived; the log socket arms its quiet-window
@@ -76,6 +78,7 @@ export class TmuxControlClient implements PaneClient {
   // command replies resolve in the order commands were written (tmux serialises them)
   private readonly blockWaiters: BlockWaiter[] = [];
   private readonly subscribers = new Map<string, Set<PaneActivitySubscriber>>();
+  private readonly inputQueues = new Map<string, Promise<boolean>>();
   private disposed = false;
   // resolves once the attach's own %begin/%end block has been consumed
   readonly ready: Promise<void>;
@@ -210,16 +213,50 @@ export class TmuxControlClient implements PaneClient {
     return id !== undefined && /^@\d+$/u.test(id) ? id : undefined;
   }
 
+  // leave history views but reject unrelated selectors
+  private async preparePaneInput(pane: string): Promise<boolean> {
+    const status = await this.command(`display-message -p -t ${pane} '${paneModeFormat}'`).catch(() => undefined);
+    // require one current pane-mode snapshot
+    if (status?.ok !== true) return false;
+    const match = /^([01])\t([^\r\n]*)$/u.exec(status.lines[0] ?? '');
+    // reject malformed or unsupported mode state
+    if (match === null) return false;
+    // normal panes accept input directly
+    if (match[1] === '0') return true;
+    // never inject into selectors or other pane modes
+    if (!inputBlockingPaneModes.has(match[2]!)) return false;
+    const cancelled = await this.command(`send-keys -X -t ${pane} cancel`).catch(() => undefined);
+    return cancelled?.ok === true;
+  }
+
   /**
-   * Type raw bytes into a pane byte-exact, as `send-keys -H` (hex literals) on the
-   * control connection, so no `send-keys` process is spawned. `-H` takes each byte as a
+   * leave a shared history view, then type raw bytes into a pane byte-exact as
+   * `send-keys -H` (hex literals) on the control connection. `-H` takes each byte as a
    * two-digit hex literal, so control bytes, UTF-8 continuation bytes and a lone Ctrl+C
-   * all reach the pane verbatim, unlike `-l` which reinterprets keys.
+   * all reach the pane verbatim, unlike `-l` which reinterprets keys. Other pane modes
+   * fail closed instead of receiving input meant for the process.
    */
   async sendInput(pane: string, bytes: Buffer): Promise<boolean> {
+    // require safe nonempty input
     if (!paneId.test(pane) || bytes.length === 0) return false;
+    const previous = this.inputQueues.get(pane) ?? Promise.resolve(true);
+    const queued = previous.catch(() => false).then(ready => ready && this.writeInput(pane, bytes));
+    this.inputQueues.set(pane, queued);
+    try {
+      return await queued;
+    } finally {
+      // clear only the final queued write
+      if (this.inputQueues.get(pane) === queued) this.inputQueues.delete(pane);
+    }
+  }
+
+  // prepare and write one ordered pane frame
+  private async writeInput(pane: string, bytes: Buffer): Promise<boolean> {
     await this.ready.catch(() => undefined);
+    // stop after connection loss
     if (this.disposed) return false;
+    // restore the live process before delivery
+    if (!await this.preparePaneInput(pane)) return false;
     const hex = [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join(' ');
     const block = await this.command(`send-keys -H -t ${pane} ${hex}`).catch(() => undefined);
     return block?.ok === true;

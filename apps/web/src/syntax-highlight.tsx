@@ -144,5 +144,6 @@ export function SyntaxHighlightedCode({ path, code, label }: { path: string; cod
   const language = languageForPath(path);
   // cache numbered token rows
   const lines = useMemo(() => highlightedLines(code, language), [code, language]);
-  return <pre aria-label={label}><code data-language={language}>{lines.map(renderLine)}</code></pre>;
+  // allow keyboard scrolling inside the preview modal
+  return <pre tabIndex={0} aria-label={label}><code data-language={language}>{lines.map(renderLine)}</code></pre>;
 }

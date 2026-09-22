@@ -41,6 +41,27 @@ const run = (noteId: string, worktreeId = 'wt-main', kind = 'codex') =>
   ({ method: 'POST' as const, url: `/api/worktrees/${worktreeId}/notes/${noteId}/run`, headers: mutate, payload: { kind } });
 
 describe('POST /api/worktrees/:id/notes/:noteId/run', () => {
+  // launch attachment-only notes through the normal staged prompt path
+  it('launches and runs an attachment-only note with its staged file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'rac-note-run-attachments-')); dirs.push(root);
+    const localWorktree = testWorktree({ id: 'wt-main', projectId: 'proj', label: 'Proj · main', path: root, identity: root, main: true });
+    const localAgent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: root, worktreeId: 'wt-main', title: 'Ready' });
+    const notes = new WorktreeNoteService(join(root, 'notes.json'));
+    const attachment = { name: 'context.txt', data: Buffer.from('attachment body').toString('base64') };
+    const note = await notes.createWithText('proj', 'Files only', '', undefined, [attachment]);
+    const queued = new QueuedPromptService(join(root, 'queue.json'));
+    const tmux = recordingTmux();
+    const discovery = appearingDiscovery({ worktree: localWorktree, agent: localAgent, socket: testSocket });
+    const server = await runApp({ notes, queued, tmux, launch: launchFake(), discovery });
+    try {
+      const response = await server.inject(run(note!.id));
+      expect(response.statusCode).toBe(201);
+      expect(tmux.pasted.some(text => /Attached files:\n@node_modules\/\.remote-agent-console\/attachments\/.+\/context\.txt /u.test(text))).toBe(true);
+    } finally {
+      await server.close();
+    }
+  }, 15_000);
+
   it('launches, waits for readiness, pastes the note, and returns the new agent id', async () => {
     const { notes, queued, noteId } = await stores();
     const tmux = recordingTmux();

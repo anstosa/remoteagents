@@ -244,6 +244,98 @@ describe.skipIf(!tmuxSocketsWork)('tmux control client (real tmux)', () => {
     }
   });
 
+  // leave shared history modes before forwarding terminal input
+  it('exits copy mode before forwarding one raw Enter', async () => {
+    const { ref, socket, pane } = await fixtureSession();
+    const client = new TmuxControlClient(tmux, ref.path, 'fixture', () => {});
+    try {
+      await client.ready;
+      expect((await run(tmux, ['-S', socket, 'send-keys', '-t', pane, '-l', 'raw draft'])).code).toBe(0);
+      expect((await run(tmux, ['-S', socket, 'copy-mode', '-t', pane])).code).toBe(0);
+      expect((await run(tmux, ['-S', socket, 'display-message', '-p', '-t', pane, '#{pane_mode}'])).stdout.trim()).toBe('copy-mode');
+
+      expect(await client.sendInput(pane, Buffer.from('\r'))).toBe(true);
+
+      await expect.poll(async () => (await run(tmux, ['-S', socket, 'display-message', '-p', '-t', pane, '#{pane_in_mode}'])).stdout.trim()).toBe('0');
+      await expect.poll(async () => (await client.capture(pane, 100))?.match(/raw draft/gu)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  // serialize mode recovery with consecutive raw input frames
+  it('orders consecutive input while leaving copy mode', async () => {
+    const { ref, socket, pane } = await fixtureSession();
+    const client = new TmuxControlClient(tmux, ref.path, 'fixture', () => {});
+    try {
+      await client.ready;
+      expect((await run(tmux, ['-S', socket, 'copy-mode', '-t', pane])).code).toBe(0);
+
+      const first = client.sendInput(pane, Buffer.from('ordered '));
+      const second = client.sendInput(pane, Buffer.from('input\r'));
+
+      await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+      await expect.poll(async () => (await client.capture(pane, 100))?.match(/ordered input/gu)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  // keep command replies aligned around concurrent capture traffic
+  it('keeps capture and input replies associated during mode recovery', async () => {
+    const { ref, socket, pane } = await fixtureSession();
+    const client = new TmuxControlClient(tmux, ref.path, 'fixture', () => {});
+    try {
+      await client.ready;
+      expect((await run(tmux, ['-S', socket, 'copy-mode', '-t', pane])).code).toBe(0);
+
+      const [sent, captured] = await Promise.all([
+        client.sendInput(pane, Buffer.from('parallel')),
+        client.capture(pane, 100)
+      ]);
+
+      expect(sent).toBe(true);
+      expect(captured).toBeTypeOf('string');
+      await expect.poll(async () => await client.capture(pane, 100)).toContain('parallel');
+    } finally {
+      client.dispose();
+    }
+  });
+
+  // do not inject input into an unrelated tmux selector
+  it('fails closed for a non-history pane mode', async () => {
+    const { ref, socket, pane } = await fixtureSession();
+    const client = new TmuxControlClient(tmux, ref.path, 'fixture', () => {});
+    try {
+      await client.ready;
+      expect((await run(tmux, ['-S', socket, 'clock-mode', '-t', pane])).code).toBe(0);
+      expect((await run(tmux, ['-S', socket, 'display-message', '-p', '-t', pane, '#{pane_mode}'])).stdout.trim()).toBe('clock-mode');
+
+      expect(await client.sendInput(pane, Buffer.from('x'))).toBe(false);
+      expect((await run(tmux, ['-S', socket, 'display-message', '-p', '-t', pane, '#{pane_mode}'])).stdout.trim()).toBe('clock-mode');
+    } finally {
+      client.dispose();
+    }
+  });
+
+  // recover managed prompt delivery without changing a sibling pane's mode
+  it('exits view mode on only the prompt target before paste and submit', async () => {
+    const { ref, socket, pane } = await fixtureSession();
+    expect((await run(tmux, ['-S', socket, 'split-window', '-d', '-t', pane, 'cat'])).code).toBe(0);
+    const sibling = (await run(tmux, ['-S', socket, 'list-panes', '-t', 'fixture', '-F', '#{pane_id}'])).stdout.split('\n').find(id => id !== '' && id !== pane)!;
+    expect((await run(tmux, ['-S', socket, 'run-shell', '-t', pane, "printf 'mode output\\n'"])).code).toBe(0);
+    await expect.poll(async () => (await run(tmux, ['-S', socket, 'display-message', '-p', '-t', pane, '#{pane_mode}'])).stdout.trim()).toBe('view-mode');
+    expect((await run(tmux, ['-S', socket, 'copy-mode', '-t', sibling])).code).toBe(0);
+    const adapter = new TmuxAdapter();
+
+    expect(await adapter.pastePrompt(ref, pane, 'rac-copy-mode-test', 'managed draft')).toBe(true);
+    expect(await adapter.sendKeys(ref, pane, ['Enter'])).toBe(true);
+
+    expect((await run(tmux, ['-S', socket, 'display-message', '-p', '-t', pane, '#{pane_in_mode}'])).stdout.trim()).toBe('0');
+    expect((await run(tmux, ['-S', socket, 'display-message', '-p', '-t', sibling, '#{pane_mode}'])).stdout.trim()).toBe('copy-mode');
+    await expect.poll(async () => (await run(tmux, ['-S', socket, 'capture-pane', '-p', '-t', pane])).stdout.match(/managed draft/gu)?.length ?? 0).toBeGreaterThanOrEqual(2);
+  });
+
   // restore the first input position after painting trailing blank rows
   it('reconstructs a normal-screen seed and restores its prompt cursor', async () => {
     const { ref, socket, pane } = await fixtureSession();

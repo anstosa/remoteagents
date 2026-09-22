@@ -81,16 +81,20 @@ describe('scheduler tick fires Schedules unattended', () => {
     const discovery = appearingDiscovery({ worktree, agent: idle, socket: testSocket });
     const { messages, push } = pushRecorder();
     const { notes, queued, noteId } = await seed({ target: { worktreeId: 'wt-main' } });
+    const attachment = { name: 'scheduled.txt', data: Buffer.from('scheduled').toString('base64') };
+    await notes.appendAttachments('proj', noteId, [attachment]);
     const tmux = recordingTmux();
     const launch = launchFake();
-    const server = await tickApp({ notes, queued, tmux, launch, discovery, push });
+    const submissions: unknown[] = [];
+    const prompts = { submit: async (_agentId: string, _text: string, attachments: unknown[]) => { submissions.push(attachments); return true; } };
+    const server = await tickApp({ notes, queued, tmux, launch, discovery, push, prompts });
     try {
       await server.scheduler.tick(tickNow);
       const lastRun = await lastRunOf(notes, noteId);
       // a managed Run records `running` at the due instant with the watch anchors; it never reuses a pane
       expect(lastRun).toMatchObject({ at: dueInstant, status: 'running', agentId: 'agent-1', sawWorking: false });
       expect(typeof lastRun?.startedAt).toBe('string');
-      expect(tmux.pasted.some(text => text.includes('Draft the weekly report'))).toBe(true);
+      expect(submissions).toEqual([[attachment]]);
       expect(tmux.pasted.some(text => text.trim() === '/new')).toBe(false);
       // a running Run stays quiet
       expect(messages).toEqual([]);

@@ -1,6 +1,7 @@
 import { constants } from 'node:fs';
 import { open, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { isUtf8 } from 'node:buffer';
 
 export type WorkspaceFileSummary = { path: string; size: number };
 export type PreviewImage = { mediaType: 'image/gif'|'image/jpeg'|'image/png'|'image/webp'; base64: string };
@@ -38,6 +39,22 @@ const previewImageMediaType = (content: Buffer): PreviewImage['mediaType'] | und
   // recognize WebP signatures
   if (content.subarray(0, 4).toString('ascii') === 'RIFF' && content.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
   return undefined;
+};
+
+// build one bounded in-memory file preview
+export const previewFileBytes = (path: string, bytes: Buffer): WorkspaceFilePreview => {
+  const mediaType = previewImageMediaType(bytes);
+  // return supported raster images only within the existing image cap
+  if (mediaType !== undefined && bytes.length <= maxTemporaryImageBytes) {
+    return { path, size: bytes.length, binary: true, truncated: false, image: { mediaType, base64: bytes.toString('base64') } };
+  }
+  const binary = mediaType !== undefined || bytes.includes(0) || !isUtf8(bytes);
+  // return a safe metadata-only fallback for unsupported binary bytes
+  if (binary) return { path, size: bytes.length, binary: true, truncated: false };
+  let content = bytes.subarray(0, maxPreviewBytes);
+  // avoid splitting the final utf-8 code point
+  while (!isUtf8(content)) content = content.subarray(0, content.length - 1);
+  return { path, size: bytes.length, binary: false, truncated: bytes.length > content.length, content: content.toString('utf8') };
 };
 
 // normalize one mentioned path

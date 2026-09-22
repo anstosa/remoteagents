@@ -529,6 +529,20 @@ html.software-keyboard-open .tabs { display: none; }
 .note-preview-interaction { display: grid; min-width: 0; min-height: 0; grid-template-rows: minmax(0, 1fr); overflow: hidden; }
 /* the note-pane head groups the toolbar and the Schedule editor into the grid's auto row */
 .note-pane-head { display: grid; min-width: 0; }
+/* keep saved files visible without crowding note content */
+.note-attachments { display: flex; flex-direction: column; min-width: 0; max-height: 9rem; overflow: auto; gap: .35rem; padding: .4rem .55rem; border-bottom: 1px solid var(--surface-1); }
+.note-attachment-list { display: flex; min-width: 0; align-items: flex-start; gap: .35rem; }
+.note-attachment-status { color: var(--subtext-0); font-size: .7rem; }
+/* match the attachment cards' padding and one-rem content height */
+.note-attachment-list > .note-attach { display: inline-flex; flex: 0 0 auto; align-items: center; gap: .3rem; padding: .2rem .45rem; border-color: var(--surface-1); background: transparent; color: var(--subtext-0); font: 600 .7rem/1rem var(--font-mono); white-space: nowrap; box-shadow: none; }
+.note-attachment-list > .note-attach:hover { border-color: var(--lavender); color: var(--text); }
+.note-attach svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+/* keep long filenames from pushing removal controls off-screen */
+.note-attachments .prompt-attachments, .note-attachments .prompt-attachments > span { min-width: 0; }
+.note-attachments .prompt-attachments { flex: 0 1 auto; align-self: center; }
+/* make filenames preview targets without nesting removal buttons */
+.note-attachments .note-attachment-preview { display: block; flex: 0 1 auto; width: auto; height: auto; min-width: 0; overflow: hidden; color: var(--lavender); font: inherit; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.note-attachments .note-attachment-preview:hover { color: var(--text); text-decoration: underline; }
 .schedule-area { position: relative; border-bottom: 1px solid var(--surface-1); }
 .schedule-sentence { position: relative; display: grid; gap: .3rem; padding: .5rem .6rem .55rem; font-size: .72rem; line-height: 1.5; color: var(--subtext-1); }
 .schedule-line { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .4rem; }

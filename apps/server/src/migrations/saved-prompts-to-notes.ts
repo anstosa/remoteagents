@@ -1,6 +1,6 @@
 import { link, readFile, unlink } from 'node:fs/promises';
 import { maxNoteTitleLength, WorktreeNoteService } from '../notes/service.js';
-import { noteTextWithDroppedAttachments } from '../notes/from-prompt.js';
+import { promptAttachmentName, validPromptAttachments, type PromptAttachment } from '../prompts/validation.js';
 import { projectIdOf } from '../workspaces/resolver.js';
 
 /**
@@ -14,8 +14,8 @@ export type SavedPromptsToNotesReport = {
   warnings: string[];              // one per skipped key, an over-limit count, and any failure
 };
 
-// a leniently-parsed saved prompt: only the text and any attachment names carry into a Note
-type ParsedPrompt = { text: string; attachments: string[] };
+// a leniently-parsed saved prompt with validated attachment bytes
+type ParsedPrompt = { text: string; attachments: PromptAttachment[] };
 
 // the migration's report as boot-log lines, matching migrations/boot.ts formatReport
 export function formatSavedPromptsToNotes(report: SavedPromptsToNotesReport): string[] {
@@ -38,13 +38,14 @@ function noteTitle(prompt: ParsedPrompt, nextAttachmentOnly: () => number): stri
 
 // parse the saved-prompts file leniently into keyed prompt lists; a non-object throws so the
 // caller leaves the source file in place
-function parseSavedPrompts(raw: string): Record<string, ParsedPrompt[]> {
+function parseSavedPrompts(raw: string): { stored: Record<string, ParsedPrompt[]>; invalidAttachments: number } {
   let parsed: unknown;
   // a SyntaxError echoes a fragment of the file (prompt text) — keep prompt contents out of the log
   try { parsed = JSON.parse(raw); }
   catch { throw new Error('the saved-prompts file is not valid JSON'); }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('the saved-prompts file is not an object');
   const stored: Record<string, ParsedPrompt[]> = {};
+  let invalidAttachments = 0;
   for (const [key, value] of Object.entries(parsed)) {
     if (!Array.isArray(value)) continue;
     stored[key] = value.flatMap(item => {
@@ -52,13 +53,21 @@ function parseSavedPrompts(raw: string): Record<string, ParsedPrompt[]> {
       const text = (item as { text?: unknown }).text;
       if (typeof text !== 'string') return [];
       const rawAttachments = (item as { attachments?: unknown }).attachments;
-      const attachments = Array.isArray(rawAttachments)
-        ? rawAttachments.flatMap(attachment => attachment !== null && typeof attachment === 'object' && typeof (attachment as { name?: unknown }).name === 'string' ? [(attachment as { name: string }).name] : [])
-        : [];
+      // require complete saved attachment payloads
+      if (rawAttachments !== undefined && !Array.isArray(rawAttachments)) { invalidAttachments += 1; return []; }
+      const attachments = (rawAttachments ?? []).flatMap(attachment => {
+        // reject malformed attachment records
+        if (attachment === null || typeof attachment !== 'object' || typeof (attachment as { name?: unknown }).name !== 'string' || typeof (attachment as { data?: unknown }).data !== 'string') return [];
+        const candidate = attachment as PromptAttachment;
+        const name = promptAttachmentName(candidate.name);
+        return name === undefined ? [] : [{ name, data: candidate.data }];
+      });
+      // reject records with missing or invalid attachment bytes
+      if (attachments.length !== (rawAttachments ?? []).length || !validPromptAttachments(attachments)) { invalidAttachments += 1; return []; }
       return [{ text, attachments }];
     });
   }
-  return stored;
+  return { stored, invalidAttachments };
 }
 
 // move the source file to a sibling backup, never overwriting one (the older backup wins), so a
@@ -105,8 +114,11 @@ export async function migrateSavedPromptsToNotes(options: { projectIds: Iterable
   // file and does nothing, and any un-migrated prompts remain in the backup. A parse or move
   // failure writes nothing and leaves the source in place.
   let stored: Record<string, ParsedPrompt[]>;
+  let invalidAttachments = 0;
   try {
-    stored = parseSavedPrompts(raw);
+    const parsed = parseSavedPrompts(raw);
+    stored = parsed.stored;
+    invalidAttachments = parsed.invalidAttachments;
   } catch (error) {
     report.warnings.push(`${message(error)}; the saved-prompts file was left in place`);
     return report;
@@ -117,6 +129,8 @@ export async function migrateSavedPromptsToNotes(options: { projectIds: Iterable
     report.warnings.push(`${message(error)}; the saved-prompts file was left in place`);
     return report;
   }
+  // report archived records that could not safely retain their bytes
+  if (invalidAttachments > 0) report.warnings.push(`${invalidAttachments} saved prompt${invalidAttachments === 1 ? '' : 's'} had invalid attachments and ${invalidAttachments === 1 ? 'was' : 'were'} not migrated`);
 
   // Write the Notes from the in-memory prompts; the source is already safe in the backup, so a
   // note-store error stops the migration without crashing boot and without a retry that duplicates.
@@ -132,8 +146,7 @@ export async function migrateSavedPromptsToNotes(options: { projectIds: Iterable
       let created = 0;
       for (const prompt of prompts) {
         const title = noteTitle(prompt, () => (attachmentOnly += 1));
-        const text = noteTextWithDroppedAttachments(prompt.text, prompt.attachments.map(name => ({ name })));
-        if (await options.notes.createWithText(projectId, title, text) === undefined) dropped += 1;
+        if (await options.notes.createWithText(projectId, title, prompt.text, undefined, prompt.attachments) === undefined) dropped += 1;
         else created += 1;
       }
       if (created > 0) report.counts[projectId] = (report.counts[projectId] ?? 0) + created;

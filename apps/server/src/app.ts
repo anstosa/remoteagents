@@ -16,7 +16,7 @@ import { adapterFor } from './adapters/registry.js';
 import { agentKinds, codexFamily, sameConversation, type Adapter, type AgentKind, type ConversationSummary, type InlineQuestion, type PaneSnapshot, type ResetSettling } from './adapters/types.js';
 import { TmuxAdapter } from './tmux/adapter.js';
 import { maxPromptAttachments, maxPromptAttachmentBytes, PromptService, type PromptAttachment } from './prompts/service.js';
-import { validPrompt } from './prompts/validation.js';
+import { promptAttachmentBytes, promptAttachmentData, promptAttachmentName, validPrompt, validPromptAttachments } from './prompts/validation.js';
 import { QueuedPromptService, type QueuedPrompt } from './prompts/queue.js';
 import { LaunchService } from './launch/service.js';
 import { createAgentWaiter, launchPollAttempts, launchPollDelay as defaultLaunchPollDelay, launchReadyTimeoutSeconds } from './launch/wait.js';
@@ -51,7 +51,7 @@ import { ReviewTourJobs } from './review-tour/jobs.js';
 import { ReviewTourStore } from './review-tour/store.js';
 import { parseReviewRequestId, parseReviewTourInput, REVIEW_REQUEST_BODY_BYTES, ReviewTourError, type ReviewErrorCode, type ReviewTourInput } from './review-tour/contracts.js';
 import { configuredWorktreeForWorkspace, projectIdOf, worktreeById, worktreeHostRoot, worktreeMatchesWorkspace, worktreePathOf, worktreeWireId } from './workspaces/resolver.js';
-import { WorkspaceFileService } from './workspace-files/service.js';
+import { previewFileBytes, WorkspaceFileService } from './workspace-files/service.js';
 import { instanceIconSvg, isInstanceIcon } from './instance-icon.js';
 import { instanceAttention, RemoteInstanceStatusPoller, validInstanceStatusRequest, type InstanceStatus } from './instance-status.js';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
@@ -98,6 +98,8 @@ const promptAttachments = (value: unknown): PromptAttachment[] | undefined => {
   const attachments = value.map(candidate => candidate !== null && typeof candidate === 'object' && typeof (candidate as { name?: unknown }).name === 'string' && typeof (candidate as { data?: unknown }).data === 'string' ? candidate as PromptAttachment : undefined);
   return attachments.some(attachment => attachment === undefined) ? undefined : attachments as PromptAttachment[];
 };
+// allow one maximum attachment request plus json/base64 overhead
+const noteAttachmentBodyLimit = Math.ceil(maxPromptAttachmentBytes * 1.4);
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
   const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow(), () => paneStream.openPaneKeys()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const prompts = deps.prompts ?? new PromptService(discovery, tmux, promptHistory, queuedPrompts, (scope: string, prompt: QueuedPrompt) => drainUndelivered(scope, prompt), undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const consoleNamed = deps.consoleNamed ?? new ConsoleNamedConversationService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboardFingerprint); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
@@ -699,9 +701,26 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // the anchor for a Schedule's displayed next-run and its firing: a restart never replays a missed
   // instant. Injectable so tests can place boot before a due instant they mean to fire.
   const scheduleBootAt = deps.scheduleBootAt ?? new Date();
-  // decorate a note with its server-computed next run, so the display and the fire agree
-  const decorateNote = (note: WorktreeNote) => note.schedule === undefined ? note : { ...note, nextRun: scheduleNextRun(note.schedule, scheduleBootAt)?.toISOString() };
+  // summarize attachment bytes and add the server-computed next run
+  const decorateNote = (note: WorktreeNote) => {
+    const { attachments, ...safe } = note;
+    return {
+      ...safe,
+      ...(attachments === undefined ? {} : { attachments: attachments.map(attachment => ({ name: attachment.name, size: promptAttachmentBytes(attachment)! })) }),
+      ...(note.schedule === undefined ? {} : { nextRun: scheduleNextRun(note.schedule, scheduleBootAt)?.toISOString() })
+    };
+  };
   const decorateNotes = (stored: WorktreeNote[]) => stored.map(decorateNote);
+  // preview one stored attachment without filesystem resolution
+  const previewNoteAttachment = async (saveKey: string, noteId: string, path: string) => {
+    const attachments = await notes.attachments(saveKey, noteId);
+    const attachment = attachments?.find(candidate => candidate.name === path);
+    // hide unknown notes and attachment names alike
+    if (attachment === undefined) return undefined;
+    const bytes = promptAttachmentData(attachment.data);
+    // persisted notes are validated, but fail closed if storage is corrupted
+    return bytes === undefined ? undefined : previewFileBytes(attachment.name, bytes);
+  };
   // resolve a Schedule notification's operator-facing "<Project | Scratch>" label and, for a Worktree
   // target, its wire id (the service worker deep-links to the Worktree). A Worktree resolves to its
   // Project's label; a gone Worktree falls back to a generic word so a "target is gone" skip still notifies.
@@ -750,7 +769,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // create one queued prompt note and advance its dashboard revision
   const createQueuedPromptNote = async (persistence: { saveKey: string; noteLabel: string }, prompt: QueuedPrompt): Promise<WorktreeNote | undefined> => {
     const content = promptNoteContent(persistence.noteLabel, new Date(), prompt);
-    const note = await notes.createWithText(persistence.saveKey, content.title, content.text, 'queued-prompt');
+    const note = await notes.createWithText(persistence.saveKey, content.title, content.text, 'queued-prompt', content.attachments ?? []);
     // publish only durable queue-created notes
     if (note !== undefined) queuedPromptRevision += 1;
     return note;
@@ -801,11 +820,78 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return reply.code(204).send();
   });
   // create an optionally titled note
-  app.post('/api/worktrees/:id/notes', { bodyLimit: 128_000 }, async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const saveKey = worktreeSaveKey(id); const title = body(request).title; const text = body(request).text; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0'))) return reply.code(400).send({ error: 'invalid note title' }); if (text !== undefined && (typeof text !== 'string' || text.length > 30_000 || text.includes('\0'))) return reply.code(400).send({ error: 'invalid note' }); if (text !== undefined && typeof title !== 'string') return reply.code(400).send({ error: 'invalid note title' }); const note = text === undefined ? await notes.create(saveKey, title as string | undefined) : await notes.createWithText(saveKey, title as string, text); return note === undefined ? reply.code(409).send({ error: 'note limit reached' }) : reply.code(201).send(note); });
-  app.put('/api/worktrees/:id/notes/:noteId', { bodyLimit: 128_000 }, async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); const text = body(request).text; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof text !== 'string' || text.length > 30_000 || text.includes('\0')) return reply.code(400).send({ error: 'invalid note' }); const note = await notes.update(saveKey, noteId, text); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
+  app.post('/api/worktrees/:id/notes', { bodyLimit: noteAttachmentBodyLimit }, async (request, reply) => {
+    controlled(request, true);
+    const id = (request.params as { id: string }).id;
+    const saveKey = worktreeSaveKey(id);
+    const data = body(request);
+    const title = data.title;
+    const text = data.text;
+    const attachments = promptAttachments(data.attachments);
+    // require a current worktree
+    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    // validate the optional title
+    if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0'))) return reply.code(400).send({ error: 'invalid note title' });
+    // validate the optional text
+    if (text !== undefined && (typeof text !== 'string' || text.length > 30_000 || text.includes('\0'))) return reply.code(400).send({ error: 'invalid note' });
+    // validate attachment records and byte limits
+    if (attachments === undefined || !validPromptAttachments(attachments)) return reply.code(400).send({ error: 'invalid attachments' });
+    // atomic initial content requires a title
+    if ((text !== undefined || attachments.length > 0) && typeof title !== 'string') return reply.code(400).send({ error: 'invalid note title' });
+    const note = text === undefined && attachments.length === 0
+      ? await notes.create(saveKey, title as string | undefined)
+      : await notes.createWithText(saveKey, title as string, typeof text === 'string' ? text : '', undefined, attachments);
+    return note === undefined ? reply.code(409).send({ error: 'note limit reached' }) : reply.code(201).send(decorateNote(note));
+  });
+  app.put('/api/worktrees/:id/notes/:noteId', { bodyLimit: 128_000 }, async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); const text = body(request).text; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof text !== 'string' || text.length > 30_000 || text.includes('\0')) return reply.code(400).send({ error: 'invalid note' }); const note = await notes.update(saveKey, noteId, text); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
   // rename one note
-  app.patch('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); const title = body(request).title; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid note title' }); const note = await notes.rename(saveKey, noteId, title); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
-  app.delete('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const note = await notes.delete(saveKey, noteId); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note; });
+  app.patch('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); const title = body(request).title; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid note title' }); const note = await notes.rename(saveKey, noteId, title); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
+  app.delete('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const note = await notes.delete(saveKey, noteId); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
+  // read full attachment payloads for one worktree note
+  app.get('/api/worktrees/:id/notes/:noteId/attachments', async (request, reply) => {
+    controlled(request);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const saveKey = worktreeSaveKey(id);
+    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const attachments = await notes.attachments(saveKey, noteId);
+    return attachments === undefined ? reply.code(404).send({ error: 'note unavailable' }) : { attachments };
+  });
+  // preview one worktree-note attachment from its stored bytes
+  app.post('/api/worktrees/:id/notes/:noteId/attachments/preview', async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const saveKey = worktreeSaveKey(id);
+    const path = body(request).path;
+    // require one canonical attachment name
+    if (typeof path !== 'string' || promptAttachmentName(path) !== path) return reply.code(400).send({ error: 'invalid attachment path' });
+    // require one current worktree scope
+    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const preview = await previewNoteAttachment(saveKey, noteId, path);
+    return preview === undefined ? reply.code(404).send({ error: 'attachment unavailable' }) : preview;
+  });
+  // append attachment payloads to one worktree note
+  app.post('/api/worktrees/:id/notes/:noteId/attachments', { bodyLimit: noteAttachmentBodyLimit }, async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const saveKey = worktreeSaveKey(id);
+    const attachments = promptAttachments(body(request).attachments);
+    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    if (attachments === undefined || attachments.length === 0 || !validPromptAttachments(attachments)) return reply.code(400).send({ error: 'invalid attachments' });
+    const note = await notes.appendAttachments(saveKey, noteId, attachments);
+    if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    return note === 'invalid' ? reply.code(400).send({ error: 'invalid attachments' }) : decorateNote(note);
+  });
+  // remove one normalized attachment name from a worktree note
+  app.delete('/api/worktrees/:id/notes/:noteId/attachments', async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const name = (request.query as { name?: unknown }).name;
+    const saveKey = worktreeSaveKey(id);
+    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    if (typeof name !== 'string' || promptAttachmentName(name) === undefined) return reply.code(400).send({ error: 'invalid attachment name' });
+    const note = await notes.removeAttachment(saveKey, noteId, name);
+    return note === undefined ? reply.code(404).send({ error: 'attachment unavailable' }) : decorateNote(note);
+  });
   // set or replace one note's Schedule
   app.put('/api/worktrees/:id/notes/:noteId/schedule', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const schedule = buildSchedule(body(request)); if (typeof schedule === 'string') return reply.code(400).send({ error: schedule }); const note = await notes.setSchedule(saveKey, noteId, schedule); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
   // remove one note's Schedule, keeping the note
@@ -822,21 +908,27 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return stored === undefined ? reply.code(400).send({ error: 'invalid note group' }) : { notes: decorateNotes(stored) };
   });
   // create one live agent note
-  app.post('/api/agents/:id/notes', { bodyLimit: 128_000 }, async (request, reply) => {
+  app.post('/api/agents/:id/notes', { bodyLimit: noteAttachmentBodyLimit }, async (request, reply) => {
     controlled(request, true);
     const persistence = await agentPersistence((request.params as { id: string }).id);
-    const title = body(request).title;
-    const text = body(request).text;
+    const data = body(request);
+    const title = data.title;
+    const text = data.text;
+    const attachments = promptAttachments(data.attachments);
     // require one current persistence group
     if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
     // require one bounded optional title
     if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0'))) return reply.code(400).send({ error: 'invalid note title' });
     // require one bounded optional initial text
     if (text !== undefined && (typeof text !== 'string' || text.length > 30_000 || text.includes('\0'))) return reply.code(400).send({ error: 'invalid note' });
-    // an initial text must carry a title; the two are written atomically (createWithText) so a failed write never leaves a blank titled note
-    if (text !== undefined && typeof title !== 'string') return reply.code(400).send({ error: 'invalid note title' });
-    const note = text === undefined ? await notes.create(persistence.saveKey, typeof title === 'string' ? title : undefined) : await notes.createWithText(persistence.saveKey, title as string, text);
-    return note === undefined ? reply.code(409).send({ error: 'note limit reached' }) : reply.code(201).send(note);
+    // require valid attachment records and byte limits
+    if (attachments === undefined || !validPromptAttachments(attachments)) return reply.code(400).send({ error: 'invalid attachments' });
+    // initial content must carry a title and is written atomically
+    if ((text !== undefined || attachments.length > 0) && typeof title !== 'string') return reply.code(400).send({ error: 'invalid note title' });
+    const note = text === undefined && attachments.length === 0
+      ? await notes.create(persistence.saveKey, typeof title === 'string' ? title : undefined)
+      : await notes.createWithText(persistence.saveKey, title as string, typeof text === 'string' ? text : '', undefined, attachments);
+    return note === undefined ? reply.code(409).send({ error: 'note limit reached' }) : reply.code(201).send(decorateNote(note));
   });
   // update one live agent note
   app.put('/api/agents/:id/notes/:noteId', { bodyLimit: 128_000 }, async (request, reply) => {
@@ -849,7 +941,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // require bounded note content
     if (typeof text !== 'string' || text.length > 30_000 || text.includes('\0')) return reply.code(400).send({ error: 'invalid note' });
     const note = await notes.update(persistence.saveKey, noteId, text);
-    return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note;
+    return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note);
   });
   // rename one live agent note
   app.patch('/api/agents/:id/notes/:noteId', async (request, reply) => {
@@ -862,7 +954,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // require one bounded title
     if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid note title' });
     const note = await notes.rename(persistence.saveKey, noteId, title);
-    return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note;
+    return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note);
   });
   // delete one live agent note
   app.delete('/api/agents/:id/notes/:noteId', async (request, reply) => {
@@ -872,7 +964,52 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // require one current persistence group
     if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
     const note = await notes.delete(persistence.saveKey, noteId);
-    return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : note;
+    return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note);
+  });
+  // read full attachment payloads for one live agent note
+  app.get('/api/agents/:id/notes/:noteId/attachments', async (request, reply) => {
+    controlled(request);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const persistence = await agentPersistence(id);
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    const attachments = await notes.attachments(persistence.saveKey, noteId);
+    return attachments === undefined ? reply.code(404).send({ error: 'note unavailable' }) : { attachments };
+  });
+  // preview one live-agent note attachment from its stored bytes
+  app.post('/api/agents/:id/notes/:noteId/attachments/preview', async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const persistence = await agentPersistence(id);
+    const path = body(request).path;
+    // require one canonical attachment name
+    if (typeof path !== 'string' || promptAttachmentName(path) !== path) return reply.code(400).send({ error: 'invalid attachment path' });
+    // require one live agent scope
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    const preview = await previewNoteAttachment(persistence.saveKey, noteId, path);
+    return preview === undefined ? reply.code(404).send({ error: 'attachment unavailable' }) : preview;
+  });
+  // append attachment payloads to one live agent note
+  app.post('/api/agents/:id/notes/:noteId/attachments', { bodyLimit: noteAttachmentBodyLimit }, async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const persistence = await agentPersistence(id);
+    const attachments = promptAttachments(body(request).attachments);
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    if (attachments === undefined || attachments.length === 0 || !validPromptAttachments(attachments)) return reply.code(400).send({ error: 'invalid attachments' });
+    const note = await notes.appendAttachments(persistence.saveKey, noteId, attachments);
+    if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    return note === 'invalid' ? reply.code(400).send({ error: 'invalid attachments' }) : decorateNote(note);
+  });
+  // remove one normalized attachment name from a live agent note
+  app.delete('/api/agents/:id/notes/:noteId/attachments', async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const name = (request.query as { name?: unknown }).name;
+    const persistence = await agentPersistence(id);
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    if (typeof name !== 'string' || promptAttachmentName(name) === undefined) return reply.code(400).send({ error: 'invalid attachment name' });
+    const note = await notes.removeAttachment(persistence.saveKey, noteId, name);
+    return note === undefined ? reply.code(404).send({ error: 'attachment unavailable' }) : decorateNote(note);
   });
   // set or replace one live agent note's Schedule
   app.put('/api/agents/:id/notes/:noteId/schedule', async (request, reply) => {
@@ -1195,7 +1332,6 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return preview === undefined ? reply.code(404).send({ error: 'file unavailable' }) : preview;
   });
   // save a queued prompt as a Note under the agent's note key, consuming the queued copy only once
-  // the Note is durable; attachments are dropped and named in the note text
   app.post('/api/agents/:id/queued-prompts/:promptId/save', async (request, reply) => {
     controlled(request, true);
     const { id, promptId } = request.params as { id: string; promptId: string };
@@ -1212,7 +1348,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (result === 'failed' || note === undefined) return reply.code(409).send({ error: 'unable to save queued prompt' });
     // publish the revision without delaying a durable save response
     void dashboardUpdates.refresh().catch(() => undefined);
-    return reply.code(201).send(note);
+    return reply.code(201).send(decorateNote(note));
   });
   app.post('/api/agents/:id/cancel', async (request, reply) => { controlled(request, true); const outcome = await prompts.cancel((request.params as { id: string }).id); if (outcome === 'unavailable') return reply.code(404).send({ error: 'target unavailable' }); if (outcome === 'not-working') return reply.code(409).send({ error: 'The agent is not working; there is nothing to interrupt.' }); return reply.code(204).send(); });
   app.post('/api/agents/:id/review-tour/jobs', { bodyLimit: REVIEW_REQUEST_BODY_BYTES }, async (request, reply) => {
@@ -1438,7 +1574,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // reuse the Schedule's own idle pane: reset the conversation, wait for the Adapter's settle
   // rule, then submit the Note's text with the reset instant so Codex completion anchors on the
   // fresh thread. Attention working/question and a non-empty composer are skipped, not forced.
-  const runReuse = async (prior: { agent: Agent; socket: SocketRef }, capability: NonNullable<Adapter['newConversation']>, text: string): Promise<RunOutcome> => {
+  const runReuse = async (prior: { agent: Agent; socket: SocketRef }, capability: NonNullable<Adapter['newConversation']>, text: string, attachments: PromptAttachment[]): Promise<RunOutcome> => {
     const agentId = prior.agent.id;
     const attention = agentAttentionState(prior.agent);
     if (attention === 'working') return { status: 'skipped', detail: 'previous run still working', agentId };
@@ -1467,13 +1603,13 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // a lost or never-settled reset leaves the pane alone (it is the Schedule's own)
     if (settling !== 'settled') return { status: 'failed', detail: 'reset did not settle', reason: 'reset-lost', agentId };
     // submit the note through the prompt service exactly as a typed prompt, carrying the reset instant
-    if (!await prompts.submit(agentId, text, [], resetAt)) return { status: 'failed', detail: 'the note could not be delivered', reason: 'delivery-failed', agentId };
+    if (!await prompts.submit(agentId, text, attachments, resetAt)) return { status: 'failed', detail: 'the note could not be delivered', reason: 'delivery-failed', agentId };
     return { status: 'launched', agentId };
   };
   // launch a fresh agent for the target, wait for it and its readiness, then submit the note; a
   // blocked or slow readiness closes the pane this Run created rather than leaving it behind
   const notReadyDetail = `agent did not become ready in ${launchReadyTimeoutSeconds} s`;
-  const runFresh = async (plan: RunPlan, text: string, name?: string): Promise<RunOutcome> => {
+  const runFresh = async (plan: RunPlan, text: string, attachments: PromptAttachment[], name?: string): Promise<RunOutcome> => {
     const before = new Set((await discovery.dashboard()).agents.map(agent => agent.id));
     // a refused launch (an unconfigured or unlaunchable kind, or a busy worktree) pastes nothing
     if (!await plan.launch()) return { status: 'failed', detail: 'launch refused', reason: 'launch-refused' };
@@ -1492,12 +1628,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // reconciler later closes is still findable by name in the Named list. Best-effort: a failed
     // rename never blocks the note's delivery.
     if (name !== undefined) await nameAgentConversation(agent.id, name).catch(() => undefined);
-    if (!await prompts.submit(agent.id, text)) return { status: 'failed', detail: 'the note could not be delivered', reason: 'delivery-failed', agentId: agent.id };
+    if (!await prompts.submit(agent.id, text, attachments)) return { status: 'failed', detail: 'the note could not be delivered', reason: 'delivery-failed', agentId: agent.id };
     return { status: 'launched', agentId: agent.id };
   };
-  const runOnce = async (input: { text: string; kind: AgentKind | undefined; target: ScheduleTarget; previousAgentId?: string; unattended?: boolean; conversationName?: string }): Promise<RunOutcome> => {
+  const runOnce = async (input: { text: string; attachments: PromptAttachment[]; kind: AgentKind | undefined; target: ScheduleTarget; previousAgentId?: string; unattended?: boolean; conversationName?: string }): Promise<RunOutcome> => {
     // preconditions — a failure records `skipped` with the reason and pastes nothing
-    if (!input.text.trim()) return { status: 'skipped', detail: 'note is empty' };
+    if (!validPrompt(input.text, input.attachments)) return { status: 'skipped', detail: 'note is empty' };
     const plan = resolveRunPlan(input.target, input.kind);
     if (plan === undefined) return { status: 'skipped', detail: 'target is gone' };
     // whether the kind can launch is checked at Run time, since configuration can change
@@ -1511,12 +1647,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       if (input.previousAgentId !== undefined && capability !== undefined) {
         const prior = await discovery.target(input.previousAgentId, true);
         // a live previous agent of another kind or workspace was retargeted: leave it alone, launch fresh
-        if (prior !== undefined && prior.agent.kind === input.kind && plan.matches(prior.agent.workspace)) return await runReuse(prior, capability, input.text);
+        if (prior !== undefined && prior.agent.kind === input.kind && plan.matches(prior.agent.workspace)) return await runReuse(prior, capability, input.text, input.attachments);
       }
     }
-    return await runFresh(plan, input.text, input.unattended ? input.conversationName : undefined);
+    return await runFresh(plan, input.text, input.attachments, input.unattended ? input.conversationName : undefined);
   };
-  const performRun = async (input: { text: string; kind: AgentKind | undefined; target: ScheduleTarget; previousAgentId?: string; unattended?: boolean; conversationName?: string }): Promise<RunOutcome> => {
+  const performRun = async (input: { text: string; attachments: PromptAttachment[]; kind: AgentKind | undefined; target: ScheduleTarget; previousAgentId?: string; unattended?: boolean; conversationName?: string }): Promise<RunOutcome> => {
     const outcome = await runOnce(input);
     // every outcome refreshes the dashboard, even a precondition skip that changed nothing
     await dashboardUpdates.refresh().catch(() => undefined);
@@ -1584,6 +1720,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       try {
         const outcome = await performRun({
           text: note.text,
+          attachments: note.attachments ?? [],
           kind: schedule.kind,
           target: schedule.target,
           unattended,
@@ -2065,9 +2202,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
     const note = (await notes.list(saveKey))?.find(candidate => candidate.id === noteId);
     if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
-    // never launch an agent for an empty note
-    if (!note.text.trim()) return reply.code(400).send({ error: 'note is empty' });
-    const outcome = await performRun({ text: note.text, kind: kind.kind, target: { worktreeId: id } });
+    // never launch an agent for a note without prompt content
+    if (!validPrompt(note.text, note.attachments ?? [])) return reply.code(400).send({ error: 'note is empty' });
+    const outcome = await performRun({ text: note.text, attachments: note.attachments ?? [], kind: kind.kind, target: { worktreeId: id } });
     if (outcome.status === 'launched') return reply.code(201).send({ agentId: outcome.agentId });
     const failure = runFailureReply(outcome);
     return reply.code(failure.code).send({ error: failure.error });

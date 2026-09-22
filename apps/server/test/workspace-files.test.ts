@@ -2,9 +2,46 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fileMentions, WorkspaceFileService } from '../src/workspace-files/service.js';
+import { fileMentions, previewFileBytes, WorkspaceFileService } from '../src/workspace-files/service.js';
 
 describe('workspace response files', () => {
+  // preview stored text and binary bytes within the modal cap
+  it('builds bounded in-memory text and binary previews', () => {
+    const large = Buffer.from('x'.repeat(256 * 1_024 + 10));
+    expect(previewFileBytes('large.txt', large)).toMatchObject({ path: 'large.txt', size: large.length, binary: false, truncated: true, content: 'x'.repeat(256 * 1_024) });
+    expect(previewFileBytes('binary.dat', Buffer.from([0xff, 0x00, 0x01]))).toEqual({ path: 'binary.dat', size: 3, binary: true, truncated: false });
+    expect(previewFileBytes('diagram.svg', Buffer.from('<svg><script>alert(1)</script></svg>'))).toMatchObject({ binary: false, content: '<svg><script>alert(1)</script></svg>' });
+  });
+
+  // preserve valid utf-8 when the byte cap lands inside a multibyte code point
+  it('trims an incomplete utf-8 tail from a text preview', () => {
+    const bytes = Buffer.from(`${'x'.repeat(256 * 1_024 - 1)}€tail`);
+    const preview = previewFileBytes('unicode.txt', bytes);
+    expect(preview).toEqual({ path: 'unicode.txt', size: bytes.length, binary: false, truncated: true, content: 'x'.repeat(256 * 1_024 - 1) });
+  });
+
+  // recognize every supported raster signature
+  it.each([
+    ['image/png', Buffer.from('89504e470d0a1a0a', 'hex')],
+    ['image/jpeg', Buffer.from('ffd8ff', 'hex')],
+    ['image/gif', Buffer.from('GIF89a', 'ascii')],
+    ['image/webp', Buffer.concat([Buffer.from('RIFF', 'ascii'), Buffer.alloc(4), Buffer.from('WEBP', 'ascii')])]
+  ] as const)('builds a bounded %s image preview', (mediaType, bytes) => {
+    expect(previewFileBytes('image.bin', bytes)).toEqual({
+      path: 'image.bin',
+      size: bytes.length,
+      binary: true,
+      truncated: false,
+      image: { mediaType, base64: bytes.toString('base64') }
+    });
+  });
+
+  // fall back safely when a recognized image exceeds five mebibytes
+  it('does not inline an oversized raster image', () => {
+    const bytes = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(5 * 1_024 * 1_024)]);
+    expect(previewFileBytes('large.png', bytes)).toEqual({ path: 'large.png', size: bytes.length, binary: true, truncated: false });
+  });
+
   it('extracts explicit and bare file references without remote URLs', () => {
     const message = 'Changed `src/main.ts:42`, [setup](docs/setup.md), and src/main.ts. See https://example.com/docs/help.';
     expect(fileMentions(message)).toEqual(['src/main.ts', 'docs/setup.md']);

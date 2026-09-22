@@ -68,11 +68,26 @@ describe('migrateSavedPromptsToNotes', () => {
 
     const report = await migrateSavedPromptsToNotes({ projectIds: ['proj'], notes, savedPromptsFile: savedFile });
 
-    // the attachment-only prompt gets a numbered title and its attachment name in the text
-    expect(await notes.list('proj')).toEqual([{ id: expect.any(String), title: 'Saved prompt · 1', text: 'Dropped attachments: diagram.png' }]);
+    // the attachment-only prompt gets a numbered title and retains its bytes
+    expect(await notes.list('proj')).toEqual([{ id: expect.any(String), title: 'Saved prompt · 1', text: '', attachments: [{ name: 'diagram.png', data: 'AAAA' }] }]);
     expect(report.counts).toEqual({ proj: 1 });
     // the stale agent-id key is skipped and named in the log
     expect(formatSavedPromptsToNotes(report)).toContain('warning: key agent-oldpane has no configured project; 1 saved prompt not migrated');
+  });
+
+  // archive malformed attachment records with an explicit migration warning
+  it('reports saved prompts whose invalid attachments cannot be migrated', async () => {
+    const { savedFile, notesFile } = await tempFiles();
+    await writeFile(savedFile, JSON.stringify({
+      'proj:/repo': [{ id: 'sp0000000001', text: 'unsafe', attachments: [{ name: 'bad.txt', data: 'not base64' }] }]
+    }));
+    const notes = new WorktreeNoteService(notesFile);
+
+    const report = await migrateSavedPromptsToNotes({ projectIds: ['proj'], notes, savedPromptsFile: savedFile });
+
+    expect(await notes.list('proj')).toEqual([]);
+    expect(report.warnings).toContain('1 saved prompt had invalid attachments and was not migrated');
+    expect(await exists(`${savedFile}.migrated-to-notes.bak`)).toBe(true);
   });
 
   it('leaves the source file in place and logs the problem when the file is corrupt', async () => {

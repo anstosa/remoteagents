@@ -2,15 +2,19 @@ export const maxPromptAttachmentBytes = 25 * 1024 * 1024;
 export const maxPromptAttachments = 10;
 export type PromptAttachment = { name: string; data: string };
 
+// decode one bounded canonical base64 payload
 export const promptAttachmentData = (value: string): Buffer | undefined => {
-  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value)) return undefined;
+  const maxEncodedLength = Math.ceil(maxPromptAttachmentBytes / 3) * 4;
+  // bound and shape-check before decoding
+  if (value.length === 0 || value.length > maxEncodedLength || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(value)) return undefined;
   const decoded = Buffer.from(value, 'base64');
   return decoded.length > 0 && decoded.toString('base64') === value ? decoded : undefined;
 };
 
+// canonicalize one safe staged filename
 export const promptAttachmentName = (value: string): string | undefined => {
   const name = value.trim();
-  return name && name.length <= 240 && !/[\\/\0\r\n]/u.test(name) ? name : undefined;
+  return name && name !== '.' && name !== '..' && name.length <= 240 && !/[\\/\0\r\n]/u.test(name) ? name : undefined;
 };
 
 export const promptAttachmentBytes = (attachment: PromptAttachment): number | undefined => promptAttachmentData(attachment.data)?.length;

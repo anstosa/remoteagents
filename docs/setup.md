@@ -434,10 +434,24 @@ agents opened in the same directory share entries across restarts; resuming a
 Conversation requires a configured Project (scratch agents can name and list
 their Conversations but cannot resume them).
 
+Notes can retain up to 10 attachments totalling 25 MB per note. Use the paperclip
+beside **Send** (also beside existing attachments), drop files onto a note, or
+paste an image into it. Click a filename to preview text or a PNG, JPEG, GIF, or
+WebP image. Text previews show the first 256 KB; image previews support files up
+to 5 MB. Other binary files remain attached but cannot be previewed. Files are saved
+independently of text autosave and remain attached when the note is sent,
+queued, launched, or run on a schedule. Notes containing only attachments are
+kept when closed. Ctrl/Cmd+S in the prompt composer saves both its text and files
+as one note; queued prompts saved as notes also retain their files. The notes
+store allows 100 MB of attachment data across all projects and scratch groups.
+
 Saved prompts have been retired in favour of Notes. On the first boot after
 upgrading, any saved prompts are carried into Notes automatically and the source
 file is renamed to a `*.migrated-to-notes.bak` sibling, so a second boot does
 nothing; anything that could not be carried over is named in the boot log.
+New migrations preserve valid attachments. Earlier migrations kept only their
+filenames in note text; those backups remain untouched and are not replayed
+automatically into notes that may since have been edited or deleted.
 
 ### Migrating from `worktrees[]`
 

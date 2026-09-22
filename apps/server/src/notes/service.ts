@@ -1,14 +1,16 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { promptAttachmentBytes, promptAttachmentName, validPromptAttachments, type PromptAttachment } from '../prompts/validation.js';
 import { type Schedule, type ScheduleLastRun, validSchedule } from '../schedule/types.js';
 
-export type WorktreeNote = { id: string; text: string; title?: string; source?: 'queued-prompt'; schedule?: Schedule };
+export type WorktreeNote = { id: string; text: string; title?: string; source?: 'queued-prompt'; schedule?: Schedule; attachments?: PromptAttachment[] };
 type StoredNotes = Record<string, WorktreeNote[]>;
 
 const maxNotesPerWorktree = 50;
 const maxWorktrees = 100;
 const maxNoteLength = 30_000;
+const defaultAttachmentStorageLimit = 100 * 1024 * 1024;
 // the note-title cap; exported so the saved-prompts boot migration truncates to the same limit
 export const maxNoteTitleLength = 120;
 const maxTotalNoteLength = 300_000;
@@ -16,18 +18,34 @@ const validWorktreeId = (value: string) => /^[A-Za-z0-9_-]{1,80}$/u.test(value);
 const validNoteId = (value: string) => /^[A-Za-z0-9_-]{12,64}$/u.test(value);
 const validText = (value: string) => value.length <= maxNoteLength && !value.includes('\0');
 const validTitle = (value: string) => value.trim().length > 0 && value.length <= maxNoteTitleLength && !value.includes('\0');
+// canonicalize names before persistence
+const normalizedAttachments = (attachments: PromptAttachment[]): PromptAttachment[] | undefined => {
+  const normalized: PromptAttachment[] = [];
+  // normalize every stored filename
+  for (const attachment of attachments) {
+    const name = promptAttachmentName(attachment.name);
+    // reject malformed filenames
+    if (name === undefined) return undefined;
+    normalized.push({ name, data: attachment.data });
+  }
+  // enforce prompt attachment limits
+  return validPromptAttachments(normalized) ? normalized : undefined;
+};
 // validate persisted note data
 const validNote = (value: unknown): value is WorktreeNote => {
   if (value === null || typeof value !== 'object') return false;
-  const note = value as { id?: unknown; text?: unknown; title?: unknown; source?: unknown; schedule?: unknown };
-  return typeof note.id === 'string' && validNoteId(note.id) && typeof note.text === 'string' && validText(note.text) && (note.title === undefined || typeof note.title === 'string' && validTitle(note.title)) && (note.source === undefined || note.source === 'queued-prompt') && (note.schedule === undefined || validSchedule(note.schedule));
+  const note = value as { id?: unknown; text?: unknown; title?: unknown; source?: unknown; schedule?: unknown; attachments?: unknown };
+  const attachments = note.attachments === undefined ? [] : note.attachments;
+  return typeof note.id === 'string' && validNoteId(note.id) && typeof note.text === 'string' && validText(note.text) && (note.title === undefined || typeof note.title === 'string' && validTitle(note.title)) && (note.source === undefined || note.source === 'queued-prompt') && (note.schedule === undefined || validSchedule(note.schedule)) && Array.isArray(attachments) && attachments.every(attachment => attachment !== null && typeof attachment === 'object' && typeof (attachment as { name?: unknown }).name === 'string' && typeof (attachment as { data?: unknown }).data === 'string') && validPromptAttachments(attachments as PromptAttachment[]) && (attachments as PromptAttachment[]).every(attachment => promptAttachmentName(attachment.name) === attachment.name);
 };
 const totalNoteLength = (stored: StoredNotes) => Object.values(stored).flat().reduce((total, note) => total + note.text.length + (note.title?.length ?? 0), 0);
+// total decoded attachment bytes
+const totalAttachmentBytes = (stored: StoredNotes) => Object.values(stored).flat().reduce((total, note) => total + (note.attachments ?? []).reduce((sum, attachment) => sum + (promptAttachmentBytes(attachment) ?? 0), 0), 0);
 
 export class WorktreeNoteService {
   private mutation = Promise.resolve();
 
-  constructor(private readonly file = process.env.RAC_NOTES_FILE ?? '.data/notes.json') {}
+  constructor(private readonly file = process.env.RAC_NOTES_FILE ?? '.data/notes.json', private readonly attachmentStorageLimit = defaultAttachmentStorageLimit) {}
 
   async list(worktreeId: string): Promise<WorktreeNote[] | undefined> {
     if (!validWorktreeId(worktreeId)) return undefined;
@@ -61,16 +79,68 @@ export class WorktreeNoteService {
   // create a titled note with initial text in one mutation — the save-as-note and halt-drain
   // paths write the note atomically before consuming the queued prompt, so a two-step
   // create-then-update (which could leave a blank titled note on failure) will not do
-  async createWithText(worktreeId: string, title: string, text: string, source?: 'queued-prompt'): Promise<WorktreeNote | undefined> {
-    if (!validWorktreeId(worktreeId) || !validTitle(title) || !validText(text)) return undefined;
+  async createWithText(worktreeId: string, title: string, text: string, source?: 'queued-prompt', attachments: PromptAttachment[] = []): Promise<WorktreeNote | undefined> {
+    const normalized = normalizedAttachments(attachments);
+    // reject invalid note content
+    if (!validWorktreeId(worktreeId) || !validTitle(title) || !validText(text) || normalized === undefined) return undefined;
     return await this.mutate(stored => {
       const notes = stored[worktreeId] ?? [];
       if (notes.length >= maxNotesPerWorktree) return undefined;
       if (stored[worktreeId] === undefined && Object.keys(stored).length >= maxWorktrees) return undefined;
       if (totalNoteLength(stored) + title.length + text.length > maxTotalNoteLength) return undefined;
-      const note: WorktreeNote = { id: randomBytes(18).toString('base64url'), text, title, ...(source === undefined ? {} : { source }) };
+      // enforce the global byte budget
+      if (totalAttachmentBytes(stored) + normalized.reduce((sum, attachment) => sum + promptAttachmentBytes(attachment)!, 0) > this.attachmentStorageLimit) return undefined;
+      const note: WorktreeNote = { id: randomBytes(18).toString('base64url'), text, title, ...(source === undefined ? {} : { source }), ...(normalized.length === 0 ? {} : { attachments: normalized }) };
       stored[worktreeId] = [note, ...notes];
       return note;
+    });
+  }
+
+  // read full attachment payloads for one note
+  async attachments(worktreeId: string, noteId: string): Promise<PromptAttachment[] | undefined> {
+    // reject invalid identifiers
+    if (!validWorktreeId(worktreeId) || !validNoteId(noteId)) return undefined;
+    await this.mutation;
+    const note = (await this.read())[worktreeId]?.find(candidate => candidate.id === noteId);
+    return note === undefined ? undefined : [...(note.attachments ?? [])];
+  }
+
+  // append attachments atomically
+  async appendAttachments(worktreeId: string, noteId: string, attachments: PromptAttachment[]): Promise<WorktreeNote | 'invalid' | undefined> {
+    const normalized = normalizedAttachments(attachments);
+    // reject malformed additions
+    if (!validWorktreeId(worktreeId) || !validNoteId(noteId) || normalized === undefined || normalized.length === 0) return 'invalid';
+    return await this.mutate(stored => {
+      const note = stored[worktreeId]?.find(candidate => candidate.id === noteId);
+      // require an existing note
+      if (note === undefined) return undefined;
+      const combined = normalizedAttachments([...(note.attachments ?? []), ...normalized]);
+      // enforce per-note limits and duplicate names
+      if (combined === undefined) return 'invalid';
+      const previousBytes = (note.attachments ?? []).reduce((sum, attachment) => sum + promptAttachmentBytes(attachment)!, 0);
+      const nextBytes = combined.reduce((sum, attachment) => sum + promptAttachmentBytes(attachment)!, 0);
+      // enforce the global byte budget
+      if (totalAttachmentBytes(stored) - previousBytes + nextBytes > this.attachmentStorageLimit) return 'invalid';
+      note.attachments = combined;
+      return { ...note };
+    });
+  }
+
+  // remove one canonical attachment name atomically
+  async removeAttachment(worktreeId: string, noteId: string, name: string): Promise<WorktreeNote | undefined> {
+    const normalizedName = promptAttachmentName(name);
+    // reject invalid identifiers and names
+    if (!validWorktreeId(worktreeId) || !validNoteId(noteId) || normalizedName === undefined) return undefined;
+    return await this.mutate(stored => {
+      const note = stored[worktreeId]?.find(candidate => candidate.id === noteId);
+      // require an existing matching attachment
+      if (note === undefined || note.attachments === undefined) return undefined;
+      const next = note.attachments.filter(attachment => attachment.name !== normalizedName);
+      if (next.length === note.attachments.length) return undefined;
+      // omit empty attachment arrays
+      if (next.length === 0) delete note.attachments;
+      else note.attachments = next;
+      return { ...note };
     });
   }
 
@@ -169,7 +239,7 @@ export class WorktreeNoteService {
       if (!validWorktreeId(worktreeId) || !Array.isArray(notes) || notes.length > maxNotesPerWorktree || notes.some(note => !validNote(note))) throw new Error('invalid notes file');
       stored[worktreeId] = notes;
     }
-    if (Object.keys(stored).length > maxWorktrees || totalNoteLength(stored) > maxTotalNoteLength) throw new Error('notes file exceeds storage limits');
+    if (Object.keys(stored).length > maxWorktrees || totalNoteLength(stored) > maxTotalNoteLength || totalAttachmentBytes(stored) > this.attachmentStorageLimit) throw new Error('notes file exceeds storage limits');
     return stored;
   }
 

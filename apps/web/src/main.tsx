@@ -171,7 +171,8 @@ const isQueuedPrompt = (value: unknown): value is QueuedPrompt => value !== null
   && typeof (value as QueuedPrompt).text === 'string'
   && typeof (value as QueuedPrompt).createdAt === 'string'
   && ((value as QueuedPrompt).attachments === undefined || Array.isArray((value as QueuedPrompt).attachments) && (value as QueuedPrompt).attachments!.every(attachment => attachment !== null && typeof attachment === 'object' && typeof attachment.name === 'string' && Number.isInteger(attachment.size) && attachment.size >= 0));
-type WorktreeNote = { id: string; text: string; title?: string; source?: 'queued-prompt'; schedule?: Schedule; nextRun?: string };
+type NoteAttachment = { name: string; size: number };
+type WorktreeNote = { id: string; text: string; title?: string; attachments?: NoteAttachment[]; source?: 'queued-prompt'; schedule?: Schedule; nextRun?: string };
 // the Adapter and target a new Schedule pre-fills with, plus the launcher rows the note pane's
 // Adapter and target pickers offer, all resolved from the dashboard for the active tab's context
 type SchedulePrefill = { kind: AgentKind; target: ScheduleTarget; runsOnText: string; adapters: ScheduleAdapterOption[]; targets: ScheduleTargetOption[]; liveAgentIds: string[] };
@@ -2315,28 +2316,37 @@ function Prompt({ id, ready = true, lifecycleControl, launchControl, history, on
     } catch { setQueuedPromptError('Unable to save this queued prompt as a note.'); }
     finally { setQueuedPromptAction(undefined); }
   };
-  // save the current composer text as a new Note, then clear the composer (Ctrl/Cmd+S)
+  // save a composer snapshot with its files before clearing the submitted draft
   const saveDraftAsNote = async () => {
     const text = value;
+    const submittedAttachments = attachments;
     const base = persistenceResourceBase(worktreeId, id);
-    // only a ready agent with a persistence context and some text has a draft worth saving
-    if (!ready || draftNotePending || base === undefined || !text.trim()) return;
+    const title = text.trim() ? assistantNoteTitle(text) : submittedAttachments[0]?.name.slice(0, 120);
+    // serialize saves and sends while allowing attachment-only drafts
+    if (!ready || draftNotePending || base === undefined || title === undefined || !beginPendingOperation(pendingKey)) return;
     setDraftNotePending(true);
     try {
-      const response = await request(`${base}/notes`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: assistantNoteTitle(text), text }) });
+      const payload = await Promise.all(submittedAttachments.map(encodeAttachment));
+      const response = await request(`${base}/notes`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title, text, ...(payload.length === 0 ? {} : { attachments: payload }) }) });
+      // retain the full draft after a failed save
       if (!response.ok) throw new Error();
       const note: unknown = await response.json();
+      // require acknowledgement before releasing submitted files
       if (!isWorktreeNote(note)) throw new Error();
-      // clear only the composer text, leaving any attachments for the next prompt
-      historyIndex.current = undefined;
-      historyDraft.current = '';
-      setValue('');
-      setCommandToken(undefined);
+      // preserve text typed while the snapshot was saving
+      if (getPromptDraft(id) === text) {
+        historyIndex.current = undefined;
+        historyDraft.current = '';
+        setValue('');
+        setCommandToken(undefined);
+      }
+      // release only files included in the successful snapshot
+      setAttachments(current => current.filter(file => !submittedAttachments.includes(file)));
       // refetch the sibling notes fly-out so the new Note appears there
       noteReloadRequests.get(worktreeId ?? `agent:${id}`)?.();
       onOperationFeedback({ tone: 'success', message: 'Draft saved to notes', detail: note.title ?? 'Note', worktreeId });
     } catch { onOperationFeedback({ tone: 'error', message: 'Unable to save draft as a note', detail: 'The console could not be reached, or this project has reached its note limit.', worktreeId }); }
-    finally { setDraftNotePending(false); }
+    finally { setDraftNotePending(false); setPendingOperation(pendingKey, false); }
   };
   const saveQueuedPromptEdit = async (queued: QueuedPrompt) => {
     if (queuedPromptAction !== undefined || queuedPromptEdit?.id !== queued.id) return;
@@ -2535,7 +2545,37 @@ function MobileKeyIcon({ name }: { name: MobileKeyIconName }) {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d={paths[name]} /></svg>;
 }
 
-const isWorktreeNote = (value: unknown): value is WorktreeNote => value !== null && typeof value === 'object' && typeof (value as WorktreeNote).id === 'string' && typeof (value as WorktreeNote).text === 'string' && ((value as WorktreeNote).title === undefined || typeof (value as WorktreeNote).title === 'string');
+// validate lightweight note responses without loading file contents
+const isWorktreeNote = (value: unknown): value is WorktreeNote => {
+  // require a note-shaped record before inspecting metadata
+  if (value === null || typeof value !== 'object') return false;
+  const note = value as Partial<WorktreeNote>;
+  const attachments = note.attachments;
+  return typeof note.id === 'string' && typeof note.text === 'string' && (note.title === undefined || typeof note.title === 'string')
+    && (attachments === undefined || Array.isArray(attachments) && attachments.every(
+      // require valid file metadata before exposing note actions
+      attachment => attachment !== null && typeof attachment === 'object' && typeof attachment.name === 'string' && Number.isSafeInteger(attachment.size) && attachment.size > 0
+    ));
+};
+// treat attachment-only notes as useful content
+const noteHasContent = (note: Pick<WorktreeNote, 'text'|'attachments'>) => Boolean(note.text.trim() || note.attachments?.length);
+// fetch file bytes only when sending a note
+const fetchNoteAttachments = async (resourceBase: string, note: WorktreeNote): Promise<Array<{ name: string; data: string }>> => {
+  const expected = note.attachments;
+  // retain the existing text-only request path
+  if (expected === undefined || expected.length === 0) return [];
+  const response = await request(`${resourceBase}/notes/${encodeURIComponent(note.id)}/attachments`);
+  // never silently submit a note without its requested files
+  if (!response.ok) throw new Error('note attachments unavailable');
+  const payload: unknown = await response.json();
+  const attachments = payload !== null && typeof payload === 'object' ? (payload as { attachments?: unknown }).attachments : undefined;
+  // require the advertised files and valid byte payloads
+  if (!Array.isArray(attachments) || attachments.length !== expected.length || !attachments.every(
+    // reject stale or malformed file snapshots
+    (attachment, index) => attachment !== null && typeof attachment === 'object' && typeof attachment.name === 'string' && attachment.name === expected[index]?.name && typeof attachment.data === 'string' && attachment.data.length > 0
+  )) throw new Error('note attachments changed; reopen the note');
+  return attachments as Array<{ name: string; data: string }>;
+};
 // validate note lists consistently across mount, manual and dashboard refreshes
 const fetchWorktreeNotes = async (resourceBase: string): Promise<WorktreeNote[]> => {
   const response = await request(`${resourceBase}/notes`);
@@ -2559,7 +2599,8 @@ const latestSubstantialResponse = (latestAssistantMessage: string | undefined, h
   return candidates.find(response => response.length <= 30_000 && response.trim().split(/\s+/u).filter(Boolean).length >= 50);
 };
 // resolve a note menu label
-const noteName = (note: WorktreeNote) => note.title ?? notePreview(note.text);
+// label attachment-only notes with their filenames
+const noteName = (note: WorktreeNote) => note.title ?? (note.text.trim() ? notePreview(note.text) : note.attachments?.map(attachment => attachment.name).join(', ') || notePreview(note.text));
 const notePreview = (text: string) => {
   const words = text.trim().split(/\s+/u).filter(Boolean);
   return `${words.length === 0 ? 'Blank note' : words.slice(0, 6).join(' ')}…`;
@@ -2598,38 +2639,47 @@ const filePreviewContent = (path: string, state: FilePreviewState, preview?: Ass
 // format compact file sizes
 const assistantFileSize = (size: number) => size < 1_024 ? `${size} B` : size < 1_048_576 ? `${(size / 1_024).toFixed(1)} KB` : `${(size / 1_048_576).toFixed(1)} MB`;
 
-// manage one workspace file preview
+// manage one stored or workspace file preview
 function useFilePreview(previewUrl: string) {
   const [previewPath, setPreviewPath] = useState<string>();
   const [preview, setPreview] = useState<AssistantFilePreview>();
   const [previewState, setPreviewState] = useState<FilePreviewState>('loading');
   const [copied, setCopied] = useState(false);
   const previewRequest = useRef(0);
+  const previewTrigger = useRef<HTMLElement | null>(null);
 
-  // reset when the workspace target changes
+  // reset when the preview target changes
   useEffect(() => {
     setPreviewPath(undefined);
     setPreview(undefined);
-    previewRequest.current += 1;
+    previewTrigger.current = null;
+    // discard responses for closed or replaced targets
+    return () => { previewRequest.current += 1; };
   }, [previewUrl]);
   // load one selected file preview
   const openFile = async (path: string) => {
     const requestId = ++previewRequest.current;
+    previewTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setPreviewPath(path);
     setPreview(undefined);
     setPreviewState('loading');
     setCopied(false);
     try {
       const response = await request(previewUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path }) });
+      // reject unavailable preview responses
       if (!response.ok) throw new Error('preview unavailable');
       const payload: unknown = await response.json();
+      // require the shared bounded preview contract
       if (!isAssistantFilePreview(payload)) throw new Error('invalid preview');
       // ignore replaced or closed previews
       if (previewRequest.current !== requestId) return;
       setPreviewPath(payload.path);
       setPreview(payload);
       setPreviewState('ready');
-    } catch { if (previewRequest.current === requestId) setPreviewState('error'); }
+    } catch {
+      // leave newer previews untouched
+      if (previewRequest.current === requestId) setPreviewState('error');
+    }
   };
   // close the active file preview
   const closePreview = () => {
@@ -2637,15 +2687,36 @@ function useFilePreview(previewUrl: string) {
     setPreviewPath(undefined);
     setPreview(undefined);
     setCopied(false);
+    previewTrigger.current?.focus();
+    previewTrigger.current = null;
   };
   // copy the canonical workspace path
   const copyPath = async () => {
+    // skip closed previews
     if (previewPath === undefined) return;
     try { await copyText(previewPath); setCopied(true); } catch { setCopied(false); }
   };
 
+  // keep preview shortcuts and focus inside the modal
+  const previewKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    // dismiss without closing the underlying note
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closePreview();
+      return;
+    }
+    // preserve ordinary preview navigation
+    if (event.key !== 'Tab') return;
+    const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), [tabindex="0"]'));
+    const index = controls.indexOf(document.activeElement as HTMLElement);
+    const next = event.shiftKey ? (index <= 0 ? controls.length - 1 : index - 1) : (index + 1) % controls.length;
+    event.preventDefault();
+    controls.at(next)?.focus();
+  };
+
   // focus preview keyboard handling when the modal opens
-  const dialog = previewPath === undefined ? null : createPortal(<div className="dialog response-file-dialog" role="dialog" aria-modal="true" aria-label={`File preview: ${previewPath}`} onKeyDown={event => { /* dismiss without forwarding */ if (event.key === 'Escape') { event.preventDefault(); closePreview(); } }}><div><header><strong title={previewPath}>{previewPath}</strong><button className="response-file-copy-path" type="button" onClick={() => void copyPath()}>{copied ? 'Path copied' : 'Copy path'}</button><button type="button" autoFocus aria-label="Close file preview" title="Close" onClick={closePreview}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{filePreviewContent(previewPath, previewState, preview)}{preview?.truncated && <footer>Preview limited to the first 256 KB.</footer>}</div></div>, document.body);
+  const dialog = previewPath === undefined ? null : createPortal(<div className="dialog response-file-dialog" role="dialog" aria-modal="true" aria-label={`File preview: ${previewPath}`} onKeyDown={previewKey}><div><header><strong title={previewPath}>{previewPath}</strong><button className="response-file-copy-path" type="button" onClick={() => { /* copy the displayed filename or path */ void copyPath(); }}>{copied ? 'Path copied' : 'Copy path'}</button><button type="button" autoFocus aria-label="Close file preview" title="Close" onClick={closePreview}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{filePreviewContent(previewPath, previewState, preview)}{preview?.truncated && <footer>Preview limited to the first 256 KB.</footer>}</div></div>, document.body);
   return { dialog, openFile, closePreview };
 }
 
@@ -2965,7 +3036,16 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   const [saveStatus, setSaveStatus] = useState<'saved'|'saving'|'error'>('saved');
   const [scheduleBusy, setScheduleBusy] = useState(false);
   const [scheduleRunning, setScheduleRunning] = useState(false);
+  const [attachmentPending, setAttachmentPending] = useState(false);
+  const [noteAttachmentError, setNoteAttachmentError] = useState('');
+  const [draggingNoteFiles, setDraggingNoteFiles] = useState(false);
+  const noteAttachmentInput = useRef<HTMLInputElement | null>(null);
+  const attachmentMutation = useRef(false);
   const resourceBase = persistenceResourceBase(worktreeId, agentId);
+  // scope previews to the currently open note
+  const noteFilePreview = useFilePreview(`${resourceBase}/notes/${encodeURIComponent(activeNote?.id ?? '')}/attachments/preview`);
+  const attachmentContext = useRef(resourceBase);
+  attachmentContext.current = resourceBase;
   const noteViewId = worktreeId ?? (agentId === undefined ? undefined : `agent:${agentId}`);
   const { generation: dashboardGeneration, notesRevision, serverStartedAt } = useContext(DashboardGenerationContext);
   // scope the in-memory revision to its server process
@@ -3052,7 +3132,8 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
         if (dirtyTexts.current.get(noteId) === text) dirtyTexts.current.delete(noteId);
         if (!dirtyTexts.current.has(noteId)) failedNotes.current.delete(noteId);
         setDirtyCount(dirtyTexts.current.size);
-        setNotes(current => current?.map(note => note.id === saved.id && !dirtyTexts.current.has(noteId) ? saved : note));
+        // text acknowledgements must not overwrite newer attachment or schedule metadata
+        setNotes(current => current?.map(note => note.id === saved.id && !dirtyTexts.current.has(noteId) ? { ...note, text: saved.text } : note));
         if (activeNoteRef.current?.id === noteId) setSaveStatus(dirtyTexts.current.has(noteId) ? failedNotes.current.has(noteId) ? 'error' : 'saving' : 'saved');
       } catch {
         if (saveVersions.current.get(noteId) !== version) return;
@@ -3115,6 +3196,8 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
     setMenuRenamingId(undefined);
     setMenuDeletingId(undefined);
     setMenuError('');
+    setNoteAttachmentError('');
+    setDraggingNoteFiles(false);
     activeNoteRef.current = undefined;
     draftRef.current = '';
     acknowledgedTexts.current.clear();
@@ -3188,7 +3271,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
       const fresh = current === undefined ? undefined : loaded.find(candidate => candidate.id === current.id);
       // keep the active editor attached to refreshed metadata
       if (current !== undefined && fresh !== undefined) {
-        const updated = { ...current, schedule: fresh.schedule, nextRun: fresh.nextRun, ...(fresh.title === undefined ? {} : { title: fresh.title }) };
+        const updated = { ...current, schedule: fresh.schedule, nextRun: fresh.nextRun, ...(attachmentMutation.current ? {} : { attachments: fresh.attachments }), ...(fresh.title === undefined ? {} : { title: fresh.title }) };
         activeNoteRef.current = updated;
         setActiveNote(updated);
       }
@@ -3236,7 +3319,10 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   }, [activeNote?.id, editing]);
 
   const restoreTriggerFocus = () => window.requestAnimationFrame(() => triggerRef.current?.focus());
+  // open one note without abandoning an attachment upload
   const open = (note: WorktreeNote, edit?: boolean) => {
+    // keep the current attachment mutation attached to its visible note
+    if (attachmentMutation.current) return;
     flush();
     const text = dirtyTexts.current.get(note.id) ?? note.text;
     const opened = { ...note, text };
@@ -3254,6 +3340,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
     setTitleDraft(note.title ?? '');
     setCopyState('idle');
     setSendState('idle');
+    setNoteAttachmentError('');
     setSaveStatus(failedNotes.current.has(note.id) ? 'error' : dirtyTexts.current.has(note.id) ? 'saving' : 'saved');
     setMenuOpen(false);
     if (dirtyTexts.current.has(note.id)) persist(note.id, text);
@@ -3368,14 +3455,122 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
       preview?.classList.remove('selection-copied');
     }, selectionCopyFlashMs);
   };
+  // keep file mutations separate from lightweight text autosaves
+  const changeNoteAttachments = async (filesOrName: File[] | string) => {
+    const note = activeNoteRef.current;
+    // serialize file changes with actions that consume or delete the note
+    if (resourceBase === undefined || note === undefined || attachmentMutation.current || deleting || sendState === 'sending' || menuRunningId !== undefined) return;
+    attachmentMutation.current = true;
+    setAttachmentPending(true);
+    setNoteAttachmentError('');
+    const base = resourceBase;
+    const path = `${base}/notes/${encodeURIComponent(note.id)}/attachments`;
+    try {
+      const response = typeof filesOrName === 'string'
+        ? await request(`${path}?name=${encodeURIComponent(filesOrName)}`, { method: 'DELETE' })
+        : await request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ attachments: await Promise.all(filesOrName.map(encodeAttachment)) }) });
+      // retain the existing files when the server rejects a mutation
+      if (!response.ok) throw new Error();
+      const saved: unknown = await response.json();
+      // require an acknowledged note in the original persistence context
+      if (!isWorktreeNote(saved) || saved.id !== note.id) throw new Error();
+      // ignore responses belonging to a tab that is no longer selected
+      if (attachmentContext.current !== base) return;
+      noteLoadSequence.current += 1;
+      setLoading(false);
+      // merge only file metadata so concurrent text edits remain intact
+      setNotes(current => current?.map(candidate => candidate.id === note.id ? { ...candidate, attachments: saved.attachments } : candidate));
+      const current = activeNoteRef.current;
+      // retain the open editor's text and schedule state
+      if (current?.id === note.id) {
+        const updated = { ...current, attachments: saved.attachments };
+        activeNoteRef.current = updated;
+        setActiveNote(updated);
+        setSendState('idle');
+      }
+    } catch {
+      // surface failures only in the originating note context
+      if (attachmentContext.current === base) setNoteAttachmentError(typeof filesOrName === 'string' ? 'Unable to remove this attachment. Please try again.' : 'Unable to save these attachments. Check the file limits and try again.');
+    } finally {
+      attachmentMutation.current = false;
+      setAttachmentPending(false);
+    }
+  };
+  // validate the combined file set before reading or uploading bytes
+  const chooseNoteFiles = (files: FileList | File[] | null) => {
+    const note = activeNoteRef.current;
+    // preserve pending snapshots and ignore cancelled file pickers
+    if (files === null || files.length === 0 || note === undefined || attachmentMutation.current) return;
+    const selected = Array.from(files);
+    const combined = [...(note.attachments ?? []), ...selected];
+    // match the prompt attachment count limit
+    if (combined.length > maxAttachments) return setNoteAttachmentError(`Attach up to ${maxAttachments} files.`);
+    // reject the entire addition rather than silently dropping files
+    if (combined.reduce((sum, file) => sum + file.size, 0) > maxAttachmentBytes) return setNoteAttachmentError(`Attachments must total ${maxAttachmentMegabytes} MB or less.`);
+    const names = new Set<string>();
+    // enforce the server's normalized filename policy
+    for (const file of combined) {
+      const name = file.name.trim();
+      // reject unreadable empty files and unsafe names before upload
+      if (!name || name === '.' || name === '..' || name.length > 240 || /[\\/\0\r\n]/u.test(name) || file.size === 0) return setNoteAttachmentError('Choose non-empty files with valid filenames.');
+      // avoid ambiguous removals and accidental duplicate uploads
+      if (names.has(name)) return setNoteAttachmentError(`An attachment named ${name} already exists.`);
+      names.add(name);
+    }
+    void changeNoteAttachments(selected);
+  };
+  const noteFilesDisabled = attachmentPending || deleting || sendState === 'sending' || menuRunningId !== undefined;
+  // accept files without changing ordinary text and link dragging
+  const dragNoteFiles = (event: React.DragEvent<HTMLElement>) => {
+    // browser file contents remain protected until drop
+    if (!event.dataTransfer.types.includes('Files')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = noteFilesDisabled ? 'none' : 'copy';
+    setDraggingNoteFiles(!noteFilesDisabled);
+  };
+  // keep the drop indicator while moving between note children
+  const leaveNoteFiles = (event: React.DragEvent<HTMLElement>) => {
+    // ignore transitions inside the same note
+    if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+    setDraggingNoteFiles(false);
+  };
+  // apply the picker policy to file drops
+  const dropNoteFiles = (event: React.DragEvent<HTMLElement>) => {
+    setDraggingNoteFiles(false);
+    // leave text dragging to the editor
+    if (!event.dataTransfer.types.includes('Files')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    // prevent changes while another action owns the note
+    if (noteFilesDisabled) return;
+    // reject directory placeholders rather than losing their contents
+    if (Array.from(event.dataTransfer.items).some(item => item.webkitGetAsEntry?.()?.isDirectory)) return setNoteAttachmentError('Folders cannot be attached. Drop individual files instead.');
+    chooseNoteFiles(event.dataTransfer.files);
+  };
+  // preserve normal paste while attaching clipboard images
+  const pasteNoteFiles = (event: React.ClipboardEvent<HTMLElement>) => {
+    const files = Array.from(event.clipboardData.files).filter(file => file.type.startsWith('image/'));
+    // let the browser insert clipboard text normally
+    if (files.length === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    // preserve an in-flight attachment snapshot
+    if (!noteFilesDisabled) chooseNoteFiles(files);
+  };
+  // send the current text and fetch its saved files on demand
   const send = async () => {
     const prompt = draftRef.current;
-    if (agentId === undefined || !prompt.trim() || deleting || sendState === 'sending' || !beginPendingOperation(promptPendingKey)) return;
+    const note = activeNoteRef.current;
+    // allow attachment-only notes without racing file writes
+    if (resourceBase === undefined || note === undefined || agentId === undefined || !noteHasContent({ ...note, text: prompt }) || deleting || attachmentMutation.current || sendState === 'sending' || !beginPendingOperation(promptPendingKey)) return;
     flush();
     setSendState('sending');
     setCopyState('idle');
     try {
-      const response = await request(`/api/agents/${encodeURIComponent(agentId)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt, attachments: [] }) });
+      const attachments = await fetchNoteAttachments(resourceBase, note);
+      const response = await request(`/api/agents/${encodeURIComponent(agentId)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt, attachments }) });
+      // report dispatch failures without clearing saved note content
       if (!response.ok) throw new Error();
       setSendState('queued');
       await onPromptHistoryChanged?.();
@@ -3394,20 +3589,24 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   // run one note: prompt the live agent (queues behind busy work), or — on an idle worktree
   // tab — launch an agent first and let it run the note, switching to the new agent tab
   const runNote = async (note: WorktreeNote) => {
-    // serialize flyout mutations
-    if (menuRunningId !== undefined || menuDeletingId !== undefined || menuRenamingId !== undefined) return;
+    // serialize flyout mutations and attachment snapshots
+    if (resourceBase === undefined || attachmentMutation.current || menuRunningId !== undefined || menuDeletingId !== undefined || menuRenamingId !== undefined) return;
     setMenuRunningId(note.id);
     setMenuError('');
     setMenuStatus('');
     try {
+      // wait for text persistence before launching from the stored note
       if (launchAndRunMode) {
         // persist the open note and let the queued save land before the server reads it, so the
         // Run submits the current text; the launch toasts and the tab switch carry the outcome
         flush();
         await saveQueue.current;
         await onLaunchAndRun!(note.id);
-      } else if (agentId !== undefined && note.text.trim()) {
-        const response = await request(`/api/agents/${encodeURIComponent(agentId)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: note.text, attachments: [] }) });
+      // include saved files when sending directly to an existing agent
+      } else if (agentId !== undefined && noteHasContent(note)) {
+        const attachments = await fetchNoteAttachments(resourceBase, note);
+        const response = await request(`/api/agents/${encodeURIComponent(agentId)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: note.text, attachments }) });
+        // preserve the saved note after a failed dispatch
         if (!response.ok) throw new Error();
         setMenuStatus('Queued');
         await onPromptHistoryChanged?.();
@@ -3521,7 +3720,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   const remove = () => {
     const note = activeNoteRef.current;
     // serialize pane deletes
-    if (resourceBase === undefined || note === undefined || deleting) return;
+    if (resourceBase === undefined || note === undefined || deleting || attachmentMutation.current) return;
     setDeleting(true);
     void deleteNote(note, true).catch(() => {
       // preserve dirty state after a failed pane delete
@@ -3544,8 +3743,12 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
       setMenuDeletingId(undefined);
     }
   };
+  // retain attachment-only notes when closing the pane
   const close = () => {
-    if (!draftRef.current.trim()) {
+    // avoid deleting a blank note while its first files are uploading
+    if (attachmentMutation.current) return;
+    // remove only notes without text or files
+    if (!noteHasContent({ text: draftRef.current, attachments: activeNoteRef.current?.attachments })) {
       remove();
       return;
     }
@@ -3574,7 +3777,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   const applySchedule = async (payload: ScheduleSetBody) => {
     const note = activeNoteRef.current;
     // serialize schedule writes for the open note
-    if (resourceBase === undefined || note === undefined || scheduleBusy) return;
+    if (resourceBase === undefined || note === undefined || scheduleBusy || attachmentMutation.current) return;
     setScheduleBusy(true);
     try {
       const response = await request(`${resourceBase}/notes/${encodeURIComponent(note.id)}/schedule`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
@@ -3605,7 +3808,8 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   // or any failure surfaces through the pane's save-status alert.
   const runScheduleNow = async () => {
     const note = activeNoteRef.current;
-    if (resourceBase === undefined || note === undefined || scheduleBusy || scheduleRunning) return;
+    // let attachment writes finish before reading the stored run snapshot
+    if (resourceBase === undefined || note === undefined || scheduleBusy || scheduleRunning || attachmentMutation.current) return;
     setScheduleRunning(true);
     try {
       const response = await request(`${resourceBase}/notes/${encodeURIComponent(note.id)}/schedule/run`, { method: 'POST' });
@@ -3632,7 +3836,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   const latestResponseAvailable = notes !== undefined && substantialResponse !== undefined && !notes.some(note => note.text === substantialResponse);
   const highlightLatestResponse = latestResponseAvailable && substantialResponse === latestAssistantMessage && latestAssistantMessageOverflows;
   const notesLabel = dirtyCount === 0 ? `Notes (${noteCount})` : `Notes (${noteCount}; ${dirtyCount} unsaved)`;
-  const noteMenuBusy = menuRenamingId !== undefined || menuDeletingId !== undefined || menuRunningId !== undefined;
+  const noteMenuBusy = attachmentPending || menuRenamingId !== undefined || menuDeletingId !== undefined || menuRunningId !== undefined;
   const control = <div className="notes-control" ref={anchorRef}>
     <button ref={triggerRef} className={`log-control page-arrow notes-toggle${menuOpen || activeNote !== undefined ? ' active' : ''}${dirtyCount > 0 ? ' unsaved' : ''}${highlightLatestResponse ? ' latest-response-available' : ''}`} aria-label={notesLabel} title={`${notesLabel}${unreadQueuedNotes ? ' — unread queued prompts' : ''}`} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}{noteCount > 0 && <span className={`saved-prompts-count notes-count${unreadQueuedNotes ? ' unread' : ''}`} aria-hidden="true">{noteCount}</span>}</button>
     {menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div ref={flyoutRef} className="notes-menu" style={flyoutStyle} aria-label={worktreeId === undefined ? 'Scratch notes' : 'Worktree notes'}>
@@ -3658,7 +3862,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
           const failed = !dim && lastRunNeedsAttention(note.schedule.lastRun);
           const badgeLabel = invalid ? 'Schedule invalid' : !note.schedule.enabled ? 'Schedule paused' : failed ? 'Last run needs attention' : 'Scheduled';
           return <span className={`note-schedule-badge${dim ? ' paused' : failed ? ' bad' : ''}`} aria-label={badgeLabel} title={badgeLabel}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg></span>;
-        })()}<span className="note-menu-name">{label}</span></button><span className="note-menu-actions"><button className={`log-control note-menu-run${launchAndRunMode ? ' note-menu-launch-run' : ''}`} type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined || !note.text.trim() || (!launchAndRunMode && agentId === undefined)} aria-label={launchAndRunMode ? `Launch and run note: ${label}` : `${noteActionLabel}: ${label}`} title={launchAndRunMode ? 'Launch and run note' : noteActionLabel} onClick={() => void runNote(note)}>{menuRunningId === note.id ? <span className="spinner" /> : launchAndRunMode ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v11l9-5.5L7 4Z" /><path d="M4 20h16" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d={noteActionIcon} /></svg>}</button><button className="log-control note-menu-rename" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Rename note: ${label}`} title="Rename note" onClick={() => setMenuRenameDraft({ id: note.id, title: Array.from(note.title ?? label).slice(0, 120).join('') })}><svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.pencil} /></svg></button><button className="log-control note-menu-delete" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Delete note: ${label}`} title="Delete note" onClick={() => void removeFromMenu(note)}>{menuDeletingId === note.id ? <span className="spinner" /> : <svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.trash} /></svg>}</button></span></>}</div>;
+        })()}<span className="note-menu-name">{label}</span></button><span className="note-menu-actions"><button className={`log-control note-menu-run${launchAndRunMode ? ' note-menu-launch-run' : ''}`} type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined || !noteHasContent(note) || (!launchAndRunMode && agentId === undefined)} aria-label={launchAndRunMode ? `Launch and run note: ${label}` : `${noteActionLabel}: ${label}`} title={launchAndRunMode ? 'Launch and run note' : noteActionLabel} onClick={() => void runNote(note)}>{menuRunningId === note.id ? <span className="spinner" /> : launchAndRunMode ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v11l9-5.5L7 4Z" /><path d="M4 20h16" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d={noteActionIcon} /></svg>}</button><button className="log-control note-menu-rename" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Rename note: ${label}`} title="Rename note" onClick={() => setMenuRenameDraft({ id: note.id, title: Array.from(note.title ?? label).slice(0, 120).join('') })}><svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.pencil} /></svg></button><button className="log-control note-menu-delete" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Delete note: ${label}`} title="Delete note" onClick={() => void removeFromMenu(note)}>{menuDeletingId === note.id ? <span className="spinner" /> : <svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.trash} /></svg>}</button></span></>}</div>;
       })}
       <button className="log-control new-note" disabled={noteMenuBusy || menuRenameDraft !== undefined} onClick={() => void create()}>+ New note</button>
     </div></FlyoutPortal>}
@@ -3692,8 +3896,23 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   // "Open agent" links to the last Run's pane, but only while that agent is still on the dashboard
   const lastRunAgentId = activeNote?.schedule?.lastRun?.agentId;
   const openAgentId = lastRunAgentId !== undefined && schedulePrefill?.liveAgentIds.includes(lastRunAgentId) ? lastRunAgentId : undefined;
-  const scheduleArea = schedulePrefill === undefined ? null : <div className="schedule-area"><ScheduleEditor key={activeNote?.id} schedule={activeNote?.schedule} nextRun={activeNote?.nextRun} prefill={{ kind: schedulePrefill.kind, target: schedulePrefill.target }} runsOnText={schedulePrefill.runsOnText} adapterOptions={schedulePrefill.adapters} targetOptions={schedulePrefill.targets} onSet={payload => void applySchedule(payload)} onRemove={() => void removeSchedule()} onRunNow={() => void runScheduleNow()} running={scheduleRunning} {...(openAgentId === undefined ? {} : { openAgentId })} preview={previewSchedule} busy={scheduleBusy} /></div>;
-  const pane = activeNote === undefined ? null : <><section className={`note-pane${expanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onKeyDown={event => { if (event.key === 'Escape' && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><div className="note-pane-head"><header className="note-toolbar" role="toolbar" aria-label="Note actions">{renaming ? <form className="note-title-form" onSubmit={event => { event.preventDefault(); void saveTitle(); }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); setRenaming(false); } }}><input ref={titleEditorRef} aria-label="Note name" value={titleDraft} maxLength={120} disabled={renamePending} onChange={event => setTitleDraft(event.target.value)} /><button type="submit" disabled={renamePending || !titleDraft.trim()} aria-label="Save note name" title="Save note name"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={renamePending} aria-label="Cancel note rename" title="Cancel" onClick={() => setRenaming(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><strong title={activeNote.title ?? 'Note'}>{activeNote.title ?? 'Note'}</strong><button className="note-rename" type="button" disabled={deleting || renamePending} aria-label="Rename note" title="Rename note" onClick={() => { setTitleDraft(activeNote.title ?? ''); setRenaming(true); }}><svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.pencil} /></svg></button></>}{saveStatus === 'error' && <span className="note-save-status error" role="alert" aria-live="assertive">Unable to save</span>}{actionStatus && <span className={`note-action-status${copyState === 'error' || sendState === 'error' ? ' error' : ''}`} role={copyState === 'error' || sendState === 'error' ? 'alert' : 'status'}>{actionStatus}</span>}<button className={`note-copy${copyState === 'copied' ? ' copied' : ''}`} type="button" disabled={deleting} aria-label={copyState === 'copied' ? 'Note copied' : 'Copy note'} title={copyState === 'copied' ? 'Copied' : 'Copy note'} onClick={() => void copy()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={copyState === 'copied' ? 'm5 12 4 4L19 6' : 'M9 9h10v10H9zM5 15H4V5h10v1'} /></svg></button>{launchAndRunMode ? <button className="note-send note-launch-run" type="button" disabled={deleting || menuRunningId !== undefined || !draft.trim()} aria-label="Launch and run note" title={launchRunLabel === undefined ? 'Launch an agent and run this note' : `Launch and run (${launchRunLabel})`} onClick={() => { const note = activeNoteRef.current; if (note !== undefined) void runNote(note); }}>{menuRunningId !== undefined ? <span className="spinner" /> : 'Launch and run'}</button> : <button className="note-send" type="button" disabled={agentId === undefined || deleting || promptPending || !draft.trim()} aria-label={`${noteActionLabel} as prompt`} title={agentId === undefined ? 'Launch an agent to send this note' : `${noteActionLabel} as prompt`} onClick={() => void send()}>{sendState === 'sending' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d={noteActionIcon} /></svg>}</button>}<button className="note-delete" type="button" disabled={deleting || sendState === 'sending'} aria-label="Delete note" title="Delete note" onClick={remove}>{deleting ? <span className="spinner" /> : <svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.trash} /></svg>}</button><button className="note-expand" type="button" disabled={deleting || sendState === 'sending'} aria-label={expanded ? 'Restore note' : 'Expand note'} title={expanded ? 'Restore note' : 'Expand note'} aria-pressed={expanded} onClick={toggleExpanded}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="note-close" type="button" disabled={deleting || sendState === 'sending'} aria-label="Close note" title="Close note" onClick={close}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{scheduleArea}</div>{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}</>;
+  const scheduleArea = schedulePrefill === undefined ? null : <div className="schedule-area"><ScheduleEditor key={activeNote?.id} schedule={activeNote?.schedule} nextRun={activeNote?.nextRun} prefill={{ kind: schedulePrefill.kind, target: schedulePrefill.target }} runsOnText={schedulePrefill.runsOnText} adapterOptions={schedulePrefill.adapters} targetOptions={schedulePrefill.targets} onSet={payload => void applySchedule(payload)} onRemove={() => void removeSchedule()} onRunNow={() => void runScheduleNow()} running={scheduleRunning} {...(openAgentId === undefined ? {} : { openAgentId })} preview={previewSchedule} busy={scheduleBusy || attachmentPending} /></div>;
+  // keep the toolbar picker icon-only
+  const noteAttachButton = <button className="note-attach" type="button" disabled={noteFilesDisabled} aria-label="Attach files to note" title="Attach files" onClick={() => { /* open the note-specific file picker */ noteAttachmentInput.current?.click(); }}><MoreMenuIcon name="attachment" /></button>;
+  // keep the picker mounted even when the attachments area is empty
+  const noteAttachmentPicker = <input ref={noteAttachmentInput} className="attachment-input" type="file" multiple aria-label="Note attachment files" disabled={noteFilesDisabled} onChange={event => { /* allow selecting the same file again after removal */ chooseNoteFiles(event.target.files); event.target.value = ''; }} />;
+  const visibleNoteAttachments = activeNote?.attachments ?? [];
+  const hasNoteAttachments = visibleNoteAttachments.length > 0;
+  // show stored files and pending feedback without an empty attachment strip
+  const noteAttachmentControls = !hasNoteAttachments && !attachmentPending && !noteAttachmentError ? null : <div className="note-attachments" role="group" aria-label="Note attachments">
+    {hasNoteAttachments && <div className="note-attachment-list"><div className="prompt-attachments">{visibleNoteAttachments.map(
+      // keep preview and removal as separate keyboard controls
+      file => <span key={file.name} title={file.name}><button className="note-attachment-preview" type="button" disabled={noteFilesDisabled} aria-label={`Preview note attachment: ${file.name}`} onClick={() => { /* load only the selected attachment preview */ void noteFilePreview.openFile(file.name); }}>{file.name}</button><button type="button" disabled={noteFilesDisabled} aria-label={`Remove note attachment: ${file.name}`} onClick={() => { /* remove only the selected stored file */ void changeNoteAttachments(file.name); }}>×</button></span>
+    )}</div><button className="note-attach" type="button" disabled={noteFilesDisabled} onClick={() => { /* reuse the note-specific file picker */ noteAttachmentInput.current?.click(); }}><MoreMenuIcon name="attachment" />Add attachment</button></div>}
+    {attachmentPending && <span className="note-attachment-status" role="status">Saving attachments…</span>}
+    {noteAttachmentError && <p className="attachment-error" role="alert">{noteAttachmentError}</p>}
+  </div>;
+  const pane = activeNote === undefined ? null : <><section className={`note-pane${expanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onDragEnter={dragNoteFiles} onDragOver={dragNoteFiles} onDragLeave={leaveNoteFiles} onDrop={dropNoteFiles} onPaste={pasteNoteFiles} onKeyDown={event => { if (event.key === 'Escape' && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><div className="note-pane-head"><header className="note-toolbar" role="toolbar" aria-label="Note actions">{renaming ? <form className="note-title-form" onSubmit={event => { event.preventDefault(); void saveTitle(); }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); setRenaming(false); } }}><input ref={titleEditorRef} aria-label="Note name" value={titleDraft} maxLength={120} disabled={renamePending} onChange={event => setTitleDraft(event.target.value)} /><button type="submit" disabled={renamePending || !titleDraft.trim()} aria-label="Save note name" title="Save note name"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={renamePending} aria-label="Cancel note rename" title="Cancel" onClick={() => setRenaming(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><strong title={activeNote.title ?? 'Note'}>{activeNote.title ?? 'Note'}</strong><button className="note-rename" type="button" disabled={deleting || renamePending} aria-label="Rename note" title="Rename note" onClick={() => { setTitleDraft(activeNote.title ?? ''); setRenaming(true); }}><svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.pencil} /></svg></button></>}{saveStatus === 'error' && <span className="note-save-status error" role="alert" aria-live="assertive">Unable to save</span>}{actionStatus && <span className={`note-action-status${copyState === 'error' || sendState === 'error' ? ' error' : ''}`} role={copyState === 'error' || sendState === 'error' ? 'alert' : 'status'}>{actionStatus}</span>}<button className={`note-copy${copyState === 'copied' ? ' copied' : ''}`} type="button" disabled={deleting} aria-label={copyState === 'copied' ? 'Note copied' : 'Copy note'} title={copyState === 'copied' ? 'Copied' : 'Copy note'} onClick={() => void copy()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={copyState === 'copied' ? 'm5 12 4 4L19 6' : 'M9 9h10v10H9zM5 15H4V5h10v1'} /></svg></button>{noteAttachButton}{launchAndRunMode ? <button className="note-send note-launch-run" type="button" disabled={noteFilesDisabled || !noteHasContent({ ...activeNote, text: draft })} aria-label="Launch and run note" title={launchRunLabel === undefined ? 'Launch an agent and run this note' : `Launch and run (${launchRunLabel})`} onClick={() => { const note = activeNoteRef.current; if (note !== undefined) void runNote(note); }}>{menuRunningId !== undefined ? <span className="spinner" /> : 'Launch and run'}</button> : <button className="note-send" type="button" disabled={agentId === undefined || noteFilesDisabled || promptPending || !noteHasContent({ ...activeNote, text: draft })} aria-label={`${noteActionLabel} as prompt`} title={agentId === undefined ? 'Launch an agent to send this note' : `${noteActionLabel} as prompt`} onClick={() => void send()}>{sendState === 'sending' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d={noteActionIcon} /></svg>}</button>}<button className="note-delete" type="button" disabled={noteFilesDisabled} aria-label="Delete note" title="Delete note" onClick={remove}>{deleting ? <span className="spinner" /> : <svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.trash} /></svg>}</button><button className="note-expand" type="button" disabled={noteFilesDisabled} aria-label={expanded ? 'Restore note' : 'Expand note'} title={expanded ? 'Restore note' : 'Expand note'} aria-pressed={expanded} onClick={toggleExpanded}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="note-close" type="button" disabled={noteFilesDisabled} aria-label="Close note" title="Close note" onClick={close}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{scheduleArea}{noteAttachmentPicker}{noteAttachmentControls}</div>{draggingNoteFiles && <div className="prompt-drop-overlay" role="status">Drop files to attach to this note</div>}{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}{noteFilePreview.dialog}</>;
   return { active: activeNote !== undefined, expanded: activeNote !== undefined && expanded, appendToActive, canAppendToActive, canCreate: !loading, control, createWithText: create, pane };
 }
 

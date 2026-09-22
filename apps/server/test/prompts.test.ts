@@ -4,6 +4,7 @@ import { readFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { maxPromptAttachmentBytes, PromptService, type UndeliveredDrain } from '../src/prompts/service.js';
+import { promptAttachmentData, promptAttachmentName } from '../src/prompts/validation.js';
 import { codexAdapter } from '../src/adapters/codex.js';
 import { inlineQuestionId } from '../src/adapters/inline-questions.js';
 import { QueuedPromptService, type QueuedPrompt } from '../src/prompts/queue.js';
@@ -13,6 +14,16 @@ const socket={fingerprint:'socket',path:'/tmp/sock',device:1,inode:1}; const age
 const drainRecorder = () => { const drained: QueuedPrompt[] = []; const drain: UndeliveredDrain = async (_scope, prompt) => { drained.push(prompt); return true; }; return { drained, drain }; };
 it('allows prompt attachments totaling 25 MiB', () => {
   expect(maxPromptAttachmentBytes).toBe(25 * 1024 * 1024);
+});
+// validate the advertised maximum without recursive regular-expression overflow
+it('decodes a 25 MiB attachment and rejects malformed base64', () => {
+  const encoded = Buffer.alloc(maxPromptAttachmentBytes, 1).toString('base64');
+  expect(promptAttachmentData(encoded)?.length).toBe(maxPromptAttachmentBytes);
+  expect(promptAttachmentData('AAAA=')).toBeUndefined();
+  expect(promptAttachmentData('A===')).toBeUndefined();
+  expect(promptAttachmentData('****')).toBeUndefined();
+  expect(promptAttachmentName('.')).toBeUndefined();
+  expect(promptAttachmentName('..')).toBeUndefined();
 });
 describe('safe prompt flow',()=>{it('pastes through a generated buffer and submits an idle Codex composer with Enter',async()=>{const calls:string[][]=[];const discovery={worktreesNow:()=>[],target:async()=>({agent,socket})};const tmux={pastePrompt:async(_s:unknown,_p:string,b:string,p:string)=>{calls.push(['paste',b,p]);return true},sendKeys:async(_s:unknown,p:string,keys:string[])=>{calls.push([keys.join('+'),p]);return true}};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'hello; $(not-a-command)')).resolves.toBe(true);expect(calls[0]?.[0]).toBe('paste');expect(calls[0]?.[2]).toBe('hello; $(not-a-command) ');expect(calls.slice(1)).toEqual([['Enter','%1']]);expect(calls[0]?.[1]).toMatch(/^rac-/)});
 

@@ -4,6 +4,8 @@ import type { AttentionState, TmuxKey } from '../adapters/types.js';
 import { capturePaneArgs, paneIdPattern as paneId, run, sessionIdPattern as sessionId, tmuxBinary } from './command.js';
 
 const attentionStates: ReadonlySet<string> = new Set(['working', 'finished', 'question']);
+const inputBlockingPaneModes: ReadonlySet<string> = new Set(['copy-mode', 'view-mode']);
+const paneModeFormat = '#{pane_in_mode}\t#{pane_mode}';
 
 // a chord written in one send-keys is read as Meta; wait this long after Escape
 const postEscapeDelayMs = 120;
@@ -118,6 +120,21 @@ function clientLimit(layout: Layout, lines: string[]): PaneSize | undefined {
 export class TmuxAdapter {
   private readonly binary = tmuxBinary();
   private readonly inputQueues = new Map<string, Promise<boolean>>();
+
+  // leave history views but reject unrelated selectors
+  private async preparePaneInput(socket: SocketRef, pane: string): Promise<boolean> {
+    const status = await run(this.binary, ['-S', socket.path, 'display-message', '-p', '-t', pane, paneModeFormat]);
+    // require one current pane-mode snapshot
+    if (status.code !== 0) return false;
+    const match = /^([01])\t([^\r\n]*)\r?\n?$/u.exec(status.stdout);
+    // reject malformed or unsupported mode state
+    if (match === null) return false;
+    // normal panes accept input directly
+    if (match[1] === '0') return true;
+    // never inject into selectors or other pane modes
+    if (!inputBlockingPaneModes.has(match[2]!)) return false;
+    return (await run(this.binary, ['-S', socket.path, 'send-keys', '-X', '-t', pane, 'cancel'])).code === 0;
+  }
 
   // read pane identity and console-owned launch metadata
   async listPanes(socket: SocketRef): Promise<Pane[]> {
@@ -296,16 +313,26 @@ export class TmuxAdapter {
     return (await run(this.binary, ['-S', socket.path, 'set-option', '-w', '-t', pane, '-u', 'window-size'])).code === 0;
   }
 
+  // paste one named buffer into the live process
   async pastePrompt(socket: SocketRef, pane: string, buffer: string, prompt: string): Promise<boolean> {
+    // require safe tmux coordinates
     if (!paneId.test(pane) || !/^rac-[a-zA-Z0-9_-]+$/.test(buffer)) return false;
     const load = await run(this.binary, ['-S', socket.path, 'load-buffer', '-b', buffer, '-'], prompt);
+    // stop on buffer failure
     if (load.code !== 0) return false;
+    // restore the live pane before pasting
+    if (!await this.preparePaneInput(socket, pane)) {
+      await run(this.binary, ['-S', socket.path, 'delete-buffer', '-b', buffer]);
+      return false;
+    }
     return (await run(this.binary, ['-S', socket.path, 'paste-buffer', '-p', '-d', '-b', buffer, '-t', pane])).code === 0;
   }
 
   // submit the composed launch command into a reused idle shell (launch path)
   async enter(socket: SocketRef, pane: string): Promise<boolean> {
-    return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, 'Enter'])).code === 0;
+    // require one writable pane
+    if (!paneId.test(pane) || !await this.preparePaneInput(socket, pane)) return false;
+    return (await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, 'Enter'])).code === 0;
   }
 
   /**
@@ -316,10 +343,15 @@ export class TmuxAdapter {
    * happen across the pair (Claude's interrupt is `Escape` then `C-c`).
    */
   async sendKeys(socket: SocketRef, pane: string, keys: readonly TmuxKey[]): Promise<boolean> {
+    // require one writable pane
     if (!paneId.test(pane) || keys.length === 0) return false;
+    if (!await this.preparePaneInput(socket, pane)) return false;
+    // preserve adapter key ordering
     for (let index = 0; index < keys.length; index += 1) {
       const key = keys[index]!;
+      // stop after the first rejected key
       if ((await run(this.binary, ['-S', socket.path, 'send-keys', '-t', pane, key])).code !== 0) return false;
+      // prevent one escape chord
       if (key === 'Escape' && index + 1 < keys.length) await delay(postEscapeDelayMs);
     }
     return true;
@@ -331,7 +363,9 @@ export class TmuxAdapter {
     return (await run(this.binary, ['-S', socket.path, 'set-option', '-p', '-t', pane, '@rac_attention', state])).code === 0;
   }
 
+  // serialize terminal frames for each pane
   async input(socket: SocketRef, pane: string, value: string): Promise<boolean> {
+    // require bounded terminal input
     if (!paneId.test(pane) || !value || value.length > 65_536 || value.includes('\0')) return false;
     const key = `${socket.path}\0${pane}`;
     const previous = this.inputQueues.get(key) ?? Promise.resolve(true);
@@ -345,13 +379,18 @@ export class TmuxAdapter {
   }
 
   private async sendInput(socket: SocketRef, pane: string, value: string): Promise<boolean> {
+    // restore the live pane once per ordered input frame
+    if (!await this.preparePaneInput(socket, pane)) return false;
+    // preserve input order across literal and named keys
     for (const part of value.split(/(\r\n|\r|\n|\x03)/u)) {
+      // skip split gaps
       if (!part) continue;
       const args = /^(?:\r\n|\r|\n)$/u.test(part)
         ? ['-S', socket.path, 'send-keys', '-t', pane, 'Enter']
         : part === '\x03'
           ? ['-S', socket.path, 'send-keys', '-t', pane, 'C-c']
           : ['-S', socket.path, 'send-keys', '-l', '-t', pane, part];
+      // stop after the first rejected input part
       if ((await run(this.binary, args)).code !== 0) return false;
     }
     return true;

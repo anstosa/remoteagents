@@ -33,14 +33,18 @@ describe('promptNoteContent', () => {
     expect(title).toBe(`Queued prompt in workspace · ${expected}`);
   });
 
-  it('lists dropped attachment names after the text', () => {
-    expect(promptNoteContent('cora', at, { text: 'Review this.', attachments: [{ name: 'context.txt' }, { name: 'diff.patch' }] }))
-      .toEqual({ title: 'Queued prompt in cora · 9:05 AM', text: 'Review this.\n\nDropped attachments: context.txt, diff.patch' });
+  // retain queued attachment bytes with the note content
+  it('carries attachments beside the original text', () => {
+    const attachments = [{ name: 'context.txt', data: 'YQ==' }, { name: 'diff.patch', data: 'Yg==' }];
+    expect(promptNoteContent('cora', at, { text: 'Review this.', attachments }))
+      .toEqual({ title: 'Queued prompt in cora · 9:05 AM', text: 'Review this.', attachments });
   });
 
-  it('drops the leading gap when an attachment-only prompt has no text', () => {
-    expect(promptNoteContent('scratch', at, { text: '', attachments: [{ name: 'shot.png' }] }))
-      .toEqual({ title: 'Queued prompt in scratch · 9:05 AM', text: 'Dropped attachments: shot.png' });
+  // preserve attachment-only prompts without synthesizing text
+  it('keeps attachment-only prompt text empty', () => {
+    const attachments = [{ name: 'shot.png', data: 'YQ==' }];
+    expect(promptNoteContent('scratch', at, { text: '', attachments }))
+      .toEqual({ title: 'Queued prompt in scratch · 9:05 AM', text: '', attachments });
   });
 
   it('bounds long worktree labels to the note title cap', () => {

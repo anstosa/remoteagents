@@ -94,10 +94,12 @@ describe('TmuxAdapter capture', () => {
 
   it('sends an Adapter key sequence one send-keys invocation per key', async () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValueOnce({ code: 0, stdout: '0\t\n', stderr: '' });
 
     await expect(new TmuxAdapter().sendKeys(socket, '%1', ['Down', 'Down', 'Enter'])).resolves.toBe(true);
 
     expect(run.mock.calls).toEqual([
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'display-message', '-p', '-t', '%1', '#{pane_in_mode}\t#{pane_mode}']],
       ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-t', '%1', 'Down']],
       ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-t', '%1', 'Down']],
       ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-t', '%1', 'Enter']],
@@ -109,6 +111,8 @@ describe('TmuxAdapter capture', () => {
     let escapeAt = 0;
     let ctrlCAt = 0;
     run.mockImplementation((_binary: string, args: string[]) => {
+      // report a normal pane to the input guard
+      if (args.includes('display-message')) return { code: 0, stdout: '0\t\n', stderr: '' };
       if (args.at(-1) === 'Escape') escapeAt = performance.now();
       if (args.at(-1) === 'C-c') ctrlCAt = performance.now();
       return { code: 0, stdout: '', stderr: '' };
@@ -116,8 +120,32 @@ describe('TmuxAdapter capture', () => {
 
     await expect(new TmuxAdapter().sendKeys(socket, '%1', ['Escape', 'C-c'])).resolves.toBe(true);
 
-    expect(run.mock.calls.map(call => (call[1] as string[]).at(-1))).toEqual(['Escape', 'C-c']);
+    expect(run.mock.calls.filter(call => (call[1] as string[]).includes('send-keys')).map(call => (call[1] as string[]).at(-1))).toEqual(['Escape', 'C-c']);
     expect(ctrlCAt - escapeAt).toBeGreaterThanOrEqual(100);
+  });
+
+  // recover one exact prompt pane from a shared history view
+  it('cancels view mode before sending one Adapter key', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValueOnce({ code: 0, stdout: '1\tview-mode\n', stderr: '' });
+
+    await expect(new TmuxAdapter().sendKeys(socket, '%1', ['Enter'])).resolves.toBe(true);
+
+    expect(run.mock.calls).toEqual([
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'display-message', '-p', '-t', '%1', '#{pane_in_mode}\t#{pane_mode}']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-X', '-t', '%1', 'cancel']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-t', '%1', 'Enter']]
+    ]);
+  });
+
+  // preserve unrelated tmux selectors
+  it('does not send Adapter keys into an unsupported pane mode', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValueOnce({ code: 0, stdout: '1\tclock-mode\n', stderr: '' });
+
+    await expect(new TmuxAdapter().sendKeys(socket, '%1', ['Enter'])).resolves.toBe(false);
+
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
   it('refuses to send keys for an unsafe pane coordinate or an empty sequence', async () => {
@@ -313,6 +341,7 @@ describe('TmuxAdapter capture', () => {
 
   it('sends literal input without attaching or resizing the tmux session', async () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValueOnce({ code: 0, stdout: '0\t\n', stderr: '' });
 
     await expect(new TmuxAdapter().input(socket, '%1', '\x1b[A')).resolves.toBe(true);
 
@@ -321,6 +350,7 @@ describe('TmuxAdapter capture', () => {
 
   it('sends Ctrl+C as an explicit tmux key', async () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValueOnce({ code: 0, stdout: '0\t\n', stderr: '' });
 
     await expect(new TmuxAdapter().input(socket, '%1', '\x03')).resolves.toBe(true);
 
@@ -329,6 +359,7 @@ describe('TmuxAdapter capture', () => {
 
   it('submits terminal-mode commands with tmux’s Enter key', async () => {
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValueOnce({ code: 0, stdout: '0\t\n', stderr: '' });
 
     await expect(new TmuxAdapter().input(socket, '%1', '! git s\r')).resolves.toBe(true);
 
@@ -344,9 +375,10 @@ describe('TmuxAdapter capture', () => {
     const firstPending = new Promise<void>((resolve) => {
       releaseFirst = resolve;
     });
-    run.mockImplementationOnce(async () => {
-      await firstPending;
-      return { code: 0, stdout: '', stderr: '' };
+    run.mockImplementation(async (_binary: string, args: string[]) => {
+      // hold the first pane-mode read
+      if (run.mock.calls.length === 1) await firstPending;
+      return { code: 0, stdout: args.includes('display-message') ? '0\t\n' : '', stderr: '' };
     });
     const adapter = new TmuxAdapter();
 
@@ -360,8 +392,11 @@ describe('TmuxAdapter capture', () => {
     releaseFirst();
     await expect(Promise.all(inputs)).resolves.toEqual([true, true, true]);
     expect(run.mock.calls).toEqual([
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'display-message', '-p', '-t', '%1', '#{pane_in_mode}\t#{pane_mode}']],
       ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-l', '-t', '%1', '!']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'display-message', '-p', '-t', '%1', '#{pane_in_mode}\t#{pane_mode}']],
       ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-l', '-t', '%1', ' git status']],
+      ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'display-message', '-p', '-t', '%1', '#{pane_in_mode}\t#{pane_mode}']],
       ['/usr/bin/tmux', ['-S', '/tmp/tmux', 'send-keys', '-t', '%1', 'Enter']]
     ]);
   });

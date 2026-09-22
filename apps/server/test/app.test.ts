@@ -1166,7 +1166,7 @@ describe('queued prompt API', () => {
     }
   }, 15_000);
 
-  it('saves a queued prompt as a note, consuming the queued copy and naming its dropped attachments', async () => {
+  it('saves a queued prompt as a note, consuming the queued copy and retaining its attachments', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-save-queued-prompt-api-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', projectId: 'cora', label: 'Renamed Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
@@ -1192,11 +1192,14 @@ describe('queued prompt API', () => {
       const saved = await queuedApp.inject({ method: 'POST', url: `/api/agents/agent-1/queued-prompts/${queued!.id}/save`, headers });
       const remaining = await queuedApp.inject({ method: 'GET', url: '/api/agents/agent-1/queued-prompts', headers: { host: headers.host, cookie: headers.cookie } });
       const worktreeNotes = await queuedApp.inject({ method: 'GET', url: '/api/worktrees/cora/notes', headers: { host: headers.host, cookie: headers.cookie } });
+      const attachmentPayload = await queuedApp.inject({ method: 'GET', url: `/api/worktrees/cora/notes/${saved.json().id}/attachments`, headers: { host: headers.host, cookie: headers.cookie } });
 
       expect(saved.statusCode).toBe(201);
-      expect(saved.json()).toMatchObject({ title: expect.stringMatching(/^Queued prompt in Renamed Cora · (?:1[0-2]|[1-9]):[0-5]\d (?:AM|PM)$/u), text: 'Save this prompt\n\nDropped attachments: context.txt', source: 'queued-prompt' });
+      expect(saved.json()).toMatchObject({ title: expect.stringMatching(/^Queued prompt in Renamed Cora · (?:1[0-2]|[1-9]):[0-5]\d (?:AM|PM)$/u), text: 'Save this prompt', source: 'queued-prompt', attachments: [{ name: 'context.txt', size: 7 }] });
+      expect(JSON.stringify(saved.json())).not.toContain('Y29udGV4dA==');
       expect(remaining.json()).toEqual({ prompts: [] });
-      expect(worktreeNotes.json().notes).toMatchObject([{ title: expect.stringMatching(/^Queued prompt in Renamed Cora · (?:1[0-2]|[1-9]):[0-5]\d (?:AM|PM)$/u), text: 'Save this prompt\n\nDropped attachments: context.txt', source: 'queued-prompt' }]);
+      expect(worktreeNotes.json().notes).toMatchObject([{ title: expect.stringMatching(/^Queued prompt in Renamed Cora · (?:1[0-2]|[1-9]):[0-5]\d (?:AM|PM)$/u), text: 'Save this prompt', source: 'queued-prompt', attachments: [{ name: 'context.txt', size: 7 }] }]);
+      expect(attachmentPayload.json()).toEqual({ attachments: [{ name: 'context.txt', data: 'Y29udGV4dA==' }] });
     } finally {
       await queuedApp.close();
       await rm(directory, { recursive: true, force: true });
@@ -1316,9 +1319,10 @@ describe('queued prompt API', () => {
       const worktreeNotes = await drainApp.inject({ method: 'GET', url: `/api/worktrees/${encodeURIComponent('cora:/worktrees/cora')}/notes`, headers: { host: headers.host, cookie: headers.cookie } });
 
       expect(remaining.json()).toEqual({ prompts: [] });
-      const drained = worktreeNotes.json().notes as Array<{ title: string; text: string; source?: string }>;
+      const drained = worktreeNotes.json().notes as Array<{ title: string; text: string; source?: string; attachments?: Array<{ name: string; size: number }> }>;
       // one note per prompt, drained front-of-queue first (so the notes list, newest first, reverses them)
-      expect(drained.map(note => note.text)).toEqual(['Second undelivered', 'First undelivered\n\nDropped attachments: context.txt']);
+      expect(drained.map(note => note.text)).toEqual(['Second undelivered', 'First undelivered']);
+      expect(drained[1]?.attachments).toEqual([{ name: 'context.txt', size: 7 }]);
       expect(drained.every(note => /^Queued prompt in Release Lane · (?:1[0-2]|[1-9]):[0-5]\d (?:AM|PM)$/u.test(note.title))).toBe(true);
       expect(drained.every(note => note.source === 'queued-prompt')).toBe(true);
       expect(dashboard.json().notesRevision).toBe(2);
@@ -1564,6 +1568,168 @@ describe('worktree notes API', () => {
       expect(calls).toEqual(['createWithText:potato:Draft this idea']);
     } finally { await notesApp.close(); }
   }, 15_000);
+
+  // expose summaries on note responses while dedicated endpoints retain full bytes
+  it('creates and manages note attachments across worktree and agent scopes', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-note-attachment-api-'));
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', projectId: 'potato', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: worktree.path, title: 'Ready' });
+    const discovery = {
+      worktreesNow: () => [worktree],
+      target: async (id: string) => id === agent.id ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined,
+      dashboard: async () => ({ generation: 1, adapters: {}, agents: [agent], projects: [] })
+    };
+    const notesApp = await buildApp({ ...config }, {
+      auth: new AuthService(hash, Buffer.alloc(32, 41).toString('base64url')),
+      discovery: discovery as never,
+      notes: new WorktreeNoteService(join(directory, 'notes.json'))
+    });
+    const longName = `${'設計'.repeat(70)}.txt`;
+    const attachments = [
+      { name: 'dot.txt', data: Buffer.from('dots').toString('base64') },
+      { name: longName, data: Buffer.from('long').toString('base64') }
+    ];
+    try {
+      const boot = await notesApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await notesApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      const readHeaders = { host: headers.host, cookie: headers.cookie };
+
+      const created = await notesApp.inject({ method: 'POST', url: '/api/worktrees/cora/notes', headers, payload: { title: 'Files only', text: '', attachments } });
+      const noteId = created.json().id as string;
+      const full = await notesApp.inject({ method: 'GET', url: `/api/agents/${agent.id}/notes/${noteId}/attachments`, headers: readHeaders });
+      const autosaved = await notesApp.inject({ method: 'PUT', url: `/api/agents/${agent.id}/notes/${noteId}`, headers, payload: { text: 'Review the files' } });
+      const noCsrf = await notesApp.inject({ method: 'POST', url: `/api/agents/${agent.id}/notes/${noteId}/attachments`, headers: readHeaders, payload: { attachments: [{ name: 'x.txt', data: 'eA==' }] } });
+      const malformed = await notesApp.inject({ method: 'POST', url: `/api/agents/${agent.id}/notes/${noteId}/attachments`, headers, payload: { attachments: [{ name: 'bad.txt', data: 'not base64' }] } });
+      const dotName = await notesApp.inject({ method: 'POST', url: `/api/agents/${agent.id}/notes/${noteId}/attachments`, headers, payload: { attachments: [{ name: '..', data: 'eA==' }] } });
+      const appended = await notesApp.inject({ method: 'POST', url: `/api/agents/${agent.id}/notes/${noteId}/attachments`, headers, payload: { attachments: [{ name: ' extra.txt ', data: 'eA==' }] } });
+      const removedDots = await notesApp.inject({ method: 'DELETE', url: `/api/worktrees/cora/notes/${noteId}/attachments?name=${encodeURIComponent('dot.txt')}`, headers });
+      const removedLong = await notesApp.inject({ method: 'DELETE', url: `/api/agents/${agent.id}/notes/${noteId}/attachments?name=${encodeURIComponent(longName)}`, headers });
+      const renamed = await notesApp.inject({ method: 'PATCH', url: `/api/worktrees/cora/notes/${noteId}`, headers, payload: { title: 'Renamed files' } });
+      const deleted = await notesApp.inject({ method: 'DELETE', url: `/api/worktrees/cora/notes/${noteId}`, headers });
+
+      expect(created.statusCode).toBe(201);
+      expect(created.json()).toMatchObject({ text: '', attachments: [{ name: 'dot.txt', size: 4 }, { name: longName, size: 4 }] });
+      expect(JSON.stringify(created.json())).not.toContain(attachments[0]!.data);
+      expect(full.json()).toEqual({ attachments });
+      expect(autosaved.json()).toMatchObject({ text: 'Review the files', attachments: [{ name: 'dot.txt', size: 4 }, { name: longName, size: 4 }] });
+      expect(noCsrf.statusCode).toBe(403);
+      expect(malformed.statusCode).toBe(400);
+      expect(dotName.statusCode).toBe(400);
+      expect(appended.json()).toMatchObject({ attachments: [{ name: 'dot.txt', size: 4 }, { name: longName, size: 4 }, { name: 'extra.txt', size: 1 }] });
+      expect(removedDots.json().attachments).toEqual([{ name: longName, size: 4 }, { name: 'extra.txt', size: 1 }]);
+      expect(removedLong.json().attachments).toEqual([{ name: 'extra.txt', size: 1 }]);
+      expect(renamed.json()).toMatchObject({ title: 'Renamed files', attachments: [{ name: 'extra.txt', size: 1 }] });
+      expect(deleted.json()).toMatchObject({ title: 'Renamed files', attachments: [{ name: 'extra.txt', size: 1 }] });
+      expect(JSON.stringify(deleted.json())).not.toContain('eA==');
+    } finally {
+      await notesApp.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  // persist attachment bytes under a scratch agent's hashed note scope
+  it('manages attachments for scratch-agent notes', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-scratch-note-attachments-'));
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const agent = stated({ id: 'scratch-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/scratch', title: 'Scratch' });
+    const discovery = {
+      worktreesNow: () => [],
+      target: async (id: string) => id === agent.id ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined,
+      dashboard: async () => ({ generation: 1, adapters: {}, agents: [agent], projects: [] })
+    };
+    const notesApp = await buildApp({ ...config }, {
+      auth: new AuthService(hash, Buffer.alloc(32, 42).toString('base64url')),
+      discovery: discovery as never,
+      notes: new WorktreeNoteService(join(directory, 'notes.json'))
+    });
+    try {
+      const boot = await notesApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await notesApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      const base = `/api/agents/${agent.id}/notes`;
+      const attachment = { name: 'scratch.txt', data: Buffer.from('scratch').toString('base64') };
+
+      const created = await notesApp.inject({ method: 'POST', url: base, headers, payload: { title: 'Scratch files', attachments: [attachment] } });
+      const noteId = created.json().id as string;
+      const full = await notesApp.inject({ method: 'GET', url: `${base}/${noteId}/attachments`, headers: { host: headers.host, cookie: headers.cookie } });
+      const removed = await notesApp.inject({ method: 'DELETE', url: `${base}/${noteId}/attachments?name=scratch.txt`, headers });
+
+      expect(created.statusCode).toBe(201);
+      expect(created.json()).toMatchObject({ text: '', attachments: [{ name: 'scratch.txt', size: 7 }] });
+      expect(full.json()).toEqual({ attachments: [attachment] });
+      expect(removed.json()).not.toHaveProperty('attachments');
+    } finally {
+      await notesApp.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  // preview only bytes stored on the requested note scope
+  it('previews note attachment text, raster images and binary fallbacks', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-note-attachment-preview-'));
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const cora = { id: 'cora', projectId: 'potato', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
+    const owen = { id: 'owen', projectId: 'other', label: 'Owen', path: '/worktrees/owen', identity: '/worktrees/owen', available: true };
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.path, title: 'Ready' });
+    const otherAgent = stated({ id: 'agent-2', paneId: '%2', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/other', title: 'Ready' });
+    const discovery = {
+      worktreesNow: () => [cora, owen],
+      target: async (id: string) => id === agent.id
+        ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } }
+        : id === otherAgent.id ? { agent: otherAgent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined,
+      dashboard: async () => ({ generation: 1, adapters: {}, agents: [agent, otherAgent], projects: [] })
+    };
+    const notes = new WorktreeNoteService(join(directory, 'notes.json'));
+    const longName = `${'設計'.repeat(70)}.txt`;
+    const png = Buffer.from('89504e470d0a1a0a', 'hex');
+    const largeText = 'x'.repeat(256 * 1_024 + 17);
+    const note = await notes.createWithText('potato', 'Previews', '', undefined, [
+      { name: longName, data: Buffer.from('hello').toString('base64') },
+      { name: 'image.png', data: png.toString('base64') },
+      { name: 'binary.dat', data: Buffer.from([0xff, 0x00, 0x01]).toString('base64') },
+      { name: 'large.txt', data: Buffer.from(largeText).toString('base64') }
+    ]);
+    const notesApp = await buildApp({ ...config }, {
+      auth: new AuthService(hash, Buffer.alloc(32, 43).toString('base64url')),
+      discovery: discovery as never,
+      notes
+    });
+    try {
+      const boot = await notesApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await notesApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+      const readHeaders = { host: headers.host, cookie: headers.cookie };
+      const worktreeBase = `/api/worktrees/cora/notes/${note!.id}/attachments/preview`;
+      const agentBase = `/api/agents/${agent.id}/notes/${note!.id}/attachments/preview`;
+
+      const text = await notesApp.inject({ method: 'POST', url: worktreeBase, headers, payload: { path: longName } });
+      const image = await notesApp.inject({ method: 'POST', url: agentBase, headers, payload: { path: 'image.png' } });
+      const binary = await notesApp.inject({ method: 'POST', url: worktreeBase, headers, payload: { path: 'binary.dat' } });
+      const truncated = await notesApp.inject({ method: 'POST', url: worktreeBase, headers, payload: { path: 'large.txt' } });
+      const missing = await notesApp.inject({ method: 'POST', url: worktreeBase, headers, payload: { path: 'missing.txt' } });
+      const invalid = await notesApp.inject({ method: 'POST', url: worktreeBase, headers, payload: { path: '..' } });
+      const unauthorized = await notesApp.inject({ method: 'POST', url: worktreeBase, headers: { host: headers.host }, payload: { path: longName } });
+      const noCsrf = await notesApp.inject({ method: 'POST', url: worktreeBase, headers: readHeaders, payload: { path: longName } });
+      const wrongWorktree = await notesApp.inject({ method: 'POST', url: `/api/worktrees/owen/notes/${note!.id}/attachments/preview`, headers, payload: { path: longName } });
+      const wrongAgent = await notesApp.inject({ method: 'POST', url: `/api/agents/${otherAgent.id}/notes/${note!.id}/attachments/preview`, headers, payload: { path: longName } });
+
+      expect(text.json()).toEqual({ path: longName, size: 5, binary: false, truncated: false, content: 'hello' });
+      expect(image.json()).toEqual({ path: 'image.png', size: png.length, binary: true, truncated: false, image: { mediaType: 'image/png', base64: png.toString('base64') } });
+      expect(binary.json()).toEqual({ path: 'binary.dat', size: 3, binary: true, truncated: false });
+      expect(truncated.json()).toMatchObject({ path: 'large.txt', size: largeText.length, binary: false, truncated: true, content: 'x'.repeat(256 * 1_024) });
+      expect(missing.statusCode).toBe(404);
+      expect(invalid.statusCode).toBe(400);
+      expect(unauthorized.statusCode).toBe(403);
+      expect(noCsrf.statusCode).toBe(403);
+      expect(wrongWorktree.statusCode).toBe(404);
+      expect(wrongAgent.statusCode).toBe(404);
+    } finally {
+      await notesApp.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
 
 describe('workspace files API', () => {

@@ -5,6 +5,74 @@ import { describe, expect, it } from 'vitest';
 import { WorktreeNoteService } from '../src/notes/service.js';
 
 describe('worktree notes', () => {
+  // preserve attachment bytes across ordinary note mutations and reloads
+  it('persists, appends and removes normalized attachments without autosave data loss', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-note-attachments-'));
+    const file = join(directory, 'notes.json');
+    const first = { name: ' context.txt ', data: Buffer.from('context').toString('base64') };
+    const second = { name: 'diagram.png', data: Buffer.from('image').toString('base64') };
+    try {
+      const service = new WorktreeNoteService(file);
+      const note = await service.createWithText('cora', 'Attached note', '', undefined, [first]);
+      expect(note?.attachments).toEqual([{ ...first, name: 'context.txt' }]);
+      await expect(service.appendAttachments('cora', note!.id, [second])).resolves.toMatchObject({ attachments: [{ ...first, name: 'context.txt' }, second] });
+      await service.update('cora', note!.id, 'Review both files');
+      const daily = { cron: '0 9 * * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true, updatedAt: '2026-09-06T09:00:00-07:00' } as const;
+      await service.setSchedule('cora', note!.id, daily);
+      await expect(new WorktreeNoteService(file).attachments('cora', note!.id)).resolves.toEqual([{ ...first, name: 'context.txt' }, second]);
+      await expect(service.removeAttachment('cora', note!.id, ' context.txt ')).resolves.toMatchObject({ text: 'Review both files', schedule: daily, attachments: [second] });
+      await service.removeSchedule('cora', note!.id);
+      await expect(service.attachments('cora', note!.id)).resolves.toEqual([second]);
+      await expect(service.delete('cora', note!.id)).resolves.toMatchObject({ attachments: [second] });
+      await expect(service.attachments('cora', note!.id)).resolves.toBeUndefined();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  // reject malformed, duplicate and over-budget attachment mutations atomically
+  it('enforces attachment validation and the aggregate storage budget', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-note-attachment-limits-'));
+    const file = join(directory, 'notes.json');
+    try {
+      const service = new WorktreeNoteService(file, 10);
+      const first = { name: 'first.txt', data: Buffer.from('12345678').toString('base64') };
+      const note = await service.createWithText('cora', 'Bounded', '', undefined, [first]);
+      await expect(service.appendAttachments('cora', note!.id, [{ name: 'bad.txt', data: 'not base64' }])).resolves.toBe('invalid');
+      await expect(service.appendAttachments('cora', note!.id, [{ name: 'first.txt', data: Buffer.from('x').toString('base64') }])).resolves.toBe('invalid');
+      await expect(service.createWithText('owen', 'Overflow', '', undefined, [{ name: 'overflow.txt', data: Buffer.from('123').toString('base64') }])).resolves.toBeUndefined();
+      await expect(service.attachments('cora', note!.id)).resolves.toEqual([{ name: 'first.txt', data: first.data }]);
+      await expect(service.list('owen')).resolves.toEqual([]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  // accept legacy note records without attachments
+  it('loads legacy note records without attachment fields', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-legacy-notes-'));
+    const file = join(directory, 'notes.json');
+    try {
+      await writeFile(file, JSON.stringify({ cora: [{ id: 'note-identifier-000', title: 'Legacy', text: 'Still here' }] }));
+      await expect(new WorktreeNoteService(file).list('cora')).resolves.toEqual([{ id: 'note-identifier-000', title: 'Legacy', text: 'Still here' }]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  // reject malformed persisted attachment fields at the storage boundary
+  it('rejects persisted null attachment fields', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-invalid-note-attachments-'));
+    const file = join(directory, 'notes.json');
+    try {
+      await writeFile(file, JSON.stringify({ cora: [{ id: 'note-identifier-000', title: 'Invalid', text: '', attachments: null }] }));
+      await expect(new WorktreeNoteService(file).list('cora')).rejects.toThrow('invalid notes file');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+
   it('persists isolated notes and serializes concurrent autosaves', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-notes-'));
     const file = join(directory, 'notes.json');

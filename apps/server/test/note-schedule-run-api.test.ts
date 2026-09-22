@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildApp } from '../src/app.js';
 import { WorktreeNoteService } from '../src/notes/service.js';
 import { QueuedPromptService } from '../src/prompts/queue.js';
-import { PromptService } from '../src/prompts/service.js';
+import { PromptService, type PromptAttachment } from '../src/prompts/service.js';
 import type { Schedule, ScheduleTarget } from '../src/schedule/types.js';
 import type { Agent, Dashboard } from '../src/domain/models.js';
 import { testConfig, testProject, testWorktree } from './helpers/config.js';
@@ -144,22 +144,47 @@ describe('POST /api/worktrees/:id/notes/:noteId/schedule/run', () => {
     } finally { await server.close(); }
   }, 15_000);
 
+  // retain real delivery and attachment staging across a reused conversation
   it('submits the note with the reset instant on reuse, so Codex completion anchors on the fresh thread', async () => {
-    const idle: Agent = { ...codexPane, attention: 'finished' };
-    const working: Agent = { ...codexPane, attention: 'working', title: '⠋ Working' };
-    const { discovery, tmux } = reuseWorld({ worktree, socket: testSocket, agent: idle, afterReset: index => (index === 0 ? working : idle) });
+    const workspace = await mkdtemp(join(tmpdir(), 'rac-scheduled-attachments-'));
+    dirs.push(workspace);
+    const runtimeWorktree = { ...worktree, path: workspace, identity: workspace };
+    const idle: Agent = { ...codexPane, workspace, attention: 'finished' };
+    const working: Agent = { ...idle, attention: 'working', title: '⠋ Working' };
+    // expose the reset transition before the actual submission
+    const { discovery, tmux } = reuseWorld({ worktree: runtimeWorktree, socket: testSocket, agent: idle, afterReset: index => (index === 0 ? working : idle) });
     const { notes, queued, noteId } = await scheduledNote({ target: { worktreeId: 'wt-main' } }, 'agent-1');
+    const attachment = { name: 'context.txt', data: Buffer.from('context').toString('base64') };
+    await notes.appendAttachments('proj', noteId, [attachment]);
     // a real prompt service over the same fakes, with submit wrapped to observe the reset instant
     const resetAts: Array<number | undefined> = [];
+    const submittedAttachments: PromptAttachment[][] = [];
     const prompts = new PromptService(discovery as never, tmux as never, undefined, queued);
-    const realSubmit = prompts.submit.bind(prompts);
-    prompts.submit = ((agentId: string, text: string, attachments?: never, resetAt?: number) => { resetAts.push(resetAt); return realSubmit(agentId, text, attachments, resetAt); }) as typeof prompts.submit;
+    const realSubmit = prompts.submit;
+    // observe arguments without replacing delivery behavior
+    prompts.submit = (agentId, text, attachments = [], resetAt) => {
+      resetAts.push(resetAt);
+      submittedAttachments.push(attachments);
+      return realSubmit.call(prompts, agentId, text, attachments, resetAt);
+    };
     const server = await runApp({ notes, queued, tmux, launch: launchFake(), discovery, prompts });
     try {
-      expect((await server.inject(runNow(noteId))).json().schedule.lastRun).toMatchObject({ status: 'launched', agentId: 'agent-1' });
+      const response = await server.inject(runNow(noteId));
+      expect(response.json().schedule.lastRun).toMatchObject({ status: 'launched', agentId: 'agent-1' });
+      expect(response.json().attachments).toEqual([{ name: 'context.txt', size: 7 }]);
+      expect(JSON.stringify(response.json())).not.toContain(attachment.data);
       // the reuse path submitted the note once, carrying a numeric reset instant (not undefined)
       expect(resetAts.length).toBe(1);
       expect(typeof resetAts[0]).toBe('number');
+      expect(submittedAttachments).toEqual([[attachment]]);
+      // require the reset and the actual note to reach the pane
+      expect(tmux.pasted).toHaveLength(2);
+      expect(tmux.pasted[1]).toContain('Draft the weekly report');
+      const stagedPath = /@(node_modules\/[^\s]+)/u.exec(tmux.pasted[1]!)?.[1];
+      // require a real staged file rather than only recorded arguments
+      if (stagedPath === undefined) throw new Error('staged attachment path missing');
+      await expect(readFile(join(workspace, stagedPath), 'utf8')).resolves.toBe('context');
+      await expect(prompts.listQueued(idle.id)).resolves.toEqual([]);
     } finally { await server.close(); }
   }, 15_000);
 
@@ -188,20 +213,34 @@ describe('POST /api/worktrees/:id/notes/:noteId/schedule/run', () => {
     } finally { await server.close(); }
   }, 15_000);
 
+  // retain real delivery when a scheduled run needs a fresh pane
   it('launches fresh when the remembered agent is gone, recording the new agent id', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'rac-fresh-scheduled-attachments-'));
+    dirs.push(workspace);
+    const runtimeWorktree = { ...worktree, path: workspace, identity: workspace };
+    const fresh: Agent = { ...codexPane, workspace, attention: 'finished' };
     const tmux = recordingTmux();
     const launch = launchFake();
     // the remembered id resolves to nothing; a fresh Codex appears
-    const discovery = appearingDiscovery({ worktree, agent: { ...codexPane, attention: 'finished' }, socket: testSocket });
+    const discovery = appearingDiscovery({ worktree: runtimeWorktree, agent: fresh, socket: testSocket });
     const { notes, queued, noteId } = await scheduledNote({ target: { worktreeId: 'wt-main' } }, 'ghost-agent-id');
-    const server = await runApp({ notes, queued, tmux, launch, discovery });
+    const attachment = { name: 'fresh.txt', data: Buffer.from('fresh').toString('base64') };
+    await notes.appendAttachments('proj', noteId, [attachment]);
+    const prompts = new PromptService(discovery as never, tmux as never, undefined, queued);
+    const server = await runApp({ notes, queued, tmux, launch, discovery, prompts });
     try {
       const response = await server.inject(runNow(noteId));
       expect(response.json().schedule.lastRun).toMatchObject({ status: 'launched', agentId: 'agent-1' });
       expect(launch.kinds).toEqual(['codex']);
       // a fresh launch never pastes a reset command
       expect(tmux.pasted.some(text => text.trim() === '/new')).toBe(false);
-      expect(tmux.pasted.some(text => text.includes('Draft the weekly report'))).toBe(true);
+      expect(tmux.pasted).toHaveLength(1);
+      expect(tmux.pasted[0]).toContain('Draft the weekly report');
+      const stagedPath = /@(node_modules\/[^\s]+)/u.exec(tmux.pasted[0]!)?.[1];
+      // require the attachment to reach a real staged file
+      if (stagedPath === undefined) throw new Error('staged attachment path missing');
+      await expect(readFile(join(workspace, stagedPath), 'utf8')).resolves.toBe('fresh');
+      await expect(prompts.listQueued(fresh.id)).resolves.toEqual([]);
     } finally { await server.close(); }
   }, 15_000);
 
