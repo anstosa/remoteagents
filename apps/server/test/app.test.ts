@@ -1016,12 +1016,12 @@ describe('agent GitHub Actions route', () => {
 describe('guided review API boundary', () => {
   it('normalizes malformed and oversized requests while accepting the exact request shape', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const snapshot = { agentId: 'agent-1', worktreeId: 'cora', workspace: '/worktrees/cora', scope: 'working', base: 'HEAD', includeTests: false, includeDocs: false, fingerprint: 'empty-fingerprint', changes: [] };
+    const comparison = { agentId: 'agent-1', worktreeId: 'cora', workspace: '/worktrees/cora', scope: 'working', base: 'HEAD', includeTests: false, includeDocs: false, fingerprint: 'empty-fingerprint', changes: [] };
     let prepares = 0;
     const reviewTours = {
       capability: async () => ({ available: true }),
-      prepare: async () => { prepares += 1; return { snapshot, resolved: {} }; },
-      fingerprint: async () => ({ snapshot: { scope: 'working', base: 'HEAD', fingerprint: 'empty-fingerprint', includeTests: false, includeDocs: false }, empty: true })
+      prepare: async () => { prepares += 1; return { comparison, resolved: {} }; },
+      fingerprint: async () => ({ comparison: { scope: 'working', base: 'HEAD', fingerprint: 'empty-fingerprint', includeTests: false, includeDocs: false }, empty: true })
     };
     const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
@@ -1056,14 +1056,14 @@ describe('guided review API boundary', () => {
       expect(invalidRequestId.statusCode).toBe(400);
       expect(invalidRequestId.json()).toEqual({ status: 'error', error: { code: 'invalid_request', retryable: false } });
       expect(valid.statusCode).toBe(200);
-      expect(valid.json()).toEqual({ status: 'empty', snapshot: { scope: 'working', base: 'HEAD', fingerprint: 'empty-fingerprint', includeTests: false, includeDocs: false } });
+      expect(valid.json()).toEqual({ status: 'empty', comparison: { scope: 'working', base: 'HEAD', fingerprint: 'empty-fingerprint', includeTests: false, includeDocs: false } });
       expect(replay.statusCode).toBe(200);
       expect(replay.json()).toEqual(valid.json());
       expect(prepares).toBe(1);
       expect(invalidFingerprint.statusCode).toBe(400);
       expect(invalidFingerprint.json()).toEqual({ status: 'error', error: { code: 'invalid_request', retryable: false } });
       expect(fingerprint.statusCode).toBe(200);
-      expect(fingerprint.json()).toEqual({ status: 'empty', snapshot: { scope: 'working', base: 'HEAD', fingerprint: 'empty-fingerprint', includeTests: false, includeDocs: false } });
+      expect(fingerprint.json()).toEqual({ status: 'empty', comparison: { scope: 'working', base: 'HEAD', fingerprint: 'empty-fingerprint', includeTests: false, includeDocs: false } });
       expect(maximumPrompt.statusCode).toBe(204);
       expect(oversizedPrompt.statusCode).toBe(400);
       expect(pasted).toHaveLength(1);

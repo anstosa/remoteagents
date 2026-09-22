@@ -3,7 +3,7 @@ import { capturePatch, digest, resolveComparison, synthesizeUntrackedPatch } fro
 import type { ComparisonKind } from '../git/comparison.js';
 import type { GitStatusChange } from '../domain/models.js';
 import type { ResolvedWorkspace } from '../workspaces/resolver.js';
-import { MAX_REVIEW_CHANGES, MAX_REVIEW_DIFF_BYTES, MAX_REVIEW_FILES, MAX_REVIEW_FILE_BYTES, ReviewTourError, type ReviewChange, type ReviewChangeKind, type ReviewSnapshot, type ReviewTourInput } from './contracts.js';
+import { MAX_REVIEW_CHANGES, MAX_REVIEW_DIFF_BYTES, MAX_REVIEW_FILES, MAX_REVIEW_FILE_BYTES, ReviewTourError, type ReviewChange, type ReviewChangeKind, type ReviewComparison, type ReviewTourInput } from './contracts.js';
 
 // split one file patch into trusted atomic units
 function atomicPatches(patch: string, fallbackKind: ReviewChangeKind): Array<{ patch: string; kind: ReviewChangeKind; oldStart?: number; oldLines?: number; newStart?: number; newLines?: number }> {
@@ -38,8 +38,8 @@ async function comparison(resolved: ResolvedWorkspace, input: ReviewTourInput): 
   return { base: result.comparison.base, gitBase: result.comparison.gitBase, changes: result.comparison.changes };
 }
 
-// capture a canonical review snapshot
-export async function captureReviewSnapshot(resolved: ResolvedWorkspace, input: ReviewTourInput): Promise<ReviewSnapshot> {
+// capture a canonical review Comparison
+export async function captureReviewComparison(resolved: ResolvedWorkspace, input: ReviewTourInput): Promise<ReviewComparison> {
   const current = await comparison(resolved, input);
   const selected = current.changes.filter(change => {
     const category = classifyReviewPath(change.path);

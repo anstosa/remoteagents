@@ -1,17 +1,17 @@
 import { randomBytes } from 'node:crypto';
-import { publicReviewSnapshot, REVIEW_JOB_POLL_MS, REVIEW_JOB_TTL_MS, ReviewTourError, type PublicReviewSnapshot, type ReviewErrorCode, type ReviewTour, type ReviewTourInput } from './contracts.js';
+import { publicReviewComparison, REVIEW_JOB_POLL_MS, REVIEW_JOB_TTL_MS, ReviewTourError, type PublicReviewComparison, type ReviewErrorCode, type ReviewTour, type ReviewTourInput } from './contracts.js';
 import type { PreparedReviewTour, ReviewTourService } from './service.js';
 import type { ReviewTourStore } from './store.js';
 
 type PendingJob = { kind: 'pending'; controller: AbortController };
 type ReadyJob = { kind: 'ready'; tour: ReviewTour };
-type EmptyJob = { kind: 'empty'; snapshot: PublicReviewSnapshot };
+type EmptyJob = { kind: 'empty'; comparison: PublicReviewComparison };
 type FailedJob = { kind: 'error'; code: ReviewErrorCode; retryable: boolean };
 type GoneJob = { kind: 'gone'; code: 'job_cancelled' | 'job_superseded' | 'job_expired' };
 export type ReviewJobState = PendingJob | ReadyJob | EmptyJob | FailedJob | GoneJob;
 export type StoredReviewJob = { id: string; owner: string; agentId: string; worktreeId: string; persistenceVersion: number; expiresAt: number; state: ReviewJobState; expiry: NodeJS.Timeout; removal?: NodeJS.Timeout };
 export type StartedReviewJob = { id: string; expiresAt: string; retryAfterMs: number };
-type ReviewJobStart = { kind: 'empty'; snapshot: PublicReviewSnapshot } | { kind: 'pending'; job: StartedReviewJob };
+type ReviewJobStart = { kind: 'empty'; comparison: PublicReviewComparison } | { kind: 'pending'; job: StartedReviewJob };
 type IdempotentStart = { agentId: string; input: ReviewTourInput; promise: Promise<ReviewJobStart>; expiry?: NodeJS.Timeout };
 export type CompletedReviewJob = { agentId: string; worktreeId: string; prepared: PreparedReviewTour; tour: ReviewTour };
 
@@ -57,15 +57,15 @@ export class ReviewTourJobs {
   private async create(owner: string, agentId: string, input: ReviewTourInput): Promise<ReviewJobStart> {
     const prepared = await this.service.prepare(agentId, input);
     const storeWithCurrency = this.store as (ReviewTourStore & { invalidate?: ReviewTourStore['invalidate']; saveIfCurrent?: ReviewTourStore['saveIfCurrent'] }) | undefined;
-    const persistenceVersion = await storeWithCurrency?.invalidate?.(prepared.snapshot.worktreeId, prepared.snapshot.branch) ?? (this.persistenceVersions.get(prepared.snapshot.worktreeId) ?? 0) + 1;
-    this.persistenceVersions.set(prepared.snapshot.worktreeId, persistenceVersion);
+    const persistenceVersion = await storeWithCurrency?.invalidate?.(prepared.comparison.worktreeId, prepared.comparison.branch) ?? (this.persistenceVersions.get(prepared.comparison.worktreeId) ?? 0) + 1;
+    this.persistenceVersions.set(prepared.comparison.worktreeId, persistenceVersion);
     this.supersede(owner, prepared);
     // skip model generation for empty selections
-    if (prepared.snapshot.changes.length === 0) return { kind: 'empty', snapshot: publicReviewSnapshot(prepared.snapshot) };
+    if (prepared.comparison.changes.length === 0) return { kind: 'empty', comparison: publicReviewComparison(prepared.comparison) };
     const id = randomBytes(18).toString('base64url');
     const expiresAt = Date.now() + REVIEW_JOB_TTL_MS;
     const controller = new AbortController();
-    const job: StoredReviewJob = { id, owner, agentId, worktreeId: prepared.snapshot.worktreeId, persistenceVersion, expiresAt, state: { kind: 'pending', controller }, expiry: setTimeout(() => this.expire(id), REVIEW_JOB_TTL_MS) };
+    const job: StoredReviewJob = { id, owner, agentId, worktreeId: prepared.comparison.worktreeId, persistenceVersion, expiresAt, state: { kind: 'pending', controller }, expiry: setTimeout(() => this.expire(id), REVIEW_JOB_TTL_MS) };
     job.expiry.unref?.();
     this.jobs.set(id, job);
     this.latestByWorktree.set(this.latestKey(owner, job.worktreeId), id);
@@ -81,13 +81,13 @@ export class ReviewTourJobs {
       // ignore superseded completions
       if (current !== job || current.state.kind !== 'pending') return;
       // durably retain branch-bound completed tours
-      if (this.store !== undefined && prepared.snapshot.branch !== undefined) {
+      if (this.store !== undefined && prepared.comparison.branch !== undefined) {
         const storeWithCurrency = this.store as ReviewTourStore & { saveIfCurrent?: ReviewTourStore['saveIfCurrent'] };
         const conditionalSave = storeWithCurrency?.saveIfCurrent;
         // preserve simple injected stores while production uses atomic currency
         const stored = conditionalSave === undefined
-          ? await this.store.save(prepared.snapshot.worktreeId, prepared.snapshot.branch, tour)
-          : await conditionalSave.call(this.store, prepared.snapshot.worktreeId, prepared.snapshot.branch, tour, job.persistenceVersion);
+          ? await this.store.save(prepared.comparison.worktreeId, prepared.comparison.branch, tour)
+          : await conditionalSave.call(this.store, prepared.comparison.worktreeId, prepared.comparison.branch, tour, job.persistenceVersion);
         // require persistence when a store is configured
         if (stored === undefined) throw new ReviewTourError('generation_failed', true);
         // discard superseded persistence attempts
@@ -110,7 +110,7 @@ export class ReviewTourJobs {
 
   // cancel earlier worktree generation
   private supersede(owner: string, prepared: PreparedReviewTour): void {
-    const previousId = this.latestByWorktree.get(this.latestKey(owner, prepared.snapshot.worktreeId));
+    const previousId = this.latestByWorktree.get(this.latestKey(owner, prepared.comparison.worktreeId));
     const previous = previousId === undefined ? undefined : this.jobs.get(previousId);
     // retain an owner-scoped superseded tombstone
     if (previous !== undefined) this.markGone(previous, 'job_superseded');

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { MAX_REVIEW_FILE_BYTES } from '../src/review-tour/contracts.js';
-import { captureReviewSnapshot } from '../src/review-tour/diff.js';
+import { captureReviewComparison } from '../src/review-tour/diff.js';
 import { resolveConfiguredWorkspace } from '../src/workspaces/resolver.js';
 import type { ResolvedWorkspace } from '../src/workspaces/resolver.js';
 
@@ -50,12 +50,12 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
-describe('review snapshot capture', () => {
+describe('review Comparison capture', () => {
   it('excludes tests and docs by default and produces stable atomic fingerprints', async () => {
     const resolved = await fixture();
     const input = { scope: 'working' as const, includeTests: false, includeDocs: false };
-    const first = await captureReviewSnapshot(resolved, input);
-    const second = await captureReviewSnapshot(resolved, input);
+    const first = await captureReviewComparison(resolved, input);
+    const second = await captureReviewComparison(resolved, input);
     expect(first.changes.map(change => change.file)).toEqual(['src/feature.ts']);
     expect(first.changes).toHaveLength(1);
     expect(first.changes[0]).toMatchObject({ category: 'implementation', kind: 'hunk', oldStart: 1, newStart: 1 });
@@ -64,8 +64,8 @@ describe('review snapshot capture', () => {
 
   it('includes tests and docs only when requested', async () => {
     const resolved = await fixture();
-    const snapshot = await captureReviewSnapshot(resolved, { scope: 'working', includeTests: true, includeDocs: true });
-    expect(snapshot.changes.map(change => [change.file, change.category])).toEqual([
+    const comparison = await captureReviewComparison(resolved, { scope: 'working', includeTests: true, includeDocs: true });
+    expect(comparison.changes.map(change => [change.file, change.category])).toEqual([
       ['docs/feature.md', 'doc'],
       ['src/feature.ts', 'implementation'],
       ['test/feature.test.ts', 'test']
@@ -86,7 +86,7 @@ describe('review snapshot capture', () => {
     const resolved = await resolveConfiguredWorkspace(discovery as never, raw.agent.id);
 
     expect(resolved?.agent.gitPrStatus?.base).toBe('main');
-    await expect(captureReviewSnapshot(resolved!, { scope: 'pr', includeTests: false, includeDocs: false })).resolves.toMatchObject({
+    await expect(captureReviewComparison(resolved!, { scope: 'pr', includeTests: false, includeDocs: false })).resolves.toMatchObject({
       scope: 'pr',
       base: 'main',
       changes: [expect.objectContaining({ file: 'src/feature.ts' })]
@@ -109,8 +109,8 @@ describe('review snapshot capture', () => {
     await git(resolved.workspace, 'commit', '-m', 'large fixture');
     await writeFile(path, `${modified.join('\n')}\n`);
 
-    const snapshot = await captureReviewSnapshot(resolved, { scope: 'working', includeTests: false, includeDocs: false });
-    const largeChanges = snapshot.changes.filter(change => change.file === 'src/large.ts');
+    const comparison = await captureReviewComparison(resolved, { scope: 'working', includeTests: false, includeDocs: false });
+    const largeChanges = comparison.changes.filter(change => change.file === 'src/large.ts');
 
     expect(largeChanges.length).toBeGreaterThan(1);
     expect(largeChanges.every(change => Buffer.byteLength(change.patch) <= MAX_REVIEW_FILE_BYTES)).toBe(true);

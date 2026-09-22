@@ -10,16 +10,11 @@ import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useCallba
 import { CodeView, type CodeViewHandle, type CodeViewItem, type CodeViewReactOptions, type FileDiffMetadata } from '@pierre/diffs/react';
 import { useColorTheme } from '../color-theme.js';
 import { groupComparisonFiles, type CodePanelMode, type CodePanelState, type ComparisonChange, type ComparisonFile, type ComparisonFileContents, type ComparisonPatch, type FilePreviewView } from './comparison.js';
-import { CODE_TOKENIZE_MAX_LINES, diffItemForContents, diffItemForFile, fileItemForContents, fileVersion, loadedFilesFromContents } from './items.js';
+import { codeViewBaseOptions, codeViewStyle, diffItemForContents, diffItemForFile, fileItemForContents, fileVersion, loadedFilesFromContents } from './items.js';
 
 type PanelItem = CodeViewItem<undefined>;
 type PanelOptions = CodeViewReactOptions<undefined, undefined>;
 type PanelHandle = CodeViewHandle<undefined, undefined>;
-
-// The font metrics the diffs render at. Kept as constants so the CSS variables the shadow DOM reads
-// and the virtualiser's `itemMetrics` stay in lockstep — a mismatch mis-measures every row's height.
-const FONT_SIZE = 13;
-const LINE_HEIGHT = 20;
 
 // Below this panel width the changed-file list is a slide-over drawer rather than a persistent left
 // rail, and the split layout is unavailable — one width rule covers both phones (always narrow) and
@@ -343,20 +338,11 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
   }, [overrideSignature, loadFile]);
 
   const options = useMemo<PanelOptions>(() => ({
-    theme: { dark: 'catppuccin-mocha', light: 'catppuccin-latte' },
-    themeType: theme === 'latte' ? 'light' : 'dark',
-    preferredHighlighter: 'shiki-js',
+    ...codeViewBaseOptions(theme === 'latte' ? 'light' : 'dark'),
     diffStyle: effectiveSplit ? 'split' : 'unified',
-    overflow: 'scroll',
-    hunkSeparators: 'line-info',
-    stickyHeaders: true,
-    enableLineSelection: true,
     // Full context expands the unchanged lines, hydrating each partial patch through loadDiffFiles.
     expandUnchanged: effectiveMode === 'full',
-    loadDiffFiles: effectiveMode === 'full' ? loadDiffFiles : undefined,
-    // past the cap a file renders as plain text so a huge diff never freezes the tab
-    tokenizeMaxLength: CODE_TOKENIZE_MAX_LINES,
-    itemMetrics: { lineHeight: LINE_HEIGHT, diffHeaderHeight: LINE_HEIGHT + 24 }
+    loadDiffFiles: effectiveMode === 'full' ? loadDiffFiles : undefined
   }), [theme, effectiveSplit, effectiveMode, loadDiffFiles]);
 
   // Remember the topmost item and how far into it we had scrolled, before leaving the all-files
@@ -408,7 +394,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
   };
 
   const fileCount = groups.implementation.length + groups.supporting.length;
-  const style = { '--diffs-font-size': `${FONT_SIZE}px`, '--diffs-line-height': `${LINE_HEIGHT}px` } as CSSProperties;
+  const style = codeViewStyle() as CSSProperties;
   // The rail is a persistent column on a wide panel unless the reviewer collapsed it; a narrow panel
   // uses the drawer instead.
   const railVisible = !narrow && !railCollapsed;

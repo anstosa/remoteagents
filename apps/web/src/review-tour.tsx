@@ -1,5 +1,10 @@
 import { createPortal } from 'react-dom';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+
+// The diff renderer pulls in `@pierre/diffs` (~177 kB), so it is loaded on demand — this dialog is in
+// the eager dashboard bundle and a static import would drag the library in. Same lazy boundary the
+// Code panel uses for the same reason.
+const ReviewDiffs = lazy(() => import('./code-panel/review-diffs.js'));
 
 export type ReviewScope = 'working' | 'pr';
 export type ReviewLaunch = { agentId: string; worktreeId: string; scope: ReviewScope };
@@ -10,7 +15,7 @@ export type ReviewTour = { title: string; overview: string; scope: ReviewScope; 
 type ReviewRequest = (url: string, init?: RequestInit, observeReachability?: boolean) => Promise<Response>;
 type StepState = 'unvisited' | 'visited' | 'skipped';
 type Job = { id: string; expiresAt: string; retryAfterMs: number };
-type Snapshot = { scope: ReviewScope; base: string; includeTests: boolean; includeDocs: boolean; fingerprint: string };
+type PublicReviewComparison = { scope: ReviewScope; base: string; includeTests: boolean; includeDocs: boolean; fingerprint: string };
 type ViewState = 'loading' | 'tour' | 'summary' | 'empty' | 'error' | 'cancelled';
 type ReviewFailure = { code?: string; message?: string };
 
@@ -51,9 +56,9 @@ function isJob(value: unknown): value is Job {
   return value !== null && typeof value === 'object' && typeof (value as Job).id === 'string' && typeof (value as Job).expiresAt === 'string' && typeof (value as Job).retryAfterMs === 'number';
 }
 
-// validate public snapshot identities
-function isSnapshot(value: unknown): value is Snapshot {
-  return value !== null && typeof value === 'object' && ((value as Snapshot).scope === 'working' || (value as Snapshot).scope === 'pr') && typeof (value as Snapshot).base === 'string' && typeof (value as Snapshot).includeTests === 'boolean' && typeof (value as Snapshot).includeDocs === 'boolean' && typeof (value as Snapshot).fingerprint === 'string';
+// validate public comparison identities
+function isPublicReviewComparison(value: unknown): value is PublicReviewComparison {
+  return value !== null && typeof value === 'object' && ((value as PublicReviewComparison).scope === 'working' || (value as PublicReviewComparison).scope === 'pr') && typeof (value as PublicReviewComparison).base === 'string' && typeof (value as PublicReviewComparison).includeTests === 'boolean' && typeof (value as PublicReviewComparison).includeDocs === 'boolean' && typeof (value as PublicReviewComparison).fingerprint === 'string';
 }
 
 // extract structured and transport failures
@@ -122,17 +127,7 @@ function feedbackDraft(tour: ReviewTour, feedback: Record<string, string>, statu
     const note = feedback[step.id]?.trim();
     return note ? [`## ${step.title} (${statuses[step.id] ?? 'unvisited'})\n${note}`] : [];
   });
-  return [`Please address the feedback from my guided review of ${tour.scope === 'working' ? 'Working' : 'All PR'} changes against ${tour.base}.`, `Tour: ${tour.title}`, `Snapshot: ${tour.fingerprint.slice(0, 12)}`, ...notes, ...(orphanFeedback.trim() === '' ? [] : [`## Feedback retained from regenerated steps\n${orphanFeedback.trim()}`])].join('\n\n');
-}
-
-// classify unified diff lines
-const patchLineClass = (line: string) => line.startsWith('@@') ? 'hunk' : line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++') ? 'metadata' : line.startsWith('+') ? 'addition' : line.startsWith('-') ? 'deletion' : 'context';
-
-// render a color-coded patch
-function ReviewPatch({ patch }: { patch: string }) {
-  const lines = patch.split('\n');
-  // preserve every visible patch line
-  return <pre>{lines.map((line, index) => <span className={`review-patch-line ${patchLineClass(line)}`} key={`${index}:${line}`}>{line || ' '}</span>)}</pre>;
+  return [`Please address the feedback from my guided review of ${tour.scope === 'working' ? 'Working' : 'All PR'} changes against ${tour.base}.`, `Tour: ${tour.title}`, `Comparison: ${tour.fingerprint.slice(0, 12)}`, ...notes, ...(orphanFeedback.trim() === '' ? [] : [`## Feedback retained from regenerated steps\n${orphanFeedback.trim()}`])].join('\n\n');
 }
 
 // render and manage one guided review
@@ -296,7 +291,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     };
   }, [launch.agentId, launch.scope, includeTests, includeDocs, retry, request, initialTour]);
 
-  // poll snapshot freshness while reviewing
+  // poll comparison freshness while reviewing
   useEffect(() => {
     // wait for a usable tour
     if (tour === undefined || state === 'loading') return;
@@ -305,10 +300,10 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
       const query = new URLSearchParams({ scope: launch.scope, includeTests: String(includeTests), includeDocs: String(includeDocs) });
       const response = await request(`/api/agents/${encodeURIComponent(launch.agentId)}/review-tour/fingerprint?${query}`, undefined, false);
       const body = await responseBody(response);
-      const snapshot = body.snapshot;
-      const currentSnapshot = response.ok && isSnapshot(snapshot) && snapshot.scope === launch.scope && snapshot.includeTests === includeTests && snapshot.includeDocs === includeDocs && snapshot.fingerprint === tour.fingerprint;
+      const comparison = body.comparison;
+      const currentComparison = response.ok && isPublicReviewComparison(comparison) && comparison.scope === launch.scope && comparison.includeTests === includeTests && comparison.includeDocs === includeDocs && comparison.fingerprint === tour.fingerprint;
       // fail closed on freshness
-      if (!stopped && !currentSnapshot) setStale(true);
+      if (!stopped && !currentComparison) setStale(true);
     };
     void check();
     const timer = window.setInterval(() => { if (document.visibilityState === 'visible') void check(); }, 5_000);
@@ -338,18 +333,18 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     if (activeTotal + value.length <= maxFeedbackTotal || value.length < orphanFeedback.length) setOrphanFeedback(value);
   };
 
-  // confirm the bound snapshot before completion or dispatch
-  const snapshotCurrent = async (): Promise<boolean> => {
+  // confirm the bound comparison before completion or dispatch
+  const comparisonCurrent = async (): Promise<boolean> => {
     // require a generated artifact
     if (tour === undefined) return false;
     const query = new URLSearchParams({ scope: launch.scope, includeTests: String(includeTests), includeDocs: String(includeDocs) });
     const response = await request(`/api/agents/${encodeURIComponent(launch.agentId)}/review-tour/fingerprint?${query}`, undefined, false);
     const body = await responseBody(response);
-    const snapshot = body.snapshot;
-    const currentSnapshot = response.ok && isSnapshot(snapshot) && snapshot.scope === launch.scope && snapshot.includeTests === includeTests && snapshot.includeDocs === includeDocs && snapshot.fingerprint === tour.fingerprint;
+    const comparison = body.comparison;
+    const currentComparison = response.ok && isPublicReviewComparison(comparison) && comparison.scope === launch.scope && comparison.includeTests === includeTests && comparison.includeDocs === includeDocs && comparison.fingerprint === tour.fingerprint;
     // freeze stale or unverifiable tours
-    if (!currentSnapshot) setStale(true);
-    return currentSnapshot;
+    if (!currentComparison) setStale(true);
+    return currentComparison;
   };
 
   // move to the previous step
@@ -372,8 +367,8 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
   const summarize = async () => {
     // block stale or incomplete reviews
     if (!complete || stale || tour === undefined || feedbackTotal > maxFeedbackTotal) return;
-    // reject changed snapshots at the transition
-    if (!await snapshotCurrent()) return;
+    // reject changed Comparisons at the transition
+    if (!await comparisonCurrent()) return;
     setDispatch(feedbackDraft(tour, feedback, statuses, orphanFeedback));
     setState('summary');
   };
@@ -382,8 +377,8 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     // validate the shared prompt boundary
     if (dispatching || dispatch.trim() === '' || dispatch.length > maxDispatch) return;
     setDispatching(true);
-    // reject changed snapshots before mutation dispatch
-    if (!await snapshotCurrent()) { setDispatching(false); setState('tour'); return; }
+    // reject changed Comparisons before mutation dispatch
+    if (!await comparisonCurrent()) { setDispatching(false); setState('tour'); return; }
     const response = await request(`/api/agents/${encodeURIComponent(launch.agentId)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: dispatch, attachments: [] }) });
     setDispatching(false);
     // preserve the draft on failure
@@ -441,7 +436,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     {state === 'loading' && <div className="review-tour-message" role="status"><span className="spinner" /><strong>Building the narrated tour…</strong><p>The AI is organizing the selected implementation changes into logical steps.</p><button type="button" onClick={() => { generation.current += 1; if (job !== undefined) void request(`/api/review-tour/jobs/${encodeURIComponent(job.id)}`, { method: 'DELETE' }, false); setState('cancelled'); }}>Cancel</button></div>}
     {state === 'empty' && <div className="review-tour-message" role="status"><strong>No included changes</strong><p>Implementation changes are empty for this scope. Enable Tests or Docs if those are the only changed files.</p></div>}
     {(state === 'error' || state === 'cancelled') && <div className="review-tour-message error" role="alert"><strong>{state === 'cancelled' ? 'Tour cancelled' : 'Unable to build tour'}</strong><p>{error || 'Generate again when you are ready.'}</p><button type="button" onClick={() => { setRetry(value => value + 1); setState('loading'); }}>Try again</button></div>}
-    {tour && state === 'tour' && step && <><div className="review-tour-progress"><span>Step {current + 1} of {tour.steps.length}</span><span>{Object.values(statuses).filter(value => value === 'visited').length} visited · {Object.values(statuses).filter(value => value === 'skipped').length} skipped</span></div><main className="review-tour-step"><section className="review-tour-narration"><small>Logical change</small><h3>{step.title}</h3><p>{step.explanation}</p><label>Feedback for this change<textarea value={stepFeedback} maxLength={maxFeedback} onChange={event => updateFeedback(step.id, event.target.value)} />{stepFeedback.length >= maxFeedback && <span role="status">{maxFeedback.toLocaleString()} character limit reached</span>}</label>{orphanFeedback !== '' && <label>Feedback from regenerated steps<textarea value={orphanFeedback} maxLength={maxFeedbackTotal} onChange={event => updateOrphanFeedback(event.target.value)} />{orphanFeedback.length >= maxFeedbackTotal && <span role="status">{maxFeedbackTotal.toLocaleString()} retained feedback character limit reached</span>}</label>}</section><section className="review-tour-diffs" aria-label="Relevant changes">{changes.map(change => <article key={change.id}><header><strong>{change.originalFile === undefined ? change.file : `${change.originalFile} → ${change.file}`}</strong><small>{change.kind}</small></header><ReviewPatch patch={change.patch} /></article>)}</section></main><footer className="review-tour-actions"><button type="button" disabled={current === 0} onClick={back}>Back</button><button type="button" onClick={skip}>Skip</button><span>{feedbackTotal >= maxFeedbackTotal ? `${maxFeedbackTotal.toLocaleString()} total feedback character limit reached` : null}</span>{complete ? <button type="button" disabled={stale || feedbackTotal > maxFeedbackTotal} onClick={() => void summarize()}>Review summary</button> : <button type="button" onClick={next}>Next</button>}</footer></>}
+    {tour && state === 'tour' && step && <><div className="review-tour-progress"><span>Step {current + 1} of {tour.steps.length}</span><span>{Object.values(statuses).filter(value => value === 'visited').length} visited · {Object.values(statuses).filter(value => value === 'skipped').length} skipped</span></div><main className="review-tour-step"><section className="review-tour-narration"><small>Logical change</small><h3>{step.title}</h3><p>{step.explanation}</p><label>Feedback for this change<textarea value={stepFeedback} maxLength={maxFeedback} onChange={event => updateFeedback(step.id, event.target.value)} />{stepFeedback.length >= maxFeedback && <span role="status">{maxFeedback.toLocaleString()} character limit reached</span>}</label>{orphanFeedback !== '' && <label>Feedback from regenerated steps<textarea value={orphanFeedback} maxLength={maxFeedbackTotal} onChange={event => updateOrphanFeedback(event.target.value)} />{orphanFeedback.length >= maxFeedbackTotal && <span role="status">{maxFeedbackTotal.toLocaleString()} retained feedback character limit reached</span>}</label>}</section><section className="review-tour-diffs" aria-label="Relevant changes"><Suspense fallback={<p className="review-tour-diff-loading" role="status">Loading diff…</p>}><ReviewDiffs changes={changes} /></Suspense></section></main><footer className="review-tour-actions"><button type="button" disabled={current === 0} onClick={back}>Back</button><button type="button" onClick={skip}>Skip</button><span>{feedbackTotal >= maxFeedbackTotal ? `${maxFeedbackTotal.toLocaleString()} total feedback character limit reached` : null}</span>{complete ? <button type="button" disabled={stale || feedbackTotal > maxFeedbackTotal} onClick={() => void summarize()}>Review summary</button> : <button type="button" onClick={next}>Next</button>}</footer></>}
     {tour && state === 'summary' && <main className="review-tour-summary"><h3>Review complete</h3><ul>{tour.steps.map(candidate => <li key={candidate.id}><span className={statuses[candidate.id]}>{statuses[candidate.id]}</span><strong>{candidate.title}</strong></li>)}</ul>{orphanFeedback !== '' && <p>Feedback from regenerated steps is retained in the consolidated change request.</p>}{feedbackTotal === 0 ? <p>No feedback was recorded. You can finish without sending anything.</p> : <label>Consolidated change request<textarea value={dispatch} maxLength={maxDispatch} onChange={event => setDispatch(event.target.value)} />{dispatch.length >= maxDispatch && <span role="status">{maxDispatch.toLocaleString()} character limit reached</span>}</label>}{error && <p ref={dispatchError} className="review-tour-error" role="alert" tabIndex={-1}>{error}</p>}{sent && <p className="review-tour-sent" role="status">Change request sent to the implementation agent.</p>}<footer className="review-tour-actions"><button type="button" onClick={() => setState('tour')}>Back to tour</button><span />{feedbackTotal > 0 && !sent && <button type="button" disabled={dispatching || dispatch.trim() === '' || dispatch.length > maxDispatch} onClick={() => void send()}>{dispatching ? 'Sending…' : 'Send change request'}</button>}<button type="button" onClick={minimize}>Finish</button></footer></main>}
     </div>
     <div className="review-tour-filters" role="group" aria-label="Tour content"><span>{tour?.base ? `Compared with ${tour.base}` : scopeLabel}</span><label><input type="checkbox" checked={includeTests} onChange={event => setIncludeTests(event.target.checked)} />Tests</label><label><input type="checkbox" checked={includeDocs} onChange={event => setIncludeDocs(event.target.checked)} />Docs</label></div>

@@ -1398,7 +1398,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     try {
       const started = await reviewJobs.start(owner, (request.params as { id: string }).id, input, requestId);
       // return empty selections without a job
-      if (started.kind === 'empty') return reply.code(200).send({ status: 'empty', snapshot: started.snapshot });
+      if (started.kind === 'empty') return reply.code(200).send({ status: 'empty', comparison: started.comparison });
       return reply.code(202).send({ status: 'pending', job: started.job });
     } catch (error) { return reviewFailure(reply, error); }
   });
@@ -1409,7 +1409,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (input === undefined) return reply.code(400).send({ status: 'error', error: { code: 'invalid_request', retryable: false } });
     try {
       const current = await reviewTours.fingerprint((request.params as { id: string }).id, input);
-      return reply.code(200).send({ status: current.empty ? 'empty' : 'snapshot', snapshot: current.snapshot });
+      return reply.code(200).send({ status: current.empty ? 'empty' : 'comparison', comparison: current.comparison });
     } catch (error) { return reviewFailure(reply, error); }
   });
   app.get('/api/review-tour/jobs/:jobId', async (request, reply) => {
@@ -1420,7 +1420,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // map every frozen job state
     if (job.state.kind === 'pending') return reply.code(202).send({ status: 'pending', job: { id: job.id, expiresAt: new Date(job.expiresAt).toISOString(), retryAfterMs: 1_000 } });
     if (job.state.kind === 'ready') return reply.code(200).send({ status: 'ready', tour: job.state.tour });
-    if (job.state.kind === 'empty') return reply.code(200).send({ status: 'empty', snapshot: job.state.snapshot });
+    if (job.state.kind === 'empty') return reply.code(200).send({ status: 'empty', comparison: job.state.comparison });
     if (job.state.kind === 'gone') return reply.code(410).send({ status: 'error', jobId: job.id, error: { code: job.state.code, retryable: true } });
     return reply.code(reviewStatus(job.state.code)).send({ status: 'error', jobId: job.id, error: { code: job.state.code, retryable: job.state.retryable } });
   });

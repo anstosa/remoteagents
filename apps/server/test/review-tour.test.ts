@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { classifyReviewPath } from '../src/git/change-classification.js';
-import { parseGeneratedReviewTour, parseReviewRequestId, parseReviewTourInput, prohibitedNarration, type ReviewSnapshot, type ReviewTour } from '../src/review-tour/contracts.js';
+import { parseGeneratedReviewTour, parseReviewRequestId, parseReviewTourInput, prohibitedNarration, type ReviewComparison, type ReviewTour } from '../src/review-tour/contracts.js';
 import { ReviewTourJobs } from '../src/review-tour/jobs.js';
 import type { PreparedReviewTour, ReviewTourService } from '../src/review-tour/service.js';
 
 const implementationChange = { id: 'chg_12345678', file: 'src/feature.ts', category: 'implementation' as const, kind: 'hunk' as const, patch: '@@ -1 +1 @@\n-old\n+new' };
 
-// build one stable prepared snapshot
+// build one stable prepared Comparison
 function prepared(worktreeId = 'cora'): PreparedReviewTour {
-  const snapshot: ReviewSnapshot = { agentId: `agent-${worktreeId}`, worktreeId, workspace: `/worktrees/${worktreeId}`, branch: 'feature/review-tour', scope: 'working', base: 'HEAD', includeTests: false, includeDocs: false, fingerprint: `fingerprint-${worktreeId}`, changes: [implementationChange] };
-  return { snapshot, resolved: { workspace: snapshot.workspace, agent: { id: snapshot.agentId, paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: snapshot.workspace, branch: snapshot.branch, title: 'Ready' }, worktree: { id: worktreeId, label: worktreeId, path: snapshot.workspace, identity: snapshot.workspace, available: true, pinned: false } } };
+  const comparison: ReviewComparison = { agentId: `agent-${worktreeId}`, worktreeId, workspace: `/worktrees/${worktreeId}`, branch: 'feature/review-tour', scope: 'working', base: 'HEAD', includeTests: false, includeDocs: false, fingerprint: `fingerprint-${worktreeId}`, changes: [implementationChange] };
+  return { comparison, resolved: { workspace: comparison.workspace, agent: { id: comparison.agentId, paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: comparison.workspace, branch: comparison.branch, title: 'Ready' }, worktree: { id: worktreeId, label: worktreeId, path: comparison.workspace, identity: comparison.workspace, available: true, pinned: false } } };
 }
 
 // complete a deferred operation
@@ -61,7 +61,7 @@ describe('review tour jobs', () => {
       // require a pending job id
       if (started.kind !== 'pending') throw new Error('expected pending job');
       expect(jobs.get('owner-b', started.job.id)).toBeUndefined();
-      result.resolve({ title: 'Tour', overview: 'Overview', steps: [{ id: 'step', title: 'Step', explanation: 'Explanation', changeIds: [implementationChange.id] }], ...prepared().snapshot });
+      result.resolve({ title: 'Tour', overview: 'Overview', steps: [{ id: 'step', title: 'Step', explanation: 'Explanation', changeIds: [implementationChange.id] }], ...prepared().comparison });
       await viWait();
       expect(jobs.get('owner-a', started.job.id)?.state.kind).toBe('ready');
       expect(saved).toMatchObject([{ worktreeId: 'cora', branch: 'feature/review-tour' }]);

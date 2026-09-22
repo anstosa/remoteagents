@@ -39,9 +39,11 @@ async function fulfillReviewConsole(route: Route, pathname: string): Promise<boo
 test('guides a human through active-scope implementation changes and sends consolidated feedback', async ({ page }) => {
   const jobRequests: Array<{ scope: string; includeTests: boolean; includeDocs: boolean }> = [];
   const prompts: string[] = [];
-  // create a vertically overflowing diff fixture
-  const longPatch = ['@@ -1,2 +1,122 @@', '-old route', `+new route ${'wide-content-'.repeat(40)}`, ...Array.from({ length: 120 }, (_, index) => ` context line ${index + 1}`)].join('\n');
-  let snapshotFingerprint = 'snapshot-1234567890';
+  // create a vertically overflowing, horizontally wide diff fixture (a full git patch so the diff
+  // library parses it into a rendered file, the way the server's captured patches arrive)
+  const longBody = ['@@ -1,121 +1,121 @@', '-old route', `+new route ${'wide-content-'.repeat(40)}`, ...Array.from({ length: 120 }, (_, index) => ` context line ${index + 1}`)].join('\n');
+  const longPatch = `diff --git a/src/route.ts b/src/route.ts\nindex 1111111..2222222 100644\n--- a/src/route.ts\n+++ b/src/route.ts\n${longBody}\n`;
+  let comparisonFingerprint = 'comparison-1234567890';
   let releaseGeneration = false;
   let fingerprintRequests = 0;
   let latestReadyJob = 0;
@@ -71,12 +73,12 @@ test('guides a human through active-scope implementation changes and sends conso
     if (jobMatch !== null && request.method() === 'GET') {
       if (!releaseGeneration) return route.fulfill({ status: 202, json: { status: 'pending' } });
       latestReadyJob = Math.max(latestReadyJob, Number(jobMatch[1]));
-      return route.fulfill({ json: { status: 'ready', tour: { title: 'Request routing tour', overview: 'Follow the request from the route into the service.', scope: 'pr', base: 'origin/main', includeTests: jobRequests.at(-1)?.includeTests ?? false, includeDocs: jobRequests.at(-1)?.includeDocs ?? false, fingerprint: snapshotFingerprint, changes: [{ id: 'chg_route0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', patch: longPatch }, { id: 'chg_service01', file: 'src/service.ts', category: 'implementation', kind: 'hunk', patch: '@@ -4 +4 @@\n-old service\n+new service' }], steps: [{ id: 'route', title: 'Accept the request', explanation: 'The route validates input before delegating.', changeIds: ['chg_route0001'] }, { id: 'service', title: 'Apply the operation', explanation: 'The service performs the requested state transition.', changeIds: ['chg_service01'] }] } } });
+      return route.fulfill({ json: { status: 'ready', tour: { title: 'Request routing tour', overview: 'Follow the request from the route into the service.', scope: 'pr', base: 'origin/main', includeTests: jobRequests.at(-1)?.includeTests ?? false, includeDocs: jobRequests.at(-1)?.includeDocs ?? false, fingerprint: comparisonFingerprint, changes: [{ id: 'chg_route0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', patch: longPatch }, { id: 'chg_service01', file: 'src/service.ts', category: 'implementation', kind: 'hunk', patch: 'diff --git a/src/service.ts b/src/service.ts\nindex 3333333..4444444 100644\n--- a/src/service.ts\n+++ b/src/service.ts\n@@ -4 +4 @@\n-old service\n+new service\n' }], steps: [{ id: 'route', title: 'Accept the request', explanation: 'The route validates input before delegating.', changeIds: ['chg_route0001'] }, { id: 'service', title: 'Apply the operation', explanation: 'The service performs the requested state transition.', changeIds: ['chg_service01'] }] } } });
     }
     if (/^\/api\/review-tour\/jobs\/job-\d+$/u.test(url.pathname) && request.method() === 'DELETE') return route.fulfill({ status: 204 });
     if (url.pathname === '/api/agents/agent-1/review-tour/fingerprint') {
       fingerprintRequests += 1;
-      return route.fulfill({ json: { status: 'snapshot', snapshot: { scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: snapshotFingerprint } } });
+      return route.fulfill({ json: { status: 'comparison', comparison: { scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: comparisonFingerprint } } });
     }
     // capture the final batch request
     if (url.pathname === '/api/agents/agent-1/prompt' && request.method() === 'POST') {
@@ -146,18 +148,13 @@ test('guides a human through active-scope implementation changes and sends conso
   expect(Math.abs(desktopColumns.files.right - desktopColumns.viewport)).toBeLessThanOrEqual(1);
   expect(desktopColumns.files.width).toBeGreaterThan(desktopColumns.narration.width);
   const diffPane = dialog.getByLabel('Relevant changes');
-  await expect.poll(async () => await diffPane.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
-  await expect.poll(async () => await diffPane.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-  const widePatch = diffPane.locator('pre').first();
-  await expect.poll(async () => await widePatch.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
-  await widePatch.evaluate(element => { element.scrollLeft = element.scrollWidth; });
-  await expect.poll(async () => await widePatch.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
-  await diffPane.evaluate(element => { element.scrollTop = element.scrollHeight; });
-  await expect.poll(async () => await diffPane.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
-  await expect(diffPane.locator('.review-patch-line.hunk').first()).toBeVisible();
-  await expect(diffPane.locator('.review-patch-line.addition').first()).toBeVisible();
-  await expect(diffPane.locator('.review-patch-line.deletion').first()).toBeVisible();
-  expect(await diffPane.locator('.review-patch-line.addition').first().evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
+  // the step's Change renders through the diff library (a shadow-DOM diffs-container), headed by the changed file
+  await expect(diffPane.locator('diffs-container [data-title]')).toContainText('route.ts');
+  // both sides of the change show as real diff lines (the library strips the +/- prefix)
+  await expect(diffPane.getByText('old route')).toBeVisible();
+  await expect(diffPane.getByText(/new route wide-content/u)).toBeVisible();
+  // the wide diff line stays inside the panel — the page never gains a horizontal scrollbar
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(jobRequests).toEqual([{ scope: 'pr', includeTests: false, includeDocs: false }]);
   const nextButton = dialog.getByRole('button', { name: 'Next' });
   const nextColors = await nextButton.evaluate(button => {
@@ -195,7 +192,7 @@ test('guides a human through active-scope implementation changes and sends conso
   await expect(reviewButton).toHaveAttribute('aria-busy', 'false');
 
   await dialog.getByLabel('Feedback for this change').fill('Keep the route error copy aligned with the existing API.');
-  snapshotFingerprint = 'snapshot-updated-567890';
+  comparisonFingerprint = 'comparison-updated-567890';
   const previousFingerprintRequests = fingerprintRequests;
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect.poll(() => fingerprintRequests).toBeGreaterThan(previousFingerprintRequests);
@@ -253,6 +250,42 @@ test('guides a human through active-scope implementation changes and sends conso
   await expect(dialog.getByRole('heading', { name: 'Review complete' })).toBeVisible();
   expect(jobRequests).toHaveLength(cachedRequests);
   await dialog.getByRole('button', { name: 'Minimize guided review' }).click();
+});
+
+// verify a change whose patch is not a renderable diff falls back to a placeholder, not an empty diff
+test('renders a placeholder for a binary or unparseable change', async ({ page }) => {
+  // a git binary-file notice carries no unified hunk, so the diff library recovers no file and the
+  // tour must show a labelled placeholder instead of a blank diff pane
+  const tour = { title: 'Asset refresh tour', overview: 'Review the replaced asset.', scope: 'working', base: 'HEAD', includeTests: false, includeDocs: false, fingerprint: 'binary-fingerprint-123456', changes: [{ id: 'chg_logo00001', file: 'assets/logo.png', category: 'implementation', kind: 'binary', patch: 'Binary files a/assets/logo.png and b/assets/logo.png differ\n' }], steps: [{ id: 'logo', title: 'Replace the logo', explanation: 'The logo asset was swapped for the new brand mark.', changeIds: ['chg_logo00001'] }] };
+  await installAgentWebSocket(page);
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    // serve the review console fixture
+    if (await fulfillReviewConsole(route, url.pathname)) return;
+    // return the ready binary-change tour
+    if (url.pathname === '/api/agents/agent-1/review-tour/jobs' && request.method() === 'POST') return route.fulfill({ status: 202, json: { status: 'pending', job: { id: 'job-binary', expiresAt: '2099-08-24T23:00:00.000Z', retryAfterMs: 10 } } });
+    if (url.pathname === '/api/review-tour/jobs/job-binary' && request.method() === 'GET') return route.fulfill({ json: { status: 'ready', tour } });
+    if (url.pathname === '/api/review-tour/jobs/job-binary' && request.method() === 'DELETE') return route.fulfill({ status: 204 });
+    // keep the loaded tour fresh
+    if (url.pathname === '/api/agents/agent-1/review-tour/fingerprint') return route.fulfill({ json: { status: 'comparison', comparison: { scope: 'working', base: 'HEAD', includeTests: false, includeDocs: false, fingerprint: tour.fingerprint } } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: /Git status: feature\/review-tour/ }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Working' }).click();
+  await page.getByRole('region', { name: 'Changed files' }).getByRole('button', { name: 'Review', exact: true }).click();
+  const reviewButton = page.locator('.review-tour-toggle');
+  await expect(reviewButton).toHaveAttribute('aria-busy', 'false');
+  await reviewButton.click();
+  const dialog = page.getByRole('dialog', { name: 'Asset refresh tour' });
+  await expect(dialog).toBeVisible();
+  const diffPane = dialog.getByLabel('Relevant changes');
+  // the unrenderable change shows as a labelled placeholder, and nothing renders through the library
+  await expect(diffPane.locator('.review-tour-diff-placeholders')).toContainText('assets/logo.png');
+  await expect(diffPane.getByText('Binary file')).toBeVisible();
+  await expect(diffPane.locator('diffs-container')).toHaveCount(0);
 });
 
 // verify actionable generator authentication feedback
@@ -452,7 +485,7 @@ test('restores the worktree review after reload and dismisses it when stale', as
     // restore the durable artifact
     if (url.pathname === '/api/worktrees/cora/review-tour' && request.method() === 'GET') return route.fulfill({ json: { status: 'ready', review: { worktreeId: 'cora', branch: 'feature/review-tour', savedAt: '2026-08-08T18:00:00.000Z', tour } } });
     if (url.pathname === '/api/worktrees/cora/review-tour' && request.method() === 'DELETE') { reviewStored = false; return route.fulfill({ status: 204 }); }
-    if (url.pathname === '/api/agents/agent-1/review-tour/fingerprint') return route.fulfill({ json: { status: 'snapshot', snapshot: { scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: 'newer-fingerprint-123456' } } });
+    if (url.pathname === '/api/agents/agent-1/review-tour/fingerprint') return route.fulfill({ json: { status: 'comparison', comparison: { scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: 'newer-fingerprint-123456' } } });
     if (url.pathname === '/api/agents/agent-1/review-tour/jobs') { generationRequests += 1; return route.fulfill({ status: 500 }); }
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });

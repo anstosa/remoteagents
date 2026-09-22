@@ -25,7 +25,7 @@ export type ReviewChange = {
   newLines?: number;
   patch: string;
 };
-export type ReviewSnapshot = {
+export type ReviewComparison = {
   agentId: string;
   worktreeId: string;
   workspace: string;
@@ -39,13 +39,13 @@ export type ReviewSnapshot = {
 };
 export type GeneratedReviewStep = { id: string; title: string; explanation: string; changeIds: string[] };
 export type GeneratedReviewTour = { title: string; overview: string; steps: GeneratedReviewStep[] };
-export type ReviewTour = GeneratedReviewTour & Pick<ReviewSnapshot, 'scope' | 'base' | 'includeTests' | 'includeDocs' | 'fingerprint' | 'changes'>;
+export type ReviewTour = GeneratedReviewTour & Pick<ReviewComparison, 'scope' | 'base' | 'includeTests' | 'includeDocs' | 'fingerprint' | 'changes'>;
 export type ReviewTourInput = { scope: ReviewScope; includeTests: boolean; includeDocs: boolean };
 export type ReviewTourCapability = { available: true } | { available: false; reason: 'generator_unavailable' | 'unsupported_cli' | 'configuration_invalid' | 'authentication_required' };
 export type StoredReviewTour = { worktreeId: string; branch: string; savedAt: string; tour: ReviewTour };
 export type StoredReviewTourSummary = Pick<StoredReviewTour, 'worktreeId' | 'branch' | 'savedAt'> & Pick<ReviewTour, 'title' | 'scope' | 'includeTests' | 'includeDocs' | 'fingerprint'>;
 export type ReviewErrorCode = 'invalid_request' | 'capability_unavailable' | 'authentication_required' | 'target_unavailable' | 'configured_worktree_required' | 'scope_unavailable' | 'conflicted_unavailable' | 'too_large' | 'generation_failed' | 'malformed_result' | 'generation_rejected' | 'timed_out' | 'cancelled' | 'stale_during_generation';
-export type PublicReviewSnapshot = Pick<ReviewSnapshot, 'scope' | 'base' | 'fingerprint' | 'includeTests' | 'includeDocs'>;
+export type PublicReviewComparison = Pick<ReviewComparison, 'scope' | 'base' | 'fingerprint' | 'includeTests' | 'includeDocs'>;
 
 export class ReviewTourError extends Error {
   // retain typed review failures
@@ -126,9 +126,9 @@ export function parseReviewTour(value: unknown): ReviewTour | undefined {
   return generated === undefined ? undefined : { ...generated, scope: tour.scope, base: tour.base, includeTests: tour.includeTests, includeDocs: tour.includeDocs, fingerprint: tour.fingerprint, changes: tour.changes };
 }
 
-// expose only snapshot identity fields
-export function publicReviewSnapshot(snapshot: ReviewSnapshot): PublicReviewSnapshot {
-  return { scope: snapshot.scope, base: snapshot.base, fingerprint: snapshot.fingerprint, includeTests: snapshot.includeTests, includeDocs: snapshot.includeDocs };
+// expose only Comparison identity fields
+export function publicReviewComparison(comparison: ReviewComparison): PublicReviewComparison {
+  return { scope: comparison.scope, base: comparison.base, fingerprint: comparison.fingerprint, includeTests: comparison.includeTests, includeDocs: comparison.includeDocs };
 }
 
 export const generatedReviewTourJsonSchema = {

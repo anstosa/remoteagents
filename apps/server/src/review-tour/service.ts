@@ -1,10 +1,10 @@
 import type { DiscoveryService } from '../discovery/service.js';
 import { resolveConfiguredWorkspace, sameConfiguredWorkspace, type ResolvedWorkspace } from '../workspaces/resolver.js';
-import { captureReviewSnapshot } from './diff.js';
+import { captureReviewComparison } from './diff.js';
 import type { ReviewTourGenerator } from './generator.js';
-import { publicReviewSnapshot, ReviewTourError, type PublicReviewSnapshot, type ReviewSnapshot, type ReviewTour, type ReviewTourCapability, type ReviewTourInput } from './contracts.js';
+import { publicReviewComparison, ReviewTourError, type PublicReviewComparison, type ReviewComparison, type ReviewTour, type ReviewTourCapability, type ReviewTourInput } from './contracts.js';
 
-export type PreparedReviewTour = { resolved: ResolvedWorkspace; snapshot: ReviewSnapshot };
+export type PreparedReviewTour = { resolved: ResolvedWorkspace; comparison: ReviewComparison };
 
 export class ReviewTourService {
   constructor(private readonly discovery: DiscoveryService, private readonly generator: ReviewTourGenerator) {}
@@ -23,34 +23,34 @@ export class ReviewTourService {
     const resolved = await resolveConfiguredWorkspace(this.discovery, agentId);
     // require a configured active agent
     if (resolved === undefined) throw new ReviewTourError('configured_worktree_required', false);
-    const snapshot = await captureReviewSnapshot(resolved, input);
+    const comparison = await captureReviewComparison(resolved, input);
     // reject identity changes during capture
     if (!await sameConfiguredWorkspace(this.discovery, agentId, resolved)) throw new ReviewTourError('target_unavailable', true);
-    return { resolved, snapshot };
+    return { resolved, comparison };
   }
 
   // generate and revalidate one complete tour
   async generate(prepared: PreparedReviewTour, signal: AbortSignal): Promise<ReviewTour> {
-    const generated = await this.generator.generate(prepared.snapshot, signal);
+    const generated = await this.generator.generate(prepared.comparison, signal);
     // preserve caller cancellation
     if (signal.aborted) throw new ReviewTourError('cancelled', true);
-    const current = await captureReviewSnapshot(prepared.resolved, { scope: prepared.snapshot.scope, includeTests: prepared.snapshot.includeTests, includeDocs: prepared.snapshot.includeDocs });
+    const current = await captureReviewComparison(prepared.resolved, { scope: prepared.comparison.scope, includeTests: prepared.comparison.includeTests, includeDocs: prepared.comparison.includeDocs });
     // reject stale narration before publication
-    if (current.fingerprint !== prepared.snapshot.fingerprint || current.branch !== prepared.snapshot.branch) throw new ReviewTourError('stale_during_generation', true);
+    if (current.fingerprint !== prepared.comparison.fingerprint || current.branch !== prepared.comparison.branch) throw new ReviewTourError('stale_during_generation', true);
     // reject agent replacement before publication
-    if (!await sameConfiguredWorkspace(this.discovery, prepared.snapshot.agentId, prepared.resolved)) throw new ReviewTourError('target_unavailable', true);
-    return { ...generated, scope: prepared.snapshot.scope, base: prepared.snapshot.base, includeTests: prepared.snapshot.includeTests, includeDocs: prepared.snapshot.includeDocs, fingerprint: prepared.snapshot.fingerprint, changes: prepared.snapshot.changes };
+    if (!await sameConfiguredWorkspace(this.discovery, prepared.comparison.agentId, prepared.resolved)) throw new ReviewTourError('target_unavailable', true);
+    return { ...generated, scope: prepared.comparison.scope, base: prepared.comparison.base, includeTests: prepared.comparison.includeTests, includeDocs: prepared.comparison.includeDocs, fingerprint: prepared.comparison.fingerprint, changes: prepared.comparison.changes };
   }
 
   // recompute current source identity without generation
-  async fingerprint(agentId: string, input: ReviewTourInput): Promise<{ snapshot: PublicReviewSnapshot; empty: boolean }> {
+  async fingerprint(agentId: string, input: ReviewTourInput): Promise<{ comparison: PublicReviewComparison; empty: boolean }> {
     const target = await this.discovery.target(agentId);
     // distinguish missing and unconfigured targets
     if (target === undefined) throw new ReviewTourError('target_unavailable', true);
     const resolved = await resolveConfiguredWorkspace(this.discovery, agentId);
     // require a configured active agent
     if (resolved === undefined) throw new ReviewTourError('configured_worktree_required', false);
-    const snapshot = await captureReviewSnapshot(resolved, input);
-    return { snapshot: publicReviewSnapshot(snapshot), empty: snapshot.changes.length === 0 };
+    const comparison = await captureReviewComparison(resolved, input);
+    return { comparison: publicReviewComparison(comparison), empty: comparison.changes.length === 0 };
   }
 }

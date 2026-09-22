@@ -6,14 +6,14 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Readable } from 'node:stream';
 import { run, safeEnv } from '../tmux/command.js';
-import { generatedReviewTourJsonSchema, MAX_REVIEW_GENERATED_BYTES, parseGeneratedReviewTourResult, REVIEW_GENERATION_TIMEOUT_MS, ReviewTourError, type GeneratedReviewTour, type ReviewSnapshot, type ReviewTourCapability } from './contracts.js';
+import { generatedReviewTourJsonSchema, MAX_REVIEW_GENERATED_BYTES, parseGeneratedReviewTourResult, REVIEW_GENERATION_TIMEOUT_MS, ReviewTourError, type GeneratedReviewTour, type ReviewComparison, type ReviewTourCapability } from './contracts.js';
 
 const MAX_REVIEW_DIAGNOSTIC_CHARACTERS = 16_384;
 const authenticationDiagnostic = /(?:^|\n)(?:\d{4}-\d{2}-\d{2}T\S+\s+)?ERROR(?:\s+codex_login::auth::manager)?:\s*(?:Failed to refresh token|Your access token could not be refreshed|Provided authentication token is expired)\b/imu;
 
 export interface ReviewTourGenerator {
   capability(): Promise<ReviewTourCapability>;
-  generate(snapshot: ReviewSnapshot, signal: AbortSignal): Promise<GeneratedReviewTour>;
+  generate(comparison: ReviewComparison, signal: AbortSignal): Promise<GeneratedReviewTour>;
 }
 
 // terminate the full generation tree
@@ -46,15 +46,15 @@ function processFailure(diagnostics: string): ReviewTourError {
 }
 
 // build explanation-only instructions
-function generationPrompt(snapshot: ReviewSnapshot): string {
-  const changes = snapshot.changes.map(change => ({ id: change.id, file: change.file, originalFile: change.originalFile, category: change.category, kind: change.kind, patch: change.patch }));
+function generationPrompt(comparison: ReviewComparison): string {
+  const changes = comparison.changes.map(change => ({ id: change.id, file: change.file, originalFile: change.originalFile, category: change.category, kind: change.kind, patch: change.patch }));
   return [
     'Create a narrated implementation-change tour for a human reviewer.',
     'Explain mechanism, intent, dependencies, and the order in which the implementation fits together.',
     'Group related change IDs across files into logical steps. Assign every change ID exactly once.',
     'Do not perform code review. Do not produce findings, warnings, issues, recommendations, severity, verdicts, approval, rejection, patches, fixes, or commands.',
     'Use only the provided change IDs in changeIds. Return JSON matching the supplied schema.',
-    `Scope: ${snapshot.scope}; base: ${snapshot.base}; tests included: ${snapshot.includeTests}; docs included: ${snapshot.includeDocs}.`,
+    `Scope: ${comparison.scope}; base: ${comparison.base}; tests included: ${comparison.includeTests}; docs included: ${comparison.includeDocs}.`,
     JSON.stringify({ changes })
   ].join('\n\n');
 }
@@ -89,7 +89,7 @@ export class CodexExecReviewTourGenerator implements ReviewTourGenerator {
   }
 
   // run one ephemeral structured generation
-  async generate(snapshot: ReviewSnapshot, signal: AbortSignal): Promise<GeneratedReviewTour> {
+  async generate(comparison: ReviewComparison, signal: AbortSignal): Promise<GeneratedReviewTour> {
     const capability = await this.capability();
     // fail closed when startup checks fail
     if (!capability.available) throw new ReviewTourError('capability_unavailable', capability.reason === 'generator_unavailable');
@@ -98,7 +98,7 @@ export class CodexExecReviewTourGenerator implements ReviewTourGenerator {
     const schemaPath = join(root, 'schema.json');
     const outputPath = join(root, 'result.json');
     await writeFile(schemaPath, JSON.stringify(generatedReviewTourJsonSchema), { mode: 0o600 });
-    const args = ['exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--sandbox', 'read-only', '--output-schema', schemaPath, '--output-last-message', outputPath, '--color', 'never', '-C', snapshot.workspace, '-'];
+    const args = ['exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--sandbox', 'read-only', '--output-schema', schemaPath, '--output-last-message', outputPath, '--color', 'never', '-C', comparison.workspace, '-'];
     const child = spawn(this.binary, args, { shell: false, detached: true, env: safeEnv(), stdio: ['pipe', 'ignore', 'pipe'] });
     const diagnostics = collectDiagnostics(child.stderr);
     const timedOut = new AbortController();
@@ -113,7 +113,7 @@ export class CodexExecReviewTourGenerator implements ReviewTourGenerator {
     try {
       // reject already-cancelled requests
       if (signal.aborted) throw new ReviewTourError('cancelled', true);
-      child.stdin.end(generationPrompt(snapshot));
+      child.stdin.end(generationPrompt(comparison));
       const code = await new Promise<number>((resolve, reject) => {
         // surface spawn failures
         child.once('error', reject);
@@ -129,7 +129,7 @@ export class CodexExecReviewTourGenerator implements ReviewTourGenerator {
       // reject oversized output
       if (raw.length > MAX_REVIEW_GENERATED_BYTES) throw new ReviewTourError('malformed_result', true);
       const parsed = JSON.parse(raw.toString('utf8')) as unknown;
-      const result = parseGeneratedReviewTourResult(parsed, snapshot.changes);
+      const result = parseGeneratedReviewTourResult(parsed, comparison.changes);
       // reject invalid assignments or narration
       if (!result.ok) throw new ReviewTourError(result.code, true);
       return result.tour;
