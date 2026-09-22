@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { installPaneMock, seedPaneSize, pushBytes, pushExit, paneInputText } from './pane-stream-mock.js';
+import { installPaneMock, seedPaneSize, pushBytes, pushExit, paneAckTotal, paneInputText } from './pane-stream-mock.js';
 
 // Terminal panels (First-class terminal panes, Console shells): the composer's terminal icon
 // picker lists a Worktree's panes, opening one adds a resizable column beside the agent, a
@@ -8,6 +8,8 @@ import { installPaneMock, seedPaneSize, pushBytes, pushExit, paneInputText } fro
 // live panels after a reload, and an agentless Worktree can open a Terminal too.
 
 type Pane = { paneId: string; session: string; window?: string; role?: string; name?: string; command: string; path: string; title: string; agent: boolean; busy?: boolean };
+// retain created note content across mocked requests
+type Note = { id: string; text: string; title?: string };
 
 const agentPanes: Pane[] = [
   { paneId: '%1', session: '$1', window: '@0', command: 'codex', path: '/worktrees/cora', title: '', agent: true },
@@ -21,7 +23,7 @@ const agentPanes: Pane[] = [
 // A live-mutable pane set + prompt capture, so a spec can change what the panes API returns
 // (a reload dropping a gone pane, a New shell appearing) between navigations. A DELETE prunes
 // the ended pane and records its query, a PATCH renames one, mirroring the real panes API.
-const routeApi = (page: Page, options: { panes: () => Pane[]; onShell?: () => string; prompts?: string[]; deleted?: string[]; deleteStatus?: (paneId: string, confirmed: boolean) => number | { status: number; busy?: boolean }; renamed?: { paneId: string; name: string }[] } = { panes: () => agentPanes }) =>
+const routeApi = (page: Page, options: { panes: () => Pane[]; onShell?: () => string; prompts?: string[]; deleted?: string[]; deleteStatus?: (paneId: string, confirmed: boolean) => number | { status: number; busy?: boolean }; renamed?: { paneId: string; name: string }[]; notes?: Note[]; savedNotes?: string[]; noteCreateStatus?: () => number } = { panes: () => agentPanes }) =>
   page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -31,7 +33,29 @@ const routeApi = (page: Page, options: { panes: () => Pane[]; onShell?: () => st
     if (path === '/api/push/public-key') return route.fulfill({ json: {} });
     if (path === '/api/agents/agent-1/tickets' || path === '/api/worktrees/cora/tickets') return route.fulfill({ json: { ticket: 'pane-ticket' } });
     if (path === '/api/agents/agent-1/saved-prompts' || path === '/api/agents/agent-1/prompt-history' || path === '/api/agents/agent-1/queued-prompts') return route.fulfill({ json: { prompts: [] } });
-    if (path === '/api/worktrees/cora/notes') return route.fulfill({ json: { notes: [] } });
+    // list this scenario's persisted notes
+    if (path === '/api/worktrees/cora/notes' && request.method() === 'GET') return route.fulfill({ json: { notes: options.notes ?? [] } });
+    // create a note through the shared persistence boundary
+    if (path === '/api/worktrees/cora/notes' && request.method() === 'POST') {
+      const status = options.noteCreateStatus?.() ?? 201;
+      // retain selection after a rejected note create
+      if (status < 200 || status >= 300) return route.fulfill({ status, json: { error: 'create failed' } });
+      const payload = request.postDataJSON() as { title?: string } | null;
+      const note = { id: `note-terminal-${(options.notes?.length ?? 0) + 1}`, text: '', ...(payload?.title === undefined ? {} : { title: payload.title }) };
+      options.notes?.unshift(note);
+      return route.fulfill({ status, json: note });
+    }
+    const noteMatch = /^\/api\/worktrees\/cora\/notes\/([^/]+)$/u.exec(path);
+    // persist editor autosaves for created notes
+    if (noteMatch && request.method() === 'PUT') {
+      const text = (request.postDataJSON() as { text: string }).text;
+      const note = options.notes?.find(candidate => candidate.id === noteMatch[1]);
+      // reject saves for notes outside this scenario
+      if (note === undefined) return route.fulfill({ status: 404, json: { error: 'missing note' } });
+      note.text = text;
+      options.savedNotes?.push(text);
+      return route.fulfill({ json: note });
+    }
     if (path === '/api/worktrees/cora/panes' && request.method() === 'GET') return route.fulfill({ json: { panes: options.panes() } });
     if (path === '/api/worktrees/cora/shells' && request.method() === 'POST') return route.fulfill({ status: 201, json: { paneId: options.onShell ? options.onShell() : '%9' } });
     if (/^\/api\/worktrees\/cora\/panes\/%25\d+$/u.test(path) && request.method() === 'PATCH') {
@@ -60,6 +84,32 @@ const routeApi = (page: Page, options: { panes: () => Pane[]; onShell?: () => st
   });
 
 const openPicker = (page: Page) => page.getByRole('button', { name: 'Open a terminal' }).click();
+
+// drag across live terminal text
+const selectTerminalText = async (page: Page, terminal: Locator, text: string) => {
+  const row = terminal.locator('.xterm-rows > div', { hasText: text });
+  await expect(row).toBeVisible();
+  await terminal.locator('.xterm-helper-textarea').focus();
+  const bounds = await row.boundingBox();
+  expect(bounds).not.toBeNull();
+  const y = bounds!.y + bounds!.height / 2;
+  await page.mouse.move(bounds!.x + 1, y);
+  await page.mouse.down();
+  await page.mouse.move(bounds!.x + Math.min(100, bounds!.width / 3), y, { steps: 5 });
+  await page.mouse.up();
+  return { row, bounds: bounds! };
+};
+
+// create a phone-native browser range
+const selectTerminalNativeRange = (row: Locator, start: number, end: number) => row.evaluate((element, offsets) => {
+  const range = document.createRange();
+  range.setStart(element.firstChild!, offsets.start);
+  range.setEnd(element.firstChild!, offsets.end);
+  const selection = window.getSelection()!;
+  selection.removeAllRanges();
+  selection.addRange(range);
+  document.dispatchEvent(new Event('selectionchange'));
+}, { start, end });
 
 // measure parent and panel together after responsive footer changes settle
 const expectFullSplitHeight = async (panel: Locator) => {
@@ -237,6 +287,412 @@ test('a focused Terminal takes typed keys while the composer still submits to th
   await composer.fill('deploy please');
   await composer.press('Enter');
   await expect.poll(() => prompts).toContain('deploy please');
+});
+
+// cover desktop selection ownership, copy feedback and ordered release
+test('a Terminal selection freezes only its pane and keeps keyboard ownership local', async ({ context, page }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await installPaneMock(page);
+  await routeApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  await pushBytes(page, '%5', `${'\r\n'.repeat(8)}Freeze selected terminal output`);
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /vim/u }).click();
+  await seedPaneSize(page, '%6', 80, 24);
+  await pushBytes(page, '%6', `${'\r\n'.repeat(8)}Independent terminal output`);
+
+  const build = page.locator('.terminal-pane[data-panel-key="%5"]');
+  const vim = page.locator('.terminal-pane[data-panel-key="%6"]');
+  const selection = await selectTerminalText(page, build, 'Freeze selected terminal output');
+  const toolbar = build.getByRole('toolbar', { name: 'Selection actions for terminal build' });
+  await expect(build).toHaveClass(/\bfocused\b/u);
+  await expect(build).toHaveClass(/\bselection-active\b/u);
+  await expect(vim).not.toHaveClass(/\bselection-active\b/u);
+  await expect(toolbar).toBeVisible();
+  await expect(toolbar.getByRole('button', { name: 'Copy', exact: true })).toBeVisible();
+
+  // selection gray replaces the focused sky ring
+  const colors = await build.evaluate(element => {
+    const probe = document.createElement('span');
+    document.body.append(probe);
+    probe.style.color = 'var(--subtext-0)';
+    const gray = getComputedStyle(probe).color;
+    probe.style.color = 'var(--sky)';
+    const sky = getComputedStyle(probe).color;
+    probe.remove();
+    return { border: getComputedStyle(element, '::after').borderTopColor, gray, sky };
+  });
+  expect(colors.border).toBe(colors.gray);
+  expect(colors.border).not.toBe(colors.sky);
+
+  const buildText = await selection.row.textContent();
+  const buildAck = await paneAckTotal(page, '%5');
+  const vimAck = await paneAckTotal(page, '%6');
+  await pushBytes(page, '%5', '\r\x1b[2Kqueued build output');
+  await pushBytes(page, '%6', '\r\x1b[2Klive vim output');
+  await page.waitForTimeout(100);
+  await expect(selection.row).toHaveText(buildText!);
+  expect(await paneAckTotal(page, '%5')).toBe(buildAck);
+  await expect(vim.locator('.xterm-rows > div', { hasText: 'live vim output' })).toBeVisible();
+  await expect.poll(() => paneAckTotal(page, '%6')).toBeGreaterThan(vimAck);
+
+  const highlight = build.locator('.xterm-selection > div').first();
+  const originalHighlight = await highlight.evaluate(element => getComputedStyle(element).backgroundColor);
+  await toolbar.getByRole('button', { name: 'Copy', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).not.toBe('');
+  const selectedText = await page.evaluate(() => navigator.clipboard.readText());
+  await expect(highlight).toHaveCSS('background-color', 'rgb(166, 227, 161)');
+  await page.waitForTimeout(350);
+  await expect(highlight).toHaveCSS('background-color', 'rgb(166, 227, 161)');
+  await expect(highlight).toHaveCSS('background-color', originalHighlight, { timeout: 900 });
+  await expect(build).toHaveClass(/\bselection-active\b/u);
+  await expect(toolbar).toBeVisible();
+
+  // every terminal copy shortcut preserves selection and skips stdin
+  const buildInputBeforeCopies = await paneInputText(page, '%5');
+  for (const shortcut of ['Control+c', 'Meta+c', 'y', 'Control+Shift+c']) {
+    await page.evaluate(() => navigator.clipboard.writeText(''));
+    await build.locator('.xterm-helper-textarea').focus();
+    await page.keyboard.press(shortcut);
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(selectedText);
+    await expect(build).toHaveClass(/\bselection-copied\b/u);
+    await expect(build).not.toHaveClass(/\bselection-copied\b/u);
+    await expect(build).toHaveClass(/\bselection-active\b/u);
+  }
+  expect(await paneInputText(page, '%5')).toBe(buildInputBeforeCopies);
+
+  // stale selection never owns another pane or text input
+  await page.evaluate(() => navigator.clipboard.writeText('selection-guard'));
+  await vim.locator('.xterm-helper-textarea').focus();
+  await page.keyboard.press('y');
+  await expect.poll(() => paneInputText(page, '%6')).toContain('y');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('selection-guard');
+  const prompt = page.getByRole('textbox', { name: 'Prompt' });
+  await prompt.fill('dra');
+  await prompt.press('y');
+  await expect(prompt).toHaveValue('dray');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('selection-guard');
+  await build.getByRole('button', { name: 'Rename terminal build', exact: true }).click();
+  const rename = build.getByRole('textbox', { name: 'Name for terminal build', exact: true });
+  await rename.fill('deplo');
+  await rename.press('y');
+  await expect(rename).toHaveValue('deploy');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('selection-guard');
+  await rename.press('Escape');
+  await expect(toolbar).toBeVisible();
+
+  // clearing selection releases queued bytes, then Ctrl+C returns to interrupt
+  await page.mouse.click(selection.bounds.x + selection.bounds.width * .8, selection.bounds.y + selection.bounds.height / 2);
+  await expect(toolbar).toBeHidden();
+  await expect(build).not.toHaveClass(/\bselection-active\b/u);
+  await expect(build.locator('.xterm-rows > div', { hasText: 'queued build output' })).toBeVisible();
+  await expect.poll(() => paneAckTotal(page, '%5')).toBeGreaterThan(buildAck);
+  await build.locator('.xterm-helper-textarea').focus();
+  await page.keyboard.press('Control+c');
+  await expect.poll(() => paneInputText(page, '%5')).toContain(String.fromCharCode(3));
+});
+
+// cover long-press selection persistence on a phone
+test('a native Terminal selection freezes output through copied feedback', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({
+    baseURL,
+    hasTouch: true,
+    isMobile: true,
+    userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36',
+    viewport: { width: 428, height: 952 }
+  });
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const page = await context.newPage();
+  await installPaneMock(page);
+  await routeApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  await pushBytes(page, '%5', 'Freeze native terminal output');
+  expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+
+  const terminal = page.locator('.terminal-pane[data-panel-key="%5"]');
+  const row = terminal.locator('.xterm-accessibility-tree [role="listitem"]', { hasText: 'Freeze native terminal output' });
+  await expect(row).toHaveText('Freeze native terminal output');
+  await selectTerminalNativeRange(row, 0, 'Freeze'.length);
+  const toolbar = terminal.getByRole('toolbar', { name: 'Selection actions for terminal build' });
+  await expect(terminal).toHaveClass(/\bselection-active\b/u);
+  await expect(toolbar).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Freeze');
+
+  const acknowledged = await paneAckTotal(page, '%5');
+  await pushBytes(page, '%5', '\r\x1b[2Kqueued native output');
+  await page.waitForTimeout(100);
+  expect(await paneAckTotal(page, '%5')).toBe(acknowledged);
+  await expect(row).toHaveText('Freeze native terminal output');
+
+  await toolbar.getByRole('button', { name: 'Copy', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('Freeze');
+  await expect(terminal).toHaveClass(/\bselection-copied\b/u);
+  await page.waitForTimeout(350);
+  await expect(terminal).toHaveClass(/\bselection-copied\b/u);
+  await expect(terminal).not.toHaveClass(/\bselection-copied\b/u, { timeout: 900 });
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Freeze');
+  await expect(terminal).toHaveClass(/\bselection-active\b/u);
+  await expect(toolbar).toBeVisible();
+
+  // browser range release flushes the pane in order
+  await page.evaluate(() => {
+    window.getSelection()?.removeAllRanges();
+    document.dispatchEvent(new Event('selectionchange'));
+  });
+  await expect(toolbar).toBeHidden();
+  await expect(terminal.locator('.xterm-accessibility-tree [role="listitem"]', { hasText: 'queued native output' })).toBeVisible();
+  await expect.poll(() => paneAckTotal(page, '%5')).toBeGreaterThan(acknowledged);
+  await context.close();
+});
+
+// desktop selection actions preserve drafts and open notes from fullscreen
+test('Terminal selection actions append to the prompt and create a note from fullscreen', async ({ context, page }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await installPaneMock(page);
+  const notes: Note[] = [];
+  const savedNotes: string[] = [];
+  const prompts: string[] = [];
+  await routeApi(page, { panes: () => agentPanes, notes, savedNotes, prompts });
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  const prompt = page.getByRole('textbox', { name: 'Prompt' });
+  await prompt.fill('existing draft');
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  await pushBytes(page, '%5', `${'\r\n'.repeat(8)}Selected terminal note text`);
+
+  const terminal = page.locator('.terminal-pane[data-panel-key="%5"]');
+  await selectTerminalText(page, terminal, 'Selected terminal note text');
+  const toolbar = terminal.getByRole('toolbar', { name: 'Selection actions for terminal build' });
+  // expose every terminal selection action by its exact label
+  for (const label of ['Create note', 'Add to prompt', 'Copy']) await expect(toolbar.getByRole('button', { name: label, exact: true })).toBeVisible();
+  await expect(toolbar.getByRole('button', { name: 'Create note', exact: true })).toBeEnabled();
+
+  await toolbar.getByRole('button', { name: 'Copy', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).not.toBe('');
+  const selectedText = await page.evaluate(() => navigator.clipboard.readText());
+  await toolbar.getByRole('button', { name: 'Add to prompt', exact: true }).click();
+  await expect(prompt).toHaveValue(`existing draft\n\n${selectedText}`);
+  expect(prompts).toEqual([]);
+  await expect(toolbar).toBeVisible();
+
+  await terminal.getByRole('button', { name: 'Enter terminal fullscreen build' }).click();
+  await expect(terminal).toHaveClass(/\bexpanded\b/u);
+  await toolbar.getByRole('button', { name: 'Create note', exact: true }).click();
+  const notePane = page.getByRole('dialog', { name: 'Note' });
+  await expect(notePane).toBeVisible();
+  await expect(terminal).not.toHaveClass(/\bexpanded\b/u);
+  await expect(notePane.locator('header strong')).toHaveText(selectedText);
+  await expect(page.getByLabel('Note preview')).toContainText(selectedText);
+  await expect.poll(() => savedNotes).toContain(selectedText);
+  expect(notes[0]).toMatchObject({ text: selectedText, title: selectedText });
+  expect(prompts).toEqual([]);
+});
+
+// phone-native selection actions remain reachable and reveal the updated draft
+test('a phone Terminal selection adds text to the agent prompt and switches panels', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({
+    baseURL,
+    hasTouch: true,
+    isMobile: true,
+    userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36',
+    viewport: { width: 390, height: 844 }
+  });
+  const page = await context.newPage();
+  await installPaneMock(page);
+  const prompts: string[] = [];
+  await routeApi(page, { panes: () => agentPanes, prompts, notes: [] });
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  const prompt = page.getByRole('textbox', { name: 'Prompt' });
+  await prompt.fill('mobile draft');
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  await pushBytes(page, '%5', 'Prefix Mobile terminal action');
+
+  const terminal = page.locator('.terminal-pane[data-panel-key="%5"]');
+  const accessibilityTree = terminal.locator('.xterm-accessibility-tree');
+  // synthesize the native range boundary beyond one viewport of scrollback
+  await accessibilityTree.evaluate((tree, length) => {
+    const probe = document.createElement('div');
+    probe.dataset.selectionLimitProbe = 'true';
+    probe.textContent = 'x'.repeat(length);
+    tree.append(probe);
+    const range = document.createRange();
+    range.selectNodeContents(probe);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event('selectionchange'));
+  }, 30_001);
+  const toolbar = terminal.getByRole('toolbar', { name: 'Selection actions for terminal build' });
+  await expect(toolbar.getByRole('button', { name: 'Create note', exact: true })).toBeDisabled();
+  await accessibilityTree.locator('[data-selection-limit-probe="true"]').evaluate(probe => {
+    window.getSelection()?.removeAllRanges();
+    probe.remove();
+    document.dispatchEvent(new Event('selectionchange'));
+  });
+  await expect(toolbar).toBeHidden();
+
+  const row = terminal.locator('.xterm-accessibility-tree [role="listitem"]', { hasText: 'Prefix Mobile terminal action' });
+  await expect(row).toHaveText('Prefix Mobile terminal action');
+  await selectTerminalNativeRange(row, 'Prefix '.length, 'Prefix Mobile'.length);
+  // keep note, draft and copy actions touch-reachable
+  for (const label of ['Create note', 'Add to prompt', 'Copy']) await expect(toolbar.getByRole('button', { name: label, exact: true })).toBeVisible();
+  await toolbar.getByRole('button', { name: 'Add to prompt', exact: true }).tap();
+
+  await expect(terminal).toBeHidden();
+  await expect(page.locator('.log-output')).toBeVisible();
+  await expect(prompt).toBeVisible();
+  await expect(prompt).toHaveValue('mobile draft\n\nMobile');
+  await expect(toolbar).toBeHidden();
+  expect(prompts).toEqual([]);
+  await context.close();
+});
+
+// failed phone note creation preserves selection for a successful retry
+test('a phone Terminal keeps its selected text when note creation fails', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({
+    baseURL,
+    hasTouch: true,
+    isMobile: true,
+    userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36',
+    viewport: { width: 390, height: 844 }
+  });
+  const page = await context.newPage();
+  await installPaneMock(page);
+  const notes: Note[] = [];
+  const savedNotes: string[] = [];
+  let rejectCreate = true;
+  await routeApi(page, { panes: () => agentPanes, notes, savedNotes, noteCreateStatus: () => rejectCreate ? 503 : 201 });
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  await pushBytes(page, '%5', 'Prefix Retryable terminal note');
+
+  const terminal = page.locator('.terminal-pane[data-panel-key="%5"]');
+  const row = terminal.locator('.xterm-accessibility-tree [role="listitem"]', { hasText: 'Prefix Retryable terminal note' });
+  await expect(row).toHaveText('Prefix Retryable terminal note');
+  await selectTerminalNativeRange(row, 'Prefix '.length, 'Prefix Retryable'.length);
+  const toolbar = terminal.getByRole('toolbar', { name: 'Selection actions for terminal build' });
+  const create = toolbar.getByRole('button', { name: 'Create note', exact: true });
+  const rejected = page.waitForResponse(response => new URL(response.url()).pathname === '/api/worktrees/cora/notes' && response.request().method() === 'POST' && response.status() === 503);
+  await Promise.all([rejected, create.tap()]);
+
+  await expect(terminal).toBeVisible();
+  await expect(terminal).toHaveClass(/\bselection-active\b/u);
+  await expect(toolbar).toBeVisible();
+  await expect(create).toBeEnabled();
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? '')).toBe('Retryable');
+  await expect(page.getByRole('dialog', { name: 'Note' })).toHaveCount(0);
+  expect(notes).toEqual([]);
+
+  rejectCreate = false;
+  await create.tap();
+  const notePane = page.getByRole('dialog', { name: 'Note' });
+  await expect(notePane).toBeVisible();
+  await expect(terminal).toBeHidden();
+  await expect(notePane.locator('header strong')).toHaveText('Retryable');
+  await expect(page.getByLabel('Note preview')).toContainText('Retryable');
+  await expect.poll(() => savedNotes).toContain('Retryable');
+  expect(notes[0]).toMatchObject({ text: 'Retryable', title: 'Retryable' });
+  await context.close();
+});
+
+// hidden agent output releases its selection behind terminal fullscreen
+test('terminal fullscreen clears an agent selection and releases queued output', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await installPaneMock(page);
+  await routeApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await pushBytes(page, 'agent-1', `${'\r\n'.repeat(8)}Agent selection before fullscreen`);
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+
+  const output = page.locator('.log-output');
+  await selectTerminalText(page, output, 'Agent selection before fullscreen');
+  const toolbar = page.getByRole('toolbar', { name: 'Output selection actions' });
+  await expect(page.locator('.log')).toHaveClass(/\bselection-active\b/u);
+  await expect(toolbar).toBeVisible();
+  const acknowledged = await paneAckTotal(page, 'agent-1');
+  await pushBytes(page, 'agent-1', '\r\x1b[2Kagent output released behind fullscreen');
+  await page.waitForTimeout(100);
+  expect(await paneAckTotal(page, 'agent-1')).toBe(acknowledged);
+
+  const terminal = page.locator('.terminal-pane[data-panel-key="%5"]');
+  await terminal.getByRole('button', { name: 'Enter terminal fullscreen build' }).click();
+  await expect(output).toBeHidden();
+  await expect(toolbar).toBeHidden();
+  await expect(page.locator('.log')).not.toHaveClass(/\bselection-active\b/u);
+  await expect(output.locator('.xterm-selection > div')).toHaveCount(0);
+  await expect.poll(() => paneAckTotal(page, 'agent-1')).toBeGreaterThan(acknowledged);
+
+  await terminal.getByRole('button', { name: 'Exit terminal fullscreen build' }).click();
+  await expect(output.locator('.xterm-rows > div', { hasText: 'agent output released behind fullscreen' })).toBeVisible();
+  await expect(toolbar).toBeHidden();
+});
+
+// real touch switches release a hidden terminal selection before returning
+test('a phone panel switch clears native Terminal selection and releases queued output', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({
+    baseURL,
+    hasTouch: true,
+    isMobile: true,
+    userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36',
+    viewport: { width: 390, height: 844 }
+  });
+  const page = await context.newPage();
+  await installPaneMock(page);
+  await routeApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  await pushBytes(page, '%5', 'Native terminal selection before switch');
+
+  const terminal = page.locator('.terminal-pane[data-panel-key="%5"]');
+  const row = terminal.locator('.xterm-accessibility-tree [role="listitem"]', { hasText: 'Native terminal selection before switch' });
+  await expect(row).toHaveText('Native terminal selection before switch');
+  await selectTerminalNativeRange(row, 0, 'Native'.length);
+  const toolbar = terminal.getByRole('toolbar', { name: 'Selection actions for terminal build' });
+  await expect(terminal).toHaveClass(/\bselection-active\b/u);
+  await expect(toolbar).toBeVisible();
+  const acknowledged = await paneAckTotal(page, '%5');
+  await pushBytes(page, '%5', '\r\x1b[2Kterminal output released behind agent');
+  await page.waitForTimeout(100);
+  expect(await paneAckTotal(page, '%5')).toBe(acknowledged);
+
+  const switches = page.locator('.mobile-split-switches');
+  await switches.locator('.mobile-agent-switch').tap();
+  await expect(terminal).toBeHidden();
+  await expect(toolbar).toBeHidden();
+  await expect(terminal).not.toHaveClass(/\bselection-active\b/u);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? '')).toBe('');
+  await expect.poll(() => paneAckTotal(page, '%5')).toBeGreaterThan(acknowledged);
+
+  await switches.locator('.mobile-terminal-switch').tap();
+  await expect(terminal).toBeVisible();
+  await expect(terminal.locator('.xterm-accessibility-tree [role="listitem"]', { hasText: 'terminal output released behind agent' })).toBeVisible();
+  await expect(toolbar).toBeHidden();
+  await context.close();
 });
 
 test('minimizing keeps a shell running, persists across reload, and updates the trigger badge', async ({ page }) => {
@@ -592,6 +1048,72 @@ test('an agentless Worktree tab can open a Terminal', async ({ page }) => {
   await seedPaneSize(page, '%5', 80, 24);
   await pushBytes(page, '%5', 'shell in an agentless worktree\r\n');
   await expect(page.locator('.terminal-pane[data-panel-key="%5"]')).toBeVisible();
+});
+
+// agentless terminal actions retain worktree-local notes and launch drafts
+test('an agentless Worktree Terminal can create a note and prepare its prompt', async ({ context, page }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await installPaneMock(page);
+  const panes: Pane[] = [{ paneId: '%5', session: '$1', window: '@1', role: 'shell', name: 'build', command: 'zsh', path: '/worktrees/cora', title: '', agent: false, busy: false }];
+  const notes: Note[] = [];
+  const savedNotes: string[] = [];
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (path === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [], projects: [{ id: 'repo', label: 'Repo', available: true, worktrees: [
+      { id: 'cora', projectId: 'repo', label: 'Cora', path: '/worktrees/cora', main: true, detached: false, locked: false, available: true, pinned: true, order: 0, branch: 'main' }
+    ] }] } });
+    if (path === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (path === '/api/worktrees/cora/tickets') return route.fulfill({ json: { ticket: 'pane-ticket' } });
+    if (path === '/api/worktrees/cora/notes' && request.method() === 'GET') return route.fulfill({ json: { notes } });
+    if (path === '/api/worktrees/cora/notes' && request.method() === 'POST') {
+      const payload = request.postDataJSON() as { title?: string } | null;
+      const note = { id: `note-agentless-${notes.length + 1}`, text: '', ...(payload?.title === undefined ? {} : { title: payload.title }) };
+      notes.unshift(note);
+      return route.fulfill({ status: 201, json: note });
+    }
+    const noteMatch = /^\/api\/worktrees\/cora\/notes\/([^/]+)$/u.exec(path);
+    if (noteMatch && request.method() === 'PUT') {
+      const note = notes.find(candidate => candidate.id === noteMatch[1]);
+      if (note === undefined) return route.fulfill({ status: 404, json: { error: 'missing note' } });
+      note.text = (request.postDataJSON() as { text: string }).text;
+      savedNotes.push(note.text);
+      return route.fulfill({ json: note });
+    }
+    if (path === '/api/worktrees/cora/launch-resolution') return route.fulfill({ json: { adapters: [] } });
+    if (path === '/api/worktrees/cora/panes' && request.method() === 'GET') return route.fulfill({ json: { panes } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  await page.goto('/');
+  await page.getByRole('tab', { name: /Cora/u }).click();
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  await pushBytes(page, '%5', `${'\r\n'.repeat(8)}Agentless terminal selection`);
+
+  const terminal = page.locator('.terminal-pane[data-panel-key="%5"]');
+  await selectTerminalText(page, terminal, 'Agentless terminal selection');
+  const toolbar = terminal.getByRole('toolbar', { name: 'Selection actions for terminal build' });
+  await toolbar.getByRole('button', { name: 'Copy', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).not.toBe('');
+  const selectedText = await page.evaluate(() => navigator.clipboard.readText());
+
+  await toolbar.getByRole('button', { name: 'Add to prompt', exact: true }).click();
+  const prompt = page.getByRole('textbox', { name: 'Prompt' });
+  await expect(prompt).toBeVisible();
+  await expect(prompt).toBeEnabled();
+  await expect(prompt).toHaveValue(selectedText);
+  await expect(toolbar).toBeVisible();
+
+  await toolbar.getByRole('button', { name: 'Create note', exact: true }).click();
+  const notePane = page.getByRole('dialog', { name: 'Note' });
+  await expect(notePane).toBeVisible();
+  await expect(notePane.locator('header strong')).toHaveText(selectedText);
+  await expect.poll(() => savedNotes).toContain(selectedText);
+  expect(notes[0]).toMatchObject({ text: selectedText, title: selectedText });
 });
 
 test('the picker groups hidden Console shells and reopens one when chosen', async ({ page }) => {

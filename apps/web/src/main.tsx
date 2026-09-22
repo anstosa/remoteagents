@@ -7,6 +7,7 @@ import { pollWhileVisible } from './client-scheduling.js';
 import { outputUrlMatchesHost } from './output-links.js';
 import { attachOutputScrollbar } from './output-scrollbar.js';
 import { mountStreamedTerminal } from './streamed-terminal.js';
+import { attachTerminalSelection, type TerminalSelection } from './terminal-selection.js';
 import { createAgentPaneConnector, createWorktreePaneConnector } from './pane-socket-client.js';
 import { FlyoutPortal } from './flyout-portal.js';
 import { NoteMarkdown } from './note-markdown.js';
@@ -3307,19 +3308,22 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
     }
   };
   // create an optionally titled note
-  const create = async (text = '', title?: string) => {
+  const create = async (text = '', title?: string): Promise<boolean> => {
     // require one idle persistence context
-    if (resourceBase === undefined || loading) return;
+    if (resourceBase === undefined || loading) return false;
     setLoading(true);
     try {
       const response = await request(`${resourceBase}/notes`, { method: 'POST', ...(title === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title }) }) });
       const note: unknown = response.ok ? await response.json() : undefined;
+      // reject unsuccessful or malformed note creation
       if (!isWorktreeNote(note)) throw new Error();
       acknowledgedTexts.current.set(note.id, note.text);
       setNotes(current => [note, ...(current ?? [])]);
       open(note, !text.trim());
+      // save selected text through the existing editor queue
       if (text) updateDraft(note, text);
-    } catch { setSaveStatus('error'); }
+      return true;
+    } catch { setSaveStatus('error'); return false; }
     finally { setLoading(false); }
   };
   // toggle notes menu
@@ -4004,9 +4008,12 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
   return <section className={`browser-pane ${mobile ? 'mobile' : 'desktop'}${expanded ? ' expanded' : ''}`} role="dialog" aria-label="Browser" onKeyDown={handleEscape}><header className="browser-toolbar" role="toolbar" aria-label="Browser actions">{deviceError && <span className="browser-device-error" role="alert" title={deviceError}>Mode failed</span>}<form className="browser-address-form" onSubmit={submitAddress}><input type="text" inputMode="url" aria-label="Browser address" value={address} spellCheck={false} onChange={changeAddress} onBlur={navigate} /></form><button className="browser-home" type="button" aria-label="Go to project home" title="Home" disabled={atHome} onClick={goHome}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 9-8 9 8M5 10v11h14V10M9 21v-7h6v7" /></svg></button><button className="browser-device-toggle" type="button" aria-label={deviceLabel} aria-pressed={mobile} title={deviceTitle} onClick={toggleDevice}><svg data-device={mobile ? 'mobile' : 'desktop'} viewBox="0 0 24 24" aria-hidden="true">{mobile ? <><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M10 5h4M11 19h2" /></> : <><rect x="3" y="5" width="18" height="13" rx="1" /><path d="M8 21h8M12 18v3" /></>}</svg></button>{proxied ? <button className={`browser-refresh${loading ? ' loading' : ''}`} type="button" aria-label={loading ? 'Stop loading browser' : 'Refresh browser'} aria-busy={loading} title={loading ? 'Stop' : 'Refresh'} onClick={toggleFrameLoad}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={loading ? 'm6 6 12 12M18 6 6 18' : 'M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6'} /></svg></button> : <button className={`browser-refresh${loading ? ' loading' : ''}`} type="button" disabled={loading} aria-label="Refresh browser" aria-busy={loading} title={loading ? 'Loading external preview' : 'Refresh external preview'} onClick={refreshFrame}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" /></svg></button>}<button className="browser-expand" type="button" aria-label={expanded ? 'Exit browser fullscreen' : 'Enter browser fullscreen'} aria-pressed={expanded} title={expanded ? 'Exit fullscreen' : 'Fullscreen'} onClick={() => setExpanded(value => !value)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="browser-close" type="button" aria-label="Close browser" title="Close" onClick={onClose}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header><div ref={frameShellRef} className={`browser-frame-shell ${mobile ? 'mobile' : 'desktop'}`}><iframe ref={frameRef} src={frameSource} title="Project browser" referrerPolicy="no-referrer" onLoad={syncFrameLocation} /></div></section>;
 }
 
-// A Terminal column of the split: its stable key (the tmux pane id) and its rendered pane,
-// which accepts `mobileHidden` so the split can hide it on a phone's single-panel view.
-type TerminalColumn = { key: string; label: string; node: ReactElement<{ mobileHidden?: boolean }> };
+// reuse the owning view's note persistence and prompt draft
+type TerminalSelectionActions = { canCreateNote: boolean; createNote: (text: string) => Promise<boolean>; addToPrompt: (text: string) => void };
+// let the split supply visibility and selection actions to terminal columns
+type TerminalColumnProps = { mobileHidden?: boolean; selectionActions?: TerminalSelectionActions };
+// keep each rendered terminal keyed by its stable tmux pane id
+type TerminalColumn = { key: string; label: string; node: ReactElement<TerminalColumnProps> };
 type SplitSizes = Record<string, number>;
 type SplitStyle = React.CSSProperties & { '--agent-split': string; '--note-split': string; '--browser-split': string; '--split-cols': string };
 type SplitDrag = { pointerId: number; startX: number; left: string; right: string; leftWidth: number; rightWidth: number; sizes: SplitSizes; resized?: SplitSizes };
@@ -4041,7 +4048,7 @@ const saveSplitSizes = (worktreeId: string | undefined, signature: string, sizes
   catch { /* browser storage is optional */ }
 };
 // render ordered resizable output panels: the agent, any Terminals, then note and browser
-function ResizableLogSplit({ worktreeId, output, note, browser, terminals, onPhoneTerminal }: { worktreeId?: string; output: ReactNode; note?: ReactNode; browser?: ReactNode; terminals?: TerminalColumn[]; onPhoneTerminal?: (paneId: string | undefined) => void }) {
+function ResizableLogSplit({ worktreeId, output, note, browser, terminals, terminalSelectionActions, onPhoneTerminal }: { worktreeId?: string; output: ReactNode; note?: ReactNode; browser?: ReactNode; terminals?: TerminalColumn[]; terminalSelectionActions?: TerminalSelectionActions; onPhoneTerminal?: (paneId: string | undefined) => void }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<SplitDrag | undefined>(undefined);
   const hasNote = note !== undefined && note !== null;
@@ -4163,10 +4170,26 @@ function ResizableLogSplit({ worktreeId, output, note, browser, terminals, onPho
       return `${index === 0 ? '' : '.45rem '}minmax(var(--split-pane-min-width), ${sizes[column.key] ?? 1}fr)`;
     }).join(' ')
   };
-  // the panel columns interleaved with resizers; a Terminal hidden on phone carries `mobileHidden`
+  // reveal the destination of a terminal selection action on phones
+  const selectionActions: TerminalSelectionActions | undefined = terminalSelectionActions === undefined ? undefined : {
+    canCreateNote: terminalSelectionActions.canCreateNote,
+    // open the shared note pane after saving selected output
+    createNote: async text => {
+      const created = await terminalSelectionActions.createNote(text);
+      // retain the selected terminal for retry when creation fails
+      if (created) setMobilePanel('note');
+      return created;
+    },
+    // show the composer without submitting the selected output
+    addToPrompt: text => {
+      terminalSelectionActions.addToPrompt(text);
+      setMobilePanel('agent');
+    }
+  };
+  // the panel columns interleaved with resizers; a terminal hidden on phone carries mobileHidden
   const laidOut = columns.flatMap((column, index) => {
     const isTerminal = splitPanelKind(column.key) === 'terminal';
-    const node = isTerminal ? cloneElement(column.node as ReactElement<{ mobileHidden?: boolean }>, { key: column.key, mobileHidden: hasTerminals && column.key !== visibleMobilePanel }) : <Fragment key={column.key}>{column.node}</Fragment>;
+    const node = isTerminal ? cloneElement(column.node as ReactElement<TerminalColumnProps>, { key: column.key, mobileHidden: hasTerminals && column.key !== visibleMobilePanel, selectionActions }) : <Fragment key={column.key}>{column.node}</Fragment>;
     return index === 0 ? [node] : [resizer(columns[index - 1].key, column.key), node];
   });
   // a switch to every hidden panel (agent, each Terminal, note, browser)
@@ -4326,9 +4349,11 @@ function useWorktreeTerminals(worktreeId: string | undefined) {
 type WorktreeTerminals = ReturnType<typeof useWorktreeTerminals>;
 
 // render a live terminal with fullscreen, minimize and managed-shell delete actions
-function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, onDelete, mobileHidden }: { worktreeId: string; paneId: string; name: string; onMinimize: () => void; onExit: () => void; onRename?: (name: string) => Promise<boolean>; onDelete?: () => Promise<boolean | undefined>; mobileHidden?: boolean }) {
+function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, onDelete, mobileHidden, selectionActions }: { worktreeId: string; paneId: string; name: string; onMinimize: () => void; onExit: () => void; onRename?: (name: string) => Promise<boolean>; onDelete?: () => Promise<boolean | undefined> } & TerminalColumnProps) {
   const canvas = useRef<HTMLDivElement | null>(null);
   const [focused, setFocused] = useState(false);
+  const [selection, setSelection] = useState<TerminalSelection>();
+  const copySelectionRef = useRef<(value: string) => Promise<void>>(copyText);
   const [expanded, setExpanded] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameDraft, setRenameDraft] = useState(name);
@@ -4381,14 +4406,24 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
     setRenamePending(false);
     if (ok) setRenaming(false);
   };
+  // keep selection and input scoped to this mounted terminal
   useEffect(() => {
     const container = canvas.current;
+    // mount only after the terminal canvas exists
     if (container === null) return;
+    setSelection(undefined);
     const handle = mountStreamedTerminal(container, {
       connect: createWorktreePaneConnector(worktreeId, paneId, request),
       transformInput: data => applyStickyModifiers(paneId, data),
       onExit: () => onExitRef.current()
     });
+    const selection = attachTerminalSelection(container, handle, {
+      onSelection: setSelection,
+      copyText,
+      flashElement: container.closest<HTMLElement>('.terminal-pane') ?? container,
+      copyFlashMs: selectionCopyFlashMs
+    });
+    copySelectionRef.current = selection.copy;
     const blur = () => handle.terminal.blur();
     terminalInputs.set(paneId, handle.sendInput);
     exitTerminalInput.set(paneId, blur);
@@ -4396,7 +4431,9 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
     const onFocusOut = () => setFocused(false);
     container.addEventListener('focusin', onFocusIn);
     container.addEventListener('focusout', onFocusOut);
+    // release selection listeners before disposing the terminal
     return () => {
+      selection.dispose();
       container.removeEventListener('focusin', onFocusIn);
       container.removeEventListener('focusout', onFocusOut);
       // only clear our own registrations, so a fast remount of the same pane id keeps the new one
@@ -4405,7 +4442,7 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
       handle.dispose();
     };
   }, [worktreeId, paneId]);
-  return <section className={`terminal-pane${expanded ? ' expanded' : ''}${focused ? ' focused' : ''}${mobileHidden ? ' mobile-hidden' : ''}`} data-panel-key={paneId}>
+  return <section className={`terminal-pane${expanded ? ' expanded' : ''}${focused ? ' focused' : ''}${selection ? ' selection-active' : ''}${mobileHidden ? ' mobile-hidden' : ''}`} data-panel-key={paneId}>
     <header className="pane-head" onKeyDown={handleHeaderKeyDown}>
       <span className={`pane-status${deleteError ? ' error' : ''}`} role={deleteError ? 'alert' : 'status'} title={deleteError ? 'Could not delete shell. Try again.' : undefined}>{deleteError ? 'Delete failed' : 'Live'}</span>
       {renaming
@@ -4416,6 +4453,12 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
       <button type="button" className="pane-minimize" disabled={deletePending} aria-label={`Minimize terminal ${name}`} title="Minimize terminal (the shell keeps running)" onClick={onMinimize}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg></button>
     </header>
     <div className="terminal-canvas" ref={canvas} aria-label={`Terminal ${name}`} />
+    {/* keep selection actions hidden with their terminal panel */}
+    {selection && <div className="output-selection-toolbar" role="toolbar" aria-label={`Selection actions for terminal ${name}`} style={{ top: selection.top, left: selection.left }} onPointerDown={event => event.preventDefault()}>
+      <button type="button" disabled={!selectionActions?.canCreateNote || selection.text.length > 30_000} onClick={async () => { /* reveal only successfully created notes */ if (await selectionActions?.createNote(selection.text)) setExpanded(false); }}>Create note</button>
+      <button type="button" disabled={selectionActions === undefined} onClick={() => { /* reveal the draft without sending it */ setExpanded(false); selectionActions?.addToPrompt(selection.text); }}>Add to prompt</button>
+      <button type="button" onClick={() => void copySelectionRef.current(selection.text)}>Copy</button>
+    </div>}
   </section>;
 }
 
@@ -4821,6 +4864,14 @@ function Log({ id, agentWorking = false, worktreeId, branch, gitStatus, gitPrSta
   onMetadataRef.current = onMetadata;
   const worktreeConversations = useWorktreeConversations(worktreeId, id, { onNavigateWorktree, onOperationFeedback });
   const worktreeNotes = useWorktreeNotes(worktreeId, id, agentWorking, embedded ? undefined : latestAssistantMessage, embedded ? false : latestAssistantMessageOverflows, refreshHistory, history, schedulePrefill);
+  // share the agent's note and prompt actions with its terminal columns
+  const terminalSelectionActions: TerminalSelectionActions = {
+    canCreateNote: worktreeNotes.canCreate,
+    // persist selected shell output through the existing note editor
+    createNote: text => worktreeNotes.createWithText(text, assistantNoteTitle(text)),
+    // append selected output without queueing a prompt
+    addToPrompt: text => setPromptDraft(id, current => appendTextBlock(current, text))
+  };
   const responseFiles = useLatestAssistantFiles(id, embedded ? undefined : latestAssistantMessage);
   const gitFilePreview = useFilePreview(`/api/agents/${encodeURIComponent(id)}/file-preview`);
   const pushPendingKey = `prompt:${id}`;
@@ -4914,7 +4965,6 @@ function Log({ id, agentWorking = false, worktreeId, branch, gitStatus, gitPrSta
     let disposed = false;
     let latestQuestion: InlineQuestion | undefined;
     let dismissedQuestionId = dismissedQuestionIds.get(id);
-    let copiedSelectionTimer: number | undefined;
     setStatus('Connecting');
     setHasRendered(false);
     setToolbarExpanded(undefined);
@@ -4972,108 +5022,18 @@ function Log({ id, agentWorking = false, worktreeId, branch, gitStatus, gitPrSta
     const onFocusOut = () => { if (!disposed) setInputActive(false); };
     canvas.current!.addEventListener('focusin', onFocusIn);
     canvas.current!.addEventListener('focusout', onFocusOut);
-    // --- Selection toolbar (create note, append, add to prompt, copy) ---
-    const nativeSelectionActive = () => {
-      const selection = window.getSelection();
-      if (selection === null || selection.isCollapsed) return false;
-      return [selection.anchorNode, selection.focusNode].some(node => node !== null && canvas.current?.contains(node));
-    };
-    const selectedOutput = () => (terminal.hasSelection() ? terminal.getSelection() : nativeSelectionActive() ? window.getSelection()?.toString() ?? '' : '');
-    const flashCopiedOutputSelection = () => {
-      const log = canvas.current?.closest('.log');
-      log?.classList.add('selection-copied');
-      if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer);
-      copiedSelectionTimer = window.setTimeout(() => { copiedSelectionTimer = undefined; log?.classList.remove('selection-copied'); }, selectionCopyFlashMs);
-    };
-    const copyOutputSelection = async (value: string) => { await copyText(value); if (!disposed) flashCopiedOutputSelection(); };
-    copyOutputSelectionRef.current = copyOutputSelection;
-    let nativeSelectionWasActive = false;
-    let mouseSelectionGesture = false;
-    // freeze streamed output for either terminal or native text selection
-    const syncSelectionMode = () => {
-      const nativeActive = nativeSelectionActive();
-      // clear xterm's mirror when the browser selection leaves output
-      if (!nativeActive && nativeSelectionWasActive) {
-        nativeSelectionWasActive = false;
-        // let the nested xterm event finish the state transition
-        if (terminal.hasSelection()) { terminal.clearSelection(); return; }
-      }
-      nativeSelectionWasActive = nativeActive;
-      const hasTerminalSelection = terminal.hasSelection();
-      handle.setOutputPaused(mouseSelectionGesture || hasTerminalSelection || nativeActive);
-      setSelectionActive(hasTerminalSelection || nativeActive);
-      if (nativeActive) {
-        const selection = window.getSelection();
-        const range = selection?.rangeCount ? selection.getRangeAt(0) : undefined;
-        const bounds = range === undefined ? undefined : (Array.from(range.getClientRects()).at(-1) ?? range.getBoundingClientRect());
-        const text = selection?.toString() ?? '';
-        return setSelectionToolbar(!text || bounds === undefined ? undefined : { text, top: Math.min(window.innerHeight - 48, bounds.bottom + 8) });
-      }
-      if (!hasTerminalSelection) return setSelectionToolbar(undefined);
-      const text = terminal.getSelection();
-      const position = terminal.getSelectionPosition();
-      const screen = terminal.element?.querySelector<HTMLElement>('.xterm-screen');
-      if (!text || position === undefined || screen === null || screen === undefined) return setSelectionToolbar(undefined);
-      const screenBounds = screen.getBoundingClientRect();
-      const viewportRow = position.end.y - terminal.buffer.active.viewportY + 1;
-      const selectionBottom = screenBounds.top + viewportRow * (screenBounds.height / terminal.rows);
-      setSelectionToolbar({ text, top: Math.min(window.innerHeight - 48, selectionBottom + 8) });
-    };
-    // freeze before xterm commits desktop drag selections on mouseup
-    const beginOutputSelection = (event: PointerEvent) => {
-      // leave touch scrolling, secondary clicks, and scrollbar drags alone
-      if (event.pointerType !== 'mouse' || event.button !== 0 || !(event.target instanceof Element) || !event.target.closest('.xterm-screen')) return;
-      // mouse-reporting applications select only with xterm's platform override
-      if (terminal.modes.mouseTrackingMode !== 'none') {
-        const forceSelection = navigator.platform.startsWith('Mac')
-          ? event.altKey && terminal.options.macOptionClickForcesSelection
-          : event.shiftKey;
-        // preserve live application mouse gestures
-        if (!forceSelection) return;
-      }
-      mouseSelectionGesture = true;
-      handle.setOutputPaused(true);
-    };
-    // keep completed selections frozen but release empty or cancelled drags
-    const endOutputSelection = () => {
-      // ignore unrelated pointer releases and window focus changes
-      if (!mouseSelectionGesture) return;
-      mouseSelectionGesture = false;
-      syncSelectionMode();
-    };
-    canvas.current!.addEventListener('pointerdown', beginOutputSelection, true);
-    window.addEventListener('pointerup', endOutputSelection, true);
-    window.addEventListener('pointercancel', endOutputSelection, true);
-    window.addEventListener('blur', endOutputSelection);
-    const selectionSub = terminal.onSelectionChange(syncSelectionMode);
-    document.addEventListener('selectionchange', syncSelectionMode);
-    const nativeOutputCopied = () => { if (nativeSelectionActive()) flashCopiedOutputSelection(); };
-    document.addEventListener('copy', nativeOutputCopied);
-    // Ctrl/Cmd+C copies a selection rather than interrupting; with no selection xterm
-    // sends \x03 through onData as any terminal would.
-    terminal.attachCustomKeyEventHandler(event => {
-      if (event.type !== 'keydown' || event.key.toLowerCase() !== 'c') return true;
-      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && terminal.hasSelection()) {
-        event.preventDefault();
-        void copyOutputSelection(terminal.getSelection());
-        return false;
-      }
-      return true;
+    // share selection freezing and copy feedback with terminal panels
+    const selection = attachTerminalSelection(canvas.current!, handle, {
+      // retain the agent's note and prompt selection actions
+      onSelection: selected => {
+        setSelectionActive(selected !== undefined);
+        setSelectionToolbar(selected);
+      },
+      copyText,
+      flashElement: canvas.current!.closest<HTMLElement>('.log') ?? canvas.current!,
+      copyFlashMs: selectionCopyFlashMs
     });
-    // Yank / Ctrl+Shift+C copy the output selection, skipped while the composer owns keys.
-    const copySelectionShortcut = (event: KeyboardEvent) => {
-      if (isPromptKeyboardTarget(event.target)) return;
-      const key = event.key.toLowerCase();
-      const yank = key === 'y' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
-      const terminalCopy = key === 'c' && event.ctrlKey && event.shiftKey && !event.metaKey && !event.altKey;
-      if (!yank && !terminalCopy) return;
-      const selected = selectedOutput();
-      if (!selected) return;
-      event.preventDefault();
-      event.stopPropagation();
-      void copyOutputSelection(selected);
-    };
-    document.addEventListener('keydown', copySelectionShortcut, true);
+    copyOutputSelectionRef.current = selection.copy;
     // Ctrl/Cmd =/+ grow, - shrink, 0 reset the terminal font; the component's font-size
     // subscription applies the new size. Skipped in editable fields other than xterm's
     // own textarea, and captured so the browser does not page-zoom.
@@ -5090,20 +5050,11 @@ function Log({ id, agentWorking = false, worktreeId, branch, gitStatus, gitPrSta
     if (!embedded) document.addEventListener('keydown', terminalFontShortcut, true);
     return () => {
       disposed = true;
-      if (copiedSelectionTimer !== undefined) window.clearTimeout(copiedSelectionTimer);
       renderSub.dispose();
-      selectionSub.dispose();
-      canvas.current?.removeEventListener('pointerdown', beginOutputSelection, true);
-      window.removeEventListener('pointerup', endOutputSelection, true);
-      window.removeEventListener('pointercancel', endOutputSelection, true);
-      window.removeEventListener('blur', endOutputSelection);
+      selection.dispose();
       canvas.current?.removeEventListener('focusin', onFocusIn);
       canvas.current?.removeEventListener('focusout', onFocusOut);
-      document.removeEventListener('selectionchange', syncSelectionMode);
-      document.removeEventListener('copy', nativeOutputCopied);
-      document.removeEventListener('keydown', copySelectionShortcut, true);
       if (!embedded) document.removeEventListener('keydown', terminalFontShortcut, true);
-      canvas.current?.closest('.log')?.classList.remove('selection-copied');
       if (terminalInputs.get(id) === handle.sendInput) terminalInputs.delete(id);
       if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id);
       if (answeredQuestionActions.get(id) === answeredQuestion) answeredQuestionActions.delete(id);
@@ -5196,7 +5147,7 @@ function Log({ id, agentWorking = false, worktreeId, branch, gitStatus, gitPrSta
   // distinguish retained output from live frames
   const output = <div className="log-output">{!embedded && <ServerSwitcher className="output-server-switcher" />}<div className="log-canvas" ref={canvas} aria-label="Live log" />{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!embedded && <div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{responseFiles.control}{worktreeConversations.control}{worktreeNotes.control}</div></div>}</div></div>;
   const browserPane = browserUrl === undefined || browserHomeUrl === undefined || onBrowserNavigate === undefined || onBrowserClose === undefined ? null : <ProjectBrowserPane url={browserUrl} homeUrl={browserHomeUrl} proxied={browserProxied} worktreeId={worktreeId} navigationRequest={browserNavigationRequest} onNavigate={onBrowserNavigate} onClose={onBrowserClose} />;
-  return <section className={`log-shell${embedded ? ' embedded-log-shell' : ''}`}><div className={`log${embedded ? ' embedded-log' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit worktreeId={worktreeId} output={output} note={embedded ? undefined : worktreeNotes.pane} browser={browserPane} terminals={embedded ? undefined : terminals} onPhoneTerminal={onPhoneTerminal} /></div>{selectionActions}{!embedded && responseFiles.dialog}{!embedded && gitFilePreview.dialog}{!embedded && statusSlot && createPortal(gitSection, statusSlot)}{!embedded && historySlot && createPortal(historyToggle, historySlot)}</section>;
+  return <section className={`log-shell${embedded ? ' embedded-log-shell' : ''}`}><div className={`log${embedded ? ' embedded-log' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit worktreeId={worktreeId} output={output} note={embedded ? undefined : worktreeNotes.pane} browser={browserPane} terminals={embedded ? undefined : terminals} terminalSelectionActions={terminalSelectionActions} onPhoneTerminal={onPhoneTerminal} /></div>{selectionActions}{!embedded && responseFiles.dialog}{!embedded && gitFilePreview.dialog}{!embedded && statusSlot && createPortal(gitSection, statusSlot)}{!embedded && historySlot && createPortal(historyToggle, historySlot)}</section>;
 }
 
 type MoreMenuIconName = 'actions'|'attachment'|'new-task'|'push'|'rename';
@@ -5726,6 +5677,17 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
   const presentation = inactiveWorktreePresentation(worktree.label, launchKind, { startingNewTask, restarting, turningOff, waking, launching, sleeping });
   const worktreeConversations = useWorktreeConversations(worktree.id, undefined, { onNavigateWorktree, onOperationFeedback });
   const worktreeNotes = useWorktreeNotes(worktree.id, undefined, false, undefined, false, undefined, undefined, schedulePrefill, sleeping ? undefined : (noteId: string) => launchAndRun(noteId), sleeping ? undefined : `${launchKind === undefined ? 'an agent' : agentKindLabel[launchKind]} on ${worktree.label}`);
+  // keep terminal selection actions available before an agent is launched
+  const terminalSelectionActions: TerminalSelectionActions = {
+    canCreateNote: worktreeNotes.canCreate,
+    // persist selected shell output in this worktree's notes
+    createNote: text => worktreeNotes.createWithText(text, assistantNoteTitle(text)),
+    // open the existing inactive-worktree composer with the selected output
+    addToPrompt: text => {
+      setPromptDraft(draftId, current => appendTextBlock(current, text));
+      setPromptOpened(true);
+    }
+  };
   const projectBrowser = useProjectBrowser(worktree.projectUrl, worktree.id, worktree.projectProxied);
   // Terminals work even with no live Agent: an agentless Worktree tab can open a shell.
   const { columns: terminalColumns, control: terminalControl } = useTerminalViews(worktree.id);
@@ -5875,7 +5837,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
     {error && <p className="launch-error" role="alert">{error}</p>}
     <Prompt id={draftId} ready={false} history={[]} onHistoryChanged={async () => { /* no agent history yet */ }} canCancel={false} cancelling={false} deleting={false} restarting={restarting} clearing={false} deactivating={turningOff} sleeping={false} onCancel={() => { /* startup cannot be cancelled here */ }} onPromptFocus={() => { /* draft belongs to the inactive worktree */ }} onOperationFeedback={onOperationFeedback} worktreeId={worktree.id} projectUrl={worktree.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} stack={worktree.stack} lifecycleControl={powerMenu ?? undefined} launchControl={launchControl} statusSlotRef={setStatusSlot} terminalControl={terminalControl} phoneTerminal={phoneTerminal} />
   </> : <section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions">{powerMenu}{gitStatus}<span className="prompt-actions-spacer" aria-hidden="true" />{terminalControl}<ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} />{!sleeping && <LaunchSplitButton label={worktree.label} resolution={worktree.launch} disabled={!worktree.available} pending={processing} onLaunch={choice => void start(choice)} />}</div></section>;
-  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit worktreeId={worktree.id} output={output} note={worktreeNotes.pane} browser={browserPane} terminals={terminalColumns} onPhoneTerminal={setPhoneTerminal} /></div>{filePreview.dialog}{statusSlot && createPortal(gitStatus, statusSlot)}</section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} />{prompt}</article>;
+  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit worktreeId={worktree.id} output={output} note={worktreeNotes.pane} browser={browserPane} terminals={terminalColumns} terminalSelectionActions={terminalSelectionActions} onPhoneTerminal={setPhoneTerminal} /></div>{filePreview.dialog}{statusSlot && createPortal(gitStatus, statusSlot)}</section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} />{prompt}</article>;
 }
 
 // render a scratch or directory session before discovery publishes its agent identity

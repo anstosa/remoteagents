@@ -73,6 +73,50 @@ test('shows selection actions for a terminal drag selection and adds to the prom
   await expect(page.getByRole('textbox', { name: 'Prompt' })).not.toHaveValue('');
 });
 
+// repaint xterm's selection rather than only toggling a native selection class
+test('flashes a copied desktop selection green then restores its highlight', async ({ context, page }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await installPaneMock(page);
+  await routeSelectionApi(page);
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await pushBytes(page, 'agent-1', `${'\r\n'.repeat(8)}Copy feedback selection`);
+  const row = page.locator('.log-canvas .xterm-rows > div', { hasText: 'Copy feedback selection' });
+  await expect(row).toBeVisible();
+  const bounds = await row.boundingBox();
+  expect(bounds).not.toBeNull();
+  const selectedY = bounds!.y + bounds!.height / 2;
+  await page.mouse.move(bounds!.x + 1, selectedY);
+  await page.mouse.down();
+  await page.mouse.move(bounds!.x + 90, selectedY, { steps: 4 });
+  await page.mouse.up();
+
+  const toolbar = page.getByRole('toolbar', { name: 'Output selection actions' });
+  await expect(toolbar).toBeVisible();
+  const highlight = page.locator('.log-canvas .xterm-selection > div').first();
+  await expect(highlight).toHaveCSS('background-color', 'rgb(203, 166, 247)');
+
+  // exercise both focused terminal shortcuts and the toolbar's unfocused selection
+  for (const action of ['Control+c', 'toolbar', 'y', 'Control+Shift+c']) {
+    // clear clipboard evidence before each copy path
+    await page.evaluate(() => navigator.clipboard.writeText(''));
+    // toolbar copy must also repaint an inactive xterm selection
+    if (action === 'toolbar') {
+      await page.getByRole('textbox', { name: 'Prompt' }).focus();
+      await toolbar.getByRole('button', { name: 'Copy' }).click();
+    } else {
+      await page.locator('.log-canvas .xterm-helper-textarea').focus();
+      await page.keyboard.press(action);
+    }
+    await expect(highlight).toHaveCSS('background-color', 'rgb(166, 227, 161)');
+    // wait for clipboard completion independently of the visible flash
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).not.toBe('');
+    await expect(highlight).toHaveCSS('background-color', 'rgb(203, 166, 247)');
+    await expect(toolbar).toBeVisible();
+  }
+});
+
+// keep native selection intact through copy feedback and follow-up actions
 test('a native output selection creates and appends notes, copies, and guards the composer', async ({ browser, baseURL }) => {
   test.setTimeout(60_000);
   const context = await browser.newContext({
@@ -141,6 +185,10 @@ test('a native output selection creates and appends notes, copies, and guards th
 
   await toolbar.getByRole('button', { name: 'Copy' }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('Selectable');
+  await expect(page.locator('.log')).toHaveClass(/selection-copied/u);
+  await expect(page.locator('.log')).not.toHaveClass(/selection-copied/u);
+  // restoring highlight colors must not replace the native range's text node
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Selectable');
 
   await toolbar.getByRole('button', { name: 'Create note' }).click();
   await expect(page.getByRole('dialog', { name: 'Note' }).locator('header strong')).toHaveText('Selectable');
