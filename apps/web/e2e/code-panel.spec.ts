@@ -24,18 +24,21 @@ const revision = (path: string, content: string): RevisionFile => ({ path, size:
 const contentsOf = (path: string, base: string, working: string): ComparisonFileContents => ({ path, base: revision(path, base), working: revision(path, working) });
 
 // mount the isolated Code panel with a scripted Comparison (and optional per-file revision contents)
-const mountPanel = async (page: Page, patch: ComparisonPatch, loaded: Record<string, ComparisonFileContents> = {}) => {
+const mountPanel = async (page: Page, patch: ComparisonPatch, loaded: Record<string, ComparisonFileContents> = {}, startExpanded = false, rootWidth?: number) => {
   await page.goto('/');
-  await page.evaluate(async ({ scripted, files }) => {
+  await page.evaluate(async ({ scripted, files, expanded, width }) => {
     const { renderCodePanel } = await import('/e2e/code-panel-fixture.tsx');
     const root = document.createElement('div');
     root.style.height = '640px';
     // stretch the panel to fill the root so its 1fr diff row is bounded and can scroll, the way the
     // real split sizes it (a bare block child would size to content and never overflow)
     root.style.display = 'grid';
+    // a narrow root forces the changed-file list into its slide-over drawer (below RAIL_BREAKPOINT),
+    // regardless of the viewport
+    if (width !== undefined) root.style.width = `${width}px`;
     document.body.replaceChildren(root);
-    renderCodePanel(root, scripted, files);
-  }, { scripted: patch, files: loaded });
+    renderCodePanel(root, scripted, files, expanded);
+  }, { scripted: patch, files: loaded, expanded: startExpanded, width: rootWidth });
 };
 
 // push a fresh Comparison (and optional per-file contents) into the mounted panel, standing in for a
@@ -183,6 +186,78 @@ test('switches a file between hunks, plain, and full-context modes', async ({ pa
   await expect(panel(page).getByText('const sentinel = 999;')).toBeVisible();
   await expect(panel(page).getByText('const b = 3;')).toBeVisible();
   await expect(panel(page).getByText('const b = 2;')).toHaveCount(0);
+});
+
+test('promotes the Code panel to full screen and restores it (control + Esc)', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mountPanel(page, patchOf([trackedFile('src/app.ts')]));
+  const region = panel(page);
+  const expand = region.getByRole('button', { name: 'Expand code panel' });
+  await expect(region).not.toHaveClass(/\bexpanded\b/u);
+  await expect(expand).toHaveAttribute('aria-pressed', 'false');
+
+  // the control promotes the panel
+  await expand.click();
+  await expect(region).toHaveClass(/\bexpanded\b/u);
+  const restore = region.getByRole('button', { name: 'Restore code panel' });
+  await expect(restore).toHaveAttribute('aria-pressed', 'true');
+
+  // Esc restores
+  await restore.press('Escape');
+  await expect(region).not.toHaveClass(/\bexpanded\b/u);
+
+  // and the control restores too
+  await region.getByRole('button', { name: 'Expand code panel' }).click();
+  await expect(region).toHaveClass(/\bexpanded\b/u);
+  await region.getByRole('button', { name: 'Restore code panel' }).click();
+  await expect(region).not.toHaveClass(/\bexpanded\b/u);
+});
+
+test('opens already promoted when startExpanded is set on a desktop viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mountPanel(page, patchOf([trackedFile('src/app.ts')]), {}, true);
+  const region = panel(page);
+  await expect(region).toHaveClass(/\bexpanded\b/u);
+  await expect(region.getByRole('button', { name: 'Restore code panel' })).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('ignores startExpanded on a phone viewport, where the control is a no-op', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mountPanel(page, patchOf([trackedFile('src/app.ts')]), {}, true);
+  const region = panel(page);
+  // the panel is not promoted (the desktop-only seed is gated off)
+  await expect(region).not.toHaveClass(/\bexpanded\b/u);
+  // the control is still rendered — just CSS-hidden below the phone breakpoint, not removed
+  await expect(page.locator('.code-pane-expand')).toHaveCount(1);
+  await expect(page.locator('.code-pane-expand')).toBeHidden();
+});
+
+test('promotes the File view to full screen and restores it', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mountFilePreview(page, { path: 'src/app.ts', state: 'ready', preview: { path: 'src/app.ts', size: 40, truncated: false, binary: false, content: 'export const answer = 42;\n' } });
+  const fileView = page.locator('.code-pane-file');
+  await expect(fileView).not.toHaveClass(/\bexpanded\b/u);
+  await panel(page).getByRole('button', { name: 'Expand code panel' }).click();
+  await expect(fileView).toHaveClass(/\bexpanded\b/u);
+  // Esc restores from the File view too
+  await panel(page).getByRole('button', { name: 'Restore code panel' }).press('Escape');
+  await expect(fileView).not.toHaveClass(/\bexpanded\b/u);
+});
+
+test('closing the changed-files drawer with Esc does not also collapse full screen', async ({ page }) => {
+  // a desktop viewport (control visible) but a narrow panel (the file list is a drawer, not a rail)
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await mountPanel(page, patchOf([trackedFile('src/app.ts'), trackedFile('src/app.test.ts')]), {}, false, 560);
+  const region = panel(page);
+  await region.getByRole('button', { name: 'Expand code panel' }).click();
+  await expect(region).toHaveClass(/\bexpanded\b/u);
+  await region.getByRole('button', { name: 'Show changed files' }).click();
+  const drawer = page.getByRole('dialog', { name: 'Changed files' });
+  await expect(drawer).toBeVisible();
+  // one Escape closes only the drawer; the panel stays full screen (the drawer stops the key bubbling)
+  await drawer.getByRole('button', { name: 'Close changed files' }).press('Escape');
+  await expect(drawer).toBeHidden();
+  await expect(region).toHaveClass(/\bexpanded\b/u);
 });
 
 test('opens a Code panel of the Working changes from the Git flyout', async ({ page }) => {

@@ -6,7 +6,7 @@
 // them in — so it stays free of any network code and easy to drive in isolation. What the view owns
 // itself is purely visual: the diff mode (Hunks / Full context / Plain file), unified vs split, and
 // the changed-file rail/drawer.
-import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CodeView, type CodeViewHandle, type CodeViewItem, type CodeViewReactOptions, type FileDiffMetadata } from '@pierre/diffs/react';
 import { useColorTheme } from '../color-theme.js';
 import { groupComparisonFiles, type CodePanelMode, type CodePanelState, type ComparisonChange, type ComparisonFile, type ComparisonFileContents, type ComparisonPatch, type FilePreviewView } from './comparison.js';
@@ -27,6 +27,23 @@ const LINE_HEIGHT = 20;
 // both come down to.
 const RAIL_BREAKPOINT = 640;
 
+// The app-wide phone breakpoint (styles.css hides every panel's full-screen control below it, so a
+// promote is a no-op on phones). Used to gate the no-agent Worktree's auto-promote to desktop.
+const PHONE_BREAKPOINT = 768;
+
+// The Code panel's full-screen promote/restore control, shared between its Comparison and File views.
+// Toggling it adds `.expanded` to the panel root, which the split's `:has()` rule promotes to fill the
+// workspace (hiding its siblings) — the same mechanism note/browser/terminal/agent carry as their own
+// inline button in main.tsx (kept inline there so this lazy module, and its diff library, stay out of
+// the eager dashboard bundle).
+function FullscreenToggle({ expanded, onToggle, className }: { expanded: boolean; onToggle: () => void; className: string }) {
+  return (
+    <button type="button" className={className} aria-label={expanded ? 'Restore code panel' : 'Expand code panel'} aria-pressed={expanded} title={expanded ? 'Restore' : 'Fullscreen'} onClick={onToggle}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg>
+    </button>
+  );
+}
+
 // Which context a diff shows: only the patched hunks, the whole file with unchanged lines expanded,
 // or the current file as plain text (no diff — single-file only).
 type ViewMode = 'hunks' | 'full' | 'plain';
@@ -43,6 +60,10 @@ export type CodePanelProps = {
   filePreview?: FilePreviewView;
   // whether an All PR Comparison exists to toggle to (disables the header toggle when it does not)
   prAvailable: boolean;
+  // open the panel already promoted to full screen — the no-agent Worktree entry, where there is no
+  // agent output to split against, so the changes fill the workspace. Honoured only on a desktop
+  // viewport (phones already show one panel at a time, so promoting there would strand the switcher).
+  startExpanded?: boolean;
   loadFile: (path: string) => Promise<ComparisonFileContents | undefined>;
   onSelectFile: (path: string) => void;
   onClearFile: () => void;
@@ -108,9 +129,20 @@ const placeholderFor = (file: ComparisonFile): Placeholder | undefined => {
   return undefined;
 };
 
-export default function CodePanel({ mode, state, patch, selectedPath, filePreview, prAvailable, loadFile, onSelectFile, onClearFile, onSetMode, onCloseFile, onClose, onRetry }: CodePanelProps) {
+export default function CodePanel({ mode, state, patch, selectedPath, filePreview, prAvailable, startExpanded, loadFile, onSelectFile, onClearFile, onSetMode, onCloseFile, onClose, onRetry }: CodePanelProps) {
   const theme = useColorTheme();
   const [supportingExpanded, setSupportingExpanded] = useState(false);
+  // Full-screen promote/restore: transient (never persisted), and seeded from `startExpanded` only on
+  // a desktop viewport so the no-agent Worktree opens its changes filling the workspace.
+  const [expanded, setExpanded] = useState(() => Boolean(startExpanded) && typeof window !== 'undefined' && !window.matchMedia(`(max-width: ${PHONE_BREAKPOINT}px)`).matches);
+  const toggleExpanded = () => setExpanded(value => !value);
+  // Esc restores from full screen (a control does too); leave every other Escape — a drawer's own
+  // close, the library's key handling — untouched.
+  const restoreOnEscape = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'Escape' || !expanded) return;
+    event.preventDefault();
+    setExpanded(false);
+  };
   const [viewMode, setViewMode] = useState<ViewMode>('hunks');
   const [split, setSplit] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(false);
@@ -393,10 +425,10 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
   // A File view (a response-file row or a terminal link) takes over the whole panel as a peer of the
   // Comparison — text through the same diff library for real highlighting, an image / binary
   // placeholder / over-cap notice as plain views. It replaces the Changes layout while it is open.
-  if (filePreview !== undefined) return <FileView filePreview={filePreview} options={options} style={style} onBack={onCloseFile} onClose={onClose} />;
+  if (filePreview !== undefined) return <FileView filePreview={filePreview} options={options} style={style} expanded={expanded} onToggleExpanded={toggleExpanded} onRestoreEscape={restoreOnEscape} onBack={onCloseFile} onClose={onClose} />;
 
   return (
-    <section className="code-pane" style={style} role="region" aria-label="Code changes" ref={panelRef}>
+    <section className={`code-pane${expanded ? ' expanded' : ''}`} style={style} role="region" aria-label="Code changes" ref={panelRef} onKeyDown={restoreOnEscape}>
       <header className="code-pane-toolbar">
         {state === 'ready' && fileCount > 0 && (narrow || railCollapsed) && (
           <button type="button" className="code-pane-files-open" aria-label="Show changed files" title="Files" onClick={() => { if (narrow) setDrawerOpen(true); else setRailCollapsed(false); }}>
@@ -437,6 +469,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
             <button type="button" aria-pressed={mode === 'pr'} disabled={!prAvailable} title={prAvailable ? 'Compare the whole PR' : 'Merge target unavailable'} onClick={() => onSetMode('pr')}>All PR</button>
           </span>
         </>}
+        <FullscreenToggle expanded={expanded} onToggle={toggleExpanded} className="code-pane-expand" />
         <button type="button" className="code-pane-close" aria-label="Close code changes" title="Close" onClick={onClose}>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
         </button>
@@ -486,7 +519,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
           </>}
         </div>
         {narrow && drawerOpen && state === 'ready' && fileCount > 0 && (
-          <div className="code-pane-drawer" role="dialog" aria-label="Changed files" onKeyDown={event => { if (event.key === 'Escape') setDrawerOpen(false); }}>
+          <div className="code-pane-drawer" role="dialog" aria-label="Changed files" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setDrawerOpen(false); } }}>
             <div className="code-pane-drawer-head">
               <span>Files</span>
               <button type="button" className="code-pane-close" aria-label="Close changed files" title="Close" onClick={() => setDrawerOpen(false)}>
@@ -506,7 +539,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
 // `{type:'file'}` item) so it gets real syntax highlighting; an image (including the agent `/tmp`
 // screenshot bridge), a binary file, and the over-cap truncation notice are plain non-library views.
 // "‹ Changes" returns to the Comparison the panel would otherwise show; the close button dismisses it.
-function FileView({ filePreview, options, style, onBack, onClose }: { filePreview: FilePreviewView; options: PanelOptions; style: CSSProperties; onBack: () => void; onClose: () => void }) {
+function FileView({ filePreview, options, style, expanded, onToggleExpanded, onRestoreEscape, onBack, onClose }: { filePreview: FilePreviewView; options: PanelOptions; style: CSSProperties; expanded: boolean; onToggleExpanded: () => void; onRestoreEscape: (event: ReactKeyboardEvent<HTMLElement>) => void; onBack: () => void; onClose: () => void }) {
   const { path, state, preview } = filePreview;
   const [copied, setCopied] = useState(false);
   useEffect(() => setCopied(false), [path]);
@@ -516,7 +549,7 @@ function FileView({ filePreview, options, style, onBack, onClose }: { filePrevie
   // a text file becomes a single plain-file item; an image or binary file renders without the library
   const items = useMemo<PanelItem[]>(() => state === 'ready' && preview !== undefined && !preview.binary ? [fileItemForContents(path, preview.content)] : [], [state, preview, path]);
   return (
-    <section className="code-pane code-pane-file" style={style} role="region" aria-label="Code changes">
+    <section className={`code-pane code-pane-file${expanded ? ' expanded' : ''}`} style={style} role="region" aria-label="Code changes" onKeyDown={onRestoreEscape}>
       <header className="code-pane-toolbar">
         <nav className="code-pane-crumbs" aria-label="Location">
           <button type="button" className="code-pane-crumb-back" onClick={onBack}>‹ Changes</button>
@@ -525,6 +558,7 @@ function FileView({ filePreview, options, style, onBack, onClose }: { filePrevie
         </nav>
         <span className="code-pane-spacer" />
         <button type="button" className="code-pane-copy-path" onClick={() => void copyPath()}>{copied ? 'Path copied' : 'Copy path'}</button>
+        <FullscreenToggle expanded={expanded} onToggle={onToggleExpanded} className="code-pane-expand" />
         <button type="button" className="code-pane-close" aria-label="Close file" title="Close" onClick={onClose}>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
         </button>

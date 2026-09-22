@@ -23,7 +23,7 @@ export const updateCodePanel = (patch: ComparisonPatch, loaded?: Record<string, 
 // and a live update in isolation from the dashboard and the network. `loaded` stands in for the
 // /comparison/file endpoint that Plain, Full-context, and "Load anyway" call; every call is recorded
 // on `window.__codeLoads` and held while the gate is closed.
-function Harness({ initialPatch, initialLoaded }: { initialPatch: ComparisonPatch; initialLoaded: Record<string, ComparisonFileContents> }) {
+function Harness({ initialPatch, initialLoaded, startExpanded }: { initialPatch: ComparisonPatch; initialLoaded: Record<string, ComparisonFileContents>; startExpanded?: boolean }) {
   const [patch, setPatch] = useState(initialPatch);
   const [selectedPath, setSelectedPath] = useState<string>();
   const [mode, setMode] = useState<CodePanelMode>(initialPatch.kind);
@@ -44,6 +44,7 @@ function Harness({ initialPatch, initialLoaded }: { initialPatch: ComparisonPatc
     patch,
     selectedPath,
     prAvailable: true,
+    startExpanded,
     loadFile,
     onSelectFile: (path: string) => setSelectedPath(path),
     onClearFile: () => setSelectedPath(undefined),
@@ -53,10 +54,10 @@ function Harness({ initialPatch, initialLoaded }: { initialPatch: ComparisonPatc
   });
 }
 
-export const renderCodePanel = (root: HTMLElement, patch: ComparisonPatch, loaded: Record<string, ComparisonFileContents> = {}) => {
+export const renderCodePanel = (root: HTMLElement, patch: ComparisonPatch, loaded: Record<string, ComparisonFileContents> = {}, startExpanded = false) => {
   loadLog().__codeLoads = [];
   gate.held = false; gate.waiters = [];
-  createRoot(root).render(createElement(Harness, { initialPatch: patch, initialLoaded: loaded }));
+  createRoot(root).render(createElement(Harness, { initialPatch: patch, initialLoaded: loaded, startExpanded }));
 };
 
 // Mount the panel showing a static File view, so a spec can assert each preview state (text through

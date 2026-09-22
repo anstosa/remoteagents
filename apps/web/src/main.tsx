@@ -4286,9 +4286,9 @@ const CodePanel = lazy(() => import('./code-panel/code-panel.js'));
 // Render one Worktree's open Code panel from its controller (callers gate on `controller.open`, so
 // this is only mounted while open). The lazy chunk resolves behind a lightweight fallback so the
 // split does not jump.
-function CodePane({ controller, prAvailable }: { controller: CodePanelController; prAvailable: boolean }) {
+function CodePane({ controller, prAvailable, startExpanded }: { controller: CodePanelController; prAvailable: boolean; startExpanded?: boolean }) {
   return <Suspense fallback={<section className="code-pane" role="region" aria-label="Code changes"><p className="code-pane-status">Loading changes…</p></section>}>
-    <CodePanel mode={controller.mode} state={controller.state} patch={controller.patch} selectedPath={controller.selectedPath} filePreview={controller.filePreview} prAvailable={prAvailable} loadFile={controller.loadFile} onSelectFile={controller.selectFile} onClearFile={controller.clearFile} onSetMode={controller.setMode} onCloseFile={controller.closeFilePreview} onClose={controller.close} onRetry={controller.refresh} />
+    <CodePanel mode={controller.mode} state={controller.state} patch={controller.patch} selectedPath={controller.selectedPath} filePreview={controller.filePreview} prAvailable={prAvailable} startExpanded={startExpanded} loadFile={controller.loadFile} onSelectFile={controller.selectFile} onClearFile={controller.clearFile} onSetMode={controller.setMode} onCloseFile={controller.closeFilePreview} onClose={controller.close} onRetry={controller.refresh} />
   </Suspense>;
 }
 // render ordered resizable output panels: the agent, any Terminals, then note, browser and code
@@ -5089,6 +5089,10 @@ function Log({ id, agentWorking = false, worktreeId, branch, gitStatus, gitPrSta
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyAnswerId, setHistoryAnswerId] = useState<string>();
   const [toolbarExpanded, setToolbarExpanded] = useState<'git'>();
+  // Full-screen promote/restore for the agent output panel: transient, and mirrored on every other
+  // panel (note/browser/terminal/code). The `.expanded` class the split's `:has()` rule promotes to
+  // fill the workspace; the control is hidden on phones (styles.css), where it is a no-op.
+  const [expanded, setExpanded] = useState(false);
   const { anchorRef: historyAnchorRef, flyoutRef: historyFlyoutRef, style: historyFlyoutStyle } = useViewportFlyout(historyOpen);
   const historyListRef = useRef<HTMLDivElement | null>(null);
   const historyPanelOpenRef = useRef(false);
@@ -5386,7 +5390,14 @@ function Log({ id, agentWorking = false, worktreeId, branch, gitStatus, gitPrSta
   };
   const gitSection = embedded ? null : <GitStatus id={id} worktreeId={worktreeId} branch={branch} summary={gitStatus} prSummary={gitPrStatus} pullRequest={pullRequest} onFixup={queueFixup} expanded={toolbarExpanded === 'git'} onToggle={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'git' ? undefined : 'git'); }} onOpenFile={openGitFile} onViewChanges={code === undefined ? undefined : mode => { setToolbarExpanded(undefined); code.openChanges(mode); }} onReview={scope => { setToolbarExpanded(undefined); onReview?.(scope); }} reviewOpen={reviewOpen} reviewUnavailable={reviewUnavailable} pushAction={pushAction} pushPending={pushPending} onPush={queuePush} onSelectTarget={onSelectTarget} onOperationFeedback={onOperationFeedback} />;
   // distinguish retained output from live frames
-  const output = <div className="log-output">{!embedded && <ServerSwitcher className="output-server-switcher" />}<div className="log-canvas" ref={canvas} aria-label="Live log" />{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!embedded && <div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{responseFiles.control}{worktreeConversations.control}{worktreeNotes.control}</div></div>}</div></div>;
+  // Esc restores the promoted agent panel, but never steals the terminal's own Escape (a shell app
+  // needs it), so it only fires when focus is outside the live-log canvas.
+  const restoreAgentOnEscape = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Escape' || !expanded || (event.target as HTMLElement).closest('.log-canvas') !== null) return;
+    event.preventDefault();
+    setExpanded(false);
+  };
+  const output = <div className={`log-output${expanded ? ' expanded' : ''}`} onKeyDown={restoreAgentOnEscape}>{!embedded && <ServerSwitcher className="output-server-switcher" />}<div className="log-canvas" ref={canvas} aria-label="Live log" />{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!embedded && <div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{responseFiles.control}{worktreeConversations.control}{worktreeNotes.control}<button type="button" className="log-control page-arrow log-expand" aria-label={expanded ? 'Restore agent output' : 'Expand agent output'} aria-pressed={expanded} title={expanded ? 'Restore' : 'Fullscreen'} onClick={() => setExpanded(value => !value)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button></div></div>}</div></div>;
   const browserPane = browserUrl === undefined || browserHomeUrl === undefined || onBrowserNavigate === undefined || onBrowserClose === undefined ? null : <ProjectBrowserPane url={browserUrl} homeUrl={browserHomeUrl} proxied={browserProxied} worktreeId={worktreeId} navigationRequest={browserNavigationRequest} onNavigate={onBrowserNavigate} onClose={onBrowserClose} />;
   const codePane = embedded || code === undefined || !code.open ? null : <CodePane controller={code} prAvailable={gitPrStatus !== undefined} />;
   return <section className={`log-shell${embedded ? ' embedded-log-shell' : ''}`}><div className={`log${embedded ? ' embedded-log' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit worktreeId={worktreeId} output={output} note={embedded ? undefined : worktreeNotes.pane} browser={browserPane} code={codePane} terminals={embedded ? undefined : terminals} terminalSelectionActions={terminalSelectionActions} onPhoneTerminal={onPhoneTerminal} /></div>{selectionActions}{!embedded && statusSlot && createPortal(gitSection, statusSlot)}{!embedded && historySlot && createPortal(historyToggle, historySlot)}</section>;
@@ -6069,7 +6080,9 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onTurnedOf
       : null;
   const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className={`log-loading inactive${sleeping ? ' sleeping' : ''}`} role={processing || sleeping ? 'status' : undefined} aria-label={presentation.ariaLabel}>{processing ? <span className="spinner" /> : sleeping ? <svg className="sleeping-agent-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.5A8 8 0 0 1 8.5 5 8 8 0 1 0 19 15.5Z" /></svg> : null}<strong>{presentation.heading}</strong><span>{presentation.detail}</span>{sleeping && !processing && <button className="wake-agent" type="button" disabled={!worktree.available} onClick={() => void start()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" /></svg>Wake up</button>}</div><span className={`status log-status ${processing ? 'connecting' : sleeping ? 'sleeping' : 'inactive'}`}>{presentation.status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeConversations.control}{worktreeNotes.control}</div></div></div></div>;
   const browserPane = projectBrowser.url === undefined || projectBrowser.homeUrl === undefined ? null : <ProjectBrowserPane url={projectBrowser.url} homeUrl={projectBrowser.homeUrl} proxied={projectBrowser.proxied} worktreeId={worktree.id} onNavigate={projectBrowser.navigate} onClose={projectBrowser.close} />;
-  const codePane = projectCode.open ? <CodePane controller={projectCode} prAvailable={worktree.gitPrStatus !== undefined} /> : null;
+  // A Worktree with no running Agent has no agent output to split against, so its changes open filling
+  // the workspace — the Code panel is the full-screen host here.
+  const codePane = projectCode.open ? <CodePane controller={projectCode} prAvailable={worktree.gitPrStatus !== undefined} startExpanded /> : null;
   // keep worktree file inspection available in either composer layout
   const gitStatus = <GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} pullRequest={worktree.pullRequest} expanded={gitExpanded} onToggle={() => { /* toggle file inspection */ setGitExpanded(value => !value); }} onOpenFile={openGitFile} onViewChanges={mode => { setGitExpanded(false); projectCode.openChanges(mode); }} reviewUnavailable="Launch agent to review" />;
   // preserve the idle recovery actions alongside the prepared draft
