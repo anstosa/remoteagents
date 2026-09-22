@@ -60,7 +60,8 @@ describe('conversations switch API', () => {
       dashboard: async () => ({ generation: resumed ? 2 : 1, adapters: {}, agents: [resumed ? replacement : firstAgent], projects: [] }),
     };
     const launch = { canResumeConversation: () => true, resumeConversation: async (worktreeId: string, id: string, kind?: AgentKind) => { events.push(`resume:${worktreeId}:${id}:${kind}`); resumed = true; return true; } };
-    const queuedPrompts = { list: async () => [] };
+    // expose an empty queue and no pending reset
+    const queuedPrompts = { list: async () => [], resets: { get: async () => undefined } };
     const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 52).toString('base64url')), discovery: discovery as never, launch: launch as never, queuedPrompts: queuedPrompts as never, tmux: { close: async () => { events.push(`close:${firstAgent.id}`); return true; } } as never, launchPollDelay: async () => undefined });
     try {
       const headers = await authenticatedHeaders(app);
@@ -111,7 +112,8 @@ describe('conversations switch API', () => {
       dashboard: async () => ({ generation: 1, adapters: {}, agents: [working], projects: [] }),
     };
     const launch = { canResumeConversation: () => true, resumeConversation: async () => { resumed = true; return true; } };
-    const queuedPrompts = { list: async () => [] };
+    // expose an empty queue and no pending reset
+    const queuedPrompts = { list: async () => [], resets: { get: async () => undefined } };
     // the immediate poll delay makes a regressed working-gate fail fast (close+resume+poll)
     // rather than hang, and lets this assert the specific not-idle reason
     const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 54).toString('base64url')), discovery: discovery as never, launch: launch as never, queuedPrompts: queuedPrompts as never, tmux: { close: async () => true } as never, launchPollDelay: async () => undefined });
@@ -217,7 +219,8 @@ describe('conversations switch API', () => {
     };
     // some kind is launchable (canResumeConversation true), but the row's own kind is not
     const launch = { canResumeConversation: () => true, isLaunchableKind: (kind: AgentKind) => kind !== 'claude', resumeConversation: async () => { resumed = true; return true; } };
-    const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 60).toString('base64url')), discovery: discovery as never, launch: launch as never, queuedPrompts: { list: async () => [] } as never, tmux: { close: async () => { closed = true; return true; } } as never });
+    // expose no pending queue or reset during the handoff
+    const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 60).toString('base64url')), discovery: discovery as never, launch: launch as never, queuedPrompts: { list: async () => [], resets: { get: async () => undefined } } as never, tmux: { close: async () => { closed = true; return true; } } as never });
     try {
       const headers = await authenticatedHeaders(app);
       const switched = await app.inject({ method: 'POST', url: `/api/worktrees/${encodeURIComponent(cora.id)}/conversations/switch`, headers, payload: { kind: 'claude', id: conversationId } });

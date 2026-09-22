@@ -118,7 +118,9 @@ export type CompletionEvent =
  *   pinned at capture with the file's `ordinal` at that instant. Pinning the file
  *   (rather than re-resolving it at completion) keeps `baseline` and `since`
  *   reading the same rollout even when a sibling pane's rollout later becomes the
- *   newest in a shared directory. This is the shape a plain turn takes.
+ *   newest in a shared directory. An externally observed reset may additionally
+ *   carry `resetPane`: `since` follows that exact pane to its first replacement
+ *   rollout, then clears the marker and pins the replacement permanently.
  * - *Deferred* (`cwd` + `resetAt`) — a turn that starts a fresh conversation with
  *   `/new`. Codex opens the new thread's rollout only at its first turn, so there
  *   is no file to pin at capture; the baseline records the pane's working
@@ -126,7 +128,7 @@ export type CompletionEvent =
  *   cwd-matching rollout created after `resetAt`. `ordinal` is zero — the whole
  *   fresh thread is read.
  */
-export type CompletionBaseline = { rollout: string; ordinal: number } | { cwd: string; resetAt: number; ordinal: number };
+export type CompletionBaseline = { rollout: string; ordinal: number; resetPane?: { pid: number; cwd?: string } } | { cwd: string; resetAt: number; ordinal: number };
 
 /**
  * A pane snapshot the console feeds an Adapter's `newConversation` while it drives a
@@ -267,10 +269,12 @@ export interface Adapter {
    * *deferred* baseline (the cwd and the instant) rather than pinning the pane's
    * still-open pre-reset rollout, and `since` resolves the post-reset rollout when
    * it appears. Deferred resolution keys on the cwd, so a reset turn without one is
-   * unresolvable (`undefined`, the same `turns` fallback).
+   * unresolvable (`undefined`, the same `turns` fallback). `followReset` handles a
+   * reset observed after the fact, when no trustworthy reset instant exists: the
+   * resolved baseline follows the exact pane to its first rollout replacement.
    */
   readonly completion?: {
-    baseline(pane: { pid: number; cwd?: string }, resetAt?: number): Promise<CompletionBaseline | undefined>;
+    baseline(pane: { pid: number; cwd?: string }, resetAt?: number, followReset?: boolean): Promise<CompletionBaseline | undefined>;
     since(baseline: CompletionBaseline): Promise<CompletionEvent | undefined>;
   };
   /**
@@ -295,6 +299,8 @@ export interface Adapter {
    */
   readonly newConversation?: {
     readonly command: string;
+    /** equivalent reset commands accepted by this TUI */
+    readonly aliases?: readonly string[];
     composerEmpty(capture: string): boolean;
     settled(before: PaneSnapshot, observed: readonly PaneSnapshot[], elapsedMs: number): ResetSettling;
     ready(snapshot: PaneSnapshot, capture: string): LaunchReadiness;

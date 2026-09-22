@@ -419,6 +419,12 @@ export function maxOrdinalFromRecords(lines: Iterable<string>): number | undefin
   return max;
 }
 
+// read one rollout's current ordinal without leaking filesystem failures
+async function rolloutOrdinal(file: string): Promise<number | undefined> {
+  const lines = await readFileTail(file, maxCompletionScanBytes).catch(() => undefined);
+  return lines === undefined ? undefined : maxOrdinalFromRecords(lines);
+}
+
 // the newest terminal turn recorded past the baseline's ordinal. A resolved
 // baseline reads the exact file it pinned, so it never drifts to a sibling pane's
 // rollout mid-turn; a deferred baseline resolves the post-reset thread first (the
@@ -426,9 +432,18 @@ export function maxOrdinalFromRecords(lines: Iterable<string>): number | undefin
 // appears.
 export async function codexTurnSince(baseline: CompletionBaseline): Promise<CompletionEvent | undefined> {
   let rollout: string;
-  // a resolved baseline names its pinned file; a deferred one resolves the post-reset rollout now
-  if ('rollout' in baseline) rollout = baseline.rollout;
-  else {
+  // a resolved external-reset baseline follows its exact pane once
+  if ('rollout' in baseline) {
+    const resetPane = baseline.resetPane;
+    const replacement = resetPane === undefined ? undefined : await paneRollout(resetPane).catch(() => undefined);
+    // pin the first replacement and stop later pane changes from drifting the turn
+    if (resetPane !== undefined && baseline.resetPane === resetPane && replacement !== undefined && replacement.file !== baseline.rollout) {
+      baseline.rollout = replacement.file;
+      baseline.ordinal = 0;
+      delete baseline.resetPane;
+    }
+    rollout = baseline.rollout;
+  } else {
     const resolved = await rolloutByCwd(baseline.cwd, baseline.resetAt).catch(() => undefined);
     // Codex opens the new thread's rollout only at its first turn; keep polling
     if (resolved === undefined) return { kind: 'pending' };
@@ -443,16 +458,38 @@ export async function codexTurnSince(baseline: CompletionBaseline): Promise<Comp
 // privilege-free fallback when a confined service cannot readlink the pane's
 // descriptors. Returns undefined when no single rollout resolves or it cannot be read.
 //
-// `resetAt` marks a turn that first resets the conversation with `/new`: the pane
-// still holds its pre-reset rollout open, so pinning it now would read the old
-// thread. Return a deferred baseline (cwd + instant) instead and let `since`
-// resolve the post-reset rollout once Codex opens it (the completion contract in
-// `types.ts` covers why deferral needs the cwd).
-export async function codexRolloutBaseline(pane: { pid: number; cwd?: string }, resetAt?: number): Promise<CompletionBaseline | undefined> {
-  if (resetAt !== undefined) return pane.cwd === undefined ? undefined : { cwd: pane.cwd, resetAt, ordinal: 0 };
+// `resetAt` marks a turn after a conversation reset. When the pane already holds a
+// rollout created at or after that instant, pin its current ordinal: an external
+// first turn may have opened or completed it and must not satisfy the next managed
+// prompt. Otherwise defer by cwd + instant until Codex opens the post-reset rollout
+// (the completion contract in `types.ts` covers why deferral needs the cwd).
+// `followReset` instead observes the exact pane's first file replacement when the
+// reset was discovered too late to have a trustworthy timestamp.
+export async function codexRolloutBaseline(pane: { pid: number; cwd?: string }, resetAt?: number, followReset = false): Promise<CompletionBaseline | undefined> {
   const selected = await paneRollout(pane);
+  // an externally observed reset follows this exact pane from its current file
+  if (followReset) {
+    // require one current rollout to follow
+    if (selected === undefined) return undefined;
+    const ordinal = await rolloutOrdinal(selected.file);
+    // require a readable starting position
+    if (ordinal === undefined) return undefined;
+    return { rollout: selected.file, ordinal, resetPane: { pid: pane.pid, ...(pane.cwd === undefined ? {} : { cwd: pane.cwd }) } };
+  }
+  // prefer an already-open fresh rollout over the deferred reset lookup
+  if (resetAt !== undefined && selected !== undefined) {
+    const metadata = await rolloutMetadata(selected.file).catch(() => undefined);
+    // require a session created no earlier than the submitted reset
+    if (metadata?.createdAt !== undefined && metadata.createdAt >= resetAt) {
+      const ordinal = await rolloutOrdinal(selected.file);
+      // exclude every external event already recorded in the fresh thread
+      if (ordinal !== undefined) return { rollout: selected.file, ordinal };
+    }
+  }
+  // a stale or unresolved pane rollout still needs post-reset cwd resolution
+  if (resetAt !== undefined) return pane.cwd === undefined ? undefined : { cwd: pane.cwd, resetAt, ordinal: 0 };
+  // require one normal rollout to pin
   if (selected === undefined) return undefined;
-  const lines = await readFileTail(selected.file, maxCompletionScanBytes).catch(() => undefined);
-  const ordinal = lines === undefined ? undefined : maxOrdinalFromRecords(lines);
+  const ordinal = await rolloutOrdinal(selected.file);
   return ordinal === undefined ? undefined : { rollout: selected.file, ordinal };
 }

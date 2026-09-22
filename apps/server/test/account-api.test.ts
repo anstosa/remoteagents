@@ -68,7 +68,8 @@ describe('Codex account API', () => {
       discovery: discovery as never,
       launch: launch as never,
       launchPollDelay: async () => {},
-      queuedPrompts: { list: async () => [] } as never,
+      // expose no pending queue or reset during account switching
+      queuedPrompts: { list: async () => [], resets: { get: async () => undefined } } as never,
       tmux: { close: async () => { events.push(`close:${firstCora.id}`); coraClosed = true; return true; } } as never
     });
     const headers = await login(app);

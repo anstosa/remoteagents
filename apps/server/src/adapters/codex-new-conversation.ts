@@ -1,4 +1,5 @@
 import { normalizedCapture, normalizedLines } from './capture-text.js';
+import { withoutComposerSparkles } from './codex-turns.js';
 import type { Adapter, LaunchReadiness, PaneSnapshot, ResetSettling } from './types.js';
 
 /**
@@ -15,8 +16,10 @@ import type { Adapter, LaunchReadiness, PaneSnapshot, ResetSettling } from './ty
 const codexChoiceRow = /^❯ \d+\./u;
 const composerPlaceholder = '› Ask Codex to do anything';
 
+// ignore decorative animation while preserving real drafts and open dialogs
 function composerEmpty(capture: string): boolean {
-  const lines = normalizedLines(capture);
+  const lines = normalizedLines(withoutComposerSparkles(capture));
+  // never paste through a choice dialog
   if (lines.some(line => codexChoiceRow.test(line))) return false;
   const composer = lines.filter(line => line.startsWith('›')).at(-1);
   return composer === '›' || composer === composerPlaceholder;
@@ -59,6 +62,7 @@ function ready(snapshot: PaneSnapshot, capture: string): LaunchReadiness {
 
 export const codexNewConversation: NonNullable<Adapter['newConversation']> = {
   command: '/new',
+  aliases: ['/clear'],
   composerEmpty,
   settled,
   ready,

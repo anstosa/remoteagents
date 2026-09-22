@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { ResetBoundaryStore } from './reset-boundaries.js';
 import { promptAttachmentBytes, validPrompt, validPromptAttachments, type PromptAttachment } from './validation.js';
 
 export type QueuedPrompt = { id: string; text: string; createdAt: string; attachments?: PromptAttachment[] };
@@ -29,8 +30,12 @@ const totals = (stored: StoredQueues) => Object.values(stored).flat().reduce((va
 export class QueuedPromptService {
   private mutation = Promise.resolve();
   private stored?: StoredQueues;
+  readonly resets: ResetBoundaryStore;
 
-  constructor(private readonly file = process.env.RAC_QUEUED_PROMPTS_FILE ?? '.data/queued-prompts.json') {}
+  // bind prompt and reset storage
+  constructor(private readonly file = process.env.RAC_QUEUED_PROMPTS_FILE ?? '.data/queued-prompts.json') {
+    this.resets = new ResetBoundaryStore(`${file}.resets.json`);
+  }
 
   async list(scope: string): Promise<QueuedPromptSummary[] | undefined> {
     if (!validScope(scope)) return undefined;
@@ -122,6 +127,7 @@ export class QueuedPromptService {
   async clearScope(scope: string): Promise<void> {
     if (!validScope(scope)) return;
     await this.mutate(stored => { delete stored[scope]; });
+    await this.resets.clear(scope);
   }
 
   private async mutate<T>(change: (stored: StoredQueues) => T | Promise<T>, shouldWrite: (result: T) => boolean = () => true): Promise<T> {

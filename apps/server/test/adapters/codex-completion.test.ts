@@ -150,6 +150,64 @@ describe('Codex rollout completion', () => {
     await expect(codexTurnSince(baseline!)).resolves.toEqual({ kind: 'completed', ordinal: 4, answer: 'Fresh answer.' });
   });
 
+  it('pins an already-open post-reset rollout after an external first turn', async () => {
+    const home = await codexHome();
+    const cwd = '/home/ubuntu/cora';
+    const resetAt = Date.parse('2026-08-30T15:30:00.000Z');
+    const freshId = '0198d100-0000-7000-8000-0000000000a3';
+    // the external turn opened and completed the fresh rollout before console delivery
+    const freshFile = await writeRollout(home, freshId, turnRecords(1, 'external', 'Typed locally', 'External answer.'), cwd, '2026-08-30T15:30:00.000Z');
+    process.env.CODEX_HOME = home;
+    process.env.RAC_HOST_PROC = await fakeProc(321, [freshFile]);
+
+    // pin after the external completion so it cannot satisfy the next managed prompt
+    const baseline = await codexRolloutBaseline({ pid: 321, cwd }, resetAt);
+    expect(baseline).toEqual({ rollout: freshFile, ordinal: 4 });
+    await expect(codexTurnSince(baseline!)).resolves.toEqual({ kind: 'pending' });
+  });
+
+  it('follows one pane rollout replacement after an externally observed reset', async () => {
+    const home = await codexHome();
+    const cwd = '/home/ubuntu/cora';
+    const staleFile = await writeRollout(home, '0198d100-0000-7000-8000-0000000000d1', turnRecords(1, 'old', 'Before reset', 'Old answer.'), cwd, '2026-08-30T14:00:00.000Z');
+    process.env.CODEX_HOME = home;
+    process.env.RAC_HOST_PROC = await fakeProc(321, [staleFile]);
+
+    // follow the pane identity because an external reset has no reliable reset timestamp
+    const baseline = await codexRolloutBaseline({ pid: 321, cwd }, undefined, true);
+    expect(baseline).toEqual({ rollout: staleFile, ordinal: 4, resetPane: { pid: 321, cwd } });
+    await expect(codexTurnSince(baseline!)).resolves.toEqual({ kind: 'pending' });
+
+    const observedResetAt = Date.parse('2026-08-30T15:30:00.000Z');
+    const freshCreatedAt = '2026-08-30T15:00:00.000Z';
+    // the replacement identity, not its older metadata timestamp, proves the reset
+    expect(Date.parse(freshCreatedAt)).toBeLessThan(observedResetAt);
+    const freshFile = await writeRollout(home, '0198d100-0000-7000-8000-0000000000d2', turnRecords(1, 'new', 'After reset', 'Fresh answer.'), cwd, freshCreatedAt);
+    process.env.RAC_HOST_PROC = await fakeProc(321, [freshFile]);
+    await expect(codexTurnSince(baseline!)).resolves.toEqual({ kind: 'completed', ordinal: 4, answer: 'Fresh answer.' });
+    expect(baseline).toEqual({ rollout: freshFile, ordinal: 0 });
+
+    // clear the follow marker after the first replacement so later panes cannot drift it
+    const laterFile = await writeRollout(home, '0198d100-0000-7000-8000-0000000000d3', turnRecords(1, 'later', 'Later pane', 'Wrong answer.'), cwd, '2026-08-30T16:00:00.000Z');
+    process.env.RAC_HOST_PROC = await fakeProc(321, [laterFile]);
+    await expect(codexTurnSince(baseline!)).resolves.toEqual({ kind: 'completed', ordinal: 4, answer: 'Fresh answer.' });
+  });
+
+  it('keeps a normal resolved baseline pinned when the pane changes rollout', async () => {
+    const home = await codexHome();
+    const cwd = '/home/ubuntu/cora';
+    const pinnedFile = await writeRollout(home, '0198d100-0000-7000-8000-0000000000e1', turnRecords(1, 'old', 'Before', 'Old answer.'), cwd, '2026-08-30T14:00:00.000Z');
+    process.env.CODEX_HOME = home;
+    process.env.RAC_HOST_PROC = await fakeProc(321, [pinnedFile]);
+    const baseline = await codexRolloutBaseline({ pid: 321, cwd });
+
+    // ordinary turns never follow a later pane rollout
+    const replacementFile = await writeRollout(home, '0198d100-0000-7000-8000-0000000000e2', turnRecords(1, 'new', 'After', 'Wrong answer.'), cwd, '2026-08-30T16:00:00.000Z');
+    process.env.RAC_HOST_PROC = await fakeProc(321, [replacementFile]);
+    await expect(codexTurnSince(baseline!)).resolves.toEqual({ kind: 'pending' });
+    expect(baseline).toEqual({ rollout: pinnedFile, ordinal: 4 });
+  });
+
   it('reads an aborted post-reset turn from a deferred baseline', async () => {
     const home = await codexHome();
     const cwd = '/home/ubuntu/cora';

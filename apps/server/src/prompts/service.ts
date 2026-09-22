@@ -5,12 +5,13 @@ import type { DiscoveryService } from '../discovery/service.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { failedTurnFromCapture, lastPromptFromHistory, latestCompletedAssistantTurn, queueReadyPrompt } from '../adapters/codex-turns.js';
 import { adapterFor } from '../adapters/registry.js';
-import type { Adapter, AgentKind, CompletionBaseline, CompletionEvent, SubmissionDraftState, SubmissionMode, TmuxKey } from '../adapters/types.js';
+import type { Adapter, AgentKind, CompletionBaseline, CompletionEvent, PaneSnapshot, SubmissionDraftState, SubmissionMode, TmuxKey } from '../adapters/types.js';
 import type { Agent } from '../domain/models.js';
 import { run } from '../tmux/command.js';
 import type { PromptHistoryService } from '../prompt-history/service.js';
 import { agentAttentionState } from '../notifications.js';
 import { QueuedPromptService, type QueuedPrompt, type QueuedPromptSummary } from './queue.js';
+import type { ResetBoundary } from './reset-boundaries.js';
 import { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentData, promptAttachmentName, validPrompt, validPromptAttachments, type PromptAttachment } from './validation.js';
 import { expandCommand } from '../launch/service.js';
 import { configuredWorktreeForWorkspace } from '../workspaces/resolver.js';
@@ -24,6 +25,8 @@ export { maxPromptAttachmentBytes, maxPromptAttachments, promptAttachmentBytes, 
 export type UndeliveredDrain = (scope: string, prompt: QueuedPrompt) => Promise<boolean>;
 
 const answerCaptureGraceMs = 10_000;
+// preserve prompts through reset startup but do not strand them behind a dead pane
+const conversationResetGraceMs = 10_000;
 // a reported-state prompt must report `working` within this window or the dispatch is failed
 const reportedWorkingGraceMs = 5_000;
 // a queued submit key can be swallowed when it races an unrendered composer
@@ -35,7 +38,7 @@ const submissionAcceptAttempts = 20;
 // retry after visible-draft grace periods without extending the acceptance window
 const submissionRetryAttempts: ReadonlySet<number> = new Set([6, 14]);
 // the console never composes submission through an unknown kind
-type AdapterView = Pick<Adapter, 'stateSource' | 'submission' | 'turns' | 'questions' | 'completion'>;
+type AdapterView = Pick<Adapter, 'stateSource' | 'submission' | 'turns' | 'questions' | 'completion' | 'newConversation'>;
 type CancelOutcome = 'ok' | 'unavailable' | 'not-working';
 // an Adapter that announces its own Attention state (rather than the console
 // inferring it from the title): it must report `working` before a prompt counts
@@ -55,8 +58,16 @@ type PromptCompletion = 'completed' | 'failed' | 'pending';
 type PromptReconciliation = 'pending' | 'settled' | 'recorded';
 type PromptPhase = { state: 'awaiting-start' | 'working' | 'awaiting-answer' | 'halted'; changedAt: number; historyEntryId?: string; historyPrompt?: string; baselineCompletion?: string; rolloutBaseline?: CompletionBaseline };
 type DiscoveredTarget = NonNullable<Awaited<ReturnType<DiscoveryService['target']>>>;
+// keep reset readiness and its first-turn boundary separate from model completion
+type ConversationReset = ResetBoundary & { observed: PaneSnapshot[]; state: 'pending' | 'ready' | 'expired' };
+// share the adapter's reset and readiness snapshot shape
+const paneSnapshot = (agent: Agent): PaneSnapshot => ({ title: agent.title, attention: agentAttentionState(agent), ...(agent.conversationId === undefined ? {} : { conversationId: agent.conversationId }) });
 export class PromptService {
   private readonly phases = new Map<string, PromptPhase>();
+  // retain the reset instant until the first real prompt anchors its fresh rollout
+  private readonly conversationResets = new Map<string, ConversationReset>();
+  // hydrate each scope once before input or observation can race its durable boundary
+  private readonly restoredResets = new Map<string, Promise<void>>();
   private readonly dispatching = new Set<string>();
   private readonly reconciled = new Set<string>();
   // track work observed after service startup
@@ -91,10 +102,14 @@ export class PromptService {
       return this.queued !== undefined && await this.queued.enqueue(scope, prompt, attachments) !== undefined;
     }
     try {
+      await this.restoreConversationReset(scope, agentId);
+      const previousReset = this.conversationResets.get(scope);
+      // retry readiness for new input without forgetting the original conversation boundary
+      if (previousReset?.agentId === agentId && previousReset.state === 'expired') previousReset.state = 'pending';
       const waiting = await this.queued?.list(scope);
       // retain prompts behind active or halted work
-      if (this.queued !== undefined && (agentAttentionState(first.agent) !== 'finished' || this.phases.has(scope) || (waiting?.length ?? 0) > 0)) {
-        const adopting = agentAttentionState(first.agent) !== 'finished' && !this.phases.has(scope);
+      if (this.queued !== undefined && (agentAttentionState(first.agent) !== 'finished' || this.phases.has(scope) || previousReset?.state === 'pending' || previousReset !== undefined && previousReset.agentId !== agentId || (waiting?.length ?? 0) > 0)) {
+        const adopting = agentAttentionState(first.agent) !== 'finished' && !this.phases.has(scope) && previousReset === undefined;
         const baselineCompletion = adopting ? await this.completionSignature(agentId) : undefined;
         const rolloutBaseline = adopting ? await this.captureRolloutBaseline(agentId, this.resolveAdapter(first.agent.kind)) : undefined;
         const queued = await this.queued.enqueue(scope, prompt, attachments);
@@ -161,8 +176,11 @@ export class PromptService {
     // require a current target
     if (target === undefined) return undefined;
     const scope = this.historyScope(target.agent, agentId);
+    await this.restoreConversationReset(scope, agentId);
     // reject overlapping input and lifecycle work
-    if (this.restartLocks.has(scope) || this.lockedAgentIds.has(agentId) || this.phases.has(scope) || (this.activeMutations.get(agentId) ?? 0) > 0
+    const reset = this.conversationResets.get(scope);
+    // reserve a live owner's reset even when a sibling shares the queue scope
+    if (this.restartLocks.has(scope) || this.lockedAgentIds.has(agentId) || this.phases.has(scope) || reset?.state === 'pending' || reset !== undefined && reset.agentId !== agentId || (this.activeMutations.get(agentId) ?? 0) > 0
       || (expectedMutationVersion !== undefined && this.mutationVersion(agentId) !== expectedMutationVersion)
       || (expectedMutationGeneration !== undefined && this.mutationGeneration() !== expectedMutationGeneration)) return undefined;
     this.restartLocks.add(scope);
@@ -229,11 +247,21 @@ export class PromptService {
   // advance managed prompt completion
   async observe(agent: Pick<Agent, 'id' | 'displayLabel' | 'workspace' | 'attention' | 'kind'>): Promise<void> {
     const scope = this.historyScope(agent, agent.id);
-    // pause queue dispatch during restart handoffs
-    if (this.restartLocks.has(scope)) return;
+    await this.restoreConversationReset(scope, agent.id);
+    // pause observation during restart handoffs and in-flight delivery
+    if (this.restartLocks.has(scope) || this.dispatching.has(scope)) return;
+    const reset = this.conversationResets.get(scope);
+    // duplicate agents cannot settle, expire, or dispatch another pane's reset
+    if (reset !== undefined && reset.agentId !== agent.id) return;
     // an Adapter without Turn capture cannot read an answer back: complete on
     // working -> finished, store the prompt alone, and skip the grace/halt path
     const adapter = this.resolveAdapter(agent.kind);
+    // a reset spinner is not a model turn and must never enter answer recovery
+    if (this.conversationResets.get(scope)?.state === 'pending' && !this.phases.has(scope)) {
+      // use fresh reset readiness rather than a possibly stale dashboard attention snapshot
+      if (await this.settleConversationReset(agent.id, scope, adapter)) await this.dispatch(agent.id, scope);
+      return;
+    }
     if (adapter !== undefined && adapter.turns === undefined) return this.observeTurnless(agent, scope, reportsOwnState(adapter));
     const busy = agentAttentionState(agent) !== 'finished';
     const phase = this.phases.get(scope);
@@ -279,6 +307,26 @@ export class PromptService {
       }
       // retry capture and persistence during the grace window
       if (completion === 'pending' && Date.now() - phase.changedAt < answerCaptureGraceMs) return;
+      // external resets can spin without a turn; never fail work we have not attempted
+      if (completion === 'pending' && phase.historyPrompt === undefined && phase.historyEntryId === undefined) {
+        const target = await this.discovery.target(agent.id, true);
+        const capability = adapter?.newConversation;
+        const capture = target === undefined ? undefined : await this.tmux.capture(target.socket, target.agent.paneId).catch(() => undefined);
+        // preserve the queue until the actual pane is ready, not merely its cached title
+        if (target === undefined || capability === undefined || capture === undefined
+          || agentAttentionState(target.agent) !== 'finished' || capability.ready(paneSnapshot(target.agent), capture).state !== 'ready'
+          || !capability.composerEmpty(capture)) return;
+        // reserve the adopted phase while its durable reset boundary is written
+        if (this.phases.get(scope) !== phase || this.dispatching.has(scope)) return;
+        this.dispatching.add(scope);
+        try {
+          // the reset time is unknown; follow the pane's first rollout replacement instead
+          await this.rememberConversationReset(scope, { agentId: agent.id, at: Date.now(), before: paneSnapshot(target.agent), external: true }, 'ready');
+          this.phases.delete(scope);
+        } finally { this.dispatching.delete(scope); }
+        await this.dispatch(agent.id, scope);
+        return;
+      }
       // save the queue after failed, cancelled, or unrecordable work
       if (completion !== 'completed') {
         this.phases.set(scope, { state: 'halted', changedAt: Date.now() });
@@ -351,16 +399,15 @@ export class PromptService {
     }
   }
 
-  // `resetAt` is threaded only from a fresh `submit` that just reset the pane; a
-  // queue drain from `observe` passes none, so its baseline is captured as usual
+  // scheduled runs may supply a reset instant; interactive resets retain their own
   private async dispatch(agentId: string, scope: string, resetAt?: number): Promise<void> {
     // reject overlapping or held dispatches
-    if (this.dispatching.has(scope) || this.phases.has(scope) || this.restartLocks.has(scope)) return;
+    if (this.dispatching.has(scope) || this.phases.has(scope) || this.restartLocks.has(scope) || this.conversationResets.get(scope)?.state === 'pending') return;
     this.dispatching.add(scope);
     try {
       const prompt = await this.queued?.next(scope);
       // consume only after the adapter confirms submission
-      if (prompt !== undefined && await this.send(agentId, prompt.text, prompt.attachments ?? [], undefined, 'queue', true, resetAt)) {
+      if (prompt !== undefined && await this.send(agentId, prompt.text, prompt.attachments ?? [], undefined, 'queue', true, resetAt, prompt.id)) {
         await this.queued?.remove(scope, prompt.id);
       }
     } finally { this.dispatching.delete(scope); }
@@ -368,16 +415,17 @@ export class PromptService {
 
   // send one prompt to a stable pane. `resetAt`, when set, anchors the completion
   // baseline on the conversation the pane was just reset into (see `submit`).
-  private async send(agentId: string, prompt: string, attachments: PromptAttachment[], discovered?: DiscoveredTarget, submission: 'queue' | 'enter' | 'confirmed-enter' = 'queue', durable = false, resetAt?: number): Promise<boolean> {
+  private async send(agentId: string, prompt: string, attachments: PromptAttachment[], discovered?: DiscoveredTarget, submission: 'queue' | 'enter' | 'confirmed-enter' = 'queue', durable = false, resetAt?: number, queuedPromptId?: string): Promise<boolean> {
     const first = discovered ?? await this.discovery.target(agentId);
     if (!first) return false;
     // the Adapter describes the paste text and the submit keys; the console pastes and sends them
     const adapter = this.resolveAdapter(first.agent.kind);
     if (adapter === undefined) return false;
-    // an instant conversation-control command (Claude's /clear) never reports
-    // `working`; an awaiting-start phase for it would time out and sweep a queued
-    // follow-up into saved prompts, so it is submitted fire-and-forget with no phase
-    const instant = adapter.submission.completesWithoutWork?.(prompt) ?? false;
+    const capability = adapter.newConversation;
+    const reset = attachments.length === 0 && capability !== undefined
+      && (prompt.trim() === capability.command || capability.aliases?.includes(prompt.trim()) === true);
+    // reset commands have no model answer, even when startup briefly looks busy
+    const instant = reset || (adapter.submission.completesWithoutWork?.(prompt) ?? false);
     const scope = this.historyScope(first.agent, agentId);
     const workspace = this.workspaceFor(first.agent.workspace);
     const staged = await this.stageAttachments(workspace, attachments);
@@ -422,7 +470,10 @@ export class PromptService {
     // snapshot the rollout baseline before the turn starts: completion is then a
     // `task_complete` recorded past it (the native-Codex TUI renders no boundary,
     // so scraping the pane never observes the finish)
-    const rolloutBaseline = this.queued === undefined ? undefined : await this.captureRolloutBaseline(agentId, adapter, resetAt);
+    const previousReset = this.conversationResets.get(scope);
+    const matchingReset = previousReset?.agentId === agentId ? previousReset : undefined;
+    const baselineResetAt = resetAt ?? (matchingReset?.external ? undefined : matchingReset?.at);
+    const rolloutBaseline = this.queued === undefined || instant ? undefined : await this.captureRolloutBaseline(agentId, adapter, baselineResetAt, matchingReset?.external);
     // refresh after every settle/baseline delay so key selection reflects send-time state
     const submitTarget = await this.discovery.target(agentId, true);
     if (!submitTarget || submitTarget.socket.fingerprint !== second.socket.fingerprint || submitTarget.agent.paneId !== second.agent.paneId) {
@@ -433,6 +484,8 @@ export class PromptService {
     const adapterKeys = agentAttentionState(submitTarget.agent) === 'finished' ? composed.idleKeys ?? composed.keys : composed.keys;
     // the update advisor is submitted with Enter regardless of the Adapter's keys
     const keys: TmuxKey[] = submission === 'enter' || submission === 'confirmed-enter' ? ['Enter'] : adapterKeys;
+    const submittedAt = Date.now();
+    const resetBefore = paneSnapshot(submitTarget.agent);
     let submitted = await this.tmux.sendKeys(submitTarget.socket, submitTarget.agent.paneId, keys);
     // require adapter acknowledgement before consuming durable queue state
     if (submitted && settle) submitted = await this.waitForSubmissionAccepted(submitTarget, composed.text, observeDraft, keys);
@@ -441,14 +494,101 @@ export class PromptService {
     if (!submitted) {
       // halt only when a durable prompt is still waiting
       await this.holdFailedSubmission(scope);
-    } else if (!instant) {
-      // track the successful prompt (an instant command has no completion to await
-      // and no answer to record, so it opens no phase and leaves the queue free)
+    } else if (instant) {
+      // release the provisional render phase instead of waiting for a nonexistent answer
+      this.phases.delete(scope);
+      // hold follow-ups through startup and anchor their completion on the new thread
+      if (reset && this.queued !== undefined) {
+        await this.rememberConversationReset(scope, { agentId, at: submittedAt, before: resetBefore, ...(queuedPromptId === undefined ? {} : { resetPromptId: queuedPromptId }) }, 'pending');
+      }
+    } else {
+      // consume the durable boundary only once a real post-reset prompt is accepted
+      if (matchingReset !== undefined) await this.queued?.resets.clear(scope, matchingReset.id);
+      this.conversationResets.delete(scope);
+      // track real prompts and their answers rather than reset commands
       const entry = await this.history?.record(scope, attachmentPrompt).catch(() => undefined);
       // monitor managed prompt completion
       if (this.queued !== undefined) this.phases.set(scope, { state: 'awaiting-start', changedAt: Date.now(), historyPrompt: attachmentPrompt, ...(entry === undefined ? {} : { historyEntryId: entry.id }), ...(rolloutBaseline === undefined ? {} : { rolloutBaseline }) });
     }
     return submitted;
+  }
+
+  // recover a reset even when its command was consumed before the server restarted
+  private async restoreConversationReset(scope: string, agentId: string): Promise<void> {
+    // deployments without durable queues have no boundary to restore
+    if (this.queued === undefined) return;
+    let restoration = this.restoredResets.get(scope);
+    // share one in-flight read so an observer cannot reinstall a consumed boundary
+    if (restoration === undefined) {
+      restoration = this.queued.resets.get(scope).then(async boundary => {
+        // missing boundaries leave normal completion recovery unchanged
+        if (boundary === undefined) return;
+        // close the crash window between durable reset acknowledgement and queue removal
+        if (boundary.resetPromptId !== undefined) await this.queued!.remove(scope, boundary.resetPromptId);
+        this.conversationResets.set(scope, { ...boundary, observed: [], state: 'pending' });
+        this.reconciled.add(scope);
+      }).catch(error => {
+        this.restoredResets.delete(scope);
+        throw error;
+      });
+      this.restoredResets.set(scope, restoration);
+    }
+    await restoration;
+    const reset = this.conversationResets.get(scope);
+    // distinguish a live sibling from a genuinely removed reset owner
+    if (reset !== undefined && reset.agentId !== agentId && await this.discovery.target(reset.agentId, true) === undefined) {
+      await this.queued.resets.clear(scope, reset.id);
+      // preserve any replacement recorded during the fresh discovery read
+      if (this.conversationResets.get(scope) === reset) this.conversationResets.delete(scope);
+    }
+  }
+
+  // persist before the reset command leaves the queue, including an empty follow-up queue
+  private async rememberConversationReset(scope: string, boundary: Omit<ResetBoundary, 'id'>, state: 'pending' | 'ready'): Promise<void> {
+    const durable = { ...boundary, id: randomBytes(18).toString('base64url') };
+    await this.queued?.resets.set(scope, durable);
+    this.conversationResets.set(scope, { ...durable, observed: [], state });
+    this.reconciled.add(scope);
+    this.observedWorking.delete(scope);
+    this.reconciliationPendingSince.delete(scope);
+  }
+
+  // retain queued work until the reset settles into a genuinely ready empty composer
+  private async settleConversationReset(agentId: string, scope: string, adapter: AdapterView | undefined): Promise<boolean> {
+    const reset = this.conversationResets.get(scope);
+    // normal turns and already settled resets need no additional terminal reads
+    if (reset === undefined || reset.state !== 'pending') return true;
+    const capability = adapter?.newConversation;
+    const target = reset.agentId === agentId ? await this.discovery.target(agentId, true) : undefined;
+    let lost = false;
+    // never release a reset into a different pane or unsupported adapter
+    if (target !== undefined && capability !== undefined) {
+      const snapshot = paneSnapshot(target.agent);
+      reset.observed.push(snapshot);
+      // bound reset diagnostics even if a dialog remains open indefinitely
+      if (reset.observed.length > 20) reset.observed.shift();
+      // an external boundary was already settled when recorded; only readiness needs rechecking
+      const settling = reset.external ? 'settled' : capability.settled(reset.before, reset.observed, Date.now() - reset.at);
+      lost = settling === 'lost';
+      // a visible composer during startup is not permission to submit
+      if (settling === 'settled' && snapshot.attention === 'finished') {
+        const capture = await this.tmux.capture(target.socket, target.agent.paneId).catch(() => undefined);
+        // wait through loading, drafts, and dialogs without pasting into them
+        if (capture !== undefined && capability.ready(snapshot, capture).state === 'ready' && capability.composerEmpty(capture)) {
+          // another observer may already have advanced to a newer reset
+          if (this.conversationResets.get(scope) !== reset) return false;
+          reset.state = 'ready';
+          return true;
+        }
+      }
+    }
+    // leave genuinely lost or blocked resets recoverable through the existing notes path
+    if ((lost || Date.now() - reset.at >= conversationResetGraceMs) && this.conversationResets.get(scope) === reset) {
+      // retain the first-turn anchor while releasing the failed readiness reservation
+      reset.state = 'expired';
+      await this.holdFailedSubmission(scope);
+    }
+    return false;
   }
 
   // wait (briefly) for a pasted interactive prompt to render on the validated pane,
@@ -680,12 +820,13 @@ export class PromptService {
   // reads completion from its event log and the pane's pid is known. The pid drives
   // the exact fd-walk; the working directory is the fallback when it is blocked.
   // `resetAt` defers the baseline to the conversation the pane was just reset into.
-  private async captureRolloutBaseline(agentId: string, adapter: AdapterView | undefined, resetAt?: number): Promise<CompletionBaseline | undefined> {
+  // untracked resets follow the pane's first replacement without guessing its timestamp
+  private async captureRolloutBaseline(agentId: string, adapter: AdapterView | undefined, resetAt?: number, followReset?: boolean): Promise<CompletionBaseline | undefined> {
     if (adapter?.completion === undefined) return undefined;
     const pid = this.paneProcessId(agentId);
     if (pid === undefined) return undefined;
     const cwd = this.paneWorkingDirectory(agentId);
-    return await adapter.completion.baseline({ pid, ...(cwd === undefined ? {} : { cwd }) }, resetAt).catch(() => undefined);
+    return await adapter.completion.baseline({ pid, ...(cwd === undefined ? {} : { cwd }) }, resetAt, followReset).catch(() => undefined);
   }
 
   // the newest terminal turn past the snapshotted baseline from the Adapter's event

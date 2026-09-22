@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { codexDraftState } from '../../src/adapters/codex-turns.js';
+import { codexNewConversation } from '../../src/adapters/codex-new-conversation.js';
 
 // reproduce the single-dot animation that Codex draws over blank composer cells
 const sparkleDots = [...'⠁⠂⠄⠈⠐⠠⡀⢀'];
@@ -23,6 +24,14 @@ describe('Codex draft observation', () => {
   // acknowledge submission even while the empty composer animates
   it.each(sparkleDots)('recognizes a cleared composer with %s after its marker', dot => {
     expect(codexDraftState(capture(animated(`›${dot}Ask Codex to do anything`)), 'review, commit, and push ')).toBe('cleared');
+  });
+
+  // reset readiness must share the submission parser's decorative-blank handling
+  it.each(sparkleDots)('recognizes an empty post-reset composer decorated with %s', dot => {
+    expect(codexNewConversation.composerEmpty(capture(animated(`›${dot}Ask${dot}Codex to do anything`)))).toBe(true);
+    expect(codexNewConversation.composerEmpty(capture(animated(`›${dot}`)))).toBe(true);
+    expect(codexNewConversation.composerEmpty(capture(animated(`›${dot}draft`)))).toBe(false);
+    expect(codexNewConversation.composerEmpty(capture(`› ${dot}`))).toBe(false);
   });
 
   // preserve visible tails through animated paragraph spacing

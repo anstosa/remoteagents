@@ -21,7 +21,8 @@ function fixture(capture = asyncCapture, kind = 'codex') {
     // record explicit navigation and submission
     sendKeys: vi.fn(async () => true)
   };
-  const queued = { enqueue: vi.fn(), list: vi.fn() };
+  // expose queue activity and no pending reset
+  const queued = { enqueue: vi.fn(), list: vi.fn(), resets: { get: vi.fn().mockResolvedValue(undefined) } };
   const service = new PromptService({ target, worktreesNow: () => [] } as never, tmux as never, undefined, queued as never);
   return { service, target, tmux, queued };
 }

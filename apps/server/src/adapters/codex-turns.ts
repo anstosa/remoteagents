@@ -21,7 +21,7 @@ const modifierResets: Partial<Record<number, readonly number[]>> = {
 };
 
 // codex paints particles with RGB foreground/background and no modifiers; authored text retains its own style
-function withoutComposerSparkles(value: string): string {
+export function withoutComposerSparkles(value: string): string {
   let rgbForeground = false;
   let rgbBackground = false;
   const modifiers = new Set<number>();
