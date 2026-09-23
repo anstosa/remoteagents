@@ -32,6 +32,8 @@ import './styles.css';
 const actionIconPaths = {
   pencil: 'm4 20 4-1 11-11-3-3L5 16l-1 4ZM14 7l3 3',
   trash: 'M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6',
+  lock: 'M7 11V7a5 5 0 0 1 10 0v4M5 11h14v10H5zM12 15v2',
+  unlock: 'M7 11V7a5 5 0 0 1 9.5-2M5 11h14v10H5zM12 15v2',
   send: 'M22 2 11 13M22 2l-7 20-4-9-9-4Z',
   queue: 'M4 6h10M4 11h10M4 16h7M18 13v6m-3-3h6'
 };
@@ -185,7 +187,7 @@ const isQueuedPrompt = (value: unknown): value is QueuedPrompt => value !== null
   && typeof (value as QueuedPrompt).createdAt === 'string'
   && ((value as QueuedPrompt).attachments === undefined || Array.isArray((value as QueuedPrompt).attachments) && (value as QueuedPrompt).attachments!.every(attachment => attachment !== null && typeof attachment === 'object' && typeof attachment.name === 'string' && Number.isInteger(attachment.size) && attachment.size >= 0));
 type NoteAttachment = { name: string; size: number };
-type WorktreeNote = { id: string; text: string; title?: string; attachments?: NoteAttachment[]; source?: 'queued-prompt'; schedule?: Schedule; nextRun?: string };
+type WorktreeNote = { id: string; text: string; title?: string; locked?: boolean; attachments?: NoteAttachment[]; source?: 'queued-prompt'; schedule?: Schedule; nextRun?: string };
 // the Adapter and target a new Schedule pre-fills with, plus the launcher rows the note pane's
 // Adapter and target pickers offer, all resolved from the dashboard for the active tab's context
 type SchedulePrefill = { kind: AgentKind; target: ScheduleTarget; runsOnText: string; adapters: ScheduleAdapterOption[]; targets: ScheduleTargetOption[]; liveAgentIds: string[] };
@@ -2565,6 +2567,7 @@ const isWorktreeNote = (value: unknown): value is WorktreeNote => {
   const note = value as Partial<WorktreeNote>;
   const attachments = note.attachments;
   return typeof note.id === 'string' && typeof note.text === 'string' && (note.title === undefined || typeof note.title === 'string')
+    && (note.locked === undefined || typeof note.locked === 'boolean')
     && (attachments === undefined || Array.isArray(attachments) && attachments.every(
       // require valid file metadata before exposing note actions
       attachment => attachment !== null && typeof attachment === 'object' && typeof attachment.name === 'string' && Number.isSafeInteger(attachment.size) && attachment.size > 0
@@ -3037,6 +3040,9 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   const [draft, setDraft] = useState('');
   const [loading, setLoading] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [lockPending, setLockPending] = useState(false);
+  const [lockError, setLockError] = useState('');
+  const lockMutation = useRef<{ noteId: string; resourceBase: string } | undefined>(undefined);
   const [menuRenameDraft, setMenuRenameDraft] = useState<{ id: string; title: string }>();
   const [menuRenamingId, setMenuRenamingId] = useState<string>();
   const [menuDeletingId, setMenuDeletingId] = useState<string>();
@@ -3057,8 +3063,9 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   const resourceBase = persistenceResourceBase(worktreeId, agentId);
   // scope previews to the currently open note
   const noteFilePreview = useFilePreview(`${resourceBase}/notes/${encodeURIComponent(activeNote?.id ?? '')}/attachments/preview`);
-  const attachmentContext = useRef(resourceBase);
-  attachmentContext.current = resourceBase;
+  // keep metadata responses attached to their originating context
+  const noteContext = useRef(resourceBase);
+  noteContext.current = resourceBase;
   const noteViewId = worktreeId ?? (agentId === undefined ? undefined : `agent:${agentId}`);
   const { generation: dashboardGeneration, notesRevision, serverStartedAt } = useContext(DashboardGenerationContext);
   // scope the in-memory revision to its server process
@@ -3208,6 +3215,9 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
     setMenuRenameDraft(undefined);
     setMenuRenamingId(undefined);
     setMenuDeletingId(undefined);
+    lockMutation.current = undefined;
+    setLockPending(false);
+    setLockError('');
     setMenuError('');
     setNoteAttachmentError('');
     setDraggingNoteFiles(false);
@@ -3256,20 +3266,20 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
     });
     return () => { cancelled = true; };
   }, [noteViewId, resourceBase]);
-  // refresh queued-note badges even while closed; schedule-only changes wait until notes are visible
+  // refresh recovered-note badges and locks even while closed; schedule-only changes stay lazy
   useEffect(() => {
     // require a current snapshot and persistence context
     if (resourceBase === undefined || noteViewId === undefined || dashboardGeneration === undefined) return;
-    // let foreground loads settle before consuming background revisions
-    if (loading) return;
+    // let foreground loads and lock writes settle before consuming revisions
+    if (loading || lockPending) return;
     const previous = seenGeneration.current;
-    const queuedNotesChanged = notesRevisionKey !== seenNotesRevision.current;
+    const notesChanged = notesRevisionKey !== seenNotesRevision.current;
     // establish the baseline on the first snapshot without refetching (the mount load already fetched)
-    if (previous === undefined && !queuedNotesChanged) { seenGeneration.current = dashboardGeneration; return; }
+    if (previous === undefined && !notesChanged) { seenGeneration.current = dashboardGeneration; return; }
     // skip snapshots whose notes have already been fetched
-    if (previous === dashboardGeneration && !queuedNotesChanged) return;
-    // keep ordinary schedule refreshes lazy without hiding new queued notes
-    if (!menuOpen && activeNote === undefined && !queuedNotesChanged) return;
+    if (previous === dashboardGeneration && !notesChanged) return;
+    // keep schedule refreshes lazy without hiding new notes or lock changes
+    if (!menuOpen && activeNote === undefined && !notesChanged) return;
     let cancelled = false;
     const sequence = ++noteLoadSequence.current;
     // preserve drafts while refreshing server-owned note metadata
@@ -3279,12 +3289,12 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
       seenGeneration.current = dashboardGeneration;
       seenNotesRevision.current = notesRevisionKey;
       setNotes(loaded);
-      // refresh the open note's Schedule display without disturbing its live text or draft
+      // refresh server-owned metadata without disturbing the live text or draft
       const current = activeNoteRef.current;
       const fresh = current === undefined ? undefined : loaded.find(candidate => candidate.id === current.id);
       // keep the active editor attached to refreshed metadata
       if (current !== undefined && fresh !== undefined) {
-        const updated = { ...current, schedule: fresh.schedule, nextRun: fresh.nextRun, ...(attachmentMutation.current ? {} : { attachments: fresh.attachments }), ...(fresh.title === undefined ? {} : { title: fresh.title }) };
+        const updated = { ...current, locked: fresh.locked, schedule: fresh.schedule, nextRun: fresh.nextRun, ...(attachmentMutation.current ? {} : { attachments: fresh.attachments }), ...(fresh.title === undefined ? {} : { title: fresh.title }) };
         activeNoteRef.current = updated;
         setActiveNote(updated);
       }
@@ -3293,7 +3303,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
       if (!cancelled && sequence === noteLoadSequence.current) setLoading(false);
     });
     return () => { cancelled = true; };
-  }, [dashboardGeneration, notesRevisionKey, resourceBase, noteViewId, menuOpen, activeNote, loading]);
+  }, [dashboardGeneration, notesRevisionKey, resourceBase, noteViewId, menuOpen, activeNote, loading, lockPending]);
   // let a sibling component (the queued panel's Save as note, which lives in Prompt) force this
   // note view's list to refetch, so a newly saved Note appears when the fly-out is next opened
   useEffect(() => {
@@ -3332,10 +3342,10 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   }, [activeNote?.id, editing]);
 
   const restoreTriggerFocus = () => window.requestAnimationFrame(() => triggerRef.current?.focus());
-  // open one note without abandoning an attachment upload
+  // open one note without abandoning pending metadata writes
   const open = (note: WorktreeNote, edit?: boolean) => {
-    // keep the current attachment mutation attached to its visible note
-    if (attachmentMutation.current) return;
+    // keep metadata mutations attached to the visible note
+    if (attachmentMutation.current || lockMutation.current !== undefined) return;
     flush();
     const text = dirtyTexts.current.get(note.id) ?? note.text;
     const opened = { ...note, text };
@@ -3354,6 +3364,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
     setCopyState('idle');
     setSendState('idle');
     setNoteAttachmentError('');
+    setLockError('');
     setSaveStatus(failedNotes.current.has(note.id) ? 'error' : dirtyTexts.current.has(note.id) ? 'saving' : 'saved');
     setMenuOpen(false);
     if (dirtyTexts.current.has(note.id)) persist(note.id, text);
@@ -3472,7 +3483,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   const changeNoteAttachments = async (filesOrName: File[] | string) => {
     const note = activeNoteRef.current;
     // serialize file changes with actions that consume or delete the note
-    if (resourceBase === undefined || note === undefined || attachmentMutation.current || deleting || sendState === 'sending' || menuRunningId !== undefined) return;
+    if (resourceBase === undefined || note === undefined || attachmentMutation.current || lockMutation.current !== undefined || deleting || sendState === 'sending' || menuRunningId !== undefined) return;
     attachmentMutation.current = true;
     setAttachmentPending(true);
     setNoteAttachmentError('');
@@ -3488,7 +3499,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
       // require an acknowledged note in the original persistence context
       if (!isWorktreeNote(saved) || saved.id !== note.id) throw new Error();
       // ignore responses belonging to a tab that is no longer selected
-      if (attachmentContext.current !== base) return;
+      if (noteContext.current !== base) return;
       noteLoadSequence.current += 1;
       setLoading(false);
       // merge only file metadata so concurrent text edits remain intact
@@ -3503,7 +3514,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
       }
     } catch {
       // surface failures only in the originating note context
-      if (attachmentContext.current === base) setNoteAttachmentError(typeof filesOrName === 'string' ? 'Unable to remove this attachment. Please try again.' : 'Unable to save these attachments. Check the file limits and try again.');
+      if (noteContext.current === base) setNoteAttachmentError(typeof filesOrName === 'string' ? 'Unable to remove this attachment. Please try again.' : 'Unable to save these attachments. Check the file limits and try again.');
     } finally {
       attachmentMutation.current = false;
       setAttachmentPending(false);
@@ -3532,7 +3543,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
     }
     void changeNoteAttachments(selected);
   };
-  const noteFilesDisabled = attachmentPending || deleting || sendState === 'sending' || menuRunningId !== undefined;
+  const noteFilesDisabled = attachmentPending || lockPending || deleting || sendState === 'sending' || menuRunningId !== undefined;
   // accept files without changing ordinary text and link dragging
   const dragNoteFiles = (event: React.DragEvent<HTMLElement>) => {
     // browser file contents remain protected until drop
@@ -3692,6 +3703,47 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
       setMenuRenamingId(undefined);
     }
   };
+  // change only deletion protection without replacing the current draft
+  const toggleNoteLock = async () => {
+    const note = activeNoteRef.current;
+    // serialize protection changes with deletes and attachment writes
+    if (resourceBase === undefined || note === undefined || lockMutation.current !== undefined || deleting || menuDeletingId !== undefined || attachmentMutation.current) return;
+    const mutation = { noteId: note.id, resourceBase };
+    const locked = !note.locked;
+    lockMutation.current = mutation;
+    setLockPending(true);
+    setLockError('');
+    try {
+      const response = await request(`${resourceBase}/notes/${encodeURIComponent(note.id)}/lock`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ locked }) });
+      // retain the last confirmed lock state after rejected writes
+      if (!response.ok) throw new Error('note lock unavailable');
+      const saved: unknown = await response.json();
+      // require confirmation of the requested protection state
+      if (!isWorktreeNote(saved) || saved.id !== mutation.noteId || Boolean(saved.locked) !== locked) throw new Error('invalid note lock response');
+      // ignore responses from a replaced worktree or scratch context
+      if (lockMutation.current !== mutation || noteContext.current !== mutation.resourceBase) return;
+      noteLoadSequence.current += 1;
+      setLoading(false);
+      // merge only protection metadata so concurrent edits remain intact
+      setNotes(current => current?.map(candidate => candidate.id === note.id ? { ...candidate, locked } : candidate));
+      const current = activeNoteRef.current;
+      // preserve the active note's live text and other metadata
+      if (current?.id === note.id) {
+        const updated = { ...current, locked };
+        activeNoteRef.current = updated;
+        setActiveNote(updated);
+      }
+    } catch {
+      // surface failures only in their originating context
+      if (lockMutation.current === mutation && noteContext.current === mutation.resourceBase) setLockError(locked ? 'Unable to lock note. Please try again.' : 'Unable to unlock note. Please try again.');
+    } finally {
+      // do not release a newer context's pending operation
+      if (lockMutation.current === mutation) {
+        lockMutation.current = undefined;
+        setLockPending(false);
+      }
+    }
+  };
   // remove one deleted note from local state
   const forgetNote = (note: WorktreeNote, restoreFocusAfterClose: boolean) => {
     acknowledgedTexts.current.delete(note.id);
@@ -3717,6 +3769,8 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   };
   // delete one note after pending saves settle
   const deleteNote = async (note: WorktreeNote, restoreFocusAfterClose: boolean) => {
+    // keep every local deletion path behind the confirmed protection state
+    if (note.locked || lockMutation.current !== undefined) throw new Error('note is locked');
     // discard a pending autosave for this note
     if (activeNoteRef.current?.id === note.id && saveTimer.current !== undefined) {
       window.clearTimeout(saveTimer.current);
@@ -3730,10 +3784,11 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
     if (!response.ok) throw new Error('note delete unavailable');
     forgetNote(note, restoreFocusAfterClose);
   };
+  // remove an unlocked note from its header or blank-note cleanup
   const remove = () => {
     const note = activeNoteRef.current;
     // serialize pane deletes
-    if (resourceBase === undefined || note === undefined || deleting || attachmentMutation.current) return;
+    if (resourceBase === undefined || note === undefined || note.locked || lockMutation.current !== undefined || deleting || attachmentMutation.current) return;
     setDeleting(true);
     void deleteNote(note, true).catch(() => {
       // preserve dirty state after a failed pane delete
@@ -3745,7 +3800,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   // delete one note from the flyout
   const removeFromMenu = async (note: WorktreeNote) => {
     // serialize menu deletes
-    if (menuDeletingId !== undefined || menuRenamingId !== undefined) return;
+    if (note.locked || lockMutation.current !== undefined || menuDeletingId !== undefined || menuRenamingId !== undefined) return;
     setMenuDeletingId(note.id);
     setMenuError('');
     try {
@@ -3756,12 +3811,12 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
       setMenuDeletingId(undefined);
     }
   };
-  // retain attachment-only notes when closing the pane
+  // retain locked and attachment-only notes when closing the pane
   const close = () => {
-    // avoid deleting a blank note while its first files are uploading
-    if (attachmentMutation.current) return;
-    // remove only notes without text or files
-    if (!noteHasContent({ text: draftRef.current, attachments: activeNoteRef.current?.attachments })) {
+    // wait for metadata writes before deciding whether a blank note is disposable
+    if (attachmentMutation.current || lockMutation.current !== undefined) return;
+    // remove only unlocked notes without text or files
+    if (!activeNoteRef.current?.locked && !noteHasContent({ text: draftRef.current, attachments: activeNoteRef.current?.attachments })) {
       remove();
       return;
     }
@@ -3849,7 +3904,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   const latestResponseAvailable = notes !== undefined && substantialResponse !== undefined && !notes.some(note => note.text === substantialResponse);
   const highlightLatestResponse = latestResponseAvailable && substantialResponse === latestAssistantMessage && latestAssistantMessageOverflows;
   const notesLabel = dirtyCount === 0 ? `Notes (${noteCount})` : `Notes (${noteCount}; ${dirtyCount} unsaved)`;
-  const noteMenuBusy = attachmentPending || menuRenamingId !== undefined || menuDeletingId !== undefined || menuRunningId !== undefined;
+  const noteMenuBusy = attachmentPending || lockPending || menuRenamingId !== undefined || menuDeletingId !== undefined || menuRunningId !== undefined;
   // pulse recovered prompts until the notes list acknowledges them
   const control = <div className="notes-control" ref={anchorRef}>
     <button ref={triggerRef} className={`log-control page-arrow notes-toggle${unreadQueuedNotes ? ' unread-queued-prompts' : ''}${menuOpen || activeNote !== undefined ? ' active' : ''}${dirtyCount > 0 ? ' unsaved' : ''}${highlightLatestResponse ? ' latest-response-available' : ''}`} aria-label={notesLabel} title={`${notesLabel}${unreadQueuedNotes ? ' — unread queued prompts' : ''}`} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}{noteCount > 0 && <span className={`saved-prompts-count notes-count${unreadQueuedNotes ? ' unread' : ''}`} aria-hidden="true">{noteCount}</span>}</button>
@@ -3865,6 +3920,10 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
         // render one sticky note row
         const label = noteName(note);
         const editingTitle = menuRenameDraft?.id === note.id;
+        // require unlocking in the note header before exposing deletion
+        const deletionControl = note.locked
+          ? <button className="log-control note-menu-lock" type="button" disabled aria-label={`Locked note: ${label}`} title="Open note to unlock before deleting"><svg viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.lock} /></svg></button>
+          : <button className="log-control note-menu-delete" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Delete note: ${label}`} title="Delete note" onClick={() => void removeFromMenu(note)}>{menuDeletingId === note.id ? <span className="spinner" /> : <svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.trash} /></svg>}</button>;
         return <div className="note-row" key={note.id}>{editingTitle ? <form className="note-menu-rename-form" onSubmit={event => { event.preventDefault(); void saveMenuTitle(); }} onKeyDown={event => {
           // save or cancel from the keyboard
           if (event.key === 'Escape') { event.preventDefault(); setMenuRenameDraft(undefined); }
@@ -3876,7 +3935,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
           const failed = !dim && lastRunNeedsAttention(note.schedule.lastRun);
           const badgeLabel = invalid ? 'Schedule invalid' : !note.schedule.enabled ? 'Schedule paused' : failed ? 'Last run needs attention' : 'Scheduled';
           return <span className={`note-schedule-badge${dim ? ' paused' : failed ? ' bad' : ''}`} aria-label={badgeLabel} title={badgeLabel}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg></span>;
-        })()}<span className="note-menu-name">{label}</span></button><span className="note-menu-actions"><button className={`log-control note-menu-run${launchAndRunMode ? ' note-menu-launch-run' : ''}`} type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined || !noteHasContent(note) || (!launchAndRunMode && agentId === undefined)} aria-label={launchAndRunMode ? `Launch and run note: ${label}` : `${noteActionLabel}: ${label}`} title={launchAndRunMode ? 'Launch and run note' : noteActionLabel} onClick={() => void runNote(note)}>{menuRunningId === note.id ? <span className="spinner" /> : launchAndRunMode ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v11l9-5.5L7 4Z" /><path d="M4 20h16" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d={noteActionIcon} /></svg>}</button><button className="log-control note-menu-rename" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Rename note: ${label}`} title="Rename note" onClick={() => setMenuRenameDraft({ id: note.id, title: Array.from(note.title ?? label).slice(0, 120).join('') })}><svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.pencil} /></svg></button><button className="log-control note-menu-delete" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Delete note: ${label}`} title="Delete note" onClick={() => void removeFromMenu(note)}>{menuDeletingId === note.id ? <span className="spinner" /> : <svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.trash} /></svg>}</button></span></>}</div>;
+        })()}<span className="note-menu-name">{label}</span></button><span className="note-menu-actions"><button className={`log-control note-menu-run${launchAndRunMode ? ' note-menu-launch-run' : ''}`} type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined || !noteHasContent(note) || (!launchAndRunMode && agentId === undefined)} aria-label={launchAndRunMode ? `Launch and run note: ${label}` : `${noteActionLabel}: ${label}`} title={launchAndRunMode ? 'Launch and run note' : noteActionLabel} onClick={() => void runNote(note)}>{menuRunningId === note.id ? <span className="spinner" /> : launchAndRunMode ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v11l9-5.5L7 4Z" /><path d="M4 20h16" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d={noteActionIcon} /></svg>}</button><button className="log-control note-menu-rename" type="button" disabled={noteMenuBusy || menuRenameDraft !== undefined} aria-label={`Rename note: ${label}`} title="Rename note" onClick={() => setMenuRenameDraft({ id: note.id, title: Array.from(note.title ?? label).slice(0, 120).join('') })}><svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.pencil} /></svg></button>{deletionControl}</span></>}</div>;
       })}
       <button className="log-control new-note" disabled={noteMenuBusy || menuRenameDraft !== undefined} onClick={() => void create()}>+ New note</button>
     </div></FlyoutPortal>}
@@ -3926,7 +3985,9 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
     {attachmentPending && <span className="note-attachment-status" role="status">Saving attachments…</span>}
     {noteAttachmentError && <p className="attachment-error" role="alert">{noteAttachmentError}</p>}
   </div>;
-  const pane = activeNote === undefined ? null : <><section className={`note-pane${expanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onDragEnter={dragNoteFiles} onDragOver={dragNoteFiles} onDragLeave={leaveNoteFiles} onDrop={dropNoteFiles} onPaste={pasteNoteFiles} onKeyDown={event => { if (event.key === 'Escape' && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><div className="note-pane-head"><header className="note-toolbar" role="toolbar" aria-label="Note actions">{renaming ? <form className="note-title-form" onSubmit={event => { event.preventDefault(); void saveTitle(); }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); setRenaming(false); } }}><input ref={titleEditorRef} aria-label="Note name" value={titleDraft} maxLength={120} disabled={renamePending} onChange={event => setTitleDraft(event.target.value)} /><button type="submit" disabled={renamePending || !titleDraft.trim()} aria-label="Save note name" title="Save note name"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={renamePending} aria-label="Cancel note rename" title="Cancel" onClick={() => setRenaming(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><strong title={activeNote.title ?? 'Note'}>{activeNote.title ?? 'Note'}</strong><button className="note-rename" type="button" disabled={deleting || renamePending} aria-label="Rename note" title="Rename note" onClick={() => { setTitleDraft(activeNote.title ?? ''); setRenaming(true); }}><svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.pencil} /></svg></button></>}{saveStatus === 'error' && <span className="note-save-status error" role="alert" aria-live="assertive">Unable to save</span>}{actionStatus && <span className={`note-action-status${copyState === 'error' || sendState === 'error' ? ' error' : ''}`} role={copyState === 'error' || sendState === 'error' ? 'alert' : 'status'}>{actionStatus}</span>}<button className={`note-copy${copyState === 'copied' ? ' copied' : ''}`} type="button" disabled={deleting} aria-label={copyState === 'copied' ? 'Note copied' : 'Copy note'} title={copyState === 'copied' ? 'Copied' : 'Copy note'} onClick={() => void copy()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={copyState === 'copied' ? 'm5 12 4 4L19 6' : 'M9 9h10v10H9zM5 15H4V5h10v1'} /></svg></button>{noteAttachButton}{launchAndRunMode ? <button className="note-send note-launch-run" type="button" disabled={noteFilesDisabled || !noteHasContent({ ...activeNote, text: draft })} aria-label="Launch and run note" title={launchRunLabel === undefined ? 'Launch an agent and run this note' : `Launch and run (${launchRunLabel})`} onClick={() => { const note = activeNoteRef.current; if (note !== undefined) void runNote(note); }}>{menuRunningId !== undefined ? <span className="spinner" /> : 'Launch and run'}</button> : <button className="note-send" type="button" disabled={agentId === undefined || noteFilesDisabled || promptPending || !noteHasContent({ ...activeNote, text: draft })} aria-label={`${noteActionLabel} as prompt`} title={agentId === undefined ? 'Launch an agent to send this note' : `${noteActionLabel} as prompt`} onClick={() => void send()}>{sendState === 'sending' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d={noteActionIcon} /></svg>}</button>}<button className="note-delete" type="button" disabled={noteFilesDisabled} aria-label="Delete note" title="Delete note" onClick={remove}>{deleting ? <span className="spinner" /> : <svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.trash} /></svg>}</button><button className="note-expand" type="button" disabled={noteFilesDisabled} aria-label={expanded ? 'Restore note' : 'Expand note'} title={expanded ? 'Restore note' : 'Expand note'} aria-pressed={expanded} onClick={toggleExpanded}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="note-close" type="button" disabled={noteFilesDisabled} aria-label="Close note" title="Close note" onClick={close}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{scheduleArea}{noteAttachmentPicker}{noteAttachmentControls}</div>{draggingNoteFiles && <div className="prompt-drop-overlay" role="status">Drop files to attach to this note</div>}{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}{noteFilePreview.dialog}</>;
+  // show the current lock state immediately before the delete action
+  const noteLockButton = <button className="note-lock" type="button" disabled={noteFilesDisabled || menuDeletingId !== undefined} aria-label={activeNote?.locked ? 'Unlock note' : 'Lock note'} title={activeNote?.locked ? 'Unlock note' : 'Lock note'} aria-pressed={Boolean(activeNote?.locked)} onClick={() => void toggleNoteLock()}>{lockPending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d={activeNote?.locked ? actionIconPaths.lock : actionIconPaths.unlock} /></svg>}</button>;
+  const pane = activeNote === undefined ? null : <><section className={`note-pane${expanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onDragEnter={dragNoteFiles} onDragOver={dragNoteFiles} onDragLeave={leaveNoteFiles} onDrop={dropNoteFiles} onPaste={pasteNoteFiles} onKeyDown={event => { if (event.key === 'Escape' && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><div className="note-pane-head"><header className="note-toolbar" role="toolbar" aria-label="Note actions">{renaming ? <form className="note-title-form" onSubmit={event => { event.preventDefault(); void saveTitle(); }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); setRenaming(false); } }}><input ref={titleEditorRef} aria-label="Note name" value={titleDraft} maxLength={120} disabled={renamePending} onChange={event => setTitleDraft(event.target.value)} /><button type="submit" disabled={renamePending || !titleDraft.trim()} aria-label="Save note name" title="Save note name"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={renamePending} aria-label="Cancel note rename" title="Cancel" onClick={() => setRenaming(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><strong title={activeNote.title ?? 'Note'}>{activeNote.title ?? 'Note'}</strong><button className="note-rename" type="button" disabled={deleting || renamePending} aria-label="Rename note" title="Rename note" onClick={() => { setTitleDraft(activeNote.title ?? ''); setRenaming(true); }}><svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.pencil} /></svg></button></>}{saveStatus === 'error' && <span className="note-save-status error" role="alert" aria-live="assertive">Unable to save</span>}{actionStatus && <span className={`note-action-status${copyState === 'error' || sendState === 'error' ? ' error' : ''}`} role={copyState === 'error' || sendState === 'error' ? 'alert' : 'status'}>{actionStatus}</span>}<button className={`note-copy${copyState === 'copied' ? ' copied' : ''}`} type="button" disabled={deleting} aria-label={copyState === 'copied' ? 'Note copied' : 'Copy note'} title={copyState === 'copied' ? 'Copied' : 'Copy note'} onClick={() => void copy()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={copyState === 'copied' ? 'm5 12 4 4L19 6' : 'M9 9h10v10H9zM5 15H4V5h10v1'} /></svg></button>{noteAttachButton}{launchAndRunMode ? <button className="note-send note-launch-run" type="button" disabled={noteFilesDisabled || !noteHasContent({ ...activeNote, text: draft })} aria-label="Launch and run note" title={launchRunLabel === undefined ? 'Launch an agent and run this note' : `Launch and run (${launchRunLabel})`} onClick={() => { const note = activeNoteRef.current; if (note !== undefined) void runNote(note); }}>{menuRunningId !== undefined ? <span className="spinner" /> : 'Launch and run'}</button> : <button className="note-send" type="button" disabled={agentId === undefined || noteFilesDisabled || promptPending || !noteHasContent({ ...activeNote, text: draft })} aria-label={`${noteActionLabel} as prompt`} title={agentId === undefined ? 'Launch an agent to send this note' : `${noteActionLabel} as prompt`} onClick={() => void send()}>{sendState === 'sending' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d={noteActionIcon} /></svg>}</button>}{noteLockButton}{!activeNote.locked && <button className="note-delete" type="button" disabled={noteFilesDisabled} aria-label="Delete note" title="Delete note" onClick={remove}>{deleting ? <span className="spinner" /> : <svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.trash} /></svg>}</button>}<button className="note-expand" type="button" disabled={noteFilesDisabled} aria-label={expanded ? 'Restore note' : 'Expand note'} title={expanded ? 'Restore note' : 'Expand note'} aria-pressed={expanded} onClick={toggleExpanded}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="note-close" type="button" disabled={noteFilesDisabled} aria-label="Close note" title="Close note" onClick={close}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{lockError && <p className="note-lock-error" role="alert">{lockError}</p>}{scheduleArea}{noteAttachmentPicker}{noteAttachmentControls}</div>{draggingNoteFiles && <div className="prompt-drop-overlay" role="status">Drop files to attach to this note</div>}{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}{noteFilePreview.dialog}</>;
   return { active: activeNote !== undefined, expanded: activeNote !== undefined && expanded, appendToActive, canAppendToActive, canCreate: !loading, control, createWithText: create, pane };
 }
 

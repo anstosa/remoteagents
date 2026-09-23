@@ -48,13 +48,64 @@ describe('worktree notes', () => {
     }
   });
 
-  // accept legacy note records without attachments
-  it('loads legacy note records without attachment fields', async () => {
+  // accept legacy note records without attachments or deletion locks
+  it('loads legacy note records without attachment or lock fields', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-legacy-notes-'));
     const file = join(directory, 'notes.json');
     try {
       await writeFile(file, JSON.stringify({ cora: [{ id: 'note-identifier-000', title: 'Legacy', text: 'Still here' }] }));
-      await expect(new WorktreeNoteService(file).list('cora')).resolves.toEqual([{ id: 'note-identifier-000', title: 'Legacy', text: 'Still here' }]);
+      const [legacy] = (await new WorktreeNoteService(file).list('cora'))!;
+      expect(legacy).toEqual({ id: 'note-identifier-000', title: 'Legacy', text: 'Still here' });
+      expect(legacy?.locked).toBeUndefined();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  // serialize lock transitions with deletion while preserving every other note field
+  it('persists deletion locks and requires an atomic unlock before deletion', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-note-locks-'));
+    const file = join(directory, 'notes.json');
+    const attachment = { name: 'context.txt', data: Buffer.from('context').toString('base64') };
+    const daily = { cron: '0 9 * * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true, updatedAt: '2026-09-06T09:00:00-07:00' } as const;
+    try {
+      const service = new WorktreeNoteService(file);
+      const note = await service.createWithText('cora', 'Protected note', 'Original text', 'queued-prompt', [attachment]);
+      await service.setSchedule('cora', note!.id, daily);
+
+      const [locked, refused] = await Promise.all([
+        service.setLocked('cora', note!.id, true),
+        service.delete('cora', note!.id)
+      ]);
+      expect(locked).toMatchObject({ ...note, schedule: daily, locked: true });
+      expect(refused).toBe('locked');
+
+      const restarted = new WorktreeNoteService(file);
+      await expect(restarted.list('cora')).resolves.toMatchObject([{ ...note, schedule: daily, locked: true }]);
+      await expect(restarted.update('cora', note!.id, 'Edited while locked')).resolves.toMatchObject({ text: 'Edited while locked', locked: true });
+      await expect(restarted.rename('cora', note!.id, 'Renamed while locked')).resolves.toMatchObject({ title: 'Renamed while locked', locked: true });
+      await expect(restarted.removeSchedule('cora', note!.id)).resolves.toMatchObject({ attachments: [attachment], locked: true });
+
+      const [unlocked, deleted] = await Promise.all([
+        restarted.setLocked('cora', note!.id, false),
+        restarted.delete('cora', note!.id)
+      ]);
+      expect(unlocked).toMatchObject({ text: 'Edited while locked', title: 'Renamed while locked', attachments: [attachment] });
+      expect(unlocked).not.toHaveProperty('locked');
+      expect(deleted).toEqual(unlocked);
+      await expect(new WorktreeNoteService(file).list('cora')).resolves.toEqual([]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  // reject malformed persisted deletion locks
+  it('rejects persisted non-boolean lock fields', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-invalid-note-lock-'));
+    const file = join(directory, 'notes.json');
+    try {
+      await writeFile(file, JSON.stringify({ cora: [{ id: 'note-identifier-000', title: 'Invalid', text: '', locked: 'yes' }] }));
+      await expect(new WorktreeNoteService(file).list('cora')).rejects.toThrow();
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

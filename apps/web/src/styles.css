@@ -443,6 +443,8 @@ html.software-keyboard-open .tabs { display: none; }
 .notes-menu .note-menu-run { color: var(--green); }
 .notes-menu .note-menu-rename { color: var(--yellow); }
 .notes-menu .note-menu-delete { color: var(--red); }
+/* distinguish protected notes from available delete actions */
+.notes-menu .note-menu-lock { color: var(--yellow); }
 /* keep launch glyphs filled and prompt actions outlined */
 .notes-menu .note-menu-launch-run svg { fill: currentColor; }
 .note-menu-actions svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
@@ -528,6 +530,9 @@ html.software-keyboard-open .tabs { display: none; }
 .note-pane header .note-launch-run { width: auto; flex: 0 0 auto; padding: 0 .6rem; border-color: color-mix(in srgb, var(--green) 60%, var(--surface-1)); color: var(--green); font: 700 .66rem var(--font-mono); white-space: nowrap; }
 .note-pane header .note-launch-run:not(:disabled):hover { border-color: var(--green); color: var(--green); filter: brightness(1.08); }
 .note-pane header .note-delete, .terminal-pane .pane-head .pane-delete { border-color: color-mix(in srgb, var(--red) 70%, var(--surface-1)); color: var(--red); }
+/* keep confirmed deletion protection visible without blocking editing */
+.note-pane header .note-lock[aria-pressed='true'] { border-color: var(--yellow); color: var(--yellow); }
+.note-lock-error { margin: .4rem .55rem; color: var(--red); font-size: .75rem; }
 .note-pane header .note-expand[aria-pressed='true'] { border-color: var(--yellow); color: var(--yellow); }
 .note-pane header svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .note-pane textarea { width: 100%; min-height: 0; overflow: auto; resize: none; border: 0; border-radius: 0; padding: .8rem var(--edge); background: transparent; font-size: var(--output-font-size); line-height: 1.45; outline-offset: -2px; }

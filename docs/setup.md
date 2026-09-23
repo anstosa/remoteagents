@@ -434,6 +434,14 @@ agents opened in the same directory share entries across restarts; resuming a
 Conversation requires a configured Project (scratch agents can name and list
 their Conversations but cannot resume them).
 
+Use the lock button beside **Delete** in a note's header to protect it from
+deletion. Its icon is open when unlocked and closed when locked.
+Locked notes hide the header's delete button and show a disabled lock
+in place of Delete in the sticky flyout. Open the note and unlock it before
+deleting it. Locking does not prevent editing, renaming, attachments, or running
+the note; even an empty locked note is retained when closed. Protection is saved
+with the note and enforced by the server.
+
 Notes can retain up to 10 attachments totalling 25 MB per note. Use the paperclip
 beside **Send** (also beside existing attachments), drop files onto a note, or
 paste an image into it. Click a filename to preview text or a PNG, JPEG, GIF, or

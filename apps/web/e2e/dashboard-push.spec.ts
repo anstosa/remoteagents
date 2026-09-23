@@ -1,47 +1,10 @@
 import { expect, test } from '@playwright/test';
+import { dashboardSocketReady, emitDashboard, installDashboardSocket } from './dashboard-socket-fixture.js';
 
+// apply pushed snapshots without redundant polling
 test('falls back until the first push, then applies snapshots without frequent HTTP refreshes', async ({ page }) => {
   await page.clock.install();
-  await page.addInitScript(() => {
-    let dashboardSocket: MockWebSocket | undefined;
-    class MockWebSocket {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSING = 2;
-      static readonly CLOSED = 3;
-      readonly OPEN = 1;
-      readonly url: string;
-      readyState = MockWebSocket.CONNECTING;
-      onopen: ((event: Event) => void) | null = null;
-      onclose: ((event: CloseEvent) => void) | null = null;
-      onerror: ((event: Event) => void) | null = null;
-      onmessage: ((event: MessageEvent) => void) | null = null;
-      constructor(url: string | URL) {
-        this.url = String(url);
-        if (this.url.includes('/ws/dashboard')) dashboardSocket = this;
-        window.setTimeout(() => {
-          if (this.readyState !== MockWebSocket.CONNECTING) return;
-          this.readyState = MockWebSocket.OPEN;
-          this.onopen?.(new Event('open'));
-        });
-      }
-      send() {}
-      close() {
-        if (this.readyState === MockWebSocket.CLOSED) return;
-        this.readyState = MockWebSocket.CLOSED;
-        this.onclose?.(new CloseEvent('close'));
-      }
-    }
-    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
-    Object.defineProperty(window, '__emitDashboard', {
-      configurable: true,
-      value: (dashboard: unknown) => dashboardSocket?.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ v: 1, type: 'dashboard', dashboard }) }))
-    });
-    Object.defineProperty(window, '__dashboardSocketReady', {
-      configurable: true,
-      value: () => dashboardSocket?.readyState === MockWebSocket.OPEN && dashboardSocket.onmessage !== null
-    });
-  });
+  await installDashboardSocket(page);
 
   let dashboardRequests = 0;
   let ticketRequests = 0;
@@ -64,11 +27,11 @@ test('falls back until the first push, then applies snapshots without frequent H
   await page.goto('/');
   await expect(page.getByRole('tab', { name: /Old label/u })).toBeVisible();
   await expect.poll(() => ticketRequests).toBe(1);
-  await expect.poll(() => page.evaluate(() => (window as typeof window & { __dashboardSocketReady: () => boolean }).__dashboardSocketReady())).toBe(true);
+  await expect.poll(() => dashboardSocketReady(page)).toBe(true);
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect.poll(() => dashboardRequests).toBeGreaterThan(1);
 
-  await page.evaluate(next => (window as typeof window & { __emitDashboard: (dashboard: unknown) => void }).__emitDashboard(next), {
+  await emitDashboard(page, {
     generation: 101,
     serverStartedAt: 1_000,
     agents: [],
@@ -80,7 +43,7 @@ test('falls back until the first push, then applies snapshots without frequent H
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   expect(dashboardRequests).toBe(synchronizedRequests);
 
-  await page.evaluate(next => (window as typeof window & { __emitDashboard: (dashboard: unknown) => void }).__emitDashboard(next), {
+  await emitDashboard(page, {
     generation: 102,
     serverStartedAt: 1_000,
     agents: [],
@@ -89,7 +52,7 @@ test('falls back until the first push, then applies snapshots without frequent H
   await expect(page.getByRole('tab', { name: /Pushed label/u })).toBeVisible();
   expect(dashboardRequests).toBe(synchronizedRequests);
 
-  await page.evaluate(next => (window as typeof window & { __emitDashboard: (dashboard: unknown) => void }).__emitDashboard(next), {
+  await emitDashboard(page, {
     generation: 1,
     serverStartedAt: 2_000,
     agents: [],

@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import { dashboardSocketReady, emitDashboard, installDashboardSocket } from './dashboard-socket-fixture.js';
 
 // pin the zone so the server-supplied nextRun renders as a fixed local sentence
 test.use({ timezoneId: 'America/Los_Angeles' });
@@ -7,48 +8,9 @@ test.use({ timezoneId: 'America/Los_Angeles' });
 // REST-only, not on the dashboard payload. So while the notes fly-out or a note pane is open, a dashboard
 // generation change must refetch this tab's notes, updating the clock badge and the "Last run" footnote.
 
-// A dashboard WebSocket mock that exposes window.__emitDashboard to push new generations from a test.
-async function installDashboardSocket(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    let dashboardSocket: MockWebSocket | undefined;
-    class MockWebSocket {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSING = 2;
-      static readonly CLOSED = 3;
-      readonly OPEN = 1;
-      readonly url: string;
-      readyState = MockWebSocket.CONNECTING;
-      onopen: ((event: Event) => void) | null = null;
-      onclose: ((event: CloseEvent) => void) | null = null;
-      onerror: ((event: Event) => void) | null = null;
-      onmessage: ((event: MessageEvent) => void) | null = null;
-      constructor(url: string | URL) {
-        this.url = String(url);
-        if (this.url.includes('/ws/dashboard')) dashboardSocket = this;
-        window.setTimeout(() => {
-          if (this.readyState !== MockWebSocket.CONNECTING) return;
-          this.readyState = MockWebSocket.OPEN;
-          this.onopen?.(new Event('open'));
-        });
-      }
-      send() {}
-      close() {
-        if (this.readyState === MockWebSocket.CLOSED) return;
-        this.readyState = MockWebSocket.CLOSED;
-        this.onclose?.(new CloseEvent('close'));
-      }
-    }
-    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
-    Object.defineProperty(window, '__emitDashboard', { configurable: true, value: (dashboard: unknown) => dashboardSocket?.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ v: 1, type: 'dashboard', dashboard }) })) });
-    Object.defineProperty(window, '__dashboardSocketReady', { configurable: true, value: () => dashboardSocket?.readyState === MockWebSocket.OPEN && dashboardSocket.onmessage !== null });
-  });
-}
-
-// deliver ordered dashboard snapshots including queued-note revisions
+// push generation and note-revision changes through the shared channel
 const emitGeneration = (page: Page, generation: number, agents: unknown[], projects: unknown[] = [], notesRevision?: number, serverStartedAt?: number) =>
-  page.evaluate(([g, a, p, revision, startedAt]) => (window as typeof window & { __emitDashboard: (d: unknown) => void }).__emitDashboard({ generation: g, agents: a, projects: p, notesRevision: revision, serverStartedAt: startedAt }), [generation, agents, projects, notesRevision, serverStartedAt] as const);
-const socketReady = (page: Page) => page.evaluate(() => (window as typeof window & { __dashboardSocketReady: () => boolean }).__dashboardSocketReady());
+  emitDashboard(page, { generation, agents, projects, notesRevision, serverStartedAt });
 const noteAlertRed = 'rgb(243, 139, 168)';
 
 // require the persistent red treatment shared by animated and reduced-motion alerts
@@ -97,7 +59,7 @@ test('refetches the fly-out badge on a generation change, and catches up on reop
   await page.getByRole('button', { name: 'Notes (1)' }).click();
   await expect(page.getByTitle('Scheduled')).toBeVisible();
   await expect.poll(() => notesGets).toBe(1);
-  await expect.poll(() => socketReady(page)).toBe(true);
+  await expect.poll(() => dashboardSocketReady(page)).toBe(true);
 
   // a Run failed and the server bumped the generation; with the fly-out open, the tab refetches and reddens
   runFailed = true;
@@ -146,7 +108,7 @@ test('refreshes the open note pane\'s Last run footnote on a generation change',
   await page.locator('.note-choice').filter({ hasText: 'Weekly' }).click();
   const editor = page.getByRole('group', { name: 'Schedule', exact: true });
   await expect(editor.locator('.schedule-last')).toContainText('launched');
-  await expect.poll(() => socketReady(page)).toBe(true);
+  await expect.poll(() => dashboardSocketReady(page)).toBe(true);
 
   // a later scheduled Run failed and bumped the generation; the open pane refetches and reddens the footnote
   runFailed = true;
@@ -197,7 +159,7 @@ test('keeps queued-note badges red until notes are opened and shares acknowledge
     notesRevision += 1;
     // queue additions can leave discovery generation unchanged
     notes.unshift({ id: `queued-note-${notesRevision}`, title, text: `Recovered prompt ${notesRevision}`, source: 'queued-prompt' });
-    await expect.poll(() => socketReady(page)).toBe(true);
+    await expect.poll(() => dashboardSocketReady(page)).toBe(true);
     await emitGeneration(page, generation, agents, [], notesRevision, serverStartedAt);
   };
 
@@ -263,7 +225,7 @@ test('keeps queued-note badges red until notes are opened and shares acknowledge
   notes.unshift({ id: 'queued-after-restart', title: 'Queued prompt in Owen · 1:08 PM', text: 'Recovered after restart', source: 'queued-prompt' });
   serverStartedAt = 2_000;
   generation = 1;
-  await expect.poll(() => socketReady(page)).toBe(true);
+  await expect.poll(() => dashboardSocketReady(page)).toBe(true);
   await emitGeneration(page, generation, agents, [], notesRevision, serverStartedAt);
   await expect(toggle).toHaveAccessibleName('Notes (5)');
   await expect(badge).toHaveClass(/unread/u);
@@ -345,8 +307,8 @@ test('merges queued-note acknowledgements across browser tabs', async ({ page, c
   await other.locator('.flyout-backdrop').click();
   await other.getByRole('tab', { name: 'Cora — Prompt done' }).click();
   coraNotes.unshift({ id: 'queued-cora-002', text: 'Another project prompt', source: 'queued-prompt' });
-  await expect.poll(() => socketReady(page)).toBe(true);
-  await expect.poll(() => socketReady(other)).toBe(true);
+  await expect.poll(() => dashboardSocketReady(page)).toBe(true);
+  await expect.poll(() => dashboardSocketReady(other)).toBe(true);
   await emitGeneration(page, 1, agents, [], 1);
   await emitGeneration(other, 1, agents, [], 1);
   await expect(page.locator('.notes-count')).toHaveClass(/unread/u);
@@ -408,7 +370,7 @@ test('keeps a queued note when the initial notes response arrives last', async (
   const toggle = page.getByRole('button', { name: /^Notes \(/u });
   await expect(toggle).toHaveAccessibleName('Notes (2)');
   await expect.poll(() => notesGets).toBe(2);
-  await expect.poll(() => socketReady(page)).toBe(true);
+  await expect.poll(() => dashboardSocketReady(page)).toBe(true);
   const updated = page.waitForResponse(response => response.url().endsWith('/worktrees/cora/notes'));
   await emitGeneration(page, 1, agents, [], 1);
   await (await updated).finished();

@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import { promptAttachmentBytes, promptAttachmentName, validPromptAttachments, type PromptAttachment } from '../prompts/validation.js';
 import { type Schedule, type ScheduleLastRun, validSchedule } from '../schedule/types.js';
 
-export type WorktreeNote = { id: string; text: string; title?: string; source?: 'queued-prompt'; schedule?: Schedule; attachments?: PromptAttachment[] };
+export type WorktreeNote = { id: string; text: string; title?: string; source?: 'queued-prompt'; schedule?: Schedule; attachments?: PromptAttachment[]; locked?: boolean };
 type StoredNotes = Record<string, WorktreeNote[]>;
 
 const maxNotesPerWorktree = 50;
@@ -34,9 +34,9 @@ const normalizedAttachments = (attachments: PromptAttachment[]): PromptAttachmen
 // validate persisted note data
 const validNote = (value: unknown): value is WorktreeNote => {
   if (value === null || typeof value !== 'object') return false;
-  const note = value as { id?: unknown; text?: unknown; title?: unknown; source?: unknown; schedule?: unknown; attachments?: unknown };
+  const note = value as { id?: unknown; text?: unknown; title?: unknown; source?: unknown; schedule?: unknown; attachments?: unknown; locked?: unknown };
   const attachments = note.attachments === undefined ? [] : note.attachments;
-  return typeof note.id === 'string' && validNoteId(note.id) && typeof note.text === 'string' && validText(note.text) && (note.title === undefined || typeof note.title === 'string' && validTitle(note.title)) && (note.source === undefined || note.source === 'queued-prompt') && (note.schedule === undefined || validSchedule(note.schedule)) && Array.isArray(attachments) && attachments.every(attachment => attachment !== null && typeof attachment === 'object' && typeof (attachment as { name?: unknown }).name === 'string' && typeof (attachment as { data?: unknown }).data === 'string') && validPromptAttachments(attachments as PromptAttachment[]) && (attachments as PromptAttachment[]).every(attachment => promptAttachmentName(attachment.name) === attachment.name);
+  return typeof note.id === 'string' && validNoteId(note.id) && typeof note.text === 'string' && validText(note.text) && (note.title === undefined || typeof note.title === 'string' && validTitle(note.title)) && (note.source === undefined || note.source === 'queued-prompt') && (note.schedule === undefined || validSchedule(note.schedule)) && (note.locked === undefined || typeof note.locked === 'boolean') && Array.isArray(attachments) && attachments.every(attachment => attachment !== null && typeof attachment === 'object' && typeof (attachment as { name?: unknown }).name === 'string' && typeof (attachment as { data?: unknown }).data === 'string') && validPromptAttachments(attachments as PromptAttachment[]) && (attachments as PromptAttachment[]).every(attachment => promptAttachmentName(attachment.name) === attachment.name);
 };
 const totalNoteLength = (stored: StoredNotes) => Object.values(stored).flat().reduce((total, note) => total + note.text.length + (note.title?.length ?? 0), 0);
 // total decoded attachment bytes
@@ -167,12 +167,30 @@ export class WorktreeNoteService {
     });
   }
 
-  async delete(worktreeId: string, noteId: string): Promise<WorktreeNote | undefined> {
+  // set one note's deletion lock without changing its editable content or metadata
+  async setLocked(worktreeId: string, noteId: string, locked: boolean): Promise<WorktreeNote | undefined> {
+    // reject invalid identifiers
+    if (!validWorktreeId(worktreeId) || !validNoteId(noteId)) return undefined;
+    return await this.mutate(stored => {
+      const note = stored[worktreeId]?.find(candidate => candidate.id === noteId);
+      // require an existing note
+      if (note === undefined) return undefined;
+      // omit the false default for legacy-compatible storage
+      if (locked) note.locked = true;
+      else delete note.locked;
+      return { ...note };
+    });
+  }
+
+  // delete only an unlocked note in the serialized mutation boundary
+  async delete(worktreeId: string, noteId: string): Promise<WorktreeNote | 'locked' | undefined> {
     if (!validWorktreeId(worktreeId) || !validNoteId(noteId)) return undefined;
     return await this.mutate(stored => {
       const notes = stored[worktreeId] ?? [];
       const index = notes.findIndex(note => note.id === noteId);
       if (index < 0) return undefined;
+      // refuse locks before changing the stored collection
+      if (notes[index]!.locked === true) return 'locked';
       const [note] = notes.splice(index, 1);
       if (notes.length === 0) delete stored[worktreeId];
       return note;

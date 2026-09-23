@@ -1,58 +1,14 @@
 import { expect, test, type Page } from '@playwright/test';
+import { dashboardSocketReady, emitDashboard, installDashboardSocket } from './dashboard-socket-fixture.js';
 
 const sendPath = 'M22 2 11 13M22 2l-7 20-4-9-9-4Z';
 const queuePath = 'M4 6h10M4 11h10M4 16h7M18 13v6m-3-3h6';
 
-// expose dashboard attention pushes
-async function installDashboardSocket(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    let dashboardSocket: MockWebSocket | undefined;
-    class MockWebSocket {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSING = 2;
-      static readonly CLOSED = 3;
-      readonly OPEN = 1;
-      readonly url: string;
-      readyState = MockWebSocket.CONNECTING;
-      onopen: ((event: Event) => void) | null = null;
-      onclose: ((event: CloseEvent) => void) | null = null;
-      onerror: ((event: Event) => void) | null = null;
-      onmessage: ((event: MessageEvent) => void) | null = null;
-      // capture the dashboard socket
-      constructor(url: string | URL) {
-        this.url = String(url);
-        if (this.url.includes('/ws/dashboard')) dashboardSocket = this;
-        window.setTimeout(() => {
-          // open only a live socket
-          if (this.readyState !== MockWebSocket.CONNECTING) return;
-          this.readyState = MockWebSocket.OPEN;
-          this.onopen?.(new Event('open'));
-        });
-      }
-      // accept client frames
-      send() {}
-      // close once
-      close() {
-        if (this.readyState === MockWebSocket.CLOSED) return;
-        this.readyState = MockWebSocket.CLOSED;
-        this.onclose?.(new CloseEvent('close'));
-      }
-    }
-    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
-    Object.defineProperty(window, '__emitDashboard', { configurable: true, value: (dashboard: unknown) => dashboardSocket?.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ v: 1, type: 'dashboard', dashboard }) })) });
-    Object.defineProperty(window, '__dashboardSocketReady', { configurable: true, value: () => dashboardSocket?.readyState === MockWebSocket.OPEN && dashboardSocket.onmessage !== null });
-  });
-}
-
 // push one attention state
-const emitAttention = (page: Page, generation: number, attention: 'working' | 'finished' | 'question' | undefined) => page.evaluate(([nextGeneration, nextAttention]) => {
-  const agent = { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: nextAttention === 'working' ? 'Working' : 'Ready', attention: nextAttention };
-  (window as typeof window & { __emitDashboard: (dashboard: unknown) => void }).__emitDashboard({ generation: nextGeneration, agents: [agent], projects: [] });
-}, [generation, attention] as const);
-
-// wait for dashboard push readiness
-const dashboardSocketReady = (page: Page) => page.evaluate(() => (window as typeof window & { __dashboardSocketReady: () => boolean }).__dashboardSocketReady());
+const emitAttention = (page: Page, generation: number, attention: 'working' | 'finished' | 'question' | undefined) => {
+  const agent = { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: attention === 'working' ? 'Working' : 'Ready', attention };
+  return emitDashboard(page, { generation, agents: [agent], projects: [] });
+};
 
 // send and queue retain one prompt action while attention changes
 test('sends or queues a note with the matching icon as agent attention changes', async ({ page }) => {

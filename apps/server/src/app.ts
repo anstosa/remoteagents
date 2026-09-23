@@ -149,7 +149,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // retain sleeping tabs during this server session
   const sleepingWorktrees = new Set<string>();
   let accountSwitching = false;
-  let queuedPromptRevision = 0;
+  let notesRevision = 0;
   const integrationConfig = structuredClone(config.integrations ?? defaultIntegrationConfig);
   const davoAvailable = integrationConfig.enabled && Boolean(process.env.RAC_OPENAI_API_KEY?.trim());
   // expose one secret-free voice settings snapshot
@@ -347,7 +347,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // Project (launched in place), and the Scratch group
     const launchResolutions = await launch.launchResolutions([scratchLaunchKey, ...worktreeViews.map(view => view.id), ...discovered.agents.flatMap(agent => agent.worktreeId === undefined ? [] : [agent.worktreeId]), ...discovered.projects.flatMap(project => project.mode === 'directory' ? [project.id] : [])]);
     const launchFor = (worktreeId: string | undefined) => launchResolutions.get(worktreeId ?? scratchLaunchKey);
-    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }), ...(launchFor(agent.worktreeId) === undefined ? {} : { launch: launchFor(agent.worktreeId) }) })), projects: discovered.projects.map(project => ({ ...project, ...(project.mode === 'directory' && launchResolutions.get(project.id) !== undefined ? { launch: launchResolutions.get(project.id) } : {}), worktrees: project.worktrees.map(worktree => ({ ...worktree, ...(sleepingWorktrees.has(worktree.id) ? { sleeping: true } : {}), ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }), ...(launchFor(worktree.id) === undefined ? {} : { launch: launchFor(worktree.id) }) })) })), cleanupPending: cleanup.pending().length, notesRevision: queuedPromptRevision, scratchLaunch: launchResolutions.get(scratchLaunchKey), reviewTour: reviewTourCapability, reviews };
+    return { ...discovered, agents: discovered.agents.map(agent => ({ ...agent, unread: notifications.isUnread(agent), queuedPromptCount: queuedCounts.get(agent.id) ?? 0, ...(controlFor(agent.worktreeId) === undefined ? {} : { stack: controlFor(agent.worktreeId) }), ...(launchFor(agent.worktreeId) === undefined ? {} : { launch: launchFor(agent.worktreeId) }) })), projects: discovered.projects.map(project => ({ ...project, ...(project.mode === 'directory' && launchResolutions.get(project.id) !== undefined ? { launch: launchResolutions.get(project.id) } : {}), worktrees: project.worktrees.map(worktree => ({ ...worktree, ...(sleepingWorktrees.has(worktree.id) ? { sleeping: true } : {}), ...(controlFor(worktree.id) === undefined ? {} : { stack: controlFor(worktree.id) }), ...(launchFor(worktree.id) === undefined ? {} : { launch: launchFor(worktree.id) }) })) })), cleanupPending: cleanup.pending().length, notesRevision, scratchLaunch: launchResolutions.get(scratchLaunchKey), reviewTour: reviewTourCapability, reviews };
   };
   // observe only agent state needed by cross-instance attention
   const localInstanceAttention = async () => {
@@ -714,6 +714,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     };
   };
   const decorateNotes = (stored: WorktreeNote[]) => stored.map(decorateNote);
+  // notify every open dashboard that note metadata changed
+  const publishNotesRevision = () => {
+    notesRevision += 1;
+    // follow an overlapping refresh when it captured the prior revision
+    void dashboardUpdates.refresh().then(snapshot => snapshot?.notesRevision === notesRevision ? undefined : dashboardUpdates.refresh()).catch(() => undefined);
+  };
   // preview one stored attachment without filesystem resolution
   const previewNoteAttachment = async (saveKey: string, noteId: string, path: string) => {
     const attachments = await notes.attachments(saveKey, noteId);
@@ -774,7 +780,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const content = promptNoteContent(persistence.noteLabel, new Date(), prompt);
     const note = await notes.createWithText(persistence.saveKey, content.title, content.text, 'queued-prompt', content.attachments ?? []);
     // publish only durable queue-created notes
-    if (note !== undefined) queuedPromptRevision += 1;
+    if (note !== undefined) notesRevision += 1;
     return note;
   };
   // the PromptService's drain sink creates the same queued prompt notes as explicit Save
@@ -849,7 +855,36 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.put('/api/worktrees/:id/notes/:noteId', { bodyLimit: 128_000 }, async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); const text = body(request).text; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof text !== 'string' || text.length > 30_000 || text.includes('\0')) return reply.code(400).send({ error: 'invalid note' }); const note = await notes.update(saveKey, noteId, text); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
   // rename one note
   app.patch('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); const title = body(request).title; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid note title' }); const note = await notes.rename(saveKey, noteId, title); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
-  app.delete('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const note = await notes.delete(saveKey, noteId); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
+  // set one worktree note's deletion lock
+  app.put('/api/worktrees/:id/notes/:noteId/lock', async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const saveKey = worktreeSaveKey(id);
+    const locked = body(request).locked;
+    // require one current worktree scope
+    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    // require an explicit boolean state
+    if (typeof locked !== 'boolean') return reply.code(400).send({ error: 'invalid note lock' });
+    const note = await notes.setLocked(saveKey, noteId, locked);
+    // hide unknown notes
+    if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    publishNotesRevision();
+    return decorateNote(note);
+  });
+  // delete one unlocked worktree note
+  app.delete('/api/worktrees/:id/notes/:noteId', async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const saveKey = worktreeSaveKey(id);
+    // require one current worktree scope
+    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const note = await notes.delete(saveKey, noteId);
+    // distinguish durable locks from missing notes
+    if (note === 'locked') return reply.code(409).send({ error: 'note is locked' });
+    // hide unknown notes
+    if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    return decorateNote(note);
+  });
   // read full attachment payloads for one worktree note
   app.get('/api/worktrees/:id/notes/:noteId/attachments', async (request, reply) => {
     controlled(request);
@@ -959,7 +994,23 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const note = await notes.rename(persistence.saveKey, noteId, title);
     return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note);
   });
-  // delete one live agent note
+  // set one live agent note's deletion lock
+  app.put('/api/agents/:id/notes/:noteId/lock', async (request, reply) => {
+    controlled(request, true);
+    const { id, noteId } = request.params as { id: string; noteId: string };
+    const persistence = await agentPersistence(id);
+    const locked = body(request).locked;
+    // require one current persistence group
+    if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    // require an explicit boolean state
+    if (typeof locked !== 'boolean') return reply.code(400).send({ error: 'invalid note lock' });
+    const note = await notes.setLocked(persistence.saveKey, noteId, locked);
+    // hide unknown notes
+    if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    publishNotesRevision();
+    return decorateNote(note);
+  });
+  // delete one unlocked live agent note
   app.delete('/api/agents/:id/notes/:noteId', async (request, reply) => {
     controlled(request, true);
     const { id, noteId } = request.params as { id: string; noteId: string };
@@ -967,7 +1018,11 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // require one current persistence group
     if (persistence === undefined) return reply.code(404).send({ error: 'agent unavailable' });
     const note = await notes.delete(persistence.saveKey, noteId);
-    return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note);
+    // distinguish durable locks from missing notes
+    if (note === 'locked') return reply.code(409).send({ error: 'note is locked' });
+    // hide unknown notes
+    if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
+    return decorateNote(note);
   });
   // read full attachment payloads for one live agent note
   app.get('/api/agents/:id/notes/:noteId/attachments', async (request, reply) => {
