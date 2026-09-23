@@ -47,8 +47,11 @@ export type Turn = { prompt?: string; text: string; rows?: number };
 // `parsed` question the client may optimistically dismiss, a `structured` one (OMX's
 // file, Claude's reported payload) is server-published and waits for the server to
 // stop reporting it. Not the same as the CONTEXT.md "Inline question" provenance.
-// selectedIndex is the live zero-based keyboard cursor, not part of the question id
-export type InlineQuestion = { id: string; text: string; choices: string[]; source: 'structured' | 'parsed'; targetPaneId?: string; selectedIndex?: number };
+// selectedIndex is the live zero-based keyboard cursor, not part of the question id;
+// descriptions parallel choices ('' where an option has none) and are not part of it either;
+// rows maps each choice to its zero-based on-screen row when the menu skips a row
+// the picker does not offer (Claude's `Type something.` input), identity otherwise
+export type InlineQuestion = { id: string; text: string; choices: string[]; descriptions?: string[]; rows?: number[]; source: 'structured' | 'parsed'; targetPaneId?: string; selectedIndex?: number };
 export type PromptCommand = { name: string; description?: string };
 
 export type LaunchMode = 'fresh' | 'continue' | 'resume';
@@ -188,6 +191,8 @@ export interface Adapter {
     parse?(capture: string): InlineQuestion | undefined;
     /** navigate to a verified text editor before bracketed paste and enter */
     textEntry?(question: InlineQuestion, capture: string): TmuxKey[] | undefined;
+    /** reshape a text answer before it is pasted, for an editor that cannot hold it verbatim */
+    textAnswer?(text: string): string;
     /** native follow-up presence, with an opening-only shortcut when collapsed */
     queued?(capture: string): { key?: TmuxKey } | undefined;
     pending?(workspace: string, paneId: string): Promise<InlineQuestion | undefined>;

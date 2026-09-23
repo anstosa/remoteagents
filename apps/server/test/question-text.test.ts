@@ -94,4 +94,25 @@ describe('text question answers', () => {
     expect(nextRelease).toBeDefined();
     nextRelease!();
   });
+
+  // Claude answers free text through its dialog's Type something row, one line only
+  it('pastes a flattened Claude answer into the Type something row and submits it', async () => {
+    const question = { question: 'Which fruit?', options: [{ label: 'Apple', description: 'Crisp' }, { label: 'Banana' }] };
+    const payload = Buffer.from(JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions: [question] } })).toString('base64');
+    const dialog = [' ☐ Fruit', 'Which fruit?', '❯ 1. Apple', '     Crisp', '  2. Banana', '  3. Type something.', '─────', '  4. Chat about this', 'Enter to select · ↑/↓ to navigate · Esc to cancel'].join('\n');
+    const target = vi.fn(async () => ({ agent: { ...agent, kind: 'claude' }, socket }));
+    const tmux = { capture: vi.fn(async () => dialog), pastePrompt: vi.fn(async () => true), sendKeys: vi.fn(async () => true) };
+    const queued = { enqueue: vi.fn(), list: vi.fn(), resets: { get: vi.fn().mockResolvedValue(undefined) } };
+    const discovery = { target, worktreesNow: () => [], reportedQuestionPayload: () => payload };
+    const service = new PromptService(discovery as never, tmux as never, undefined, queued as never);
+    const fruitId = inlineQuestionId('Which fruit?', ['Apple', 'Banana', 'Chat about this']);
+    await expect(service.answerQuestion(agent.id, fruitId, 'Neither.\nA pear.')).resolves.toBe(true);
+    expect(tmux.sendKeys.mock.calls).toEqual([[socket, '%1', ['Down', 'Down']], [socket, '%1', ['Enter']]]);
+    expect(tmux.pastePrompt).toHaveBeenCalledWith(socket, '%1', expect.stringMatching(/^rac-/u), 'Neither. A pear.');
+    expect(tmux.sendKeys.mock.invocationCallOrder[0]).toBeLessThan(tmux.pastePrompt.mock.invocationCallOrder[0]!);
+    // Chat about this is choice 2 but screen row 3: it skips the Type something input
+    tmux.sendKeys.mockClear();
+    await expect(service.answerQuestion(agent.id, fruitId, 2)).resolves.toBe(true);
+    expect(tmux.sendKeys.mock.calls).toEqual([[socket, '%1', ['Down', 'Down', 'Down', 'Enter']]]);
+  });
 });

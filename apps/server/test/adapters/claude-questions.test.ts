@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { reportedClaudeQuestion } from '../../src/adapters/claude-questions.js';
+import { claudeQuestionTextAnswer, claudeQuestionTextEntry, reportedClaudeQuestion } from '../../src/adapters/claude-questions.js';
 import { inlineQuestionId } from '../../src/adapters/inline-questions.js';
 
 type Option = { label: string; description?: string };
@@ -43,11 +43,14 @@ const wideDialog = (caret = 1): string => [
 
 describe('reportedClaudeQuestion', () => {
   it('renders a single reported question with the option labels as its choices', () => {
-    const choices = ['Staging', 'Production', 'Neither, hold the build until the smoke tests finish'];
+    // the drawn Chat about this row rides along as a last choice whose row skips the text input
+    const choices = ['Staging', 'Production', 'Neither, hold the build until the smoke tests finish', 'Chat about this'];
     expect(reportedClaudeQuestion(encode([deploy]), wideDialog())).toEqual({
       id: inlineQuestionId(deploy.question, choices),
       text: deploy.question,
       choices,
+      descriptions: ['Rehearse first', 'Ship to live', 'Wait', ''],
+      rows: [0, 1, 2, 4],
       source: 'structured',
     });
   });
@@ -73,14 +76,14 @@ describe('reportedClaudeQuestion', () => {
     // choices come from the payload (its id is width-independent), so the wrapped
     // capture must still be recognised as the same live question
     expect(reportedClaudeQuestion(encode([deploy]), narrow)).toEqual({
-      id: inlineQuestionId(deploy.question, choices), text: deploy.question, choices, source: 'structured',
+      id: inlineQuestionId(deploy.question, choices), text: deploy.question, choices, descriptions: ['Rehearse first', 'Ship to live', 'Wait'], source: 'structured',
     });
   });
 
   it('still matches when the caret sits on another option', () => {
-    const choices = ['Staging', 'Production', 'Neither, hold the build until the smoke tests finish'];
+    const choices = ['Staging', 'Production', 'Neither, hold the build until the smoke tests finish', 'Chat about this'];
     expect(reportedClaudeQuestion(encode([deploy]), wideDialog(2))).toEqual({
-      id: inlineQuestionId(deploy.question, choices), text: deploy.question, choices, source: 'structured',
+      id: inlineQuestionId(deploy.question, choices), text: deploy.question, choices, descriptions: ['Rehearse first', 'Ship to live', 'Wait', ''], rows: [0, 1, 2, 4], source: 'structured',
     });
   });
 
@@ -243,5 +246,43 @@ describe('reportedClaudeQuestion', () => {
     expect(reportedClaudeQuestion('not+valid+base64+json', wideDialog())).toBeUndefined();
     expect(reportedClaudeQuestion(Buffer.from('not json').toString('base64'), wideDialog())).toBeUndefined();
     expect(reportedClaudeQuestion(Buffer.from('[]').toString('base64'), wideDialog())).toBeUndefined();
+  });
+});
+
+describe('claudeQuestionTextEntry', () => {
+  it('moves from option 1 onto the Type something row below the options', () => {
+    const question = reportedClaudeQuestion(encode([deploy]), wideDialog())!;
+    expect(claudeQuestionTextEntry(question, wideDialog())).toEqual(['Down', 'Down', 'Down']);
+  });
+
+  it('refuses when the Type something row is not drawn at the expected number', () => {
+    // the review page offers no free-text row; a text answer must not land on an option
+    const review = { id: 'review', text: 'Ready to submit your answers?', choices: ['Submit answers', 'Cancel'], source: 'structured' as const };
+    expect(claudeQuestionTextEntry(review, 'Ready to submit your answers?\n❯ 1. Submit answers\n  2. Cancel')).toBeUndefined();
+    const question = reportedClaudeQuestion(encode([deploy]), wideDialog())!;
+    expect(claudeQuestionTextEntry(question, wideDialog().replace('4. Type something.', '4. Something else'))).toBeUndefined();
+  });
+
+  it('still finds the Type something row when Chat about this is offered as a choice', () => {
+    // three options plus Chat: the text input is row 4, three Downs from option 1
+    const question = reportedClaudeQuestion(encode([deploy]), wideDialog())!;
+    expect(question.choices).toHaveLength(4);
+    expect(claudeQuestionTextEntry(question, wideDialog())).toEqual(['Down', 'Down', 'Down']);
+    const withoutChat = reportedClaudeQuestion(encode([deploy]), wideDialog().replace('5. Chat about this', ''))!;
+    expect(withoutChat.choices).toHaveLength(3);
+    expect(withoutChat.rows).toBeUndefined();
+    expect(claudeQuestionTextEntry(withoutChat, wideDialog())).toEqual(['Down', 'Down', 'Down']);
+  });
+
+  it('refuses a parsed question', () => {
+    const question = { ...reportedClaudeQuestion(encode([deploy]), wideDialog())!, source: 'parsed' as const };
+    expect(claudeQuestionTextEntry(question, wideDialog())).toBeUndefined();
+  });
+});
+
+describe('claudeQuestionTextAnswer', () => {
+  it('joins lines with a space because the Type something input drops line breaks', () => {
+    expect(claudeQuestionTextAnswer('  first line\n\n  second line \n')).toBe('first line second line');
+    expect(claudeQuestionTextAnswer('one line')).toBe('one line');
   });
 });

@@ -3,7 +3,7 @@ import { claudeConfigDir, claudeConversationName, claudeConversationSummaries, v
 import { claudeSkillDirectories, claudeSlash } from './claude-commands.js';
 import { claudeFiles, claudeHooksFileName } from './claude-hooks.js';
 import { claudeNewConversation } from './claude-new-conversation.js';
-import { reportedClaudeQuestion } from './claude-questions.js';
+import { claudeQuestionTextAnswer, claudeQuestionTextEntry, reportedClaudeQuestion } from './claude-questions.js';
 import type { Adapter, TmuxKey } from './types.js';
 
 // The packaged CLI entry a `node …` invocation of Claude Code runs.
@@ -82,6 +82,9 @@ export const claudeAdapter: Adapter = {
     // the Agent reports the question payload on its own pane; the matcher confirms
     // the dialog is live against the capture and answers it on the same pane
     reported: reportedClaudeQuestion,
+    // free text goes through the dialog's `Type something.` row
+    textEntry: claudeQuestionTextEntry,
+    textAnswer: claudeQuestionTextAnswer,
   },
   conversations: {
     validId: validClaudeSessionId,

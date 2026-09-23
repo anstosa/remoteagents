@@ -1108,6 +1108,7 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .question-choice { display: grid; min-height: 2.45rem; grid-template-columns: 1.4rem minmax(0, 1fr); align-items: stretch; justify-content: flex-start; padding: .45rem .6rem; color: var(--text); border-color: color-mix(in srgb, var(--lavender) 45%, var(--surface-1)); background: linear-gradient(145deg, var(--surface-0), var(--mantle)); box-shadow: none; font: 600 .72rem/1.35 var(--font-mono); text-align: left; }
 .question-choice b { display: grid; width: 1.4rem; height: 1.4rem; align-self: start; margin-top: -.05rem; place-items: center; border: 1px solid var(--lavender); border-radius: var(--control-radius); background: color-mix(in srgb, var(--lavender) 12%, transparent); color: var(--lavender); font: 800 .7rem var(--font-mono); }
 .question-choice > span { min-width: 0; align-self: center; overflow-wrap: anywhere; }
+.question-choice > span small { display: block; margin-top: .15rem; color: var(--subtext-0); font-weight: 500; }
 .question-notes { display: flex; flex-direction: column; gap: .4rem; padding: .55rem; border: 1px solid color-mix(in srgb, var(--mauve) 34%, var(--surface-1)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 88%, transparent); }
 .question-notes textarea { width: 100%; min-height: 4.5rem; border-color: var(--surface-2); background: color-mix(in srgb, var(--crust) 72%, transparent); }
 .question-notes-actions { display: flex; justify-content: flex-end; }

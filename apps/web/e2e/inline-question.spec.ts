@@ -208,3 +208,26 @@ test('renders inline questions from the pane stream and answers through one endp
   await expect.poll(() => answerCount).toBe(3);
   await expect(page.getByText('Agent question')).toHaveCount(0);
 });
+
+test('shows reported option descriptions and switches the picker to the normal prompt', async ({ page }) => {
+  await installPaneMock(page);
+  await page.route('**/api/**', async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Action required', attention: 'question', kind: 'claude' }], projects: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'pane-ticket' } });
+    if (/^\/api\/agents\/agent-1\/(saved-prompts|prompt-history)$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await pushQuestion(page, 'agent-1', { id: 'question-fruit', text: 'Which fruit?', choices: ['Apple', 'Banana'], descriptions: ['A crisp red fruit', ''], source: 'structured' });
+
+  const choices = page.locator('.question-choice');
+  await expect(choices.nth(0).locator('small')).toHaveText('A crisp red fruit');
+  await expect(choices.nth(1).locator('small')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Switch to normal prompt mode' }).click();
+  await expect(page.getByText('Agent question')).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Switch to answer mode' })).toBeVisible();
+});

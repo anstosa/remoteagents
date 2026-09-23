@@ -1013,7 +1013,7 @@ export class PromptService {
       // refuse replacement panes or intervening operator input
       if (!await stillCurrent()) return false;
       // preserve cursor-aware numbered selection
-      if (!textAnswer) return await this.tmux.sendKeys(first.socket, targetPane, adapter.submission.selectOption(answer, question.selectedIndex));
+      if (!textAnswer) return await this.tmux.sendKeys(first.socket, targetPane, adapter.submission.selectOption(question.rows?.[answer] ?? answer, question.selectedIndex));
       const keys = capture === undefined ? undefined : adapter.questions.textEntry?.(question, capture);
       // unsupported menus must not receive a normal prompt or an implicit default
       if (keys === undefined) return false;
@@ -1023,7 +1023,7 @@ export class PromptService {
       if (!await stillCurrent()) return false;
       const buffer = `rac-${randomBytes(18).toString('base64url')}`;
       // bracketed paste keeps multiline answers and leading digits out of menu shortcuts
-      if (!await this.tmux.pastePrompt(first.socket, targetPane, buffer, answer)) return false;
+      if (!await this.tmux.pastePrompt(first.socket, targetPane, buffer, adapter.questions.textAnswer?.(answer) ?? answer)) return false;
       // never submit into a replacement pane after a slow paste
       if (!await stillCurrent()) return false;
       return await this.tmux.sendKeys(first.socket, targetPane, ['Enter']);

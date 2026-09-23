@@ -2,7 +2,7 @@
 // collapse whitespace, so a wrapped or box-framed line matches its plain string
 import { normalizeLine as normalize } from './capture-text.js';
 import { inlineQuestionId } from './inline-questions.js';
-import type { InlineQuestion } from './types.js';
+import type { InlineQuestion, TmuxKey } from './types.js';
 
 /**
  * Claude Code's `AskUserQuestion` dialog rendered as an Inline question (ADR 0006).
@@ -19,6 +19,15 @@ import type { InlineQuestion } from './types.js';
  * answer and offers Submit answers / Cancel; that page is matched by its own literal
  * before any question text, and rendered as the two-choice question `selectOption(0)`
  * submits.
+ *
+ * A free-text answer goes through the `N+1. Type something.` row drawn under the N
+ * options: Down × N from the first option focuses its inline input, a bracketed
+ * paste fills it, and Enter submits it as the answer. The input keeps Up for itself
+ * (Up × 6 on the row stays put), so the caret cannot be homed from there.
+ *
+ * Below that row, past a rule, Claude draws `N+2. Chat about this`: selecting it
+ * declines the question so the conversation can discuss it. When drawn it is offered
+ * as one more choice whose on-screen row skips the text input.
  */
 
 // only the bottom of the screen holds the live dialog; the transcript above repeats
@@ -29,10 +38,11 @@ const questionWindowLines = 80;
 // review/submit step of a multi-question call is one more of these — its prompt as
 // the text, Submit answers / Cancel as the choices — so it matches through the same
 // `isLive` check and renders through the same `asInline`.
-type Renderable = { text: string; choices: string[] };
+type Renderable = { text: string; choices: string[]; descriptions?: string[] };
 const reviewStep: Renderable = { text: 'Ready to submit your answers?', choices: ['Submit answers', 'Cancel'] };
+const chatChoice = 'Chat about this';
 
-type ReportedOption = { label?: unknown };
+type ReportedOption = { label?: unknown; description?: unknown };
 type ReportedQuestion = { question?: unknown; options?: unknown; multiSelect?: unknown };
 type ReportedPayload = { hook_event_name?: unknown; tool_name?: unknown; tool_input?: { questions?: unknown } };
 
@@ -57,11 +67,25 @@ function renderableQuestion(question: ReportedQuestion): Renderable | undefined 
   const choices = question.options.map(option => (option as ReportedOption)?.label).filter(isNonEmptyString);
   // every option must carry a label, and the list must be a real choice set
   if (choices.length !== question.options.length || choices.length < 2 || choices.length > 16) return undefined;
-  return { text: question.question, choices };
+  const descriptions = question.options.map(option => {
+    const description = (option as ReportedOption).description;
+    return typeof description === 'string' ? description : '';
+  });
+  return { text: question.question, choices, ...(descriptions.some(Boolean) ? { descriptions } : {}) };
 }
 
-const asInline = ({ text, choices }: Renderable): InlineQuestion =>
-  ({ id: inlineQuestionId(text, choices), text, choices: [...choices], source: 'structured' });
+// descriptions ride along for display only; the id stays text + labels
+const asInline = ({ text, choices, descriptions }: Renderable): InlineQuestion =>
+  ({ id: inlineQuestionId(text, choices), text, choices: [...choices], ...(descriptions === undefined ? {} : { descriptions: [...descriptions] }), source: 'structured' });
+
+// append the Chat about this row when the dialog draws it under the text input
+function withChat(question: Renderable, window: string): InlineQuestion {
+  const count = question.choices.length;
+  if (!window.includes(normalize(`${count + 2}. ${chatChoice}`))) return asInline(question);
+  const descriptions = question.descriptions === undefined ? undefined : [...question.descriptions, ''];
+  const rows = [...question.choices.keys(), count + 1];
+  return { ...asInline({ text: question.text, choices: [...question.choices, chatChoice], descriptions }), rows };
+}
 
 // the normalised last-80-line window. Claude pads blank rows below the dialog to
 // the pane height, so trailing blanks are trimmed before windowing — otherwise a
@@ -101,5 +125,24 @@ export function reportedClaudeQuestion(payload: string, capture: string): Inline
   const live = questions
     .map(renderableQuestion)
     .filter((question): question is Renderable => question !== undefined && isLive(question, window));
-  return live.length === 1 ? asInline(live[0]!) : undefined;
+  return live.length === 1 ? withChat(live[0]!, window) : undefined;
 }
+
+/**
+ * Keys that move a freshly opened dialog's caret from option 1 onto its
+ * `Type something.` row, or undefined when that row is not on screen — the review
+ * page offers no free-text row, and a text answer must never land on an option.
+ * Like `selectOption`, this assumes the caret opens on row 1 (ADR 0006).
+ */
+export function claudeQuestionTextEntry(question: InlineQuestion, capture: string): TmuxKey[] | undefined {
+  if (question.source !== 'structured') return undefined;
+  // the text input is the row right after the options — the one row the choices skip
+  const options = question.rows === undefined ? question.choices.length : question.choices.length - 1;
+  const row = normalize(`${options + 1}. Type something.`);
+  if (!captureWindow(capture).includes(row)) return undefined;
+  return Array.from({ length: options }, (): TmuxKey => 'Down');
+}
+
+// the Type something input drops line breaks (a pasted `a\nb` answers `ab`), so
+// join lines with a space to keep the words apart
+export const claudeQuestionTextAnswer = (text: string): string => text.trim().replace(/\s*\n\s*/gu, ' ');
