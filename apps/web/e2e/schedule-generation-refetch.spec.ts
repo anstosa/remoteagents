@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 
 // pin the zone so the server-supplied nextRun renders as a fixed local sentence
 test.use({ timezoneId: 'America/Los_Angeles' });
@@ -49,6 +49,28 @@ async function installDashboardSocket(page: Page): Promise<void> {
 const emitGeneration = (page: Page, generation: number, agents: unknown[], projects: unknown[] = [], notesRevision?: number, serverStartedAt?: number) =>
   page.evaluate(([g, a, p, revision, startedAt]) => (window as typeof window & { __emitDashboard: (d: unknown) => void }).__emitDashboard({ generation: g, agents: a, projects: p, notesRevision: revision, serverStartedAt: startedAt }), [generation, agents, projects, notesRevision, serverStartedAt] as const);
 const socketReady = (page: Page) => page.evaluate(() => (window as typeof window & { __dashboardSocketReady: () => boolean }).__dashboardSocketReady());
+const noteAlertRed = 'rgb(243, 139, 168)';
+
+// require the persistent red treatment shared by animated and reduced-motion alerts
+const expectStaticNoteAlert = async (toggle: Locator) => {
+  await expect(toggle).toHaveCSS('border-color', noteAlertRed);
+  await expect(toggle).not.toHaveCSS('box-shadow', 'none');
+};
+
+// require the same pulse cadence as the cleanup alert
+const expectAnimatedNoteAlert = async (toggle: Locator) => {
+  await expectStaticNoteAlert(toggle);
+  await expect(toggle).not.toHaveCSS('animation-name', 'none');
+  await expect(toggle).toHaveCSS('animation-duration', '1.6s');
+  await expect(toggle).toHaveCSS('animation-timing-function', 'ease-in-out');
+  await expect(toggle).toHaveCSS('animation-iteration-count', 'infinite');
+};
+
+// require ordinary and acknowledged notes to retain the neutral control treatment
+const expectNoNoteAlert = async (toggle: Locator) => {
+  await expect(toggle).not.toHaveCSS('border-color', noteAlertRed);
+  await expect(toggle).toHaveCSS('animation-name', 'none');
+};
 
 test('refetches the fly-out badge on a generation change, and catches up on reopen after one while closed', async ({ page }) => {
   await installDashboardSocket(page);
@@ -184,12 +206,14 @@ test('keeps queued-note badges red until notes are opened and shares acknowledge
   const badge = page.locator('.notes-count');
   await expect(toggle).toHaveAccessibleName('Notes (1)');
   await expect(badge).not.toHaveClass(/unread/u);
+  await expectNoNoteAlert(toggle);
 
   await recoverPrompt('Queued prompt in Cora · 1:05 PM');
   await expect(toggle).toHaveAccessibleName('Notes (2)');
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await expect(badge).toHaveClass(/unread/u);
   await expect(badge).toHaveCSS('background-color', 'rgb(243, 139, 168)');
+  await expectAnimatedNoteAlert(toggle);
   await page.locator('.notes-control').screenshot({ path: test.info().outputPath('queued-note-unread.png') });
 
   // background reloads must not acknowledge the recovered prompt
@@ -198,10 +222,12 @@ test('keeps queued-note badges red until notes are opened and shares acknowledge
   await toggle.click();
   await expect(page.getByLabel('Worktree notes')).toContainText('Queued prompt in Cora · 1:05 PM');
   await expect(badge).not.toHaveClass(/unread/u);
+  await expectNoNoteAlert(toggle);
   await page.locator('.flyout-backdrop').click();
   await page.reload();
   await expect(toggle).toHaveAccessibleName('Notes (2)');
   await expect(badge).not.toHaveClass(/unread/u);
+  await expectNoNoteAlert(toggle);
 
   // a different open note pane is not an acknowledgement of a new queued note
   await toggle.click();
@@ -210,23 +236,28 @@ test('keeps queued-note badges red until notes are opened and shares acknowledge
   await recoverPrompt('A renamed recovered prompt');
   await expect(toggle).toHaveAccessibleName('Notes (3)');
   await expect(badge).toHaveClass(/unread/u);
+  await expectAnimatedNoteAlert(toggle);
   await toggle.click();
   await expect(badge).not.toHaveClass(/unread/u);
+  await expectNoNoteAlert(toggle);
 
   // entries arriving in the visible list are already seen
   await recoverPrompt('Queued prompt in Cora · 1:07 PM');
   await expect(page.getByLabel('Worktree notes')).toContainText('Queued prompt in Cora · 1:07 PM');
   await expect(toggle).toHaveAccessibleName('Notes (4)');
   await expect(badge).not.toHaveClass(/unread/u);
+  await expectNoNoteAlert(toggle);
   await page.locator('.flyout-backdrop').click();
 
   // project-shared notes stay acknowledged in another worktree
   await page.getByRole('tab', { name: 'Owen — Prompt done' }).click();
   await expect(toggle).toHaveAccessibleName('Notes (4)');
   await expect(badge).not.toHaveClass(/unread/u);
+  await expectNoNoteAlert(toggle);
   await page.reload();
   await expect(toggle).toHaveAccessibleName('Notes (4)');
   await expect(badge).not.toHaveClass(/unread/u);
+  await expectNoNoteAlert(toggle);
 
   // restarting the server may reuse a numeric revision but must still reveal new notes
   notes.unshift({ id: 'queued-after-restart', title: 'Queued prompt in Owen · 1:08 PM', text: 'Recovered after restart', source: 'queued-prompt' });
@@ -236,6 +267,29 @@ test('keeps queued-note badges red until notes are opened and shares acknowledge
   await emitGeneration(page, generation, agents, [], notesRevision, serverStartedAt);
   await expect(toggle).toHaveAccessibleName('Notes (5)');
   await expect(badge).toHaveClass(/unread/u);
+  await expectAnimatedNoteAlert(toggle);
+
+  // reduced motion keeps the red alert visible without pulsing
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expectStaticNoteAlert(toggle);
+  await expect(toggle).toHaveCSS('animation-name', 'none');
+
+  // keep the control visible at phone and desktop widths
+  for (const viewport of [{ label: 'phone', width: 320, height: 640 }, { label: 'desktop', width: 1440, height: 900 }]) {
+    await page.setViewportSize(viewport);
+    const bounds = await page.locator('.notes-control').boundingBox();
+    expect(bounds).not.toBeNull();
+    // stop coordinate checks when Playwright reports no rendered box
+    if (bounds === null) continue;
+    expect(bounds.x).toBeGreaterThanOrEqual(0);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
+    const padding = 24;
+    const x = Math.max(0, bounds.x - padding);
+    const y = Math.max(0, bounds.y - padding);
+    const right = Math.min(viewport.width, bounds.x + bounds.width + padding);
+    const bottom = Math.min(viewport.height, bounds.y + bounds.height + padding);
+    await page.screenshot({ path: test.info().outputPath(`queued-note-unread-${viewport.label}.png`), clip: { x, y, width: right - x, height: bottom - y } });
+  }
 });
 
 // acknowledgements from separate browser tabs must converge without losing either project
