@@ -67,6 +67,10 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
   status.className = 'streamed-terminal-status';
   status.setAttribute('role', 'status');
   status.hidden = true;
+  // separate the solid notice from the cached-output treatment
+  const statusMessage = document.createElement('span');
+  statusMessage.className = 'streamed-terminal-status-message';
+  status.append(statusMessage);
   container.append(status);
 
   const jump = document.createElement('button');
@@ -293,8 +297,9 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
     scheduleOverlayRender();
   };
 
+  // update the notice without replacing its styled container
   const showStatus = (text: string) => {
-    status.textContent = text;
+    statusMessage.textContent = text;
     status.hidden = false;
     container.dataset.status = text;
   };
@@ -340,7 +345,8 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
       onOpen: () => sendViewport(),
       onBytes: queueOutput,
       onFrame: handleFrame,
-      onClose: info => handleDisconnect(`Reconnecting… (${info.code})`)
+      // keep transport codes out of the reconnect notice
+      onClose: () => handleDisconnect('Reconnecting…')
     });
   }
 

@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { dropPane, installPaneMock, pushBytes, seedPaneSize } from './pane-stream-mock.js';
 
-// retain cached output behind the blocking reconnect notice
+// restore the opaque client status while retaining mounted console panes
 test('blocks the console with a reconnecting overlay until the tunnel recovers', async ({ page }) => {
   test.setTimeout(60_000);
   await installPaneMock(page);
@@ -32,14 +32,15 @@ test('blocks the console with a reconnecting overlay until the tunnel recovers',
   await expect(output).toContainText('CACHED-OUTPUT');
 
   tunnelAvailable = false;
-  await page.getByRole('button', { name: 'More options' }).click();
+  // trigger the public reachability probe without racing the blocking overlay
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
 
   const overlay = page.getByRole('alert', { name: 'Reconnecting to console' });
   await expect(overlay).toBeVisible();
   // avoid duplicate notices when the pane disconnects during a console outage
   await dropPane(page, 'agent-1');
   const paneStatus = page.locator('.log-canvas .streamed-terminal-status');
-  await expect(paneStatus).toHaveText('Reconnecting… (1006)');
+  await expect(paneStatus).toHaveText('Reconnecting…');
   await expect(paneStatus).toBeHidden();
   const [bounds, viewport] = await Promise.all([overlay.boundingBox(), page.evaluate(() => ({ width: innerWidth, height: innerHeight }))]);
   expect(bounds).not.toBeNull();
@@ -50,26 +51,26 @@ test('blocks the console with a reconnecting overlay until the tunnel recovers',
   await expect(agentTab).toHaveCount(1);
   await expect(output).toContainText('CACHED-OUTPUT');
   await expect(overlay).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
-  await expect(overlay).toHaveCSS('background-image', 'none');
-  // preserve sharp cached text beneath the original yellow border and hatching
-  const cachedTreatment = overlay.locator('.log-cached-treatment');
-  await expect(cachedTreatment).toHaveCSS('backdrop-filter', 'none');
-  await expect(cachedTreatment).toHaveCSS('filter', 'none');
-  await expect(cachedTreatment).toHaveCSS('border-top-width', '2px');
-  await expect(cachedTreatment).toHaveCSS('border-top-style', 'solid');
-  // tolerate color-mix rounding while checking the yellow palette and opacity
-  await expect(cachedTreatment).toHaveCSS('border-top-color', /color\(srgb 0\.97647\d* 0\.88627\d* 0\.68627\d* \/ 0\.58\)/u);
-  await expect(cachedTreatment).toHaveCSS('background-image', /repeating-linear-gradient\(135deg,/u);
-  const message = overlay.locator('.reconnecting-message');
-  await expect(message).toHaveText('Reconnecting…');
-  await expect(message).toHaveCSS('color', 'rgb(249, 226, 175)');
-  // keep the reconnect notice centered on desktop and phone
-  for (const size of [{ width: 1280, height: 720 }, { width: 390, height: 844 }]) {
-    await page.setViewportSize(size);
-    const messageBounds = await message.boundingBox();
-    expect(messageBounds).not.toBeNull();
-    expect(messageBounds!.x + messageBounds!.width / 2).toBeCloseTo(size.width / 2, 0);
-    expect(messageBounds!.y + messageBounds!.height / 2).toBeCloseTo(size.height / 2, 0);
+  await expect(overlay).toHaveCSS('background-image', /radial-gradient\(circle at 50% 42%,/u);
+  await expect(overlay.locator('.auth-glow')).toBeVisible();
+  const message = overlay.locator('.loading-line');
+  await expect(message).toHaveText('Reconnecting to console');
+  await expect(overlay.locator('.loading-bars')).toBeVisible();
+  // inspect the restored full-client grid treatment
+  const grid = await overlay.evaluate(element => {
+    const before = getComputedStyle(element, '::before');
+    return { background: before.backgroundImage, opacity: before.opacity };
+  });
+  expect(grid.background).toContain('linear-gradient');
+  expect(grid.opacity).toBe('0.28');
+  // keep the opaque reconnect status centered on desktop and phone
+  for (const viewport of [{ label: 'desktop', width: 1440, height: 900 }, { label: 'phone', width: 320, height: 640 }]) {
+    await page.setViewportSize(viewport);
+    const consoleBounds = await overlay.locator('.loading-console').boundingBox();
+    expect(consoleBounds).not.toBeNull();
+    expect(consoleBounds!.x + consoleBounds!.width / 2).toBeCloseTo(viewport.width / 2, 0);
+    expect(consoleBounds!.y + consoleBounds!.height / 2).toBeCloseTo(viewport.height / 2, 0);
+    await page.screenshot({ path: test.info().outputPath(`console-reconnecting-${viewport.label}.png`) });
   }
 
   tunnelAvailable = true;

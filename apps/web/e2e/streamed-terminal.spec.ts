@@ -379,23 +379,26 @@ test('a socket loss reconnects and re-seeds without keeping a stale line', async
   await drive(page, 'pushClose', 1006, 'lost');
   await expect.poll(() => drive(page, 'connectCalls')).toBeGreaterThan(1);
   await expect(status).toBeVisible();
-  await expect(status).toHaveText('Reconnecting… (1006)');
-  await expect(status).toHaveCSS('color', 'rgb(249, 226, 175)');
+  await expect(status).toHaveText('Reconnecting…');
+  const message = status.locator('.streamed-terminal-status-message');
+  await expect(message).toBeVisible();
+  await expect(message).toHaveCSS('background-color', 'rgb(249, 226, 175)');
+  await expect(message).toHaveCSS('background-image', 'none');
+  await expect(message).toHaveCSS('color', 'rgb(0, 0, 0)');
   expect(await drive<string>(page, 'screenText')).toContain('STALE-LINE');
   await expect(page.locator('#term .streamed-terminal-cover')).toHaveCount(0);
-  // measure the text itself rather than its full-pane status container
-  for (const viewport of [{ width: 1280, height: 720 }, { width: 390, height: 844 }]) {
+  // measure the solid status itself rather than its full-pane cached-output treatment
+  for (const viewport of [{ label: 'desktop', width: 1440, height: 900 }, { label: 'phone', width: 320, height: 640 }]) {
     await page.setViewportSize(viewport);
-    // inspect centered text and the original cached-output border and hatching
+    const [badgeBounds, paneBounds] = await Promise.all([message.boundingBox(), page.locator('#term').boundingBox()]);
+    // require visible geometry before comparing centers
+    if (badgeBounds === null || paneBounds === null) throw new Error('reconnect badge or output pane is not visible');
+    expect(badgeBounds.x + badgeBounds.width / 2 - paneBounds.x - paneBounds.width / 2).toBeCloseTo(0, 0);
+    expect(badgeBounds.y + badgeBounds.height / 2 - paneBounds.y - paneBounds.height / 2).toBeCloseTo(0, 0);
+    // inspect the retained cached-output border and hatching
     const appearance = await status.evaluate(element => {
-      const range = document.createRange();
-      range.selectNodeContents(element);
-      const text = range.getBoundingClientRect();
-      const pane = element.parentElement!.getBoundingClientRect();
       const backdrop = getComputedStyle(element, '::before');
       return {
-        horizontalOffset: text.x + text.width / 2 - pane.x - pane.width / 2,
-        verticalOffset: text.y + text.height / 2 - pane.y - pane.height / 2,
         backdropFilter: backdrop.backdropFilter,
         filter: backdrop.filter,
         background: backdrop.backgroundColor,
@@ -405,8 +408,6 @@ test('a socket loss reconnects and re-seeds without keeping a stale line', async
         borderColor: backdrop.borderTopColor
       };
     });
-    expect(appearance.horizontalOffset).toBeCloseTo(0, 0);
-    expect(appearance.verticalOffset).toBeCloseTo(0, 0);
     expect(appearance.backdropFilter).toBe('none');
     expect(appearance.filter).toBe('none');
     expect(appearance.background).toBe('rgba(0, 0, 0, 0)');
@@ -415,6 +416,7 @@ test('a socket loss reconnects and re-seeds without keeping a stale line', async
     expect(appearance.borderStyle).toBe('solid');
     // tolerate color-mix rounding while checking the yellow palette and opacity
     expect(appearance.borderColor).toMatch(/color\(srgb 0\.97647\d* 0\.88627\d* 0\.68627\d* \/ 0\.58\)/u);
+    await page.locator('#term').screenshot({ path: test.info().outputPath(`output-reconnecting-${viewport.label}.png`) });
   }
   await drive(page, 'pushSize', 40, 10);
   await expect(status).toBeVisible();
