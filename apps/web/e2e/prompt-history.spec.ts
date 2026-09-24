@@ -89,7 +89,7 @@ test('shows worktree prompt history and cycles it from the composer', async ({ p
   expect((await noteCreated).ok()).toBe(true);
   const notePane = page.getByRole('dialog', { name: 'Note' });
   await expect(historyMenu).toBeHidden();
-  await expect(notePane.locator('header strong')).toHaveText('Second final answer');
+  await expect(notePane.locator('.note-picker strong')).toHaveText('Second final answer');
   await expect(page.getByLabel('Note preview')).toContainText('Second final answer');
   await page.getByRole('button', { name: 'Close note' }).click();
   await historyToggle.click();

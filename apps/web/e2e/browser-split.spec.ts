@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { installPaneMock, seedPaneSize, pushBytes } from './pane-stream-mock.js';
+import { clickPanelAction, expectPanelAction } from './panel-header';
 
 // verify direct external preview routing
 test('loads direct external previews without managed proxy endpoints', async ({ page }) => {
@@ -281,25 +282,26 @@ test('opens the configured project in desktop and mobile split views', async ({ 
   await preview.getByRole('link', { name: 'View details' }).click();
   await expect(preview.locator('main')).toHaveAttribute('data-location', '/details?view=files');
   await expect(browser.getByRole('textbox', { name: 'Browser address' })).toHaveValue('https://project.example.com/details?view=files#changed');
-  await expect(browser.getByRole('button', { name: 'Go to project home' })).toBeVisible();
+  await expectPanelAction(browser, 'Go to project home', home => expect(home).toBeVisible());
 
-  await browser.getByRole('button', { name: 'Go to project home' }).click();
+  await clickPanelAction(browser, 'Go to project home');
   await expect(preview.locator('main')).toHaveAttribute('data-location', '/');
-  await expect(browser.getByRole('button', { name: 'Go to project home' })).toBeDisabled();
+  await expectPanelAction(browser, 'Go to project home', home => expect(home).toBeDisabled());
   const loadsBeforeSpaNavigation = previewLoads;
   await preview.getByRole('link', { name: 'Open SPA page' }).click();
   await expect(preview.locator('main')).toHaveAttribute('data-location', '/spa');
   await expect(browser.getByRole('textbox', { name: 'Browser address' })).toHaveValue('https://project.example.com/spa');
-  await expect(browser.getByRole('button', { name: 'Go to project home' })).toBeEnabled();
+  await expectPanelAction(browser, 'Go to project home', home => expect(home).toBeEnabled());
   expect(previewLoads).toBe(loadsBeforeSpaNavigation);
 
-  await deviceToggle.click();
+  await clickPanelAction(browser, 'Use mobile viewport and user agent');
   await expect(browser.locator('.browser-frame-shell')).toHaveClass(/mobile/u);
-  await expect(deviceToggle).toHaveAttribute('aria-label', 'Use desktop viewport and user agent');
-  await expect(deviceToggle).toHaveAttribute('aria-pressed', 'true');
-  await expect(deviceToggle.locator('svg')).toHaveAttribute('data-device', 'mobile');
+  await expectPanelAction(browser, 'Use desktop viewport and user agent', async toggle => {
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(toggle.locator('svg')).toHaveAttribute('data-device', 'mobile');
+  });
   expect(requestedDevices.at(-1)).toBe('mobile');
-  await expect(browser.getByRole('button', { name: 'Go to project home' })).toBeVisible();
+  await expectPanelAction(browser, 'Go to project home', home => expect(home).toBeVisible());
   await expect(browserDivider).toBeHidden();
   await expect(noteDivider).toBeVisible();
   const [frameWidth, shellWidth, paneWidth, outputWidth, addressBounds, deviceBounds] = await Promise.all([
@@ -308,7 +310,8 @@ test('opens the configured project in desktop and mobile split views', async ({ 
     browser.evaluate(element => element.getBoundingClientRect().width),
     page.locator('.log-output').evaluate(element => element.getBoundingClientRect().width),
     browser.locator('.browser-address-form').boundingBox(),
-    deviceToggle.boundingBox()
+    // the narrow column folds the device toggle into the header ⋮, which shares the address row
+    browser.locator('.panel-header-more').boundingBox()
   ]);
   expect(frameWidth).toBeLessThanOrEqual(391);
   expect(Math.abs(frameWidth - shellWidth)).toBeLessThanOrEqual(2);
@@ -316,13 +319,14 @@ test('opens the configured project in desktop and mobile split views', async ({ 
   expect(outputWidth).toBeGreaterThan(paneWidth);
   expect(Math.abs(addressBounds!.y - deviceBounds!.y)).toBeLessThanOrEqual(2);
 
-  await deviceToggle.click();
+  await clickPanelAction(browser, 'Use desktop viewport and user agent');
   await expect(browser.locator('.browser-frame-shell')).toHaveClass(/desktop/u);
-  await expect(deviceToggle).toHaveAttribute('aria-label', 'Use mobile viewport and user agent');
-  await expect(deviceToggle).toHaveAttribute('aria-pressed', 'false');
-  await expect(deviceToggle.locator('svg')).toHaveAttribute('data-device', 'desktop');
+  await expectPanelAction(browser, 'Use mobile viewport and user agent', async toggle => {
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await expect(toggle.locator('svg')).toHaveAttribute('data-device', 'desktop');
+  });
   expect(requestedDevices.at(-1)).toBe('desktop');
-  await deviceToggle.click();
+  await clickPanelAction(browser, 'Use mobile viewport and user agent');
   await expect(browser.locator('.browser-frame-shell')).toHaveClass(/mobile/u);
   expect(requestedDevices.at(-1)).toBe('mobile');
 
@@ -376,13 +380,13 @@ test('opens the configured project in desktop and mobile split views', async ({ 
   await expect.poll(() => previewLoads).toBeGreaterThan(loadsBeforeRefresh);
   await expect(preview.locator('main')).toHaveAttribute('data-location', '/spa');
 
-  await browser.getByRole('button', { name: 'Go to project home' }).click();
+  await clickPanelAction(browser, 'Go to project home');
   await expect(preview.locator('main')).toHaveAttribute('data-location', '/');
-  await expect(browser.getByRole('button', { name: 'Go to project home' })).toBeDisabled();
+  await expectPanelAction(browser, 'Go to project home', home => expect(home).toBeDisabled());
 
   await preview.getByRole('link', { name: 'Open unreported page' }).click();
   await expect(preview.locator('main')).toHaveAttribute('data-location', '/unreported');
-  await expect(browser.getByRole('button', { name: 'Go to project home' })).toBeVisible();
+  await expectPanelAction(browser, 'Go to project home', home => expect(home).toBeVisible());
   // Re-stream the project links here: the many split/device/fullscreen resizes above
   // reflow the pane, and unlike tmux the mock does not persist earlier output, so the
   // panel's live buffer is re-seeded for this interaction the way the server would.
@@ -391,8 +395,8 @@ test('opens the configured project in desktop and mobile split views', async ({ 
   await expect(homeOutputLink).toBeVisible();
   await homeOutputLink.click();
   await expect(preview.locator('main')).toHaveAttribute('data-location', '/');
-  await expect(browser.getByRole('button', { name: 'Go to project home' })).toBeDisabled();
-  await browser.getByRole('button', { name: 'Enter browser fullscreen' }).click();
+  await expectPanelAction(browser, 'Go to project home', home => expect(home).toBeDisabled());
+  await browser.getByRole('button', { name: 'Expand browser' }).click();
   await expect(browser).toHaveClass(/expanded/u);
   await expect(page.locator('.log-output')).toBeHidden();
   await expect(note).toBeHidden();
@@ -492,20 +496,25 @@ test.describe('phone browser split', () => {
     await browserSwitch.click();
 
     const mobileSwitch = page.getByRole('button', { name: 'Show agent output' });
-    const deviceToggle = browser.locator('.browser-device-toggle');
     const preview = page.frameLocator('iframe[title="Project browser"]');
     await expect(browser).toBeVisible();
     await expect(output).toBeHidden();
     await expect(mobileSwitch).toBeVisible();
-    await expect(browser.getByRole('button', { name: 'Enter browser fullscreen' })).toBeHidden();
-    await expect(deviceToggle.locator('svg')).toHaveCount(1);
-    await expect(deviceToggle.locator('svg')).toHaveAttribute('data-device', 'desktop');
+    // present but hidden (getByRole skips hidden elements, so count by class)
+    await expect(browser.locator('.panel-header-expand')).toHaveCount(1);
+    await expect(browser.getByRole('button', { name: 'Expand browser' })).toBeHidden();
+    await expectPanelAction(browser, 'Use mobile viewport and user agent', async toggle => {
+      await expect(toggle.locator('svg')).toHaveCount(1);
+      await expect(toggle.locator('svg')).toHaveAttribute('data-device', 'desktop');
+    });
     expect(requestedDevices.at(-1)).toBe('desktop');
     expect(await preview.locator('main').evaluate(() => window.innerWidth)).toBe(980);
 
-    await deviceToggle.click();
-    await expect(deviceToggle).toHaveAttribute('aria-pressed', 'true');
-    await expect(deviceToggle.locator('svg')).toHaveAttribute('data-device', 'mobile');
+    await clickPanelAction(browser, 'Use mobile viewport and user agent');
+    await expectPanelAction(browser, 'Use desktop viewport and user agent', async toggle => {
+      await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+      await expect(toggle.locator('svg')).toHaveAttribute('data-device', 'mobile');
+    });
     expect(requestedDevices.at(-1)).toBe('mobile');
     const [frameWidth, shellWidth, layoutWidth] = await Promise.all([
       browser.locator('iframe').evaluate(element => element.getBoundingClientRect().width),
@@ -515,9 +524,11 @@ test.describe('phone browser split', () => {
     expect(Math.abs(frameWidth - shellWidth)).toBeLessThanOrEqual(2);
     expect(layoutWidth).toBeLessThanOrEqual(428);
 
-    await deviceToggle.click();
-    await expect(deviceToggle).toHaveAttribute('aria-pressed', 'false');
-    await expect(deviceToggle.locator('svg')).toHaveAttribute('data-device', 'desktop');
+    await clickPanelAction(browser, 'Use desktop viewport and user agent');
+    await expectPanelAction(browser, 'Use mobile viewport and user agent', async toggle => {
+      await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+      await expect(toggle.locator('svg')).toHaveAttribute('data-device', 'desktop');
+    });
     expect(requestedDevices.at(-1)).toBe('desktop');
     expect(await preview.locator('main').evaluate(() => window.innerWidth)).toBe(980);
 

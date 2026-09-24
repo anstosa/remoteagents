@@ -1,7 +1,18 @@
-import { createElement, useCallback, useEffect, useRef, useState } from 'react';
+import { createElement, type ReactElement, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import CodePanel from '../src/code-panel/code-panel.js';
 import { useCodePanel, type CodePanelMode, type ComparisonFileContents, type ComparisonPatch, type FilePreviewView } from '../src/code-panel/comparison.js';
+import { PanelExpandContext, useExpansionScope, usePanelExpansion } from '../src/panel-header.js';
+
+// Host the panel the way a Workspace split does: one expansion scope holding the Code panel, with
+// Esc restoring from the container. `startExpanded` opens it promoted, as an agentless Worktree does.
+function Workspace({ children, startExpanded = false }: { children: ReactElement; startExpanded?: boolean }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const expansion = usePanelExpansion();
+  const scope = useExpansionScope(expansion, ['code'], containerRef);
+  useLayoutEffect(() => { if (startExpanded) expansion.setExpanded('code', true); }, [startExpanded, expansion.setExpanded]);
+  return createElement(PanelExpandContext.Provider, { value: scope.context }, createElement('div', { ref: containerRef, style: { display: 'grid', minWidth: 0, minHeight: 0 }, onKeyDown: scope.onKeyDown }, children));
+}
 
 // A spec reads the recorded loadFile calls to confirm Plain / Full-context / live-rebuild fetched the file.
 const loadLog = (): { __codeLoads?: string[] } => window as unknown as { __codeLoads?: string[] };
@@ -38,20 +49,19 @@ function Harness({ initialPatch, initialLoaded, startExpanded }: { initialPatch:
     pushUpdate = (next, loaded) => { if (loaded !== undefined) loadedRef.current = loaded; setPatch(next); };
     return () => { pushUpdate = undefined; };
   }, []);
-  return createElement(CodePanel, {
+  return createElement(Workspace, { startExpanded }, createElement(CodePanel, {
     mode,
     state: 'ready',
     patch,
     selectedPath,
     prAvailable: true,
-    startExpanded,
     loadFile,
     onSelectFile: (path: string) => setSelectedPath(path),
     onClearFile: () => setSelectedPath(undefined),
     onSetMode: (next: CodePanelMode) => setMode(next),
     onCloseFile: () => { /* isolated fixture has no Comparison to return to */ },
     onClose: () => { /* isolated fixture has nothing to close into */ }
-  });
+  }));
 }
 
 export const renderCodePanel = (root: HTMLElement, patch: ComparisonPatch, loaded: Record<string, ComparisonFileContents> = {}, startExpanded = false) => {
@@ -63,7 +73,7 @@ export const renderCodePanel = (root: HTMLElement, patch: ComparisonPatch, loade
 // Mount the panel showing a static File view, so a spec can assert each preview state (text through
 // the library, an image, a binary placeholder, an over-cap notice) without a controller or network.
 export const renderFilePreview = (root: HTMLElement, filePreview: FilePreviewView) => {
-  createRoot(root).render(createElement(CodePanel, {
+  createRoot(root).render(createElement(Workspace, {}, createElement(CodePanel, {
     mode: 'working' as CodePanelMode,
     state: 'ready' as const,
     patch: undefined,
@@ -76,7 +86,7 @@ export const renderFilePreview = (root: HTMLElement, filePreview: FilePreviewVie
     onSetMode: () => { /* no Comparison toggle in the File view */ },
     onCloseFile: () => { /* spec asserts render, not navigation */ },
     onClose: () => { /* spec asserts render, not navigation */ }
-  }));
+  })));
 };
 
 // Controls a spec drives on the REAL `useCodePanel` controller (below), so the production trigger —
@@ -126,7 +136,7 @@ function ControllerHarness({ initialPatch }: { initialPatch: ComparisonPatch }) 
       closeFile: () => controller.closeFilePreview()
     };
   });
-  return createElement(CodePanel, {
+  return createElement(Workspace, {}, createElement(CodePanel, {
     mode: controller.mode,
     state: controller.state,
     patch: controller.patch,
@@ -140,7 +150,7 @@ function ControllerHarness({ initialPatch }: { initialPatch: ComparisonPatch }) 
     onCloseFile: controller.closeFilePreview,
     onClose: controller.close,
     onRetry: controller.refresh
-  });
+  }));
 }
 
 export const renderCodeController = (root: HTMLElement, initialPatch: ComparisonPatch) => {

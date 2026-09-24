@@ -6,9 +6,10 @@
 // them in — so it stays free of any network code and easy to drive in isolation. What the view owns
 // itself is purely visual: the diff mode (Hunks / Full context / Plain file), unified vs split, and
 // the changed-file rail/drawer.
-import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CodeView, type CodeViewHandle, type CodeViewItem, type CodeViewReactOptions, type FileDiffMetadata } from '@pierre/diffs/react';
 import { useColorTheme } from '../color-theme.js';
+import { type PanelAction, PanelHeader, PanelIcon, panelIcons, usePanelExpand } from '../panel-header.js';
 import { groupComparisonFiles, type CodePanelMode, type CodePanelState, type ComparisonChange, type ComparisonFile, type ComparisonFileContents, type ComparisonPatch, type FilePreviewView } from './comparison.js';
 import { codeViewBaseOptions, codeViewStyle, diffItemForContents, diffItemForFile, fileItemForContents, fileVersion, loadedFilesFromContents } from './items.js';
 
@@ -22,28 +23,8 @@ type PanelHandle = CodeViewHandle<undefined, undefined>;
 // both come down to.
 const RAIL_BREAKPOINT = 640;
 
-// Below this (narrower) width the toolbar's segmented controls no longer fit beside the file title,
-// so they move into the right-side fly-out. It is well under RAIL_BREAKPOINT because a desktop split
-// column is routinely 500–640 px wide and the inline controls still fit there — only a phone-width
-// panel (single column, ~390 px) needs the fly-out.
-const TOOLBAR_FLYOUT_BREAKPOINT = 480;
-
-// The app-wide phone breakpoint (styles.css hides every panel's full-screen control below it, so a
-// promote is a no-op on phones). Used to gate the no-agent Worktree's auto-promote to desktop.
-const PHONE_BREAKPOINT = 768;
-
-// The Code panel's full-screen promote/restore control, shared between its Comparison and File views.
-// Toggling it adds `.expanded` to the panel root, which the split's `:has()` rule promotes to fill the
-// workspace (hiding its siblings) — the same mechanism note/browser/terminal/agent carry as their own
-// inline button in main.tsx (kept inline there so this lazy module, and its diff library, stay out of
-// the eager dashboard bundle).
-function FullscreenToggle({ expanded, onToggle, className }: { expanded: boolean; onToggle: () => void; className: string }) {
-  return (
-    <button type="button" className={className} aria-label={expanded ? 'Restore code panel' : 'Expand code panel'} aria-pressed={expanded} title={expanded ? 'Restore' : 'Fullscreen'} onClick={onToggle}>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg>
-    </button>
-  );
-}
+// Below this (narrower) width the title pill drops its file count and branch so the title reads.
+const COMPACT_BREAKPOINT = 480;
 
 // Which context a diff shows: only the patched hunks, the whole file with unchanged lines expanded,
 // or the current file as plain text (no diff — single-file only).
@@ -61,10 +42,10 @@ export type CodePanelProps = {
   filePreview?: FilePreviewView;
   // whether an All PR Comparison exists to toggle to (disables the header toggle when it does not)
   prAvailable: boolean;
-  // open the panel already promoted to full screen — the no-agent Worktree entry, where there is no
-  // agent output to split against, so the changes fill the workspace. Honoured only on a desktop
-  // viewport (phones already show one panel at a time, so promoting there would strand the switcher).
-  startExpanded?: boolean;
+  // the Place's branch, shown beside the file count
+  branch?: string;
+  // the guided review of the shown Comparison, where an Agent can run one
+  review?: CodePanelReview;
   loadFile: (path: string) => Promise<ComparisonFileContents | undefined>;
   onSelectFile: (path: string) => void;
   onClearFile: () => void;
@@ -74,6 +55,10 @@ export type CodePanelProps = {
   onClose: () => void;
   onRetry?: () => void;
 };
+
+// Start (or reopen) the guided review of a Comparison; `unavailable` says why it cannot start.
+// With no Agent there is no `onReview`, and the button shows disabled with `unavailable` as its reason.
+export type CodePanelReview = { onReview?: (scope: CodePanelMode) => void; open: boolean; unavailable?: string };
 
 // Why a Change shows a placeholder instead of a rendered diff.
 type PlaceholderReason = 'capped' | 'binary' | 'metadata' | 'unrenderable';
@@ -130,31 +115,21 @@ const placeholderFor = (file: ComparisonFile): Placeholder | undefined => {
   return undefined;
 };
 
-export default function CodePanel({ mode, state, patch, selectedPath, filePreview, prAvailable, startExpanded, loadFile, onSelectFile, onClearFile, onSetMode, onCloseFile, onClose, onRetry }: CodePanelProps) {
+export default function CodePanel({ mode, state, patch, selectedPath, filePreview, prAvailable, branch, review, loadFile, onSelectFile, onClearFile, onSetMode, onCloseFile, onClose, onRetry }: CodePanelProps) {
   const theme = useColorTheme();
   const [supportingExpanded, setSupportingExpanded] = useState(false);
-  // Full-screen promote/restore: transient (never persisted), and seeded from `startExpanded` only on
-  // a desktop viewport so the no-agent Worktree opens its changes filling the workspace.
-  const [expanded, setExpanded] = useState(() => Boolean(startExpanded) && typeof window !== 'undefined' && !window.matchMedia(`(max-width: ${PHONE_BREAKPOINT}px)`).matches);
-  const toggleExpanded = () => setExpanded(value => !value);
-  // Esc restores from full screen (a control does too); leave every other Escape — a drawer's own
-  // close, the library's key handling — untouched.
-  const restoreOnEscape = (event: ReactKeyboardEvent<HTMLElement>) => {
-    if (event.key !== 'Escape' || !expanded) return;
-    event.preventDefault();
-    setExpanded(false);
-  };
+  // the Workspace's expansion, which promotes this panel over its siblings
+  const expanded = usePanelExpand('code')?.expanded === true;
   const [viewMode, setViewMode] = useState<ViewMode>('hunks');
   const [split, setSplit] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  // On a narrow panel the toolbar's segmented controls (Comparison, diff mode, tests & docs) do not
-  // fit beside the file title, so they move into a right-side fly-out this toggles; it closes as soon
-  // as a control is chosen.
+  // The view options (diff mode and layout) live in a right-side fly-out this toggles; it closes as
+  // soon as an option is chosen.
   const [optionsOpen, setOptionsOpen] = useState(false);
-  // The panel's own width (not the viewport's), so the file list and toolbar adapt to a squeezed
+  // The panel's own width (not the viewport's), so the file list and header adapt to a squeezed
   // column, not just a narrow phone. `narrow` folds the file list into a drawer and forces unified;
-  // `compact` (narrower still) folds the toolbar's segmented controls into the fly-out.
+  // `compact` (narrower still) drops the header's file count and branch.
   const [panelWidth, setPanelWidth] = useState(Number.POSITIVE_INFINITY);
   // Changes the reviewer pulled in with "Load anyway", keyed by path; they render as ordinary diff
   // items alongside the rest.
@@ -225,7 +200,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
     panelObserver.current.observe(node);
   }, []);
   const narrow = panelWidth < RAIL_BREAKPOINT;
-  const compact = panelWidth < TOOLBAR_FLYOUT_BREAKPOINT;
+  const compact = panelWidth < COMPACT_BREAKPOINT;
 
   // Plain view is single-file only; fall back to Hunks in the all-files scroll. Split needs a wide
   // column, so a narrow panel (a phone, or a squeezed column) is always unified.
@@ -430,68 +405,44 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
   // A File view (a response-file row or a terminal link) takes over the whole panel as a peer of the
   // Comparison — text through the same diff library for real highlighting, an image / binary
   // placeholder / over-cap notice as plain views. It replaces the Changes layout while it is open.
-  if (filePreview !== undefined) return <FileView filePreview={filePreview} options={options} style={style} expanded={expanded} onToggleExpanded={toggleExpanded} onRestoreEscape={restoreOnEscape} onBack={onCloseFile} onClose={onClose} />;
+  if (filePreview !== undefined) return <FileView filePreview={filePreview} options={options} style={style} expanded={expanded} onBack={onCloseFile} onClose={onClose} />;
+
+  const hasDiffs = state === 'ready' && fileCount > 0;
+  const secondary: PanelAction[] = [];
+  if (state === 'ready' && selectedPath === undefined && groups.supporting.length > 0) secondary.push({ key: 'supporting', label: `${supportingExpanded ? 'Hide' : 'Show'} tests & docs (${groups.supporting.length})`, icon: <PanelIcon path="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3M7.5 15h9" />, pressed: supportingExpanded, onSelect: () => setSupportingExpanded(value => !value) });
+  if (hasDiffs) secondary.push({ key: 'options', label: 'View options', title: 'View options (Hunks / Full / Plain, Unified / Split)', icon: <PanelIcon path="M4 6h16M4 12h16M4 18h16" />, popupOpen: optionsOpen, onSelect: () => setOptionsOpen(value => !value) });
+  const title = <>
+    {hasDiffs && (narrow || railCollapsed) && (
+      <button type="button" className="code-pane-files-open" aria-label="Show changed files" title="Files" onClick={() => { if (narrow) setDrawerOpen(true); else setRailCollapsed(false); }}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+      </button>
+    )}
+    <nav className="code-pane-crumbs" aria-label="Location">
+      {selectedPath === undefined
+        ? <span className="code-pane-crumb-current code-pane-title">{mode === 'working' ? 'Working changes' : 'All PR changes'}</span>
+        : <>
+            <button type="button" className="code-pane-crumb-back" onClick={backToAll}>‹ All files</button>
+            <span className="code-pane-crumb-sep" aria-hidden="true">/</span>
+            <span className="code-pane-crumb-current" title={selectedPath}>{basename(selectedPath)}</span>
+          </>}
+    </nav>
+    {!compact && state === 'ready' && selectedPath === undefined && <span className="panel-header-sub"><span className="code-pane-count">{fileCount === 1 ? '1 file' : `${fileCount} files`}</span>{branch !== undefined && <span className="code-pane-branch" title={branch}> · {branch}</span>}</span>}
+  </>;
+  // The Working / All PR toggle stays available whenever the Comparison has settled — including when
+  // it resolved empty — so switching to an empty Comparison never strands the reviewer.
+  const actions = <>
+    {state !== 'loading' && (
+      <span className="code-pane-segment" role="group" aria-label="Comparison">
+        <button type="button" aria-pressed={mode === 'working'} onClick={() => onSetMode('working')}>Working</button>
+        <button type="button" aria-pressed={mode === 'pr'} disabled={!prAvailable} title={prAvailable ? 'Compare the whole PR' : 'Merge target unavailable'} onClick={() => onSetMode('pr')}>All PR</button>
+      </span>
+    )}
+    {review !== undefined && <button type="button" className="code-pane-review" disabled={review.onReview === undefined || (!review.open && (review.unavailable !== undefined || !hasDiffs))} title={review.unavailable ?? (review.open ? 'Open the guided review' : 'Start a guided review of these changes')} onClick={() => review.onReview?.(mode)}>{review.open ? 'Open Review' : 'Review'}</button>}
+  </>;
 
   return (
-    <section className={`code-pane${expanded ? ' expanded' : ''}`} style={style} role="region" aria-label="Code changes" ref={panelRef} onKeyDown={restoreOnEscape}>
-      <header className="code-pane-toolbar">
-        {state === 'ready' && fileCount > 0 && (narrow || railCollapsed) && (
-          <button type="button" className="code-pane-files-open" aria-label="Show changed files" title="Files" onClick={() => { if (narrow) setDrawerOpen(true); else setRailCollapsed(false); }}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
-            <span>Files</span>
-          </button>
-        )}
-        <nav className="code-pane-crumbs" aria-label="Location">
-          {selectedPath === undefined
-            ? <span className="code-pane-crumb-current">All files</span>
-            : <>
-                <button type="button" className="code-pane-crumb-back" onClick={backToAll}>‹ All files</button>
-                <span className="code-pane-crumb-sep" aria-hidden="true">/</span>
-                <span className="code-pane-crumb-current" title={selectedPath}>{basename(selectedPath)}</span>
-              </>}
-        </nav>
-        {!compact && state === 'ready' && selectedPath === undefined && <span className="code-pane-count">{fileCount === 1 ? '1 file' : `${fileCount} files`}</span>}
-        {!compact && state === 'ready' && selectedPath === undefined && groups.supporting.length > 0 && (
-          <button type="button" className="code-pane-group-toggle" aria-pressed={supportingExpanded} onClick={() => setSupportingExpanded(value => !value)}>
-            {supportingExpanded ? 'Hide' : 'Show'} tests &amp; docs ({groups.supporting.length})
-          </button>
-        )}
-        <span className="code-pane-spacer" />
-        {/* Panels wide enough show the segmented controls inline; a compact one (a phone-width column)
-            folds them into the fly-out below so the file title stays readable. The Working / All PR
-            toggle stays available whenever the Comparison has settled — including when it resolved
-            empty — so switching to an empty Comparison never strands the reviewer. */}
-        {!compact ? <>
-          {state === 'ready' && fileCount > 0 && <>
-            <span className="code-pane-segment" role="group" aria-label="Diff mode">
-              <button type="button" aria-pressed={effectiveMode === 'hunks'} onClick={() => setViewMode('hunks')}>Hunks</button>
-              <button type="button" aria-pressed={effectiveMode === 'full'} onClick={() => setViewMode('full')}>Full ctx</button>
-              <button type="button" aria-pressed={effectiveMode === 'plain'} disabled={selectedPath === undefined} title={selectedPath === undefined ? 'Open a file for the plain view' : undefined} onClick={() => setViewMode('plain')}>Plain file</button>
-            </span>
-            {!narrow && effectiveMode !== 'plain' && (
-              <span className="code-pane-segment" role="group" aria-label="Diff layout">
-                <button type="button" aria-pressed={!effectiveSplit} onClick={() => setSplit(false)}>Unified</button>
-                <button type="button" aria-pressed={effectiveSplit} onClick={() => setSplit(true)}>Split</button>
-              </span>
-            )}
-          </>}
-          {state !== 'loading' && (
-            <span className="code-pane-segment" role="group" aria-label="Comparison">
-              <button type="button" aria-pressed={mode === 'working'} onClick={() => onSetMode('working')}>Working</button>
-              <button type="button" aria-pressed={mode === 'pr'} disabled={!prAvailable} title={prAvailable ? 'Compare the whole PR' : 'Merge target unavailable'} onClick={() => onSetMode('pr')}>All PR</button>
-            </span>
-          )}
-        </> : state !== 'loading' && (
-          <button type="button" className="code-pane-options-open" aria-label="View options" aria-expanded={optionsOpen} title="View options" onClick={() => setOptionsOpen(value => !value)}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /><circle cx="9" cy="6" r="2" /><circle cx="15" cy="12" r="2" /><circle cx="9" cy="18" r="2" /></svg>
-            <span>Options</span>
-          </button>
-        )}
-        <FullscreenToggle expanded={expanded} onToggle={toggleExpanded} className="code-pane-expand" />
-        <button type="button" className="code-pane-close" aria-label="Close code changes" title="Close" onClick={onClose}>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
-        </button>
-      </header>
+    <section className={`code-pane${expanded ? ' expanded' : ''}`} style={style} role="region" aria-label="Code changes" ref={panelRef} onKeyDown={event => { /* an open fly-out takes Esc before the Workspace does */ if (event.key === 'Escape' && optionsOpen) { event.preventDefault(); event.stopPropagation(); setOptionsOpen(false); } }}>
+      <PanelHeader panelKey="code" label="code panel" title={title} actions={actions} secondary={secondary} close={{ key: 'close', label: 'Close code changes', title: 'Close', icon: <PanelIcon path={panelIcons.close} />, onSelect: onClose }} />
       <div className="code-pane-main">
         {state === 'ready' && fileCount > 0 && railVisible && (
           <aside className="code-pane-rail">
@@ -547,10 +498,9 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
             {fileList}
           </div>
         )}
-        {/* The narrow-panel controls fly-out: the segmented controls that don't fit in the toolbar,
-            each closing the fly-out as soon as it is chosen (so a phone tap picks one option and
-            returns to the diff). */}
-        {compact && optionsOpen && state !== 'loading' && (
+        {/* The view options fly-out, each option closing it as soon as it is chosen (so a phone tap
+            picks one option and returns to the diff). */}
+        {optionsOpen && hasDiffs && (
           <div className="code-pane-options" role="dialog" aria-label="View options" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setOptionsOpen(false); } }}>
             <div className="code-pane-options-head">
               <span>View options</span>
@@ -560,28 +510,20 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
             </div>
             <div className="code-pane-options-body">
               <div className="code-pane-options-group">
-                <span className="code-pane-options-label">Comparison</span>
-                <span className="code-pane-segment" role="group" aria-label="Comparison">
-                  <button type="button" aria-pressed={mode === 'working'} onClick={() => { onSetMode('working'); setOptionsOpen(false); }}>Working</button>
-                  <button type="button" aria-pressed={mode === 'pr'} disabled={!prAvailable} title={prAvailable ? undefined : 'Merge target unavailable'} onClick={() => { onSetMode('pr'); setOptionsOpen(false); }}>All PR</button>
+                <span className="code-pane-options-label">Diff mode</span>
+                <span className="code-pane-segment" role="group" aria-label="Diff mode">
+                  <button type="button" aria-pressed={effectiveMode === 'hunks'} onClick={() => { setViewMode('hunks'); setOptionsOpen(false); }}>Hunks</button>
+                  <button type="button" aria-pressed={effectiveMode === 'full'} onClick={() => { setViewMode('full'); setOptionsOpen(false); }}>Full ctx</button>
+                  <button type="button" aria-pressed={effectiveMode === 'plain'} disabled={selectedPath === undefined} title={selectedPath === undefined ? 'Open a file for the plain view' : undefined} onClick={() => { setViewMode('plain'); setOptionsOpen(false); }}>Plain file</button>
                 </span>
               </div>
-              {state === 'ready' && fileCount > 0 && (
+              {!narrow && effectiveMode !== 'plain' && (
                 <div className="code-pane-options-group">
-                  <span className="code-pane-options-label">Diff mode</span>
-                  <span className="code-pane-segment" role="group" aria-label="Diff mode">
-                    <button type="button" aria-pressed={effectiveMode === 'hunks'} onClick={() => { setViewMode('hunks'); setOptionsOpen(false); }}>Hunks</button>
-                    <button type="button" aria-pressed={effectiveMode === 'full'} onClick={() => { setViewMode('full'); setOptionsOpen(false); }}>Full ctx</button>
-                    <button type="button" aria-pressed={effectiveMode === 'plain'} disabled={selectedPath === undefined} title={selectedPath === undefined ? 'Open a file for the plain view' : undefined} onClick={() => { setViewMode('plain'); setOptionsOpen(false); }}>Plain file</button>
+                  <span className="code-pane-options-label">Diff layout</span>
+                  <span className="code-pane-segment" role="group" aria-label="Diff layout">
+                    <button type="button" aria-pressed={!effectiveSplit} onClick={() => { setSplit(false); setOptionsOpen(false); }}>Unified</button>
+                    <button type="button" aria-pressed={effectiveSplit} onClick={() => { setSplit(true); setOptionsOpen(false); }}>Split</button>
                   </span>
-                </div>
-              )}
-              {state === 'ready' && selectedPath === undefined && groups.supporting.length > 0 && (
-                <div className="code-pane-options-group">
-                  <span className="code-pane-options-label">Tests &amp; docs</span>
-                  <button type="button" className="code-pane-group-toggle" aria-pressed={supportingExpanded} onClick={() => { setSupportingExpanded(value => !value); setOptionsOpen(false); }}>
-                    {supportingExpanded ? 'Hide' : 'Show'} ({groups.supporting.length})
-                  </button>
                 </div>
               )}
             </div>
@@ -597,7 +539,7 @@ export default function CodePanel({ mode, state, patch, selectedPath, filePrevie
 // `{type:'file'}` item) so it gets real syntax highlighting; an image (including the agent `/tmp`
 // screenshot bridge), a binary file, and the over-cap truncation notice are plain non-library views.
 // "‹ Changes" returns to the Comparison the panel would otherwise show; the close button dismisses it.
-function FileView({ filePreview, options, style, expanded, onToggleExpanded, onRestoreEscape, onBack, onClose }: { filePreview: FilePreviewView; options: PanelOptions; style: CSSProperties; expanded: boolean; onToggleExpanded: () => void; onRestoreEscape: (event: ReactKeyboardEvent<HTMLElement>) => void; onBack: () => void; onClose: () => void }) {
+function FileView({ filePreview, options, style, expanded, onBack, onClose }: { filePreview: FilePreviewView; options: PanelOptions; style: CSSProperties; expanded: boolean; onBack: () => void; onClose: () => void }) {
   const { path, state, preview } = filePreview;
   const [copied, setCopied] = useState(false);
   useEffect(() => setCopied(false), [path]);
@@ -607,20 +549,14 @@ function FileView({ filePreview, options, style, expanded, onToggleExpanded, onR
   // a text file becomes a single plain-file item; an image or binary file renders without the library
   const items = useMemo<PanelItem[]>(() => state === 'ready' && preview !== undefined && !preview.binary ? [fileItemForContents(path, preview.content)] : [], [state, preview, path]);
   return (
-    <section className={`code-pane code-pane-file${expanded ? ' expanded' : ''}`} style={style} role="region" aria-label="Code changes" onKeyDown={onRestoreEscape}>
-      <header className="code-pane-toolbar">
-        <nav className="code-pane-crumbs" aria-label="Location">
+    <section className={`code-pane code-pane-file${expanded ? ' expanded' : ''}`} style={style} role="region" aria-label="Code changes">
+      <PanelHeader panelKey="code" label="code panel" title={<nav className="code-pane-crumbs" aria-label="Location">
           <button type="button" className="code-pane-crumb-back" onClick={onBack}>‹ Changes</button>
           <span className="code-pane-crumb-sep" aria-hidden="true">/</span>
           <span className="code-pane-crumb-current" title={path}>{basename(path)}</span>
-        </nav>
-        <span className="code-pane-spacer" />
-        <button type="button" className="code-pane-copy-path" onClick={() => void copyPath()}>{copied ? 'Path copied' : 'Copy path'}</button>
-        <FullscreenToggle expanded={expanded} onToggle={onToggleExpanded} className="code-pane-expand" />
-        <button type="button" className="code-pane-close" aria-label="Close file" title="Close" onClick={onClose}>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
-        </button>
-      </header>
+        </nav>}
+        secondary={[{ key: 'copy-path', label: copied ? 'Path copied' : 'Copy path', className: copied ? 'copied' : undefined, icon: <PanelIcon path={copied ? panelIcons.check : panelIcons.copy} />, onSelect: () => void copyPath() }]}
+        close={{ key: 'close', label: 'Close file', title: 'Close', icon: <PanelIcon path={panelIcons.close} />, onSelect: onClose }} />
       <div className="code-pane-main">
         <div className="code-pane-body">
           {state === 'loading' && <p className="code-pane-status" role="status">Loading file…</p>}

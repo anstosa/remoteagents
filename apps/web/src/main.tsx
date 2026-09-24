@@ -10,8 +10,10 @@ import { mountStreamedTerminal } from './streamed-terminal.js';
 import { attachTerminalSelection, type TerminalSelection } from './terminal-selection.js';
 import { createAgentPaneConnector, createWorktreePaneConnector } from './pane-socket-client.js';
 import { FlyoutPortal } from './flyout-portal.js';
+import { PanelExpandContext, type PanelAction, type PanelExpansion, PanelHeader, PanelIcon, panelIcons, useExpansionScope, usePanelExpand, usePanelExpansion } from './panel-header.js';
 import { NoteMarkdown } from './note-markdown.js';
 import { ProjectOpen } from './project-open.js';
+import type { CodePanelReview } from './code-panel/code-panel.js';
 import { supportingChange, useCodePanel, type CodePanelController, type CodePanelMode } from './code-panel/comparison.js';
 import { PullRequestCard, PullRequestFixup, PullRequestIndicators, type PullRequestSummary } from './pull-request-card.js';
 import { isStackOperationLog, type StackAction, type StackOperationLog } from './stack-operations.js';
@@ -3036,11 +3038,17 @@ function useWorktreeConversations(worktreeId?: string, agentId?: string, resume?
 }
 
 // manage persistent worktree notes
-function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = false, latestAssistantMessage?: string, latestAssistantMessageOverflows = false, onPromptHistoryChanged?: () => void | Promise<void>, promptHistory: PromptHistoryEntry[] = [], schedulePrefill?: SchedulePrefill, onLaunchAndRun?: (noteId: string) => Promise<boolean>, launchRunLabel?: string) {
+// `expansion` is the Workspace's: the note pane expands through it, and a retained note view
+// restores its expansion into it.
+function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpansion, agentId?: string, agentWorking = false, latestAssistantMessage?: string, latestAssistantMessageOverflows = false, onPromptHistoryChanged?: () => void | Promise<void>, promptHistory: PromptHistoryEntry[] = [], schedulePrefill?: SchedulePrefill, onLaunchAndRun?: (noteId: string) => Promise<boolean>, launchRunLabel?: string) {
   const [notes, setNotes] = useState<WorktreeNote[]>();
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeNote, setActiveNote] = useState<WorktreeNote>();
-  const [expanded, setExpanded] = useState(false);
+  const expanded = expansion.expanded === 'note';
+  const { setExpanded: setPanelExpanded } = expansion;
+  const setExpanded = useCallback((on: boolean) => setPanelExpanded('note', on), [setPanelExpanded]);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const picker = useViewportFlyout<HTMLButtonElement>(pickerOpen);
   const [editing, setEditing] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renamePending, setRenamePending] = useState(false);
@@ -3109,27 +3117,15 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   const [selectionToolbar, setSelectionToolbar] = useState<{ text: string; top: number }>();
   const promptPendingKey = `prompt:${agentId ?? 'unavailable'}`;
   const promptPending = usePendingOperation(promptPendingKey);
-  // keep explicit note expansion desktop-only
-  useLayoutEffect(() => {
-    // skip inactive expansion state
-    if (!expanded) return;
-    const mobile = window.matchMedia('(max-width: 768px)');
-    const collapse = () => {
-      // preserve desktop expansion
-      if (!mobile.matches) return;
-      setExpanded(current => {
-        // skip already collapsed notes
-        if (!current) return current;
-        const note = activeNoteRef.current;
-        // normalize retained mobile state
-        if (noteViewId !== undefined && note !== undefined) setWorktreeNoteView(noteViewId, { noteId: note.id, expanded: false });
-        return false;
-      });
-    };
-    collapse();
-    mobile.addEventListener('change', collapse);
-    return () => mobile.removeEventListener('change', collapse);
-  }, [expanded, noteViewId]);
+  // Retain the open note's expansion with its view. Only an expansion change writes: when the view
+  // itself changes, the ref still holds the previous view's note until the reset below clears it.
+  const expansionRequest = useRef(expansion.expanded);
+  expansionRequest.current = expansion.expanded;
+  useEffect(() => {
+    const note = activeNoteRef.current;
+    if (noteViewId !== undefined && note !== undefined) setWorktreeNoteView(noteViewId, { noteId: note.id, expanded });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded]);
 
   const clearActionStatusLater = () => {
     if (actionStatusTimer.current !== undefined) window.clearTimeout(actionStatusTimer.current);
@@ -3215,7 +3211,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
     seenNotesRevision.current = notesRevisionKey;
     setMenuOpen(false);
     setActiveNote(undefined);
-    setExpanded(retained?.expanded ?? false);
+    setExpanded(false);
     setEditing(false);
     setRenaming(false);
     setRenamePending(false);
@@ -3261,7 +3257,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
           draftRef.current = note.text;
           setDraft(note.text);
           setActiveNote(note);
-          setExpanded(retained.expanded);
+          if (retained.expanded && expansionRequest.current === undefined) setExpanded(true);
           setEditing(false);
         }
       }
@@ -3351,7 +3347,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
 
   const restoreTriggerFocus = () => window.requestAnimationFrame(() => triggerRef.current?.focus());
   // open one note without abandoning pending metadata writes
-  const open = (note: WorktreeNote, edit?: boolean) => {
+  const open = (note: WorktreeNote, edit?: boolean, keepExpansion = false) => {
     // keep metadata mutations attached to the visible note
     if (attachmentMutation.current || lockMutation.current !== undefined) return;
     flush();
@@ -3363,9 +3359,10 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
     if (!acknowledgedTexts.current.has(note.id)) acknowledgedTexts.current.set(note.id, note.text);
     setDraft(text);
     setActiveNote(opened);
-    setExpanded(false);
+    const stayExpanded = keepExpansion && expanded;
+    if (!stayExpanded) setExpanded(false);
     // retain this context's open note
-    if (noteViewId !== undefined) setWorktreeNoteView(noteViewId, { noteId: note.id, expanded: false });
+    if (noteViewId !== undefined) setWorktreeNoteView(noteViewId, { noteId: note.id, expanded: stayExpanded });
     setEditing(editingOnOpen);
     setRenaming(false);
     setTitleDraft(note.title ?? '');
@@ -3906,7 +3903,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   };
 
   // hide notes without any persistence context
-  if (resourceBase === undefined) return { active: false, expanded: false, appendToActive, canAppendToActive, canCreate: false, control: null, createWithText: create, pane: null };
+  if (resourceBase === undefined) return { active: false, appendToActive, canAppendToActive, canCreate: false, control: null, createWithText: create, pane: null };
   const noteCount = notes?.length ?? 0;
   const substantialResponse = latestSubstantialResponse(latestAssistantMessage, promptHistory);
   const latestResponseAvailable = notes !== undefined && substantialResponse !== undefined && !notes.some(note => note.text === substantialResponse);
@@ -3949,12 +3946,6 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
     </div></FlyoutPortal>}
   </div>;
   const actionStatus = copyState === 'error' ? 'Copy failed' : sendState === 'queued' ? 'Queued' : sendState === 'error' ? 'Queue failed' : '';
-  const toggleExpanded = () => setExpanded(value => {
-    const next = !value;
-    // retain this context's pane state
-    if (noteViewId !== undefined && activeNote !== undefined) setWorktreeNoteView(noteViewId, { noteId: activeNote.id, expanded: next });
-    return next;
-  });
   const inferEditing = (target: EventTarget | null) => {
     if (target instanceof Element && target.closest('a, button, input')) {
       selectionAtPointerDown.current = false;
@@ -3978,8 +3969,6 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   const lastRunAgentId = activeNote?.schedule?.lastRun?.agentId;
   const openAgentId = lastRunAgentId !== undefined && schedulePrefill?.liveAgentIds.includes(lastRunAgentId) ? lastRunAgentId : undefined;
   const scheduleArea = schedulePrefill === undefined ? null : <div className="schedule-area"><ScheduleEditor key={activeNote?.id} schedule={activeNote?.schedule} nextRun={activeNote?.nextRun} prefill={{ kind: schedulePrefill.kind, target: schedulePrefill.target }} runsOnText={schedulePrefill.runsOnText} adapterOptions={schedulePrefill.adapters} targetOptions={schedulePrefill.targets} onSet={payload => void applySchedule(payload)} onRemove={() => void removeSchedule()} onRunNow={() => void runScheduleNow()} running={scheduleRunning} {...(openAgentId === undefined ? {} : { openAgentId })} preview={previewSchedule} busy={scheduleBusy || attachmentPending} /></div>;
-  // keep the toolbar picker icon-only
-  const noteAttachButton = <button className="note-attach" type="button" disabled={noteFilesDisabled} aria-label="Attach files to note" title="Attach files" onClick={() => { /* open the note-specific file picker */ noteAttachmentInput.current?.click(); }}><MoreMenuIcon name="attachment" /></button>;
   // keep the picker mounted even when the attachments area is empty
   const noteAttachmentPicker = <input ref={noteAttachmentInput} className="attachment-input" type="file" multiple aria-label="Note attachment files" disabled={noteFilesDisabled} onChange={event => { /* allow selecting the same file again after removal */ chooseNoteFiles(event.target.files); event.target.value = ''; }} />;
   const visibleNoteAttachments = activeNote?.attachments ?? [];
@@ -3993,10 +3982,32 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
     {attachmentPending && <span className="note-attachment-status" role="status">Saving attachments…</span>}
     {noteAttachmentError && <p className="attachment-error" role="alert">{noteAttachmentError}</p>}
   </div>;
-  // show the current lock state immediately before the delete action
-  const noteLockButton = <button className="note-lock" type="button" disabled={noteFilesDisabled || menuDeletingId !== undefined} aria-label={activeNote?.locked ? 'Unlock note' : 'Lock note'} title={activeNote?.locked ? 'Unlock note' : 'Lock note'} aria-pressed={Boolean(activeNote?.locked)} onClick={() => void toggleNoteLock()}>{lockPending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d={activeNote?.locked ? actionIconPaths.lock : actionIconPaths.unlock} /></svg>}</button>;
-  const pane = activeNote === undefined ? null : <><section className={`note-pane${expanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onDragEnter={dragNoteFiles} onDragOver={dragNoteFiles} onDragLeave={leaveNoteFiles} onDrop={dropNoteFiles} onPaste={pasteNoteFiles} onKeyDown={event => { if (event.key === 'Escape' && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><div className="note-pane-head"><header className="note-toolbar" role="toolbar" aria-label="Note actions">{renaming ? <form className="note-title-form" onSubmit={event => { event.preventDefault(); void saveTitle(); }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); setRenaming(false); } }}><input ref={titleEditorRef} aria-label="Note name" value={titleDraft} maxLength={120} disabled={renamePending} onChange={event => setTitleDraft(event.target.value)} /><button type="submit" disabled={renamePending || !titleDraft.trim()} aria-label="Save note name" title="Save note name"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={renamePending} aria-label="Cancel note rename" title="Cancel" onClick={() => setRenaming(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><strong title={activeNote.title ?? 'Note'}>{activeNote.title ?? 'Note'}</strong><button className="note-rename" type="button" disabled={deleting || renamePending} aria-label="Rename note" title="Rename note" onClick={() => { setTitleDraft(activeNote.title ?? ''); setRenaming(true); }}><svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.pencil} /></svg></button></>}{saveStatus === 'error' && <span className="note-save-status error" role="alert" aria-live="assertive">Unable to save</span>}{actionStatus && <span className={`note-action-status${copyState === 'error' || sendState === 'error' ? ' error' : ''}`} role={copyState === 'error' || sendState === 'error' ? 'alert' : 'status'}>{actionStatus}</span>}<button className={`note-copy${copyState === 'copied' ? ' copied' : ''}`} type="button" disabled={deleting} aria-label={copyState === 'copied' ? 'Note copied' : 'Copy note'} title={copyState === 'copied' ? 'Copied' : 'Copy note'} onClick={() => void copy()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={copyState === 'copied' ? 'm5 12 4 4L19 6' : 'M9 9h10v10H9zM5 15H4V5h10v1'} /></svg></button>{noteAttachButton}{launchAndRunMode ? <button className="note-send note-launch-run" type="button" disabled={noteFilesDisabled || !noteHasContent({ ...activeNote, text: draft })} aria-label="Launch and run note" title={launchRunLabel === undefined ? 'Launch an agent and run this note' : `Launch and run (${launchRunLabel})`} onClick={() => { const note = activeNoteRef.current; if (note !== undefined) void runNote(note); }}>{menuRunningId !== undefined ? <span className="spinner" /> : 'Launch and run'}</button> : <button className="note-send" type="button" disabled={agentId === undefined || noteFilesDisabled || promptPending || !noteHasContent({ ...activeNote, text: draft })} aria-label={`${noteActionLabel} as prompt`} title={agentId === undefined ? 'Launch an agent to send this note' : `${noteActionLabel} as prompt`} onClick={() => void send()}>{sendState === 'sending' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d={noteActionIcon} /></svg>}</button>}{noteLockButton}{!activeNote.locked && <button className="note-delete" type="button" disabled={noteFilesDisabled} aria-label="Delete note" title="Delete note" onClick={remove}>{deleting ? <span className="spinner" /> : <svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.trash} /></svg>}</button>}<button className="note-expand" type="button" disabled={noteFilesDisabled} aria-label={expanded ? 'Restore note' : 'Expand note'} title={expanded ? 'Restore note' : 'Expand note'} aria-pressed={expanded} onClick={toggleExpanded}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="note-close" type="button" disabled={noteFilesDisabled} aria-label="Close note" title="Close note" onClick={close}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{lockError && <p className="note-lock-error" role="alert">{lockError}</p>}{scheduleArea}{noteAttachmentPicker}{noteAttachmentControls}</div>{draggingNoteFiles && <div className="prompt-drop-overlay" role="status">Drop files to attach to this note</div>}{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}{noteFilePreview.dialog}</>;
-  return { active: activeNote !== undefined, expanded: activeNote !== undefined && expanded, appendToActive, canAppendToActive, canCreate: !loading, control, createWithText: create, pane };
+  const noteTitle = activeNote?.title ?? 'Note';
+  // the title pill: the note picker (with the count of notes at this Place) or the rename field
+  const noteTitlePill = activeNote === undefined ? null : renaming
+    ? <form className="note-title-form" onSubmit={event => { event.preventDefault(); void saveTitle(); }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); setRenaming(false); } }}><input ref={titleEditorRef} aria-label="Note name" value={titleDraft} maxLength={120} disabled={renamePending} onChange={event => setTitleDraft(event.target.value)} /><button type="submit" disabled={renamePending || !titleDraft.trim()} aria-label="Save note name" title="Save note name"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={renamePending} aria-label="Cancel note rename" title="Cancel" onClick={() => setRenaming(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form>
+    : <><button ref={picker.anchorRef} type="button" className="note-picker" aria-label={`Switch note (${noteCount} here): ${noteTitle}`} aria-expanded={pickerOpen} title={noteTitle} disabled={noteFilesDisabled} onClick={() => setPickerOpen(value => !value)} onKeyDown={event => { if (event.key === 'Escape' && pickerOpen) { event.preventDefault(); event.stopPropagation(); setPickerOpen(false); } }}><strong>{noteTitle}</strong>{noteCount > 1 && <span className="note-picker-count" aria-hidden="true">{noteCount}</span>}<svg className="note-picker-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button><span className="panel-header-sub">{activeNote.schedule === undefined ? 'Note' : 'Scheduled'}</span>{saveStatus === 'error' && <span className="note-save-status error" role="alert" aria-live="assertive">Unable to save</span>}{actionStatus && <span className={`note-action-status${copyState === 'error' || sendState === 'error' ? ' error' : ''}`} role={copyState === 'error' || sendState === 'error' ? 'alert' : 'status'}>{actionStatus}</span>}</>;
+  const notePicker = pickerOpen && activeNote !== undefined && <FlyoutPortal onDismiss={() => setPickerOpen(false)}><div ref={picker.flyoutRef} className="more-menu note-picker-menu" style={picker.style} role="group" aria-label="Notes here" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setPickerOpen(false); } }}>
+    {notes?.map(note => <button key={note.id} type="button" className="note-picker-choice" aria-current={note.id === activeNote.id ? 'true' : undefined} onClick={() => { setPickerOpen(false); if (note.id !== activeNote.id) open(note, undefined, true); }}>{note.schedule !== undefined && <svg className="note-picker-scheduled" viewBox="0 0 24 24" aria-label="Scheduled"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>}<span>{noteName(note)}</span></button>)}
+    <button type="button" className="note-picker-new" disabled={noteMenuBusy} onClick={() => { setPickerOpen(false); void create(); }}>+ New note</button>
+  </div></FlyoutPortal>;
+  // send to the current Agent, or launch one and run the note where no Agent runs here
+  const noteSendAction = activeNote === undefined ? null : launchAndRunMode
+    ? <button className="panel-header-action note-send note-launch-run" type="button" disabled={noteFilesDisabled || !noteHasContent({ ...activeNote, text: draft })} aria-label="Launch and run note" title={launchRunLabel === undefined ? 'Launch an agent and run this note' : `Launch and run (${launchRunLabel})`} onClick={() => { const note = activeNoteRef.current; if (note !== undefined) void runNote(note); }}>{menuRunningId !== undefined ? <span className="spinner" /> : 'Launch and run'}</button>
+    : <button className="panel-header-action note-send" type="button" disabled={agentId === undefined || noteFilesDisabled || promptPending || !noteHasContent({ ...activeNote, text: draft })} aria-label={`${noteActionLabel} as prompt`} title={agentId === undefined ? 'Launch an agent to send this note' : `${noteActionLabel} as prompt`} onClick={() => void send()}>{sendState === 'sending' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d={noteActionIcon} /></svg>}</button>;
+  // attach sits beside Send, and lock right before the delete it guards
+  const noteSecondary: PanelAction[] = activeNote === undefined ? [] : [
+    // open the note-specific file picker
+    { key: 'attach', label: 'Attach files to note', title: 'Attach files', className: 'note-attach', disabled: noteFilesDisabled, icon: <MoreMenuIcon name="attachment" />, onSelect: () => noteAttachmentInput.current?.click() },
+    { key: 'copy', label: copyState === 'copied' ? 'Note copied' : 'Copy note', title: copyState === 'copied' ? 'Copied' : 'Copy note', className: `note-copy${copyState === 'copied' ? ' copied' : ''}`, disabled: deleting, icon: <PanelIcon path={copyState === 'copied' ? panelIcons.check : panelIcons.copy} />, onSelect: () => void copy() },
+    { key: 'rename', label: 'Rename note', className: 'note-rename', disabled: deleting || renamePending, icon: <PanelIcon path={actionIconPaths.pencil} />, onSelect: () => { setTitleDraft(activeNote.title ?? ''); setRenaming(true); } },
+    { key: 'lock', label: activeNote.locked ? 'Unlock note' : 'Lock note', className: 'note-lock', pressed: Boolean(activeNote.locked), disabled: noteFilesDisabled || menuDeletingId !== undefined, icon: lockPending ? <span className="spinner" /> : <PanelIcon path={activeNote.locked ? actionIconPaths.lock : actionIconPaths.unlock} />, onSelect: () => void toggleNoteLock() },
+    // a locked note must be unlocked before it can be removed
+    ...(activeNote.locked ? [] : [{ key: 'delete', label: 'Delete note', className: 'note-delete', disabled: noteFilesDisabled, icon: deleting ? <span className="spinner" /> : <PanelIcon path={actionIconPaths.trash} />, onSelect: remove }])
+  ];
+  // Esc closes the note, unless it is expanded: then the Workspace restores its siblings first
+  const pane = activeNote === undefined ? null : <><section className={`note-pane${expanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onDragEnter={dragNoteFiles} onDragOver={dragNoteFiles} onDragLeave={leaveNoteFiles} onDrop={dropNoteFiles} onPaste={pasteNoteFiles} onKeyDown={event => { if (event.key === 'Escape' && !expanded && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><PanelHeader panelKey="note" label="note" title={noteTitlePill} actions={noteSendAction} secondary={noteSecondary} expandDisabled={noteFilesDisabled} close={{ key: 'close', label: 'Close note', className: 'note-close', disabled: noteFilesDisabled, icon: <PanelIcon path={panelIcons.close} />, onSelect: close }} /><div className="note-pane-head">{lockError && <p className="note-lock-error" role="alert">{lockError}</p>}{scheduleArea}{noteAttachmentPicker}{noteAttachmentControls}</div>{draggingNoteFiles && <div className="prompt-drop-overlay" role="status">Drop files to attach to this note</div>}{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}{noteFilePreview.dialog}{notePicker}</>;
+  return { active: activeNote !== undefined, appendToActive, canAppendToActive, canCreate: !loading, control, createWithText: create, pane };
 }
 type WorktreeNotes = ReturnType<typeof useWorktreeNotes>;
 
@@ -4134,7 +4145,7 @@ const isProjectBrowserDeviceErrorMessage = (value: unknown): value is ProjectBro
 // render the embedded project browser
 function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationRequest, onNavigate, onClose }: { url: string; homeUrl: string; proxied: boolean; worktreeId?: string; navigationRequest?: ProjectBrowserNavigationRequest; onNavigate: (url: string) => boolean; onClose: () => void }) {
   const [loading, setLoading] = useState(true);
-  const [expanded, setExpanded] = useState(false);
+  const expanded = usePanelExpand('browser')?.expanded === true;
   const [mobile, setMobile] = useState(() => savedBrowserMobile(worktreeId));
   const [deviceError, setDeviceError] = useState<string>();
   const [address, setAddress] = useState(url);
@@ -4284,14 +4295,11 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
     if (loading) { stopFrame(); return; }
     refreshFrame();
   };
-  // handle pane escape behavior
+  // Esc closes the browser, unless it is expanded: then the Workspace restores its siblings first
   const handleEscape = (event: React.KeyboardEvent<HTMLElement>) => {
-    // ignore other keys
-    if (event.key !== 'Escape') return;
+    if (event.key !== 'Escape' || expanded) return;
     event.preventDefault();
-    // restore fullscreen before closing
-    if (expanded) setExpanded(false);
-    else onClose();
+    onClose();
   };
   // apply both viewport and browser identity
   const toggleDevice = () => {
@@ -4308,7 +4316,18 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
   // describe the applied preview capability
   const deviceLabel = proxied ? mobile ? 'Use desktop viewport and user agent' : 'Use mobile viewport and user agent' : mobile ? 'Use desktop viewport' : 'Use mobile viewport';
   const deviceTitle = proxied ? mobile ? 'Desktop viewport and user agent' : 'Mobile viewport and user agent' : mobile ? 'Desktop viewport' : 'Mobile viewport';
-  return <section className={`browser-pane ${mobile ? 'mobile' : 'desktop'}${expanded ? ' expanded' : ''}`} role="dialog" aria-label="Browser" onKeyDown={handleEscape}><header className="browser-toolbar" role="toolbar" aria-label="Browser actions">{deviceError && <span className="browser-device-error" role="alert" title={deviceError}>Mode failed</span>}<form className="browser-address-form" onSubmit={submitAddress}><input type="text" inputMode="url" aria-label="Browser address" value={address} spellCheck={false} onChange={changeAddress} onBlur={navigate} /></form><button className="browser-home" type="button" aria-label="Go to project home" title="Home" disabled={atHome} onClick={goHome}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 9-8 9 8M5 10v11h14V10M9 21v-7h6v7" /></svg></button><button className="browser-device-toggle" type="button" aria-label={deviceLabel} aria-pressed={mobile} title={deviceTitle} onClick={toggleDevice}><svg data-device={mobile ? 'mobile' : 'desktop'} viewBox="0 0 24 24" aria-hidden="true">{mobile ? <><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M10 5h4M11 19h2" /></> : <><rect x="3" y="5" width="18" height="13" rx="1" /><path d="M8 21h8M12 18v3" /></>}</svg></button>{proxied ? <button className={`browser-refresh${loading ? ' loading' : ''}`} type="button" aria-label={loading ? 'Stop loading browser' : 'Refresh browser'} aria-busy={loading} title={loading ? 'Stop' : 'Refresh'} onClick={toggleFrameLoad}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={loading ? 'm6 6 12 12M18 6 6 18' : 'M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6'} /></svg></button> : <button className={`browser-refresh${loading ? ' loading' : ''}`} type="button" disabled={loading} aria-label="Refresh browser" aria-busy={loading} title={loading ? 'Loading external preview' : 'Refresh external preview'} onClick={refreshFrame}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" /></svg></button>}<button className="browser-expand" type="button" aria-label={expanded ? 'Exit browser fullscreen' : 'Enter browser fullscreen'} aria-pressed={expanded} title={expanded ? 'Exit fullscreen' : 'Fullscreen'} onClick={() => setExpanded(value => !value)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="browser-close" type="button" aria-label="Close browser" title="Close" onClick={onClose}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header><div ref={frameShellRef} className={`browser-frame-shell ${mobile ? 'mobile' : 'desktop'}`}><iframe ref={frameRef} src={frameSource} title="Project browser" referrerPolicy="no-referrer" onLoad={syncFrameLocation} /></div></section>;
+  const actions = <>
+    {proxied
+      ? <button className={`panel-header-action browser-refresh${loading ? ' loading' : ''}`} type="button" aria-label={loading ? 'Stop loading browser' : 'Refresh browser'} aria-busy={loading} title={loading ? 'Stop' : 'Refresh'} onClick={toggleFrameLoad}><PanelIcon path={loading ? 'm6 6 12 12M18 6 6 18' : 'M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6'} /></button>
+      : <button className={`panel-header-action browser-refresh${loading ? ' loading' : ''}`} type="button" disabled={loading} aria-label="Refresh browser" aria-busy={loading} title={loading ? 'Loading external preview' : 'Refresh external preview'} onClick={refreshFrame}><PanelIcon path="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" /></button>}
+    <a className="panel-header-action browser-open-tab" href={normalizedUrl} target="_blank" rel="noopener noreferrer" aria-label="Open in a new tab" title="Open in a new tab"><PanelIcon path="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" /></a>
+  </>;
+  const secondary: PanelAction[] = [
+    { key: 'home', label: 'Go to project home', title: 'Home', className: 'browser-home', disabled: atHome, icon: <PanelIcon path="m3 11 9-8 9 8M5 10v11h14V10M9 21v-7h6v7" />, onSelect: goHome },
+    { key: 'device', label: deviceLabel, title: deviceTitle, className: 'browser-device-toggle', pressed: mobile, icon: <svg className="panel-header-icon" data-device={mobile ? 'mobile' : 'desktop'} viewBox="0 0 24 24" aria-hidden="true">{mobile ? <><rect x="7" y="2" width="10" height="20" rx="2" /><path d="M10 5h4M11 19h2" /></> : <><rect x="3" y="5" width="18" height="13" rx="1" /><path d="M8 21h8M12 18v3" /></>}</svg>, onSelect: toggleDevice }
+  ];
+  const title = <>{deviceError && <span className="browser-device-error" role="alert" title={deviceError}>Mode failed</span>}<form className="browser-address-form" onSubmit={submitAddress}><input type="text" inputMode="url" aria-label="Browser address" value={address} spellCheck={false} onChange={changeAddress} onBlur={navigate} /></form></>;
+  return <section className={`browser-pane ${mobile ? 'mobile' : 'desktop'}${expanded ? ' expanded' : ''}`} role="dialog" aria-label="Browser" onKeyDown={handleEscape}><PanelHeader panelKey="browser" label="browser" title={title} actions={actions} secondary={secondary} close={{ key: 'close', label: 'Close browser', title: 'Close', className: 'browser-close', icon: <PanelIcon path={panelIcons.close} />, onSelect: onClose }} /><div ref={frameShellRef} className={`browser-frame-shell ${mobile ? 'mobile' : 'desktop'}`}><iframe ref={frameRef} src={frameSource} title="Project browser" referrerPolicy="no-referrer" onLoad={syncFrameLocation} /></div></section>;
 }
 
 // reuse the owning view's note persistence and prompt draft
@@ -4358,14 +4377,17 @@ const CodePanel = lazy(() => import('./code-panel/code-panel.js'));
 // Render one Worktree's open Code panel from its controller (callers gate on `controller.open`, so
 // this is only mounted while open). The lazy chunk resolves behind a lightweight fallback so the
 // split does not jump.
-function CodePane({ controller, prAvailable, startExpanded }: { controller: CodePanelController; prAvailable: boolean; startExpanded?: boolean }) {
+function CodePane({ controller, prAvailable, branch, review }: { controller: CodePanelController; prAvailable: boolean; branch?: string; review?: CodePanelReview }) {
   return <Suspense fallback={<section className="code-pane" role="region" aria-label="Code changes"><p className="code-pane-status">Loading changes…</p></section>}>
-    <CodePanel mode={controller.mode} state={controller.state} patch={controller.patch} selectedPath={controller.selectedPath} filePreview={controller.filePreview} prAvailable={prAvailable} startExpanded={startExpanded} loadFile={controller.loadFile} onSelectFile={controller.selectFile} onClearFile={controller.clearFile} onSetMode={controller.setMode} onCloseFile={controller.closeFilePreview} onClose={controller.close} onRetry={controller.refresh} />
+    <CodePanel mode={controller.mode} state={controller.state} patch={controller.patch} selectedPath={controller.selectedPath} filePreview={controller.filePreview} prAvailable={prAvailable} branch={branch} review={review} loadFile={controller.loadFile} onSelectFile={controller.selectFile} onClearFile={controller.clearFile} onSetMode={controller.setMode} onCloseFile={controller.closeFilePreview} onClose={controller.close} onRetry={controller.refresh} />
   </Suspense>;
 }
 // render ordered resizable output panels: the agent, any Terminals, then note, browser and code
-function ResizableLogSplit({ worktreeId, output, note, browser, code, terminals, terminalSelectionActions, onPhoneTerminal }: { worktreeId?: string; output: ReactNode; note?: ReactNode; browser?: ReactNode; code?: ReactNode; terminals?: TerminalColumn[]; terminalSelectionActions?: TerminalSelectionActions; onPhoneTerminal?: (paneId: string | undefined) => void }) {
+// `expansion` is the Workspace's expanded panel; a split without a Workspace keeps its own.
+function ResizableLogSplit({ worktreeId, output, note, browser, code, terminals, terminalSelectionActions, onPhoneTerminal, expansion: workspaceExpansion }: { worktreeId?: string; output: ReactNode; note?: ReactNode; browser?: ReactNode; code?: ReactNode; terminals?: TerminalColumn[]; terminalSelectionActions?: TerminalSelectionActions; onPhoneTerminal?: (paneId: string | undefined) => void; expansion?: PanelExpansion }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const ownExpansion = usePanelExpansion();
+  const expansion = workspaceExpansion ?? ownExpansion;
   const dragRef = useRef<SplitDrag | undefined>(undefined);
   const hasNote = note !== undefined && note !== null;
   const hasBrowser = browser !== undefined && browser !== null;
@@ -4385,6 +4407,7 @@ function ResizableLogSplit({ worktreeId, output, note, browser, code, terminals,
   // restores that combination's own widths
   const signature = keys.join('|');
   const previousKeys = useRef(keys);
+  const expansionScope = useExpansionScope(expansion, keys, containerRef);
   const [sizes, setSizes] = useState<SplitSizes>(() => savedSplitSizes(worktreeId, signature, keys));
   const [mobilePanel, setMobilePanel] = useState<string>('agent');
   // restore the exact workspace layout for each open-panel composition
@@ -4524,7 +4547,7 @@ function ResizableLogSplit({ worktreeId, output, note, browser, code, terminals,
     return <button key={column.key} className={`mobile-${kind}-switch`} type="button" aria-label={label} title={label} onClick={() => setMobilePanel(column.key)}>{icon}</button>;
   })}</div> : null;
   const mobileView = hasSplit ? ` mobile-${splitPanelKind(visibleMobilePanel)}-view` : '';
-  return <div ref={containerRef} className={`log-split${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}${hasCode ? ' has-code' : ''}${hasTerminals ? ' has-terminals' : ''}${mobileView}`} style={style}>{laidOut}{mobileSwitches}</div>;
+  return <PanelExpandContext.Provider value={expansionScope.context}><div ref={containerRef} className={`log-split${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}${hasCode ? ' has-code' : ''}${hasTerminals ? ' has-terminals' : ''}${mobileView}`} style={style} onKeyDown={expansionScope.onKeyDown}>{laidOut}{mobileSwitches}</div></PanelExpandContext.Provider>;
 }
 
 // One pane of a Worktree the picker can show as a Terminal (the wire shape of
@@ -4673,37 +4696,14 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
   const [focused, setFocused] = useState(false);
   const [selection, setSelection] = useState<TerminalSelection>();
   const copySelectionRef = useRef<(value: string) => Promise<void>>(copyText);
-  const [expanded, setExpanded] = useState(false);
+  // this Terminal's share of the Workspace's expansion, keyed by its pane id
+  const expand = usePanelExpand(paneId);
+  const expanded = expand?.expanded === true;
   const [renaming, setRenaming] = useState(false);
   const [renameDraft, setRenameDraft] = useState(name);
   const [renamePending, setRenamePending] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
   const [deleteError, setDeleteError] = useState(false);
-  // restore normal switching when fullscreen reaches a phone viewport
-  useLayoutEffect(() => {
-    // observe viewport changes only during fullscreen
-    if (!expanded) return;
-    const mobile = window.matchMedia('(max-width: 768px)');
-    // phone panels already fill the output area
-    const collapse = () => {
-      // keep desktop fullscreen intact
-      if (mobile.matches) setExpanded(false);
-    };
-    collapse();
-    mobile.addEventListener('change', collapse);
-    // release the temporary viewport listener
-    return () => mobile.removeEventListener('change', collapse);
-  }, [expanded]);
-  // resize the existing terminal without remounting its stream
-  const toggleExpanded = () => setExpanded(current => !current);
-  // reserve canvas escape for shell applications
-  const handleHeaderKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
-    // restore fullscreen only from a focused header control
-    if (event.key !== 'Escape' || !expanded) return;
-    event.preventDefault();
-    event.stopPropagation();
-    setExpanded(false);
-  };
   // preserve the panel when deletion fails or confirmation is cancelled
   const deleteShell = async () => {
     // ignore duplicate deletion or non-managed panes
@@ -4761,21 +4761,21 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
       handle.dispose();
     };
   }, [worktreeId, paneId]);
+  const secondary: PanelAction[] = [];
+  if (onRename !== undefined) secondary.push({ key: 'rename', label: `Rename terminal ${name}`, title: 'Rename terminal', className: 'pane-rename-toggle', disabled: deletePending || renaming, icon: <PanelIcon path={actionIconPaths.pencil} />, onSelect: () => { setRenameDraft(name); setRenaming(true); } });
+  if (onDelete !== undefined) secondary.push({ key: 'delete', label: `Delete terminal ${name}`, title: 'Delete shell (ends the running shell)', className: 'pane-delete', disabled: deletePending || renamePending, icon: deletePending ? <span className="spinner" /> : <PanelIcon path={actionIconPaths.trash} />, onSelect: () => void deleteShell() });
   return <section className={`terminal-pane${expanded ? ' expanded' : ''}${focused ? ' focused' : ''}${selection ? ' selection-active' : ''}${mobileHidden ? ' mobile-hidden' : ''}`} data-panel-key={paneId}>
-    <header className="pane-head" onKeyDown={handleHeaderKeyDown}>
+    <PanelHeader panelKey={paneId} label={`terminal ${name}`} expandDisabled={deletePending} secondary={secondary} close={{ key: 'minimize', label: `Minimize terminal ${name}`, title: 'Minimize terminal (the shell keeps running)', className: 'pane-minimize', disabled: deletePending, icon: <PanelIcon path="M5 12h14" />, onSelect: onMinimize }} title={<>
       <span className={`pane-status${deleteError ? ' error' : ''}`} role={deleteError ? 'alert' : 'status'} title={deleteError ? 'Could not delete shell. Try again.' : undefined}>{deleteError ? 'Delete failed' : 'Live'}</span>
       {renaming
       ? <form className="pane-rename" onSubmit={event => { event.preventDefault(); void submitRename(); }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); setRenaming(false); } }}><input aria-label={`Name for terminal ${name}`} value={renameDraft} maxLength={maxTerminalNameLength} autoFocus disabled={renamePending} onChange={event => setRenameDraft(event.target.value)} /><button type="submit" disabled={renamePending || renameDraft.trim() === ''} aria-label="Save terminal name" title="Save terminal name"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={renamePending} aria-label="Cancel terminal rename" title="Cancel" onClick={() => setRenaming(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form>
-      : <><span className="pane-title" title={name}>{name}</span>{onRename !== undefined && <button type="button" className="pane-rename-toggle" disabled={deletePending} aria-label={`Rename terminal ${name}`} title="Rename terminal" onClick={() => { /* edit the shell name */ setRenameDraft(name); setRenaming(true); }}><svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.pencil} /></svg></button>}</>}
-      {onDelete !== undefined && <button type="button" className="pane-delete" disabled={deletePending || renamePending} aria-label={`Delete terminal ${name}`} title="Delete shell (ends the running shell)" onClick={deleteShell}>{deletePending ? <span className="spinner" /> : <LauncherRowIcon name="trash" />}</button>}
-      <button type="button" className="pane-expand" disabled={deletePending} aria-label={`${expanded ? 'Exit' : 'Enter'} terminal fullscreen ${name}`} aria-pressed={expanded} title={expanded ? 'Exit fullscreen' : 'Fullscreen'} onClick={toggleExpanded}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button>
-      <button type="button" className="pane-minimize" disabled={deletePending} aria-label={`Minimize terminal ${name}`} title="Minimize terminal (the shell keeps running)" onClick={onMinimize}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg></button>
-    </header>
+      : <span className="pane-title" title={name}>{name}</span>}
+    </>} />
     <div className="terminal-canvas" ref={canvas} aria-label={`Terminal ${name}`} />
     {/* keep selection actions hidden with their terminal panel */}
     {selection && <div className="output-selection-toolbar" role="toolbar" aria-label={`Selection actions for terminal ${name}`} style={{ top: selection.top, left: selection.left }} onPointerDown={event => event.preventDefault()}>
-      <button type="button" disabled={!selectionActions?.canCreateNote || selection.text.length > 30_000} onClick={async () => { /* reveal only successfully created notes */ if (await selectionActions?.createNote(selection.text)) setExpanded(false); }}>Create note</button>
-      <button type="button" disabled={selectionActions?.addToPrompt === undefined} onClick={() => { /* reveal the draft without sending it */ setExpanded(false); selectionActions?.addToPrompt?.(selection.text); }}>Add to prompt</button>
+      <button type="button" disabled={!selectionActions?.canCreateNote || selection.text.length > 30_000} onClick={async () => { /* reveal only successfully created notes */ if (await selectionActions?.createNote(selection.text)) expand?.restore(); }}>Create note</button>
+      <button type="button" disabled={selectionActions?.addToPrompt === undefined} onClick={() => { /* reveal the draft without sending it */ expand?.restore(); selectionActions?.addToPrompt?.(selection.text); }}>Add to prompt</button>
       <button type="button" onClick={() => void copySelectionRef.current(selection.text)}>Copy</button>
     </div>}
   </section>;
@@ -5165,9 +5165,11 @@ function useWorkspace(place: WorkspacePlace, { agentId, noteOptions: notes, onNa
   // for that pane's helper keys (spec, the phone footer).
   const [phoneTerminal, setPhoneTerminal] = useState<string>();
   const conversations = useWorktreeConversations(place.worktreeId, agentId, { onNavigateWorktree, onOperationFeedback });
-  const placeNotes = useWorktreeNotes(place.id, agentId, notes.agentWorking, notes.latestAssistantMessage, notes.latestAssistantMessageOverflows, notes.onPromptHistoryChanged, notes.promptHistory, notes.schedulePrefill, notes.onLaunchAndRun, notes.launchRunLabel);
+  // the panel filling the Workspace; the notes restore theirs, so they share it
+  const expansion = usePanelExpansion();
+  const placeNotes = useWorktreeNotes(place.id, expansion, agentId, notes.agentWorking, notes.latestAssistantMessage, notes.latestAssistantMessageOverflows, notes.onPromptHistoryChanged, notes.promptHistory, notes.schedulePrefill, notes.onLaunchAndRun, notes.launchRunLabel);
   const [gitExpanded, setGitExpanded] = useState(false);
-  return { place, browser, code, terminals, phoneTerminal, setPhoneTerminal, conversations, notes: placeNotes, gitExpanded, setGitExpanded };
+  return { place, browser, code, terminals, phoneTerminal, setPhoneTerminal, conversations, notes: placeNotes, expansion, gitExpanded, setGitExpanded };
 }
 type WorkspaceState = ReturnType<typeof useWorkspace>;
 // The git actions only an Agent offers (push, fixup, guided review); an agentless Workspace passes
@@ -5186,7 +5188,9 @@ function WorkspaceGitStatus({ workspace, actions, onToggle }: { workspace: Works
 // the card's idle placeholder in its column), then Terminals, note, browser and code. The git
 // status portals into the composer's status slot.
 function Workspace({ workspace, output, idle = false, git, onGitToggle, onAddToPrompt, statusSlot }: { workspace: WorkspaceState; output: ReactNode; idle?: boolean; git?: WorkspaceGitActions; onGitToggle?: () => void; onAddToPrompt?: (text: string) => void; statusSlot: HTMLElement | null }) {
-  const { place, browser, code, notes } = workspace;
+  const { place, browser, code, notes, expansion } = workspace;
+  // With no Agent there is no output to split against, so the Code panel opens filling the Workspace.
+  useLayoutEffect(() => { if (idle && code.open) expansion.setExpanded('code', true); }, [idle, code.open, expansion.setExpanded]);
   // Terminal selections save into this Place's notes or go to the card's composer.
   const terminalSelectionActions: TerminalSelectionActions = {
     canCreateNote: notes.canCreate,
@@ -5194,9 +5198,9 @@ function Workspace({ workspace, output, idle = false, git, onGitToggle, onAddToP
     addToPrompt: onAddToPrompt
   };
   const browserPane = browser.url === undefined || browser.homeUrl === undefined ? null : <ProjectBrowserPane url={browser.url} homeUrl={browser.homeUrl} proxied={browser.proxied} worktreeId={place.id} navigationRequest={browser.navigationRequest} onNavigate={browser.navigate} onClose={browser.close} />;
-  // With no Agent there is no output to split against, so the Code panel opens filling the Workspace.
-  const codePane = code.open ? <CodePane controller={code} prAvailable={place.gitPrStatus !== undefined} startExpanded={idle || undefined} /> : null;
-  return <section className="log-shell"><div className={`log${idle ? ' inactive-log' : ''}`}><ResizableLogSplit worktreeId={place.id} output={output} note={notes.pane} browser={browserPane} code={codePane} terminals={workspace.terminals.columns} terminalSelectionActions={terminalSelectionActions} onPhoneTerminal={workspace.setPhoneTerminal} /></div>{statusSlot && createPortal(<WorkspaceGitStatus workspace={workspace} actions={git} onToggle={onGitToggle} />, statusSlot)}</section>;
+  const review = git === undefined || (git.onReview === undefined && git.reviewUnavailable === undefined) ? undefined : { onReview: git.onReview, open: git.reviewOpen === true, unavailable: git.reviewUnavailable };
+  const codePane = code.open ? <CodePane controller={code} prAvailable={place.gitPrStatus !== undefined} branch={place.branch} review={review} /> : null;
+  return <section className="log-shell"><div className={`log${idle ? ' inactive-log' : ''}`}><ResizableLogSplit worktreeId={place.id} expansion={expansion} output={output} note={notes.pane} browser={browserPane} code={codePane} terminals={workspace.terminals.columns} terminalSelectionActions={terminalSelectionActions} onPhoneTerminal={workspace.setPhoneTerminal} /></div>{statusSlot && createPortal(<WorkspaceGitStatus workspace={workspace} actions={git} onToggle={onGitToggle} />, statusSlot)}</section>;
 }
 
 type LogProps = { id: string; embedded?: boolean; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined, overflow: boolean) => void; controls?: ReactNode; notes?: WorktreeNotes; onAddToPrompt?: (text: string) => void; onOpenUrl?: (url: string) => boolean; onOpenFile?: (path: string) => void; processingLabel?: string; processingDetail?: string };
@@ -5211,10 +5215,10 @@ function Log({ id, embedded = false, onQuestion, onMetadata, controls, notes, on
   // begin by attaching to their live output, not by starting a new process.
   const [status, setStatus] = useState('Connecting');
   const [hasRendered, setHasRendered] = useState(false);
-  // Full-screen promote/restore for the agent output panel: transient, and mirrored on every other
-  // panel (note/browser/terminal/code). The `.expanded` class the split's `:has()` rule promotes to
-  // fill the workspace; the control is hidden on phones (styles.css), where it is a no-op.
-  const [expanded, setExpanded] = useState(false);
+  // The agent output's share of the Workspace's expansion. The `.expanded` class is what the
+  // split's `:has()` rule promotes to fill the Workspace; the control is hidden on phones.
+  const expand = usePanelExpand('agent');
+  const expanded = expand?.expanded === true;
   const [inputActive, setInputActive] = useState(false);
   const [selectionActive, setSelectionActive] = useState(false);
   const [selectionToolbar, setSelectionToolbar] = useState<{ text: string; top: number }>();
@@ -5330,20 +5334,14 @@ function Log({ id, embedded = false, onQuestion, onMetadata, controls, notes, on
   const loading = !hasRendered || processing;
   const visibleStatus = processing ? 'Starting' : status;
   const loadingLabel = processingLabel ?? (status === 'Live' ? 'Waiting for output' : status);
-  const selectionActions = selectionToolbar === undefined || notes?.expanded === true ? null : createPortal(<div className={`output-selection-toolbar${embedded ? ' embedded' : ''}`} role="toolbar" aria-label="Output selection actions" style={{ top: selectionToolbar.top }} onPointerDown={event => event.preventDefault()}>
-    {notes !== undefined && <button type="button" disabled={!notes.canCreate || selectionToolbar.text.length > 30_000} onClick={() => void notes.createWithText(selectionToolbar.text, assistantNoteTitle(selectionToolbar.text))}>Create note</button>}
-    {notes?.active === true && <button type="button" disabled={!notes.canAppendToActive(selectionToolbar.text)} onClick={() => notes.appendToActive(selectionToolbar.text)}>Append to note</button>}
+  // an expanded sibling hides the output, and its selection actions with it
+  const selectionActions = selectionToolbar === undefined || (expand?.anyExpanded === true && !expanded) ? null : createPortal(<div className={`output-selection-toolbar${embedded ? ' embedded' : ''}`} role="toolbar" aria-label="Output selection actions" style={{ top: selectionToolbar.top }} onPointerDown={event => event.preventDefault()}>
+    {notes !== undefined && <button type="button" disabled={!notes.canCreate || selectionToolbar.text.length > 30_000} onClick={() => void notes.createWithText(selectionToolbar.text, assistantNoteTitle(selectionToolbar.text)).then(created => { /* reveal the new note */ if (created) expand?.restore(); })}>Create note</button>}
+    {notes?.active === true && <button type="button" disabled={!notes.canAppendToActive(selectionToolbar.text)} onClick={() => { expand?.restore(); notes.appendToActive(selectionToolbar.text); }}>Append to note</button>}
     {onAddToPrompt !== undefined && <button type="button" onClick={() => onAddToPrompt(selectionToolbar.text)}>Add to prompt</button>}
     <button type="button" onClick={() => void copyOutputSelectionRef.current(selectionToolbar.text)}>Copy</button>
   </div>, document.body);
-  // Esc restores the promoted agent panel, but never steals the terminal's own Escape (a shell app
-  // needs it), so it only fires when focus is outside the live-log canvas.
-  const restoreAgentOnEscape = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'Escape' || !expanded || (event.target as HTMLElement).closest('.log-canvas') !== null) return;
-    event.preventDefault();
-    setExpanded(false);
-  };
-  return <><div className={`log-output${expanded ? ' expanded' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`} onKeyDown={restoreAgentOnEscape}>{!embedded && <ServerSwitcher className="output-server-switcher" />}<div className="log-canvas" ref={canvas} aria-label="Live log" />{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!embedded && <div className="log-controls-bottom"><div className="page-controls">{controls}<button type="button" className="log-control page-arrow log-expand" aria-label={expanded ? 'Restore agent output' : 'Expand agent output'} aria-pressed={expanded} title={expanded ? 'Restore' : 'Fullscreen'} onClick={() => setExpanded(value => !value)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button></div></div>}</div></div>{selectionActions}</>;
+  return <><div className={`log-output${expanded ? ' expanded' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}>{!embedded && <ServerSwitcher className="output-server-switcher" />}<div className="log-canvas" ref={canvas} aria-label="Live log" />{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!embedded && <div className="log-controls-bottom"><div className="page-controls">{controls}{expand !== undefined && <button type="button" className="log-control page-arrow log-expand" aria-label={expanded ? 'Restore agent output' : 'Expand agent output'} aria-pressed={expanded} title={expanded ? 'Restore the other panels' : 'Fill the Workspace'} onClick={expand.toggle}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? panelIcons.restore : panelIcons.expand} /></svg></button>}</div></div>}</div></div>{selectionActions}</>;
 }
 
 // The composer's prompt-history button and flyout for one Agent. The open state is the caller's,

@@ -191,7 +191,7 @@ test('a native output selection creates and appends notes, copies, and guards th
   await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Selectable');
 
   await toolbar.getByRole('button', { name: 'Create note' }).click();
-  await expect(page.getByRole('dialog', { name: 'Note' }).locator('header strong')).toHaveText('Selectable');
+  await expect(page.getByRole('dialog', { name: 'Note' }).locator('.note-picker strong')).toHaveText('Selectable');
   const notePreview = page.getByLabel('Note preview');
   await expect(notePreview).toContainText('Selectable');
   const noteEditor = page.getByRole('textbox', { name: 'Note content' });

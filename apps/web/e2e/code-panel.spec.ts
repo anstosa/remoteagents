@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { installPaneMock, pushBytes, seedPaneSize } from './pane-stream-mock';
+import { codeViewOption, panelAction } from './panel-header';
 import type { ComparisonFile, ComparisonFileContents, ComparisonPatch, FilePreviewView, RevisionFile } from '../src/code-panel/comparison';
 
 // a minimal but valid git unified diff for one modified file, enough for parsePatchFiles
@@ -158,21 +159,41 @@ test('expands a collapsed hunk gap in Hunks mode without first visiting Full con
   await expect(panel(page).getByText('line 25', { exact: true })).toBeVisible();
 });
 
-test('folds the toolbar controls into a fly-out on a narrow panel and closes it on selection', async ({ page }) => {
-  // a narrow root (below RAIL_BREAKPOINT) stands in for a phone / squeezed column
+test('keeps the view options in a fly-out, folded into the header ⋮ on a narrow panel', async ({ page }) => {
+  // a narrow root (below the header's fold width) stands in for a phone / squeezed column
   await mountPanel(page, patchOf([trackedFile('src/app.ts'), trackedFile('src/widget.ts')]), {}, false, 380);
 
-  // the segmented controls are not inline; one Options control gathers them so the file title fits
+  // the diff modes are never inline, and the narrow header folds the View options control into its ⋮
   await expect(panel(page).getByRole('button', { name: 'Hunks' })).toHaveCount(0);
-  const options = panel(page).getByRole('button', { name: 'View options' });
-  await expect(options).toBeVisible();
-  await options.click();
+  await expect(panel(page).getByRole('button', { name: 'View options' })).toHaveCount(0);
+  // the Working / All PR toggle stays in the header
+  await expect(panel(page).getByRole('button', { name: 'Working', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'More code panel actions' }).click();
+  await page.getByRole('group', { name: 'More code panel actions' }).getByRole('button', { name: 'View options' }).click();
   const flyout = panel(page).getByRole('dialog', { name: 'View options' });
-  await expect(flyout.getByRole('button', { name: 'Working', exact: true })).toBeVisible();
-  await expect(flyout.getByRole('button', { name: 'Hunks' })).toBeVisible();
+  await expect(flyout.getByRole('button', { name: 'Hunks' })).toHaveAttribute('aria-pressed', 'true');
   // choosing an option applies it and closes the fly-out
-  await flyout.getByRole('button', { name: 'All PR' }).click();
+  await flyout.getByRole('button', { name: 'Full ctx' }).click();
   await expect(flyout).toBeHidden();
+  // reopening shows the chosen mode
+  await expect(await codeViewOption(panel(page), 'Full ctx')).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('Esc from the View options control closes its fly-out before it restores the panel', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mountPanel(page, patchOf([trackedFile('src/app.ts')]));
+  const region = panel(page);
+  await region.getByRole('button', { name: 'Expand code panel' }).click();
+  const options = region.getByRole('button', { name: 'View options', exact: true });
+  await options.click();
+  const flyout = region.getByRole('dialog', { name: 'View options' });
+  await expect(flyout).toBeVisible();
+  await options.press('Escape');
+  await expect(flyout).toBeHidden();
+  await expect(region).toHaveClass(/\bexpanded\b/u);
+  // the next Escape restores
+  await options.press('Escape');
+  await expect(region).not.toHaveClass(/\bexpanded\b/u);
 });
 
 test('covers a size-capped file with a Load anyway placeholder instead of a diff', async ({ page }) => {
@@ -215,7 +236,8 @@ test('switches a file between hunks, plain, and full-context modes', async ({ pa
   await mountPanel(page, patchOf([trackedFile('src/app.ts')]), { 'src/app.ts': contentsOf('src/app.ts', baseFile, workingFile) });
 
   // Plain file is single-file only, so it is disabled in the all-files view
-  await expect(panel(page).getByRole('button', { name: 'Plain file' })).toBeDisabled();
+  await expect(await codeViewOption(panel(page), 'Plain file')).toBeDisabled();
+  await panel(page).getByRole('button', { name: 'Close view options' }).click();
 
   await panel(page).getByRole('button', { name: 'app.ts' }).click();
   await expect(panel(page).getByRole('button', { name: '‹ All files' })).toBeVisible();
@@ -227,14 +249,14 @@ test('switches a file between hunks, plain, and full-context modes', async ({ pa
   // Full context: still a diff (a header renders), but the unchanged lines expand by hydrating from
   // the file-at-revision endpoint — so the out-of-hunk line appears and a fresh fetch fired for it.
   await page.evaluate(() => { (window as unknown as { __codeLoads?: string[] }).__codeLoads = []; });
-  await panel(page).getByRole('button', { name: 'Full ctx' }).click();
+  await (await codeViewOption(panel(page), 'Full ctx')).click();
   await expect(panel(page).getByText('const sentinel = 999;')).toBeVisible();
   await expect(diffHeaders(page)).toHaveCount(1);
   expect(await page.evaluate(() => (window as unknown as { __codeLoads?: string[] }).__codeLoads ?? [])).toContain('src/app.ts');
 
   // Plain file: the whole *current* file renders — the out-of-hunk line stays visible, but the
   // deleted old line (shown by the Hunks/Full diffs) is gone because this is the working file, not a diff
-  await panel(page).getByRole('button', { name: 'Plain file' }).click();
+  await (await codeViewOption(panel(page), 'Plain file')).click();
   await expect(panel(page).getByText('const sentinel = 999;')).toBeVisible();
   await expect(panel(page).getByText('const b = 3;')).toBeVisible();
   await expect(panel(page).getByText('const b = 2;')).toHaveCount(0);
@@ -280,8 +302,8 @@ test('ignores startExpanded on a phone viewport, where the control is a no-op', 
   // the panel is not promoted (the desktop-only seed is gated off)
   await expect(region).not.toHaveClass(/\bexpanded\b/u);
   // the control is still rendered — just CSS-hidden below the phone breakpoint, not removed
-  await expect(page.locator('.code-pane-expand')).toHaveCount(1);
-  await expect(page.locator('.code-pane-expand')).toBeHidden();
+  await expect(page.locator('.panel-header-expand')).toHaveCount(1);
+  await expect(page.locator('.panel-header-expand')).toBeHidden();
 });
 
 test('promotes the File view to full screen and restores it', async ({ page }) => {
@@ -398,7 +420,7 @@ test('refreshes a changed file in place and reuses unchanged files without rehyd
   await expect(diffHeaders(page)).toHaveCount(2);
 
   // Full context hydrates every file from its two revisions — one loadFile per file
-  await panel(page).getByRole('button', { name: 'Full ctx' }).click();
+  await (await codeViewOption(panel(page), 'Full ctx')).click();
   await expect.poll(() => codeLoads(page)).toContain('src/app.ts');
   await expect.poll(() => codeLoads(page)).toContain('src/util.ts');
   await expect(panel(page).getByText('const sentinel = 999;').first()).toBeVisible();
@@ -488,7 +510,7 @@ test('preserves the reviewer scroll position across a soft refresh', async ({ pa
 test('keeps a full-context file expanded while its live rebuild is in flight', async ({ page }) => {
   await mountPanel(page, patchOf([trackedFile('src/app.ts')]), { 'src/app.ts': contentsOf('src/app.ts', baseFile, workingFile) });
   await panel(page).getByRole('button', { name: 'app.ts' }).click();
-  await panel(page).getByRole('button', { name: 'Full ctx' }).click();
+  await (await codeViewOption(panel(page), 'Full ctx')).click();
 
   // Full context expands the unchanged lines: the out-of-hunk sentinel shows, alongside the current
   // changed line (b = 3)

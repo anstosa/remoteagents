@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { installPaneMock, seedPaneSize, pushBytes, pushExit, paneAckTotal, paneInputText } from './pane-stream-mock.js';
+import { clickPanelAction, expectPanelAction } from './panel-header';
 
 // Terminal panels (First-class terminal panes, Console shells): the composer's terminal icon
 // picker lists a Worktree's panes, opening one adds a resizable column beside the agent, a
@@ -184,7 +185,7 @@ test('lists panes with the agent and a claimed window disabled, and opens a colu
   const column = page.locator('.terminal-pane[data-panel-key="%5"]');
   await expect(column).toBeVisible();
   await expect(column.getByText('build')).toBeVisible();
-  const header = column.locator(':scope > header');
+  const header = column.locator(':scope > .panel-header .panel-header-title');
   const status = header.locator('.pane-status');
   await expect(header.locator(':scope > *').first()).toHaveClass(/\bpane-status\b/u);
   await expect(status).toHaveAttribute('role', 'status');
@@ -378,7 +379,7 @@ test('a Terminal selection freezes only its pane and keeps keyboard ownership lo
   await prompt.press('y');
   await expect(prompt).toHaveValue('dray');
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('selection-guard');
-  await build.getByRole('button', { name: 'Rename terminal build', exact: true }).click();
+  await clickPanelAction(build, 'Rename terminal build');
   const rename = build.getByRole('textbox', { name: 'Name for terminal build', exact: true });
   await rename.fill('deplo');
   await rename.press('y');
@@ -488,13 +489,13 @@ test('Terminal selection actions append to the prompt and create a note from ful
   expect(prompts).toEqual([]);
   await expect(toolbar).toBeVisible();
 
-  await terminal.getByRole('button', { name: 'Enter terminal fullscreen build' }).click();
+  await terminal.getByRole('button', { name: 'Expand terminal build' }).click();
   await expect(terminal).toHaveClass(/\bexpanded\b/u);
   await toolbar.getByRole('button', { name: 'Create note', exact: true }).click();
   const notePane = page.getByRole('dialog', { name: 'Note' });
   await expect(notePane).toBeVisible();
   await expect(terminal).not.toHaveClass(/\bexpanded\b/u);
-  await expect(notePane.locator('header strong')).toHaveText(selectedText);
+  await expect(notePane.locator('.note-picker strong')).toHaveText(selectedText);
   await expect(page.getByLabel('Note preview')).toContainText(selectedText);
   await expect.poll(() => savedNotes).toContain(selectedText);
   expect(notes[0]).toMatchObject({ text: selectedText, title: selectedText });
@@ -607,7 +608,7 @@ test('a phone Terminal keeps its selected text when note creation fails', async 
   const notePane = page.getByRole('dialog', { name: 'Note' });
   await expect(notePane).toBeVisible();
   await expect(terminal).toBeHidden();
-  await expect(notePane.locator('header strong')).toHaveText('Retryable');
+  await expect(notePane.locator('.note-picker strong')).toHaveText('Retryable');
   await expect(page.getByLabel('Note preview')).toContainText('Retryable');
   await expect.poll(() => savedNotes).toContain('Retryable');
   expect(notes[0]).toMatchObject({ text: 'Retryable', title: 'Retryable' });
@@ -637,14 +638,14 @@ test('terminal fullscreen clears an agent selection and releases queued output',
   expect(await paneAckTotal(page, 'agent-1')).toBe(acknowledged);
 
   const terminal = page.locator('.terminal-pane[data-panel-key="%5"]');
-  await terminal.getByRole('button', { name: 'Enter terminal fullscreen build' }).click();
+  await terminal.getByRole('button', { name: 'Expand terminal build' }).click();
   await expect(output).toBeHidden();
   await expect(toolbar).toBeHidden();
   await expect(page.locator('.log-output')).not.toHaveClass(/\bselection-active\b/u);
   await expect(output.locator('.xterm-selection > div')).toHaveCount(0);
   await expect.poll(() => paneAckTotal(page, 'agent-1')).toBeGreaterThan(acknowledged);
 
-  await terminal.getByRole('button', { name: 'Exit terminal fullscreen build' }).click();
+  await terminal.getByRole('button', { name: 'Restore terminal build' }).click();
   await expect(output.locator('.xterm-rows > div', { hasText: 'agent output released behind fullscreen' })).toBeVisible();
   await expect(toolbar).toBeHidden();
 });
@@ -857,8 +858,8 @@ for (const panels of ['note', 'browser', 'note and browser']) {
     // every desktop column fills the same available output area
     for (const panel of await visiblePanels.all()) await expectFullSplitHeight(panel);
 
-    const terminalHeader = split.locator('.terminal-pane[data-panel-key="%5"] > header');
-    const referenceHeader = split.locator(panels.includes('browser') ? '.browser-pane > header' : '.note-pane header').first();
+    const terminalHeader = split.locator('.terminal-pane[data-panel-key="%5"] > .panel-header');
+    const referenceHeader = split.locator(panels.includes('browser') ? '.browser-pane > .panel-header' : '.note-pane > .panel-header').first();
     // align shell chrome with adjacent splits
     await expect.poll(async () => {
       const terminalBox = await terminalHeader.boundingBox();
@@ -868,8 +869,8 @@ for (const panels of ['note', 'browser', 'note and browser']) {
     const referenceHeaderHeight = (await referenceHeader.boundingBox())!.height;
     const minimize = terminalHeader.getByRole('button', { name: 'Minimize terminal build', exact: true });
     const referenceButton = referenceHeader.getByRole('button', { name: panels.includes('browser') ? 'Close browser' : 'Close note', exact: true });
-    await expect(minimize).toHaveCSS('width', '32px');
-    await expect(minimize).toHaveCSS('height', '32px');
+    await expect(minimize).toHaveCSS('width', await referenceButton.evaluate(element => getComputedStyle(element).width));
+    await expect(minimize).toHaveCSS('height', await referenceButton.evaluate(element => getComputedStyle(element).height));
     await expect(minimize).toHaveCSS('border-style', 'solid');
     await expect(minimize).toHaveCSS('background-color', await referenceButton.evaluate(element => getComputedStyle(element).backgroundColor));
     const minimizeIcon = minimize.locator('svg[aria-hidden="true"]');
@@ -893,14 +894,14 @@ for (const panels of ['note', 'browser', 'note and browser']) {
     if (panels === 'note and browser') {
       const terminal = split.locator('.terminal-pane[data-panel-key="%5"]');
       const canvas = terminal.locator('.terminal-canvas');
-      const expand = terminalHeader.locator('.pane-expand');
-      await expect(expand).toHaveAccessibleName('Enter terminal fullscreen build');
+      const expand = terminalHeader.locator('.panel-header-expand');
+      await expect(expand).toHaveAccessibleName('Expand terminal build');
       await expect(expand).toHaveAttribute('aria-pressed', 'false');
       // mark the live canvas across toggles
       await canvas.evaluate(element => { element.dataset.fullscreenProbe = 'preserved'; });
       await expand.click();
       await expect(terminal).toHaveClass(/\bexpanded\b/u);
-      await expect(expand).toHaveAccessibleName('Exit terminal fullscreen build');
+      await expect(expand).toHaveAccessibleName('Restore terminal build');
       await expect(expand).toHaveAttribute('aria-pressed', 'true');
       await expect(visiblePanels).toHaveCount(1);
       await expect(split.locator(':scope > .split-resizer:visible')).toHaveCount(0);
@@ -913,7 +914,7 @@ for (const panels of ['note', 'browser', 'note and browser']) {
       // the toggle restores sibling panels
       await expand.click();
       await expect(terminal).not.toHaveClass(/\bexpanded\b/u);
-      await expect(expand).toHaveAccessibleName('Enter terminal fullscreen build');
+      await expect(expand).toHaveAccessibleName('Expand terminal build');
       await expect(visiblePanels).toHaveCount(4);
       await expect(canvas).toHaveAttribute('data-fullscreen-probe', 'preserved');
 
@@ -948,7 +949,7 @@ for (const panels of ['note', 'browser', 'note and browser']) {
     if (panels.includes('browser')) {
       const browser = split.locator('.browser-pane');
       const divider = split.locator('.browser-resizer');
-      await browser.getByRole('button', { name: 'Use mobile viewport', exact: true }).click();
+      await clickPanelAction(browser, 'Use mobile viewport');
       await expect(divider).toBeHidden();
       await expect(browser).toHaveCSS('width', '390px');
       const frameBox = (await browser.locator('iframe').boundingBox())!;
@@ -959,12 +960,12 @@ for (const panels of ['note', 'browser', 'note and browser']) {
       expect(mobileBrowserBox.height).toBeCloseTo(mobilePreviewSplit.height, 0);
       expect(mobileBrowserBox.x + mobileBrowserBox.width).toBeCloseTo(mobilePreviewSplit.x + mobilePreviewSplit.width, 0);
 
-      await browser.getByRole('button', { name: 'Enter browser fullscreen' }).click();
+      await browser.getByRole('button', { name: 'Expand browser' }).click();
       await expect(browser).toHaveCSS('width', '1800px');
-      await browser.getByRole('button', { name: 'Exit browser fullscreen' }).click();
+      await browser.getByRole('button', { name: 'Restore browser' }).click();
       await expect(browser).toHaveCSS('width', '390px');
 
-      await browser.getByRole('button', { name: 'Use desktop viewport', exact: true }).click();
+      await clickPanelAction(browser, 'Use desktop viewport');
       await expect(divider).toBeVisible();
       const desktopBrowserBox = (await browser.boundingBox())!;
       expect(desktopBrowserBox.width).toBeGreaterThanOrEqual(390);
@@ -972,13 +973,14 @@ for (const panels of ['note', 'browser', 'note and browser']) {
 
     // collapse fullscreen at the phone breakpoint
     if (panels === 'note and browser') {
-      await terminalHeader.locator('.pane-expand').click();
+      await terminalHeader.locator('.panel-header-expand').click();
       await expect(split.locator('.terminal-pane[data-panel-key="%5"]')).toHaveClass(/\bexpanded\b/u);
     }
     await page.setViewportSize({ width: 390, height: 844 });
     const phoneTerminal = split.locator('.terminal-pane[data-panel-key="%5"]');
     await expect(phoneTerminal).not.toHaveClass(/\bexpanded\b/u);
-    await expect(terminalHeader.locator('.pane-expand')).toBeHidden();
+    await expect(terminalHeader.locator('.panel-header-expand')).toHaveCount(1);
+    await expect(terminalHeader.locator('.panel-header-expand')).toBeHidden();
     await expect(visiblePanels).toHaveCount(1);
     await expectFullSplitHeight(phoneTerminal);
     const phoneHeaderHeight = (await terminalHeader.boundingBox())!.height;
@@ -993,6 +995,111 @@ for (const panels of ['note', 'browser', 'note and browser']) {
     await expect(split.locator('.log-output')).toBeVisible();
   });
 }
+
+// open the agent, a browser, a note and a Terminal side by side on a wide desktop
+const openFourPanels = async (page: Page) => {
+  await page.setViewportSize({ width: 1800, height: 900 });
+  await installPaneMock(page);
+  await routeApi(page);
+  await page.route('**/api/dashboard', route => route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Working', attention: 'working', queuedPromptCount: 0, projectUrl: 'https://preview.example/', projectProxied: false }], projects: [] } }));
+  await page.route('**/api/worktrees/cora/notes', route => route.fulfill({ json: { notes: [{ id: 'note-cora-000001', text: 'Expandable note' }, { id: 'note-cora-000002', text: 'Second note' }] } }));
+  await page.route('https://preview.example/**', route => route.fulfill({ contentType: 'text/html', body: '<main>Split preview</main>' }));
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-1', 80, 24);
+  await pushBytes(page, 'agent-1', 'agent ready\r\n');
+  await page.getByRole('button', { name: 'Open project in split view' }).click();
+  await page.getByRole('button', { name: 'Notes (2)' }).click();
+  await page.getByRole('button', { name: 'Expandable note…', exact: true }).click();
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  const split = page.locator('.log-split');
+  const visiblePanels = split.locator(':scope > :is(.log-output, .terminal-pane, .note-pane, .browser-pane):visible');
+  await expect(visiblePanels).toHaveCount(4);
+  return { split, visiblePanels };
+};
+
+// Every panel kind expands through one shared mechanism: its expand fills the Workspace with it,
+// Esc restores the rest, and closing an expanded panel restores the rest without re-expanding it later.
+test('every panel kind expands to fill the Workspace and Esc restores its siblings', async ({ page }) => {
+  const { split, visiblePanels } = await openFourPanels(page);
+  for (const [selector, label] of [['.log-output', 'agent output'], ['.terminal-pane', 'terminal build'], ['.note-pane', 'note'], ['.browser-pane', 'browser']]) {
+    const panel = split.locator(selector);
+    await panel.getByRole('button', { name: `Expand ${label}`, exact: true }).click();
+    await expect(panel).toHaveClass(/\bexpanded\b/u);
+    await expect(visiblePanels).toHaveCount(1);
+    await expect(panel).toBeVisible();
+    const restore = panel.getByRole('button', { name: `Restore ${label}`, exact: true });
+    await expect(restore).toHaveAttribute('aria-pressed', 'true');
+    // Esc restores the siblings without closing the panel (a note or browser closes on Escape otherwise)
+    await restore.press('Escape');
+    await expect(panel).not.toHaveClass(/\bexpanded\b/u);
+    await expect(visiblePanels).toHaveCount(4);
+  }
+
+  // switching notes from an expanded note's picker keeps it expanded
+  const note = split.locator('.note-pane');
+  await note.getByRole('button', { name: 'Expand note', exact: true }).click();
+  await note.getByRole('button', { name: /^Switch note \(2 here\)/u }).click();
+  await page.getByRole('group', { name: 'Notes here' }).getByRole('button', { name: /Second note/u }).click();
+  await expect(note).toContainText('Second note');
+  await expect(note).toHaveClass(/\bexpanded\b/u);
+  await note.getByRole('button', { name: 'Restore note', exact: true }).click();
+  await expect(visiblePanels).toHaveCount(4);
+
+  // closing the expanded panel restores the rest, and reopening it does not expand it again
+  const browser = split.locator('.browser-pane');
+  await browser.getByRole('button', { name: 'Expand browser', exact: true }).click();
+  await expect(visiblePanels).toHaveCount(1);
+  await browser.getByRole('button', { name: 'Close browser', exact: true }).click();
+  await expect(visiblePanels).toHaveCount(3);
+  await page.getByRole('button', { name: 'Open project in split view' }).click();
+  await expect(browser).toBeVisible();
+  await expect(browser).not.toHaveClass(/\bexpanded\b/u);
+  await expect(visiblePanels).toHaveCount(4);
+});
+
+// A panel narrower than the fold width keeps its secondary actions in its header's ⋮; a wide one
+// shows them inline. Esc closes an open ⋮ without closing the panel.
+test('a narrow panel folds its secondary actions into the header ⋮', async ({ page }) => {
+  const { split, visiblePanels } = await openFourPanels(page);
+  const browser = split.locator('.browser-pane');
+  const more = browser.getByRole('button', { name: 'More browser actions', exact: true });
+  await expect(more).toBeVisible();
+  await expect(browser.getByRole('button', { name: 'Go to project home', exact: true })).toHaveCount(0);
+  // the primary actions stay in the pill
+  await expect(browser.getByRole('button', { name: 'Refresh browser', exact: true })).toBeVisible();
+  await expect(browser.getByRole('link', { name: 'Open in a new tab' })).toHaveAttribute('href', 'https://preview.example/');
+
+  await more.click();
+  const menu = page.getByRole('group', { name: 'More browser actions' });
+  await expect(menu.getByRole('button', { name: 'Go to project home', exact: true })).toContainText('Go to project home');
+  await expect(menu.getByRole('button', { name: 'Use mobile viewport', exact: true })).toBeVisible();
+  await more.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await expect(browser).toBeVisible();
+  await expect(visiblePanels).toHaveCount(4);
+
+  // a row runs its action and closes the ⋮
+  await more.click();
+  await menu.getByRole('button', { name: 'Use mobile viewport', exact: true }).click();
+  await expect(menu).toHaveCount(0);
+  await expect(browser.locator('.browser-frame-shell')).toHaveClass(/mobile/u);
+
+  // the same note header folds too, and its ⋮ keeps Esc from closing the note
+  const note = split.locator('.note-pane');
+  await note.getByRole('button', { name: 'More note actions', exact: true }).click();
+  const lock = page.getByRole('group', { name: 'More note actions' }).getByRole('button', { name: 'Lock note', exact: true });
+  await expect(lock).toBeVisible();
+  await lock.press('Escape');
+  await expect(page.getByRole('group', { name: 'More note actions' })).toHaveCount(0);
+  await expect(note).toBeVisible();
+
+  // expanded to the Workspace's width the header has room, so the actions are inline again
+  await note.getByRole('button', { name: 'Expand note', exact: true }).click();
+  await expect(note.getByRole('button', { name: 'More note actions', exact: true })).toHaveCount(0);
+  await expect(note.getByRole('button', { name: 'Lock note', exact: true })).toBeVisible();
+});
 
 test('on a phone the split switcher gains a chip for the Terminal', async ({ page }) => {
   await page.setViewportSize({ width: 428, height: 880 });
@@ -1113,7 +1220,7 @@ test('an agentless Worktree Terminal can create a note and prepare its prompt', 
   await toolbar.getByRole('button', { name: 'Create note', exact: true }).click();
   const notePane = page.getByRole('dialog', { name: 'Note' });
   await expect(notePane).toBeVisible();
-  await expect(notePane.locator('header strong')).toHaveText(selectedText);
+  await expect(notePane.locator('.note-picker strong')).toHaveText(selectedText);
   await expect.poll(() => savedNotes).toContain(selectedText);
   expect(notes[0]).toMatchObject({ text: selectedText, title: selectedText });
 });
@@ -1157,12 +1264,14 @@ test('only a Console shell offers a rename affordance', async ({ page }) => {
   const vim = page.locator('.terminal-pane[data-panel-key="%6"]');
   await expect(vim).toBeVisible();
   await expect(vim.getByRole('button', { name: /Rename terminal/u })).toHaveCount(0);
+  // rename and delete are a Terminal's only folding actions, so no ⋮ means neither hides in one
+  await expect(vim.locator('.panel-header-more')).toHaveCount(0);
 
   // a Console shell does offer it
   await openPicker(page);
   await page.getByRole('menuitem', { name: /build/u }).click();
   await seedPaneSize(page, '%5', 80, 24);
-  await expect(page.locator('.terminal-pane[data-panel-key="%5"]').getByRole('button', { name: /Rename terminal/u })).toBeVisible();
+  await expectPanelAction(page.locator('.terminal-pane[data-panel-key="%5"]'), /Rename terminal/u, rename => expect(rename).toBeVisible());
 });
 
 test('a managed shell header deletes through the pane endpoint while failed deletion stays open', async ({ page }) => {
@@ -1230,6 +1339,7 @@ test('a managed shell header deletes through the pane endpoint while failed dele
   const vim = page.locator('.terminal-pane[data-panel-key="%6"]');
   await expect(vim).toBeVisible();
   await expect(vim.getByRole('button', { name: /Delete terminal/u })).toHaveCount(0);
+  await expect(vim.locator('.panel-header-more')).toHaveCount(0);
 });
 
 test('a stale idle shell asks before retrying a busy DELETE conflict', async ({ page }) => {
@@ -1290,7 +1400,7 @@ test('renaming a Console shell from its panel updates the head and the picker ro
   await expect(column.getByText('build')).toBeVisible();
 
   // rename from the panel head; the endpoint is called and the head shows the new name
-  await column.getByRole('button', { name: /Rename terminal/u }).click();
+  await clickPanelAction(column, /Rename terminal/u);
   const nameField = column.getByRole('textbox', { name: /Name for terminal/u });
   await nameField.fill('deploy');
   await nameField.press('Enter');
@@ -1321,7 +1431,7 @@ test('renaming a Console shell renames its phone chip', async ({ page }) => {
   const column = page.locator('.terminal-pane[data-panel-key="%5"]');
   await expect(column).toBeVisible();
 
-  await column.getByRole('button', { name: /Rename terminal/u }).click();
+  await clickPanelAction(column, /Rename terminal/u);
   const nameField = column.getByRole('textbox', { name: /Name for terminal/u });
   await nameField.fill('deploy');
   await nameField.press('Enter');

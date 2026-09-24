@@ -36,6 +36,10 @@ test('promotes a panel to full screen in a running split and restores it', async
   await page.getByRole('button', { name: 'View changes', exact: true }).click();
   await expect(codePanel(page)).toBeVisible();
   await expect(agentOutput(page)).toBeVisible();
+  // the header names the Comparison, its file count and the branch, and offers the Agent's review
+  await expect(codePanel(page).getByText('Working changes')).toBeVisible();
+  await expect(codePanel(page).locator('.code-pane-branch')).toHaveText(' · feature/fullscreen');
+  await expect(codePanel(page).getByRole('button', { name: 'Review', exact: true })).toBeVisible();
 
   // promote the Code panel: it fills the workspace and the agent output is hidden
   await codePanel(page).getByRole('button', { name: 'Expand code panel' }).click();
@@ -89,6 +93,10 @@ test('opens the Code view full screen for a Worktree with no running agent', asy
   await expect(codePanel(page)).toHaveClass(/\bexpanded\b/u);
   await expect(codePanel(page).getByRole('button', { name: 'Restore code panel' })).toHaveAttribute('aria-pressed', 'true');
   await expect(agentOutput(page)).toBeHidden();
+  // with no Agent the review is offered but disabled, with the reason
+  const review = codePanel(page).getByRole('button', { name: 'Review', exact: true });
+  await expect(review).toBeDisabled();
+  await expect(review).toHaveAttribute('title', 'Launch agent to review');
 
   // and it restores to the split like any other panel
   await codePanel(page).getByRole('button', { name: 'Restore code panel' }).click();

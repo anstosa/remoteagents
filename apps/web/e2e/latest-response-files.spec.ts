@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { installPaneMock, seedPaneSize, pushBytes, pushMetadata } from './pane-stream-mock.js';
+import { clickPanelAction } from './panel-header';
 
 // The response-files flyout and a pane file link both open the file in the Code panel's File view now,
 // not the retired modal preview dialog: text renders through the diff library, an image (including the
@@ -81,8 +82,7 @@ test('opens response files and pane file links in the Code panel File view', asy
   await expect(panel.getByText('export const ready = true;')).toBeVisible();
 
   // the File view owns copy-path (from the retired dialog)
-  const copyPath = panel.getByRole('button', { name: 'Copy path' });
-  await copyPath.click();
+  await clickPanelAction(panel, 'Copy path');
   await expect.poll(() => page.evaluate(() => (window as unknown as { __copiedPath?: string }).__copiedPath)).toBe('apps/web/src/main.tsx');
 
   // an image (the /tmp screenshot bridge) previews inline in the panel, not a dialog

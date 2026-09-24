@@ -162,11 +162,14 @@ test('renders saved notes with stable tables, lists, links, selection actions, a
   await page.getByRole('button', { name: 'Copy note' }).focus();
   await expect(preview).toBeVisible();
 
+  // a very narrow note folds its secondary actions into the header ⋮, so its actions stay on screen
   await page.setViewportSize({ width: 240, height: 640 });
   const toolbar = page.getByRole('toolbar', { name: 'Note actions' });
-  await expect(toolbar).toHaveCSS('overflow-x', 'auto');
-  const overflow = await toolbar.evaluate(element => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
-  expect(overflow.scrollWidth).toBeGreaterThan(overflow.clientWidth);
-  await toolbar.evaluate(element => { element.scrollLeft = element.scrollWidth; });
-  expect(await toolbar.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
+  await expect(toolbar.getByRole('button', { name: 'More note actions' })).toBeVisible();
+  await expect(toolbar.getByRole('button', { name: 'Close note' })).toBeInViewport({ ratio: 1 });
+  const bounds = await toolbar.boundingBox();
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(240);
+  // the title pill shrinks rather than sliding under the actions
+  const title = await page.getByRole('dialog', { name: 'Note' }).locator('.panel-header-title').boundingBox();
+  expect(title!.x + title!.width).toBeLessThanOrEqual(bounds!.x);
 });

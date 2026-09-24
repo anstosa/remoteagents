@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { installPaneMock, seedPaneSize, pushBytes, pushMetadata } from './pane-stream-mock.js';
+import { clickPanelAction } from './panel-header';
 
 test('saves the newest response with at least fifty words and only highlights current overflowing replies', async ({ page }) => {
   const notes: Array<{ id: string; text: string; title?: string }> = [];
@@ -69,17 +70,15 @@ test('saves the newest response with at least fifty words and only highlights cu
   await expect(saveLatest).toBeVisible();
   await saveLatest.click();
   const pane = page.getByRole('dialog', { name: 'Note' });
-  const noteTitle = pane.locator('header strong');
-  const renameNote = page.getByRole('button', { name: 'Rename note' });
+  const noteTitle = pane.locator('.note-picker strong');
   await expect(noteTitle).toHaveText('Summary');
-  const [titleBounds, renameBounds] = await Promise.all([noteTitle.boundingBox(), renameNote.boundingBox()]);
-  expect(renameBounds!.x - (titleBounds!.x + titleBounds!.width)).toBeLessThan(12);
-  await renameNote.click();
+  // renaming is one of the note header's actions
+  await clickPanelAction(pane, 'Rename note');
   const noteName = page.getByRole('textbox', { name: 'Note name' });
   await expect(noteName).toHaveValue('Summary');
   await noteName.fill('Release checklist');
   await page.getByRole('button', { name: 'Save note name' }).click();
-  await expect(pane.locator('header strong')).toHaveText('Release checklist');
+  await expect(pane.locator('.note-picker strong')).toHaveText('Release checklist');
   const preview = page.getByLabel('Note preview');
   await expect(preview).toContainText('Summary');
   await expect(preview).toContainText('Detail 1');
