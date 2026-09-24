@@ -1,5 +1,5 @@
 import { mkdir, open, unlink } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { resolveCodexProgram, type ValidatedConfig } from '../config/schema.js';
 import { run } from '../tmux/command.js';
@@ -16,6 +16,7 @@ import { WorktreeLaunchStore, scratchLaunchKey } from '../worktrees/store.js';
 import type { Pane, SocketRef, Worktree } from '../domain/models.js';
 import { updateAdvisorPendingLabel } from '../update-advisor.js';
 import { isFullGitSha } from '../git/revision.js';
+import { accountHome, configuredPlaces, placeForRoot, scratchHome, scratchPlaceLabel, scratchProjectId, type Place } from '../places/places.js';
 
 export function expandCommand(command: string, worktree: Pick<Worktree, 'identity'>): string {
   const directory = `'${worktree.identity.replaceAll("'", "'\\''")}'`;
@@ -59,12 +60,15 @@ export function expandHomeCommand(command: string, home: string): string {
   return expandCommand(command, { identity: home });
 }
 
-export const scratchLabel = '~ Scratch';
+export const scratchLabel = scratchPlaceLabel;
 // allow approved host repairs and verification
 const updateAdvisorArgs = ['--dangerously-bypass-approvals-and-sandbox', '--no-alt-screen'];
 
 export class LaunchService {
-  private pending = new Set<string>(); private readonly tmux = process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux'; private readonly hostSocket = process.env.RAC_HOST_TMUX_DIR === undefined ? undefined : join(process.env.RAC_HOST_TMUX_DIR, 'default');
+  private pending = new Set<string>();
+  // the configured Scratch folder's realpath, resolved once
+  private scratchHomeValue?: Promise<string>;
+  private readonly tmux = process.env.RAC_TMUX_BIN ?? '/usr/bin/tmux'; private readonly hostSocket = process.env.RAC_HOST_TMUX_DIR === undefined ? undefined : join(process.env.RAC_HOST_TMUX_DIR, 'default');
   private readonly localShell = interactiveShellPath();
   private readonly localShellName = interactiveShellName(this.localShell);
   private readonly hostShell = hostInteractiveShellPath();
@@ -141,10 +145,12 @@ export class LaunchService {
   }
 
   // the remembered-kind precedence for one scope: a Worktree's own last-used kind, then
-  // its Project's (which seeds a fresh Worktree), then registry order; Scratch stands alone
+  // its Project's (which seeds a fresh Worktree), then registry order; Scratch stands alone,
+  // and a Scratch Place (`scratch:<root>`) falls back to the Scratch group, both in the scratch scope
   private rememberedChain(key: string, remembered: Record<string, AgentKind | undefined>): Array<{ origin: LaunchScope; kind?: AgentKind }> {
     if (key === scratchLaunchKey) return [{ origin: 'scratch', kind: remembered[key] }];
     const projectId = projectIdOf(key);
+    if (projectId === scratchProjectId) return [{ origin: 'scratch', kind: remembered[key] }, { origin: 'scratch', kind: remembered[scratchLaunchKey] }];
     // a bare `<projectId>` key resolves in the project scope; a worktree key falls back to it
     if (projectId === key) return [{ origin: 'project', kind: remembered[key] }];
     return [{ origin: 'worktree', kind: remembered[key] }, { origin: 'project', kind: remembered[projectId] }];
@@ -187,11 +193,20 @@ export class LaunchService {
 
   // resolve the authenticated account home independently from the launch directory
   agentHome(projectId?: string): string {
-    const project = projectId === undefined
-      ? this.config.projects.find(candidate => candidate.hostPath !== undefined)
-      : this.config.projects.find(candidate => candidate.id === projectId);
-    const hostPath = project?.hostPath;
-    return hostPath === undefined ? process.env.HOME ?? '/' : dirname(hostPath);
+    return accountHome(this.config.projects, projectId);
+  }
+
+  // every configured Place over the current Worktree snapshot
+  private async places(): Promise<Place[]> {
+    this.scratchHomeValue ??= scratchHome(this.config.scratchDirectory, this.config.projects);
+    return configuredPlaces(this.discoveredWorktrees(), this.config.projects, await this.scratchHomeValue);
+  }
+
+  // the id of the Place a pane belongs to; a pane already at a Worktree's root needs no git
+  // resolution (it is its own toplevel), any other cwd resolves its root as discovery does
+  private async placeIdOf(places: readonly Place[], paneCwd: string): Promise<string> {
+    const atWorktree = places.some(place => place.kind === 'worktree' && (place.home === paneCwd || place.hostPath === paneCwd));
+    return placeForRoot(places, atWorktree ? paneCwd : await this.paneRoot(paneCwd)).id;
   }
   // find one unlabeled worktree shell that no modal or scratch flow owns
   private async existingPane(worktree: Worktree): Promise<{ socket: SocketRef; pane: Pane } | undefined> {
@@ -209,7 +224,9 @@ export class LaunchService {
       // reuse a shell only when its git toplevel is exactly this worktree, never a
       // parent whose subtree holds a nested checkout (a `.claude/worktrees/<n>` the
       // agent's own tool created); a subdirectory of the worktree still resolves here.
-      if (!await this.paneBelongsTo(worktree, pane.path)) continue;
+      // Stricter than Place membership, which counts a nested checkout as the Worktree's:
+      // an adopted shell is where the Agent runs, so it must be the Worktree itself.
+      if (!await this.paneRootIsWorktree(worktree, pane.path)) continue;
       return { socket, pane };
     }
     return undefined;
@@ -229,34 +246,34 @@ export class LaunchService {
       // deliberately (Remove is separately refused while a Console shell exists)
       if (pane.role === 'shell' || this.paneHasOpenTerminal(pane)) continue;
       if (pane.command !== this.hostShellName) continue;
-      if (!await this.paneBelongsTo(worktree, pane.path)) continue;
+      if (!await this.paneRootIsWorktree(worktree, pane.path)) continue;
       await this.panes.close(socket, pane.paneId).catch(() => false);
     }
   }
 
-  // the Console shells the operator created in this Worktree: panes marked `@rac_role=shell`
-  // whose git toplevel is exactly the Worktree (identity = marker + cwd, spec). Drives the
-  // panes API, the Remove gate, and the launch "join the shells' session" rule.
-  async worktreeConsoleShells(worktree: Worktree): Promise<Pane[]> {
-    const sockets = await this.finder.find();
+  // the Console shells the operator created at this Place: panes marked `@rac_role=shell`
+  // that belong to the Place by the nearest-Place rule (identity = marker + cwd, spec). Drives
+  // the panes API, the Remove gate, and the launch "join the shells' session" rule.
+  async placeConsoleShells(place: Pick<Place, 'id'>): Promise<Pane[]> {
+    const [places, sockets] = await Promise.all([this.places(), this.finder.find()]);
     const listed = await Promise.all(sockets.map(async socket => ({ socket, panes: await this.panes.listPanes(socket) })));
     const shells: Pane[] = [];
     for (const { panes } of listed) for (const pane of panes) {
       if (pane.role !== 'shell') continue;
-      if (!await this.paneBelongsTo(worktree, pane.path)) continue;
+      if (await this.placeIdOf(places, pane.path) !== place.id) continue;
       shells.push(pane);
     }
     return shells;
   }
 
-  // Every pane the console may stream for a Worktree: every pane of every tmux session that
-  // holds at least one pane belonging to the Worktree (its live Agent's window, its Console
-  // shells, an idle landing shell), which subsumes the Worktree's Console shells wherever they
-  // sit. Membership for the Worktree pane socket and the source of the panes-API listing.
-  async worktreePanes(worktree: Worktree): Promise<Pane[]> {
-    const sockets = await this.finder.find();
+  // Every pane the console may stream for a Place: every pane of every tmux session that
+  // holds at least one pane belonging to the Place (its live Agent's window, its Console
+  // shells, an idle landing shell), which subsumes the Place's Console shells wherever they
+  // sit. Membership for the Place pane socket and the source of the panes-API listing.
+  async placePanes(place: Pick<Place, 'id'>): Promise<Pane[]> {
+    const [places, sockets] = await Promise.all([this.places(), this.finder.find()]);
     const all = (await Promise.all(sockets.map(socket => this.panes.listPanes(socket)))).flat();
-    const belongs = await Promise.all(all.map(pane => this.paneBelongsTo(worktree, pane.path)));
+    const belongs = await Promise.all(all.map(async pane => await this.placeIdOf(places, pane.path) === place.id));
     const sessions = new Set<string>();
     all.forEach((pane, index) => { if (belongs[index]) sessions.add(`${pane.socket.fingerprint}\0${pane.sessionId}`); });
     return all.filter(pane => sessions.has(`${pane.socket.fingerprint}\0${pane.sessionId}`));
@@ -268,8 +285,8 @@ export class LaunchService {
     return pane.command !== this.shellName;
   }
 
-  // does a shell's working directory belong to this worktree by exact git toplevel?
-  private async paneBelongsTo(worktree: Worktree, paneCwd: string): Promise<boolean> {
+  // is a shell's git toplevel exactly this worktree (a subdirectory counts, a nested checkout does not)?
+  private async paneRootIsWorktree(worktree: Worktree, paneCwd: string): Promise<boolean> {
     // a shell already at the worktree root needs no git resolution
     if (worktreeMatchesWorkspace(worktree, paneCwd)) return true;
     return worktreeMatchesWorkspace(worktree, await this.paneRoot(paneCwd));
@@ -436,7 +453,7 @@ export class LaunchService {
     // no adoptable idle shell: if the Worktree already has Console shells, add the Agent's
     // window to the session holding them, so an attached terminal keeps the agent and the
     // shells together, rather than opening a separate session (spec, Console shells)
-    const shells = await this.worktreeConsoleShells(worktree);
+    const shells = await this.placeConsoleShells(worktree);
     const shellSession = shells[0];
     if (shellSession !== undefined) return await this.launchInSessionWindow(worktree, command, id, sandboxed, shellSession.socket, shellSession.sessionId);
     const session = worktreeSessionName(worktreeHostRoot(worktree));
@@ -555,7 +572,7 @@ export class LaunchService {
   async createConsoleShell(worktree: Worktree, name: string, agentSession?: { socket: SocketRef; session: string }): Promise<string | undefined> {
     const { cwd, argv } = this.consoleShellCommand(worktree);
     if (agentSession !== undefined) return await this.panes.createConsoleShellWindow(agentSession.socket, agentSession.session, cwd, argv, name);
-    const shells = await this.worktreeConsoleShells(worktree);
+    const shells = await this.placeConsoleShells(worktree);
     const existing = shells[0];
     if (existing !== undefined) return await this.panes.createConsoleShellWindow(existing.socket, existing.sessionId, cwd, argv, name);
     return await this.createConsoleShellSession(worktree, cwd, argv, name);

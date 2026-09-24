@@ -91,7 +91,7 @@ type PullRequestChoiceFixture = { number: number; branch: string; headSha: strin
 function switchService(repository: Awaited<ReturnType<typeof createSwitchRepository>>, choice: PullRequestChoiceFixture, attention: AttentionState = 'finished', command: GitCommand = run) {
   const targetWorktree = { ...worktree, id: `cora:${repository.targetPath}`, path: repository.targetPath, identity: repository.targetPath };
   const targetAgent = { ...agent, home: repository.targetPath, branch: 'main', attention };
-  const discovery = { worktreesNow: () => [targetWorktree], target: async () => ({ agent: targetAgent, socket }), dashboard: async () => ({ generation: 1, agents: [targetAgent], projects: [] }) };
+  const discovery = { worktreesNow: () => [targetWorktree], target: async () => ({ agent: targetAgent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [targetAgent], projects: [] }) };
   const pulls = { supports: async () => true, open: async () => ({ own: [{ number: choice.number, title: 'Draft work', branch: choice.branch, headSha: choice.headSha, headOnOrigin: choice.headOnOrigin, draft: false, url: `https://github.com/octo/repo/pull/${choice.number}` }], others: [] }) };
   const service = new PullRequestSwitchService(config, discovery as never, pulls as never, command);
   return { service, targetAgent };
@@ -114,7 +114,7 @@ function moveService(repository: Awaited<ReturnType<typeof createMoveRepository>
   const discovery = {
     worktreesNow: () => [targetWorktree, sourceWorktree],
     target: async (id: string) => id === targetAgent.id ? { agent: targetAgent, socket } : id === sourceAgent.id ? { agent: sourceAgent, socket } : undefined,
-    dashboard: async () => ({ generation: 1, agents: [targetAgent, sourceAgent], projects: [] })
+    dashboard: async () => ({ generation: 1, places: [], agents: [targetAgent, sourceAgent], projects: [] })
   };
   const service = new PullRequestSwitchService(config, discovery as never, pulls as never, command);
   return { service, targetAgent };
@@ -137,7 +137,7 @@ describe('pull request switching', () => {
   });
 
   it('marks a pull request unavailable when another agent has its branch checked out', async () => {
-    const discovery = { worktreesNow: () => [worktree, { ...worktree, id: 'delta', label: 'Delta' }], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent, { ...agent, id: 'agent-2', branch: 'feature/draft', worktreeId: 'delta' }], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree, { ...worktree, id: 'delta', label: 'Delta' }], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [agent, { ...agent, id: 'agent-2', branch: 'feature/draft', worktreeId: 'delta' }], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
     const service = new PullRequestSwitchService(config, discovery as never, pulls as never, cleanCommand);
 
@@ -148,7 +148,7 @@ describe('pull request switching', () => {
   // reject a no-op checkout in the current worktree
   it('marks a pull request unavailable when the target worktree already has its branch checked out', async () => {
     const currentAgent = { ...agent, branch: 'feature/draft', worktreeId: worktree.id };
-    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent: currentAgent, socket }), dashboard: async () => ({ generation: 1, agents: [currentAgent], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent: currentAgent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [currentAgent], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
     const command = async (_binary: string, args: string[]) => {
       // expose the current symbolic branch
@@ -164,7 +164,7 @@ describe('pull request switching', () => {
   // prefer the live branch over cached dashboard metadata
   it('marks the live target branch checked out when the dashboard branch is stale', async () => {
     const staleAgent = { ...agent, worktreeId: worktree.id };
-    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent: staleAgent, socket }), dashboard: async () => ({ generation: 1, agents: [staleAgent], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent: staleAgent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [staleAgent], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
     const command = async (_binary: string, args: string[]) => {
       // expose the branch changed after dashboard caching
@@ -187,7 +187,7 @@ describe('pull request switching', () => {
       await symlink(common, sourceAlias, 'dir');
       const sourceWorktree = { ...worktree, id: 'delta', label: 'Delta', identity: '/worktrees/delta', path: '/worktrees/delta' };
       const sourceAgent = { ...agent, id: 'agent-2', home: sourceWorktree.identity, branch: 'feature/draft', worktreeId: 'delta' };
-      const discovery = { worktreesNow: () => [worktree, sourceWorktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent, sourceAgent], projects: [] }) };
+      const discovery = { worktreesNow: () => [worktree, sourceWorktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [agent, sourceAgent], projects: [] }) };
       const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
       const command = async (_binary: string, args: string[]) => {
         // expose two paths for one repository directory
@@ -205,7 +205,7 @@ describe('pull request switching', () => {
   // preserve the newest git state after remote metadata loading
   it('checks worktree readiness after loading pull request metadata', async () => {
     let pullRequestsLoaded = false;
-    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [agent], projects: [] }) };
     const pulls = {
       supports: async () => true,
       open: async () => {
@@ -230,7 +230,7 @@ describe('pull request switching', () => {
 
   it('identifies a pull request checked out in an inactive worktree', async () => {
     const deltaView = { id: 'delta', projectId: 'cora', label: 'Delta', path: '/worktrees/delta', available: true, pinned: false, main: false, detached: false, locked: false, order: 1, branch: 'feature/draft' };
-    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [{ id: 'cora', label: 'Cora', available: true, worktrees: [deltaView] }] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [agent], projects: [{ id: 'cora', label: 'Cora', available: true, worktrees: [deltaView] }] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
     const service = new PullRequestSwitchService(config, discovery as never, pulls as never, cleanCommand);
 
@@ -256,7 +256,7 @@ describe('pull request switching', () => {
 
   it('lists local branches annotated with the worktree that holds each', async () => {
     const deltaView = { id: 'delta', projectId: 'cora', label: 'Delta', path: '/worktrees/delta', available: true, pinned: false, main: false, detached: false, locked: false, order: 1, branch: 'feature/draft' };
-    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [{ id: 'cora', label: 'Cora', available: true, worktrees: [deltaView] }] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [agent], projects: [{ id: 'cora', label: 'Cora', available: true, worktrees: [deltaView] }] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: [], others: [] }) };
     const service = new PullRequestSwitchService(config, discovery as never, pulls as never, branchListingCommand('feature/current\nfeature/draft\nfeature/solo\n'));
 
@@ -269,7 +269,7 @@ describe('pull request switching', () => {
   });
 
   it('excludes the current branch and branches already shown as pull requests', async () => {
-    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [agent], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
     const service = new PullRequestSwitchService(config, discovery as never, pulls as never, branchListingCommand('feature/current\nfeature/draft\nfeature/solo\n'));
 
@@ -279,7 +279,7 @@ describe('pull request switching', () => {
   });
 
   it('caps the local-branch list for repositories with very many branches', async () => {
-    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [agent], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: [], others: [] }) };
     const listing = Array.from({ length: 250 }, (_value, index) => `feature/branch-${index}`).join('\n');
     const service = new PullRequestSwitchService(config, discovery as never, pulls as never, branchListingCommand(listing));
@@ -289,7 +289,7 @@ describe('pull request switching', () => {
   });
 
   it('returns local branches with pull requests unsupported when there is no GitHub origin', async () => {
-    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [agent], projects: [] }) };
     // fail closed if the GitHub-only path is ever queried
     const pulls = { supports: async () => false, open: async () => { throw new Error('GitHub must not be queried without a supported origin'); } };
     const service = new PullRequestSwitchService(config, discovery as never, pulls as never, branchListingCommand('feature/current\nfeature/solo\n'));
@@ -298,7 +298,7 @@ describe('pull request switching', () => {
   });
 
   it('returns undefined when the target worktree is not a git checkout', async () => {
-    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [agent], projects: [] }) };
     const pulls = { supports: async () => false, open: async () => { throw new Error('unused'); } };
     // reject an unreadable repository identity before any listing
     const command = async (_binary: string, args: string[]) => args.includes('--git-common-dir') ? { code: 128, stdout: '' } : { code: 0, stdout: '' };
@@ -309,7 +309,7 @@ describe('pull request switching', () => {
 
   it('ignores matching branch names from another repository', async () => {
     const otherWorktree = { ...worktree, id: 'delta', label: 'Delta', path: '/worktrees/delta', identity: '/worktrees/delta' };
-    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [{ ...agent, id: 'agent-2', home: otherWorktree.identity, branch: 'feature/draft', worktreeId: 'delta' }], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [{ ...agent, id: 'agent-2', home: otherWorktree.identity, branch: 'feature/draft', worktreeId: 'delta' }], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
     const command = async (_binary: string, args: string[]) => {
       // separate repository identities by worktree path
@@ -601,7 +601,7 @@ describe('pull request switching', () => {
   }, 15_000);
 
   it('keeps switching disabled when the working tree is dirty', async () => {
-    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [agent], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
     const command = async (_binary: string, args: string[]) => {
       // share one fake repository identity
@@ -616,7 +616,7 @@ describe('pull request switching', () => {
   });
 
   it('allows switching when HEAD is pushed to a remote branch without a configured upstream', async () => {
-    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [agent], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
     const command = async (_binary: string, args: string[]) => {
       // share one fake repository identity
@@ -631,7 +631,7 @@ describe('pull request switching', () => {
   });
 
   it('allows switching from a clean detached HEAD without requiring a remote ref', async () => {
-    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [agent], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
     const command = async (_binary: string, args: string[]) => {
       // share one fake repository identity
@@ -646,7 +646,7 @@ describe('pull request switching', () => {
   });
 
   it('allows switching from a clean branch whose configured upstream is gone', async () => {
-    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [agent], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
     const command = async (_binary: string, args: string[]) => {
       // share one fake repository identity
@@ -663,7 +663,7 @@ describe('pull request switching', () => {
   });
 
   it('enables switching from a clean branch that is not yet pushed', async () => {
-    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [agent], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
     const command = async (_binary: string, args: string[]) => {
       // share one fake repository identity
@@ -683,7 +683,7 @@ describe('pull request switching', () => {
   it('returns and switches pull requests by other authors', async () => {
     const otherHeadSha = 'b'.repeat(40);
     const other = { number: 8, title: 'Other work', branch: 'main', headSha: otherHeadSha, headOnOrigin: false, draft: false, url: 'https://github.com/octo/repo/pull/8' };
-    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent, { ...agent, id: 'agent-2', branch: 'main' }], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [agent, { ...agent, id: 'agent-2', branch: 'main' }], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [other] }) };
     const service = new PullRequestSwitchService(config, discovery as never, pulls as never, cleanCommand);
 
@@ -711,7 +711,7 @@ describe('pull request switching', () => {
 
   it('rejects a plain switch to a branch open in another worktree', async () => {
     const deltaView = { id: 'delta', projectId: 'cora', label: 'Delta', path: '/worktrees/delta', available: true, pinned: false, main: false, detached: false, locked: false, order: 1, branch: 'feature/draft' };
-    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent], projects: [{ id: 'cora', label: 'Cora', available: true, worktrees: [deltaView] }] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, places: [], agents: [agent], projects: [{ id: 'cora', label: 'Cora', available: true, worktrees: [deltaView] }] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: [], others: [] }) };
     const service = new PullRequestSwitchService(config, discovery as never, pulls as never, branchListingCommand('feature/current\nfeature/draft\nfeature/solo\n'));
 

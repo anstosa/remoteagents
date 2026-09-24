@@ -31,7 +31,7 @@ describe('conversations switch API', () => {
       target: async () => undefined,
       worktreesNow: () => [cora],
       conversations: conversationsIn([{ kind: 'claude', id: conversationId, name: 'alpha', lastActiveAt: 100, directory: '/host/cora' }]),
-      dashboard: async () => ({ generation: launched ? 2 : 1, adapters: {}, agents: launched ? [replacement] : [], projects: [] }),
+      dashboard: async () => ({ generation: launched ? 2 : 1, places: [], adapters: {}, agents: launched ? [replacement] : [], projects: [] }),
     };
     const launch = { canResumeConversation: () => true, resumeConversation: async (worktreeId: string, id: string, kind?: AgentKind) => { launched = worktreeId === cora.id && id === conversationId && kind === 'claude'; return launched; } };
     const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 51).toString('base64url')), discovery: discovery as never, launch: launch as never, launchPollDelay: async () => undefined });
@@ -57,7 +57,7 @@ describe('conversations switch API', () => {
       target: async (id: string) => id === firstAgent.id ? { agent: firstAgent, socket } : undefined,
       worktreesNow: () => [cora],
       conversations: conversationsIn([{ kind: 'claude', id: conversationId, name: 'alpha', lastActiveAt: 100, directory: '/host/cora' }]),
-      dashboard: async () => ({ generation: resumed ? 2 : 1, adapters: {}, agents: [resumed ? replacement : firstAgent], projects: [] }),
+      dashboard: async () => ({ generation: resumed ? 2 : 1, places: [], adapters: {}, agents: [resumed ? replacement : firstAgent], projects: [] }),
     };
     const launch = { canResumeConversation: () => true, resumeConversation: async (worktreeId: string, id: string, kind?: AgentKind) => { events.push(`resume:${worktreeId}:${id}:${kind}`); resumed = true; return true; } };
     // expose an empty queue and no pending reset
@@ -84,7 +84,7 @@ describe('conversations switch API', () => {
       target: async () => undefined,
       worktreesNow: () => [cora],
       conversations: conversationsIn([{ kind: 'claude', id: conversationId, name: 'alpha', lastActiveAt: 100, directory: '/host/cora' }]),
-      dashboard: async () => ({ generation: 1, adapters: {}, agents: [first, second], projects: [] }),
+      dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [first, second], projects: [] }),
     };
     const launch = { canResumeConversation: () => true, resumeConversation: async () => { resumed = true; return true; } };
     const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 53).toString('base64url')), discovery: discovery as never, launch: launch as never });
@@ -109,7 +109,7 @@ describe('conversations switch API', () => {
       target: async (id: string) => id === working.id ? { agent: working, socket } : undefined,
       worktreesNow: () => [cora],
       conversations: conversationsIn([{ kind: 'claude', id: conversationId, name: 'alpha', lastActiveAt: 100, directory: '/host/cora' }]),
-      dashboard: async () => ({ generation: 1, adapters: {}, agents: [working], projects: [] }),
+      dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [working], projects: [] }),
     };
     const launch = { canResumeConversation: () => true, resumeConversation: async () => { resumed = true; return true; } };
     // expose an empty queue and no pending reset
@@ -138,7 +138,7 @@ describe('conversations switch API', () => {
       worktreesNow: () => [cora, owen],
       // the Conversation lives under owen; a scan of cora's directory returns nothing
       conversations: conversationsIn([{ kind: 'claude', id: conversationId, name: 'alpha', lastActiveAt: 100, directory: '/host/owen' }]),
-      dashboard: async () => ({ generation: 1, adapters: {}, agents: [], projects: [] }),
+      dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [], projects: [] }),
     };
     const launch = { canResumeConversation: () => true, resumeConversation: async () => { resumed = true; return true; } };
     const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 55).toString('base64url')), discovery: discovery as never, launch: launch as never });
@@ -164,7 +164,7 @@ describe('conversations switch API', () => {
       worktreesNow: () => [cora],
       // the directory holds a Conversation, but not the requested id — the row must match by id
       conversations: conversationsIn([{ kind: 'claude', id: otherId, name: 'someone else', lastActiveAt: 100, directory: '/host/cora' }]),
-      dashboard: async () => ({ generation: 1, adapters: {}, agents: [], projects: [] }),
+      dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [], projects: [] }),
     };
     const launch = { canResumeConversation: () => true, resumeConversation: async () => { resumed = true; return true; } };
     const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 59).toString('base64url')), discovery: discovery as never, launch: launch as never });
@@ -188,7 +188,7 @@ describe('conversations switch API', () => {
       target: async () => undefined,
       worktreesNow: () => [cora],
       conversations: async () => { scanned = true; return []; },
-      dashboard: async () => ({ generation: 1, adapters: {}, agents: [], projects: [] }),
+      dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [], projects: [] }),
     };
     const launch = { canResumeConversation: () => true, resumeConversation: async () => { resumed = true; return true; } };
     const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 56).toString('base64url')), discovery: discovery as never, launch: launch as never });
@@ -215,7 +215,7 @@ describe('conversations switch API', () => {
       target: async (id: string) => id === idle.id ? { agent: idle, socket } : undefined,
       worktreesNow: () => [cora],
       conversations: conversationsIn([{ kind: 'claude', id: conversationId, name: 'alpha', lastActiveAt: 100, directory: '/host/cora' }]),
-      dashboard: async () => ({ generation: 1, adapters: {}, agents: [idle], projects: [] }),
+      dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [idle], projects: [] }),
     };
     // some kind is launchable (canResumeConversation true), but the row's own kind is not
     const launch = { canResumeConversation: () => true, isLaunchableKind: (kind: AgentKind) => kind !== 'claude', resumeConversation: async () => { resumed = true; return true; } };
@@ -249,7 +249,7 @@ describe('conversations switch API', () => {
         { kind: 'codex', id: conversationId, name: 'owen chat', lastActiveAt: 300, directory: '/host/owen' },
         { kind: 'codex', id: conversationId, name: 'cora chat', lastActiveAt: 200, directory: '/host/cora' },
       ]),
-      dashboard: async () => ({ generation: launchedOn === undefined ? 1 : 2, adapters: {}, agents: launchedOn === undefined ? [] : [replacement(launchedOn)], projects: [] }),
+      dashboard: async () => ({ generation: launchedOn === undefined ? 1 : 2, places: [], adapters: {}, agents: launchedOn === undefined ? [] : [replacement(launchedOn)], projects: [] }),
     };
     const launch = { canResumeConversation: () => true, resumeConversation: async (worktreeId: string, _id: string, kind?: AgentKind) => { resumes.push({ worktreeId, kind }); launchedOn = worktreeId; return true; } };
     // Owen last launched OMX; Cora last launched Claude (not codex-family → stays Codex)
@@ -274,7 +274,7 @@ describe('conversations switch API', () => {
   it('404s an unknown Worktree and 400s a malformed switch target', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const cora = testWorktree({ id: 'potato:/wt/cora', projectId: 'potato', label: 'Cora', path: '/wt/cora', identity: '/wt/cora', hostPath: '/host/cora' });
-    const discovery = { target: async () => undefined, worktreesNow: () => [cora], conversations: async () => [], dashboard: async () => ({ generation: 1, adapters: {}, agents: [], projects: [] }) };
+    const discovery = { target: async () => undefined, worktreesNow: () => [cora], conversations: async () => [], dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [], projects: [] }) };
     const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 58).toString('base64url')), discovery: discovery as never });
     try {
       const headers = await authenticatedHeaders(app);

@@ -3,9 +3,10 @@ import type { DiscoveryService } from '../discovery/service.js';
 
 export type ResolvedWorkspace = { agent: Agent; worktree: Worktree; workspace: string };
 
-// the association rule: an Agent belongs to the Worktree whose git toplevel its pane
-// reports, matched exactly — the console path (`identity`), or the host path (`hostPath`)
-// under the bridge — never a prefix. the bridge host-path fallback lives only here
+// whether a folder is exactly this Worktree — the console path (`identity`), or the host path
+// (`hostPath`) under the bridge — never a prefix. An Agent's `home` is already its Place's
+// folder (discovery applies the nearest-Place rule, places/places.ts), so an exact match
+// finds the Worktree an Agent belongs to
 export function worktreeMatchesWorkspace(worktree: Pick<Worktree, 'identity' | 'hostPath'>, workspace: string): boolean {
   return workspace === worktree.identity || workspace === worktree.hostPath;
 }

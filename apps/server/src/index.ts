@@ -26,7 +26,7 @@ const config = await acquireConfig().catch((error: unknown) => {
 // retire any pre-existing Bookmark store once: log each saved bookmark and set the file aside
 // (Conversations replace bookmarks; ADR 0007). A missing file is a no-op, so this fires once.
 await retireBookmarks();
-const tmux = new TmuxAdapter(); const worktreeStore = new WorktreeLaunchStore(); const discovery = new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore); const push = new PushService(); const worktreeManagement = new WorktreeManagementService(() => config.projects); const cleanup = new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement);
+const tmux = new TmuxAdapter(); const worktreeStore = new WorktreeLaunchStore(); const discovery = new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore, undefined, config.scratchDirectory); const push = new PushService(); const worktreeManagement = new WorktreeManagementService(() => config.projects); const cleanup = new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement);
 const notificationPollMs = Math.max(1_000, config.pollIntervalMs);
 const notifications = new AgentNotificationCoordinator(notification => push.notify(notification), Math.max(2_000, notificationPollMs * 2));
 const dashboardUpdates = new DashboardUpdates<DashboardPayload>(dashboardFingerprint);

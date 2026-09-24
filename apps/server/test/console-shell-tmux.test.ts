@@ -91,7 +91,7 @@ const encode = (data: string) => Buffer.from(data, 'utf8').toString('base64url')
 // open a Worktree pane socket against the given member pane, acking every binary frame
 async function openWorktreePane(socket: SocketRef, worktree: Worktree, member: { paneId: string; sessionId: string }) {
   const discovery = { target: async () => undefined, worktreesNow: () => [worktree] } as never;
-  const launch = { worktreePanes: async () => [{ paneId: member.paneId, sessionId: member.sessionId, pid: 1, path: worktree.identity, command: 'cat', title: '', socket }] } as never;
+  const launch = { placePanes: async () => [{ paneId: member.paneId, sessionId: member.sessionId, pid: 1, path: worktree.identity, command: 'cat', title: '', socket }] } as never;
   const port = await freePort();
   const tickets = new TicketStore();
   const app = await buildApp(
@@ -129,7 +129,7 @@ describe.skipIf(!tmuxSocketsWork)('Console shells (real tmux)', () => {
     // created beside the fixture session, it is a login shell in the Worktree, marked and named
     const pane = await launch.createConsoleShell(worktree, 'build', { socket: fixture.socket, session: fixture.session });
     expect(pane).toMatch(/^%\d+$/);
-    const shells = await launch.worktreeConsoleShells(worktree);
+    const shells = await launch.placeConsoleShells(worktree);
     expect(shells).toHaveLength(1);
     expect(shells[0]!.paneId).toBe(pane);
     expect(shells[0]!.role).toBe('shell');
@@ -139,13 +139,13 @@ describe.skipIf(!tmuxSocketsWork)('Console shells (real tmux)', () => {
 
     // a rename writes the option and a fresh listing reflects it; an empty name clears it
     expect(await new TmuxAdapter().renamePaneName(fixture.socket, pane!, 'tests')).toBe(true);
-    expect((await launch.worktreeConsoleShells(worktree))[0]!.paneName).toBe('tests');
+    expect((await launch.placeConsoleShells(worktree))[0]!.paneName).toBe('tests');
     expect(await new TmuxAdapter().renamePaneName(fixture.socket, pane!, '')).toBe(true);
-    expect((await launch.worktreeConsoleShells(worktree))[0]!.paneName).toBeUndefined();
+    expect((await launch.placeConsoleShells(worktree))[0]!.paneName).toBeUndefined();
 
     // a shell whose foreground command is not the login shell reads as busy
     const busyPane = await new TmuxAdapter().createConsoleShellWindow(fixture.socket, fixture.session, fixture.worktreeDir, ['cat'], '');
-    const busyShell = (await launch.worktreeConsoleShells(worktree)).find(shell => shell.paneId === busyPane);
+    const busyShell = (await launch.placeConsoleShells(worktree)).find(shell => shell.paneId === busyPane);
     expect(busyShell).toBeDefined();
     expect(launch.consoleShellBusy(busyShell!)).toBe(true);
   });

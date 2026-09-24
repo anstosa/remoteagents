@@ -131,7 +131,7 @@ describe('GET /api/dashboard project shape', () => {
     const discovery = {
       worktreesNow: () => [main, linked],
       invalidateWorktrees: () => {},
-      dashboard: async () => ({ generation: 1, serverStartedAt: 1, adapters: {}, agents: [agent], projects: [{ id: 'proj', label: 'Repo', available: true, worktrees: [
+      dashboard: async () => ({ generation: 1, places: [], serverStartedAt: 1, adapters: {}, agents: [agent], projects: [{ id: 'proj', label: 'Repo', available: true, worktrees: [
         { id: main.id, projectId: 'proj', label: 'Repo', path: '/repo', available: true, pinned: true, main: true, detached: false, locked: false, order: 0, branch: 'main' },
         { id: linked.id, projectId: 'proj', label: 'Repo · feat', path: '/repo-feat', available: true, pinned: false, main: false, detached: false, locked: false, order: 1, branch: 'feat' }
       ] }] })

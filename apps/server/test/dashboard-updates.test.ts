@@ -53,7 +53,7 @@ describe('dashboard updates', () => {
   });
 
   it('publishes a queued-note revision without an agent status change', async () => {
-    const base = { generation: 1, adapters: {}, agents: [], projects: [], cleanupPending: 0, reviewTour: { available: false, reason: 'generator_unavailable' }, reviews: [] } satisfies DashboardPayload;
+    const base = { generation: 1, places: [], adapters: {}, agents: [], projects: [], cleanupPending: 0, reviewTour: { available: false, reason: 'generator_unavailable' }, reviews: [] } satisfies DashboardPayload;
     let value: DashboardPayload = { ...base, notesRevision: 0 };
     const updates = new DashboardUpdates<DashboardPayload>(dashboardFingerprint);
     updates.setLoader(async () => value);

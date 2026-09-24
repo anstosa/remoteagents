@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -691,5 +691,101 @@ describe('DiscoveryService dashboard', () => {
       expect(dashboard.agents[0]).not.toHaveProperty('question');
       expect(service.reportedQuestionPayload('socket:%1')).toBe(payload);
     } finally { await rm(workspace, { recursive: true, force: true }); }
+  });
+});
+
+describe('DiscoveryService Places', () => {
+  const push = { label: 'p', prompt: '$p' };
+  const notes = () => testProject({ id: 'notes', label: 'Notes', path: '/data/notes', identity: '/data/notes', mode: 'directory', hostPath: '/host/notes', push });
+  const ferry = () => testProject({ id: 'ferry', label: 'Ferry', path: '/worktrees/ferry', push });
+  const worktreeLists = listImpl({ '/worktrees/ferry': [entry('/worktrees/ferry', 'main')] });
+  // one agent pane per path (pane ids %1, %2, … in order); non-git fake paths resolve to themselves
+  const agentPanes = (...paths: string[]) => paneLister(paths.map((path, index) => ({ paneId: `%${index + 1}`, sessionId: `$${index}`, pid: 100 + index, path, title: 'Ready' })));
+  const service = (tmux: ReturnType<typeof paneLister>, options: { codex?: boolean; pins?: Record<string, boolean> } = {}) =>
+    new DiscoveryService(socketFinder(), tmux as never, processInspector({ codex: options.codex ?? true }), undefined, undefined, [ferry(), notes()], { pins: async () => options.pins ?? {} }, worktreeLists, '/home/me/scratch');
+
+  it('tags every Agent with the Place it belongs to and sets home to the Place home', async () => {
+    const dashboard = await service(agentPanes('/worktrees/ferry', '/data/notes/2026', '/home/me/scratch/probe', '/srv/tools')).dashboard();
+
+    expect(dashboard.agents.map(agent => ({ paneId: agent.paneId, placeId: agent.placeId, home: agent.home, worktreeId: agent.worktreeId }))).toEqual([
+      { paneId: '%1', placeId: 'ferry:/worktrees/ferry', home: '/worktrees/ferry', worktreeId: 'ferry:/worktrees/ferry' },
+      // a directory-Project Agent in a subfolder
+      { paneId: '%2', placeId: 'notes:/data/notes', home: '/data/notes', worktreeId: undefined },
+      // a Scratch Agent in a subfolder of the configured Scratch folder
+      { paneId: '%3', placeId: 'scratch:/home/me/scratch', home: '/home/me/scratch', worktreeId: undefined },
+      // an Agent in an unconfigured folder is its own Scratch Place
+      { paneId: '%4', placeId: 'scratch:/srv/tools', home: '/srv/tools', worktreeId: undefined }
+    ]);
+  });
+
+  it('places an Agent in a nested, unconfigured checkout inside a Worktree in that Worktree', async () => {
+    const dashboard = await service(agentPanes('/worktrees/ferry/vendor/lib')).dashboard();
+
+    expect(dashboard.agents[0]).toMatchObject({ placeId: 'ferry:/worktrees/ferry', worktreeId: 'ferry:/worktrees/ferry', projectId: 'ferry', home: '/worktrees/ferry' });
+  });
+
+  it('tags the Agent a target lookup returns with its Place but keeps home as the folder its pane runs in', async () => {
+    const discovery = service(agentPanes('/host/notes/drafts', '/worktrees/ferry/vendor/lib'));
+
+    await discovery.worktrees();
+
+    // attachments, a teardown, file links and conversations act in the pane's own folder, so the
+    // server-side Agent keeps it; only the dashboard publishes the Place home
+    expect((await discovery.target('socket:%1'))?.agent).toMatchObject({ placeId: 'notes:/data/notes', home: '/host/notes/drafts' });
+    expect((await discovery.target('socket:%2'))?.agent).toMatchObject({ placeId: 'ferry:/worktrees/ferry', home: '/worktrees/ferry/vendor/lib' });
+    expect((await discovery.target('socket:%2'))?.agent).not.toHaveProperty('worktreeId');
+  });
+
+  it("reads a Scratch Agent's branch from the checkout it runs in, not from its Place home", async () => {
+    const scratch = await realpath(await mkdtemp(join(tmpdir(), 'rac-scratch-')));
+    try {
+      const checkout = join(scratch, 'tool');
+      execFileSync('/usr/bin/git', ['init', '--quiet', '--initial-branch', 'probe', checkout]);
+      execFileSync('/usr/bin/git', ['-C', checkout, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '--quiet', '--allow-empty', '-m', 'init']);
+      const discovery = new DiscoveryService(socketFinder(), agentPanes(checkout) as never, processInspector(), undefined, undefined, [], { pins: async () => ({}) }, listImpl({}), scratch);
+
+      const dashboard = await discovery.dashboard();
+
+      expect(dashboard.agents[0]).toMatchObject({ placeId: `scratch:${scratch}`, home: scratch, branch: 'probe' });
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it('lists directory-Project and Scratch Places with their Console-shell counts and pins', async () => {
+    const tmux = paneLister([
+      { paneId: '%1', sessionId: '$0', pid: 11, path: '/data/notes/2026', command: 'zsh', role: 'shell', title: '' },
+      { paneId: '%2', sessionId: '$0', pid: 12, path: '/host/notes', command: 'zsh', role: 'shell', title: '' },
+      { paneId: '%3', sessionId: '$1', pid: 13, path: '/opt/shell-only', command: 'zsh', role: 'shell', title: '' },
+      // an unmarked shell does not make an ad-hoc Scratch Place
+      { paneId: '%4', sessionId: '$2', pid: 14, path: '/opt/bare', command: 'zsh', title: '' },
+      // a Console shell in a nested checkout counts for the Worktree around it
+      { paneId: '%5', sessionId: '$3', pid: 15, path: '/worktrees/ferry/vendor/lib', command: 'zsh', role: 'shell', title: '' }
+    ]);
+
+    const dashboard = await service(tmux, { codex: false, pins: { 'notes:/data/notes': true } }).dashboard();
+
+    expect(dashboard.projects.find(project => project.id === 'ferry')?.worktrees).toMatchObject([{ id: 'ferry:/worktrees/ferry', consoleShells: 1 }]);
+    expect(dashboard.places).toEqual([
+      { id: 'notes:/data/notes', kind: 'directory', projectId: 'notes', label: 'Notes', home: '/data/notes', pinned: true, consoleShells: 2 },
+      { id: 'scratch:/home/me/scratch', kind: 'scratch', projectId: 'scratch', label: '~ Scratch', home: '/home/me/scratch', pinned: false },
+      { id: 'scratch:/opt/shell-only', kind: 'scratch', projectId: 'scratch', label: 'shell-only', home: '/opt/shell-only', pinned: false, consoleShells: 1 }
+    ]);
+  });
+
+  it('lists an ad-hoc Scratch Place that holds an Agent', async () => {
+    const dashboard = await service(agentPanes('/srv/tools')).dashboard();
+
+    expect(dashboard.places.map(place => place.id)).toEqual(['notes:/data/notes', 'scratch:/home/me/scratch', 'scratch:/srv/tools']);
+  });
+
+  it('never places an update advisor', async () => {
+    const tmux = paneLister([{ paneId: '%1', sessionId: '$0', pid: 1, path: '/srv/advisor', title: 'Ready', displayLabel: 'Update Advisor Starting v4 2222222' }]);
+
+    const dashboard = await service(tmux).dashboard();
+
+    expect(dashboard.agents[0]).not.toHaveProperty('placeId');
+    expect(dashboard.agents[0]).toMatchObject({ home: '/srv/advisor' });
+    expect(dashboard.places.map(place => place.id)).toEqual(['notes:/data/notes', 'scratch:/home/me/scratch']);
   });
 });

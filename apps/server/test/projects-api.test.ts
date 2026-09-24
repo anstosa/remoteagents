@@ -20,7 +20,7 @@ describe('projects dashboard over an authenticated session', () => {
     const discovery = {
       worktreesNow: () => [worktree],
       invalidateWorktrees: () => {},
-      dashboard: async () => ({ generation: 1, adapters: {}, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: worktree.id, projectId: 'proj', label: 'Proj', path: '/repo', available: true, pinned: true, main: true, detached: false, locked: false, order: 0, branch: 'main' }] }] }),
+      dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: worktree.id, projectId: 'proj', label: 'Proj', path: '/repo', available: true, pinned: true, main: true, detached: false, locked: false, order: 0, branch: 'main' }] }] }),
     } as never;
     const app = await buildApp(testConfig(), { auth: await testAuthService(), discovery, worktreeStore: new WorktreeLaunchStore({ file: join(root, 'worktrees.json') }) });
     try {

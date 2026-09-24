@@ -39,7 +39,7 @@ describe('configuredWorktreeForWorkspace', () => {
 });
 
 describe('worktreePrBase', () => {
-  const dashboard = (over: Partial<Dashboard> = {}): Dashboard => ({ generation: 0, adapters: {}, agents: [], projects: [], ...over });
+  const dashboard = (over: Partial<Dashboard> = {}): Dashboard => ({ generation: 0, places: [], adapters: {}, agents: [], projects: [], ...over });
   const idleProject = (base?: string) => ({ id: 'p1', label: 'P', mode: 'repository' as const, available: true, manageWorktrees: false, stalePaths: [], worktrees: [{ id: 'w1', projectId: 'p1', label: 'W', path: '/w1', available: true, pinned: false, main: false, detached: false, locked: false, order: 0, ...(base === undefined ? {} : { gitPrStatus: { base, files: 0 } }) }] });
 
   it('reads a live agent resolved base for its worktree', () => {

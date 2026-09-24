@@ -486,15 +486,15 @@ describe('/ws/pane Worktree target', () => {
   const member = { paneId: '%2', sessionId: '$1', pid: 2, path: '/repo', command: 'zsh', role: 'shell', title: '', socket };
 
   // drive /ws/pane against a Worktree target (by default discovery.target misses, so the handler
-  // falls to the Worktree branch and checks membership against launch.worktreePanes). `target`
+  // falls to the Worktree branch and checks membership against launch.placePanes). `target`
   // can resolve a live Agent (so the handler refuses that pane) and `prompts` is wired in so the
   // no-lock assertions on a raw pane are load-bearing.
-  async function connectWorktree(query: string, worktreePanes: () => Promise<unknown[]>, stream: ReturnType<typeof fakePaneStream>, tmuxOverride: unknown, deps: { target?: (id: string) => Promise<unknown>; prompts?: unknown } = {}) {
+  async function connectWorktree(query: string, placePanes: () => Promise<unknown[]>, stream: ReturnType<typeof fakePaneStream>, tmuxOverride: unknown, deps: { target?: (id: string) => Promise<unknown>; prompts?: unknown } = {}) {
     const control = { connect: () => true, active: () => true } as never;
     const port = await freePort();
     const tickets = new TicketStore();
     const discovery = { target: deps.target ?? (async () => undefined), worktreesNow: () => [worktree] } as never;
-    const launch = { worktreePanes } as never;
+    const launch = { placePanes } as never;
     const app = await buildApp(
       testConfig({ publicOrigin: new URL(`http://127.0.0.1:${port}`), projects: [testProject({ id: 'proj' })] as never }),
       { auth, control, dashboardUpdates, discovery, launch, tickets, paneStream: stream.provider, tmux: tmuxOverride, ...(deps.prompts === undefined ? {} : { prompts: deps.prompts }) } as never

@@ -21,7 +21,7 @@ export type GitStatusChange = { code: string; path: string; originalPath?: strin
 export type GitStatusSummary = { files: number; staged: number; unstaged: number; untracked: number; conflicted: number; changes?: GitStatusChange[] };
 export type GitComparisonSummary = { base: string; files: number; changes?: GitStatusChange[] };
 export type GitUpstreamSummary = { upstream: string; ahead: number; behind: number };
-export type Agent = { id: string; paneId: string; sessionId: string; socketFingerprint: string; home: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind: AgentKind; attention: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; projectId?: string; worktreeId?: string; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion };
+export type Agent = { id: string; paneId: string; sessionId: string; socketFingerprint: string; home: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind: AgentKind; attention: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; placeId?: string; projectId?: string; worktreeId?: string; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion };
 // An Agent's `sessionId` is the console's composite id `${socketFingerprint}:${tmuxSession}`
 // (discovery keys agents that way). Recover the raw tmux session name a command targets.
 export const agentTmuxSession = (agent: Pick<Agent, 'sessionId' | 'socketFingerprint'>): string => agent.sessionId.slice(agent.socketFingerprint.length + 1);
@@ -70,4 +70,8 @@ export type DashboardWorktree = { id: string; projectId: string; label: string; 
 // the Project configures a `commands.setup`: the web shows a "running setup" notice while a
 // new Worktree is being created, without ever receiving the (shell) command itself.
 export type DashboardProject = { id: string; label: string; mode: 'repository' | 'directory'; available: boolean; unavailableReason?: string; manageWorktrees: boolean; manageWorktreesReason?: string; stalePaths: string[]; setup?: boolean; worktrees: DashboardWorktree[] };
-export type Dashboard = { generation: number; serverStartedAt?: number; adapters: Partial<Record<AgentKind, AdapterCapability>>; agents: Agent[]; projects: DashboardProject[] };
+// One directory-Project or Scratch Place on the wire, beside the Worktrees `projects[]` already
+// lists (a Worktree is a Place too, with the same id). Lists every available directory Project,
+// the configured Scratch folder, and any other Scratch Place holding an Agent or a Console shell.
+export type DashboardPlace = { id: string; kind: 'directory' | 'scratch'; projectId: string; label: string; home: string; pinned: boolean; consoleShells?: number };
+export type Dashboard = { generation: number; serverStartedAt?: number; adapters: Partial<Record<AgentKind, AdapterCapability>>; agents: Agent[]; projects: DashboardProject[]; places: DashboardPlace[] };

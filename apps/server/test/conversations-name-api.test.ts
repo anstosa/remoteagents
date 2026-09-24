@@ -40,7 +40,7 @@ function namingDiscovery(kind: AgentKind, conversationId: string, worktrees: Ret
   return {
     target: async (id: string) => id === agent.id ? { agent, socket } : undefined,
     worktreesNow: () => worktrees,
-    dashboard: async () => ({ generation: 1, adapters: {}, agents: [agent], projects: [] }),
+    dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [agent], projects: [] }),
     conversationId: async () => conversationId,
     paneWorkingDirectory: () => cwd,
     // the row the naming route re-lists to return; the store intersection sets consoleNamed

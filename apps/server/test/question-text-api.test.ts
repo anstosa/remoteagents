@@ -16,7 +16,7 @@ describe('text question API', () => {
         // isolate the test from host agent discovery
         worktreesNow: () => [],
         // return an empty dashboard for authentication notifications
-        dashboard: async () => ({ generation: 1, agents: [], projects: [] })
+        dashboard: async () => ({ generation: 1, places: [], agents: [], projects: [] })
       } as never
     });
     try {

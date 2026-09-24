@@ -39,7 +39,7 @@ describe('Codex account API', () => {
     let coraResumed = false;
     const discovery = {
       // expose the replacement only after the resume handoff
-      dashboard: async () => ({ generation: coraResumed ? 2 : 1, adapters: {}, agents: [coraResumed ? secondCora : firstCora, workingOwen, scratch], projects: [] }),
+      dashboard: async () => ({ generation: coraResumed ? 2 : 1, places: [], adapters: {}, agents: [coraResumed ? secondCora : firstCora, workingOwen, scratch], projects: [] }),
       worktreesNow: () => [cora, owen],
       // resolve the original target until it closes
       target: async (id: string) => !coraClosed && id === firstCora.id ? { agent: firstCora, socket } : undefined
@@ -259,7 +259,7 @@ describe('Codex account API', () => {
     const pasteBlocked = new Promise<void>(resolve => { releasePaste = resolve; });
     const closed: string[] = [];
     const discovery = {
-      dashboard: async () => ({ generation: 1, adapters: {}, agents: [idleCora], projects: [] }),
+      dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [idleCora], projects: [] }),
       worktreesNow: () => [cora],
       target: async (id: string) => id === idleCora.id ? { agent: idleCora, socket } : undefined
     };

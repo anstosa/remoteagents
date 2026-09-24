@@ -23,6 +23,7 @@ const activeAgent: Agent = stated({ id: 'agent-cora', paneId: '%1', sessionId: '
 function dependencies(overrides: Partial<OrchestrationDependencies> = {}): OrchestrationDependencies {
   const dashboard: DashboardPayload = {
     generation: 1,
+    places: [],
     adapters: {},
     agents: [{ ...activeAgent, unread: false }],
     projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [

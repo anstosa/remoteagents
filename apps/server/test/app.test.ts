@@ -50,7 +50,7 @@ describe('server identity API', () => {
     vi.stubEnv('RAC_INSTANCE_STATUS_SECRET', statusSecret);
     const instanceStatusPoller = { statuses: async () => [{ url: 'https://framework.santosa.dev', name: 'Framework', icon: 'heart' as const, attention: 'idle' as const }] };
     // avoid host discovery in identity test
-    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: 1, agents: [], projects: [] }) };
+    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: 1, places: [], agents: [], projects: [] }) };
     const identityApp = await buildApp(namedConfig, { auth: new AuthService(hash, Buffer.alloc(32, 16).toString('base64url')), instanceStatusPoller, discovery: discovery as never });
     // close the isolated app after assertions
     try {
@@ -208,7 +208,7 @@ describe('server administration API', () => {
     let signalAdvisorCloseStarted = () => {};
     let advisorCloseGate = Promise.resolve();
     const discovery = { worktreesNow: () => [],
-      dashboard: async () => ({ generation: launched ? 2 : 1, agents: [...(oldAdvisorClosed ? [] : [oldAgent]), ...(launched && !advisorClosed ? [stated({ ...(advisorReady ? readyAgent : pendingAgent), title: advisorStarted ? '⠋ Reviewing' : 'Ready' })] : [])], projects: [] }),
+      dashboard: async () => ({ generation: launched ? 2 : 1, places: [], agents: [...(oldAdvisorClosed ? [] : [oldAgent]), ...(launched && !advisorClosed ? [stated({ ...(advisorReady ? readyAgent : pendingAgent), title: advisorStarted ? '⠋ Reviewing' : 'Ready' })] : [])], projects: [] }),
       target: async (id: string) => launched && !advisorClosed && id === advisorId ? { agent: stated({ ...(advisorReady ? readyAgent : pendingAgent), title: advisorStarted ? '⠋ Reviewing' : 'Ready' }), socket } : !oldAdvisorClosed && id === oldAgent.id ? { agent: oldAgent, socket } : undefined
     };
     const launch = { launchUpdateAdvisor: vi.fn(async () => { launched = true; advisorReady = false; advisorStarted = false; advisorClosed = false; return true; }) };
@@ -292,7 +292,7 @@ describe('server administration API', () => {
     let closed = false;
     let dashboardFails = false;
     const discovery = { worktreesNow: () => [],
-      dashboard: async () => { if (dashboardFails) throw new Error('tmux unavailable'); return { generation: 1, agents: closed ? [] : [legacy], projects: [] }; },
+      dashboard: async () => { if (dashboardFails) throw new Error('tmux unavailable'); return { generation: 1, places: [], agents: closed ? [] : [legacy], projects: [] }; },
       target: async (id: string) => !closed && id === legacy.id ? { agent: legacy, socket } : undefined
     };
     const tmux = { close: vi.fn(async () => { closed = true; return true; }) };
@@ -321,7 +321,7 @@ describe('server administration API', () => {
     const newer = { ...older, id: 'newer-advisor', paneId: '%9', sessionId: 'socket:$9', title: 'remoteagents' };
     let olderClosed = false;
     const discovery = { worktreesNow: () => [],
-      dashboard: async () => ({ generation: 1, agents: [...(olderClosed ? [] : [older]), newer], projects: [] }),
+      dashboard: async () => ({ generation: 1, places: [], agents: [...(olderClosed ? [] : [older]), newer], projects: [] }),
       target: async (id: string) => id === newer.id ? { agent: newer, socket } : !olderClosed && id === older.id ? { agent: older, socket } : undefined
     };
     const launch = { launchUpdateAdvisor: vi.fn(async () => true) };
@@ -428,7 +428,7 @@ describe('client control', () => {
     notifications.observe(stated({ ...agent, title: '⠋ Working' }));
     notifications.observe(agent);
     await new Promise(resolve => setTimeout(resolve, 0));
-    const discovery = { worktreesNow: () => [worktree], target: async (id: string) => id === agent.id ? { agent, socket } : undefined, dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async (id: string) => id === agent.id ? { agent, socket } : undefined, dashboard: async () => ({ generation: 1, places: [], agents: [agent], projects: [] }) };
     const pushApp = await buildApp({ ...config }, { auth: new AuthService(hash, Buffer.alloc(32, 6).toString('base64url')), discovery: discovery as never, push: push as never, notifications });
     const login = async () => {
       const boot = await pushApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
@@ -460,7 +460,7 @@ describe('agent launches', () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/home/ubuntu', title: '' });
     let dashboards = 0;
-    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: ++dashboards, agents: dashboards === 1 ? [] : [agent], projects: [] }) };
+    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: ++dashboards, places: [], agents: dashboards === 1 ? [] : [agent], projects: [] }) };
     const launch = { launch: async () => true, launchHome: async () => true };
     const launchApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 3).toString('base64url')), discovery: discovery as never, launch: launch as never });
     try {
@@ -479,7 +479,7 @@ describe('agent launches', () => {
     const agent = stated({ id: 'socket:%2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', home: '/worktrees/cora', title: '', worktreeId: 'cora' });
     let dashboards = 0;
     // reveal after the old timeout
-    const discovery = { worktreesNow: () => [worktree], dashboard: async () => ({ generation: ++dashboards, agents: dashboards < 83 ? [] : [agent], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], dashboard: async () => ({ generation: ++dashboards, places: [], agents: dashboards < 83 ? [] : [agent], projects: [] }) };
     const launch = { launch: async (id: string) => id === 'cora', launchHome: async () => true };
     // skip real poll delays
     const skipLaunchPollDelay = async () => {};
@@ -499,7 +499,7 @@ describe('agent launches', () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/home/ubuntu', title: '' });
     let dashboards = 0;
-    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: ++dashboards, agents: dashboards === 1 ? [] : [agent], projects: [] }) };
+    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: ++dashboards, places: [], agents: dashboards === 1 ? [] : [agent], projects: [] }) };
     const kinds: Array<string | undefined> = [];
     const launch = { launch: async () => true, launchHome: async (kind?: string) => { kinds.push(kind); return true; } };
     const launchApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 9).toString('base64url')), discovery: discovery as never, launch: launch as never });
@@ -521,7 +521,7 @@ describe('agent launches', () => {
     const directoryConfig = { ...config, projects: [testProject({ id: 'notes', label: 'Notes', path: '/home/me/notes', identity: '/home/me/notes', mode: 'directory', available: true })] };
     const agent = stated({ id: 'socket:%5', paneId: '%5', sessionId: 'socket:$5', socketFingerprint: 'socket', home: '/home/me/notes', displayLabel: 'Notes', title: '' });
     let dashboards = 0;
-    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: ++dashboards, agents: dashboards === 1 ? [] : [agent], projects: [] }) };
+    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: ++dashboards, places: [], agents: dashboards === 1 ? [] : [agent], projects: [] }) };
     const kinds: Array<string | undefined> = [];
     const launch = { launchProjectDirectory: async (id: string, kind?: string) => { kinds.push(kind); return id === 'notes'; } };
     const launchApp = await buildApp(directoryConfig, { auth: new AuthService(hash, Buffer.alloc(32, 12).toString('base64url')), discovery: discovery as never, launch: launch as never, launchPollDelay: async () => {} });
@@ -545,7 +545,7 @@ describe('agent launches', () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const repoConfig = { ...config, projects: [testProject({ id: 'repo', label: 'Repo', mode: 'repository', available: true })] };
     let called = false;
-    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: 1, agents: [], projects: [] }) };
+    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: 1, places: [], agents: [], projects: [] }) };
     const launch = { launchProjectDirectory: async () => { called = true; return true; } };
     const launchApp = await buildApp(repoConfig, { auth: new AuthService(hash, Buffer.alloc(32, 13).toString('base64url')), discovery: discovery as never, launch: launch as never, launchPollDelay: async () => {} });
     try {
@@ -665,6 +665,7 @@ describe('dashboard launch resolution', () => {
       worktreesNow: () => [],
       dashboard: async () => ({
         generation: 1,
+        places: [],
         adapters: {},
         agents: [{ id: 'agent-cora', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', title: 'Ready', kind: 'codex', attention: 'finished' }],
         projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'delta', projectId: 'proj', label: 'Delta', path: '/worktrees/delta', available: true, pinned: true, main: false, detached: false, locked: false, order: 1 }] }]
@@ -691,6 +692,47 @@ describe('dashboard launch resolution', () => {
       expect(body.agents[0].launch).toEqual({ kind: 'claude', origin: 'cora' });
       expect(body.scratchLaunch).toEqual({ kind: 'claude', origin: 'scratch' });
       expect(requestedScopes.some(scopes => scopes.includes('scratch') && scopes.includes('delta') && scopes.includes('cora'))).toBe(true);
+    } finally {
+      await app.close();
+    }
+  }, 15_000);
+});
+
+describe('dashboard Place launch resolution', () => {
+  it("publishes each directory-Project and Scratch Place's launch profile and resolves a placed Agent's from its Place", async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const placedAgent = (id: string, placeId: string, home: string) => ({ id, sessionId: 'socket:$1', home, placeId, title: 'Ready', kind: 'codex', attention: 'finished' });
+    const discovery = {
+      worktreesNow: () => [],
+      dashboard: async () => ({
+        generation: 1,
+        adapters: {},
+        agents: [placedAgent('agent-notes', 'notes:/data/notes', '/data/notes'), placedAgent('agent-tools', 'scratch:/srv/tools', '/srv/tools')],
+        projects: [{ id: 'notes', label: 'Notes', mode: 'directory', available: true, worktrees: [] }],
+        places: [
+          { id: 'notes:/data/notes', kind: 'directory', projectId: 'notes', label: 'Notes', home: '/data/notes', pinned: false },
+          { id: 'scratch:/srv/tools', kind: 'scratch', projectId: 'scratch', label: 'tools', home: '/srv/tools', pinned: false }
+        ]
+      }),
+      target: async () => undefined
+    };
+    // map each requested scope to a resolution tagged with its key
+    const launch = { launchResolutions: async (keys: Iterable<string>) => new Map([...keys].map(key => [key, { kind: 'claude', origin: key }])) };
+    const app = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 27).toString('base64url')), discovery: discovery as never, launch: launch as never, launchPollDelay: async () => {} });
+    try {
+      const boot = await app.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await app.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const cookie = String(login.headers['set-cookie']).split(';')[0];
+      const body = (await app.inject({ method: 'GET', url: '/api/dashboard', headers: { host: 'agents.example.com', cookie } })).json();
+      // a directory Project launches under its Project id; a Scratch Place under its own id
+      expect(body.places.map((place: { id: string; launch: unknown }) => [place.id, place.launch])).toEqual([
+        ['notes:/data/notes', { kind: 'claude', origin: 'notes' }],
+        ['scratch:/srv/tools', { kind: 'claude', origin: 'scratch:/srv/tools' }]
+      ]);
+      expect(body.agents.map((agent: { id: string; launch: unknown }) => [agent.id, agent.launch])).toEqual([
+        ['agent-notes', { kind: 'claude', origin: 'notes' }],
+        ['agent-tools', { kind: 'claude', origin: 'scratch:/srv/tools' }]
+      ]);
     } finally {
       await app.close();
     }
@@ -761,7 +803,7 @@ describe('configured worktree deactivation', () => {
     const worktrees = [{ id: worktree.id, projectId: 'cora', label: worktree.label, path: worktree.path, available: true, pinned: false, main: true, detached: false, locked: false, order: 0 }];
     const discovery = { worktreesNow: () => [worktree],
       // expose the current process state
-      dashboard: async () => ({ generation: active ? 1 : 2, adapters: {}, agents: active ? [agent] : [], projects: [{ id: 'cora', label: 'Cora', available: true, worktrees }] }),
+      dashboard: async () => ({ generation: active ? 1 : 2, places: [], adapters: {}, agents: active ? [agent] : [], projects: [{ id: 'cora', label: 'Cora', available: true, worktrees }] }),
       // resolve only the live agent
       target: async (id: string) => active && id === agent.id ? { agent, socket } : undefined
     };
@@ -805,9 +847,9 @@ describe('configured worktree deactivation', () => {
       // expose one stale frame before the replacement
       dashboard: async () => {
         // retain the original agent before resume
-        if (!resumed) return { generation: 1, agents: [firstAgent], projects: [] };
+        if (!resumed) return { generation: 1, places: [], agents: [firstAgent], projects: [] };
         pollsAfterResume += 1;
-        return { generation: pollsAfterResume === 1 ? 1 : 2, agents: [pollsAfterResume === 1 ? firstAgent : secondAgent], projects: [] };
+        return { generation: pollsAfterResume === 1 ? 1 : 2, places: [], agents: [pollsAfterResume === 1 ? firstAgent : secondAgent], projects: [] };
       },
       // resolve the original restart target
       target: async (id: string) => id === firstAgent.id ? { agent: firstAgent, socket } : undefined
@@ -836,7 +878,7 @@ describe('configured worktree deactivation', () => {
 describe('Console shells server lifecycle', () => {
   const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
   const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/worktrees/cora', available: true, pinned: false, main: false, detached: false, locked: false };
-  const idleDashboard = { generation: 1, adapters: {}, agents: [] as unknown[], projects: [{ id: 'cora', label: 'Cora', mode: 'repository', available: true, manageWorktrees: true, stalePaths: [], worktrees: [] }] };
+  const idleDashboard = { generation: 1, places: [], adapters: {}, agents: [] as unknown[], projects: [{ id: 'cora', label: 'Cora', mode: 'repository', available: true, manageWorktrees: true, stalePaths: [], worktrees: [] }] };
   const shell = { paneId: '%9', sessionId: '$1', pid: 9, path: '/worktrees/cora', command: 'zsh', role: 'shell', title: '', socket };
   const consoleShellBusy = (pane: { command: string }) => pane.command !== 'zsh';
   let secret = 30;
@@ -856,7 +898,7 @@ describe('Console shells server lifecycle', () => {
     const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
     const agentPane = { paneId: '%1', sessionId: '$1', windowId: '@0', pid: 1, path: '/worktrees/cora', command: 'codex', title: '', socket };
     const busyShell = { ...shell, windowId: '@3', paneName: 'build', command: 'vim' };
-    const { app, headers } = await start({ discovery: { dashboard: async () => ({ ...idleDashboard, agents: [agent] }) }, launch: { worktreePanes: async () => [agentPane, busyShell], consoleShellBusy } });
+    const { app, headers } = await start({ discovery: { dashboard: async () => ({ ...idleDashboard, agents: [agent] }) }, launch: { placePanes: async () => [agentPane, busyShell], consoleShellBusy } });
     try {
       const response = await app.inject({ method: 'GET', url: '/api/worktrees/cora/panes', headers: { host: headers.host, cookie: headers.cookie } });
       expect(response.statusCode).toBe(200);
@@ -891,7 +933,7 @@ describe('Console shells server lifecycle', () => {
 
   it('renames a Console shell by writing its name option', async () => {
     const renamePaneName = vi.fn(async () => true);
-    const { app, headers } = await start({ launch: { worktreeConsoleShells: async () => [shell] }, tmux: { renamePaneName } });
+    const { app, headers } = await start({ launch: { placeConsoleShells: async () => [shell] }, tmux: { renamePaneName } });
     try {
       const response = await app.inject({ method: 'PATCH', url: '/api/worktrees/cora/panes/%259', headers, payload: { name: 'build' } });
       expect(response.statusCode).toBe(204);
@@ -906,7 +948,7 @@ describe('Console shells server lifecycle', () => {
   it('ends an idle Console shell, and reports a busy one until the operator confirms', async () => {
     const close = vi.fn(async () => true);
     const busy = { ...shell, command: 'vim' };
-    const { app, headers } = await start({ launch: { worktreeConsoleShells: async () => [busy], consoleShellBusy }, tmux: { close } });
+    const { app, headers } = await start({ launch: { placeConsoleShells: async () => [busy], consoleShellBusy }, tmux: { close } });
     try {
       // a busy shell is reported, not killed, until confirmed
       const blocked = await app.inject({ method: 'DELETE', url: '/api/worktrees/cora/panes/%259', headers });
@@ -921,7 +963,7 @@ describe('Console shells server lifecycle', () => {
 
   it('ends an idle Console shell without confirmation', async () => {
     const close = vi.fn(async () => true);
-    const { app, headers } = await start({ launch: { worktreeConsoleShells: async () => [shell], consoleShellBusy }, tmux: { close } });
+    const { app, headers } = await start({ launch: { placeConsoleShells: async () => [shell], consoleShellBusy }, tmux: { close } });
     try {
       const response = await app.inject({ method: 'DELETE', url: '/api/worktrees/cora/panes/%259', headers });
       expect(response.statusCode).toBe(204);
@@ -941,7 +983,7 @@ describe('Console shells server lifecycle', () => {
   }, 15_000);
 
   it('refuses to remove a Worktree while it has an open Console shell', async () => {
-    const { app, headers } = await start({ launch: { worktreeConsoleShells: async () => [shell] }, worktreeCommands: { sessionRunning: async () => false } });
+    const { app, headers } = await start({ launch: { placeConsoleShells: async () => [shell] }, worktreeCommands: { sessionRunning: async () => false } });
     try {
       const response = await app.inject({ method: 'DELETE', url: '/api/worktrees/cora', headers });
       expect(response.statusCode).toBe(409);
@@ -1052,7 +1094,7 @@ describe('guided review API boundary', () => {
     const review: ReviewTour = { title: 'Persisted tour', overview: 'Resume the saved walkthrough.', scope: 'pr', base: 'origin/main', includeTests: false, includeDocs: false, fingerprint: 'persisted-fingerprint-1234', changes: [{ id: 'chg_route0001', file: 'src/route.ts', category: 'implementation', kind: 'hunk', patch: '@@ -1 +1 @@\n-old\n+new' }], steps: [{ id: 'route', title: 'Accept the request', explanation: 'The route delegates to the service.', changeIds: ['chg_route0001'] }] };
     const reviewStore = new ReviewTourStore(join(directory, 'reviews.json'));
     await reviewStore.save('cora', 'feature/review', review);
-    const discovery = { worktreesNow: () => [worktree], dashboard: async () => ({ generation: 1, adapters: {}, agents: [], projects: [{ id: 'cora', label: 'Cora', available: true, worktrees: [{ id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: false, main: true, detached: false, locked: false, order: 0, branch: 'feature/review' }] }] }) };
+    const discovery = { worktreesNow: () => [worktree], dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [], projects: [{ id: 'cora', label: 'Cora', available: true, worktrees: [{ id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: false, main: true, detached: false, locked: false, order: 0, branch: 'feature/review' }] }] }) };
     const reviewApp = await buildApp({ ...config }, { auth: new AuthService(hash, Buffer.alloc(32, 20).toString('base64url')), discovery: discovery as never, reviewStore, reviewTours: { capability: async () => ({ available: true }) } as never });
     try {
       const boot = await reviewApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
@@ -1199,7 +1241,7 @@ describe('queued prompt API', () => {
         target: async (id: string) => id === agent.id ? { agent, socket } : undefined,
         worktreesNow: () => [worktree],
         // expose the same agent and worktree represented by the save route
-        dashboard: async () => ({ generation: 1, adapters: {}, agents: [agent], projects: [dashboardProject] })
+        dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [agent], projects: [dashboardProject] })
       } as never,
       queuedPrompts: new QueuedPromptService(join(directory, 'queue.json')),
       notes: new WorktreeNoteService(join(directory, 'notes.json')),
@@ -1270,7 +1312,7 @@ describe('queued prompt API', () => {
     let capture = ['› Earlier prompt', '', '• Earlier answer', '', '─ Worked for 1s', '', '› Active prompt', '', '• Working'].join('\n');
     const drainApp = await buildApp({ ...config }, {
       auth: new AuthService(hash, Buffer.alloc(32, 15).toString('base64url')),
-      discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined, worktreesNow: () => [worktree], dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) } as never,
+      discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined, worktreesNow: () => [worktree], dashboard: async () => ({ generation: 1, places: [], agents: [agent], projects: [] }) } as never,
       tmux: { pastePrompt: async () => true, capture: async () => capture, sendKeys: async () => true } as never,
       queuedPrompts: new QueuedPromptService(join(directory, 'queue.json')),
       notes: new WorktreeNoteService(join(directory, 'notes.json'))
@@ -1351,7 +1393,7 @@ describe('queued prompt API', () => {
     let capture = ['› Active prompt', '', '• Working'].join('\n');
     const drainApp = await buildApp({ ...config }, {
       auth: new AuthService(hash, Buffer.alloc(32, 17).toString('base64url')),
-      discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined, worktreesNow: () => [], dashboard: async () => ({ generation: 1, agents: [agent], projects: [] }) } as never,
+      discovery: { target: async (id: string) => id === agent.id ? { agent, socket } : undefined, worktreesNow: () => [], dashboard: async () => ({ generation: 1, places: [], agents: [agent], projects: [] }) } as never,
       tmux: { pastePrompt: async () => true, capture: async () => capture, sendKeys: async () => true } as never,
       queuedPrompts: new QueuedPromptService(join(directory, 'queue.json')),
       notes: new WorktreeNoteService(join(directory, 'notes.json'))
@@ -1434,7 +1476,7 @@ describe('worktree notes API', () => {
       rename: async (key: string, noteId: string, title: string) => { keys.push(`rename:${key}:${noteId}`); const note = stored.find(candidate => candidate.id === noteId); if (note === undefined) return undefined; note.title = title; return { ...note }; },
       delete: async (key: string, noteId: string) => { keys.push(`delete:${key}:${noteId}`); const index = stored.findIndex(candidate => candidate.id === noteId); return index < 0 ? undefined : stored.splice(index, 1)[0]; }
     };
-    const discovery = { worktreesNow: () => [worktree], dashboard: async () => ({ generation: 1, adapters: {}, agents: [], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [], projects: [] }) };
     const notesApp = await buildApp({ ...config }, { auth: new AuthService(hash, Buffer.alloc(32, 10).toString('base64url')), discovery: discovery as never, notes: notes as never });
     try {
       const boot = await notesApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
@@ -1489,7 +1531,7 @@ describe('worktree notes API', () => {
     const discovery = { worktreesNow: () => [worktree],
       // resolve the live scratch agent
       target: async (id: string) => id === agent.id ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined,
-      dashboard: async () => ({ generation: 1, agents: [agent], projects: [] })
+      dashboard: async () => ({ generation: 1, places: [], agents: [agent], projects: [] })
     };
     const notesApp = await buildApp({ ...config }, { auth: new AuthService(hash, Buffer.alloc(32, 26).toString('base64url')), discovery: discovery as never, notes: notes as never });
     try {
@@ -1525,7 +1567,7 @@ describe('worktree notes API', () => {
       create: async () => { calls.push('create'); return { id: 'note-identifier-blank', text: '' }; },
       createWithText: async (key: string, title: string, text: string) => { calls.push(`createWithText:${key}:${title}`); return { id: 'note-identifier-777', title, text }; }
     };
-    const discovery = { worktreesNow: () => [worktree], dashboard: async () => ({ generation: 1, adapters: {}, agents: [], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [], projects: [] }) };
     const notesApp = await buildApp({ ...config }, { auth: new AuthService(hash, Buffer.alloc(32, 11).toString('base64url')), discovery: discovery as never, notes: notes as never });
     try {
       const boot = await notesApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
@@ -1553,7 +1595,7 @@ describe('worktree notes API', () => {
     const discovery = {
       worktreesNow: () => [worktree],
       target: async (id: string) => id === agent.id ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined,
-      dashboard: async () => ({ generation: 1, adapters: {}, agents: [agent], projects: [] })
+      dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [agent], projects: [] })
     };
     const notesApp = await buildApp({ ...config }, {
       auth: new AuthService(hash, Buffer.alloc(32, 41).toString('base64url')),
@@ -1612,7 +1654,7 @@ describe('worktree notes API', () => {
     const discovery = {
       worktreesNow: () => [],
       target: async (id: string) => id === agent.id ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined,
-      dashboard: async () => ({ generation: 1, adapters: {}, agents: [agent], projects: [] })
+      dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [agent], projects: [] })
     };
     const notesApp = await buildApp({ ...config }, {
       auth: new AuthService(hash, Buffer.alloc(32, 42).toString('base64url')),
@@ -1654,7 +1696,7 @@ describe('worktree notes API', () => {
       target: async (id: string) => id === agent.id
         ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } }
         : id === otherAgent.id ? { agent: otherAgent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined,
-      dashboard: async () => ({ generation: 1, adapters: {}, agents: [agent, otherAgent], projects: [] })
+      dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [agent, otherAgent], projects: [] })
     };
     const notes = new WorktreeNoteService(join(directory, 'notes.json'));
     const longName = `${'設計'.repeat(70)}.txt`;

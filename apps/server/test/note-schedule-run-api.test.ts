@@ -49,7 +49,7 @@ const staticDiscovery = (agent: Agent) => ({
   invalidateWorktrees: () => {},
   worktreesNow: () => [worktree],
   worktrees: async () => [worktree],
-  dashboard: async (): Promise<Dashboard> => ({ generation: 1, adapters: {}, agents: [agent], projects: [] }),
+  dashboard: async (): Promise<Dashboard> => ({ generation: 1, places: [], adapters: {}, agents: [agent], projects: [] }),
   target: async (id: string) => (id === agent.id ? { agent, socket: testSocket } : undefined),
 });
 
@@ -252,7 +252,7 @@ describe('POST /api/worktrees/:id/notes/:noteId/schedule/run', () => {
       invalidateWorktrees: () => {},
       worktreesNow: () => [worktree],
       worktrees: async () => [worktree],
-      dashboard: async (): Promise<Dashboard> => ({ generation: ++dashboards, adapters: {}, agents: dashboards > 1 ? [stale, fresh] : [stale], projects: [] }),
+      dashboard: async (): Promise<Dashboard> => ({ generation: ++dashboards, places: [], adapters: {}, agents: dashboards > 1 ? [stale, fresh] : [stale], projects: [] }),
       target: async (id: string) => (id === stale.id ? { agent: stale, socket: testSocket } : id === fresh.id ? { agent: fresh, socket: testSocket } : undefined),
     };
     const tmux = recordingTmux();
@@ -370,7 +370,7 @@ describe('POST /api/worktrees/:id/notes/:noteId/schedule/run', () => {
       invalidateWorktrees: () => {},
       worktreesNow: () => [worktree],
       worktrees: async () => [worktree],
-      dashboard: async (): Promise<Dashboard> => ({ generation: ++dashboards, adapters: {}, agents: dashboards > 1 ? [stale, fresh] : [stale], projects: [] }),
+      dashboard: async (): Promise<Dashboard> => ({ generation: ++dashboards, places: [], adapters: {}, agents: dashboards > 1 ? [stale, fresh] : [stale], projects: [] }),
       target: async (id: string) => (id === stale.id ? { agent: stale, socket: testSocket } : id === fresh.id ? { agent: fresh, socket: testSocket } : undefined),
     };
     const tmux = recordingTmux();

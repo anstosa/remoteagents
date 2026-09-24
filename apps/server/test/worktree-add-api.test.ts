@@ -33,7 +33,7 @@ function discoveryStub(agentAfterLaunch = true) {
     invalidateWorktrees: () => {},
     worktreesNow: () => [newWorktree],
     worktrees: async () => [newWorktree],
-    dashboard: async () => { dashboardCalls += 1; return { generation: 1, adapters: {}, agents: agentAfterLaunch && dashboardCalls > 1 ? [agent] : [], projects: [] }; },
+    dashboard: async () => { dashboardCalls += 1; return { generation: 1, places: [], adapters: {}, agents: agentAfterLaunch && dashboardCalls > 1 ? [agent] : [], projects: [] }; },
   } as never;
 }
 
@@ -102,7 +102,7 @@ describe('POST /api/projects/:id/worktrees', () => {
     const worktreeManagement = { add: async () => ({ ok: true, path: '/repo/wts/feat' }) } as never;
     const launch = { startWorktreeShell: async () => true, launch: async () => true } as never;
     // discovery never surfaces the new checkout, so the route cannot resolve it to launch
-    const discovery = { invalidateWorktrees: () => {}, worktreesNow: () => [], worktrees: async () => [], dashboard: async () => ({ generation: 1, adapters: {}, agents: [], projects: [] }) } as never;
+    const discovery = { invalidateWorktrees: () => {}, worktreesNow: () => [], worktrees: async () => [], dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [], projects: [] }) } as never;
     const server = await app({ discovery, worktreeManagement, launch, worktreeStore: await store() });
     try {
       const response = await server.inject({ method: 'POST', url: '/api/projects/proj/worktrees', headers: mutationHeaders, payload: { mode: 'new', branch: 'feat', base: 'main' } });

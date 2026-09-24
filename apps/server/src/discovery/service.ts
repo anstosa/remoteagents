@@ -13,9 +13,10 @@ import { gitCommonDir, listWorktrees, type WorktreeEntry } from '../git/worktree
 import { worktreeManagementAvailability } from '../worktrees/management.js';
 import type { WorktreeLaunchStore } from '../worktrees/store.js';
 import type { Adapter, AdapterConfigs, AgentKind, AttentionState, Conversation, ConversationSummary, InlineQuestion } from '../adapters/types.js';
-import type { Agent, Dashboard, DashboardProject, DashboardWorktree, GitComparisonSummary, GitStatusSummary, GitUpstreamSummary, Project, SocketRef, Worktree } from '../domain/models.js';
+import type { Agent, Dashboard, DashboardPlace, DashboardProject, DashboardWorktree, GitComparisonSummary, GitStatusSummary, GitUpstreamSummary, Project, SocketRef, Worktree } from '../domain/models.js';
 import { addUntrackedLineStats, comparisonAgainst, prComparisonCandidates, workingStatus } from '../git/comparison.js';
 import { isUpdateAdvisorLabel } from '../update-advisor.js';
+import { configuredPlaces, placeForRoot, scratchHome, type Place } from '../places/places.js';
 
 export interface SocketFinder { find(): Promise<SocketRef[]>; }
 export class ProcSocketFinder implements SocketFinder {
@@ -128,9 +129,12 @@ export class DiscoveryService {
   // the base64 reported Inline question payload (`@rac_question`) per agent id, kept
   // server-side so the dashboard and answer path can re-derive it; never published
   private paneQuestionPayloads = new Map<string, string>();
-  // the git toplevel of every Console shell (a pane marked `@rac_role=shell`), so the
-  // dashboard can count a Worktree's shells; rediscovered every scan, nothing persisted
-  private consoleShellWorkspaces: string[] = [];
+  // the root (git toplevel, else canonical cwd) of every Console shell (a pane marked
+  // `@rac_role=shell`), so the dashboard can count each Place's shells; rediscovered every
+  // scan, nothing persisted
+  private consoleShellRoots: string[] = [];
+  // the configured Scratch folder's realpath, resolved once
+  private scratchHomeValue?: Promise<string>;
   private readonly serverStartedAt = Date.now();
   private refreshedAt = 0;
   private refreshInFlight?: Promise<Agent[]>;
@@ -143,6 +147,8 @@ export class DiscoveryService {
   // the Prune-eligible checkout paths per Project (git's prunable entries plus console
   // records git lists nowhere), published atomically with the worktree snapshot (ADR 0003)
   private staleSnapshot = new Map<string, string[]>();
+  // the pins read with the worktree snapshot, for the directory-Project and Scratch Places
+  private pinSnapshot: Record<string, boolean> = {};
   private worktreesRefreshedAt = 0;
   private worktreesRefreshInFlight?: Promise<Worktree[]>;
   // bumped by invalidateWorktrees(); a scan that began under an older epoch read stale pins
@@ -156,7 +162,16 @@ export class DiscoveryService {
   private readonly commonDirCache = new Map<string, string | null>();
   private static readonly refreshCacheMs = 2_000;
   private static readonly gitMetadataCacheMs = 30_000;
-  constructor(private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly tmux = new TmuxAdapter(), private readonly processes: ProcessInspector = new ProcInspector(), private readonly pullRequests = new PullRequestService(), private readonly adapters: AdapterConfigs = {}, private readonly projects: Project[] = [], private readonly pinStore?: Pick<WorktreeLaunchStore, 'pins'> & Partial<Pick<WorktreeLaunchStore, 'keys' | 'labels'>>, private readonly listWorktreesImpl: (path: string) => Promise<WorktreeEntry[] | undefined> = listWorktrees) {}
+  constructor(private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly tmux = new TmuxAdapter(), private readonly processes: ProcessInspector = new ProcInspector(), private readonly pullRequests = new PullRequestService(), private readonly adapters: AdapterConfigs = {}, private readonly projects: Project[] = [], private readonly pinStore?: Pick<WorktreeLaunchStore, 'pins'> & Partial<Pick<WorktreeLaunchStore, 'keys' | 'labels'>>, private readonly listWorktreesImpl: (path: string) => Promise<WorktreeEntry[] | undefined> = listWorktrees, private readonly scratchDirectory?: string) {}
+  // every configured Place over this Worktree set: the Worktrees, the directory Projects and the Scratch folder
+  private async places(worktrees: readonly Worktree[]): Promise<Place[]> {
+    this.scratchHomeValue ??= scratchHome(this.scratchDirectory, this.projects);
+    return configuredPlaces(worktrees, this.projects, await this.scratchHomeValue);
+  }
+  // the Place a discovered agent's pane root belongs to; a modal update advisor is never placed
+  private placeOf(agent: Agent, places: readonly Place[]): Place | undefined {
+    return isUpdateAdvisorLabel(agent.displayLabel) ? undefined : placeForRoot(places, agent.home);
+  }
   // reuse socket discovery across adjacent requests
   private async sockets(force = false): Promise<SocketRef[]> {
     // serve the recent socket snapshot
@@ -191,6 +206,7 @@ export class DiscoveryService {
     const paneCwds = new Map<string, string>();
     const paneReported = new Map<string, AttentionState>();
     const paneQuestionPayloads = new Map<string, string>();
+    const places = await this.places(this.worktreeSnapshot);
     const agents: Agent[] = (await Promise.all(panes.filter(pane => !paneExcluded(pane)).map(async (pane): Promise<Agent | undefined> => {
       const recognized = await this.processes.recognizeAgent(pane.pid);
       if (recognized === undefined) {
@@ -207,11 +223,16 @@ export class DiscoveryService {
       if (pane.reportedQuestion !== undefined && pane.reportedQuestion.length > 0) paneQuestionPayloads.set(id, pane.reportedQuestion);
       const attention = resolveAttention({ kind: recognized.kind, title: pane.title, reported, hasQuestion: false });
       const conversationId = pane.reportedSession !== undefined && pane.reportedSession.length > 0 ? pane.reportedSession : undefined;
-      return { id, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, home, title: pane.title, kind: recognized.kind, attention, ...(pane.reportedSandboxed === '1' ? { sandboxed: true } : {}), ...(conversationId === undefined ? {} : { conversationId }), ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }) };
+      const agent: Agent = { id, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, home, title: pane.title, kind: recognized.kind, attention, ...(pane.reportedSandboxed === '1' ? { sandboxed: true } : {}), ...(conversationId === undefined ? {} : { conversationId }), ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }) };
+      // the Agent the server acts on keeps `home` as its pane root, the folder it runs in (a
+      // teardown, attachments, file links and conversations all act there); only the dashboard
+      // publishes its Place's home. The snapshot Place may trail a fresh Worktree scan by one tick.
+      const place = this.placeOf(agent, places);
+      return place === undefined ? agent : { ...agent, placeId: place.id };
     }))).filter((agent): agent is Agent => agent !== undefined);
-    // resolve each Console shell's git toplevel so the dashboard can count a Worktree's shells
-    // (identity = the `@rac_role=shell` marker plus cwd toplevel, spec, Console shells)
-    this.consoleShellWorkspaces = await Promise.all(panes.filter(pane => pane.role === 'shell').map(pane => workspaceRoot(pane.path)));
+    // resolve each Console shell's root so the dashboard can count a Place's shells
+    // (identity = the `@rac_role=shell` marker plus cwd root, spec, Console shells)
+    this.consoleShellRoots = await Promise.all(panes.filter(pane => pane.role === 'shell').map(pane => workspaceRoot(pane.path)));
     this.snapshot = agents;
     this.panePids = panePids;
     this.paneCwds = paneCwds;
@@ -330,12 +351,13 @@ export class DiscoveryService {
     // so a scan that started under the old pins can never satisfy it
     if (!force && this.worktreesRefreshInFlight !== undefined && this.worktreesInFlightEpoch === this.worktreesEpoch) return this.worktreesRefreshInFlight;
     const epoch = this.worktreesEpoch;
-    const refresh = this.discoverWorktrees().then(({ worktrees, stale }) => {
+    const refresh = this.discoverWorktrees().then(({ worktrees, stale, pins }) => {
       // publish only when this is still the newest scan and no invalidation raced it, so a
       // stale scan's completion never re-stamps the cache over a fresher pin/worktree set
       if (this.worktreesRefreshInFlight === refresh && this.worktreesEpoch === epoch) {
         this.worktreeSnapshot = worktrees;
         this.staleSnapshot = stale;
+        this.pinSnapshot = pins;
         this.worktreesRefreshedAt = Date.now();
       }
       return worktrees;
@@ -356,7 +378,7 @@ export class DiscoveryService {
   // any scan already in flight (which read the old pins) stale, so it cannot re-stamp the cache.
   invalidateWorktrees(): void { this.worktreesRefreshedAt = 0; this.worktreesEpoch += 1; this.dashboardSnapshot = undefined; }
 
-  private async discoverWorktrees(): Promise<{ worktrees: Worktree[]; stale: Map<string, string[]> }> {
+  private async discoverWorktrees(): Promise<{ worktrees: Worktree[]; stale: Map<string, string[]>; pins: Record<string, boolean> }> {
     const pins = (await this.pinStore?.pins()) ?? {};
     const labels = (await this.pinStore?.labels?.()) ?? {};
     // every stored key, so a worktree key git lists nowhere counts as an orphaned record
@@ -419,7 +441,7 @@ export class DiscoveryService {
       });
       worktrees.push(...usable);
     }
-    return { worktrees, stale };
+    return { worktrees, stale, pins };
   }
 
   // build or reuse one dashboard view
@@ -483,16 +505,23 @@ export class DiscoveryService {
       if (cached !== undefined) return Promise.resolve(cached.value);
       return value;
     };
-    const worktreeFor = (workspace: string) => worktrees.find(candidate => worktreeMatchesWorkspace(candidate, workspace));
+    // re-place every agent against this (possibly fresher) Worktree set, publishing the
+    // console-side Place home; a Worktree's Agents take its git identity as before
+    const places = await this.places(worktrees);
+    const worktreeById = new Map(worktrees.map(worktree => [worktree.id, worktree] as const));
     // the stable tab order follows configured checkout order and discovery defaults
     const orderOf = new Map(worktrees.map((worktree, index) => [worktree.id, index] as const));
-    const agents = await Promise.all(discovered.map(async (agent) => {
-      // keep modal advisors outside configured worktree identity
-      const worktree = isUpdateAdvisorLabel(agent.displayLabel) ? undefined : worktreeFor(agent.home);
-      const home = worktree?.identity ?? agent.home;
+    const agents = await Promise.all(discovered.map(async (discoveredAgent) => {
+      const place = this.placeOf(discoveredAgent, places);
+      const agent = place === undefined ? discoveredAgent : { ...discoveredAgent, placeId: place.id, home: place.home };
+      const worktree = place === undefined ? undefined : worktreeById.get(place.id);
+      // git metadata reads the Worktree, else the checkout the pane is in; a question file lives
+      // where the pane runs, read through the console-side path when that is the Worktree itself
+      const home = worktree?.identity ?? discoveredAgent.home;
+      const questionFolder = worktree !== undefined && worktreeMatchesWorkspace(worktree, discoveredAgent.home) ? worktree.identity : discoveredAgent.home;
       const [meta, question] = await Promise.all([
         metadataFor(home),
-        this.agentQuestion(agent, home)
+        this.agentQuestion(agent, questionFolder)
       ]);
       const branch = meta.branch ?? agent.branch;
       const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, branch);
@@ -508,10 +537,14 @@ export class DiscoveryService {
     // it on the Worktree record, as the flat list used to. A modal advisor never claims one.
     const activeAgents = agents.filter(agent => !isUpdateAdvisorLabel(agent.displayLabel));
     const activeWorktreeIds = new Set(activeAgents.flatMap(agent => agent.worktreeId === undefined ? [] : [agent.worktreeId]));
+    // every Console shell counts for the Place its root belongs to, by the same rule as Agents
+    const shellPlaces = this.consoleShellRoots.map(root => placeForRoot(places, root));
+    const shellCounts = new Map<string, number>();
+    for (const place of shellPlaces) shellCounts.set(place.id, (shellCounts.get(place.id) ?? 0) + 1);
     const worktreeViews = await Promise.all(worktrees.map(async (worktree): Promise<DashboardWorktree> => {
       // a Worktree carries its Console-shell count whether or not it has a live Agent, so the
       // row shows it and the idle-tab retain rule can keep the tab open (spec, Console shells)
-      const consoleShells = this.consoleShellWorkspaces.filter(workspace => worktreeMatchesWorkspace(worktree, workspace)).length;
+      const consoleShells = shellCounts.get(worktree.id) ?? 0;
       const base: DashboardWorktree = { id: worktree.id, projectId: worktree.projectId, label: worktree.label, ...(worktree.customLabel === true ? { customLabel: true } : {}), path: worktree.path, available: worktree.available, pinned: worktree.pinned, main: worktree.main, detached: worktree.detached, locked: worktree.locked, order: orderOf.get(worktree.id) ?? 0, ...(worktree.branch === undefined ? {} : { branch: worktree.branch }), ...(worktree.sha === undefined ? {} : { sha: worktree.sha }), ...(consoleShells > 0 ? { consoleShells } : {}), ...(worktree.projectUrl === undefined ? {} : { projectUrl: worktree.projectUrl, projectProxied: worktree.projectPort !== undefined }) };
       if (activeWorktreeIds.has(worktree.id)) return base;
       const meta = await metadataFor(worktree.identity);
@@ -525,7 +558,20 @@ export class DiscoveryService {
       const management = worktreeManagementAvailability(project);
       return { id: project.id, label: project.label, mode: project.mode, available: project.available, ...(project.unavailableReason === undefined ? {} : { unavailableReason: project.unavailableReason }), manageWorktrees: management.available, ...(management.reason === undefined ? {} : { manageWorktreesReason: management.reason }), stalePaths: this.staleSnapshot.get(project.id) ?? [], ...(project.commands?.setup === undefined ? {} : { setup: true }), worktrees: byProject.get(project.id) ?? [] };
     });
-    return { generation: this.generation, serverStartedAt: this.serverStartedAt, adapters: adapterCapabilities(this.adapters), agents, projects };
+    return { generation: this.generation, serverStartedAt: this.serverStartedAt, adapters: adapterCapabilities(this.adapters), agents, projects, places: this.placeViews(places, [...discovered.flatMap(agent => this.placeOf(agent, places) ?? []), ...shellPlaces], shellCounts) };
+  }
+
+  // the directory-Project and Scratch Places on the wire: every configured one, then each other
+  // Scratch Place that holds an Agent or a Console shell, ordered by home
+  private placeViews(configured: readonly Place[], occupied: readonly Place[], shellCounts: ReadonlyMap<string, number>): DashboardPlace[] {
+    const known = new Set(configured.map(place => place.id));
+    const adhoc = new Map<string, Place>();
+    for (const place of occupied) if (!known.has(place.id)) adhoc.set(place.id, place);
+    const listed = [...configured.filter(place => place.kind !== 'worktree'), ...[...adhoc.values()].sort((left, right) => left.home.localeCompare(right.home))];
+    return listed.map(place => {
+      const consoleShells = shellCounts.get(place.id) ?? 0;
+      return { id: place.id, kind: place.kind === 'directory' ? 'directory' : 'scratch', projectId: place.projectId, label: place.label, home: place.home, pinned: this.pinSnapshot[place.id] ?? false, ...(consoleShells > 0 ? { consoleShells } : {}) };
+    });
   }
 
   // whether a live agent sits in a checkout that is not a known Worktree but whose
@@ -533,10 +579,13 @@ export class DiscoveryService {
   private async hasUnknownProjectWorktree(agents: Agent[], worktrees: Worktree[]): Promise<boolean> {
     const seen = new Set<string>();
     for (const agent of agents) {
-      if (isUpdateAdvisorLabel(agent.displayLabel) || seen.has(agent.home)) continue;
-      seen.add(agent.home);
-      if (worktrees.some(worktree => worktreeMatchesWorkspace(worktree, agent.home))) continue;
-      const common = await this.cachedCommonDir(agent.home);
+      // the checkout the pane is in, not the Place it was placed in: a new Worktree nested in
+      // a known one is placed in the outer one until the re-scan lists it
+      const root = agent.home;
+      if (isUpdateAdvisorLabel(agent.displayLabel) || seen.has(root)) continue;
+      seen.add(root);
+      if (worktrees.some(worktree => worktreeMatchesWorkspace(worktree, root))) continue;
+      const common = await this.cachedCommonDir(root);
       if (common !== undefined && this.projects.some(project => project.available && project.identity === common)) return true;
     }
     return false;

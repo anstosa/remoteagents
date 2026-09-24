@@ -1,4 +1,4 @@
-import type { Agent, Dashboard, DashboardProject, DashboardWorktree, StackAction } from '../domain/models.js';
+import type { Agent, Dashboard, DashboardPlace, DashboardProject, DashboardWorktree, StackAction } from '../domain/models.js';
 import type { LaunchResolution } from '../launch/resolution.js';
 import type { ReviewTourCapability, StoredReviewTourSummary } from '../review-tour/contracts.js';
 
@@ -6,7 +6,7 @@ type StackState = { running?: boolean; transition?: 'starting' | 'migrating'; op
 // one Worktree on the wire, augmented with the per-Worktree state the loader adds:
 // its stack controls and its resolved Launch profile
 export type PayloadWorktree = DashboardWorktree & { stack?: StackState; launch?: LaunchResolution };
-export type DashboardPayload = Omit<Dashboard, 'agents' | 'projects'> & {
+export type DashboardPayload = Omit<Dashboard, 'agents' | 'projects' | 'places'> & {
   // `launch` carries each scope's resolved Launch profile so the web renders the Launch
   // menu without re-deriving it (a running agent's is its worktree's; a scratch agent's
   // is `scratchLaunch`); `scratchLaunch` is the Scratch group's resolution.
@@ -14,6 +14,9 @@ export type DashboardPayload = Omit<Dashboard, 'agents' | 'projects'> & {
   // a non-git `directory` Project carries its own resolved Launch profile so the web renders
   // a Project-level Launch button (it has no Worktrees to launch through); omitted otherwise
   projects: Array<Omit<DashboardProject, 'worktrees'> & { worktrees: PayloadWorktree[]; launch?: LaunchResolution }>;
+  // each directory-Project and Scratch Place carries the Launch profile of its scope (its
+  // Project's, or the Scratch Place's own falling back to the Scratch group's)
+  places: Array<DashboardPlace & { launch?: LaunchResolution }>;
   cleanupPending: number;
   notesRevision?: number;
   scratchLaunch?: LaunchResolution;
@@ -22,7 +25,7 @@ export type DashboardPayload = Omit<Dashboard, 'agents' | 'projects'> & {
 };
 
 // fingerprint every dashboard field that drives browser refreshes
-export const dashboardFingerprint = (dashboard: DashboardPayload): string => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.cleanupPending, dashboard.notesRevision, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews]);
+export const dashboardFingerprint = (dashboard: DashboardPayload): string => JSON.stringify([dashboard.agents, dashboard.projects, dashboard.places, dashboard.cleanupPending, dashboard.notesRevision, dashboard.scratchLaunch, dashboard.reviewTour, dashboard.reviews]);
 
 export class DashboardUpdates<T = DashboardPayload> {
   private loader?: () => Promise<T>;

@@ -28,7 +28,13 @@ Open `http://127.0.0.1:8787`. Leave `projects` empty or omit it entirely to
 launch scratch agents without configuring a repository. By default a scratch
 agent starts in the console's home directory; set the top-level
 `scratchDirectory` (an absolute path) to launch it elsewhere. The account home
-the shell exports is unaffected — only the working directory changes. Before
+the shell exports is unaffected — only the working directory changes. The
+Scratch folder is also a Place: every pane under it that is outside a
+configured Project (an Agent started by hand, a terminal) belongs to it, and its
+notes and terminals are shared. With `scratchDirectory` unset that folder is the
+home directory itself, so every such pane anywhere under it lands in the one
+Scratch Place; set `scratchDirectory` to keep it narrow. A pane outside both the
+Scratch folder and every Project is a Scratch Place of its own. Before
 publishing the console, replace `publicOrigin` with its canonical HTTPS origin.
 
 When `remoteServers` connects multiple console instances, configure the same

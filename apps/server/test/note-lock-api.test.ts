@@ -43,7 +43,7 @@ describe('note deletion lock API', () => {
       // resolve only the scratch note route's live agent
       target: async (id: string) => id === scratch.id ? { agent: scratch, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined,
       // isolate note revisions from discovery changes
-      dashboard: async () => ({ generation: 1, adapters: {}, agents: [], projects: [] })
+      dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [], projects: [] })
     };
     const dashboardUpdates = new DashboardUpdates<DashboardPayload>(dashboardFingerprint);
     const revisions: Array<number | undefined> = [];

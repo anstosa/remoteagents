@@ -60,7 +60,7 @@ const staticDiscovery = (agent: Agent) => ({
   invalidateWorktrees: () => {},
   worktreesNow: () => [worktree],
   worktrees: async () => [worktree],
-  dashboard: async () => ({ generation: 1, adapters: {}, agents: [agent], projects: [] }),
+  dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [agent], projects: [] }),
   target: async (id: string) => (id === agent.id ? { agent, socket: testSocket } : undefined),
 });
 

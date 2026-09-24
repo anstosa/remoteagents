@@ -119,6 +119,14 @@ describe('launchResolutions', () => {
     expect(resolution.get(cora)).toEqual({ kind: 'claude', origin: 'project' });
   });
 
+  it('resolves a Scratch Place in the scratch scope, from its own last-used kind then the Scratch group', async () => {
+    const service = new LaunchService(twoKinds(), undefined, undefined, undefined, { launchProfiles: async () => ({ scratch: 'claude', 'scratch:/srv/tools': 'codex' }) } as never);
+    const resolutions = await service.launchResolutions(['scratch:/srv/tools', 'scratch:/srv/other']);
+    expect(resolutions.get('scratch:/srv/tools')).toEqual({ kind: 'codex', origin: 'scratch' });
+    // never the `scratch` group record read as if it were a Project's
+    expect(resolutions.get('scratch:/srv/other')).toEqual({ kind: 'claude', origin: 'scratch' });
+  });
+
   it('surfaces a skipped remembered kind that is no longer launchable', async () => {
     const service = new LaunchService(twoKinds(false), undefined, undefined, undefined, { launchProfiles: async () => ({ [cora]: 'claude' }) } as never);
     const resolution = await service.launchResolutions([cora]);

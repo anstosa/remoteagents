@@ -770,7 +770,7 @@ describe('LaunchService', () => {
       expect(closed).toEqual(['%2']);
     });
 
-    it('worktreeConsoleShells returns only this Worktree\'s marked shells', async () => {
+    it('placeConsoleShells returns only this Worktree\'s marked shells', async () => {
       const socket: SocketRef = { fingerprint: 'sock', path: '/host-tmux/default', device: 1, inode: 2 };
       const worktree = alex();
       const panes = { listPanes: async () => [
@@ -780,9 +780,74 @@ describe('LaunchService', () => {
       ] };
       const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree]);
 
-      const shells = await service.worktreeConsoleShells(worktree);
+      const shells = await service.placeConsoleShells(worktree);
       expect(shells.map(shell => shell.paneId)).toEqual(['%1']);
       expect(service.consoleShellBusy(shells[0]!)).toBe(false);
+    });
+
+    describe('Place membership', () => {
+      const socket: SocketRef = { fingerprint: 'sock', path: '/host-tmux/default', device: 1, inode: 2 };
+      const notes = { id: 'notes', label: 'Notes', path: '/data/notes', identity: '/data/notes', mode: 'directory', hostPath: '/host/notes', worktreesDirectory: '/data/notes-worktrees', available: true, push: { label: 'p', prompt: '$p' } };
+      const config = { ...(codex as object), projects: [notes], scratchDirectory: '/home/me/scratch' } as never;
+      // non-git fake paths are their own roots, as a real `git rev-parse` failure resolves them
+      const service = (panes: Array<Record<string, unknown>>, worktrees: Worktree[] = [alex()]) => new LaunchService(config, { find: async () => [socket] }, { listPanes: async () => panes.map(pane => ({ sessionId: '$1', pid: 1, command: 'zsh', title: '', socket, ...pane })) } as never, async path => path, undefined, () => worktrees);
+
+      it("counts a directory Project's Console shells in its folder, its subfolders and its bridge host path", async () => {
+        const shells = await service([
+          { paneId: '%1', role: 'shell', path: '/data/notes' },
+          { paneId: '%2', role: 'shell', path: '/data/notes/2026/september' },
+          { paneId: '%3', role: 'shell', path: '/host/notes/drafts' },
+          { paneId: '%4', role: 'shell', path: '/data/notes-archive' },
+          { paneId: '%5', path: '/data/notes' }
+        ]).placeConsoleShells({ id: 'notes:/data/notes' });
+
+        expect(shells.map(shell => shell.paneId)).toEqual(['%1', '%2', '%3']);
+      });
+
+      it('counts the Scratch folder\'s Console shells and gives an unconfigured folder its own Scratch Place', async () => {
+        const launch = service([
+          { paneId: '%1', role: 'shell', path: '/home/me/scratch/probe' },
+          { paneId: '%2', role: 'shell', path: '/srv/tools' },
+          { paneId: '%3', role: 'shell', path: '/srv/tools/bin' }
+        ]);
+
+        expect((await launch.placeConsoleShells({ id: 'scratch:/home/me/scratch' })).map(shell => shell.paneId)).toEqual(['%1']);
+        expect((await launch.placeConsoleShells({ id: 'scratch:/srv/tools' })).map(shell => shell.paneId)).toEqual(['%2']);
+        // an unconfigured folder contains nothing: a non-git subfolder is a Scratch Place of its own
+        expect((await launch.placeConsoleShells({ id: 'scratch:/srv/tools/bin' })).map(shell => shell.paneId)).toEqual(['%3']);
+      });
+
+      it('counts a Console shell in a nested, unconfigured checkout for the Worktree around it, but not one in a nested Worktree', async () => {
+        const nested = cora({ id: 'alex-agent', label: 'Alex · agent', path: '/worktrees/alex/.claude/worktrees/3', identity: '/worktrees/alex/.claude/worktrees/3', hostPath: undefined });
+        const launch = service([
+          { paneId: '%1', role: 'shell', path: '/home/ubuntu/alex/vendor/lib' },
+          { paneId: '%2', role: 'shell', path: '/worktrees/alex/.claude/worktrees/3' }
+        ], [alex(), nested]);
+
+        expect((await launch.placeConsoleShells({ id: 'alex' })).map(shell => shell.paneId)).toEqual(['%1']);
+        expect((await launch.placeConsoleShells({ id: 'alex-agent' })).map(shell => shell.paneId)).toEqual(['%2']);
+      });
+
+      it('never streams a nested Worktree\'s session for the Worktree around it', async () => {
+        const nested = cora({ id: 'alex-agent', label: 'Alex · agent', path: '/worktrees/alex/.claude/worktrees/3', identity: '/worktrees/alex/.claude/worktrees/3', hostPath: undefined });
+        const launch = service([
+          { paneId: '%1', sessionId: '$1', path: '/worktrees/alex/vendor/lib' },
+          { paneId: '%2', sessionId: '$2', path: '/worktrees/alex/.claude/worktrees/3/src' }
+        ], [alex(), nested]);
+
+        expect((await launch.placePanes({ id: 'alex' })).map(pane => pane.paneId)).toEqual(['%1']);
+        expect((await launch.placePanes({ id: 'alex-agent' })).map(pane => pane.paneId)).toEqual(['%2']);
+      });
+
+      it("streams every pane of a session that holds one of a directory Project's panes", async () => {
+        const panes = await service([
+          { paneId: '%1', sessionId: '$1', path: '/data/notes/2026' },
+          { paneId: '%2', sessionId: '$1', path: '/tmp' },
+          { paneId: '%3', sessionId: '$2', path: '/srv/tools' }
+        ]).placePanes({ id: 'notes:/data/notes' });
+
+        expect(panes.map(pane => pane.paneId)).toEqual(['%1', '%2']);
+      });
     });
   });
 });

@@ -80,7 +80,7 @@ describe('review Comparison capture', () => {
       target: async () => ({ agent: raw.agent, socket: {} }),
       worktreesNow: () => [raw.worktree],
       // serve enriched comparison metadata
-      dashboard: async () => ({ generation: 1, adapters: {}, agents: [enriched], projects: [] })
+      dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [enriched], projects: [] })
     };
 
     const resolved = await resolveConfiguredWorkspace(discovery as never, raw.agent.id);

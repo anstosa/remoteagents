@@ -90,7 +90,7 @@ export function reuseWorld(params: { worktree: Worktree; socket: SocketRef; agen
     invalidateWorktrees: () => {},
     worktreesNow: () => [worktree],
     worktrees: async () => [worktree],
-    dashboard: async () => ({ generation: 1, adapters: {}, agents: [agent], projects: [] }),
+    dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [agent], projects: [] }),
     // once reset, an optional `vanishAfterReset` drops the pane so the settle loop reads it as lost
     target: async (id: string) => (id !== agent.id || (reset && params.vanishAfterReset) ? undefined : { agent: reset ? params.afterReset(readIndex++) : agent, socket }),
   };
@@ -117,7 +117,7 @@ export function appearingDiscovery(params: { worktree: Worktree; agent: Agent; s
     invalidateWorktrees: () => {},
     worktreesNow: () => [worktree],
     worktrees: async () => [worktree],
-    dashboard: async () => ({ generation: ++dashboards, adapters: {}, agents: dashboards > appearAfter ? [agent] : [], projects: [] }),
+    dashboard: async () => ({ generation: ++dashboards, places: [], adapters: {}, agents: dashboards > appearAfter ? [agent] : [], projects: [] }),
     target: async (id: string) => (id === agent.id ? { agent, socket } : undefined),
   };
 }

@@ -26,7 +26,7 @@ const discoveryStub = () => ({
   worktreesNow: () => [worktree],
   worktrees: async () => [worktree],
   target: async (id: string) => id === scratchAgent.id ? { agent: scratchAgent, socket } : undefined,
-  dashboard: async () => ({ generation: 1, adapters: {}, agents: [scratchAgent], projects: [] }),
+  dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [scratchAgent], projects: [] }),
 }) as never;
 
 async function notesService(): Promise<WorktreeNoteService> {

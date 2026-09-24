@@ -39,7 +39,7 @@ function discoveryStub(agents: Array<{ worktreeId?: string }> = [], worktrees = 
     invalidateWorktrees: () => {},
     worktreesNow: () => worktrees,
     worktrees: async () => worktrees,
-    dashboard: async () => ({ generation: 1, adapters: {}, agents, projects: [] })
+    dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents, projects: [] })
   } as never;
 }
 
@@ -124,7 +124,7 @@ describe('DELETE /api/worktrees/:id', () => {
     const killed: string[] = [];
     let removeCalls = 0;
     const worktreeManagement = { removal: async () => ({ ok: true, facts: { ...cleanFacts, dirtyCount: 3 } }), removeCheckout: async () => { removeCalls += 1; return { ok: true }; } } as never;
-    const launch = { worktreeConsoleShells: async () => [], killWorktreeShells: async (w: { id: string }) => { killed.push(w.id); } } as never;
+    const launch = { placeConsoleShells: async () => [], killWorktreeShells: async (w: { id: string }) => { killed.push(w.id); } } as never;
     const main = testWorktree({ id: 'proj:/repo', projectId: 'proj', path: '/repo', identity: '/repo', main: true });
     const locked = testWorktree({ ...linked, locked: true });
     const withMain = await app({ discovery: discoveryStub([], [main]), worktreeManagement, launch, ...(await stores()) });
@@ -161,7 +161,7 @@ describe('DELETE /api/worktrees/:id', () => {
 
   it('refuses removal while a running stack command holds the worktree', async () => {
     const worktreeManagement = { removal: async () => ({ ok: true, facts: cleanFacts }), removeCheckout: async () => ({ ok: true }) } as never;
-    const launch = { worktreeConsoleShells: async () => [], killWorktreeShells: async () => {} } as never;
+    const launch = { placeConsoleShells: async () => [], killWorktreeShells: async () => {} } as never;
     // no running agent, but the stack service reports an active operation
     const worktreeCommands = { sessionRunning: async () => true } as never;
     const server = await app({ discovery: discoveryStub(), worktreeManagement, launch, worktreeCommands, ...(await stores()) });
@@ -178,7 +178,7 @@ describe('DELETE /api/worktrees/:id', () => {
     // killWorktreeShells resolves on a later tick; if the route dropped its `await`,
     // removeCheckout would push 'remove' first — so this proves completion order, not call order
     const worktreeManagement = { removal: async () => ({ ok: true, facts: cleanFacts }), removeCheckout: async () => { order.push('remove'); return { ok: true }; } } as never;
-    const launch = { worktreeConsoleShells: async () => [], killWorktreeShells: async () => { await new Promise(resolve => setTimeout(resolve, 5)); order.push('kill'); } } as never;
+    const launch = { placeConsoleShells: async () => [], killWorktreeShells: async () => { await new Promise(resolve => setTimeout(resolve, 5)); order.push('kill'); } } as never;
     const { worktreeStore, queuedPrompts, promptHistory } = await stores();
     const reviewStore = { summaries: async () => [], current: async () => undefined, invalidate: async (id: string) => { invalidated.push(id); return 1; }, save: async () => undefined } as never;
     await worktreeStore.setPinned(linked.id, true);
@@ -202,7 +202,7 @@ describe('DELETE /api/worktrees/:id', () => {
   it('removes a clean tree without --force', async () => {
     let forced: boolean | undefined;
     const worktreeManagement = { removal: async () => ({ ok: true, facts: cleanFacts }), removeCheckout: async (_w: unknown, o: { force: boolean }) => { forced = o.force; return { ok: true }; } } as never;
-    const launch = { worktreeConsoleShells: async () => [], killWorktreeShells: async () => {} } as never;
+    const launch = { placeConsoleShells: async () => [], killWorktreeShells: async () => {} } as never;
     const server = await app({ discovery: discoveryStub(), worktreeManagement, launch, ...(await stores()) });
     try {
       const response = await server.inject({ method: 'DELETE', url: `/api/worktrees/${encodeURIComponent(linked.id)}`, headers: mutationHeaders });
@@ -215,7 +215,7 @@ describe('DELETE /api/worktrees/:id', () => {
   it('force-removes a dirty tree when discardChanges is set', async () => {
     let forced: boolean | undefined;
     const worktreeManagement = { removal: async () => ({ ok: true, facts: { ...cleanFacts, dirtyCount: 2 } }), removeCheckout: async (_w: unknown, o: { force: boolean }) => { forced = o.force; return { ok: true }; } } as never;
-    const launch = { worktreeConsoleShells: async () => [], killWorktreeShells: async () => {} } as never;
+    const launch = { placeConsoleShells: async () => [], killWorktreeShells: async () => {} } as never;
     const server = await app({ discovery: discoveryStub(), worktreeManagement, launch, ...(await stores()) });
     try {
       const response = await server.inject({ method: 'DELETE', url: `/api/worktrees/${encodeURIComponent(linked.id)}`, headers: mutationHeaders, payload: { discardChanges: true } });
@@ -226,7 +226,7 @@ describe('DELETE /api/worktrees/:id', () => {
 
   it('preserves the worktree records when git removal fails', async () => {
     const worktreeManagement = { removal: async () => ({ ok: true, facts: cleanFacts }), removeCheckout: async () => ({ ok: false, status: 409, error: 'fatal: could not remove' }) } as never;
-    const launch = { worktreeConsoleShells: async () => [], killWorktreeShells: async () => {} } as never;
+    const launch = { placeConsoleShells: async () => [], killWorktreeShells: async () => {} } as never;
     const { worktreeStore, queuedPrompts, promptHistory, reviewStore } = await stores();
     await worktreeStore.setPinned(linked.id, true);
     await queuedPrompts.enqueue(linked.id, 'keep me');
@@ -244,7 +244,7 @@ describe('DELETE /api/worktrees/:id', () => {
   it('deletes the branch when asked, reporting its failure without undoing the removal', async () => {
     const deleted: string[] = [];
     const worktreeManagement = { removal: async () => ({ ok: true, facts: cleanFacts }), removeCheckout: async () => ({ ok: true }), deleteBranch: async (_w: unknown, b: string) => { deleted.push(b); return { ok: false, error: 'error: unmerged' }; } } as never;
-    const launch = { worktreeConsoleShells: async () => [], killWorktreeShells: async () => {} } as never;
+    const launch = { placeConsoleShells: async () => [], killWorktreeShells: async () => {} } as never;
     const server = await app({ discovery: discoveryStub(), worktreeManagement, launch, ...(await stores()) });
     try {
       const response = await server.inject({ method: 'DELETE', url: `/api/worktrees/${encodeURIComponent(linked.id)}`, headers: mutationHeaders, payload: { deleteBranch: true } });
@@ -259,7 +259,7 @@ describe('DELETE /api/worktrees/:id', () => {
   it('deletes an unpushed, unmerged branch when it is explicitly requested', async () => {
     const deleted: string[] = [];
     const worktreeManagement = { removal: async () => ({ ok: true, facts: { ...cleanFacts, pushed: false, merged: false } }), removeCheckout: async () => ({ ok: true }), deleteBranch: async (_w: unknown, b: string) => { deleted.push(b); return { ok: true }; } } as never;
-    const launch = { worktreeConsoleShells: async () => [], killWorktreeShells: async () => {} } as never;
+    const launch = { placeConsoleShells: async () => [], killWorktreeShells: async () => {} } as never;
     const server = await app({ discovery: discoveryStub(), worktreeManagement, launch, ...(await stores()) });
     try {
       const response = await server.inject({ method: 'DELETE', url: `/api/worktrees/${encodeURIComponent(linked.id)}`, headers: mutationHeaders, payload: { deleteBranch: true } });
@@ -272,7 +272,7 @@ describe('DELETE /api/worktrees/:id', () => {
   it('leaves the branch alone when it was not requested', async () => {
     const deleted: string[] = [];
     const worktreeManagement = { removal: async () => ({ ok: true, facts: { ...cleanFacts, pushed: false, merged: false } }), removeCheckout: async () => ({ ok: true }), deleteBranch: async (_w: unknown, b: string) => { deleted.push(b); return { ok: true }; } } as never;
-    const launch = { worktreeConsoleShells: async () => [], killWorktreeShells: async () => {} } as never;
+    const launch = { placeConsoleShells: async () => [], killWorktreeShells: async () => {} } as never;
     const server = await app({ discovery: discoveryStub(), worktreeManagement, launch, ...(await stores()) });
     try {
       const response = await server.inject({ method: 'DELETE', url: `/api/worktrees/${encodeURIComponent(linked.id)}`, headers: mutationHeaders, payload: {} });
