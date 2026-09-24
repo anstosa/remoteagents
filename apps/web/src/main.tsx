@@ -72,7 +72,7 @@ type AttentionState = 'working' | 'finished' | 'question';
 // `worktreeLabel`/`worktreeOrder` are no longer on the wire (the server carries them on the
 // Worktree); they remain as optional read-only fallbacks the tab bar consults when an Agent's
 // Worktree is not present in the payload, absent from the real server.
-type Agent = { id: string; sessionId: string; workspace: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; projectId?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion; stack?: Stack; unread?: boolean; queuedPromptCount: number; launch?: LaunchResolution };
+type Agent = { id: string; sessionId: string; home: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; projectId?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion; stack?: Stack; unread?: boolean; queuedPromptCount: number; launch?: LaunchResolution };
 type Worktree = { id: string; projectId: string; label: string; customLabel?: boolean; path: string; main: boolean; detached: boolean; locked: boolean; branch?: string; sha?: string; consoleShells?: number; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; order: number; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; stack?: Stack; launch?: LaunchResolution };
 // `mode: 'directory'` marks a non-git Project the console launches in place (like Scratch);
 // `launch` is its resolved Launch profile for the Project-level Launch button. A git
@@ -228,7 +228,7 @@ const commandTokenAt = (value: string, cursor: number): CommandToken | undefined
 // Attention is resolved server-side (ADR 0001/0002); the web reads it and never regexes a title.
 const actionRequired = (agent: Agent) => agent.attention === 'question';
 const agentState = (agent: Agent): AgentState => agent.attention === 'question' ? 'action-required' : agent.attention === 'working' ? 'working' : 'prompt-done';
-const agentLabel = (agent: Agent) => (agent.displayLabel ?? (actionRequired(agent) ? agent.title.replace(/(?:\[\s*.\s*\]\s*)?action required\s*\|?\s*/i, '🚨 ') : agent.title)) || agent.workspace;
+const agentLabel = (agent: Agent) => (agent.displayLabel ?? (actionRequired(agent) ? agent.title.replace(/(?:\[\s*.\s*\]\s*)?action required\s*\|?\s*/i, '🚨 ') : agent.title)) || agent.home;
 // keep server-owned update advisors inside their modal surface
 const isEmbeddedUpdateAdvisor = (agent: Pick<Agent, 'displayLabel' | 'worktreeId'>): boolean => agent.worktreeId === undefined && /^Update Advisor (?:(?:Starting v[34]|v[234]) )?[0-9a-f]{7}$/u.test(agent.displayLabel ?? '');
 // list other open worktrees once, labelling each by its Worktree (the server carries the
@@ -630,7 +630,7 @@ const reviewNotificationTag = (worktreeId: string) => `review-ready-${worktreeId
 const agentNotificationNames = (agent: Agent, projects: Project[]) => {
   const project = projects.find(candidate => candidate.id === agent.projectId);
   const worktree = project?.worktrees.find(candidate => candidate.id === agent.worktreeId);
-  const fallbackName = agent.worktreeLabel ?? agent.displayLabel ?? agent.workspace.split('/').filter(Boolean).at(-1) ?? agent.title;
+  const fallbackName = agent.worktreeLabel ?? agent.displayLabel ?? agent.home.split('/').filter(Boolean).at(-1) ?? agent.title;
   return { projectName: project?.label ?? fallbackName, worktreeName: worktree?.label ?? fallbackName, multipleWorktrees: (project?.worktrees.length ?? 0) > 1 };
 };
 const pageFocused = () => document.visibilityState === 'visible' && document.hasFocus();
@@ -6556,7 +6556,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       const sourceAgent = dashboardSnapshot.current?.agents.find(agent => agent.id === sourceAgentId && agent.worktreeId === worktreeId);
       // the Project id is the wire id prefix `<projectId>:<realpath>` (a colon-less id is its own project)
       const projectId = sourceAgent?.projectId ?? (worktreeId.includes(':') ? worktreeId.slice(0, worktreeId.indexOf(':')) : worktreeId);
-      const retained = priorWorktree ?? (sourceAgent === undefined ? undefined : { id: worktreeId, projectId, label: sourceAgent.worktreeLabel ?? agentLabel(sourceAgent), path: sourceAgent.workspace, main: false, detached: false, locked: false, branch: sourceAgent.branch, gitStatus: sourceAgent.gitStatus, gitPrStatus: sourceAgent.gitPrStatus, gitUpstream: sourceAgent.gitUpstream, available: false, pinned: false, order: Number.MAX_SAFE_INTEGER, projectUrl: sourceAgent.projectUrl, projectProxied: sourceAgent.projectProxied, pullRequest: sourceAgent.pullRequest, stack: sourceAgent.stack });
+      const retained = priorWorktree ?? (sourceAgent === undefined ? undefined : { id: worktreeId, projectId, label: sourceAgent.worktreeLabel ?? agentLabel(sourceAgent), path: sourceAgent.home, main: false, detached: false, locked: false, branch: sourceAgent.branch, gitStatus: sourceAgent.gitStatus, gitPrStatus: sourceAgent.gitPrStatus, gitUpstream: sourceAgent.gitUpstream, available: false, pinned: false, order: Number.MAX_SAFE_INTEGER, projectUrl: sourceAgent.projectUrl, projectProxied: sourceAgent.projectProxied, pullRequest: sourceAgent.pullRequest, stack: sourceAgent.stack });
       // retain the last known workspace shape
       if (retained !== undefined) retainedWorktrees.push({ ...retained, available: false, pinned: false });
     }

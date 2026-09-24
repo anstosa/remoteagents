@@ -29,7 +29,7 @@ const routeApi = (page: Page, options: { panes: () => Pane[]; onShell?: () => st
     const url = new URL(request.url());
     const path = url.pathname;
     if (path === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Working', attention: 'working', queuedPromptCount: 0 }], projects: [] } });
+    if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Working', attention: 'working', queuedPromptCount: 0 }], projects: [] } });
     if (path === '/api/push/public-key') return route.fulfill({ json: {} });
     if (path === '/api/agents/agent-1/tickets' || path === '/api/worktrees/cora/tickets') return route.fulfill({ json: { ticket: 'pane-ticket' } });
     if (path === '/api/agents/agent-1/saved-prompts' || path === '/api/agents/agent-1/prompt-history' || path === '/api/agents/agent-1/queued-prompts') return route.fulfill({ json: { prompts: [] } });
@@ -829,7 +829,7 @@ for (const panels of ['note', 'browser', 'note and browser']) {
     await installPaneMock(page);
     await routeApi(page);
     // provide a browser target alongside the existing pane fixture
-    await page.route('**/api/dashboard', route => route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Working', attention: 'working', queuedPromptCount: 0, projectUrl: 'https://preview.example/', projectProxied: false }], projects: [] } }));
+    await page.route('**/api/dashboard', route => route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Working', attention: 'working', queuedPromptCount: 0, projectUrl: 'https://preview.example/', projectProxied: false }], projects: [] } }));
     // provide one saved note
     await page.route('**/api/worktrees/cora/notes', route => route.fulfill({ json: { notes: [{ id: 'note-cora-000001', text: 'Mixed split note' }] } }));
     // avoid external navigation in the embedded browser

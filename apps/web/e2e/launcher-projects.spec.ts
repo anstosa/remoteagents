@@ -122,7 +122,7 @@ test('launcher keeps a worktree visible while its agent is already open', async 
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     if (url.pathname === '/api/dashboard') return route.fulfill({ json: {
       generation: 1,
-      agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/home/ubuntu/remoteagents', projectId: 'remoteagents', worktreeId: 'remoteagents:/workspace', title: 'Ready', kind: 'codex', attention: 'finished', queuedPromptCount: 0 }],
+      agents: [{ id: 'agent-1', sessionId: 'socket:$1', home: '/home/ubuntu/remoteagents', projectId: 'remoteagents', worktreeId: 'remoteagents:/workspace', title: 'Ready', kind: 'codex', attention: 'finished', queuedPromptCount: 0 }],
       projects: [{ id: 'remoteagents', label: '📱 Remote Agents', available: true, worktrees: [{ id: 'remoteagents:/workspace', projectId: 'remoteagents', label: '📱 Remote Agents', customLabel: true, path: '/workspace', main: true, detached: false, locked: false, available: true, pinned: true, order: 0, branch: 'main' }] }]
     } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });

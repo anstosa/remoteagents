@@ -304,17 +304,17 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     ...(account.error === undefined ? {} : { error: account.error })
   });
   // share durable prompt queue scopes
-  const promptStorageKeyForAgent = (agent: Pick<Agent, 'displayLabel' | 'id' | 'workspace'>) => {
+  const promptStorageKeyForAgent = (agent: Pick<Agent, 'displayLabel' | 'id' | 'home'>) => {
     // isolate modal advisors from the configured repository prompt queue
     if (isUpdateAdvisorLabel(agent.displayLabel)) return `agent:${agent.id}`;
-    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), agent.workspace);
+    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), agent.home);
     return worktree === undefined ? `agent:${agent.id}` : worktree.id;
   };
   // resolve project and worktree names for one agent alert
   const notificationContextForAgent = (agent: Agent, projects: DashboardPayload['projects']): AgentNotificationContext => {
     const project = projects.find(candidate => candidate.id === agent.projectId);
     const worktree = project?.worktrees.find(candidate => candidate.id === agent.worktreeId);
-    const fallbackName = agent.displayLabel ?? agent.workspace.split('/').filter(Boolean).at(-1) ?? agent.title;
+    const fallbackName = agent.displayLabel ?? agent.home.split('/').filter(Boolean).at(-1) ?? agent.title;
     return {
       projectName: project?.label ?? fallbackName,
       worktreeName: worktree?.label ?? fallbackName,
@@ -780,12 +780,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const target = await discovery.target(id);
     // require one current agent target
     if (target === undefined) return undefined;
-    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
-    return { agent: target.agent, worktree, saveKey: worktree?.projectId ?? scratchSaveKey(target.agent.workspace), noteLabel: worktree?.label ?? (basename(target.agent.workspace) || 'workspace') };
+    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.home);
+    return { agent: target.agent, worktree, saveKey: worktree?.projectId ?? scratchSaveKey(target.agent.home), noteLabel: worktree?.label ?? (basename(target.agent.home) || 'workspace') };
   };
   // resolve one queue scope to its note key and current operator-facing label
   const notePersistenceForQueueScope = async (scope: string): Promise<{ saveKey: string; noteLabel: string } | undefined> => {
-    // scratch scopes still require their live agent workspace
+    // scratch scopes still require their live agent home
     if (scope.startsWith('agent:')) return await agentPersistence(scope.slice('agent:'.length));
     const worktree = configuredWorktree(scope);
     const fallbackPath = worktreePathOf(scope) ?? scope;
@@ -1127,7 +1127,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // marks nothing current (used by the conversations listing route)
   const currentConversationOnWorktree = async (worktreeId: string, agentId: string): Promise<string | undefined> => {
     const target = await discovery.target(agentId);
-    const targetWorktree = target === undefined ? undefined : configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
+    const targetWorktree = target === undefined ? undefined : configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.home);
     return targetWorktree?.id === worktreeId ? discovery.conversationId(agentId) : undefined;
   };
   // a Project's current Worktree directories mapped to their Worktree id: the host-visible
@@ -1186,7 +1186,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // or just its own directory for a Scratch agent that has no Worktree to resume into
   const agentConversationScope = (persistence: NonNullable<Awaited<ReturnType<typeof agentPersistence>>>): { scope: Map<string, string>; directories: string[] } => {
     const scope = persistence.worktree === undefined ? new Map<string, string>() : projectConversationScope(persistence.worktree.projectId);
-    return { scope, directories: persistence.worktree === undefined ? [persistence.agent.workspace] : [...scope.keys()] };
+    return { scope, directories: persistence.worktree === undefined ? [persistence.agent.home] : [...scope.keys()] };
   };
   // list one Worktree's Project-wide Named conversations (every kind, every Worktree of the
   // Project); an optional live agent open on this Worktree marks the current row
@@ -1306,7 +1306,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const removed = await consoleNamed.remove(saveKey, kind as AgentKind, conversationId);
     return removed ? reply.code(204).send() : reply.code(404).send({ error: 'conversation record unavailable' });
   });
-  // the agent-scoped twin: a Scratch agent's records key to its workspace, not a Project
+  // the agent-scoped twin: a Scratch agent's records key to its home, not a Project
   app.delete('/api/agents/:id/conversations/:kind/:conversationId', async (request, reply) => {
     controlled(request, true);
     const { id, kind, conversationId } = request.params as { id: string; kind: string; conversationId: string };
@@ -1371,7 +1371,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     controlled(request, true);
     const target = await discovery.target((request.params as { id: string }).id);
     if (!target) return reply.code(404).send({ error: 'target unavailable' });
-    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
+    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.home);
     const scopedAgent = worktree === undefined ? target.agent : { ...target.agent, worktreeId: worktree.id };
     notifications.view(scopedAgent);
     return reply.code(204).send();
@@ -1411,10 +1411,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const adapter = adapterFor(target.agent.kind);
     // an Adapter without a command catalog serves an empty one
     if (adapter === undefined) return { commands: [] };
-    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
+    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.home);
     // the Adapter resolves its own state directory (its skills root) from the environment
     const stateDirectory = adapter.commands?.stateDirectory() ?? '';
-    return { commands: await commandCatalog.catalog(adapter, worktree?.path ?? target.agent.workspace, stateDirectory) };
+    return { commands: await commandCatalog.catalog(adapter, worktree?.path ?? target.agent.home, stateDirectory) };
   });
   // list workspace files referenced by one completed response
   app.post('/api/agents/:id/message-files', async (request, reply) => {
@@ -1423,8 +1423,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (typeof message !== 'string' || message.length > 30_000 || message.includes('\0')) return reply.code(400).send({ error: 'invalid assistant message' });
     const target = await discovery.target((request.params as { id: string }).id);
     if (!target) return reply.code(404).send({ error: 'target unavailable' });
-    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
-    return { files: await workspaceFiles.list(worktree?.identity ?? target.agent.workspace, message) };
+    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.home);
+    return { files: await workspaceFiles.list(worktree?.identity ?? target.agent.home, message) };
   });
   // preview one workspace file or bounded host temporary screenshot
   app.post('/api/agents/:id/file-preview', async (request, reply) => {
@@ -1433,10 +1433,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (typeof path !== 'string' || !path || path.length > 512 || path.includes('\0')) return reply.code(400).send({ error: 'invalid file path' });
     const target = await discovery.target((request.params as { id: string }).id);
     if (!target) return reply.code(404).send({ error: 'target unavailable' });
-    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
+    const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.home);
     const panePid = discovery.paneProcessId(target.agent.id);
     // fall back only to the image-only host temporary bridge
-    const preview = await workspaceFiles.preview(worktree?.identity ?? target.agent.workspace, path) ?? await workspaceFiles.previewTemporaryImage(path, panePid);
+    const preview = await workspaceFiles.preview(worktree?.identity ?? target.agent.home, path) ?? await workspaceFiles.previewTemporaryImage(path, panePid);
     return preview === undefined ? reply.code(404).send({ error: 'file unavailable' }) : preview;
   });
   // save a queued prompt as a Note under the agent's note key, consuming the queued copy only once
@@ -1518,13 +1518,13 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(204).send();
   });
-  app.delete('/api/agents/:id', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const target = await discovery.target(id); if (!target || discovery.worktreesNow().some(worktree => worktreeMatchesWorkspace(worktree, target.agent.workspace)) || !await prompts.close(id)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
+  app.delete('/api/agents/:id', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; const target = await discovery.target(id); if (!target || discovery.worktreesNow().some(worktree => worktreeMatchesWorkspace(worktree, target.agent.home)) || !await prompts.close(id)) return reply.code(404).send({ error: 'target unavailable' }); return reply.code(204).send(); });
   // permanently close one idle configured agent
   app.post('/api/agents/:id/deactivate', async (request, reply) => {
     controlled(request, true);
     const id = (request.params as { id: string }).id;
     const target = await discovery.target(id);
-    const worktree = target === undefined ? undefined : configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
+    const worktree = target === undefined ? undefined : configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.home);
     // preserve active configured agents
     if (!target || worktree === undefined || agentAttentionState(target.agent) === 'working') return reply.code(409).send({ error: 'only idle configured agents can be turned off' });
     // require a live target
@@ -1740,7 +1740,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       if (input.previousAgentId !== undefined && capability !== undefined) {
         const prior = await discovery.target(input.previousAgentId, true);
         // a live previous agent of another kind or workspace was retargeted: leave it alone, launch fresh
-        if (prior !== undefined && prior.agent.kind === input.kind && plan.matches(prior.agent.workspace)) return await runReuse(prior, capability, input.text, input.attachments);
+        if (prior !== undefined && prior.agent.kind === input.kind && plan.matches(prior.agent.home)) return await runReuse(prior, capability, input.text, input.attachments);
       }
     }
     return await runFresh(plan, input.text, input.attachments, input.unattended ? input.conversationName : undefined);
@@ -2014,7 +2014,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     try {
       const current = await discovery.dashboard(true);
       const observed = current.agents.find(agent => agent.id === id);
-      const worktree = observed === undefined ? undefined : configuredWorktreeForWorkspace(discovery.worktreesNow(), observed.workspace);
+      const worktree = observed === undefined ? undefined : configuredWorktreeForWorkspace(discovery.worktreesNow(), observed.home);
       const worktreeId = worktree?.id ?? expectedWorktreeId ?? 'unknown';
       // require the original configured target
       if (observed === undefined || worktree === undefined || (expectedWorktreeId !== undefined && worktree.id !== expectedWorktreeId)) return { status: 'skipped', worktreeId, reason: 'unavailable', error: 'The worktree agent is no longer open.' };

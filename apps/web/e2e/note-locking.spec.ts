@@ -28,8 +28,8 @@ const noteLockFixture = (context: 'worktree' | 'scratch', notes: Note[]): NoteLo
 
 // describe the agent that owns each notes persistence context
 const dashboardAgent = (context: 'worktree' | 'scratch') => context === 'worktree'
-  ? { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready' }
-  : { id: 'scratch-1', sessionId: 'socket:$1', workspace: '/tmp/scratch', displayLabel: 'Scratch', title: 'Ready' };
+  ? { id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready' }
+  : { id: 'scratch-1', sessionId: 'socket:$1', home: '/tmp/scratch', displayLabel: 'Scratch', title: 'Ready' };
 
 // pause one lock acknowledgement so concurrent draft edits exercise stale-response merging
 const holdNextLock = (fixture: NoteLockFixture) => {

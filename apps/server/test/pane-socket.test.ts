@@ -21,7 +21,7 @@ const dashboardUpdates = { setLoader: () => {}, refresh: async () => {}, close: 
 
 const socket = { fingerprint: 'sockfp', path: '/tmp/rac-pane-test.sock', device: 0, inode: 0 };
 // the composite agent id embeds the raw tmux session ($1) behind the socket fingerprint
-const agentOf = (kind: string) => ({ id: 'agent-1', paneId: '%1', sessionId: 'sockfp:$1', socketFingerprint: 'sockfp', workspace: '/repo', title: 'Ready', kind, attention: 'finished' });
+const agentOf = (kind: string) => ({ id: 'agent-1', paneId: '%1', sessionId: 'sockfp:$1', socketFingerprint: 'sockfp', home: '/repo', title: 'Ready', kind, attention: 'finished' });
 const discoveryOf = (kind: string) => ({
   target: async (id: string) => (id === 'agent-1' ? { agent: agentOf(kind), socket } : undefined),
   // the project proxy inspects every WS upgrade; no worktrees means it passes ours to Fastify

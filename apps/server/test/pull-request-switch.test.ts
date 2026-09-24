@@ -10,7 +10,7 @@ import { run } from '../src/tmux/command.js';
 
 const worktree = { id: 'cora:/worktrees/cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: true, main: true, detached: false, locked: false };
 const config: ValidatedConfig = { name: 'Remote Agents', remoteServers: [], listen: { host: '127.0.0.1', port: 8787 }, publicOrigin: new URL('https://agents.example.com'), trustedProxyIps: new Set(), pollIntervalMs: 500, adapters: {}, projects: [] };
-const agent = { id: 'agent-1', paneId: '%1', sessionId: '$1', socketFingerprint: 'socket', workspace: worktree.identity, branch: 'feature/current', title: 'Ready', attention: 'finished' as AttentionState };
+const agent = { id: 'agent-1', paneId: '%1', sessionId: '$1', socketFingerprint: 'socket', home: worktree.identity, branch: 'feature/current', title: 'Ready', attention: 'finished' as AttentionState };
 const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
 const headSha = 'a'.repeat(40);
 const choices = [{ number: 7, title: 'Draft work', branch: 'feature/draft', headSha, headOnOrigin: true, draft: true, url: 'https://github.com/octo/repo/pull/7' }];
@@ -90,7 +90,7 @@ type PullRequestChoiceFixture = { number: number; branch: string; headSha: strin
 // assemble one switch service around a real repository, with the target agent's attention and git command configurable
 function switchService(repository: Awaited<ReturnType<typeof createSwitchRepository>>, choice: PullRequestChoiceFixture, attention: AttentionState = 'finished', command: GitCommand = run) {
   const targetWorktree = { ...worktree, id: `cora:${repository.targetPath}`, path: repository.targetPath, identity: repository.targetPath };
-  const targetAgent = { ...agent, workspace: repository.targetPath, branch: 'main', attention };
+  const targetAgent = { ...agent, home: repository.targetPath, branch: 'main', attention };
   const discovery = { worktreesNow: () => [targetWorktree], target: async () => ({ agent: targetAgent, socket }), dashboard: async () => ({ generation: 1, agents: [targetAgent], projects: [] }) };
   const pulls = { supports: async () => true, open: async () => ({ own: [{ number: choice.number, title: 'Draft work', branch: choice.branch, headSha: choice.headSha, headOnOrigin: choice.headOnOrigin, draft: false, url: `https://github.com/octo/repo/pull/${choice.number}` }], others: [] }) };
   const service = new PullRequestSwitchService(config, discovery as never, pulls as never, command);
@@ -109,8 +109,8 @@ async function dirtyMoveSource(sourcePath: string) {
 function moveService(repository: Awaited<ReturnType<typeof createMoveRepository>>, command: GitCommand = run, pulls: object = { supports: async () => true, open: async () => ({ own: [{ ...choices[0], headSha: repository.headSha }], others: [] }) }, targetAttention: AttentionState = 'finished', sourceAttention: AttentionState = 'finished') {
   const targetWorktree = { ...worktree, id: `cora:${repository.targetPath}`, path: repository.targetPath, identity: repository.targetPath };
   const sourceWorktree = { ...worktree, id: 'delta', projectId: 'cora', label: 'Delta', path: repository.sourcePath, identity: repository.sourcePath };
-  const targetAgent = { ...agent, workspace: repository.targetPath, branch: 'main', attention: targetAttention };
-  const sourceAgent = { ...agent, id: 'agent-2', paneId: '%2', workspace: repository.sourcePath, branch: 'feature/draft', worktreeId: 'delta', attention: sourceAttention };
+  const targetAgent = { ...agent, home: repository.targetPath, branch: 'main', attention: targetAttention };
+  const sourceAgent = { ...agent, id: 'agent-2', paneId: '%2', home: repository.sourcePath, branch: 'feature/draft', worktreeId: 'delta', attention: sourceAttention };
   const discovery = {
     worktreesNow: () => [targetWorktree, sourceWorktree],
     target: async (id: string) => id === targetAgent.id ? { agent: targetAgent, socket } : id === sourceAgent.id ? { agent: sourceAgent, socket } : undefined,
@@ -128,12 +128,12 @@ describe('pull request switching', () => {
     const requested: string[] = [];
     const pulls = { actionsUrl: async (workspace: string) => { requested.push(workspace); return 'https://github.com/octo/repo/actions'; } };
     const configured = new PullRequestSwitchService(config, { worktreesNow: () => [worktree], target: async () => ({ agent, socket }) } as never, pulls as never, cleanCommand);
-    const scratchAgent = { ...agent, workspace: '/scratch/repo' };
+    const scratchAgent = { ...agent, home: '/scratch/repo' };
     const scratch = new PullRequestSwitchService(config, { worktreesNow: () => [worktree], target: async () => ({ agent: scratchAgent, socket }) } as never, pulls as never, cleanCommand);
 
     await expect(configured.actionsUrl(agent.id)).resolves.toBe('https://github.com/octo/repo/actions');
     await expect(scratch.actionsUrl(scratchAgent.id)).resolves.toBe('https://github.com/octo/repo/actions');
-    expect(requested).toEqual([worktree.identity, scratchAgent.workspace]);
+    expect(requested).toEqual([worktree.identity, scratchAgent.home]);
   });
 
   it('marks a pull request unavailable when another agent has its branch checked out', async () => {
@@ -186,7 +186,7 @@ describe('pull request switching', () => {
       await symlink(common, targetAlias, 'dir');
       await symlink(common, sourceAlias, 'dir');
       const sourceWorktree = { ...worktree, id: 'delta', label: 'Delta', identity: '/worktrees/delta', path: '/worktrees/delta' };
-      const sourceAgent = { ...agent, id: 'agent-2', workspace: sourceWorktree.identity, branch: 'feature/draft', worktreeId: 'delta' };
+      const sourceAgent = { ...agent, id: 'agent-2', home: sourceWorktree.identity, branch: 'feature/draft', worktreeId: 'delta' };
       const discovery = { worktreesNow: () => [worktree, sourceWorktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [agent, sourceAgent], projects: [] }) };
       const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
       const command = async (_binary: string, args: string[]) => {
@@ -309,7 +309,7 @@ describe('pull request switching', () => {
 
   it('ignores matching branch names from another repository', async () => {
     const otherWorktree = { ...worktree, id: 'delta', label: 'Delta', path: '/worktrees/delta', identity: '/worktrees/delta' };
-    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [{ ...agent, id: 'agent-2', workspace: otherWorktree.identity, branch: 'feature/draft', worktreeId: 'delta' }], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent, socket }), dashboard: async () => ({ generation: 1, agents: [{ ...agent, id: 'agent-2', home: otherWorktree.identity, branch: 'feature/draft', worktreeId: 'delta' }], projects: [] }) };
     const pulls = { supports: async () => true, open: async () => ({ own: choices, others: [] }) };
     const command = async (_binary: string, args: string[]) => {
       // separate repository identities by worktree path

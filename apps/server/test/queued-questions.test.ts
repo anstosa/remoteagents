@@ -3,7 +3,7 @@ import { PromptService } from '../src/prompts/service.js';
 
 const banner = '• Queued follow-up inputs\n  ? 1 question\n    alt + ↑ to answer\n\n› Ask Codex to do anything\n  gpt-6-astra · /repo · main';
 const socket = { fingerprint: 'socket', path: '/tmp/queued-question-test', device: 1, inode: 1 };
-const agent = { id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/repo', kind: 'codex', title: 'Ready', attention: 'finished' };
+const agent = { id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/repo', kind: 'codex', title: 'Ready', attention: 'finished' };
 
 // exercise real prompt guards without typing into a live agent
 function fixture() {

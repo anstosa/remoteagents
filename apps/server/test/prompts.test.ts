@@ -9,7 +9,7 @@ import { codexAdapter } from '../src/adapters/codex.js';
 import { inlineQuestionId } from '../src/adapters/inline-questions.js';
 import { QueuedPromptService, type QueuedPrompt } from '../src/prompts/queue.js';
 import { stated } from './helpers/agent.js';
-const socket={fingerprint:'socket',path:'/tmp/sock',device:1,inode:1}; const agent=stated({id:'socket:%1',paneId:'%1',sessionId:'socket:$1',socketFingerprint:'socket',workspace:'/tmp',title:''});
+const socket={fingerprint:'socket',path:'/tmp/sock',device:1,inode:1}; const agent=stated({id:'socket:%1',paneId:'%1',sessionId:'socket:$1',socketFingerprint:'socket',home:'/tmp',title:''});
 // records every prompt a halted queue drains into Notes, in drain order (front of the queue first)
 const drainRecorder = () => { const drained: QueuedPrompt[] = []; const drain: UndeliveredDrain = async (_scope, prompt) => { drained.push(prompt); return true; }; return { drained, drain }; };
 it('allows prompt attachments totaling 25 MiB', () => {
@@ -46,7 +46,7 @@ it('stages attached files in a Git-ignored location and references each one in t
   const workspace = await mkdtemp(join(tmpdir(), 'rac-attachments-'));
   await writeFile(join(workspace, '.gitignore'), 'node_modules/\n');
   execFileSync('/usr/bin/git', ['init', '--quiet', workspace]);
-  const attachedAgent = { ...agent, workspace };
+  const attachedAgent = { ...agent, home: workspace };
   const pasted: string[] = [];
   const discovery = { worktreesNow: () => [], target: async () => ({ agent: attachedAgent, socket }) };
   const tmux = { pastePrompt: async (_s: unknown, _p: string, _b: string, prompt: string) => { pasted.push(prompt); return true; }, sendKeys: async () => true };
@@ -65,7 +65,7 @@ it('stages attached files in a Git-ignored location and references each one in t
 it('submits attachment-only prompts from a non-Git workspace', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-non-git-attachments-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
-  const attachedAgent = { ...agent, workspace: directory };
+  const attachedAgent = { ...agent, home: directory };
   const attachment = { name: 'photo.jpg', data: Buffer.from('image data').toString('base64') };
   let pasted = '';
   let submitted = false;
@@ -97,7 +97,7 @@ it('maps a discovered host worktree path to its mounted workspace before staging
   const workspace = await mkdtemp(join(tmpdir(), 'rac-mounted-'));
   await writeFile(join(workspace, '.gitignore'), 'node_modules/\n');
   execFileSync('/usr/bin/git', ['init', '--quiet', workspace]);
-  const discoveredAgent = { ...agent, workspace: '/host/worktree' };
+  const discoveredAgent = { ...agent, home: '/host/worktree' };
   const pasted: string[] = [];
   const worktree = { id: 'p:/host/worktree', projectId: 'p', label: 'Worktree', path: workspace, identity: workspace, hostPath: '/host/worktree', available: true, pinned: true, main: true, detached: false, locked: false };
   const discovery = { worktreesNow: () => [worktree], target: async () => ({ agent: discoveredAgent, socket }) };
@@ -128,8 +128,8 @@ it('records successful submissions in the configured worktree history', async ()
 it('isolates update advisor prompts from the configured repository queue', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'rac-advisor-scope-'));
   const queue = new QueuedPromptService(join(directory, 'queue.json'));
-  const normalAgent = { ...agent, id: 'socket:%1', paneId: '%1', workspace: '/tmp' };
-  const advisorAgent = { ...agent, id: 'socket:%2', paneId: '%2', workspace: '/tmp', displayLabel: 'Update Advisor Starting v4 2222222' };
+  const normalAgent = { ...agent, id: 'socket:%1', paneId: '%1', home: '/tmp' };
+  const advisorAgent = { ...agent, id: 'socket:%2', paneId: '%2', home: '/tmp', displayLabel: 'Update Advisor Starting v4 2222222' };
   const pasted: string[][] = [];
   const entered: string[] = [];
   const queued: string[] = [];
@@ -1127,7 +1127,7 @@ it('answers a Codex menu relative to its fresh highlight without changing its qu
 
 it('answers a Claude reported question by re-deriving it from a fresh payload and capture', async () => {
   const sent: string[][] = [];
-  const claudeAgent = { id: 'socket:%1', paneId: '%1', workspace: '/tmp', kind: 'claude' as const, title: '' };
+  const claudeAgent = { id: 'socket:%1', paneId: '%1', home: '/tmp', kind: 'claude' as const, title: '' };
   const payload = Buffer.from(JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: 'Deploy where?', options: [{ label: 'Staging' }, { label: 'Production' }], multiSelect: false }] } })).toString('base64');
   const capture = [' ☐ Target', '│ Deploy where?', '❯ 1. Staging', '  2. Production', '  3. Type something.'].join('\n');
   const discovery = { worktreesNow: () => [], target: async () => ({ agent: claudeAgent, socket }), reportedQuestionPayload: () => payload };
@@ -1143,7 +1143,7 @@ it('answers a Claude reported question by re-deriving it from a fresh payload an
 });
 
 it('refuses a Claude reported answer once the payload is cleared', async () => {
-  const claudeAgent = { id: 'socket:%1', paneId: '%1', workspace: '/tmp', kind: 'claude' as const, title: '' };
+  const claudeAgent = { id: 'socket:%1', paneId: '%1', home: '/tmp', kind: 'claude' as const, title: '' };
   const id = inlineQuestionId('Deploy where?', ['Staging', 'Production']);
   // PostToolUse cleared @rac_question: no payload, so nothing is re-derived
   const discovery = { worktreesNow: () => [], target: async () => ({ agent: claudeAgent, socket }), reportedQuestionPayload: () => undefined };
@@ -1155,7 +1155,7 @@ it('refuses a Claude reported answer once the payload is cleared', async () => {
 it('dismisses composer autocomplete before queuing a skill or plugin prompt',async()=>{const pasted:string[]=[];const discovery={worktreesNow:()=>[],target:async()=>({agent,socket})};const tmux={pastePrompt:async(_s:unknown,_p:string,_b:string,p:string)=>{pasted.push(p);return true},sendKeys:async()=>true};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'Use $my-plugin')).resolves.toBe(true);await expect(service.submit(agent.id,'/skill already resolved ')).resolves.toBe(true);expect(pasted).toEqual(['Use $my-plugin ','/skill already resolved '])});it('does not queue a stale target',async()=>{let count=0;const discovery={worktreesNow:()=>[],target:async()=>++count===1?{agent,socket}:undefined};const tmux={pastePrompt:async()=>true,sendKeys:async()=>true};const service=new PromptService(discovery as never,tmux as never);await expect(service.submit(agent.id,'synthetic')).resolves.toBe(false)});it('sends Ctrl-C only to the discovered agent pane',async()=>{const calls:string[][]=[];const discovery={worktreesNow:()=>[],target:async()=>({agent:stated({...agent,title:'⠋ Working'}),socket})};const tmux={sendKeys:async(_s:unknown,p:string,keys:string[])=>{if(keys.includes('C-c'))calls.push(['interrupt',p]);return true}};const service=new PromptService(discovery as never,tmux as never);await expect(service.cancel(agent.id)).resolves.toBe('ok');expect(calls).toEqual([['interrupt','%1']])});it('kills only the discovered pane when deleting an agent',async()=>{const calls:string[][]=[];const discovery={worktreesNow:()=>[],target:async()=>({agent,socket})};const tmux={close:async(_s:unknown,p:string)=>{calls.push(['close',p]);return true}};const service=new PromptService(discovery as never,tmux as never);await expect(service.close(agent.id)).resolves.toBe(true);expect(calls).toEqual([['close','%1']])})});
 
 describe('adapter teardown',()=>{
-it('runs the configured teardown in the stopped agent workspace after a successful kill',async()=>{const calls:string[][]=[];const discovery={worktreesNow:()=>[],target:async()=>({agent,socket})};const tmux={close:async()=>true,runShell:async(s:{path:string},command:string)=>{calls.push(['run-shell',s.path,command]);return true}};const service=new PromptService(discovery as never,tmux as never,undefined,undefined,undefined,undefined,kind=>kind==='codex'?'rm -f .omx/state/session.json':undefined);await expect(service.close(agent.id)).resolves.toBe(true);expect(calls).toEqual([['run-shell','/tmp/sock',"cd -- '/tmp' && eval 'rm -f .omx/state/session.json'"]])});
+it('runs the configured teardown in the stopped agent home after a successful kill',async()=>{const calls:string[][]=[];const discovery={worktreesNow:()=>[],target:async()=>({agent,socket})};const tmux={close:async()=>true,runShell:async(s:{path:string},command:string)=>{calls.push(['run-shell',s.path,command]);return true}};const service=new PromptService(discovery as never,tmux as never,undefined,undefined,undefined,undefined,kind=>kind==='codex'?'rm -f .omx/state/session.json':undefined);await expect(service.close(agent.id)).resolves.toBe(true);expect(calls).toEqual([['run-shell','/tmp/sock',"cd -- '/tmp' && eval 'rm -f .omx/state/session.json'"]])});
 it('issues no teardown for an unconfigured kind or a failed kill',async()=>{const ran:string[]=[];const discovery={worktreesNow:()=>[],target:async()=>({agent,socket})};const unconfigured=new PromptService(discovery as never,{close:async()=>true,runShell:async(_s:unknown,command:string)=>{ran.push(command);return true}} as never);await expect(unconfigured.close(agent.id)).resolves.toBe(true);const failing=new PromptService(discovery as never,{close:async()=>false,runShell:async(_s:unknown,command:string)=>{ran.push(command);return true}} as never,undefined,undefined,undefined,undefined,()=>'rm -f x');await expect(failing.close(agent.id)).resolves.toBe(false);expect(ran).toEqual([])});
 it('logs a failing teardown and still reports the stop as successful',async()=>{const errors=vi.spyOn(console,'error').mockImplementation(()=>{});try{const discovery={worktreesNow:()=>[],target:async()=>({agent,socket})};const service=new PromptService(discovery as never,{close:async()=>true,runShell:async()=>{throw new Error('boom')}} as never,undefined,undefined,undefined,undefined,()=>'rm -f x');await expect(service.close(agent.id)).resolves.toBe(true);expect(errors).toHaveBeenCalledWith(expect.stringContaining('teardown failed'))}finally{errors.mockRestore()}});
 });

@@ -45,7 +45,7 @@ const adapterUpdates = z.object({ current: command, latest: command, run: comman
 // `setup`/`teardown` are operator-trust lifecycle commands (shell-interpreted, like a
 // Project's stack commands): `setup` runs in the launched pane before the program and
 // aborts the launch on failure; `teardown` runs best-effort after the console stops an
-// agent of this kind, in the stopped agent's workspace.
+// agent of this kind, in the stopped agent's home.
 const adapterEntry = z.object({ program: adapterProgram, args: z.array(adapterArgument).max(64).optional(), env: z.record(adapterEnvName, adapterArgument).optional(), setup: command.optional(), teardown: command.optional(), updates: adapterUpdates.optional() }).strict();
 // keyed by kind, one strict entry each; an omitted block is observe-only (nothing launches)
 const adaptersSchema = z.object({ codex: adapterEntry.optional(), omx: adapterEntry.optional(), claude: adapterEntry.optional(), pi: adapterEntry.optional(), opencode: adapterEntry.optional() }).strict();

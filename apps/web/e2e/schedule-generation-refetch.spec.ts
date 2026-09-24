@@ -36,7 +36,7 @@ const expectNoNoteAlert = async (toggle: Locator) => {
 
 test('refetches the fly-out badge on a generation change, and catches up on reopen after one while closed', async ({ page }) => {
   await installDashboardSocket(page);
-  const agents = [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready' }];
+  const agents = [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready' }];
   const schedule = { cron: '0 9 * * *', kind: 'claude', target: { worktreeId: 'cora' }, enabled: true, updatedAt: '2026-01-01T00:00:00-08:00' };
   let runFailed = false;
   let notesGets = 0;
@@ -83,7 +83,7 @@ test('refreshes the open note pane\'s Last run footnote on a generation change',
   test.setTimeout(60_000);
   await installDashboardSocket(page);
   const worktree = { id: 'wt-main', projectId: 'atlas', label: 'main', path: '/worktrees/atlas', main: true, detached: false, locked: false, available: true, pinned: true, order: 0, branch: 'main', launch: { kind: 'claude' } };
-  const agents = [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/atlas', worktreeId: 'wt-main', worktreeLabel: 'main', projectId: 'atlas', kind: 'claude', title: 'Ready' }];
+  const agents = [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/atlas', worktreeId: 'wt-main', worktreeLabel: 'main', projectId: 'atlas', kind: 'claude', title: 'Ready' }];
   const projects = [{ id: 'atlas', label: 'atlas', mode: 'repository', available: true, worktrees: [worktree] }];
   const schedule = { cron: '0 9 * * *', kind: 'claude', target: { worktreeId: 'wt-main' }, enabled: true, updatedAt: '2026-01-01T00:00:00-08:00' };
   let runFailed = false;
@@ -122,8 +122,8 @@ test('keeps queued-note badges red until notes are opened and shares acknowledge
   test.setTimeout(60_000);
   await installDashboardSocket(page);
   const agents = [
-    { id: 'agent-cora', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' },
-    { id: 'agent-owen', sessionId: 'socket:$2', workspace: '/worktrees/owen', worktreeId: 'owen', worktreeLabel: 'Owen', worktreeOrder: 1, title: 'Ready' }
+    { id: 'agent-cora', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' },
+    { id: 'agent-owen', sessionId: 'socket:$2', home: '/worktrees/owen', worktreeId: 'owen', worktreeLabel: 'Owen', worktreeOrder: 1, title: 'Ready' }
   ];
   // a matching title alone must not mark an ordinary note unread
   const ordinaryTitle = 'Queued prompt in Cora · 9:41 AM';
@@ -261,8 +261,8 @@ test('merges queued-note acknowledgements across browser tabs', async ({ page, c
   await installDashboardSocket(page);
   await installDashboardSocket(other);
   const agents = [
-    { id: 'agent-cora', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' },
-    { id: 'agent-owen', sessionId: 'socket:$2', workspace: '/worktrees/owen', worktreeId: 'owen', worktreeLabel: 'Owen', worktreeOrder: 1, title: 'Ready' }
+    { id: 'agent-cora', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' },
+    { id: 'agent-owen', sessionId: 'socket:$2', home: '/worktrees/owen', worktreeId: 'owen', worktreeLabel: 'Owen', worktreeOrder: 1, title: 'Ready' }
   ];
   const coraNotes = [{ id: 'queued-cora-001', text: 'First project prompt', source: 'queued-prompt' }];
   const owenNotes = [{ id: 'queued-owen-001', text: 'Second project prompt', source: 'queued-prompt' }];
@@ -322,7 +322,7 @@ test('merges queued-note acknowledgements across browser tabs', async ({ page, c
 test('keeps a queued note when the initial notes response arrives last', async ({ page }) => {
   test.setTimeout(60_000);
   await installDashboardSocket(page);
-  const agents = [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', title: 'Working', attention: 'working' }];
+  const agents = [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', title: 'Working', attention: 'working' }];
   type Note = { id: string; text: string; source?: 'queued-prompt' };
   const notes: Note[] = [{ id: 'ordinary-note-001', text: 'Existing note' }];
   const queued = [{ id: 'queued-prompt-001', text: 'Recovered queue entry', createdAt: '2026-09-20T09:00:00Z' }];

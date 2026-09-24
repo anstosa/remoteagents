@@ -6,7 +6,7 @@ const queuePath = 'M4 6h10M4 11h10M4 16h7M18 13v6m-3-3h6';
 
 // push one attention state
 const emitAttention = (page: Page, generation: number, attention: 'working' | 'finished' | 'question' | undefined) => {
-  const agent = { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: attention === 'working' ? 'Working' : 'Ready', attention };
+  const agent = { id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: attention === 'working' ? 'Working' : 'Ready', attention };
   return emitDashboard(page, { generation, agents: [agent], projects: [] });
 };
 
@@ -20,7 +20,7 @@ test('sends or queues a note with the matching icon as agent attention changes',
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready', attention: 'finished' }], projects: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', title: 'Ready', attention: 'finished' }], projects: [] } });
     if (url.pathname === '/api/dashboard/ticket') return route.fulfill({ json: { ticket: 'dashboard-ticket' } });
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });

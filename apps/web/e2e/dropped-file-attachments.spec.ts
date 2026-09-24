@@ -19,7 +19,7 @@ const mockComposerApi = async (page: Page, promptRequest?: PromptRequestHandler)
     // authenticate the local console
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     // expose one idle agent
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready', kind: 'codex', attention: 'finished' }], projects: [] } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', title: 'Ready', kind: 'codex', attention: 'finished' }], projects: [] } });
     // disable push enrollment
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
     // provide websocket tickets
@@ -282,7 +282,7 @@ test('prevents navigation but does not accept files while prompt submission is p
 test('prevents file-drop navigation in question mode', async ({ page }) => {
   await mockComposerApi(page);
   // publish the current question through the normal dashboard contract
-  await page.route('**/api/dashboard', route => route.fulfill({ json: { generation: 1, projects: [], agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Question', kind: 'codex', attention: 'question', question: { id: 'drop-question', text: 'Which environment?', choices: ['Staging', 'Production'], source: 'parsed' } }] } }));
+  await page.route('**/api/dashboard', route => route.fulfill({ json: { generation: 1, projects: [], agents: [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', title: 'Question', kind: 'codex', attention: 'question', question: { id: 'drop-question', text: 'Which environment?', choices: ['Staging', 'Production'], source: 'parsed' } }] } }));
   await page.goto('/');
   const question = page.getByRole('button', { name: 'Staging', exact: true });
   await expect(question).toBeVisible();

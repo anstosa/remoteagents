@@ -75,7 +75,7 @@ same login shell as the agent, in the launch directory (the worktree for a
 worktree launch, the home directory for Scratch), before the program; a non-zero
 exit stops the agent from ever starting — the failure is visible in the pane.
 `teardown` runs after the console stops a running agent of the kind (Turn off,
-Restart), in the stopped agent's workspace, best-effort: a failure is logged and
+Restart), in the stopped agent's folder, best-effort: a failure is logged and
 never blocks the stop. Unlike `setup`, `teardown` runs through the tmux server's
 `sh` with the server's environment, not your login shell, so it does not see
 profile-only `PATH` entries — keep it to absolute paths and plain commands. On
@@ -147,7 +147,7 @@ cleanup as the OMX adapter's lifecycle commands:
 keeps the checkout tidy between launches and, being keyed by kind, never fires
 for a plain Codex stop. Relative paths in either command resolve against the
 directory the command runs in — the worktree for `setup`, the stopped agent's
-workspace for `teardown`.
+folder for `teardown`.
 
 The program is launched from an interactive zsh shell by default. Set
 `RAC_INTERACTIVE_SHELL` for container or direct sessions and

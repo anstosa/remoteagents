@@ -245,7 +245,7 @@ export class PromptService {
   }
 
   // advance managed prompt completion
-  async observe(agent: Pick<Agent, 'id' | 'displayLabel' | 'workspace' | 'attention' | 'kind'>): Promise<void> {
+  async observe(agent: Pick<Agent, 'id' | 'displayLabel' | 'home' | 'attention' | 'kind'>): Promise<void> {
     const scope = this.historyScope(agent, agent.id);
     await this.restoreConversationReset(scope, agent.id);
     // pause observation during restart handoffs and in-flight delivery
@@ -427,7 +427,7 @@ export class PromptService {
     // reset commands have no model answer, even when startup briefly looks busy
     const instant = reset || (adapter.submission.completesWithoutWork?.(prompt) ?? false);
     const scope = this.historyScope(first.agent, agentId);
-    const workspace = this.workspaceFor(first.agent.workspace);
+    const workspace = this.workspaceFor(first.agent.home);
     const staged = await this.stageAttachments(workspace, attachments);
     if (staged === undefined) return false;
     const attachmentPrompt = staged.length === 0 ? prompt : `${prompt}${prompt ? '\n\n' : ''}Attached files:\n${staged.map(path => `@${path}`).join('\n')}`;
@@ -864,10 +864,10 @@ export class PromptService {
 
   // the Worktree-scoped key (queued prompts, history): the Worktree wire id
   // `<projectId>:<realpath>`, or an `agent:<id>` scope for a Scratch or advisor pane
-  private historyScope(agent: Pick<Agent, 'displayLabel' | 'workspace'>, agentId: string): string {
+  private historyScope(agent: Pick<Agent, 'displayLabel' | 'home'>, agentId: string): string {
     // prevent advisor prompts and feedback from entering the repository queue
     if (isUpdateAdvisorLabel(agent.displayLabel)) return `agent:${agentId}`;
-    const worktree = configuredWorktreeForWorkspace(this.discovery.worktreesNow(), agent.workspace);
+    const worktree = configuredWorktreeForWorkspace(this.discovery.worktreesNow(), agent.home);
     return worktree === undefined ? `agent:${agentId}` : worktree.id;
   }
 
@@ -986,7 +986,7 @@ export class PromptService {
       if (!first) return false;
       const adapter = this.resolveAdapter(first.agent.kind);
       if (adapter?.questions === undefined) return false;
-      const workspace = this.workspaceFor(first.agent.workspace);
+      const workspace = this.workspaceFor(first.agent.home);
       let question = await adapter.questions.pending?.(workspace, first.agent.paneId);
       let capture: string | undefined;
       // re-derive reported questions from their current hook payload and pane
@@ -1048,18 +1048,18 @@ export class PromptService {
     return 'ok';
   }
   // stop one Agent by killing its pane; a kind with a configured teardown command
-  // then gets a best-effort post-stop cleanup in the stopped agent's workspace
+  // then gets a best-effort post-stop cleanup in the stopped agent's home
   // (never on cleanup or new-task pane kills, which bypass this path)
   async close(agentId: string): Promise<boolean> {
     const target = await this.discovery.target(agentId);
     if (target === undefined || !await this.tmux.close(target.socket, target.agent.paneId)) return false;
     const teardown = this.teardownFor(target.agent.kind);
     if (teardown !== undefined) {
-      const done = await this.tmux.runShell(target.socket, expandCommand(teardown, { identity: target.agent.workspace })).catch(() => false);
+      const done = await this.tmux.runShell(target.socket, expandCommand(teardown, { identity: target.agent.home })).catch(() => false);
       // a failed teardown never blocks the stop; the setup command is the safety net.
       // the workspace is an agent-controlled path (its cwd), so JSON-encode it — a
       // directory name may hold newlines or control bytes that would forge log lines
-      if (!done) console.error(`[prompts] adapters.${target.agent.kind} teardown failed in ${JSON.stringify(target.agent.workspace)}`);
+      if (!done) console.error(`[prompts] adapters.${target.agent.kind} teardown failed in ${JSON.stringify(target.agent.home)}`);
     }
     return true;
   }

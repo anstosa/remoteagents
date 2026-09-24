@@ -14,7 +14,7 @@ const socket = { fingerprint: 'socket', path: '/tmp/sock', device: 1, inode: 1 }
 type ResetTestAgent = {
   id: string;
   paneId: string;
-  workspace: string;
+  home: string;
   kind: 'claude' | 'codex' | 'omx';
   title: string;
   attention: 'finished' | 'working';
@@ -30,7 +30,7 @@ const createResetFixture = async (kind: ResetTestAgent['kind'] = 'codex') => {
   const agent: ResetTestAgent = {
     id: 'socket:%1',
     paneId: '%1',
-    workspace: '/tmp',
+    home: '/tmp',
     kind,
     title: 'Ready',
     attention: 'finished'

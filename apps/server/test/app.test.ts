@@ -194,7 +194,7 @@ describe('server administration API', () => {
     const targetSha = '2'.repeat(40);
     const advisorId = 'update-advisor';
     const socket = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const pendingAgent = stated({ id: advisorId, paneId: '%8', sessionId: 'socket:$8', socketFingerprint: 'socket', workspace: '/host/repo', displayLabel: 'Update Advisor Starting v4 2222222', title: 'Ready' });
+    const pendingAgent = stated({ id: advisorId, paneId: '%8', sessionId: 'socket:$8', socketFingerprint: 'socket', home: '/host/repo', displayLabel: 'Update Advisor Starting v4 2222222', title: 'Ready' });
     const readyAgent = { ...pendingAgent, displayLabel: 'Update Advisor v4 2222222' };
     const oldAgent = { ...pendingAgent, id: 'old-update-advisor', paneId: '%7', sessionId: 'socket:$7' };
     const preview = { available: true, rebuildRetryAvailable: false, baseSha: '1'.repeat(40), targetSha, fastForwardable: true, commitCount: 1, commits: [], commitsTruncated: false, filesTruncated: false, advisory: { required: true, reasons: [{ kind: 'config', paths: ['.env.example'] }] } };
@@ -288,7 +288,7 @@ describe('server administration API', () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const targetSha = '2'.repeat(40);
     const socket = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const legacy = stated({ id: 'legacy-advisor', paneId: '%7', sessionId: 'socket:$7', socketFingerprint: 'socket', workspace: '/host/repo', displayLabel: 'Update Advisor 2222222', title: 'Ready' });
+    const legacy = stated({ id: 'legacy-advisor', paneId: '%7', sessionId: 'socket:$7', socketFingerprint: 'socket', home: '/host/repo', displayLabel: 'Update Advisor 2222222', title: 'Ready' });
     let closed = false;
     let dashboardFails = false;
     const discovery = { worktreesNow: () => [],
@@ -317,7 +317,7 @@ describe('server administration API', () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const targetSha = '2'.repeat(40);
     const socket = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
-    const older = stated({ id: 'older-advisor', paneId: '%8', sessionId: 'socket:$8', socketFingerprint: 'socket', workspace: '/host/repo', displayLabel: 'Update Advisor v4 2222222', title: 'Framework' });
+    const older = stated({ id: 'older-advisor', paneId: '%8', sessionId: 'socket:$8', socketFingerprint: 'socket', home: '/host/repo', displayLabel: 'Update Advisor v4 2222222', title: 'Framework' });
     const newer = { ...older, id: 'newer-advisor', paneId: '%9', sessionId: 'socket:$9', title: 'remoteagents' };
     let olderClosed = false;
     const discovery = { worktreesNow: () => [],
@@ -421,7 +421,7 @@ describe('client control', () => {
     const subscribed: unknown[] = [];
     const messages: unknown[] = [];
     const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
-    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', worktreeId: 'cora', title: 'Ready' });
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', worktreeId: 'cora', title: 'Ready' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const push = { enabled: true, publicKey: 'public-key', subscribe: async (subscription: unknown) => { subscribed.push(subscription); return true; }, notify: async (message: unknown) => { messages.push(message); } };
     const notifications = new AgentNotificationCoordinator(() => {}, 0);
@@ -458,7 +458,7 @@ describe('client control', () => {
 describe('agent launches', () => {
   it('waits for a discovered Codex pane and returns its id to the client', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu', title: '' });
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/home/ubuntu', title: '' });
     let dashboards = 0;
     const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: ++dashboards, agents: dashboards === 1 ? [] : [agent], projects: [] }) };
     const launch = { launch: async () => true, launchHome: async () => true };
@@ -476,7 +476,7 @@ describe('agent launches', () => {
   it('waits beyond twenty seconds for the requested worktree agent', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
-    const agent = stated({ id: 'socket:%2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '', worktreeId: 'cora' });
+    const agent = stated({ id: 'socket:%2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', home: '/worktrees/cora', title: '', worktreeId: 'cora' });
     let dashboards = 0;
     // reveal after the old timeout
     const discovery = { worktreesNow: () => [worktree], dashboard: async () => ({ generation: ++dashboards, agents: dashboards < 83 ? [] : [agent], projects: [] }) };
@@ -497,7 +497,7 @@ describe('agent launches', () => {
 
   it('forwards a requested launch kind and rejects an unknown one', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu', title: '' });
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/home/ubuntu', title: '' });
     let dashboards = 0;
     const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: ++dashboards, agents: dashboards === 1 ? [] : [agent], projects: [] }) };
     const kinds: Array<string | undefined> = [];
@@ -519,7 +519,7 @@ describe('agent launches', () => {
   it('launches a non-git directory Project in place and returns its labeled agent id', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const directoryConfig = { ...config, projects: [testProject({ id: 'notes', label: 'Notes', path: '/home/me/notes', identity: '/home/me/notes', mode: 'directory', available: true })] };
-    const agent = stated({ id: 'socket:%5', paneId: '%5', sessionId: 'socket:$5', socketFingerprint: 'socket', workspace: '/home/me/notes', displayLabel: 'Notes', title: '' });
+    const agent = stated({ id: 'socket:%5', paneId: '%5', sessionId: 'socket:$5', socketFingerprint: 'socket', home: '/home/me/notes', displayLabel: 'Notes', title: '' });
     let dashboards = 0;
     const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: ++dashboards, agents: dashboards === 1 ? [] : [agent], projects: [] }) };
     const kinds: Array<string | undefined> = [];
@@ -666,7 +666,7 @@ describe('dashboard launch resolution', () => {
       dashboard: async () => ({
         generation: 1,
         adapters: {},
-        agents: [{ id: 'agent-cora', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', title: 'Ready', kind: 'codex', attention: 'finished' }],
+        agents: [{ id: 'agent-cora', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', title: 'Ready', kind: 'codex', attention: 'finished' }],
         projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'delta', projectId: 'proj', label: 'Delta', path: '/worktrees/delta', available: true, pinned: true, main: false, detached: false, locked: false, order: 1 }] }]
       }),
       target: async () => undefined
@@ -701,7 +701,7 @@ describe('configured worktree deactivation', () => {
   it('closes an idle configured agent so its worktree becomes inactive', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
     let closed = false;
     const deactivateApp = await buildApp({ ...config }, { auth: new AuthService(hash, Buffer.alloc(32, 7).toString('base64url')), discovery: { worktreesNow: () => [worktree], target: async (id: string) => id === agent.id ? { agent, socket: { fingerprint: "socket", path: "/tmp/tmux", device: 1, inode: 2 } } : undefined } as never, tmux: { close: async () => { closed = true; return true; } } as never });
     try {
@@ -716,7 +716,7 @@ describe('configured worktree deactivation', () => {
   it('runs the configured adapter teardown when the console stops an agent', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
     const shell: string[] = [];
     // the real buildApp wiring (`kind => config.adapters[kind]?.teardown`) must reach the tmux layer
     const teardownConfig = { ...config, adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true, teardown: 'rm -f .omx/state/session.json' } } };
@@ -733,8 +733,8 @@ describe('configured worktree deactivation', () => {
   it('runs adapters.omx.teardown for an OMX agent and no teardown for a Codex agent when only adapters.omx has one', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
-    const omxAgent = { ...stated({ id: 'agent-omx', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' }), kind: 'omx' as const };
-    const codexAgent = stated({ id: 'agent-codex', paneId: '%2', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
+    const omxAgent = { ...stated({ id: 'agent-omx', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' }), kind: 'omx' as const };
+    const codexAgent = stated({ id: 'agent-codex', paneId: '%2', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
     const agents = [omxAgent, codexAgent];
     const shell: string[] = [];
     // the teardown is keyed by the stopped agent's kind: the OMX-on-ZFS cleanup never fires for a plain Codex stop
@@ -754,7 +754,7 @@ describe('configured worktree deactivation', () => {
   it('offers no sleep, wake, or forget-sleeping-tab routes, and Turn off leaves no sleeping flag', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false };
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     let active = true;
     let resumed = false;
@@ -795,7 +795,7 @@ describe('configured worktree deactivation', () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-restart-agent-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false };
-    const firstAgent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
+    const firstAgent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
     const secondAgent = { ...firstAgent, id: 'agent-2', paneId: '%2', sessionId: 'socket:$2' };
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const events: string[] = [];
@@ -853,7 +853,7 @@ describe('Console shells server lifecycle', () => {
   };
 
   it('lists the Worktree panes with their role, name, busy and agent flags', async () => {
-    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
     const agentPane = { paneId: '%1', sessionId: '$1', windowId: '@0', pid: 1, path: '/worktrees/cora', command: 'codex', title: '', socket };
     const busyShell = { ...shell, windowId: '@3', paneName: 'build', command: 'vim' };
     const { app, headers } = await start({ discovery: { dashboard: async () => ({ ...idleDashboard, agents: [agent] }) }, launch: { worktreePanes: async () => [agentPane, busyShell], consoleShellBusy } });
@@ -868,7 +868,7 @@ describe('Console shells server lifecycle', () => {
   }, 15_000);
 
   it('opens a Console shell beside a live Agent, forwarding the Agent session', async () => {
-    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
     const createConsoleShell = vi.fn(async () => '%9');
     const { app, headers } = await start({ discovery: { dashboard: async () => ({ ...idleDashboard, agents: [agent] }), target: async (id: string) => id === agent.id ? { agent, socket } : undefined }, launch: { createConsoleShell } });
     try {
@@ -954,7 +954,7 @@ describe('Console shells server lifecycle', () => {
   // Agent's `%1` is closed proves the shell's pane (`%9`) is never touched — without relying on
   // the shell-scan, which this route deliberately never calls.
   it('leaves a Console shell alone when the Agent is turned off', async () => {
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
     const closed: string[] = [];
     const { app, headers } = await start({ discovery: { dashboard: async () => ({ ...idleDashboard, agents: [agent] }), target: async (id: string) => id === agent.id ? { agent, socket } : undefined }, tmux: { close: async (_socket: unknown, pane: string) => { closed.push(pane); return true; } } });
     try {
@@ -968,7 +968,7 @@ describe('Console shells server lifecycle', () => {
 describe('agent GitHub Actions route', () => {
   it('returns the pull-request switch service actions URL, or 404 when there is none', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '⠋ Working' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: '⠋ Working' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const actionsApp = await buildApp(config, {
       auth: new AuthService(hash, Buffer.alloc(32, 8).toString('base64url')),
@@ -998,7 +998,7 @@ describe('guided review API boundary', () => {
       prepare: async () => { prepares += 1; return { comparison, resolved: {} }; },
       fingerprint: async () => ({ comparison: { scope: 'working', base: 'HEAD', fingerprint: 'empty-fingerprint', includeTests: false, includeDocs: false }, empty: true })
     };
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const pasted: string[] = [];
     const reviewApp = await buildApp(config, {
@@ -1075,7 +1075,7 @@ describe('queued prompt API', () => {
   it('accepts a durable prompt when immediate agent acknowledgement is missing', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-unacknowledged-prompt-api-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/tmp', title: 'Ready' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/tmp', title: 'Ready' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     let pasted = '';
     const queuedApp = await buildApp(config, {
@@ -1108,7 +1108,7 @@ describe('queued prompt API', () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-queued-prompt-api-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '⠋ Working' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: '⠋ Working' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const queuedApp = await buildApp({ ...config }, {
       auth: new AuthService(hash, Buffer.alloc(32, 11).toString('base64url')),
@@ -1145,7 +1145,7 @@ describe('queued prompt API', () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-save-queued-prompt-api-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', projectId: 'cora', label: 'Renamed Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '⠋ Working' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: '⠋ Working' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const dashboardUpdates = { setLoader: () => {}, refresh: async () => { throw new Error('refresh unavailable'); }, close: () => {} };
     const queuedApp = await buildApp({ ...config }, {
@@ -1186,7 +1186,7 @@ describe('queued prompt API', () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-save-queued-prompt-update-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = testWorktree({ id: 'cora', projectId: 'cora', label: 'Renamed Cora', path: '/worktrees/cora', identity: '/worktrees/cora' });
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: worktree.path, worktreeId: worktree.id, projectId: worktree.projectId, title: '⠋ Working' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: worktree.path, worktreeId: worktree.id, projectId: worktree.projectId, title: '⠋ Working' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const dashboardUpdates = new DashboardUpdates<DashboardPayload>(dashboardFingerprint);
     const dashboardProject = {
@@ -1232,7 +1232,7 @@ describe('queued prompt API', () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-save-queued-prompt-fail-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '⠋ Working' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: '⠋ Working' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const queuedApp = await buildApp({ ...config }, {
       auth: new AuthService(hash, Buffer.alloc(32, 14).toString('base64url')),
@@ -1265,7 +1265,7 @@ describe('queued prompt API', () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     // a realistic `<projectId>:<realpath>` wire id, so the drain's projectId collapse is exercised
     const worktree = { id: 'cora:/worktrees/cora', projectId: 'cora', label: 'Release Lane', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: '⠋ Working' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: '⠋ Working' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     let capture = ['› Earlier prompt', '', '• Earlier answer', '', '─ Worked for 1s', '', '› Active prompt', '', '• Working'].join('\n');
     const drainApp = await buildApp({ ...config }, {
@@ -1311,7 +1311,7 @@ describe('queued prompt API', () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-save-scratch-note-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     // no configured worktree: the queue keys as agent:<id> while notes key by the hashed Scratch dir
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/me/scratch', title: '⠋ Working' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/home/me/scratch', title: '⠋ Working' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const queuedApp = await buildApp({ ...config }, {
       auth: new AuthService(hash, Buffer.alloc(32, 16).toString('base64url')),
@@ -1346,7 +1346,7 @@ describe('queued prompt API', () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-drain-scratch-api-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     // no configured worktree: the queue keys as agent:<id> and the drain must resolve the scratch key
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/me/scratch', title: '⠋ Working' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/home/me/scratch', title: '⠋ Working' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     let capture = ['› Active prompt', '', '• Working'].join('\n');
     const drainApp = await buildApp({ ...config }, {
@@ -1383,8 +1383,8 @@ describe('prompt history API', () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
     const agents = [
-      stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' }),
-      stated({ id: 'agent-2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready' })
+      stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready' }),
+      stated({ id: 'agent-2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready' })
     ];
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     const stored: Array<{ id: string; text: string; createdAt: string }> = [];
@@ -1462,7 +1462,7 @@ describe('worktree notes API', () => {
   it('keeps scratch notes available through the live agent', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
-    const agent = stated({ id: 'scratch-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu', title: 'Scratch' });
+    const agent = stated({ id: 'scratch-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/home/ubuntu', title: 'Scratch' });
     const stored: Array<{ id: string; text: string; title?: string }> = [{ id: 'note-identifier-001', text: 'Scratch note' }];
     const keys: string[] = [];
     const notes = {
@@ -1549,7 +1549,7 @@ describe('worktree notes API', () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-note-attachment-api-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', projectId: 'potato', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: worktree.path, title: 'Ready' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: worktree.path, title: 'Ready' });
     const discovery = {
       worktreesNow: () => [worktree],
       target: async (id: string) => id === agent.id ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined,
@@ -1608,7 +1608,7 @@ describe('worktree notes API', () => {
   it('manages attachments for scratch-agent notes', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-scratch-note-attachments-'));
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const agent = stated({ id: 'scratch-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/scratch', title: 'Scratch' });
+    const agent = stated({ id: 'scratch-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/home/ubuntu/scratch', title: 'Scratch' });
     const discovery = {
       worktreesNow: () => [],
       target: async (id: string) => id === agent.id ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined,
@@ -1647,8 +1647,8 @@ describe('worktree notes API', () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const cora = { id: 'cora', projectId: 'potato', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true };
     const owen = { id: 'owen', projectId: 'other', label: 'Owen', path: '/worktrees/owen', identity: '/worktrees/owen', available: true };
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.path, title: 'Ready' });
-    const otherAgent = stated({ id: 'agent-2', paneId: '%2', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/other', title: 'Ready' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: cora.path, title: 'Ready' });
+    const otherAgent = stated({ id: 'agent-2', paneId: '%2', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/home/ubuntu/other', title: 'Ready' });
     const discovery = {
       worktreesNow: () => [cora, owen],
       target: async (id: string) => id === agent.id
@@ -1711,7 +1711,7 @@ describe('workspace files API', () => {
   it('lists response files and previews active or inactive workspace files', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', hostPath: '/home/ubuntu/cora', available: true, pinned: false };
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/home/ubuntu/cora', title: 'Ready' });
+    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/home/ubuntu/cora', title: 'Ready' });
     const discovery = {
       worktreesNow: () => [worktree],
       target: async (id: string) => id === agent.id ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined,

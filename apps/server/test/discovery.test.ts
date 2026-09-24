@@ -115,7 +115,9 @@ describe('DiscoveryService dashboard', () => {
 
     expect(dashboard.agents).toHaveLength(1);
     // the pane's host path matches the Main worktree's hostPath, not its console path
-    expect(dashboard.agents[0]).toMatchObject({ workspace: '/worktrees/ferry', projectId: 'ferry', worktreeId: 'ferry:/worktrees/ferry', newTaskConfigured: true, push: { label: 'Commit/Push', prompt: '$push' }, projectUrl: 'https://ferry.external.example.com', projectProxied: false });
+    expect(dashboard.agents[0]).toMatchObject({ home: '/worktrees/ferry', projectId: 'ferry', worktreeId: 'ferry:/worktrees/ferry', newTaskConfigured: true, push: { label: 'Commit/Push', prompt: '$push' }, projectUrl: 'https://ferry.external.example.com', projectProxied: false });
+    // the Agent's folder travels as `home` only; the retired `workspace` key must not reappear on the wire
+    expect(dashboard.agents[0]).not.toHaveProperty('workspace');
     // the Worktree is carried under its Project; an active Worktree omits idle git metadata
     expect(dashboard.projects[0]?.worktrees).toMatchObject([{ id: 'ferry:/worktrees/ferry', main: true, pinned: true, projectUrl: 'https://ferry.external.example.com', projectProxied: false }]);
   });
@@ -282,7 +284,7 @@ describe('DiscoveryService dashboard', () => {
 
     const dashboard = await service.dashboard();
 
-    expect(dashboard.agents).toEqual([expect.objectContaining({ paneId: '%2', workspace: '/host/remoteagents', displayLabel: 'Update Advisor Starting v4 2222222' })]);
+    expect(dashboard.agents).toEqual([expect.objectContaining({ paneId: '%2', home: '/host/remoteagents', displayLabel: 'Update Advisor Starting v4 2222222' })]);
     // a modal advisor never claims the Project's Main worktree, which stays idle in projects[]
     expect(dashboard.agents[0]).not.toHaveProperty('worktreeId');
     expect(dashboard.projects[0]?.worktrees).toEqual([expect.objectContaining({ id: 'remoteagents:/workspace' })]);

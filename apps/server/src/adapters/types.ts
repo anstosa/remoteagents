@@ -348,7 +348,7 @@ export interface Adapter {
  * and `unavailableReason` come from the boot executable check (skipped under the
  * host bridge, where `program` is a host path the container cannot stat).
  * `setup` runs in the launched pane before the program (a failure aborts the
- * launch); `teardown` runs best-effort in the agent's workspace after a stop.
+ * launch); `teardown` runs best-effort in the agent's home after a stop.
  */
 /** Trusted shell commands used to inspect and update one configured agent CLI. */
 export type AdapterUpdateCommands = { current: string; latest: string; run: string };

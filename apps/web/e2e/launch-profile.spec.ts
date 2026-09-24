@@ -228,7 +228,7 @@ test('a launcher row menu is one fixed-width flyout that an outside press closes
 });
 
 test('an idle agent restarts as another kind from its power menu', async ({ page }) => {
-  const agent = { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 1, title: 'Ready', kind: 'codex', attention: 'finished', queuedPromptCount: 0, launch: { kind: 'codex', origin: 'worktree' } };
+  const agent = { id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 1, title: 'Ready', kind: 'codex', attention: 'finished', queuedPromptCount: 0, launch: { kind: 'codex', origin: 'worktree' } };
   const posts = await mount(page, { generation: 1, adapters: { codex, claude }, agents: [agent], projects: [] });
   await page.getByRole('button', { name: 'Agent power options' }).click();
   await page.getByRole('menuitem', { name: 'Restart as…' }).click();
@@ -240,7 +240,7 @@ test('an idle agent restarts as another kind from its power menu', async ({ page
 });
 
 test('agent tabs carry the kind glyph and a lock when sandboxed, idle worktree tabs carry none', async ({ page }) => {
-  const agent = { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 1, title: 'Ready', kind: 'claude', attention: 'finished', sandboxed: true, queuedPromptCount: 0 };
+  const agent = { id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 1, title: 'Ready', kind: 'claude', attention: 'finished', sandboxed: true, queuedPromptCount: 0 };
   await mount(page, { generation: 1, adapters: { codex, claude }, agents: [agent], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'codex', origin: 'default' }, { id: 'delta', label: 'Delta', order: 2 })] }] });
   // the Claude agent tab shows its glyph and a lock
   const agentTab = page.getByRole('tab', { name: /Cora/ });
@@ -253,11 +253,11 @@ test('agent tabs carry the kind glyph and a lock when sandboxed, idle worktree t
 // keep every agent tab glyph full-size, unboxed, and close to its label at each supported width
 test('agent tab glyphs stay unboxed, full-size, and tightly spaced on desktop and mobile', async ({ page }) => {
   const agents = [
-    { id: 'codex-agent', sessionId: 'socket:$1', workspace: '/worktrees/codex', worktreeId: 'codex', worktreeLabel: 'Codex tab', worktreeOrder: 1, title: 'Ready', kind: 'codex', attention: 'finished', queuedPromptCount: 0 },
-    { id: 'omx-agent', sessionId: 'socket:$2', workspace: '/worktrees/omx', worktreeId: 'omx', worktreeLabel: 'OMX tab', worktreeOrder: 2, title: 'Ready', kind: 'omx', attention: 'finished', queuedPromptCount: 0 },
-    { id: 'claude-agent', sessionId: 'socket:$3', workspace: '/worktrees/claude', worktreeId: 'claude', worktreeLabel: 'Claude tab', worktreeOrder: 3, title: 'Ready', kind: 'claude', attention: 'finished', sandboxed: true, queuedPromptCount: 0 },
-    { id: 'pi-agent', sessionId: 'socket:$4', workspace: '/worktrees/pi', worktreeId: 'pi', worktreeLabel: 'Pi tab', worktreeOrder: 4, title: 'Ready', kind: 'pi', attention: 'finished', queuedPromptCount: 0 },
-    { id: 'opencode-agent', sessionId: 'socket:$5', workspace: '/worktrees/opencode', worktreeId: 'opencode', worktreeLabel: 'OpenCode tab', worktreeOrder: 5, title: 'Ready', kind: 'opencode', attention: 'finished', queuedPromptCount: 0 },
+    { id: 'codex-agent', sessionId: 'socket:$1', home: '/worktrees/codex', worktreeId: 'codex', worktreeLabel: 'Codex tab', worktreeOrder: 1, title: 'Ready', kind: 'codex', attention: 'finished', queuedPromptCount: 0 },
+    { id: 'omx-agent', sessionId: 'socket:$2', home: '/worktrees/omx', worktreeId: 'omx', worktreeLabel: 'OMX tab', worktreeOrder: 2, title: 'Ready', kind: 'omx', attention: 'finished', queuedPromptCount: 0 },
+    { id: 'claude-agent', sessionId: 'socket:$3', home: '/worktrees/claude', worktreeId: 'claude', worktreeLabel: 'Claude tab', worktreeOrder: 3, title: 'Ready', kind: 'claude', attention: 'finished', sandboxed: true, queuedPromptCount: 0 },
+    { id: 'pi-agent', sessionId: 'socket:$4', home: '/worktrees/pi', worktreeId: 'pi', worktreeLabel: 'Pi tab', worktreeOrder: 4, title: 'Ready', kind: 'pi', attention: 'finished', queuedPromptCount: 0 },
+    { id: 'opencode-agent', sessionId: 'socket:$5', home: '/worktrees/opencode', worktreeId: 'opencode', worktreeLabel: 'OpenCode tab', worktreeOrder: 5, title: 'Ready', kind: 'opencode', attention: 'finished', queuedPromptCount: 0 },
   ];
   const expectedTabs = [
     { label: 'Codex tab', glyph: '◆' },

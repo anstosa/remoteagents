@@ -10,7 +10,7 @@ const agent = (title: string, unread = false, overrides: Partial<Agent> = {}) =>
   paneId: '%1',
   sessionId: '$1',
   socketFingerprint: 'socket',
-  workspace: '/workspace',
+  home: '/workspace',
   title,
   kind: 'codex' as const,
   attention: resolveAttention({ kind: 'codex', title, hasQuestion: overrides.question !== undefined }),

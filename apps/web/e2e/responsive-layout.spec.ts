@@ -10,11 +10,11 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
       json: {
         generation: 1,
         agents: [
-          { id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', displayLabel: '🥔 Cora', title: 'Ready' },
-          { id: 'agent-2', sessionId: 'socket:$2', workspace: '/worktrees/owen', displayLabel: '🥔 Owen', title: 'Ready' },
-          { id: 'agent-3', sessionId: 'socket:$3', workspace: '/worktrees/dave', displayLabel: '🥔 Dave', title: 'Ready' },
-          { id: 'agent-4', sessionId: 'socket:$4', workspace: '/worktrees/eric', displayLabel: '🥔 Eric', title: 'Ready' },
-          { id: 'agent-5', sessionId: 'socket:$5', workspace: '/worktrees/remote-agents', worktreeId: 'remote-agents', branch: 'feature/output-git-summary', gitStatus: { files: 3, staged: 1, unstaged: 2, untracked: 1, conflicted: 0 }, displayLabel: '📱 Remote Agents', title: 'Ready', attention: 'finished', projectUrl: 'https://project.example.com', stack: { actions: ['start', 'build'], tunnel: true }, pullRequest: { number: 42, title: 'Move the worktree tabs', status: 'open', url: 'https://github.com/octo/repo/pull/42' } }
+          { id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', displayLabel: '🥔 Cora', title: 'Ready' },
+          { id: 'agent-2', sessionId: 'socket:$2', home: '/worktrees/owen', displayLabel: '🥔 Owen', title: 'Ready' },
+          { id: 'agent-3', sessionId: 'socket:$3', home: '/worktrees/dave', displayLabel: '🥔 Dave', title: 'Ready' },
+          { id: 'agent-4', sessionId: 'socket:$4', home: '/worktrees/eric', displayLabel: '🥔 Eric', title: 'Ready' },
+          { id: 'agent-5', sessionId: 'socket:$5', home: '/worktrees/remote-agents', worktreeId: 'remote-agents', branch: 'feature/output-git-summary', gitStatus: { files: 3, staged: 1, unstaged: 2, untracked: 1, conflicted: 0 }, displayLabel: '📱 Remote Agents', title: 'Ready', attention: 'finished', projectUrl: 'https://project.example.com', stack: { actions: ['start', 'build'], tunnel: true }, pullRequest: { number: 42, title: 'Move the worktree tabs', status: 'open', url: 'https://github.com/octo/repo/pull/42' } }
         ],
         projects: []
       }

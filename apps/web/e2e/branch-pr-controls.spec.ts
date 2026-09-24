@@ -70,7 +70,7 @@ const activeWorktree = {
   branch: 'feature/current-pr-controls', gitStatus: { files: 3, staged: 1, unstaged: 2, untracked: 0, conflicted: 0 }, gitPrStatus: { base: 'origin/main', files: 4 }, pullRequest: activePullRequest
 };
 const activeAgent = {
-  id: 'agent-active', sessionId: 'socket:$1', workspace: '/worktrees/active', projectId: 'repo', worktreeId: 'active', title: 'Ready', queuedPromptCount: 0,
+  id: 'agent-active', sessionId: 'socket:$1', home: '/worktrees/active', projectId: 'repo', worktreeId: 'active', title: 'Ready', queuedPromptCount: 0,
   branch: activeWorktree.branch, gitStatus: activeWorktree.gitStatus, gitPrStatus: activeWorktree.gitPrStatus, pullRequest: activePullRequest, push: { label: 'Finish and PR', prompt: '$finish' }
 };
 

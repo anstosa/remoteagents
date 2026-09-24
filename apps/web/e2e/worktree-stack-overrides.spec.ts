@@ -17,7 +17,7 @@ test('renders independent stack URLs and actions for worktrees in one project', 
       agents: [{
         id: 'agent-cora',
         sessionId: 'socket:$1',
-        workspace: '/worktrees/cora',
+        home: '/worktrees/cora',
         projectId: 'potato',
         worktreeId: 'potato:/worktrees/cora',
         title: 'Running tests',

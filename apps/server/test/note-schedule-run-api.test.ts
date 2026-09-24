@@ -22,7 +22,7 @@ const mutate = { host, origin: `https://${host}`, cookie: '__Host-rac=x', 'x-csr
 const dashboardUpdates = { setLoader: () => {}, refresh: async () => {}, close: () => {} } as never;
 
 const worktree = testWorktree({ id: 'wt-main', projectId: 'proj', label: 'Proj · main', path: '/repo', identity: '/repo', main: true });
-const codexPane = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/repo', worktreeId: 'wt-main', title: 'Ready', kind: 'codex' as const };
+const codexPane = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/repo', worktreeId: 'wt-main', title: 'Ready', kind: 'codex' as const };
 const claudePane = { ...codexPane, kind: 'claude' as const };
 
 // seed a note keyed under the project with a Schedule (and optionally a remembered agent id)
@@ -149,7 +149,7 @@ describe('POST /api/worktrees/:id/notes/:noteId/schedule/run', () => {
     const workspace = await mkdtemp(join(tmpdir(), 'rac-scheduled-attachments-'));
     dirs.push(workspace);
     const runtimeWorktree = { ...worktree, path: workspace, identity: workspace };
-    const idle: Agent = { ...codexPane, workspace, attention: 'finished' };
+    const idle: Agent = { ...codexPane, home: workspace, attention: 'finished' };
     const working: Agent = { ...idle, attention: 'working', title: '⠋ Working' };
     // expose the reset transition before the actual submission
     const { discovery, tmux } = reuseWorld({ worktree: runtimeWorktree, socket: testSocket, agent: idle, afterReset: index => (index === 0 ? working : idle) });
@@ -218,7 +218,7 @@ describe('POST /api/worktrees/:id/notes/:noteId/schedule/run', () => {
     const workspace = await mkdtemp(join(tmpdir(), 'rac-fresh-scheduled-attachments-'));
     dirs.push(workspace);
     const runtimeWorktree = { ...worktree, path: workspace, identity: workspace };
-    const fresh: Agent = { ...codexPane, workspace, attention: 'finished' };
+    const fresh: Agent = { ...codexPane, home: workspace, attention: 'finished' };
     const tmux = recordingTmux();
     const launch = launchFake();
     // the remembered id resolves to nothing; a fresh Codex appears
@@ -288,7 +288,7 @@ describe('POST /api/worktrees/:id/notes/:noteId/schedule/run', () => {
   it('launches fresh for a Scratch target through launchHome', async () => {
     const tmux = recordingTmux();
     const launch = launchFake();
-    const discovery = appearingDiscovery({ worktree, agent: { ...codexPane, workspace: '/scratch', attention: 'finished' }, socket: testSocket });
+    const discovery = appearingDiscovery({ worktree, agent: { ...codexPane, home: '/scratch', attention: 'finished' }, socket: testSocket });
     const { notes, queued, noteId } = await scheduledNote({ target: { scratch: true } });
     const server = await runApp({ notes, queued, tmux, launch, discovery });
     try {
@@ -303,7 +303,7 @@ describe('POST /api/worktrees/:id/notes/:noteId/schedule/run', () => {
   it('launches fresh for a directory Project target through launchProjectDirectory', async () => {
     const tmux = recordingTmux();
     const launch = launchFake();
-    const fresh: Agent = { ...codexPane, id: 'agent-1', workspace: '/dir', displayLabel: 'Dir Proj', attention: 'finished' };
+    const fresh: Agent = { ...codexPane, id: 'agent-1', home: '/dir', displayLabel: 'Dir Proj', attention: 'finished' };
     const discovery = appearingDiscovery({ worktree, agent: fresh, socket: testSocket });
     const projects = [testProject({ id: 'proj' }), testProject({ id: 'dir-proj', label: 'Dir Proj', mode: 'directory', path: '/dir', identity: '/dir', available: true })];
     const { notes, queued, noteId } = await scheduledNote({ target: { projectId: 'dir-proj' } });
@@ -363,8 +363,8 @@ describe('POST /api/worktrees/:id/notes/:noteId/schedule/run', () => {
   });
 
   it('launches fresh when the remembered agent is in another workspace', async () => {
-    const stale: Agent = { ...codexPane, id: 'stale-agent', workspace: '/other', attention: 'finished' };
-    const fresh: Agent = { ...codexPane, id: 'agent-2', workspace: '/repo', attention: 'finished' };
+    const stale: Agent = { ...codexPane, id: 'stale-agent', home: '/other', attention: 'finished' };
+    const fresh: Agent = { ...codexPane, id: 'agent-2', home: '/repo', attention: 'finished' };
     let dashboards = 0;
     const discovery = {
       invalidateWorktrees: () => {},

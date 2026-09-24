@@ -17,7 +17,7 @@ const config: ValidatedConfig = {
   projects: []
 };
 const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
-const activeAgent: Agent = stated({ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: cora.identity, branch: 'feature/cora', title: 'Ready', projectId: cora.projectId, worktreeId: cora.id, projectUrl: cora.projectUrl, projectProxied: false, gitStatus: { files: 2, staged: 0, unstaged: 2, untracked: 0, conflicted: 0 } });
+const activeAgent: Agent = stated({ id: 'agent-cora', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: cora.identity, branch: 'feature/cora', title: 'Ready', projectId: cora.projectId, worktreeId: cora.id, projectUrl: cora.projectUrl, projectProxied: false, gitStatus: { files: 2, staged: 0, unstaged: 2, untracked: 0, conflicted: 0 } });
 
 // build one fully structural dependency set
 function dependencies(overrides: Partial<OrchestrationDependencies> = {}): OrchestrationDependencies {
@@ -215,7 +215,7 @@ describe('OrchestrationService', () => {
     agent = stated({ ...activeAgent, title: 'Ready' });
     await expect(service.deactivate(activeAgent.id)).resolves.toMatchObject({ ok: true, value: { deactivated: true } });
     expect(closed).toBe(1);
-    agent = { ...activeAgent, workspace: '/scratch/repo', title: 'Ready' };
+    agent = { ...activeAgent, home: '/scratch/repo', title: 'Ready' };
     await expect(service.deactivate(activeAgent.id)).resolves.toMatchObject({ ok: false, error: { code: 'conflict' } });
     expect(closed).toBe(1);
   });

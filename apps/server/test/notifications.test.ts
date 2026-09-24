@@ -12,7 +12,7 @@ const agent = (overrides: Partial<Agent> = {}): Agent => {
     paneId: '%1',
     sessionId: '$1',
     socketFingerprint: 'socket',
-    workspace: '/workspace',
+    home: '/workspace',
     title,
     kind: 'codex',
     attention: resolveAttention({ kind: 'codex', title, hasQuestion: overrides.question !== undefined }),

@@ -40,7 +40,7 @@ export class PullRequestSwitchService {
     const target = await this.discovery.target(agentId);
     // require one current target
     if (target === undefined) return undefined;
-    const worktree = this.worktree(target.agent.workspace);
+    const worktree = this.worktree(target.agent.home);
     if (worktree === undefined) return undefined;
     // require one canonical repository identity, not merely a GitHub origin
     const repository = await this.repositoryIdentity(worktree.identity);
@@ -54,7 +54,7 @@ export class PullRequestSwitchService {
     const agents = await Promise.all((dashboard?.agents ?? []).map(async agent => {
       // skip the freshly resolved target and branchless agents
       if (agent.id === target.agent.id || agent.branch === undefined) return undefined;
-      const candidate = this.worktree(agent.workspace)?.identity ?? agent.workspace;
+      const candidate = this.worktree(agent.home)?.identity ?? agent.home;
       return await this.repositoryIdentity(candidate) === repository ? agent : undefined;
     }));
     // prioritize active agents in this repository
@@ -116,8 +116,8 @@ export class PullRequestSwitchService {
   async actionsUrl(agentId: string): Promise<string | undefined> {
     const target = await this.discovery.target(agentId);
     if (target === undefined) return undefined;
-    const worktree = this.worktree(target.agent.workspace);
-    return await this.pullRequests.actionsUrl(worktree?.identity ?? target.agent.workspace);
+    const worktree = this.worktree(target.agent.home);
+    return await this.pullRequests.actionsUrl(worktree?.identity ?? target.agent.home);
   }
 
   async switch(agentId: string, number: number): Promise<BranchSwitchResult> {
@@ -128,7 +128,7 @@ export class PullRequestSwitchService {
       const available = await this.available(agentId);
       const pullRequest = available?.pullRequests.find(candidate => candidate.number === number) ?? available?.otherPullRequests.find(candidate => candidate.number === number);
       const target = await this.discovery.target(agentId);
-      const targetWorktree = target === undefined ? undefined : this.worktree(target.agent.workspace);
+      const targetWorktree = target === undefined ? undefined : this.worktree(target.agent.home);
       // require one ready and unused target
       if (!available?.enabled || pullRequest === undefined || pullRequest.checkedOut || target === undefined || targetWorktree === undefined) return 'unavailable';
       return await this.runSwitch(target, targetWorktree, pullRequest.checkoutBranch, workspace =>
@@ -148,7 +148,7 @@ export class PullRequestSwitchService {
       // require the branch on the availability list, held by no other worktree
       const switchable = available?.branches.find(candidate => candidate.branch === branch);
       const target = await this.discovery.target(agentId);
-      const targetWorktree = target === undefined ? undefined : this.worktree(target.agent.workspace);
+      const targetWorktree = target === undefined ? undefined : this.worktree(target.agent.home);
       if (!available?.enabled || switchable === undefined || switchable.checkedOut || target === undefined || targetWorktree === undefined) return 'unavailable';
       return await this.runSwitch(target, targetWorktree, branch, workspace => this.switchLocalBranch(workspace, branch));
     } finally {
@@ -228,13 +228,13 @@ export class PullRequestSwitchService {
   private async moveCheckedOutBranch(agentId: string, enabled: boolean, movable: SwitchableBranch): Promise<PullRequestMoveResult> {
     const { branch: checkoutBranch, checkedOut, openIn } = movable;
     const target = await this.discovery.target(agentId);
-    const targetWorktree = target === undefined ? undefined : this.worktree(target.agent.workspace);
+    const targetWorktree = target === undefined ? undefined : this.worktree(target.agent.home);
     const sourceWorktree = openIn === undefined ? undefined : worktreeById(this.discovery.worktreesNow(), openIn.worktreeId);
     // require one ready destination and one resolvable source
     if (!enabled || !checkedOut || target === undefined || targetWorktree === undefined || openIn === undefined || sourceWorktree === undefined || sourceWorktree.id === targetWorktree.id) return 'unavailable';
     const sourceTarget = openIn.agentId === undefined ? undefined : await this.discovery.target(openIn.agentId);
     // fail closed when the active source changed identity
-    if (openIn.agentId !== undefined && (sourceTarget === undefined || sourceTarget.agent.id === target.agent.id || this.worktree(sourceTarget.agent.workspace)?.id !== sourceWorktree.id)) return 'unavailable';
+    if (openIn.agentId !== undefined && (sourceTarget === undefined || sourceTarget.agent.id === target.agent.id || this.worktree(sourceTarget.agent.home)?.id !== sourceWorktree.id)) return 'unavailable';
     // without job control neither the destination nor an active source can be interrupted for a move
     if (agentAttentionState(target.agent) === 'working' || (sourceTarget !== undefined && agentAttentionState(sourceTarget.agent) === 'working')) return 'busy';
     const sourceBranch = await this.command('/usr/bin/git', ['-C', sourceWorktree.identity, 'symbolic-ref', '--quiet', '--short', 'HEAD']);

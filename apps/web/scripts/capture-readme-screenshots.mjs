@@ -17,7 +17,7 @@ const dashboard = {
     {
       id: 'agent-atlas',
       sessionId: 'local:$1',
-      workspace: '/worktrees/atlas',
+      home: '/worktrees/atlas',
       worktreeId: 'atlas',
       worktreeLabel: 'Atlas',
       worktreeOrder: 1,
@@ -51,7 +51,7 @@ const dashboard = {
     {
       id: 'agent-docs',
       sessionId: 'local:$2',
-      workspace: '/worktrees/docs',
+      home: '/worktrees/docs',
       worktreeId: 'docs',
       worktreeLabel: 'Docs',
       worktreeOrder: 2,
@@ -63,7 +63,7 @@ const dashboard = {
     {
       id: 'agent-api',
       sessionId: 'local:$3',
-      workspace: '/worktrees/api',
+      home: '/worktrees/api',
       worktreeId: 'api',
       worktreeLabel: 'API migration',
       worktreeOrder: 3,

@@ -33,7 +33,7 @@ const mountLifecycle = async (page: Page, options: { failFirst?: boolean; holdFa
   const requestFinished = new Promise<void>(resolve => { finishRequest = resolve; });
   const cora = { id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: options.pinned ?? true, order: 0, launch: { kind: 'codex', origin: 'worktree' } };
   const delta = { id: 'delta', label: 'Delta', path: '/worktrees/delta', available: true, pinned: true, order: 1 };
-  const readyAgent = { id: 'agent-ready', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready', kind: 'codex', attention: 'finished', launch: { kind: 'codex', origin: 'worktree' } };
+  const readyAgent = { id: 'agent-ready', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready', kind: 'codex', attention: 'finished', launch: { kind: 'codex', origin: 'worktree' } };
 
   // serve controlled lifecycle snapshots
   await page.route('**/api/**', async route => {
@@ -121,8 +121,8 @@ const mountPendingSession = async (page: Page, scope: 'scratch' | 'directory', o
   let finishRequest!: () => void;
   const requestFinished = new Promise<void>(resolve => { finishRequest = resolve; });
   const directory = { id: 'docs', label: 'Docs', mode: 'directory', available: true, worktrees: [], launch: { kind: 'codex', origin: 'project' } };
-  const anchorAgent = { id: 'anchor', sessionId: 'socket:$1', workspace: '/tmp/anchor', displayLabel: 'Anchor', title: 'Ready', kind: 'codex', attention: 'finished' };
-  const readyAgent = { id: agentId, sessionId: 'socket:$2', workspace: scope === 'scratch' ? '/tmp/scratch' : '/projects/docs', displayLabel: label, title: 'Ready', kind: 'codex', attention: 'finished', ...(scope === 'directory' ? { projectId: 'docs' } : {}) };
+  const anchorAgent = { id: 'anchor', sessionId: 'socket:$1', home: '/tmp/anchor', displayLabel: 'Anchor', title: 'Ready', kind: 'codex', attention: 'finished' };
+  const readyAgent = { id: agentId, sessionId: 'socket:$2', home: scope === 'scratch' ? '/tmp/scratch' : '/projects/docs', displayLabel: label, title: 'Ready', kind: 'codex', attention: 'finished', ...(scope === 'directory' ? { projectId: 'docs' } : {}) };
 
   // serve controlled scratch-like snapshots
   await page.route('**/api/**', async route => {
@@ -537,7 +537,7 @@ test('does not steal selection when a scratch launch completes in the background
 
 // verify dashboard deep links
 test('keeps initial and same-document tab links aligned with stable selection keys', async ({ page }) => {
-  const cora = { id: 'agent-cora', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready', kind: 'codex', attention: 'finished' };
+  const cora = { id: 'agent-cora', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready', kind: 'codex', attention: 'finished' };
   const delta = { id: 'delta', label: 'Delta', path: '/worktrees/delta', available: true, pinned: true, order: 1 };
   // serve one agent and one idle worktree
   await page.route('**/api/**', route => {

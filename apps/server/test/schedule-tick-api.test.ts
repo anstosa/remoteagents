@@ -23,7 +23,7 @@ const control = { connect: () => true } as never;
 const dashboardUpdates = { setLoader: () => {}, refresh: async () => {}, close: () => {} } as never;
 
 const worktree = testWorktree({ id: 'wt-main', projectId: 'proj', label: 'Proj · main', path: '/repo', identity: '/repo', main: true });
-const codexPane = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/repo', worktreeId: 'wt-main', title: 'Ready', kind: 'codex' as const };
+const codexPane = { id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/repo', worktreeId: 'wt-main', title: 'Ready', kind: 'codex' as const };
 
 // boot and settings-change both precede the Jan-5 due instant, so a tick at Jan-5 10:00 fires it once.
 const bootPast = new Date('2026-01-01T00:00:00-08:00');
@@ -190,7 +190,7 @@ describe('scheduler tick fires Schedules unattended', () => {
   it('drops the closed pane id when a fresh launch is blocked, deep-linking the notification to the Worktree', async () => {
     const { messages, push } = pushRecorder();
     const { notes, queued, noteId } = await seed({ target: { worktreeId: 'wt-main' }, kind: 'claude' });
-    const claude: Agent = { id: 'agent-9', paneId: '%9', sessionId: 'socket:$9', socketFingerprint: 'socket', workspace: '/repo', worktreeId: 'wt-main', title: 'Ready', kind: 'claude', attention: 'finished' };
+    const claude: Agent = { id: 'agent-9', paneId: '%9', sessionId: 'socket:$9', socketFingerprint: 'socket', home: '/repo', worktreeId: 'wt-main', title: 'Ready', kind: 'claude', attention: 'finished' };
     const discovery = appearingDiscovery({ worktree, agent: claude, socket: testSocket });
     // Claude's readiness sees the Quick safety check dialog and blocks; runFresh then closes the pane
     const tmux = recordingTmux({ capture: () => 'Quick safety check: Is this a project you trust?' });

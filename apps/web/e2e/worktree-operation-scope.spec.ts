@@ -17,8 +17,8 @@ test('keeps a queued prompt pending only on its originating agent tab', async ({
       return route.fulfill({
         json: {
           agents: [
-            { id: 'agent-alpha', sessionId: 'socket:$1', workspace: '/worktrees/alpha', worktreeLabel: 'Alpha', worktreeOrder: 1, title: 'Ready' },
-            { id: 'agent-bravo', sessionId: 'socket:$2', workspace: '/worktrees/bravo', worktreeLabel: 'Bravo', worktreeOrder: 2, title: 'Ready' }
+            { id: 'agent-alpha', sessionId: 'socket:$1', home: '/worktrees/alpha', worktreeLabel: 'Alpha', worktreeOrder: 1, title: 'Ready' },
+            { id: 'agent-bravo', sessionId: 'socket:$2', home: '/worktrees/bravo', worktreeLabel: 'Bravo', worktreeOrder: 2, title: 'Ready' }
           ],
           projects: []
         }
@@ -65,7 +65,7 @@ test('keeps launch state on its worktree tab and does not pull focus back after 
     if (url.pathname === '/api/dashboard') {
       return route.fulfill({
         json: launched ? {
-          agents: [{ id: 'agent-alpha', sessionId: 'socket:$1', workspace: '/worktrees/alpha', worktreeId: 'alpha', worktreeLabel: 'Alpha', worktreeOrder: 1, title: 'Ready' }],
+          agents: [{ id: 'agent-alpha', sessionId: 'socket:$1', home: '/worktrees/alpha', worktreeId: 'alpha', worktreeLabel: 'Alpha', worktreeOrder: 1, title: 'Ready' }],
           projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'bravo', label: 'Bravo', path: '/worktrees/bravo', available: true, pinned: true, order: 2 }] }]
         } : {
           agents: [],
@@ -129,8 +129,8 @@ test('creates loading tabs immediately and keeps the worktree launcher available
       // count delayed dashboard propagation
       if (alphaLaunchReturned && !alphaRunning) alphaPostResponseDashboards += 1;
       const agents = [
-        ...(alphaRunning ? [{ id: 'agent-alpha', sessionId: 'socket:$1', workspace: '/worktrees/alpha', worktreeId: 'alpha', worktreeLabel: 'Alpha', worktreeOrder: 1, title: 'Ready' }] : []),
-        ...(bravoRunning ? [{ id: 'agent-bravo', sessionId: 'socket:$2', workspace: '/worktrees/bravo', worktreeId: 'bravo', worktreeLabel: 'Bravo', worktreeOrder: 2, title: 'Ready' }] : [])
+        ...(alphaRunning ? [{ id: 'agent-alpha', sessionId: 'socket:$1', home: '/worktrees/alpha', worktreeId: 'alpha', worktreeLabel: 'Alpha', worktreeOrder: 1, title: 'Ready' }] : []),
+        ...(bravoRunning ? [{ id: 'agent-bravo', sessionId: 'socket:$2', home: '/worktrees/bravo', worktreeId: 'bravo', worktreeLabel: 'Bravo', worktreeOrder: 2, title: 'Ready' }] : [])
       ];
       const worktrees = [
         ...(!alphaRunning ? [{ id: 'alpha', projectId: 'proj', label: 'Alpha', path: '/worktrees/alpha', main: false, detached: false, locked: false, available: true, pinned: false, order: 1 }] : []),
@@ -251,7 +251,7 @@ test('keeps a pending Turn off on its worktree tab without blocking another agen
   const turnedOff = new Set<string>();
   let finishTurnOff!: () => void;
   const turnOffFinished = new Promise<void>(resolve => { finishTurnOff = resolve; });
-  const agent = (name: string, order: number) => ({ id: `agent-${name}`, sessionId: `socket:$${order}`, workspace: `/worktrees/${name}`, worktreeId: name, title: 'Ready' });
+  const agent = (name: string, order: number) => ({ id: `agent-${name}`, sessionId: `socket:$${order}`, home: `/worktrees/${name}`, worktreeId: name, title: 'Ready' });
   const worktree = (name: string, label: string, order: number) => ({ id: name, label, path: `/worktrees/${name}`, available: true, pinned: false, order });
   await page.route('**/api/**', async route => {
     const request = route.request();

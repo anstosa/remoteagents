@@ -203,11 +203,11 @@ export class OrchestrationService {
     const target = await this.dependencies.discovery.target(agentId);
     // require a current target
     if (target === undefined) return undefined;
-    const worktree = configuredWorktreeForWorkspace(this.dependencies.discovery.worktreesNow(), target.agent.workspace);
+    const worktree = configuredWorktreeForWorkspace(this.dependencies.discovery.worktreesNow(), target.agent.home);
     return {
       scope: worktree === undefined ? `agent:${agentId}` : worktree.id,
       agent: target.agent,
-      workspace: worktree?.identity ?? target.agent.workspace
+      workspace: worktree?.identity ?? target.agent.home
     };
   }
 
@@ -578,7 +578,7 @@ export class OrchestrationService {
       const target = await this.dependencies.discovery.target(agentId);
       // require a current target
       if (target === undefined) return failure('not_found', 'Agent not found.');
-      const configured = configuredWorktreeForWorkspace(this.dependencies.discovery.worktreesNow(), target.agent.workspace);
+      const configured = configuredWorktreeForWorkspace(this.dependencies.discovery.worktreesNow(), target.agent.home);
       const enriched = (await this.dependencies.loadDashboard()).agents.find(candidate => candidate.id === agentId);
       // protect scratch, working, and questioning agents
       if (configured === undefined || agentAttentionState(target.agent) !== 'finished' || (enriched !== undefined && agentAttentionState(enriched) !== 'finished')) return failure('conflict', 'Only idle configured agents can be deactivated.');

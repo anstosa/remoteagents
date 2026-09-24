@@ -68,7 +68,7 @@ export async function resolveConfiguredWorkspace(discovery: DiscoveryService, ag
   const target = await discovery.target(agentId);
   // require a current agent target
   if (target === undefined) return undefined;
-  const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.workspace);
+  const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.home);
   // exclude scratch agents
   if (worktree === undefined) return undefined;
   const dashboard = await discovery.dashboard();

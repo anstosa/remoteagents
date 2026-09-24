@@ -198,7 +198,7 @@ export class DiscoveryService {
         if (pane.reportedAttention !== undefined || pane.reportedSession !== undefined || pane.reportedSandboxed !== undefined || pane.reportedQuestion !== undefined) void this.tmux.unsetReportedState(pane.socket, pane.paneId).catch(() => {});
         return undefined;
       }
-      const workspace = await workspaceRoot(pane.path);
+      const home = await workspaceRoot(pane.path);
       const id = `${pane.socket.fingerprint}:${pane.paneId}`;
       panePids.set(id, pane.pid);
       paneCwds.set(id, pane.path);
@@ -207,7 +207,7 @@ export class DiscoveryService {
       if (pane.reportedQuestion !== undefined && pane.reportedQuestion.length > 0) paneQuestionPayloads.set(id, pane.reportedQuestion);
       const attention = resolveAttention({ kind: recognized.kind, title: pane.title, reported, hasQuestion: false });
       const conversationId = pane.reportedSession !== undefined && pane.reportedSession.length > 0 ? pane.reportedSession : undefined;
-      return { id, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, workspace, title: pane.title, kind: recognized.kind, attention, ...(pane.reportedSandboxed === '1' ? { sandboxed: true } : {}), ...(conversationId === undefined ? {} : { conversationId }), ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }) };
+      return { id, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, home, title: pane.title, kind: recognized.kind, attention, ...(pane.reportedSandboxed === '1' ? { sandboxed: true } : {}), ...(conversationId === undefined ? {} : { conversationId }), ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }) };
     }))).filter((agent): agent is Agent => agent !== undefined);
     // resolve each Console shell's git toplevel so the dashboard can count a Worktree's shells
     // (identity = the `@rac_role=shell` marker plus cwd toplevel, spec, Console shells)
@@ -488,18 +488,18 @@ export class DiscoveryService {
     const orderOf = new Map(worktrees.map((worktree, index) => [worktree.id, index] as const));
     const agents = await Promise.all(discovered.map(async (agent) => {
       // keep modal advisors outside configured worktree identity
-      const worktree = isUpdateAdvisorLabel(agent.displayLabel) ? undefined : worktreeFor(agent.workspace);
-      const workspace = worktree?.identity ?? agent.workspace;
+      const worktree = isUpdateAdvisorLabel(agent.displayLabel) ? undefined : worktreeFor(agent.home);
+      const home = worktree?.identity ?? agent.home;
       const [meta, question] = await Promise.all([
-        metadataFor(workspace),
-        this.agentQuestion(agent, workspace)
+        metadataFor(home),
+        this.agentQuestion(agent, home)
       ]);
       const branch = meta.branch ?? agent.branch;
       const pullRequest = await this.pullRequests.cachedPullRequest(meta.workspace, branch);
       const gitPrStatus = await gitPrComparisonForBase(meta, branch, pullRequest?.baseBranch);
       const details = worktree === undefined
         ? { ...agent, branch, ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }) }
-        : { ...agent, branch, ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }), workspace: worktree.identity, projectId: worktree.projectId, worktreeId: worktree.id, ...(worktree.newTask === undefined ? {} : { newTaskConfigured: true }), push: worktree.push, ...(worktree.projectUrl === undefined ? {} : { projectUrl: worktree.projectUrl, projectProxied: worktree.projectPort !== undefined }) };
+        : { ...agent, branch, ...(meta.gitStatus === undefined ? {} : { gitStatus: meta.gitStatus }), ...(gitPrStatus === undefined ? {} : { gitPrStatus }), ...(meta.gitUpstream === undefined ? {} : { gitUpstream: meta.gitUpstream }), home: worktree.identity, projectId: worktree.projectId, worktreeId: worktree.id, ...(worktree.newTask === undefined ? {} : { newTaskConfigured: true }), push: worktree.push, ...(worktree.projectUrl === undefined ? {} : { projectUrl: worktree.projectUrl, projectProxied: worktree.projectPort !== undefined }) };
       // re-resolve now that a pending Inline question is known (precedence: reported → question → inferred → finished)
       const attention = resolveAttention({ kind: agent.kind, title: agent.title, reported: this.paneReported.get(agent.id), hasQuestion: question !== undefined });
       return { ...details, attention, ...(pullRequest === undefined ? {} : { pullRequest }), ...(question === undefined ? {} : { question }) };
@@ -533,10 +533,10 @@ export class DiscoveryService {
   private async hasUnknownProjectWorktree(agents: Agent[], worktrees: Worktree[]): Promise<boolean> {
     const seen = new Set<string>();
     for (const agent of agents) {
-      if (isUpdateAdvisorLabel(agent.displayLabel) || seen.has(agent.workspace)) continue;
-      seen.add(agent.workspace);
-      if (worktrees.some(worktree => worktreeMatchesWorkspace(worktree, agent.workspace))) continue;
-      const common = await this.cachedCommonDir(agent.workspace);
+      if (isUpdateAdvisorLabel(agent.displayLabel) || seen.has(agent.home)) continue;
+      seen.add(agent.home);
+      if (worktrees.some(worktree => worktreeMatchesWorkspace(worktree, agent.home))) continue;
+      const common = await this.cachedCommonDir(agent.home);
       if (common !== undefined && this.projects.some(project => project.available && project.identity === common)) return true;
     }
     return false;

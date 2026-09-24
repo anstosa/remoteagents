@@ -9,7 +9,7 @@ const routeApi = async (page: Page, cleanupPending = 0) => {
     // authenticate the browser fixture
     if (path === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
     // include cleanup above the always-visible output controls
-    if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, cleanupPending, agents: [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', title: 'Ready', queuedPromptCount: 0 }], projects: [] } });
+    if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, cleanupPending, agents: [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', title: 'Ready', queuedPromptCount: 0 }], projects: [] } });
     // disable push registration
     if (path === '/api/push/public-key') return route.fulfill({ json: {} });
     // connect only to the mocked pane socket

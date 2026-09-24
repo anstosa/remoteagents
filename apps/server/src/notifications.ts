@@ -96,7 +96,7 @@ export function scheduleNotification(params: {
 // build one agent-state push payload
 export function agentNotification(previous: AgentAttentionState | undefined, current: AgentAttentionState, agent: Agent, context?: AgentNotificationContext): AgentNotification | undefined {
   if (previous === undefined || previous === current) return undefined;
-  const fallbackName = agent.displayLabel ?? agent.workspace.split('/').filter(Boolean).at(-1) ?? agent.title;
+  const fallbackName = agent.displayLabel ?? agent.home.split('/').filter(Boolean).at(-1) ?? agent.title;
   const projectName = context?.projectName ?? fallbackName;
   const worktreeName = context?.worktreeName ?? fallbackName;
   const shared = { tag: agentNotificationTag(agent), url: `/#agent=${encodeURIComponent(agent.id)}`, ...(agent.worktreeId === undefined ? {} : { worktreeId: agent.worktreeId }) };

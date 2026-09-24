@@ -23,7 +23,7 @@ export class NewTaskService {
 
   async available(agentId: string): Promise<NewTaskAvailability | undefined> {
     const target = await this.discovery.target(agentId);
-    const worktree = target === undefined ? undefined : this.worktree(target.agent.workspace);
+    const worktree = target === undefined ? undefined : this.worktree(target.agent.home);
     if (worktree?.newTask === undefined) return undefined;
     const enabled = await this.cleanAndPushed(worktree);
     return enabled ? { enabled } : { enabled, reason: unavailableReason };
@@ -31,7 +31,7 @@ export class NewTaskService {
 
   async start(agentId: string): Promise<boolean> {
     const target = await this.discovery.target(agentId);
-    const worktree = target === undefined ? undefined : this.worktree(target.agent.workspace);
+    const worktree = target === undefined ? undefined : this.worktree(target.agent.home);
     if (target === undefined || worktree?.newTask === undefined || !await this.cleanAndPushed(worktree)) return false;
     const path = worktreeHostRoot(worktree);
     const home = dirname(path);
