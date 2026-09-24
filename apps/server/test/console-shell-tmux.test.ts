@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { mkdtemp as mkdtempAsync, realpath, rm as rmAsync } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -40,6 +40,11 @@ const tmuxSocketsWork = (() => {
   }
 })();
 
+// A login shell that exists on this host: the configured interactive shell, else zsh, else bash. A
+// missing one (the zsh default on a fish or bash host) dies the moment its pane starts, so every
+// Console shell here would be a dead pane.
+const loginShell = [process.env.RAC_INTERACTIVE_SHELL?.trim(), '/usr/bin/zsh', '/bin/bash'].find((path): path is string => path !== undefined && path !== '' && existsSync(path));
+
 const auth = { unsign: () => 'session', get: () => ({ id: 'session', csrf: 'csrf' }), csrf: () => true } as never;
 const control = { connect: () => true, active: () => true } as never;
 const dashboardUpdates = { setLoader: () => {}, refresh: async () => {}, close: () => {} } as never;
@@ -58,10 +63,11 @@ afterEach(async () => {
 });
 
 // a real tmux server on a private socket with one 80x24 window; the temp root doubles as the
-// Worktree's on-disk identity (it exists, so tmux can `cd` into it and the shell's cwd matches)
+// Worktree's on-disk identity (it exists, so tmux can `cd` into it and the shell's cwd matches).
+// The socket is named `default` so the root can stand in for RAC_HOST_TMUX_DIR (bridgeToFixture).
 async function fixtureSession(): Promise<{ socket: SocketRef; socketPath: string; session: string; worktreeDir: string }> {
   const root = await mkdtempAsync(join(tmpdir(), 'rac-console-shell-'));
-  const socketPath = join(root, 'tmux.sock');
+  const socketPath = join(root, 'default');
   fixtures.push({ root, socket: socketPath });
   expect((await run(tmux, ['-f', '/dev/null', '-S', socketPath, 'new-session', '-d', '-s', 'fixture', '-x', '80', '-y', '24', '-c', root, 'cat'])).code).toBe(0);
   return { socket: { fingerprint: 'fixture', path: socketPath, device: 0, inode: 0 }, socketPath, session: 'fixture', worktreeDir: root };
@@ -118,8 +124,14 @@ async function openWorktreePane(socket: SocketRef, worktree: Worktree, member: {
   return { frames, binary, closeCode: () => closeCode, send: (frame: unknown) => ws.send(JSON.stringify(frame)), text: () => Buffer.concat(binary).toString('utf8') };
 }
 
-describe.skipIf(!tmuxSocketsWork)('Console shells (real tmux)', () => {
-  beforeAll(() => { vi.stubEnv('RAC_TMUX_BIN', tmux); });
+// Make the fixture server the console's own tmux socket for a LaunchService built afterwards. A
+// launch's own-socket commands (a new session, the free-name check) otherwise carry no `-S` and,
+// with the console's stripped environment, reach the operator's real default tmux server.
+const bridgeToFixture = (fixture: { worktreeDir: string }) => vi.stubEnv('RAC_HOST_TMUX_DIR', fixture.worktreeDir);
+
+describe.skipIf(!tmuxSocketsWork || loginShell === undefined)('Console shells (real tmux)', () => {
+  beforeAll(() => { vi.stubEnv('RAC_TMUX_BIN', tmux); vi.stubEnv('RAC_INTERACTIVE_SHELL', loginShell!); });
+  afterEach(() => { vi.stubEnv('RAC_HOST_TMUX_DIR', undefined); });
   afterAll(() => { vi.unstubAllEnvs(); });
 
   it('opens a Console shell beside a session with both markers, renames it, and reads the busy state', async () => {
@@ -208,7 +220,8 @@ describe.skipIf(!tmuxSocketsWork)('Console shells (real tmux)', () => {
 
     const store = { rememberLaunchProfile: async () => {}, launchProfiles: async () => ({}) } as never;
     const config = testConfig({ adapters: { codex: { program: '/bin/echo', args: [], env: {}, launchable: true } } } as never);
-    const launch = new LaunchService(config as never, { find: async () => [fixture.socket] }, new TmuxAdapter(), undefined, store, () => [worktree], () => new Set(), undefined, join(fixture.worktreeDir, '.rac-launch'));
+    bridgeToFixture(fixture);
+    const launch = new LaunchService(config as never, { find: async () => [fixture.socket] }, new TmuxAdapter(), undefined, store, () => [worktree], () => new Set());
 
     expect(await launch.launch(worktree.id)).toBe(true);
 
@@ -217,13 +230,12 @@ describe.skipIf(!tmuxSocketsWork)('Console shells (real tmux)', () => {
   });
 
   // A directory-Project or Scratch launch joins its Place the way a Worktree launch does. The
-  // fixture pane runs `cat` (no adoptable shell) and the runner exits at once under the test
-  // runner, so `remain-on-exit` keeps the launched window to read its label from.
+  // fixture pane runs `cat`, so there is no adoptable shell; the launched window's bootstrap leaves
+  // an interactive shell behind, so the window stays to read its label from.
   for (const kind of ['directory', 'scratch'] as const) {
     it(`joins the session holding a ${kind} Place's Console shells and labels the launched pane`, async () => {
       const fixture = await fixtureSession();
       const home = await realpath(fixture.worktreeDir);
-      await run(tmux, ['-S', fixture.socketPath, 'set-option', '-g', 'remain-on-exit', 'on']);
       expect(await new TmuxAdapter().createConsoleShellWindow(fixture.socket, fixture.session, home, [interactiveShellPath(), '-l'], '')).toMatch(/^%\d+$/);
       const windowIds = async () => (await run(tmux, ['-S', fixture.socketPath, 'list-windows', '-t', fixture.session, '-F', '#{window_id}'])).stdout.trim().split('\n').filter(Boolean);
       const before = await windowIds();
@@ -231,7 +243,8 @@ describe.skipIf(!tmuxSocketsWork)('Console shells (real tmux)', () => {
       const store = { rememberLaunchProfile: async () => {}, launchProfiles: async () => ({}) } as never;
       const notes = testProject({ id: 'notes', label: 'Notes', mode: 'directory', path: home, identity: home });
       const config = testConfig({ adapters: { codex: { program: '/bin/echo', args: [], env: {}, launchable: true } }, ...(kind === 'directory' ? { projects: [notes] } : { projects: [], scratchDirectory: home }) } as never);
-      const launch = new LaunchService(config as never, { find: async () => [fixture.socket] }, new TmuxAdapter(), undefined, store, () => [], () => new Set(), undefined, join(home, '.rac-launch'));
+      bridgeToFixture(fixture);
+      const launch = new LaunchService(config as never, { find: async () => [fixture.socket] }, new TmuxAdapter(), undefined, store, () => [], () => new Set());
 
       expect(kind === 'directory' ? await launch.launchProjectDirectory('notes') : await launch.launchHome()).toBe(true);
 
