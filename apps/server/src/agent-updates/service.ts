@@ -8,7 +8,8 @@ import type { ValidatedConfig } from '../config/schema.js';
 import { run } from '../tmux/command.js';
 import { serverCheckout, serverCheckoutOnHost } from '../workspaces/server-checkout.js';
 
-const statusTimeoutMs = 15_000;
+// allow registry latency while keeping version checks bounded
+const statusTimeoutMs = 30_000;
 const updateTimeoutMs = 5 * 60_000;
 const cacheTtlMs = 15 * 60_000;
 const failedCacheTtlMs = 60_000;
@@ -71,7 +72,8 @@ export class AgentUpdateService {
   // bind update commands to the launch account and host bridge
   constructor(private readonly config: ValidatedConfig, private readonly home: string, runner?: AgentUpdateRunner, checkout: string = serverCheckout()) {
     this.checkout = checkout;
-    this.hostCheckout = serverCheckoutOnHost(config.projects, process.env.RAC_HOST_WORKSPACE, checkout);
+    // prefer the update repository while preserving legacy workspace overrides
+    this.hostCheckout = serverCheckoutOnHost(config.projects, process.env.RAC_HOST_REPOSITORY?.trim() || process.env.RAC_HOST_WORKSPACE, checkout);
     this.runner = runner ?? ((command, timeoutMs) => this.runConfigured(command, timeoutMs));
   }
 
