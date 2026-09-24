@@ -64,11 +64,11 @@ describe('placeForRoot', () => {
 
   it('never matches by a bare string prefix', () => {
     // `/data/notes-archive` shares a prefix with `/data/notes` but is not inside it
-    expect(placeForRoot(places, '/data/notes-archive')).toEqual({ id: 'scratch:/data/notes-archive', kind: 'scratch', projectId: 'scratch', label: 'notes-archive', home: '/data/notes-archive' });
+    expect(placeForRoot(places, '/data/notes-archive')).toEqual({ id: 'scratch:/data/notes-archive', kind: 'scratch', projectId: 'scratch', label: 'notes-archive', home: '/data/notes-archive', adhoc: true });
   });
 
   it('makes a root inside no configured Place its own Scratch Place', () => {
-    expect(placeForRoot(places, '/srv/tools')).toEqual({ id: 'scratch:/srv/tools', kind: 'scratch', projectId: 'scratch', label: 'tools', home: '/srv/tools' });
+    expect(placeForRoot(places, '/srv/tools')).toEqual({ id: 'scratch:/srv/tools', kind: 'scratch', projectId: 'scratch', label: 'tools', home: '/srv/tools', adhoc: true });
     expect(placeForRoot(places, '/')).toMatchObject({ id: 'scratch:/', label: '/', home: '/' });
   });
 });
@@ -84,10 +84,14 @@ describe('placeLaunchScope', () => {
 describe('placeNoteKey', () => {
   it('keys a Place by the folder a console launch runs its Agent in, never by the Place id', () => {
     // a directory Project launches in its bridge host path when it has one, else its home
-    expect(placeNoteKey({ home: '/data/notes', hostPath: '/host/notes' })).toBe(folderNoteKey('/host/notes'));
-    expect(placeNoteKey({ home: '/home/me/scratch' })).toBe(folderNoteKey('/home/me/scratch'));
+    expect(placeNoteKey({ kind: 'directory', projectId: 'notes', home: '/data/notes', hostPath: '/host/notes' })).toBe(folderNoteKey('/host/notes'));
+    expect(placeNoteKey({ kind: 'scratch', projectId: 'scratch', home: '/home/me/scratch' })).toBe(folderNoteKey('/home/me/scratch'));
     // a note key cannot hold `:`, so it is an opaque hash of the folder
-    expect(placeNoteKey({ home: '/home/me/scratch' })).toMatch(/^scratch_[A-Za-z0-9_-]{40}$/u);
+    expect(placeNoteKey({ kind: 'scratch', projectId: 'scratch', home: '/home/me/scratch' })).toMatch(/^scratch_[A-Za-z0-9_-]{40}$/u);
+  });
+
+  it("keys a Worktree's notes by its Project, shared across its checkouts", () => {
+    expect(placeNoteKey({ kind: 'worktree', projectId: 'ferry', home: '/worktrees/ferry', hostPath: '/host/ferry' })).toBe('ferry');
   });
 });
 

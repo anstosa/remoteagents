@@ -16,7 +16,7 @@ import type { Adapter, AdapterConfigs, AgentKind, AttentionState, Conversation, 
 import type { Agent, Dashboard, DashboardPlace, DashboardProject, DashboardWorktree, GitComparisonSummary, GitStatusSummary, GitUpstreamSummary, Project, SocketRef, Worktree } from '../domain/models.js';
 import { addUntrackedLineStats, comparisonAgainst, prComparisonCandidates, workingStatus } from '../git/comparison.js';
 import { isUpdateAdvisorLabel } from '../update-advisor.js';
-import { configuredPlaces, placeForRoot, scratchHome, type Place } from '../places/places.js';
+import { configuredPlaces, placeForRoot, scratchHome, scratchProjectId, type Place } from '../places/places.js';
 
 export interface SocketFinder { find(): Promise<SocketRef[]>; }
 export class ProcSocketFinder implements SocketFinder {
@@ -149,6 +149,8 @@ export class DiscoveryService {
   private staleSnapshot = new Map<string, string[]>();
   // the pins read with the worktree snapshot, for the directory-Project and Scratch Places
   private pinSnapshot: Record<string, boolean> = {};
+  // the directory-Project and Scratch Places the last built dashboard listed, by id
+  private listedPlaces = new Map<string, Place>();
   private worktreesRefreshedAt = 0;
   private worktreesRefreshInFlight?: Promise<Worktree[]>;
   // bumped by invalidateWorktrees(); a scan that began under an older epoch read stale pins
@@ -558,20 +560,45 @@ export class DiscoveryService {
       const management = worktreeManagementAvailability(project);
       return { id: project.id, label: project.label, mode: project.mode, available: project.available, ...(project.unavailableReason === undefined ? {} : { unavailableReason: project.unavailableReason }), manageWorktrees: management.available, ...(management.reason === undefined ? {} : { manageWorktreesReason: management.reason }), stalePaths: this.staleSnapshot.get(project.id) ?? [], ...(project.commands?.setup === undefined ? {} : { setup: true }), worktrees: byProject.get(project.id) ?? [] };
     });
-    return { generation: this.generation, serverStartedAt: this.serverStartedAt, adapters: adapterCapabilities(this.adapters), agents, projects, places: this.placeViews(places, [...discovered.flatMap(agent => this.placeOf(agent, places) ?? []), ...shellPlaces], shellCounts) };
+    const listed = this.listPlaces(places, [...discovered.flatMap(agent => this.placeOf(agent, places) ?? []), ...shellPlaces, ...await this.pinnedScratchPlaces(places)]);
+    this.listedPlaces = new Map(listed.map(place => [place.id, place]));
+    return { generation: this.generation, serverStartedAt: this.serverStartedAt, adapters: adapterCapabilities(this.adapters), agents, projects, places: listed.map(place => this.placeView(place, shellCounts)) };
   }
 
-  // the directory-Project and Scratch Places on the wire: every configured one, then each other
-  // Scratch Place that holds an Agent or a Console shell, ordered by home
-  private placeViews(configured: readonly Place[], occupied: readonly Place[], shellCounts: ReadonlyMap<string, number>): DashboardPlace[] {
+  // The directory-Project or Scratch Place with this id, as the current dashboard lists it (with
+  // its bridge host path), so a Place route only reaches a folder the console already shows.
+  // Worktrees are not included; they resolve from the Worktree snapshot.
+  async place(id: string): Promise<Place | undefined> {
+    await this.dashboard();
+    return this.listedPlaces.get(id);
+  }
+
+  // the pinned ad-hoc Scratch Places: a pinned `scratch:<root>` whose folder still resolves to that
+  // root (not removed, not swapped for a symlink) and lies inside no configured Place, where a
+  // folder since made part of a directory Project would otherwise linger as a Place of its own
+  private async pinnedScratchPlaces(configured: readonly Place[]): Promise<Place[]> {
+    const pinned = await Promise.all(Object.entries(this.pinSnapshot).map(async ([id, isPinned]) => {
+      const root = worktreePathOf(id);
+      if (!isPinned || projectIdOf(id) !== scratchProjectId || root === undefined) return undefined;
+      if (await realpath(root).catch(() => undefined) !== root) return undefined;
+      const place = placeForRoot(configured, root);
+      return place.id === id ? place : undefined;
+    }));
+    return pinned.filter((place): place is Place => place !== undefined);
+  }
+
+  // the directory-Project and Scratch Places the dashboard lists: every configured one, then each
+  // other Scratch Place that holds an Agent or a Console shell or is pinned, ordered by home
+  private listPlaces(configured: readonly Place[], occupied: readonly Place[]): Place[] {
     const known = new Set(configured.map(place => place.id));
     const adhoc = new Map<string, Place>();
     for (const place of occupied) if (!known.has(place.id)) adhoc.set(place.id, place);
-    const listed = [...configured.filter(place => place.kind !== 'worktree'), ...[...adhoc.values()].sort((left, right) => left.home.localeCompare(right.home))];
-    return listed.map(place => {
-      const consoleShells = shellCounts.get(place.id) ?? 0;
-      return { id: place.id, kind: place.kind === 'directory' ? 'directory' : 'scratch', projectId: place.projectId, label: place.label, home: place.home, pinned: this.pinSnapshot[place.id] ?? false, ...(consoleShells > 0 ? { consoleShells } : {}) };
-    });
+    return [...configured.filter(place => place.kind !== 'worktree'), ...[...adhoc.values()].sort((left, right) => left.home.localeCompare(right.home))];
+  }
+  // one listed Place on the wire, with its pin and Console-shell count
+  private placeView(place: Place, shellCounts: ReadonlyMap<string, number>): DashboardPlace {
+    const consoleShells = shellCounts.get(place.id) ?? 0;
+    return { id: place.id, kind: place.kind === 'directory' ? 'directory' : 'scratch', projectId: place.projectId, label: place.label, home: place.home, pinned: this.pinSnapshot[place.id] ?? false, ...(consoleShells > 0 ? { consoleShells } : {}) };
   }
 
   // whether a live agent sits in a checkout that is not a known Worktree but whose

@@ -21,7 +21,7 @@ import { QueuedPromptService, type QueuedPrompt } from './prompts/queue.js';
 import { LaunchService } from './launch/service.js';
 import { createAgentWaiter, launchPollAttempts, launchPollDelay as defaultLaunchPollDelay, launchReadyTimeoutSeconds } from './launch/wait.js';
 import { scratchLaunchKey, WorktreeLaunchStore } from './worktrees/store.js';
-import { folderNoteKey, placeLaunchScope } from './places/places.js';
+import { folderNoteKey, placeLaunchScope, placeNoteKey, worktreePlace, type Place } from './places/places.js';
 import { safeEnv } from './tmux/command.js';
 import { PushService } from './push-service.js';
 import { WorktreeCommandService } from './worktree-commands/service.js';
@@ -722,8 +722,23 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return { targets };
   });
   const configuredWorktree = (id: string) => worktreeById(discovery.worktreesNow(), id);
-  // notes and console-named conversations are Project-scoped: their shared key is the Worktree's projectId (ADR 0003)
-  const worktreeSaveKey = (id: string) => configuredWorktree(id)?.projectId;
+  // the Place with this id: a Worktree from the current snapshot, else a directory-Project or
+  // Scratch Place the dashboard lists (the configured ones always; an ad-hoc Scratch folder while
+  // it holds an Agent, a Console shell or a pin)
+  const resolvePlace = async (id: string): Promise<Place | undefined> => {
+    const worktree = configuredWorktree(id);
+    return worktree === undefined ? await discovery.place(id) : worktreePlace(worktree);
+  };
+  // a Place's notes key (placeNoteKey): a Worktree's Project, else the Place folder's hash
+  const placeSaveKey = async (id: string): Promise<string | undefined> => {
+    const place = await resolvePlace(id);
+    return place === undefined ? undefined : placeNoteKey(place);
+  };
+  // The refusal for a Worktree-only route whose id is no Worktree: 409 for a directory-Project or
+  // Scratch Place, 404 for an id that is no Place at all. Each route may keep its own body shape.
+  const notGitCheckout = { error: 'Only a worktree supports this; this place is not a git checkout.' };
+  const nonWorktreeReply = async (id: string, reply: FastifyReply, bodies: { missing?: unknown; refused?: unknown } = {}) =>
+    await resolvePlace(id) === undefined ? reply.code(404).send(bodies.missing ?? { error: 'worktree unavailable' }) : reply.code(409).send(bodies.refused ?? notGitCheckout);
   // the anchor for a Schedule's displayed next-run and its firing: a restart never replays a missed
   // instant. Injectable so tests can place boot before a due instant they mean to fire.
   const scheduleBootAt = deps.scheduleBootAt ?? new Date();
@@ -818,17 +833,20 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const discovered = await discovery.dashboard();
     return discovered.agents.find(agent => agent.worktreeId === id)?.branch ?? discovered.projects.flatMap(project => project.worktrees).find(worktree => worktree.id === id)?.branch;
   };
-  app.get('/api/worktrees/:id/notes', async (request, reply) => { controlled(request); const id = (request.params as { id: string }).id; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const stored = await notes.list(saveKey); return stored === undefined ? reply.code(400).send({ error: 'invalid worktree' }) : { notes: decorateNotes(stored) }; });
-  // pin or unpin one Worktree so an idle checkout keeps (or drops) its tab; the override
-  // is stored in `.data`, discovery re-reads it on the next tick
+  app.get('/api/worktrees/:id/notes', async (request, reply) => { controlled(request); const id = (request.params as { id: string }).id; const saveKey = await placeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' }); const stored = await notes.list(saveKey); return stored === undefined ? reply.code(400).send({ error: 'invalid place' }) : { notes: decorateNotes(stored) }; });
+  // pin or unpin one Place so it keeps (or drops) its tab while idle; the override is stored in
+  // `.data` under the Place id, discovery re-reads it on the next tick
   app.post('/api/worktrees/:id/pin', async (request, reply) => {
     controlled(request, true);
     const id = (request.params as { id: string }).id;
     const pinned = body(request).pinned;
-    // require one known Worktree and an explicit pin state
-    if (configuredWorktree(id) === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const place = await resolvePlace(id);
+    // require one known Place and an explicit pin state
+    if (place === undefined) return reply.code(404).send({ error: 'place unavailable' });
     if (typeof pinned !== 'boolean') return reply.code(400).send({ error: 'invalid pin state' });
-    await worktreeStore.setPinned(id, pinned);
+    // a Worktree's override may unpin a Main checkout; any other Place defaults to unpinned, so
+    // unpinning it clears the record rather than leaving a `pinned: false` behind
+    await worktreeStore.setPinned(id, pinned || place.kind === 'worktree' ? pinned : undefined);
     discovery.invalidateWorktrees();
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(204).send();
@@ -838,8 +856,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     controlled(request, true);
     const id = (request.params as { id: string }).id;
     const requestedLabel = body(request).label;
-    // require one known Worktree before writing operator state
-    if (configuredWorktree(id) === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    // require one known Worktree before writing operator state. A directory Project's label is
+    // its configured one and a Scratch Place's is fixed, so neither is relabelled.
+    if (configuredWorktree(id) === undefined) return await nonWorktreeReply(id, reply, { refused: { error: 'Only a worktree can be renamed; a project or Scratch label is fixed.' } });
     // null restores the generated Project/branch label
     if (requestedLabel !== null && typeof requestedLabel !== 'string') return reply.code(400).send({ error: 'invalid worktree label' });
     const label = typeof requestedLabel === 'string' ? requestedLabel.trim() : undefined;
@@ -855,13 +874,13 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.post('/api/worktrees/:id/notes', { bodyLimit: noteAttachmentBodyLimit }, async (request, reply) => {
     controlled(request, true);
     const id = (request.params as { id: string }).id;
-    const saveKey = worktreeSaveKey(id);
+    const saveKey = await placeSaveKey(id);
     const data = body(request);
     const title = data.title;
     const text = data.text;
     const attachments = promptAttachments(data.attachments);
-    // require a current worktree
-    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    // require a current Place
+    if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' });
     // validate the optional title
     if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0'))) return reply.code(400).send({ error: 'invalid note title' });
     // validate the optional text
@@ -875,17 +894,17 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       : await notes.createWithText(saveKey, title as string, typeof text === 'string' ? text : '', undefined, attachments);
     return note === undefined ? reply.code(409).send({ error: 'note limit reached' }) : reply.code(201).send(decorateNote(note));
   });
-  app.put('/api/worktrees/:id/notes/:noteId', { bodyLimit: 128_000 }, async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); const text = body(request).text; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof text !== 'string' || text.length > 30_000 || text.includes('\0')) return reply.code(400).send({ error: 'invalid note' }); const note = await notes.update(saveKey, noteId, text); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
+  app.put('/api/worktrees/:id/notes/:noteId', { bodyLimit: 128_000 }, async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = await placeSaveKey(id); const text = body(request).text; if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' }); if (typeof text !== 'string' || text.length > 30_000 || text.includes('\0')) return reply.code(400).send({ error: 'invalid note' }); const note = await notes.update(saveKey, noteId, text); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
   // rename one note
-  app.patch('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); const title = body(request).title; if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid note title' }); const note = await notes.rename(saveKey, noteId, title); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
+  app.patch('/api/worktrees/:id/notes/:noteId', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = await placeSaveKey(id); const title = body(request).title; if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' }); if (typeof title !== 'string' || !title.trim() || title.length > 120 || title.includes('\0')) return reply.code(400).send({ error: 'invalid note title' }); const note = await notes.rename(saveKey, noteId, title); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
   // set one worktree note's deletion lock
   app.put('/api/worktrees/:id/notes/:noteId/lock', async (request, reply) => {
     controlled(request, true);
     const { id, noteId } = request.params as { id: string; noteId: string };
-    const saveKey = worktreeSaveKey(id);
+    const saveKey = await placeSaveKey(id);
     const locked = body(request).locked;
-    // require one current worktree scope
-    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    // require one current Place
+    if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' });
     // require an explicit boolean state
     if (typeof locked !== 'boolean') return reply.code(400).send({ error: 'invalid note lock' });
     const note = await notes.setLocked(saveKey, noteId, locked);
@@ -898,9 +917,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.delete('/api/worktrees/:id/notes/:noteId', async (request, reply) => {
     controlled(request, true);
     const { id, noteId } = request.params as { id: string; noteId: string };
-    const saveKey = worktreeSaveKey(id);
-    // require one current worktree scope
-    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const saveKey = await placeSaveKey(id);
+    // require one current Place
+    if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' });
     const note = await notes.delete(saveKey, noteId);
     // distinguish durable locks from missing notes
     if (note === 'locked') return reply.code(409).send({ error: 'note is locked' });
@@ -912,8 +931,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.get('/api/worktrees/:id/notes/:noteId/attachments', async (request, reply) => {
     controlled(request);
     const { id, noteId } = request.params as { id: string; noteId: string };
-    const saveKey = worktreeSaveKey(id);
-    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const saveKey = await placeSaveKey(id);
+    if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' });
     const attachments = await notes.attachments(saveKey, noteId);
     return attachments === undefined ? reply.code(404).send({ error: 'note unavailable' }) : { attachments };
   });
@@ -921,12 +940,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.post('/api/worktrees/:id/notes/:noteId/attachments/preview', async (request, reply) => {
     controlled(request, true);
     const { id, noteId } = request.params as { id: string; noteId: string };
-    const saveKey = worktreeSaveKey(id);
+    const saveKey = await placeSaveKey(id);
     const path = body(request).path;
     // require one canonical attachment name
     if (typeof path !== 'string' || promptAttachmentName(path) !== path) return reply.code(400).send({ error: 'invalid attachment path' });
-    // require one current worktree scope
-    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    // require one current Place
+    if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' });
     const preview = await previewNoteAttachment(saveKey, noteId, path);
     return preview === undefined ? reply.code(404).send({ error: 'attachment unavailable' }) : preview;
   });
@@ -934,9 +953,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.post('/api/worktrees/:id/notes/:noteId/attachments', { bodyLimit: noteAttachmentBodyLimit }, async (request, reply) => {
     controlled(request, true);
     const { id, noteId } = request.params as { id: string; noteId: string };
-    const saveKey = worktreeSaveKey(id);
+    const saveKey = await placeSaveKey(id);
     const attachments = promptAttachments(body(request).attachments);
-    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' });
     if (attachments === undefined || attachments.length === 0 || !validPromptAttachments(attachments)) return reply.code(400).send({ error: 'invalid attachments' });
     const note = await notes.appendAttachments(saveKey, noteId, attachments);
     if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
@@ -947,18 +966,18 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     controlled(request, true);
     const { id, noteId } = request.params as { id: string; noteId: string };
     const name = (request.query as { name?: unknown }).name;
-    const saveKey = worktreeSaveKey(id);
-    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const saveKey = await placeSaveKey(id);
+    if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' });
     if (typeof name !== 'string' || promptAttachmentName(name) === undefined) return reply.code(400).send({ error: 'invalid attachment name' });
     const note = await notes.removeAttachment(saveKey, noteId, name);
     return note === undefined ? reply.code(404).send({ error: 'attachment unavailable' }) : decorateNote(note);
   });
   // set or replace one note's Schedule
-  app.put('/api/worktrees/:id/notes/:noteId/schedule', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const schedule = buildSchedule(body(request)); if (typeof schedule === 'string') return reply.code(400).send({ error: schedule }); const note = await notes.setSchedule(saveKey, noteId, schedule); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
+  app.put('/api/worktrees/:id/notes/:noteId/schedule', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = await placeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' }); const schedule = buildSchedule(body(request)); if (typeof schedule === 'string') return reply.code(400).send({ error: schedule }); const note = await notes.setSchedule(saveKey, noteId, schedule); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
   // remove one note's Schedule, keeping the note
-  app.delete('/api/worktrees/:id/notes/:noteId/schedule', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); const note = await notes.removeSchedule(saveKey, noteId); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
+  app.delete('/api/worktrees/:id/notes/:noteId/schedule', async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = await placeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' }); const note = await notes.removeSchedule(saveKey, noteId); return note === undefined ? reply.code(404).send({ error: 'note unavailable' }) : decorateNote(note); });
   // run one worktree note's Schedule now, exactly as the scheduler will
-  app.post('/api/worktrees/:id/notes/:noteId/schedule/run', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = worktreeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); return await runScheduleNow(saveKey, noteId, reply); });
+  app.post('/api/worktrees/:id/notes/:noteId/schedule/run', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => { controlled(request, true); const { id, noteId } = request.params as { id: string; noteId: string }; const saveKey = await placeSaveKey(id); if (saveKey === undefined) return reply.code(404).send({ error: 'place unavailable' }); return await runScheduleNow(saveKey, noteId, reply); });
   // list one live agent's notes
   app.get('/api/agents/:id/notes', async (request, reply) => {
     controlled(request);
@@ -1203,7 +1222,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const agentId = (request.query as { agentId?: unknown }).agentId;
     const worktree = configuredWorktree(id);
     // require one configured Worktree
-    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    if (worktree === undefined) return await nonWorktreeReply(id, reply);
     // reject malformed agent context
     if (agentId !== undefined && (typeof agentId !== 'string' || !agentId)) return reply.code(400).send({ error: 'invalid agent' });
     const scope = projectConversationScope(worktree.projectId);
@@ -1305,9 +1324,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.delete('/api/worktrees/:id/conversations/:kind/:conversationId', async (request, reply) => {
     controlled(request, true);
     const { id, kind, conversationId } = request.params as { id: string; kind: string; conversationId: string };
-    const saveKey = worktreeSaveKey(id);
+    const saveKey = configuredWorktree(id)?.projectId;
     // require one configured Worktree group
-    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    if (saveKey === undefined) return await nonWorktreeReply(id, reply);
     // reject an unknown kind
     if (!agentKinds.includes(kind as AgentKind)) return reply.code(400).send({ error: 'invalid conversation' });
     const removed = await consoleNamed.remove(saveKey, kind as AgentKind, conversationId);
@@ -1325,17 +1344,17 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const removed = await consoleNamed.remove(persistence.saveKey, kind as AgentKind, conversationId);
     return removed ? reply.code(204).send() : reply.code(404).send({ error: 'conversation record unavailable' });
   });
-  // preview one configured worktree file
+  // preview one file in a Place
   app.post('/api/worktrees/:id/file-preview', async (request, reply) => {
     controlled(request, true);
     const { id } = request.params as { id: string };
     const path = body(request).path;
     // require one bounded relative path
     if (typeof path !== 'string' || !path || path.length > 512 || path.includes('\0')) return reply.code(400).send({ error: 'invalid file path' });
-    const worktree = configuredWorktree(id);
-    // require a configured workspace
-    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
-    const preview = await workspaceFiles.preview(worktree.identity, path);
+    const place = await resolvePlace(id);
+    // require a known Place; a file preview reads the folder, no git needed
+    if (place === undefined) return reply.code(404).send({ error: 'place unavailable' });
+    const preview = await workspaceFiles.preview(place.home, path);
     return preview === undefined ? reply.code(404).send({ error: 'file unavailable' }) : preview;
   });
   // the git patch for a Comparison of one configured worktree: the Changes with their per-file
@@ -1348,7 +1367,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (kind === undefined) return reply.code(400).send({ error: 'invalid comparison' });
     const worktree = configuredWorktree(id);
     // require a configured workspace
-    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    if (worktree === undefined) return await nonWorktreeReply(id, reply);
     const result = await comparison.patch(worktree, kind);
     // an unresolvable base, conflicted tree, or unavailable worktree has no Comparison to show
     return result.ok ? { kind: result.kind, ...result.patch } : reply.code(404).send({ error: 'comparison unavailable' });
@@ -1366,7 +1385,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (typeof path !== 'string' || !path || path.length > 512 || path.includes('\0')) return reply.code(400).send({ error: 'invalid file path' });
     const worktree = configuredWorktree(id);
     // require a configured workspace
-    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    if (worktree === undefined) return await nonWorktreeReply(id, reply);
     const result = await comparison.file(worktree, kind, path);
     // a path outside the Comparison, or a Comparison that will not resolve, is unavailable
     if (!result.ok) return reply.code(404).send({ error: result.reason === 'not_in_comparison' ? 'file unavailable' : 'comparison unavailable' });
@@ -1511,7 +1530,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     controlled(request);
     const id = (request.params as { id: string }).id;
     // require a configured worktree
-    if (configuredWorktree(id) === undefined) return reply.code(404).send({ status: 'error', error: { code: 'target_unavailable', retryable: false } });
+    if (configuredWorktree(id) === undefined) return await nonWorktreeReply(id, reply, { missing: { status: 'error', error: { code: 'target_unavailable', retryable: false } }, refused: { status: 'error', error: { code: 'target_unavailable', retryable: false } } });
     const review = await reviewStore.current(id, await reviewBranch(id));
     // hide missing and branch-invalidated reviews
     return review === undefined ? reply.code(404).send({ status: 'error', error: { code: 'target_unavailable', retryable: false } }) : reply.code(200).send({ status: 'ready', review });
@@ -1520,7 +1539,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     controlled(request, true);
     const id = (request.params as { id: string }).id;
     // require a configured worktree
-    if (configuredWorktree(id) === undefined) return reply.code(404).send({ status: 'error', error: { code: 'target_unavailable', retryable: false } });
+    if (configuredWorktree(id) === undefined) return await nonWorktreeReply(id, reply, { missing: { status: 'error', error: { code: 'target_unavailable', retryable: false } }, refused: { status: 'error', error: { code: 'target_unavailable', retryable: false } } });
     await reviewStore.dismiss(id);
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(204).send();
@@ -2211,7 +2230,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const { kind, id: conversationId } = body(request) as { kind?: unknown; id?: unknown };
     const worktree = configuredWorktree(id);
     // require one configured worktree
-    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    if (worktree === undefined) return await nonWorktreeReply(id, reply);
     // reject a malformed switch target
     if (typeof conversationId !== 'string' || typeof kind !== 'string' || !agentKinds.includes(kind as AgentKind)) return reply.code(400).send({ error: 'invalid conversation' });
     const rowKind = kind as AgentKind;
@@ -2284,7 +2303,14 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (!agent) return reply.code(504).send({ error: `The worktree session started, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
     return reply.code(201).send({ agentId: agent.id });
   });
-  // Launch and run one Note on an idle Worktree tab — the fresh-launch entry into the Run
+  // the Run target that launches at a Place, as its launcher row does; an ad-hoc Scratch folder
+  // has no launch of its own, only the configured Scratch folder does
+  const placeRunTarget = (place: Place): ScheduleTarget | undefined => {
+    if (place.kind === 'worktree') return { worktreeId: place.id };
+    if (place.kind === 'directory') return { projectId: place.projectId };
+    return place.adhoc === true ? undefined : { scratch: true };
+  };
+  // Launch and run one Note on an idle Place tab — the fresh-launch entry into the Run
   // primitive (Scheduled prompts). It records nothing on the Note and returns the new agent id
   // so the web can switch to its tab; the primitive keeps the 409 / 504 / 502 contract /launch
   // uses (a blocked or slow readiness closes the pane it created), mapped from the outcome.
@@ -2294,13 +2320,15 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const kind = requestedKind(request);
     // reject an unknown kind before any handoff
     if (kind.invalid) return reply.code(400).send({ error: 'invalid agent kind' });
-    const saveKey = worktreeSaveKey(id);
-    if (saveKey === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
-    const note = (await notes.list(saveKey))?.find(candidate => candidate.id === noteId);
+    const place = await resolvePlace(id);
+    if (place === undefined) return reply.code(404).send({ error: 'place unavailable' });
+    const note = (await notes.list(placeNoteKey(place)))?.find(candidate => candidate.id === noteId);
     if (note === undefined) return reply.code(404).send({ error: 'note unavailable' });
     // never launch an agent for a note without prompt content
     if (!validPrompt(note.text, note.attachments ?? [])) return reply.code(400).send({ error: 'note is empty' });
-    const outcome = await performRun({ text: note.text, attachments: note.attachments ?? [], kind: kind.kind, target: { worktreeId: id } });
+    const target = placeRunTarget(place);
+    if (target === undefined) return reply.code(409).send({ error: 'The console cannot launch an agent in this folder.' });
+    const outcome = await performRun({ text: note.text, attachments: note.attachments ?? [], kind: kind.kind, target });
     if (outcome.status === 'launched') return reply.code(201).send({ agentId: outcome.agentId });
     const failure = runFailureReply(outcome);
     return reply.code(failure.code).send({ error: failure.error });
@@ -2391,11 +2419,11 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(201).send({ worktreeId, ...(agentId === undefined ? {} : { agentId }), ...(launchError === undefined ? {} : { launchError }), ...(setupError === undefined ? {} : { setupError }) });
   });
-  // the session + socket of a Worktree's live Agent, so a new Console shell opens beside it
+  // the session + socket of a Place's live Agent, so a new Console shell opens beside it
   // (an Agent adopted into the operator's own session lives wherever, so it is resolved from
   // discovery, never by session name)
-  const worktreeAgentSession = async (worktree: Worktree): Promise<{ socket: SocketRef; session: string } | undefined> => {
-    const agent = (await discovery.dashboard()).agents.find(candidate => candidate.worktreeId === worktree.id);
+  const placeAgentSession = async (place: Place): Promise<{ socket: SocketRef; session: string } | undefined> => {
+    const agent = (await discovery.dashboard()).agents.find(candidate => candidate.placeId === place.id);
     if (agent === undefined) return undefined;
     const target = await discovery.target(agent.id);
     return target === undefined ? undefined : { socket: target.socket, session: agentTmuxSession(target.agent) };
@@ -2414,39 +2442,40 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     agent: agentIds.has(`${pane.socket.fingerprint}:${pane.paneId}`),
     ...(pane.role === 'shell' ? { busy: launch.consoleShellBusy(pane) } : {})
   });
-  // list every pane the console may stream for a Worktree (its Agent's session, its Console
+  // list every pane the console may stream for a Place (its Agent's session, its Console
   // shells, idle landing shells), a read behind the read guard (spec, Console shells)
   app.get('/api/worktrees/:id/panes', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (request, reply) => {
     controlled(request);
-    const worktree = configuredWorktree((request.params as { id: string }).id);
-    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
-    const [panes, dashboard] = await Promise.all([launch.placePanes(worktree), discovery.dashboard()]);
-    const agentIds = new Set(dashboard.agents.filter(agent => agent.worktreeId === worktree.id).map(agent => agent.id));
+    const place = await resolvePlace((request.params as { id: string }).id);
+    if (place === undefined) return reply.code(404).send({ error: 'place unavailable' });
+    const [panes, dashboard] = await Promise.all([launch.placePanes(place), discovery.dashboard()]);
+    // every live Agent's pane, whatever its Place: the Place pane socket refuses them all
+    const agentIds = new Set(dashboard.agents.map(agent => agent.id));
     return { panes: panes.map(pane => worktreePaneView(pane, agentIds)) };
   });
-  // open a Console shell in the Worktree: beside its live Agent, else the session holding its
-  // Console shells, else a fresh console session named for the Worktree (spec, Console shells)
+  // open a Console shell at the Place: beside its live Agent, else the session holding its
+  // Console shells, else a fresh console session named for the Place (spec, Console shells)
   app.post('/api/worktrees/:id/shells', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     controlled(request, true);
-    const worktree = configuredWorktree((request.params as { id: string }).id);
-    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const place = await resolvePlace((request.params as { id: string }).id);
+    if (place === undefined) return reply.code(404).send({ error: 'place unavailable' });
     const name = body(request).name;
     if (name !== undefined && (typeof name !== 'string' || name.length > 120 || name.includes('\0') || /[\r\n]/u.test(name))) return reply.code(400).send({ error: 'invalid terminal name' });
-    const paneId = await launch.createConsoleShell(worktree, typeof name === 'string' ? name : '', await worktreeAgentSession(worktree));
+    const paneId = await launch.createConsoleShell(place, typeof name === 'string' ? name : '', await placeAgentSession(place));
     if (paneId === undefined) return reply.code(500).send({ error: 'could not open a terminal' });
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(201).send({ paneId });
   });
   // rename a Console shell (writes `@rac_pane_name`); membership is enforced by finding the
-  // pane among the Worktree's own Console shells
+  // pane among the Place's own Console shells
   app.patch('/api/worktrees/:id/panes/:paneId', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     controlled(request, true);
     const { id, paneId } = request.params as { id: string; paneId: string };
-    const worktree = configuredWorktree(id);
-    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const place = await resolvePlace(id);
+    if (place === undefined) return reply.code(404).send({ error: 'place unavailable' });
     const name = body(request).name;
     if (typeof name !== 'string' || name.length > 120 || name.includes('\0') || /[\r\n]/u.test(name)) return reply.code(400).send({ error: 'invalid terminal name' });
-    const shell = (await launch.placeConsoleShells(worktree)).find(candidate => candidate.paneId === paneId);
+    const shell = (await launch.placeConsoleShells(place)).find(candidate => candidate.paneId === paneId);
     if (shell === undefined) return reply.code(404).send({ error: 'terminal unavailable' });
     if (!await tmux.renamePaneName(shell.socket, shell.paneId, name)) return reply.code(500).send({ error: 'could not rename the terminal' });
     await dashboardUpdates.refresh().catch(() => undefined);
@@ -2457,10 +2486,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   app.delete('/api/worktrees/:id/panes/:paneId', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     controlled(request, true);
     const { id, paneId } = request.params as { id: string; paneId: string };
-    const worktree = configuredWorktree(id);
-    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const place = await resolvePlace(id);
+    if (place === undefined) return reply.code(404).send({ error: 'place unavailable' });
     const confirm = (request.query as { confirm?: unknown }).confirm; const confirmed = confirm === '1' || confirm === 'true';
-    const shell = (await launch.placeConsoleShells(worktree)).find(candidate => candidate.paneId === paneId);
+    const shell = (await launch.placeConsoleShells(place)).find(candidate => candidate.paneId === paneId);
     if (shell === undefined) return reply.code(404).send({ error: 'terminal unavailable' });
     if (!confirmed && launch.consoleShellBusy(shell)) return reply.code(409).send({ error: 'the terminal is busy', busy: true });
     if (!await tmux.close(shell.socket, shell.paneId)) return reply.code(500).send({ error: 'could not end the terminal' });
@@ -2503,9 +2532,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const branch = (request.query as { branch?: unknown }).branch;
     // validate the branch before repository lookup
     if (typeof branch !== 'string' || branch.length === 0 || branch.length > 255) return reply.code(400).send({ error: 'invalid branch name' });
-    const worktree = configuredWorktree((request.params as { id: string }).id);
+    const id = (request.params as { id: string }).id;
+    const worktree = configuredWorktree(id);
     // require a configured repository context
-    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    if (worktree === undefined) return await nonWorktreeReply(id, reply);
     const result = await worktreeManagement.branchRemoval(worktree.projectId, branch);
     // surface fresh git refusals
     if (!result.ok) return reply.code(result.status).send({ error: result.error });
@@ -2519,9 +2549,10 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (typeof branch !== 'string' || branch.length === 0 || branch.length > 255) return reply.code(400).send({ error: 'invalid branch name' });
     // restrict the acknowledgement to a boolean
     if (discardUnpushed !== undefined && typeof discardUnpushed !== 'boolean') return reply.code(400).send({ error: 'invalid discardUnpushed flag' });
-    const worktree = configuredWorktree((request.params as { id: string }).id);
+    const id = (request.params as { id: string }).id;
+    const worktree = configuredWorktree(id);
     // require a configured repository context
-    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    if (worktree === undefined) return await nonWorktreeReply(id, reply);
     const result = await worktreeManagement.deleteBranchGuarded(worktree.projectId, branch, discardUnpushed === true);
     // preserve the branch on every guard failure
     if (!result.ok) return reply.code(result.status).send({ error: result.error });
@@ -2533,8 +2564,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // read, so it never mutates and stays off the 10/min mutation budget)
   app.get('/api/worktrees/:id/removal', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     controlled(request);
-    const worktree = configuredWorktree((request.params as { id: string }).id);
-    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const id = (request.params as { id: string }).id;
+    const worktree = configuredWorktree(id);
+    if (worktree === undefined) return await nonWorktreeReply(id, reply);
     const result = await worktreeManagement.removal(worktree);
     if (!result.ok) return reply.code(result.status).send({ error: result.error });
     return { ...result.facts, blockers: await worktreeRemovalBlockers(worktree) };
@@ -2549,8 +2581,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const { discardChanges, deleteBranch } = requestBody;
     if (discardChanges !== undefined && typeof discardChanges !== 'boolean') return reply.code(400).send({ error: 'invalid discardChanges flag' });
     if (deleteBranch !== undefined && typeof deleteBranch !== 'boolean') return reply.code(400).send({ error: 'invalid deleteBranch flag' });
-    const worktree = configuredWorktree((request.params as { id: string }).id);
-    if (worktree === undefined) return reply.code(404).send({ error: 'worktree unavailable' });
+    const id = (request.params as { id: string }).id;
+    const worktree = configuredWorktree(id);
+    if (worktree === undefined) return await nonWorktreeReply(id, reply);
     if (worktree.main) return reply.code(409).send({ error: 'the main worktree cannot be removed' });
     if (worktree.locked) return reply.code(409).send({ error: 'Locked worktrees cannot be removed' });
     const blockers = await worktreeRemovalBlockers(worktree, true);
@@ -2590,10 +2623,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(204).send();
   });
-  app.post('/api/worktrees/:id/commands/:action', async (request, reply) => { controlled(request, true); const action = (request.params as { action: string }).action; if (!(stackActions as readonly string[]).includes(action)) return reply.code(404).send({ error: 'stack command unavailable' }); const result = await stackCommands.start((request.params as { id: string }).id, action as StackAction); if (result === 'busy') return reply.code(409).send({ error: 'stack operation already running' }); return result === false ? reply.code(404).send({ error: 'stack command unavailable' }) : reply.code(202).send(); });
+  app.post('/api/worktrees/:id/commands/:action', async (request, reply) => { controlled(request, true); const id = (request.params as { id: string }).id; if (configuredWorktree(id) === undefined) return await nonWorktreeReply(id, reply, { missing: { error: 'stack command unavailable' } }); const action = (request.params as { action: string }).action; if (!(stackActions as readonly string[]).includes(action)) return reply.code(404).send({ error: 'stack command unavailable' }); const result = await stackCommands.start(id, action as StackAction); if (result === 'busy') return reply.code(409).send({ error: 'stack operation already running' }); return result === false ? reply.code(404).send({ error: 'stack command unavailable' }) : reply.code(202).send(); });
   app.get('/api/worktrees/:id/commands/log', async (request, reply) => {
     controlled(request, false);
-    const log = await stackCommands.log((request.params as { id: string }).id);
+    const id = (request.params as { id: string }).id;
+    if (configuredWorktree(id) === undefined) return await nonWorktreeReply(id, reply, { missing: { error: 'stack log unavailable' } });
+    const log = await stackCommands.log(id);
     // report stacks without retained output separately
     if (log === undefined) return reply.code(404).send({ error: 'stack log unavailable' });
     return log;
@@ -2611,9 +2646,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return reply.code(201).send({ agentId: agent.id });
   });
   app.post('/api/agents/:id/tickets', async (request, reply) => { const s = controlled(request, true); const kind = body(request).kind; if (kind !== 'pane') return reply.code(400).send({ error: 'invalid ticket type' }); const target = await discovery.target((request.params as { id: string }).id); if (!target) return reply.code(404).send({ error: 'target unavailable' }); return { ticket: tickets.mint(s.id, 'pane', target.agent.id).id }; });
-  // a `pane` ticket for a Worktree target (a Console shell or another Worktree pane); the
-  // Worktree counterpart of the Agent ticket route, so `/ws/pane/:id` streams either (spec)
-  app.post('/api/worktrees/:id/tickets', async (request, reply) => { const s = controlled(request, true); const kind = body(request).kind; if (kind !== 'pane') return reply.code(400).send({ error: 'invalid ticket type' }); const id = (request.params as { id: string }).id; if (configuredWorktree(id) === undefined) return reply.code(404).send({ error: 'worktree unavailable' }); return { ticket: tickets.mint(s.id, 'pane', id).id }; });
+  // a `pane` ticket for a Place target (a Console shell or another pane at the Place); the
+  // Place counterpart of the Agent ticket route, so `/ws/pane/:id` streams either (spec)
+  app.post('/api/worktrees/:id/tickets', async (request, reply) => { const s = controlled(request, true); const kind = body(request).kind; if (kind !== 'pane') return reply.code(400).send({ error: 'invalid ticket type' }); const id = (request.params as { id: string }).id; if (await resolvePlace(id) === undefined) return reply.code(404).send({ error: 'place unavailable' }); return { ticket: tickets.mint(s.id, 'pane', id).id }; });
   // renew and check the single-browser control lease on an interval; close the socket the
   // moment the lease is lost. The one periodic tick a pane socket keeps (its live frame and
   // Size claim are event-driven), and the dashboard socket's heartbeat, are the same thing.
@@ -2656,9 +2691,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       let handleRaw: (raw: unknown) => void = raw => { earlyFrames.push(raw); };
       socket.on('message', (raw: unknown) => handleRaw(raw));
       // Resolve the pane target: an Agent (default pane = the Agent's own, membership = every
-      // pane of its tmux session, derive + mutation lock on its own pane) or a Worktree (an
-      // explicit pane required, membership = the Worktree's pane set — every pane of every
-      // session holding a Worktree pane, plus its Console shells — raw bytes, no derive, no
+      // pane of its tmux session, derive + mutation lock on its own pane) or a Place (an
+      // explicit pane required, membership = the Place's pane set — every pane of every
+      // session holding a pane at the Place, plus its Console shells — raw bytes, no derive, no
       // lock). Both mint a `pane` ticket bound to their id (spec, The pane socket).
       const requestedPane = (request.query as { pane?: unknown }).pane;
       const agentTarget = await discovery.target(id);
@@ -2679,14 +2714,15 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         }
         isAgentPane = pane === agentTarget.agent.paneId;
       } else {
-        const worktree = configuredWorktree(id);
-        if (worktree === undefined || typeof requestedPane !== 'string' || !/^%\d+$/u.test(requestedPane)) throw new Error();
-        const member = (await launch.placePanes(worktree)).find(candidate => candidate.paneId === requestedPane);
+        if (typeof requestedPane !== 'string' || !/^%\d+$/u.test(requestedPane)) throw new Error();
+        const place = await resolvePlace(id);
+        if (place === undefined) throw new Error();
+        const member = (await launch.placePanes(place)).find(candidate => candidate.paneId === requestedPane);
         if (member === undefined) throw new Error();
-        // A live Agent's own pane is reachable through the Worktree set (its cwd is the
-        // Worktree), but it must be streamed only through its Agent target so input takes the
+        // A live Agent's own pane is reachable through the Place set (its cwd is at the
+        // Place), but it must be streamed only through its Agent target so input takes the
         // mutation lock and a lone Ctrl+C routes through queued-prompt cancellation. Refuse it
-        // here (the picker lists it disabled), so the Worktree path only ever drives raw panes.
+        // here (the picker lists it disabled), so the Place path only ever drives raw panes.
         if (await discovery.target(`${member.socket.fingerprint}:${member.paneId}`) !== undefined) throw new Error();
         socketRef = member.socket;
         session = member.sessionId;

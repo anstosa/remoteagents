@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import argon2 from 'argon2';
 import { createHmac } from 'node:crypto';
 import { buildApp } from '../src/app.js';
+import { worktreePlace } from '../src/places/places.js';
 import { AuthService } from '../src/auth/service.js';
 import { AgentNotificationCoordinator } from '../src/notifications.js';
 import { stated } from './helpers/agent.js';
@@ -910,14 +911,14 @@ describe('Console shells server lifecycle', () => {
   }, 15_000);
 
   it('opens a Console shell beside a live Agent, forwarding the Agent session', async () => {
-    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready', placeId: 'cora', worktreeId: 'cora' });
     const createConsoleShell = vi.fn(async () => '%9');
     const { app, headers } = await start({ discovery: { dashboard: async () => ({ ...idleDashboard, agents: [agent] }), target: async (id: string) => id === agent.id ? { agent, socket } : undefined }, launch: { createConsoleShell } });
     try {
       const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload: { name: 'build' } });
       expect(response.statusCode).toBe(201);
       expect(response.json()).toEqual({ paneId: '%9' });
-      expect(createConsoleShell).toHaveBeenCalledWith(worktree, 'build', { socket, session: '$1' });
+      expect(createConsoleShell).toHaveBeenCalledWith(worktreePlace(worktree as never), 'build', { socket, session: '$1' });
     } finally { await app.close(); }
   }, 15_000);
 
@@ -927,7 +928,7 @@ describe('Console shells server lifecycle', () => {
     try {
       const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload: {} });
       expect(response.statusCode).toBe(201);
-      expect(createConsoleShell).toHaveBeenCalledWith(worktree, '', undefined);
+      expect(createConsoleShell).toHaveBeenCalledWith(worktreePlace(worktree as never), '', undefined);
     } finally { await app.close(); }
   }, 15_000);
 
@@ -1476,7 +1477,7 @@ describe('worktree notes API', () => {
       rename: async (key: string, noteId: string, title: string) => { keys.push(`rename:${key}:${noteId}`); const note = stored.find(candidate => candidate.id === noteId); if (note === undefined) return undefined; note.title = title; return { ...note }; },
       delete: async (key: string, noteId: string) => { keys.push(`delete:${key}:${noteId}`); const index = stored.findIndex(candidate => candidate.id === noteId); return index < 0 ? undefined : stored.splice(index, 1)[0]; }
     };
-    const discovery = { worktreesNow: () => [worktree], dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [], projects: [] }) };
+    const discovery = { worktreesNow: () => [worktree], place: async () => undefined, dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [], projects: [] }) };
     const notesApp = await buildApp({ ...config }, { auth: new AuthService(hash, Buffer.alloc(32, 10).toString('base64url')), discovery: discovery as never, notes: notes as never });
     try {
       const boot = await notesApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
@@ -1756,6 +1757,7 @@ describe('workspace files API', () => {
     const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/home/ubuntu/cora', title: 'Ready' });
     const discovery = {
       worktreesNow: () => [worktree],
+      place: async () => undefined,
       target: async (id: string) => id === agent.id ? { agent, socket: { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 } } : undefined,
       // bind temporary artifacts to the selected pane
       paneProcessId: (id: string) => id === agent.id ? 1234 : undefined
@@ -1790,7 +1792,7 @@ describe('workspace files API', () => {
 
 describe('comparison API', () => {
   const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false, main: true, detached: false, locked: false, branch: 'feature' };
-  const discovery = { worktreesNow: () => [worktree] };
+  const discovery = { worktreesNow: () => [worktree], place: async () => undefined };
   // a comparison service faked to the route seam: Working resolves with a capped file, All PR has no base
   const comparison = {
     patch: async (_worktree: unknown, kind: 'working' | 'pr') => kind === 'working'

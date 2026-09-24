@@ -274,7 +274,7 @@ describe('conversations switch API', () => {
   it('404s an unknown Worktree and 400s a malformed switch target', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const cora = testWorktree({ id: 'potato:/wt/cora', projectId: 'potato', label: 'Cora', path: '/wt/cora', identity: '/wt/cora', hostPath: '/host/cora' });
-    const discovery = { target: async () => undefined, worktreesNow: () => [cora], conversations: async () => [], dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [], projects: [] }) };
+    const discovery = { target: async () => undefined, worktreesNow: () => [cora], place: async () => undefined, conversations: async () => [], dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [], projects: [] }) };
     const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 58).toString('base64url')), discovery: discovery as never });
     try {
       const headers = await authenticatedHeaders(app);

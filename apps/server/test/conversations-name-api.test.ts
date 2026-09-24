@@ -334,7 +334,7 @@ describe('conversation naming API', () => {
     const directory = await mkdtemp(join(tmpdir(), 'rac-name-remove-')); dirs.push(directory);
     const consoleNamed = new ConsoleNamedConversationService({ file: join(directory, 'records.json') });
     await consoleNamed.record('potato', { kind: 'claude', id: claudeId });
-    const discovery = { target: async () => undefined, worktreesNow: () => [cora] };
+    const discovery = { target: async () => undefined, worktreesNow: () => [cora], place: async () => undefined };
     const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 68).toString('base64url')), discovery: discovery as never, consoleNamed });
     try {
       const headers = await authenticatedHeaders(app);

@@ -16,7 +16,7 @@ import { WorktreeLaunchStore, scratchLaunchKey } from '../worktrees/store.js';
 import type { Pane, SocketRef, Worktree } from '../domain/models.js';
 import { updateAdvisorPendingLabel } from '../update-advisor.js';
 import { isFullGitSha } from '../git/revision.js';
-import { accountHome, configuredPlaces, placeForRoot, scratchHome, scratchPlaceLabel, scratchProjectId, type Place } from '../places/places.js';
+import { accountHome, configuredPlaces, placeForRoot, placeHostRoot, scratchHome, scratchPlaceLabel, scratchProjectId, type Place } from '../places/places.js';
 
 export function expandCommand(command: string, worktree: Pick<Worktree, 'identity'>): string {
   const directory = `'${worktree.identity.replaceAll("'", "'\\''")}'`;
@@ -52,6 +52,9 @@ export function composeLaunch(program: string, adapterArgs: string[], operatorAr
   const launch = prefix === '' ? command : `${prefix} ${command}`;
   return setup === undefined ? launch : `eval ${shellQuote(setup)} && ${launch}`;
 }
+
+// what a Console shell needs of its Place: membership, where it starts and whose HOME it exports
+export type ConsoleShellPlace = Pick<Place, 'id' | 'kind' | 'projectId' | 'home' | 'hostPath'>;
 
 // one worktree launch request: which conversation (if any) and whether to confine it
 type LaunchRequest = { mode: LaunchMode; conversationId?: string; sandboxed: boolean };
@@ -556,32 +559,34 @@ export class LaunchService {
     return `${base}-${randomBytes(4).toString('hex')}`;
   }
 
-  // the login-shell command and cwd for a Console shell: a native login shell, or the host
-  // bootstrap on the host socket (same shape as `startWorktreeShell`). Never sandboxed — it is
-  // the operator's own shell, not the Agent's.
-  private consoleShellCommand(worktree: Worktree): { cwd: string; argv: string[] } {
-    if (this.hostSocket === undefined) return { cwd: worktree.identity, argv: [this.localShell, '-l'] };
-    const home = this.agentHome(worktree.projectId);
-    return { cwd: worktreeHostRoot(worktree), argv: [this.hostShell, '-lc', interactiveShellBootstrap(hostCommand('', home), home, this.hostShell)] };
+  // the login-shell command and cwd for a Console shell at a Place: a native login shell in the
+  // Place home, or the host bootstrap in its host root on the host socket (same shape as
+  // `startWorktreeShell`), with the HOME the Place's own Agent launch exports. Never sandboxed —
+  // it is the operator's own shell, not the Agent's.
+  private consoleShellCommand(place: ConsoleShellPlace): { cwd: string; argv: string[] } {
+    if (this.hostSocket === undefined) return { cwd: place.home, argv: [this.localShell, '-l'] };
+    // a Worktree launch exports its Project's account home; directory and Scratch launches the default one
+    const home = this.agentHome(place.kind === 'worktree' ? place.projectId : undefined);
+    return { cwd: placeHostRoot(place), argv: [this.hostShell, '-lc', interactiveShellBootstrap(hostCommand('', home), home, this.hostShell)] };
   }
 
-  // Open a Console shell for the Worktree and return the new pane id, or undefined on failure.
-  // Placement (spec): a detached window in the session of the Worktree's live Agent (the caller
-  // resolves it from discovery), else the session already holding the Worktree's Console shells,
-  // else a fresh console session named for the Worktree — so agent and shells stay in one session.
-  async createConsoleShell(worktree: Worktree, name: string, agentSession?: { socket: SocketRef; session: string }): Promise<string | undefined> {
-    const { cwd, argv } = this.consoleShellCommand(worktree);
+  // Open a Console shell at the Place and return the new pane id, or undefined on failure.
+  // Placement (spec): a detached window in the session of the Place's live Agent (the caller
+  // resolves it from discovery), else the session already holding the Place's Console shells,
+  // else a fresh console session named for the Place — so agent and shells stay in one session.
+  async createConsoleShell(place: ConsoleShellPlace, name: string, agentSession?: { socket: SocketRef; session: string }): Promise<string | undefined> {
+    const { cwd, argv } = this.consoleShellCommand(place);
     if (agentSession !== undefined) return await this.panes.createConsoleShellWindow(agentSession.socket, agentSession.session, cwd, argv, name);
-    const shells = await this.placeConsoleShells(worktree);
+    const shells = await this.placeConsoleShells(place);
     const existing = shells[0];
     if (existing !== undefined) return await this.panes.createConsoleShellWindow(existing.socket, existing.sessionId, cwd, argv, name);
-    return await this.createConsoleShellSession(worktree, cwd, argv, name);
+    return await this.createConsoleShellSession(place, cwd, argv, name);
   }
 
-  // create the Worktree's first Console shell as a fresh console session named for the Worktree
+  // create the Place's first Console shell as a fresh console session named for the Place
   // (the no-live-Agent path); a later Launch adds its window to this session
-  private async createConsoleShellSession(worktree: Worktree, cwd: string, argv: string[], name: string): Promise<string | undefined> {
-    const session = await this.availableSessionName(worktreeSessionName(worktreeHostRoot(worktree)));
+  private async createConsoleShellSession(place: ConsoleShellPlace, cwd: string, argv: string[], name: string): Promise<string | undefined> {
+    const session = await this.availableSessionName(worktreeSessionName(placeHostRoot(place)));
     const socketArgs = this.hostSocket === undefined ? [] : ['-S', this.hostSocket];
     const created = await run(this.tmux, [...socketArgs, 'new-session', '-d', '-s', session, '-c', cwd, '-P', '-F', '#{pane_id}', '--', ...argv]);
     if (created.code !== 0) return undefined;

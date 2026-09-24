@@ -181,7 +181,7 @@ describe('conversations listing API', () => {
 
   it('404s an unknown worktree or agent', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const discovery = { target: async () => undefined, worktreesNow: () => [], conversations: async () => [] };
+    const discovery = { target: async () => undefined, worktreesNow: () => [], place: async () => undefined, conversations: async () => [] };
     const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 43).toString('base64url')), discovery: discovery as never });
     try {
       const headers = await authenticatedHeaders(app);

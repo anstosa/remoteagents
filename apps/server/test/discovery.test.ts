@@ -779,6 +779,42 @@ describe('DiscoveryService Places', () => {
     expect(dashboard.places.map(place => place.id)).toEqual(['notes:/data/notes', 'scratch:/home/me/scratch', 'scratch:/srv/tools']);
   });
 
+  it('keeps listing a pinned ad-hoc Scratch Place with nothing in it while its folder exists outside every configured Place', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'rac-pinned-')));
+    try {
+      await mkdir(join(root, 'tools'));
+      await mkdir(join(root, 'notes', 'drafts'), { recursive: true });
+      const notesHere = testProject({ id: 'notes', label: 'Notes', path: join(root, 'notes'), identity: join(root, 'notes'), mode: 'directory', push });
+      const pins = {
+        [`scratch:${root}/tools`]: true,
+        [`scratch:${root}/unpinned`]: false,
+        // removed since it was pinned
+        [`scratch:${root}/gone`]: true,
+        // pinned as its own Scratch Place before notes became a directory Project
+        [`scratch:${root}/notes/drafts`]: true
+      };
+      const discovery = new DiscoveryService(socketFinder(), paneLister([]) as never, processInspector({ codex: false }), undefined, undefined, [notesHere], { pins: async () => pins }, listImpl({}), '/home/me/scratch');
+
+      const dashboard = await discovery.dashboard();
+
+      expect(dashboard.places.map(place => place.id)).toEqual([`notes:${root}/notes`, 'scratch:/home/me/scratch', `scratch:${root}/tools`]);
+      expect(dashboard.places.at(-1)).toEqual({ id: `scratch:${root}/tools`, kind: 'scratch', projectId: 'scratch', label: 'tools', home: `${root}/tools`, pinned: true });
+      // the listed Place resolves by id with its server-side shape; an unlisted one does not
+      await expect(discovery.place(`scratch:${root}/tools`)).resolves.toMatchObject({ kind: 'scratch', home: `${root}/tools`, adhoc: true });
+      await expect(discovery.place(`scratch:${root}/gone`)).resolves.toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves a listed directory-Project Place with its bridge host path', async () => {
+    const discovery = service(paneLister([]), { codex: false });
+
+    await expect(discovery.place('notes:/data/notes')).resolves.toEqual({ id: 'notes:/data/notes', kind: 'directory', projectId: 'notes', label: 'Notes', home: '/data/notes', hostPath: '/host/notes' });
+    // a Worktree resolves from the Worktree snapshot, not here
+    await expect(discovery.place('ferry:/worktrees/ferry')).resolves.toBeUndefined();
+  });
+
   it('never places an update advisor', async () => {
     const tmux = paneLister([{ paneId: '%1', sessionId: '$0', pid: 1, path: '/srv/advisor', title: 'Ready', displayLabel: 'Update Advisor Starting v4 2222222' }]);
 

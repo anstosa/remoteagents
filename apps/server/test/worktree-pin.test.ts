@@ -46,7 +46,7 @@ describe('POST /api/worktrees/:id/pin', () => {
 
   it('rejects an unknown Worktree and a non-boolean pin state', async () => {
     const worktreeStore = await store();
-    const discovery = { worktreesNow: () => [worktree], invalidateWorktrees: () => {} } as never;
+    const discovery = { worktreesNow: () => [worktree], invalidateWorktrees: () => {}, place: async () => undefined } as never;
     const app = await buildApp(testConfig({ publicOrigin: new URL(`https://${host}`) }), { auth, control, discovery, worktreeStore, dashboardUpdates });
     try {
       const unknown = await app.inject({ method: 'POST', url: `/api/worktrees/${encodeURIComponent('proj:/gone')}/pin`, headers: mutationHeaders, payload: { pinned: true } });
@@ -82,7 +82,7 @@ describe('PATCH /api/worktrees/:id/label', () => {
 
   it('returns after persistence without waiting for dashboard reconciliation', async () => {
     const worktreeStore = await store();
-    const discovery = { worktreesNow: () => [worktree], invalidateWorktrees: () => {} } as never;
+    const discovery = { worktreesNow: () => [worktree], invalidateWorktrees: () => {}, place: async () => undefined } as never;
     let releaseRefresh = () => {};
     const refreshGate = new Promise<void>(resolve => { releaseRefresh = resolve; });
     let markRefreshStarted = () => {};
@@ -107,7 +107,7 @@ describe('PATCH /api/worktrees/:id/label', () => {
 
   it('rejects an unknown Worktree and invalid custom labels', async () => {
     const worktreeStore = await store();
-    const discovery = { worktreesNow: () => [worktree], invalidateWorktrees: () => {} } as never;
+    const discovery = { worktreesNow: () => [worktree], invalidateWorktrees: () => {}, place: async () => undefined } as never;
     const app = await buildApp(testConfig({ publicOrigin: new URL(`https://${host}`) }), { auth, control, discovery, worktreeStore, dashboardUpdates });
     try {
       const unknown = await app.inject({ method: 'PATCH', url: `/api/worktrees/${encodeURIComponent('proj:/gone')}/label`, headers: mutationHeaders, payload: { label: 'Gone' } });

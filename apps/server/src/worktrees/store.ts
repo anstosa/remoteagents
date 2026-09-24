@@ -89,9 +89,19 @@ export class WorktreeLaunchStore {
   }
 
   // record an explicit pin override for one Worktree, the tab-menu / launcher toggle
-  async setPinned(key: string, pinned: boolean): Promise<void> {
+  // set one explicit pin override, or clear it (undefined) back to the default
+  async setPinned(key: string, pinned: boolean | undefined): Promise<void> {
     if (!validKey(key)) return;
     await this.mutate(stored => {
+      if (pinned === undefined) {
+        const record = stored[key];
+        if (record === undefined) return;
+        const { pinned: _pinned, ...remaining } = record;
+        // avoid retaining an empty orphan record
+        if (Object.keys(remaining).length === 0) delete stored[key];
+        else stored[key] = remaining;
+        return;
+      }
       if (stored[key] === undefined && Object.keys(stored).length >= maxKeys) return;
       stored[key] = { ...stored[key], pinned };
     });

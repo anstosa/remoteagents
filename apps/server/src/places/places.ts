@@ -19,18 +19,34 @@ export type PlaceKind = 'worktree' | 'directory' | 'scratch';
  * `hostPath` the host-side one under the Docker bridge. Built fresh from the discovered
  * Worktrees and config, never stored.
  */
-export type Place = { id: string; kind: PlaceKind; projectId: string; label: string; home: string; hostPath?: string };
+export type Place = { id: string; kind: PlaceKind; projectId: string; label: string; home: string; hostPath?: string; adhoc?: true };
 
 // the configured Places, in the order a tie between equally deep homes resolves: Worktrees,
 // then directory Projects, then the configured Scratch folder
 export function configuredPlaces(worktrees: readonly Worktree[], projects: readonly Project[], scratchHome: string): Place[] {
-  const places: Place[] = worktrees.map(worktree => ({ id: worktree.id, kind: 'worktree', projectId: worktree.projectId, label: worktree.label, home: worktree.identity, ...(worktree.hostPath === undefined ? {} : { hostPath: worktree.hostPath }) }));
+  const places: Place[] = worktrees.map(worktreePlace);
   for (const project of projects) {
     if (!project.available || project.mode !== 'directory') continue;
     places.push({ id: worktreeWireId(project.id, project.identity), kind: 'directory', projectId: project.id, label: project.label, home: project.identity, ...(project.hostPath === undefined ? {} : { hostPath: project.hostPath }) });
   }
   places.push({ id: worktreeWireId(scratchProjectId, scratchHome), kind: 'scratch', projectId: scratchProjectId, label: scratchPlaceLabel, home: scratchHome });
   return places;
+}
+
+// a Worktree as a Place: its wire id, its git identity as home, its bridge host path
+export function worktreePlace(worktree: Worktree): Place {
+  return { id: worktree.id, kind: 'worktree', projectId: worktree.projectId, label: worktree.label, home: worktree.identity, ...(worktree.hostPath === undefined ? {} : { hostPath: worktree.hostPath }) };
+}
+
+// the Scratch Place of a folder inside no configured Place, labelled with its basename; `adhoc`
+// tells it from the configured Scratch folder, which alone has a launch of its own
+function adhocScratchPlace(root: string): Place {
+  return { id: worktreeWireId(scratchProjectId, root), kind: 'scratch', projectId: scratchProjectId, label: basename(root) || root, home: root, adhoc: true };
+}
+
+// the Place folder as the launching host sees it: the bridge host path, else the home
+export function placeHostRoot(place: Pick<Place, 'home' | 'hostPath'>): string {
+  return place.hostPath ?? place.home;
 }
 
 // the length of the Place folder that contains `root` (itself or an ancestor), else -1
@@ -54,7 +70,7 @@ export function placeForRoot(places: readonly Place[], root: string): Place {
     // strictly deeper only, so the earlier Place wins a tie
     if (matched > depth) { nearest = place; depth = matched; }
   }
-  return nearest ?? { id: worktreeWireId(scratchProjectId, root), kind: 'scratch', projectId: scratchProjectId, label: basename(root) || root, home: root };
+  return nearest ?? adhocScratchPlace(root);
 }
 
 // The notes key of a folder that is no Worktree: `scratch_<hash>`, never the Place id, since a
@@ -63,8 +79,10 @@ export function placeForRoot(places: readonly Place[], root: string): Place {
 export function folderNoteKey(folder: string): string {
   return `scratch_${createHash('sha256').update(folder).digest('base64url').slice(0, 40)}`;
 }
-export function placeNoteKey(place: Pick<Place, 'home' | 'hostPath'>): string {
-  return folderNoteKey(place.hostPath ?? place.home);
+// a Place's notes key: a Worktree's notes are Project-scoped (ADR 0003), any other Place's are
+// keyed by the folder its console-launched Agent runs in
+export function placeNoteKey(place: Pick<Place, 'kind' | 'projectId' | 'home' | 'hostPath'>): string {
+  return place.kind === 'worktree' ? place.projectId : folderNoteKey(placeHostRoot(place));
 }
 
 // the launch-profile store key a Place's last-used kind lives under: a Worktree's own id, a

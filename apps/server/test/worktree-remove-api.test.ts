@@ -39,6 +39,7 @@ function discoveryStub(agents: Array<{ worktreeId?: string }> = [], worktrees = 
     invalidateWorktrees: () => {},
     worktreesNow: () => worktrees,
     worktrees: async () => worktrees,
+    place: async () => undefined,
     dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents, projects: [] })
   } as never;
 }

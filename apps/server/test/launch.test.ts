@@ -13,6 +13,7 @@ import { hostCommand, interactiveShellPath } from '../src/tmux/interactive-shell
 import { startNamedReplacementSession, worktreeSessionName } from '../src/tmux/session-name.js';
 import type { SocketRef, Worktree } from '../src/domain/models.js';
 import { testWorktree } from './helpers/config.js';
+import { worktreePlace } from '../src/places/places.js';
 
 // worktrees are discovered and launched through a configured Adapter now; the legacy
 // per-worktree `command`/`resumeCommand` launch path is retired, so a worktree launch
@@ -699,7 +700,7 @@ describe('LaunchService', () => {
       const worktree = alex();
       const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
 
-      await expect(service.createConsoleShell(worktree, 'build', { socket, session: '$1' })).resolves.toBe('%9');
+      await expect(service.createConsoleShell(worktreePlace(worktree), 'build', { socket, session: '$1' })).resolves.toBe('%9');
 
       const newWindow = run.mock.calls.find(call => call[1].includes('new-window'));
       expect(newWindow?.[1]).toEqual(['-S', '/tmp/tmux/default', 'new-window', '-d', '-t', '$1', '-c', '/worktrees/alex', '-P', '-F', '#{pane_id}', '--', interactiveShellPath(), '-l']);
@@ -713,7 +714,7 @@ describe('LaunchService', () => {
       const worktree = alex();
       const service = new LaunchService(codex, { find: async () => [socket] }, undefined, undefined, undefined, () => [worktree]);
 
-      await expect(service.createConsoleShell(worktree, '')).resolves.toBe('%5');
+      await expect(service.createConsoleShell(worktreePlace(worktree), '')).resolves.toBe('%5');
 
       const newSession = run.mock.calls.find(call => call[1].includes('new-session'));
       expect(newSession?.[1]).toEqual(['new-session', '-d', '-s', 'alex', '-c', '/worktrees/alex', '-P', '-F', '#{pane_id}', '--', interactiveShellPath(), '-l']);
@@ -837,6 +838,33 @@ describe('LaunchService', () => {
 
         expect((await launch.placePanes({ id: 'alex' })).map(pane => pane.paneId)).toEqual(['%1']);
         expect((await launch.placePanes({ id: 'alex-agent' })).map(pane => pane.paneId)).toEqual(['%2']);
+      });
+
+      it("opens a directory Project's first Console shell in its bridge host path, in a session named for it", async () => {
+        process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+        run.mockImplementation(async (_bin: string, args: string[]) => ({ code: 0, stdout: args.includes('new-session') ? '%5' : '', stderr: '' }));
+        const launch = service([]);
+
+        await expect(launch.createConsoleShell({ id: 'notes:/data/notes', kind: 'directory', projectId: 'notes', home: '/data/notes', hostPath: '/host/notes' }, 'build')).resolves.toBe('%5');
+
+        const newSession = run.mock.calls.find(call => call[1].includes('new-session'));
+        expect(newSession?.[1]).toEqual(expect.arrayContaining(['-S', '/host-tmux/default', 'new-session', '-d', '-s', 'notes', '-c', '/host/notes']));
+        expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%5', '@rac_pane_name', 'build']);
+      });
+
+      it("opens a Scratch Place's Console shell in the session already holding its shells", async () => {
+        const createConsoleShellWindow = vi.fn(async () => '%9');
+        // another Place's shell comes first, so only the Place filter picks the right session
+        const panes = [
+          { paneId: '%2', sessionId: '$1', role: 'shell', path: '/data/notes' },
+          { paneId: '%1', sessionId: '$4', role: 'shell', path: '/home/me/scratch' }
+        ].map(pane => ({ pid: 1, command: 'zsh', title: '', socket, ...pane }));
+        const launch = new LaunchService(config, { find: async () => [socket] }, { listPanes: async () => panes, createConsoleShellWindow } as never, async path => path, undefined, () => [alex()]);
+
+        await expect(launch.createConsoleShell({ id: 'scratch:/home/me/scratch', kind: 'scratch', projectId: 'scratch', home: '/home/me/scratch' }, '')).resolves.toBe('%9');
+
+        expect(createConsoleShellWindow).toHaveBeenCalledWith(socket, '$4', '/home/me/scratch', [interactiveShellPath(), '-l'], '');
+        expect(run.mock.calls.some(call => call[1].includes('new-session'))).toBe(false);
       });
 
       it("streams every pane of a session that holds one of a directory Project's panes", async () => {

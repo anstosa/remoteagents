@@ -484,24 +484,28 @@ describe('/ws/pane lifecycle', () => {
 describe('/ws/pane Worktree target', () => {
   const worktree = { id: 'cora', projectId: 'proj', label: 'Cora', path: '/repo', identity: '/repo', available: true, pinned: false, main: false, detached: false, locked: false, push: { label: 'p', prompt: '$p' } };
   const member = { paneId: '%2', sessionId: '$1', pid: 2, path: '/repo', command: 'zsh', role: 'shell', title: '', socket };
+  const notesPlace = { id: 'notes:/data/notes', kind: 'directory', projectId: 'notes', label: 'Notes', home: '/data/notes', hostPath: '/host/notes' };
+  const scratchPlace = { id: 'scratch:/home/me/scratch', kind: 'scratch', projectId: 'scratch', label: '~ Scratch', home: '/home/me/scratch' };
 
   // drive /ws/pane against a Worktree target (by default discovery.target misses, so the handler
   // falls to the Worktree branch and checks membership against launch.placePanes). `target`
   // can resolve a live Agent (so the handler refuses that pane) and `prompts` is wired in so the
   // no-lock assertions on a raw pane are load-bearing.
-  async function connectWorktree(query: string, placePanes: () => Promise<unknown[]>, stream: ReturnType<typeof fakePaneStream>, tmuxOverride: unknown, deps: { target?: (id: string) => Promise<unknown>; prompts?: unknown } = {}) {
+  async function connectWorktree(query: string, placePanes: () => Promise<unknown[]>, stream: ReturnType<typeof fakePaneStream>, tmuxOverride: unknown, deps: { target?: (id: string) => Promise<unknown>; prompts?: unknown; placeId?: string } = {}) {
+    const placeId = deps.placeId ?? 'cora';
     const control = { connect: () => true, active: () => true } as never;
     const port = await freePort();
     const tickets = new TicketStore();
-    const discovery = { target: deps.target ?? (async () => undefined), worktreesNow: () => [worktree] } as never;
+    // the dashboard lists a directory-Project and a Scratch Place beside the Worktree
+    const discovery = { target: deps.target ?? (async () => undefined), worktreesNow: () => [worktree], place: async (id: string) => [notesPlace, scratchPlace].find(place => place.id === id) } as never;
     const launch = { placePanes } as never;
     const app = await buildApp(
       testConfig({ publicOrigin: new URL(`http://127.0.0.1:${port}`), projects: [testProject({ id: 'proj' })] as never }),
       { auth, control, dashboardUpdates, discovery, launch, tickets, paneStream: stream.provider, tmux: tmuxOverride, ...(deps.prompts === undefined ? {} : { prompts: deps.prompts }) } as never
     );
     await app.listen({ host: '127.0.0.1', port });
-    const ticket = tickets.mint('session', 'pane', 'cora').id;
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/pane/cora${query}`, ['rac', ticket]);
+    const ticket = tickets.mint('session', 'pane', placeId).id;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/pane/${encodeURIComponent(placeId)}${query}`, ['rac', ticket]);
     ws.binaryType = 'arraybuffer';
     open.push({ app, ws });
     const binary: Buffer[] = [];
@@ -547,6 +551,39 @@ describe('/ws/pane Worktree target', () => {
     const stream = fakePaneStream();
     const { tmux } = fakeTmux(stream);
     const conn = await connectWorktree('?pane=%99', async () => [member], stream, tmux);
+    await waitFor(() => conn.closeCode() !== undefined);
+    expect(conn.closeCode()).toBe(1008);
+  });
+
+  it('streams a Console shell at a directory-Project Place with no Agent', async () => {
+    const stream = fakePaneStream();
+    stream.setSeed(Buffer.from('NOTESSEED'));
+    const { tmux } = fakeTmux(stream);
+    const shell = { ...member, path: '/data/notes' };
+    const placePanes = vi.fn(async () => [shell]);
+    const conn = await connectWorktree('?pane=%2', placePanes, stream, tmux, { placeId: notesPlace.id });
+    conn.send({ type: 'viewport', cols: 100, rows: 30, scrollback: 500 });
+    await waitFor(() => conn.binary.length > 0);
+    expect(conn.binary[0]!.toString()).toBe('NOTESSEED');
+    expect(placePanes).toHaveBeenCalledWith(expect.objectContaining({ id: notesPlace.id, kind: 'directory' }));
+  });
+
+  it('streams a Console shell at a Scratch Place with no Agent', async () => {
+    const stream = fakePaneStream();
+    stream.setSeed(Buffer.from('SCRATCHSEED'));
+    const { tmux } = fakeTmux(stream);
+    const placePanes = vi.fn(async () => [{ ...member, path: '/home/me/scratch' }]);
+    const conn = await connectWorktree('?pane=%2', placePanes, stream, tmux, { placeId: scratchPlace.id });
+    conn.send({ type: 'viewport', cols: 100, rows: 30, scrollback: 500 });
+    await waitFor(() => conn.binary.length > 0);
+    expect(conn.binary[0]!.toString()).toBe('SCRATCHSEED');
+    expect(placePanes).toHaveBeenCalledWith(scratchPlace);
+  });
+
+  it('closes 1008 for a Scratch folder the dashboard does not list', async () => {
+    const stream = fakePaneStream();
+    const { tmux } = fakeTmux(stream);
+    const conn = await connectWorktree('?pane=%2', async () => [member], stream, tmux, { placeId: 'scratch:/etc' });
     await waitFor(() => conn.closeCode() !== undefined);
     expect(conn.closeCode()).toBe(1008);
   });
