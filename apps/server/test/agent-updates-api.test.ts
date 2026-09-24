@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
-import type { AgentUpdateServiceLike } from '../src/agent-updates/service.js';
+import { AgentUpdateService, type AgentUpdateJob, type AgentUpdateServiceLike } from '../src/agent-updates/service.js';
 import { authenticatedHeaders, testAuthService, testHost } from './helpers/auth.js';
 import { testConfig } from './helpers/config.js';
 
@@ -14,7 +14,9 @@ describe('agent update API', () => {
     const current = { kind: 'codex' as const, currentVersion: '0.153.2', latestVersion: '0.153.2', updateAvailable: false };
     const statuses = vi.fn(async () => [available]);
     const update = vi.fn(async () => ({ outcome: 'updated' as const, status: current }));
-    app = await buildApp(testConfig(), { auth: await testAuthService(), agentUpdates: { statuses, update } satisfies AgentUpdateServiceLike });
+    const startUpdate = vi.fn<AgentUpdateServiceLike['startUpdate']>(() => ({ outcome: 'unavailable' }));
+    const updateStatus = vi.fn<AgentUpdateServiceLike['updateStatus']>(() => undefined);
+    app = await buildApp(testConfig(), { auth: await testAuthService(), agentUpdates: { statuses, update, startUpdate, updateStatus } satisfies AgentUpdateServiceLike });
     const denied = await app.inject({ method: 'GET', url: '/api/agents/updates', headers: { host: testHost } });
     const headers = await authenticatedHeaders(app);
     const listed = await app.inject({ method: 'GET', url: '/api/agents/updates', headers: { host: headers.host, cookie: headers.cookie } });
@@ -32,7 +34,7 @@ describe('agent update API', () => {
       if (kind === 'claude') return { outcome: 'failed' };
       return { outcome: 'unavailable' };
     });
-    app = await buildApp(testConfig(), { auth: await testAuthService(), agentUpdates: { statuses: async () => [], update } });
+    app = await buildApp(testConfig(), { auth: await testAuthService(), agentUpdates: { statuses: async () => [], update, startUpdate: () => ({ outcome: 'unavailable' }), updateStatus: () => undefined } });
     const headers = await authenticatedHeaders(app);
     const busy = await app.inject({ method: 'POST', url: '/api/agents/codex/update', headers });
     const failed = await app.inject({ method: 'POST', url: '/api/agents/claude/update', headers });
@@ -44,10 +46,64 @@ describe('agent update API', () => {
 
   it('rejects unknown agent kinds', async () => {
     const update: AgentUpdateServiceLike['update'] = vi.fn(async () => ({ outcome: 'unavailable' }));
-    app = await buildApp(testConfig(), { auth: await testAuthService(), agentUpdates: { statuses: async () => [], update } });
+    app = await buildApp(testConfig(), { auth: await testAuthService(), agentUpdates: { statuses: async () => [], update, startUpdate: () => ({ outcome: 'unavailable' }), updateStatus: () => undefined } });
     const headers = await authenticatedHeaders(app);
     const unknown = await app.inject({ method: 'POST', url: '/api/agents/not-real/update', headers });
     expect(unknown.statusCode).toBe(404);
     expect(update).not.toHaveBeenCalled();
+  }, 15_000);
+
+  // prove the async route returns before its gated installer
+  it('returns an asynchronous update before the installer completes and exposes its terminal state', async () => {
+    let release = () => {};
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let current = '0.152.1';
+    const runner = vi.fn(async (command: string) => {
+      // hold the installer behind an explicit test gate
+      if (command === 'update') { await gate; current = '0.153.2'; return { code: 0, output: 'installed' }; }
+      return { code: 0, output: command === 'current' ? current : '0.153.2' };
+    });
+    const config = testConfig({ adapters: { codex: { program: '/bin/codex', args: [], env: {}, launchable: true, updates: { current: 'current', latest: 'latest', run: 'update' } } } });
+    const service = new AgentUpdateService(config, '/home/test', runner);
+    app = await buildApp(config, { auth: await testAuthService(), agentUpdates: service });
+    const headers = await authenticatedHeaders(app);
+    const readHeaders = { host: headers.host, cookie: headers.cookie };
+
+    const noCsrf = await app.inject({ method: 'POST', url: '/api/agents/codex/update', headers: { ...readHeaders, origin: headers.origin, prefer: 'respond-async' } });
+    expect(noCsrf.statusCode).toBe(403);
+    const started = await app.inject({ method: 'POST', url: '/api/agents/codex/update', headers: { ...headers, prefer: 'wait=1, respond-async' } });
+    expect(started.statusCode).toBe(202);
+    const job = started.json<{ update: AgentUpdateJob }>().update;
+    expect(job).toMatchObject({ kind: 'codex', state: 'running' });
+    expect(runner).toHaveBeenCalledWith('update', 5 * 60_000);
+
+    const denied = await app.inject({ method: 'GET', url: `/api/agents/codex/update/${job.id}`, headers: { host: testHost } });
+    const running = await app.inject({ method: 'GET', url: `/api/agents/codex/update/${job.id}`, headers: readHeaders });
+    const unknown = await app.inject({ method: 'GET', url: '/api/agents/codex/update/unknown', headers: readHeaders });
+    const wrongKind = await app.inject({ method: 'GET', url: `/api/agents/omx/update/${job.id}`, headers: readHeaders });
+    expect(denied.statusCode).toBe(401);
+    expect(running.json()).toEqual({ update: job });
+    expect(unknown.statusCode).toBe(404);
+    expect(unknown.json()).toEqual({ error: 'Agent update status is unknown. Check the installed version before retrying.' });
+    expect(wrongKind.statusCode).toBe(404);
+
+    release();
+    await vi.waitFor(async () => {
+      const terminal = await app!.inject({ method: 'GET', url: `/api/agents/codex/update/${job.id}`, headers: readHeaders });
+      expect(terminal.json()).toEqual({ update: { id: job.id, kind: 'codex', state: 'complete', agent: { kind: 'codex', currentVersion: '0.153.2', latestVersion: '0.153.2', updateAvailable: false } } });
+    });
+  }, 15_000);
+
+  // preserve safe async start refusal codes
+  it('maps asynchronous unavailable and busy starts', async () => {
+    // select one refusal per configured test kind
+    const startUpdate: AgentUpdateServiceLike['startUpdate'] = vi.fn(kind => kind === 'codex' ? { outcome: 'busy' } : { outcome: 'unavailable' });
+    const agentUpdates: AgentUpdateServiceLike = { statuses: async () => [], update: async () => ({ outcome: 'unavailable' }), startUpdate, updateStatus: () => undefined };
+    app = await buildApp(testConfig(), { auth: await testAuthService(), agentUpdates });
+    const headers = await authenticatedHeaders(app);
+    const busy = await app.inject({ method: 'POST', url: '/api/agents/codex/update', headers: { ...headers, prefer: 'respond-async' } });
+    const unavailable = await app.inject({ method: 'POST', url: '/api/agents/omx/update', headers: { ...headers, prefer: 'respond-async' } });
+    expect(busy.statusCode).toBe(409);
+    expect(unavailable.statusCode).toBe(404);
   }, 15_000);
 });

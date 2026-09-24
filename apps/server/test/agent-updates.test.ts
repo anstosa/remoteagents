@@ -153,4 +153,69 @@ describe('agent updates', () => {
     expect(await pending).toEqual({ outcome: 'failed' });
     expect(await service.update('omx')).toEqual({ outcome: 'unavailable' });
   });
+
+  // lock bounded coalescing and stale job behavior
+  it('coalesces one asynchronous update and keeps only its latest terminal job', async () => {
+    const config = configured();
+    config.adapters!.omx!.updates = { current: 'omx-current', latest: 'omx-latest', run: 'omx-update' };
+    let release = () => {};
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let installed = '1.0.0';
+    const runner = vi.fn<AgentUpdateRunner>(async command => {
+      // gate only the installer
+      if (command === 'update') { await gate; installed = '1.1.0'; return { code: 0, output: 'installed' }; }
+      return { code: 0, output: command === 'current' ? installed : '1.1.0' };
+    });
+    const service = new AgentUpdateService(config, '/home/test', runner);
+
+    const started = service.startUpdate('codex');
+    expect(started.outcome).toBe('started');
+    // narrow the asserted start result
+    if (started.outcome !== 'started') throw new Error('expected a started update');
+    expect(started.job).toMatchObject({ kind: 'codex', state: 'running' });
+    expect(service.updateStatus('codex', started.job.id)).toEqual(started.job);
+    expect(service.updateStatus('codex', 'unknown')).toBeUndefined();
+    expect(service.startUpdate('codex')).toEqual(started);
+    expect(service.startUpdate('omx')).toEqual({ outcome: 'busy' });
+
+    release();
+    await vi.waitFor(() => expect(service.updateStatus('codex', started.job.id)).toEqual({
+      id: started.job.id,
+      kind: 'codex',
+      state: 'complete',
+      agent: { kind: 'codex', currentVersion: '1.1.0', latestVersion: '1.1.0', updateAvailable: false }
+    }));
+
+    const replacement = service.startUpdate('codex');
+    expect(replacement.outcome).toBe('started');
+    // narrow the asserted replacement result
+    if (replacement.outcome !== 'started') throw new Error('expected a replacement update');
+    expect(replacement.job.id).not.toBe(started.job.id);
+    expect(service.updateStatus('codex', started.job.id)).toBeUndefined();
+    await vi.waitFor(() => expect(service.updateStatus('codex', replacement.job.id)?.state).toBe('complete'));
+  });
+
+  // cover both command failure paths without retaining their output
+  it.each(['exit', 'reject'] as const)('settles an asynchronous %s failure safely', async failure => {
+    const runner = vi.fn<AgentUpdateRunner>(async command => {
+      // fail only the configured installer
+      if (command === 'update') {
+        // model a rejected command promise separately
+        if (failure === 'reject') throw new Error('secret rejected output');
+        return { code: 1, output: 'secret command output' };
+      }
+      return { code: 0, output: '1.0.0' };
+    });
+    const service = new AgentUpdateService(configured(), '/home/test', runner);
+    const started = service.startUpdate('codex');
+    expect(started.outcome).toBe('started');
+    // narrow the asserted start result
+    if (started.outcome !== 'started') throw new Error('expected a started update');
+    await vi.waitFor(() => expect(service.updateStatus('codex', started.job.id)).toEqual({
+      id: started.job.id,
+      kind: 'codex',
+      state: 'failed',
+      error: 'Agent update failed.'
+    }));
+  });
 });

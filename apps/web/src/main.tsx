@@ -720,6 +720,10 @@ type ServerUpdateState = 'queued' | 'running' | 'complete' | 'failed';
 type ServerUpdateAvailability = { available: boolean; commitCount?: number; targetSha?: string };
 type ServerRevision = { sha: string; committedAt: string };
 type AgentUpdateStatus = { kind: AgentKind; currentVersion?: string; latestVersion?: string; updateAvailable: boolean; error?: string };
+type AgentUpdateJob =
+  | { id: string; kind: AgentKind; state: 'running' }
+  | { id: string; kind: AgentKind; state: 'complete'; agent: AgentUpdateStatus }
+  | { id: string; kind: AgentKind; state: 'failed'; error: string };
 type ServerUpdateCommit = { sha: string; subject: string; author: string; authoredAt: string };
 type ServerUpdateAdvisoryReason = { kind: 'config' | 'compose' | 'runtime' | 'dependency' | 'state' | 'other'; paths: string[] };
 type ServerUpdatePreview = { available: boolean; rebuildRetryAvailable: boolean; baseSha: string; targetSha: string; fastForwardable: boolean; commitCount: number; commits: ServerUpdateCommit[]; commitsTruncated: boolean; filesTruncated: boolean; advisory: { required: boolean; reasons: ServerUpdateAdvisoryReason[] } };
@@ -763,6 +767,17 @@ const isAgentUpdateStatus = (value: unknown): value is AgentUpdateStatus => valu
   && ((value as AgentUpdateStatus).latestVersion === undefined || typeof (value as AgentUpdateStatus).latestVersion === 'string')
   && typeof (value as AgentUpdateStatus).updateAvailable === 'boolean'
   && ((value as AgentUpdateStatus).error === undefined || typeof (value as AgentUpdateStatus).error === 'string');
+// validate one background update without trusting its terminal payload
+const isAgentUpdateJob = (value: unknown): value is AgentUpdateJob => {
+  // require an object before reading the job envelope
+  if (value === null || typeof value !== 'object') return false;
+  const job = value as { id?: unknown; kind?: unknown; state?: unknown; agent?: unknown; error?: unknown };
+  // require an opaque identity and configured agent kind
+  if (typeof job.id !== 'string' || job.id.length === 0 || !isAgentKind(job.kind)) return false;
+  return job.state === 'running'
+    || job.state === 'failed' && typeof job.error === 'string'
+    || job.state === 'complete' && isAgentUpdateStatus(job.agent) && job.agent.kind === job.kind;
+};
 // validate one public voice settings response
 const isDavoSettings = (value: unknown): value is DavoSettings => value !== null
   && typeof value === 'object'
@@ -7547,15 +7562,43 @@ function App() {
     if (!Array.isArray(payload?.agents) || !payload.agents.every(isAgentUpdateStatus)) return { error: 'Unable to check agent versions.' };
     return { agents: payload.agents };
   }, []);
-  // execute one configured agent update
+  // start once and poll without holding a tunnel request open during installation
   const updateAgent = useCallback(async (kind: AgentKind): Promise<{ agent?: AgentUpdateStatus; error?: string }> => {
-    const response = await request(`/api/agents/${encodeURIComponent(kind)}/update`, { method: 'POST' });
-    const payload = await response.json().catch(() => undefined) as { agent?: unknown; error?: unknown } | undefined;
-    // surface command and concurrency failures
-    if (!response.ok) return { error: typeof payload?.error === 'string' ? payload.error : 'Unable to update the agent.' };
-    // require the refreshed version comparison
-    if (!isAgentUpdateStatus(payload?.agent)) return { error: 'Unable to update the agent.' };
-    return { agent: payload.agent };
+    const path = `/api/agents/${encodeURIComponent(kind)}/update`;
+    const unknownStatus = 'Update status is unavailable. The update may still be running; check installed versions before retrying.';
+    const response = await request(path, { method: 'POST', headers: { Prefer: 'respond-async' }, signal: AbortSignal.timeout(10_000) }, false);
+    const payload = await response.json().catch(() => undefined) as { agent?: unknown; update?: unknown; error?: unknown } | undefined;
+    // never replay an installer after an ambiguous start response
+    if (response.status >= 500) return { error: unknownStatus };
+    // preserve explicit start refusals
+    if (!response.ok) return { error: typeof payload?.error === 'string' ? payload.error : 'Unable to start the agent update.' };
+    // accept older servers that return the completed update directly
+    if (response.status === 200 && isAgentUpdateStatus(payload?.agent) && payload.agent.kind === kind) return { agent: payload.agent };
+    // require the requested background job before polling
+    if (!isAgentUpdateJob(payload?.update) || payload.update.kind !== kind) return { error: unknownStatus };
+    let job = payload.update;
+    const id = job.id;
+    const deadline = Date.now() + 7 * 60_000;
+    // outlast the bounded installer and version checks without retrying the mutation
+    while (true) {
+      // apply only a validated terminal result
+      if (job.state === 'complete') return { agent: job.agent };
+      // surface installer failures without declaring the console disconnected
+      if (job.state === 'failed') return { error: job.error };
+      // stop waiting without discarding a terminal response received at the deadline
+      if (Date.now() >= deadline) return { error: unknownStatus };
+      // pace short status reads independently of console reachability
+      await new Promise<void>(resolve => window.setTimeout(resolve, 1_000));
+      const poll = await request(`${path}/${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(10_000) }, false);
+      // retry only status reads after transient proxy or transport failures
+      if (poll.status >= 500 || poll.status === 429) continue;
+      const status = await poll.json().catch(() => undefined) as { update?: unknown; error?: unknown } | undefined;
+      // preserve unknown-job and authorization errors instead of rerunning the installer
+      if (!poll.ok) return { error: typeof status?.error === 'string' ? status.error : unknownStatus };
+      // reject another job or a malformed result without changing installed versions
+      if (!isAgentUpdateJob(status?.update) || status.update.id !== id || status.update.kind !== kind) return { error: unknownStatus };
+      job = status.update;
+    }
   }, []);
   // persist the server-wide voice identity and feature gate
   const updateDavo = useCallback(async (settings: Pick<DavoSettings, 'enabled' | 'name' | 'context'>): Promise<string | undefined> => {

@@ -19,8 +19,13 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 export type AgentUpdateStatus = { kind: AgentKind; currentVersion?: string; latestVersion?: string; updateAvailable: boolean; error?: string };
 export type AgentUpdateResult = { outcome: 'updated'; status: AgentUpdateStatus } | { outcome: 'unavailable' } | { outcome: 'busy' } | { outcome: 'failed' };
+export type AgentUpdateJob =
+  | { id: string; kind: AgentKind; state: 'running' }
+  | { id: string; kind: AgentKind; state: 'complete'; agent: AgentUpdateStatus }
+  | { id: string; kind: AgentKind; state: 'failed'; error: string };
+export type AgentUpdateStart = { outcome: 'started'; job: AgentUpdateJob } | { outcome: 'unavailable' } | { outcome: 'busy' };
 export type AgentUpdateRunner = (command: string, timeoutMs: number) => Promise<{ code: number; output: string }>;
-export type AgentUpdateServiceLike = Pick<AgentUpdateService, 'statuses' | 'update'>;
+export type AgentUpdateServiceLike = Pick<AgentUpdateService, 'statuses' | 'update' | 'startUpdate' | 'updateStatus'>;
 
 // remove terminal controls and retain one bounded version line
 export function normalizedVersion(output: string): string | undefined {
@@ -67,6 +72,7 @@ export class AgentUpdateService {
   private readonly runner: AgentUpdateRunner;
   private readonly cache = new Map<AgentKind, { status: AgentUpdateStatus; expiresAt: number }>();
   private readonly refreshes = new Map<AgentKind, Promise<AgentUpdateStatus>>();
+  private readonly jobs = new Map<AgentKind, AgentUpdateJob>();
   private updating: AgentKind | undefined;
 
   // bind update commands to the launch account and host bridge
@@ -81,6 +87,37 @@ export class AgentUpdateService {
   async statuses(): Promise<AgentUpdateStatus[]> {
     const kinds = agentKinds.filter(kind => this.config.adapters?.[kind]?.updates !== undefined);
     return await Promise.all(kinds.map(kind => this.status(kind)));
+  }
+
+  // start one bounded background update
+  startUpdate(kind: AgentKind): AgentUpdateStart {
+    const commands = this.config.adapters?.[kind]?.updates;
+    // refuse kinds without a complete update contract
+    if (commands === undefined) return { outcome: 'unavailable' };
+    const current = this.jobs.get(kind);
+    // coalesce duplicate starts for the active kind
+    if (current?.state === 'running') return { outcome: 'started', job: current };
+    // serialize every installer in this process
+    if (this.updating !== undefined) return { outcome: 'busy' };
+    const job: AgentUpdateJob = { id: randomBytes(12).toString('hex'), kind, state: 'running' };
+    this.jobs.set(kind, job);
+    void this.update(kind).then(result => {
+      // retain only the terminal state for this job identity
+      if (result.outcome === 'updated') this.settleJob(job, { ...job, state: 'complete', agent: result.status });
+      else this.settleJob(job, { ...job, state: 'failed', error: 'Agent update failed.' });
+    }, () => {
+      // contain an unexpected background rejection
+      this.settleJob(job, { ...job, state: 'failed', error: 'Agent update failed.' });
+    });
+    return { outcome: 'started', job };
+  }
+
+  // read only the latest matching job
+  updateStatus(kind: AgentKind, id: string): AgentUpdateJob | undefined {
+    const job = this.jobs.get(kind);
+    // hide stale and cross-kind identifiers
+    if (job?.id !== id) return undefined;
+    return job;
   }
 
   // execute one configured update and refresh its versions
@@ -103,6 +140,13 @@ export class AgentUpdateService {
     } finally {
       this.updating = undefined;
     }
+  }
+
+  // settle only the job that still owns this kind
+  private settleJob(started: AgentUpdateJob, terminal: AgentUpdateJob): void {
+    // prevent an older completion from replacing a newer job
+    if (this.jobs.get(started.kind)?.id !== started.id) return;
+    this.jobs.set(started.kind, terminal);
   }
 
   // resolve one cached version comparison

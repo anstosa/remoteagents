@@ -566,6 +566,18 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const kind = (request.params as { kind?: unknown }).kind;
     // require one registered adapter kind
     if (typeof kind !== 'string' || !(agentKinds as readonly string[]).includes(kind)) return reply.code(404).send({ error: 'Agent update is unavailable.' });
+    const prefer = request.headers.prefer;
+    // opt into background completion with one standard preference token
+    const respondAsync = typeof prefer === 'string' && prefer.split(',').some(value => value.trim().toLowerCase() === 'respond-async');
+    // preserve the synchronous response for older clients
+    if (respondAsync) {
+      const started = agentUpdates.startUpdate(kind as AgentKind);
+      // map start refusals without launching work
+      if (started.outcome === 'unavailable') return reply.code(404).send({ error: 'Agent update is unavailable.' });
+      // preserve one in-flight installer
+      if (started.outcome === 'busy') return reply.code(409).send({ error: 'Agent update is already running.' });
+      return reply.code(202).send({ update: started.job });
+    }
     const result = await agentUpdates.update(kind as AgentKind);
     // map service outcomes without exposing command details
     if (result.outcome === 'unavailable') return reply.code(404).send({ error: 'Agent update is unavailable.' });
@@ -574,6 +586,17 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // report an operator command failure safely
     if (result.outcome === 'failed') return reply.code(502).send({ error: 'Agent update failed.' });
     return { agent: result.status };
+  });
+  // publish one authenticated background update state
+  app.get('/api/agents/:kind/update/:id', async (request, reply) => {
+    controlled(request);
+    const { kind, id } = request.params as { kind?: unknown; id?: unknown };
+    // require one registered adapter kind and opaque identifier
+    if (typeof kind !== 'string' || !(agentKinds as readonly string[]).includes(kind) || typeof id !== 'string') return reply.code(404).send({ error: 'Agent update is unavailable.' });
+    const update = agentUpdates.updateStatus(kind as AgentKind, id);
+    // hide unknown, stale, and cross-kind jobs alike
+    if (update === undefined) return reply.code(404).send({ error: 'Agent update status is unknown. Check the installed version before retrying.' });
+    return { update };
   });
   // persist the configurable voice surface
   app.patch('/api/server/davo', async (request, reply) => {

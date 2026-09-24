@@ -90,6 +90,12 @@ semantic precedence, and aggregates any available agent update into a purple dot
 on the settings gear. Checks are cached for 15 minutes; invalid or failed checks
 do not expose shell output to the browser.
 
+Browser updates run as background operations with short status-polling requests,
+so a slow package installer does not have to hold a tunnel request open. Only one
+agent installation runs at a time; retrying the same active update resumes its
+status instead of launching another installer. If the console restarts and loses
+the operation status, check the installed versions before retrying.
+
 Use adapter launch settings to disable each CLI's own startup updater once this
 surface is configured. Codex accepts
 `"args": ["-c", "check_for_update_on_startup=false"]`; OMX should receive the
