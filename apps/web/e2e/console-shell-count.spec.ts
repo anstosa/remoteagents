@@ -11,7 +11,7 @@ test('shows the Console-shell count, blocks Remove, and retains an agentless tab
     if (url.pathname === '/api/dashboard') {
       return route.fulfill({ json: { generation: 1, agents: [], projects: [{ id: 'repo', label: 'Repo', available: true, worktrees: [
         { id: 'repo:/repo', projectId: 'repo', label: 'Repo', path: '/repo', main: true, detached: false, locked: false, available: true, pinned: true, order: 0, branch: 'main' },
-        // an idle, unpinned Worktree with open Console shells — no draft, not sleeping
+        // an idle, unpinned Worktree with open Console shells — no draft
         { id: 'repo:/repo/feature', projectId: 'repo', label: 'Feature', path: '/repo/feature', main: false, detached: false, locked: false, available: true, pinned: false, order: 1, branch: 'feature', consoleShells: 2 }
       ] }] } });
     }

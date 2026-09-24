@@ -74,7 +74,7 @@ host- or operator-specific shims. `setup` runs in the launched pane through the
 same login shell as the agent, in the launch directory (the worktree for a
 worktree launch, the home directory for Scratch), before the program; a non-zero
 exit stops the agent from ever starting — the failure is visible in the pane.
-`teardown` runs after the console stops a running agent of the kind (Stop, Sleep,
+`teardown` runs after the console stops a running agent of the kind (Turn off,
 Restart), in the stopped agent's workspace, best-effort: a failure is logged and
 never blocks the stop. Unlike `setup`, `teardown` runs through the tmux server's
 `sh` with the server's environment, not your login shell, so it does not see
@@ -409,8 +409,9 @@ is ahead of or behind its upstream:
   fails, the removal still stands and the failure is reported.
 
 Removing a Worktree kills its idle shell, removes the checkout, and deletes its
-console records (pin, last-used kind, queued prompts, prompt history, sleeping
-tab). It never touches the Project-scoped notes and console-named conversations its siblings share.
+console records (pin, last-used kind, queued prompts, prompt history). It never
+touches the Project-scoped notes and console-named conversations its siblings
+share.
 
 The active agent's **More → Branches** list also offers **Delete**. Its confirm
 reloads the same safety facts before deletion: a checked-out branch is blocked

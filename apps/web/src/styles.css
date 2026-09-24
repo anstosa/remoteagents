@@ -224,7 +224,6 @@ textarea { min-height: 7rem; resize: vertical; font-family: var(--font-mono); }
 .tabs button.unread { color: var(--green); background: linear-gradient(145deg, color-mix(in srgb, var(--green) 18%, var(--surface-0)), color-mix(in srgb, var(--green) 8%, var(--mantle))); animation: tab-unread-success 1.6s ease-in-out infinite; }
 .tabs button.unread::after { position: absolute; top: .42rem; right: .42rem; width: .42rem; height: .42rem; border-radius: 50%; background: var(--green); box-shadow: 0 0 .7rem color-mix(in srgb, var(--green) 88%, transparent); content: ''; animation: tab-unread-dot 1.6s ease-in-out infinite; }
 .tabs button.status-closed { color: var(--surface-2); }
-.tabs button.status-sleeping { color: var(--blue); }
 .tabs button.status-transitioning { isolation: isolate; color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 42%, var(--surface-1)); background: linear-gradient(145deg, color-mix(in srgb, var(--yellow) 12%, var(--surface-0)), var(--mantle)); }
 .tab-transition-label { display: grid; min-width: 0; gap: .08rem; line-height: 1; text-align: left; }
 .tab-transition-label > span { display: flex; min-width: 0; align-items: center; gap: .3rem; overflow: hidden; text-overflow: ellipsis; }
@@ -271,10 +270,6 @@ html.software-keyboard-open .tabs { display: none; }
 .log-loading strong { color: var(--text); font: 700 .78rem var(--font-mono); }
 .log-loading > span:not(.spinner) { max-width: 31rem; color: var(--overlay-2); font: 500 .68rem/1.5 var(--font-mono); letter-spacing: .01em; }
 .log-loading.inactive { color: var(--overlay-0); }
-.log-loading.sleeping { pointer-events: auto; }
-.sleeping-agent-icon { width: 2.4rem; height: 2.4rem; fill: color-mix(in srgb, var(--blue) 16%, transparent); stroke: var(--blue); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.6; filter: drop-shadow(0 0 .65rem color-mix(in srgb, var(--blue) 45%, transparent)); }
-.log-loading .wake-agent { min-width: 8rem; justify-content: center; margin-top: .25rem; border-color: color-mix(in srgb, var(--blue) 70%, var(--surface-2)); background: color-mix(in srgb, var(--blue) 18%, var(--mantle)); color: var(--blue); box-shadow: 0 0 1rem color-mix(in srgb, var(--blue) 18%, transparent); }
-.log-loading .wake-agent svg { width: 1rem; height: 1rem; fill: currentColor; stroke: none; }
 .log-stale-overlay { position: absolute; inset: 0; z-index: 14; overflow: hidden; pointer-events: none; background: linear-gradient(120deg, color-mix(in srgb, var(--crust) 50%, transparent), color-mix(in srgb, var(--mantle) 26%, transparent)), repeating-linear-gradient(0deg, color-mix(in srgb, var(--crust) 10%, transparent) 0 1px, transparent 1px 5px); box-shadow: inset 0 0 5rem color-mix(in srgb, var(--crust) 72%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--surface-2) 42%, transparent); backdrop-filter: blur(1.75px) saturate(.72) brightness(.82); }
 .log-stale-overlay::after { position: absolute; inset: -20%; content: ''; background: radial-gradient(ellipse at 50% 48%, transparent 25%, color-mix(in srgb, var(--crust) 36%, transparent) 76%); filter: blur(1rem); }
 /* confine the cached-output border and hatching to terminal output */
@@ -872,7 +867,6 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .log-status.live, .log-status.terminal { --log-status-color: var(--green); color: var(--crust); }
 .log-status.disconnected, .log-status.unavailable { --log-status-color: var(--red); color: var(--crust); }
 .log-status.inactive { --log-status-color: var(--overlay-2); color: var(--crust); }
-.log-status.sleeping { --log-status-color: var(--blue); color: var(--crust); }
 /* anchor attachment feedback to the prompt */
 .prompt { position: relative; display: grid; min-width: 0; gap: .375rem; }
 /* reserve one vertical shortcut rail beside the normal composer */

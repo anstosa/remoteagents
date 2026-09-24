@@ -23,15 +23,15 @@ type PendingSessionHarness = {
 
 const codexAdapter = { launchable: true, program: '/bin/codex', stateSource: 'both', turnCapture: true, bookmarks: true, inlineQuestions: false, commands: true, sandbox: false };
 
-// mount one launch or wake lifecycle
-const mountLifecycle = async (page: Page, options: { sleeping?: boolean; failFirst?: boolean; holdFailure?: boolean; pinned?: boolean } = {}): Promise<LifecycleHarness> => {
+// mount one launch lifecycle
+const mountLifecycle = async (page: Page, options: { failFirst?: boolean; holdFailure?: boolean; pinned?: boolean } = {}): Promise<LifecycleHarness> => {
   const agentWrites: Array<{ path: string; body: unknown }> = [];
   let attempts = 0;
   let dashboardRequests = 0;
   let agentVisible = false;
   let finishRequest!: () => void;
   const requestFinished = new Promise<void>(resolve => { finishRequest = resolve; });
-  const cora = { id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: options.pinned ?? true, order: 0, launch: { kind: 'codex', origin: 'worktree' }, ...(options.sleeping ? { sleeping: true } : {}) };
+  const cora = { id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: options.pinned ?? true, order: 0, launch: { kind: 'codex', origin: 'worktree' } };
   const delta = { id: 'delta', label: 'Delta', path: '/worktrees/delta', available: true, pinned: true, order: 1 };
   const readyAgent = { id: 'agent-ready', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready', kind: 'codex', attention: 'finished', launch: { kind: 'codex', origin: 'worktree' } };
 
@@ -70,7 +70,7 @@ const mountLifecycle = async (page: Page, options: { sleeping?: boolean; failFir
     // provide an empty command catalog
     if (url.pathname === '/api/agents/agent-ready/commands') return route.fulfill({ json: { commands: [] } });
     // hold the selected start operation
-    if (url.pathname === `/api/worktrees/cora/${options.sleeping ? 'wake' : 'launch'}` && request.method() === 'POST') {
+    if (url.pathname === '/api/worktrees/cora/launch' && request.method() === 'POST') {
       attempts += 1;
       // fail only the first launch attempt
       if (options.failFirst && attempts === 1) {
@@ -310,11 +310,11 @@ test('preserves the prepared draft and files after launch failure and retry', as
   await expect(page.getByLabel('Selected attachments')).toContainText('retry-context.txt');
 });
 
-// verify mobile wake layout and handoff
-test('shows the editable wake composer without overflowing a mobile viewport', async ({ page }) => {
+// verify mobile launch layout and handoff
+test('shows the editable launch composer without overflowing a mobile viewport', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  const harness = await mountLifecycle(page, { sleeping: true });
-  await page.getByRole('button', { name: 'Wake up' }).click();
+  const harness = await mountLifecycle(page);
+  await page.getByRole('button', { name: 'Launch Codex' }).click();
   await expect.poll(harness.attempts).toBe(1);
 
   const composer = page.getByRole('region', { name: 'Prompt composer' });
@@ -322,7 +322,7 @@ test('shows the editable wake composer without overflowing a mobile viewport', a
   await expect(composer).toBeVisible();
   await expect(prompt).toBeEnabled();
   await expect(composer.getByRole('button', { name: 'Attach files' })).toBeEnabled();
-  await prompt.fill('Mobile wake draft');
+  await prompt.fill('Mobile launch draft');
   await attach(page, 'mobile-context.txt', 'mobile context');
   await expect(page.getByLabel('Selected attachments')).toContainText('mobile-context.txt');
   await expect(composer.getByRole('button', { name: 'Queue', exact: true })).toBeDisabled();
@@ -336,13 +336,13 @@ test('shows the editable wake composer without overflowing a mobile viewport', a
   expect(layout.right).toBeLessThanOrEqual(layout.viewportWidth);
 
   harness.finishRequest();
-  await expect(page.getByRole('status').filter({ hasText: 'Cora is awake' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Cora is starting' })).toBeVisible();
   await expect.poll(harness.dashboardRequests).toBeGreaterThanOrEqual(2);
-  await expect(prompt).toHaveValue('Mobile wake draft');
+  await expect(prompt).toHaveValue('Mobile launch draft');
   harness.revealAgent();
   await harness.refreshDashboard();
   await expect(page.getByRole('tab', { name: 'Cora — Prompt done' })).toBeVisible();
-  await expect(page.getByRole('textbox', { name: 'Prompt' })).toHaveValue('Mobile wake draft');
+  await expect(page.getByRole('textbox', { name: 'Prompt' })).toHaveValue('Mobile launch draft');
   await expect(page.getByLabel('Selected attachments')).toContainText('mobile-context.txt');
 });
 

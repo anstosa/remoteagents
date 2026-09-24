@@ -751,58 +751,44 @@ describe('configured worktree deactivation', () => {
     } finally { await app.close(); }
   }, 15_000);
 
-  it('sleeps, wakes, and turns off a retained worktree tab', async () => {
+  it('offers no sleep, wake, or forget-sleeping-tab routes, and Turn off leaves no sleeping flag', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false };
     const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
     const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
     let active = true;
-    let resumed = '';
+    let resumed = false;
+    const worktrees = [{ id: worktree.id, projectId: 'cora', label: worktree.label, path: worktree.path, available: true, pinned: false, main: true, detached: false, locked: false, order: 0 }];
     const discovery = { worktreesNow: () => [worktree],
       // expose the current process state
-      dashboard: async () => active
-        ? { generation: 1, adapters: {}, agents: [agent], projects: [{ id: 'cora', label: 'Cora', available: true, worktrees: [{ id: worktree.id, projectId: 'cora', label: worktree.label, path: worktree.path, available: true, pinned: false, main: true, detached: false, locked: false, order: 0 }] }] }
-        : { generation: 2, adapters: {}, agents: [], projects: [{ id: 'cora', label: 'Cora', available: true, worktrees: [{ id: worktree.id, projectId: 'cora', label: worktree.label, path: worktree.path, available: true, pinned: false, main: true, detached: false, locked: false, order: 0 }] }] },
+      dashboard: async () => ({ generation: active ? 1 : 2, adapters: {}, agents: active ? [agent] : [], projects: [{ id: 'cora', label: 'Cora', available: true, worktrees }] }),
       // resolve only the live agent
       target: async (id: string) => active && id === agent.id ? { agent, socket } : undefined
     };
     const launch = {
-      // wake through the requested alias
-      resume: async (id: string) => { resumed = id; active = true; return true; },
+      resume: async () => { resumed = true; return true; },
       launch: async () => false,
       launchHome: async () => false,
       // the dashboard loader resolves each scope's Launch profile
       launchResolutions: async () => new Map()
     };
-    const sleepApp = await buildApp({ ...config }, { auth: new AuthService(hash, Buffer.alloc(32, 21).toString('base64url')), discovery: discovery as never, launch: launch as never, tmux: { close: async () => { active = false; return true; } } as never, launchPollDelay: async () => {} });
+    const app = await buildApp({ ...config }, { auth: new AuthService(hash, Buffer.alloc(32, 21).toString('base64url')), discovery: discovery as never, launch: launch as never, tmux: { close: async () => { active = false; return true; } } as never, launchPollDelay: async () => {} });
     try {
-      const boot = await sleepApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
-      const login = await sleepApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const boot = await app.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await app.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
       const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
 
-      const slept = await sleepApp.inject({ method: 'POST', url: '/api/agents/agent-1/sleep', headers });
-      expect(slept.statusCode).toBe(204);
-      const sleepingDashboard = await sleepApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: headers.host, cookie: headers.cookie } });
-      expect(sleepingDashboard.json().projects.flatMap(p => p.worktrees)).toEqual([expect.objectContaining({ id: 'cora', sleeping: true })]);
+      expect((await app.inject({ method: 'POST', url: '/api/agents/agent-1/sleep', headers })).statusCode).toBe(404);
+      expect(active).toBe(true);
+      expect((await app.inject({ method: 'POST', url: '/api/worktrees/cora/wake', headers })).statusCode).toBe(404);
+      expect((await app.inject({ method: 'POST', url: '/api/worktrees/cora/deactivate', headers })).statusCode).toBe(404);
+      expect(resumed).toBe(false);
 
-      const woke = await sleepApp.inject({ method: 'POST', url: '/api/worktrees/cora/wake', headers });
-      expect(woke.statusCode).toBe(201);
-      expect(woke.json()).toEqual({ agentId: agent.id });
-      expect(resumed).toBe('cora');
-
-      // retain the tab again for shutdown
-      const sleptAgain = await sleepApp.inject({ method: 'POST', url: '/api/agents/agent-1/sleep', headers });
-      expect(sleptAgain.statusCode).toBe(204);
-      const turnedOff = await sleepApp.inject({ method: 'POST', url: '/api/worktrees/cora/deactivate', headers });
-      expect(turnedOff.statusCode).toBe(204);
-      const inactiveDashboard = await sleepApp.inject({ method: 'GET', url: '/api/dashboard', headers: { host: headers.host, cookie: headers.cookie } });
-      expect(inactiveDashboard.json().projects.flatMap(p => p.worktrees)).toEqual([expect.objectContaining({ id: 'cora' })]);
-      expect(inactiveDashboard.json().projects.flatMap(p => p.worktrees)[0].sleeping).toBeUndefined();
-
-      // reject wake after permanent shutdown
-      const wakeAfterTurnOff = await sleepApp.inject({ method: 'POST', url: '/api/worktrees/cora/wake', headers });
-      expect(wakeAfterTurnOff.statusCode).toBe(409);
-    } finally { await sleepApp.close(); }
+      expect((await app.inject({ method: 'POST', url: '/api/agents/agent-1/deactivate', headers })).statusCode).toBe(204);
+      const dashboard = await app.inject({ method: 'GET', url: '/api/dashboard', headers: { host: headers.host, cookie: headers.cookie } });
+      expect(dashboard.json().agents).toEqual([]);
+      expect(dashboard.json().projects.flatMap((project: { worktrees: object[] }) => project.worktrees)).toEqual([expect.not.objectContaining({ sleeping: expect.anything() })]);
+    } finally { await app.close(); }
   }, 15_000);
 
   it('closes an idle agent before restarting it through the resume alias', async () => {
@@ -963,27 +949,16 @@ describe('Console shells server lifecycle', () => {
     } finally { await app.close(); }
   }, 15_000);
 
-  // Turn off and Sleep close only the Agent's own pane (`prompts.close`). A Console shell is a
+  // Turn off closes only the Agent's own pane (`prompts.close`). A Console shell is a
   // separate pane in its own window, so recording every `kill-pane` and asserting only the
   // Agent's `%1` is closed proves the shell's pane (`%9`) is never touched — without relying on
-  // the shell-scan, which these routes deliberately never call.
+  // the shell-scan, which this route deliberately never calls.
   it('leaves a Console shell alone when the Agent is turned off', async () => {
     const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
     const closed: string[] = [];
     const { app, headers } = await start({ discovery: { dashboard: async () => ({ ...idleDashboard, agents: [agent] }), target: async (id: string) => id === agent.id ? { agent, socket } : undefined }, tmux: { close: async (_socket: unknown, pane: string) => { closed.push(pane); return true; } } });
     try {
       const response = await app.inject({ method: 'POST', url: '/api/agents/agent-1/deactivate', headers });
-      expect(response.statusCode).toBe(204);
-      expect(closed).toEqual(['%1']);
-    } finally { await app.close(); }
-  }, 15_000);
-
-  it('leaves a Console shell alone when the Agent is put to sleep', async () => {
-    const agent = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', workspace: '/worktrees/cora', title: 'Ready', worktreeId: 'cora' });
-    const closed: string[] = [];
-    const { app, headers } = await start({ discovery: { dashboard: async () => ({ ...idleDashboard, agents: [agent] }), target: async (id: string) => id === agent.id ? { agent, socket } : undefined }, tmux: { close: async (_socket: unknown, pane: string) => { closed.push(pane); return true; } } });
-    try {
-      const response = await app.inject({ method: 'POST', url: '/api/agents/agent-1/sleep', headers });
       expect(response.statusCode).toBe(204);
       expect(closed).toEqual(['%1']);
     } finally { await app.close(); }

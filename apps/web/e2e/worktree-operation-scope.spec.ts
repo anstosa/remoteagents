@@ -246,50 +246,46 @@ test('shows a failed unpinned worktree launch globally', async ({ page }) => {
   await expect(page.getByRole('tab', { name: /^Alpha/u })).toHaveCount(0);
 });
 
-// scope wake state to its launcher action
-test('disables a sleeping worktree launcher while wake is pending', async ({ page }) => {
-  let running = false;
-  let waking = false;
-  let interimDashboards = 0;
-  let finishWake!: () => void;
-  const wakeFinished = new Promise<void>(resolve => { finishWake = resolve; });
+// scope Turn off state to its own worktree
+test('keeps a pending Turn off on its worktree tab without blocking another agent', async ({ page }) => {
+  const turnedOff = new Set<string>();
+  let finishTurnOff!: () => void;
+  const turnOffFinished = new Promise<void>(resolve => { finishTurnOff = resolve; });
+  const agent = (name: string, order: number) => ({ id: `agent-${name}`, sessionId: `socket:$${order}`, workspace: `/worktrees/${name}`, worktreeId: name, title: 'Ready' });
+  const worktree = (name: string, label: string, order: number) => ({ id: name, label, path: `/worktrees/${name}`, available: true, pinned: false, order });
   await page.route('**/api/**', async route => {
-    const url = new URL(route.request().url());
+    const request = route.request();
+    const url = new URL(request.url());
     // serve one authenticated console
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    // switch from sleeping through an unpinned transition to an active agent
-    if (url.pathname === '/api/dashboard') {
-      if (running) return route.fulfill({ json: { generation: 3, agents: [{ id: 'agent-alpha', sessionId: 'socket:$1', workspace: '/worktrees/alpha', worktreeId: 'alpha', worktreeLabel: 'Alpha', worktreeOrder: 1, title: 'Ready' }], projects: [] } });
-      if (waking) {
-        interimDashboards += 1;
-        return route.fulfill({ json: { generation: 2, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'alpha', label: 'Alpha', path: '/worktrees/alpha', available: false, pinned: false, sleeping: false, order: 1 }] }] } });
-      }
-      return route.fulfill({ json: { generation: 1, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'alpha', label: 'Alpha', path: '/worktrees/alpha', available: true, pinned: false, sleeping: true, order: 1 }] }] } });
-    }
+    // two idle agents in unpinned worktrees, minus any that were turned off
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1 + turnedOff.size, agents: [agent('alpha', 1), agent('bravo', 2)].filter(candidate => !turnedOff.has(candidate.worktreeId)), projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [worktree('alpha', 'Alpha', 1), worktree('bravo', 'Bravo', 2)] }] } });
     // disable push enrollment
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
-    // hold the wake request
-    if (url.pathname === '/api/worktrees/alpha/wake') {
-      waking = true;
-      await wakeFinished;
-      running = true;
-      return route.fulfill({ json: { agentId: 'agent-alpha' } });
+    // hold Alpha's Turn off
+    if (url.pathname === '/api/agents/agent-alpha/deactivate' && request.method() === 'POST') {
+      await turnOffFinished;
+      turnedOff.add('alpha');
+      return route.fulfill({ status: 204 });
     }
     // provide active agent bootstrap data
-    if (/^\/api\/agents\/agent-alpha\/(?:tickets|saved-prompts|prompt-history)$/u.test(url.pathname)) return route.fulfill({ json: url.pathname.endsWith('/tickets') ? { ticket: 'log-ticket' } : { prompts: [] } });
+    if (/^\/api\/agents\/agent-(?:alpha|bravo)\/(?:tickets|saved-prompts|prompt-history)$/u.test(url.pathname)) return route.fulfill({ json: url.pathname.endsWith('/tickets') ? { ticket: 'log-ticket' } : { prompts: [] } });
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 
   await page.goto('/');
-  const launcher = launcherToggle(page);
-  const wakeAlpha = page.getByRole('group', { name: 'Agent launcher' }).locator('.launcher-row').filter({ hasText: 'Alpha' }).getByRole('button', { name: 'Wake up' });
-  await launcher.click();
-  await wakeAlpha.click();
-  await launcher.click();
-  await expect(wakeAlpha).toBeDisabled();
-  await expect.poll(() => interimDashboards, { timeout: 10_000 }).toBeGreaterThan(0);
-  await expect(page.getByRole('tab', { name: 'Alpha — Waking up' })).toHaveAttribute('aria-busy', 'true');
+  await page.getByRole('tab', { name: /^Alpha/u }).click();
+  await page.getByRole('button', { name: 'Agent power options' }).click();
+  await page.getByRole('menu', { name: 'Agent power options' }).getByRole('menuitem', { name: 'Turn off' }).click();
+  await expect(page.getByRole('tab', { name: 'Alpha — Turning off' })).toHaveAttribute('aria-busy', 'true');
+  await expect(page.getByRole('button', { name: 'Agent power options' })).toBeDisabled();
 
-  finishWake();
-  await expect(page.getByRole('tab', { name: 'Alpha — Prompt done' })).toBeVisible();
+  // Bravo stays controllable while Alpha is turning off
+  await page.getByRole('tab', { name: /^Bravo/u }).click();
+  await expect(page.getByRole('tab', { name: /^Bravo/u })).not.toHaveAttribute('aria-busy', 'true');
+  await expect(page.getByRole('button', { name: 'Agent power options' })).toBeEnabled();
+
+  finishTurnOff();
+  await expect(page.getByRole('tab', { name: /^Alpha/u })).toHaveCount(0);
+  await expect(page.getByRole('tab', { name: /^Bravo/u })).toBeVisible();
 });

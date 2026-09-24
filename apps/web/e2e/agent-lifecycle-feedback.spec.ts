@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 // verify lifecycle feedback names the chosen launch agent
 test('keeps agent on/off progress visible across lifecycle transitions', async ({ page }) => {
@@ -45,7 +45,7 @@ test('keeps agent on/off progress visible across lifecycle transitions', async (
   await page.goto('/');
   await page.getByRole('button', { name: 'Agent power options' }).click();
   const powerMenu = page.getByRole('menu', { name: 'Agent power options' });
-  await expect(powerMenu.getByRole('menuitem', { name: 'Sleep' })).toBeVisible();
+  await expect(powerMenu.getByRole('menuitem', { name: 'Sleep' })).toHaveCount(0);
   await powerMenu.getByRole('menuitem', { name: 'Turn off' }).click();
 
   const pendingOff = page.getByRole('status').filter({ hasText: 'Turning off Cora' });
@@ -144,101 +144,87 @@ test('clears and restarts an idle agent from the power menu', async ({ page }) =
   await expect(page.getByRole('tab', { name: 'Cora — Prompt done' })).toBeVisible();
 });
 
-test('sleeps an idle agent and wakes the retained tab through resume', async ({ page }) => {
-  let state: 'active'|'sleeping' = 'active';
-  let agentId = 'agent-1';
-  let sleepRequests = 0;
-  let wakeRequests = 0;
-  let finishWake!: () => void;
-  const wakeFinished = new Promise<void>(resolve => { finishWake = resolve; });
-
-  await page.route('**/api/**', async route => {
-    const request = route.request();
-    const url = new URL(request.url());
-    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: state === 'active'
-      ? { generation: agentId === 'agent-1' ? 1 : 3, agents: [{ id: agentId, sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' }], projects: [] }
-      : { generation: 2, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: false, sleeping: true, projectUrl: 'https://example.test', order: 0 }] }] } });
-    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
-    if (/^\/api\/agents\/agent-[12]\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
-    if (/^\/api\/agents\/agent-[12]\/(?:saved-prompts|prompt-history)$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });
-    if (url.pathname === '/api/worktrees/cora/notes') return route.fulfill({ json: { notes: [] } });
-    // close the process while retaining the sleep state
-    if (url.pathname === '/api/agents/agent-1/sleep' && request.method() === 'POST') {
-      sleepRequests += 1;
-      state = 'sleeping';
-      return route.fulfill({ status: 204 });
-    }
-    // resume only after the wake transition is visible
-    if (url.pathname === '/api/worktrees/cora/wake' && request.method() === 'POST') {
-      wakeRequests += 1;
-      await wakeFinished;
-      state = 'active';
-      agentId = 'agent-2';
-      return route.fulfill({ status: 201, json: { agentId } });
-    }
-    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
-  });
-
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Agent power options' }).click();
-  await page.getByRole('menuitem', { name: 'Sleep' }).click();
-
-  await expect.poll(() => sleepRequests).toBe(1);
-  await expect(page.getByRole('tab', { name: 'Cora — Sleeping' })).toBeVisible();
-  await expect(page.getByRole('status', { name: 'Cora sleeping', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Wake up' })).toBeEnabled();
-  await expect(page.locator('.prompt-actions').getByRole('button', { name: 'Launch agent' })).toHaveCount(0);
-  const powerButtonBounds = await page.getByRole('button', { name: 'Agent power options' }).boundingBox();
-  const projectButtonBounds = await page.getByRole('link', { name: 'Open' }).boundingBox();
-  expect(powerButtonBounds?.x).toBeLessThan(projectButtonBounds?.x ?? 0);
-
-  await page.getByRole('button', { name: 'Agent power options' }).click();
-  const sleepingPowerMenu = page.getByRole('menu', { name: 'Agent power options' });
-  await expect(sleepingPowerMenu.getByRole('menuitem')).toHaveText(['Rename worktree', 'Wake up', 'Turn off']);
-  await sleepingPowerMenu.getByRole('menuitem', { name: 'Wake up' }).click();
-  await expect.poll(() => wakeRequests).toBe(1);
-  await expect(page.getByRole('tab', { name: 'Cora — Waking up' })).toHaveAttribute('aria-busy', 'true');
-  await expect(page.getByRole('status', { name: 'Waking Cora', exact: true })).toBeVisible();
-
-  finishWake();
-  await expect(page.getByRole('status').filter({ hasText: 'Cora is awake' })).toBeVisible();
-  await expect(page.getByRole('tab', { name: 'Cora — Prompt done' })).toBeVisible();
-});
-
-// verify sleeping-tab permanent shutdown
-test('turns off a retained sleeping tab from its power menu', async ({ page }) => {
-  let sleeping = true;
+// serve one idle agent in Cora whose Turn off closes it, with Cora pinned or not
+const mountTurnOff = async (page: Page, pinned: boolean) => {
+  let running = true;
   let turnOffRequests = 0;
-
-  // serve one retained sleeping lifecycle
+  const cora = { id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned, order: 0 };
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
     // authenticate the browser
     if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
-    // expose or remove the sleeping tab
-    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: sleeping ? 1 : 2, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: false, ...(sleeping ? { sleeping: true } : {}), order: 0 }] }] } });
+    // expose the agent until it is turned off
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: running ? 1 : 2, agents: running ? [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' }] : [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [cora] }] } });
     // disable push setup
     if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    // provide live agent resources
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (/^\/api\/agents\/agent-1\/(?:saved-prompts|prompt-history)$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });
     // provide empty worktree notes
     if (url.pathname === '/api/worktrees/cora/notes') return route.fulfill({ json: { notes: [] } });
-    // forget the retained tab
-    if (url.pathname === '/api/worktrees/cora/deactivate' && request.method() === 'POST') {
+    // close the agent
+    if (url.pathname === '/api/agents/agent-1/deactivate' && request.method() === 'POST') {
       turnOffRequests += 1;
-      sleeping = false;
+      running = false;
       return route.fulfill({ status: 204 });
+    }
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  await page.goto('/');
+  return { turnOffRequests: () => turnOffRequests };
+};
+
+// verify Turn off is the only way to stop an idle agent, and a Pinned Worktree keeps its tab
+test('turns off an idle agent and keeps the tab of its pinned worktree', async ({ page }) => {
+  const harness = await mountTurnOff(page, true);
+  await page.getByRole('button', { name: 'Agent power options' }).click();
+  const powerMenu = page.getByRole('menu', { name: 'Agent power options' });
+  await expect(powerMenu.getByRole('menuitem')).toHaveText(['Restart', 'Clear', 'Turn off']);
+  await powerMenu.getByRole('menuitem', { name: 'Turn off' }).click();
+
+  await expect.poll(harness.turnOffRequests).toBe(1);
+  await expect(page.getByRole('tab', { name: 'Cora — Agent closed' })).toBeVisible();
+  await expect(page.getByText('Agent is off', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Wake up' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Worktree power options' }).click();
+  await expect(page.getByRole('menu', { name: 'Worktree power options' }).getByRole('menuitem')).toHaveText(['Rename worktree', 'Remove worktree']);
+});
+
+// verify an unpinned Worktree's tab closes with its agent
+test('turns off an idle agent and drops the tab of its unpinned worktree', async ({ page }) => {
+  const harness = await mountTurnOff(page, false);
+  await page.getByRole('button', { name: 'Agent power options' }).click();
+  await page.getByRole('menu', { name: 'Agent power options' }).getByRole('menuitem', { name: 'Turn off' }).click();
+
+  await expect.poll(harness.turnOffRequests).toBe(1);
+  await expect(page.getByRole('heading', { name: 'No sessions' })).toBeVisible();
+});
+
+// verify a failed restart stays visible after the unpinned worktree's tab closes
+test('reports a failed restart even when the unpinned worktree tab closes', async ({ page }) => {
+  let running = true;
+
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: running ? 1 : 2, agents: running ? [{ id: 'agent-1', sessionId: 'socket:$1', workspace: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 0, title: 'Ready' }] : [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [{ id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: false, order: 0 }] }] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (/^\/api\/agents\/agent-1\/tickets$/u.test(url.pathname)) return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (/^\/api\/agents\/agent-1\/(?:saved-prompts|prompt-history)$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [] } });
+    // the server closes the agent, then the resume fails
+    if (url.pathname === '/api/agents/agent-1/restart' && request.method() === 'POST') {
+      running = false;
+      return route.fulfill({ status: 409, json: { error: 'The agent closed, but it could not be resumed.' } });
     }
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 
   await page.goto('/');
   await page.getByRole('button', { name: 'Agent power options' }).click();
-  const powerMenu = page.getByRole('menu', { name: 'Agent power options' });
-  await expect(powerMenu.getByRole('menuitem')).toHaveText(['Rename worktree', 'Wake up', 'Turn off']);
-  await powerMenu.getByRole('menuitem', { name: 'Turn off' }).click();
+  await page.getByRole('menu', { name: 'Agent power options' }).getByRole('menuitem', { name: 'Restart', exact: true }).click();
 
-  await expect.poll(() => turnOffRequests).toBe(1);
   await expect(page.getByRole('heading', { name: 'No sessions' })).toBeVisible();
-  await expect(page.getByRole('status').filter({ hasText: 'Cora is off' })).toContainText('worktree remains available');
+  await expect(page.getByRole('alert').filter({ hasText: 'Cora could not restart' })).toContainText('could not be resumed');
 });
