@@ -37,3 +37,81 @@ test('shows the Console-shell count, blocks Remove, and retains an agentless tab
   await expect(remove).toBeDisabled();
   await expect(remove).toHaveAttribute('title', 'End the open terminals before removing this worktree');
 });
+
+// A directory-Project or Scratch Place carries its Console-shell count and Pinned flag in
+// `places[]`. The launcher's Project-level and Scratch rows show the count and a pin toggle that
+// pins through the Place's pin route, and a Place with a Console shell or a pin keeps an
+// agentless tab with no Agent running there.
+test('a directory-Project and a Scratch Place show their shell count and pin, and keep agentless tabs', async ({ page }) => {
+  const pins: { path: string; body: unknown }[] = [];
+  const launches: string[] = [];
+  // pins the dashboard reports back, so a pin toggle is seen through a real refresh
+  const pinned = new Set(['scratch:/srv/tools']);
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') {
+      return route.fulfill({ json: { generation: 1, agents: [], projects: [{ id: 'notes', label: 'Notes', mode: 'directory', available: true, manageWorktrees: false, stalePaths: [], worktrees: [], launch: { kind: 'codex', origin: 'project' } }], adapters: { codex: { launchable: true, program: '/bin/codex', stateSource: 'both', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } }, places: [
+        { id: 'notes:/data/notes', kind: 'directory', projectId: 'notes', label: 'Notes', home: '/data/notes', pinned: pinned.has('notes:/data/notes'), consoleShells: 2 },
+        { id: 'scratch:/home/me/scratch', kind: 'scratch', projectId: 'scratch', label: '~ Scratch', home: '/home/me/scratch', pinned: pinned.has('scratch:/home/me/scratch') },
+        // a pinned ad-hoc folder with nothing running keeps its tab too
+        { id: 'scratch:/srv/tools', kind: 'scratch', projectId: 'scratch', label: 'tools', home: '/srv/tools', adhoc: true, pinned: pinned.has('scratch:/srv/tools') }
+      ] } });
+    }
+    if (request.method() === 'POST' && url.pathname === '/api/projects/notes/launch') {
+      launches.push(url.pathname);
+      return route.fulfill({ status: 409, json: { error: 'not launched in this test' } });
+    }
+    if (request.method() === 'POST' && url.pathname.endsWith('/pin')) {
+      const body = request.postDataJSON() as { pinned: boolean };
+      pins.push({ path: url.pathname, body });
+      const id = decodeURIComponent(url.pathname.split('/')[3]!);
+      if (body.pinned) pinned.add(id); else pinned.delete(id);
+      return route.fulfill({ status: 204 });
+    }
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (request.method() === 'GET' && url.pathname.endsWith('/notes')) return route.fulfill({ json: { notes: [] } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+
+  // the directory Project keeps a tab for its Console shells, the ad-hoc folder for its pin;
+  // the empty, unpinned Scratch folder has none
+  await expect(page.getByRole('tab', { name: /^Notes/u })).toBeVisible();
+  await expect(page.getByRole('tab', { name: /^tools/u })).toBeVisible();
+  await expect(page.getByRole('tab', { name: /Scratch/u })).toHaveCount(0);
+
+  // the directory Place's tab offers its pin and launches its Project in place
+  await page.getByRole('tab', { name: /^Notes/u }).click();
+  const prompt = page.locator('.prompt-actions');
+  await expect(prompt.getByRole('button', { name: 'Pin Notes' })).toHaveAttribute('aria-pressed', 'false');
+  await prompt.getByRole('button', { name: /^Launch/u }).click();
+  await expect.poll(() => launches).toEqual(['/api/projects/notes/launch']);
+  // the ad-hoc folder's tab can be unpinned but has no Launch
+  await page.getByRole('tab', { name: /^tools/u }).click();
+  await expect(prompt.getByRole('button', { name: 'Unpin tools' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(prompt.getByRole('button', { name: /^Launch/u })).toHaveCount(0);
+
+  await page.locator('.new-agent-tab').click();
+  const launcher = page.getByRole('group', { name: 'Agent launcher' });
+  const notesRow = launcher.getByRole('group', { name: 'Notes' }).locator('.launcher-row');
+  await expect(notesRow.locator('.launcher-shells')).toHaveText('2');
+  await expect(notesRow.locator('.launcher-shells')).toHaveAttribute('aria-label', '2 open terminals');
+
+  // the pin toggle pins the Place through its own pin route
+  const pin = notesRow.getByRole('button', { name: 'Pin Notes' });
+  await expect(pin).toHaveAttribute('aria-pressed', 'false');
+  await pin.click();
+  await expect.poll(() => pins).toEqual([{ path: `/api/worktrees/${encodeURIComponent('notes:/data/notes')}/pin`, body: { pinned: true } }]);
+
+  // the refreshed dashboard shows the Place pinned
+  await expect(notesRow.getByRole('button', { name: 'Unpin Notes' })).toHaveAttribute('aria-pressed', 'true');
+
+  // the launcher stays open; the Scratch row pins the configured Scratch folder the same way, and
+  // the now-pinned Scratch folder gains a tab
+  await launcher.getByRole('button', { name: 'Pin ~ Scratch' }).click();
+  await expect.poll(() => pins.map(entry => entry.path)).toContain(`/api/worktrees/${encodeURIComponent('scratch:/home/me/scratch')}/pin`);
+  await expect(page.getByRole('tab', { name: /Scratch/u })).toBeVisible();
+});

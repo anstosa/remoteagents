@@ -598,7 +598,7 @@ export class DiscoveryService {
   // one listed Place on the wire, with its pin and Console-shell count
   private placeView(place: Place, shellCounts: ReadonlyMap<string, number>): DashboardPlace {
     const consoleShells = shellCounts.get(place.id) ?? 0;
-    return { id: place.id, kind: place.kind === 'directory' ? 'directory' : 'scratch', projectId: place.projectId, label: place.label, home: place.home, pinned: this.pinSnapshot[place.id] ?? false, ...(consoleShells > 0 ? { consoleShells } : {}) };
+    return { id: place.id, kind: place.kind === 'directory' ? 'directory' : 'scratch', projectId: place.projectId, label: place.label, home: place.home, ...(place.adhoc === true ? { adhoc: true as const } : {}), pinned: this.pinSnapshot[place.id] ?? false, ...(consoleShells > 0 ? { consoleShells } : {}) };
   }
 
   // whether a live agent sits in a checkout that is not a known Worktree but whose

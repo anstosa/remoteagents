@@ -902,6 +902,10 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 :is(.prompt-actions, .prompt-action-rail) .icon-button svg { display: block; width: 1rem; height: 1rem; }
 /* balance the terminal glyph with the adjacent stack icon */
 .prompt-actions .terminal-picker-toggle svg { width: 1.25rem; height: 1.25rem; }
+/* an agentless Place tab's pin toggle: a prompt control, filled while Pinned like the launcher's */
+.prompt-actions .place-pin { border-color: var(--prompt-control-border); background: var(--prompt-control-background); color: var(--prompt-control-foreground); }
+.prompt-actions .place-pin svg { width: 1.1rem; height: 1.1rem; }
+.prompt-actions .place-pin.pinned { border-color: var(--lavender); background: var(--lavender); color: var(--crust); }
 :is(.prompt-actions, .prompt-action-rail) :is(.review-tour-toggle, .more, .attachment-button, .terminal-picker-toggle, .project-browser-toggle, .project-stack-toggle), .prompt-actions .project-open { border-color: var(--prompt-control-border); background: var(--prompt-control-background); color: var(--prompt-control-foreground); filter: none; }
 .prompt-actions :is(.outline-button, .queued-prompts-toggle) { border-color: var(--surface-2); background: transparent; color: var(--prompt-control-foreground); filter: none; }
 :is(.prompt-actions, .prompt-action-rail) :is(.review-tour-toggle, .more, .attachment-button, .terminal-picker-toggle, .project-browser-toggle, .project-stack-toggle, .outline-button, .queued-prompts-toggle):not(:disabled):hover, .prompt-actions .project-open:hover { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); filter: none; }

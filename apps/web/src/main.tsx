@@ -88,7 +88,8 @@ type ReviewTourCapability = { available: true } | { available: false; reason: 'g
 type StoredReviewSummary = { worktreeId: string; branch: string; savedAt: string; title: string; scope: ReviewScope; includeTests: boolean; includeDocs: boolean; fingerprint: string };
 type ReviewButtonState = ReviewTourIndicator & { onOpen: () => void };
 // a directory-Project or Scratch Place, listed beside the Worktrees (a Worktree is a Place with the same id)
-type Place = { id: string; kind: 'directory' | 'scratch'; projectId: string; label: string; home: string; pinned: boolean; consoleShells?: number; launch?: LaunchResolution };
+// `adhoc` marks a Scratch folder other than the configured one: the console cannot launch into it
+type Place = { id: string; kind: 'directory' | 'scratch'; projectId: string; label: string; home: string; adhoc?: true; pinned: boolean; consoleShells?: number; launch?: LaunchResolution };
 type Dashboard = { notesRevision?: number; generation?: number; serverStartedAt?: number; adapters?: AdapterCapabilities; agents: Agent[]; projects: Project[]; places?: Place[]; cleanupPending?: number; scratchLaunch?: LaunchResolution; reviewTour?: ReviewTourCapability; reviews?: StoredReviewSummary[] };
 // every Worktree across the dashboard's Projects, flattened for tab and launcher rendering
 const allWorktrees = (dashboard: Pick<Dashboard, 'projects'>): Worktree[] => dashboard.projects.flatMap(project => project.worktrees);
@@ -169,7 +170,7 @@ const isBranchRemovalFacts = (value: unknown): value is BranchRemovalFacts => va
 type AgentState = 'working' | 'prompt-done' | 'action-required' | 'closed';
 type DashboardOperation = 'launching'|'restarting'|'clearing'|'deactivating'|'new-task';
 type PendingSessionLaunch = { id: string; draftId: string; label: string; resolution?: LaunchResolution; choice?: LaunchChoice; kind?: AgentKind; sandboxed?: boolean; phase: 'launching'|'confirming'|'delayed'|'failed'; agentId?: string; error?: string; confirmationTimer?: number } & ({ scope: 'scratch' } | { scope: 'directory'; projectId: string });
-type DashboardItem = { key: string; label: string; state: AgentState; order: number; unread: boolean; operation?: DashboardOperation; agent?: Agent; worktree?: Worktree; pendingLaunch?: PendingSessionLaunch };
+type DashboardItem = { key: string; label: string; state: AgentState; order: number; unread: boolean; operation?: DashboardOperation; agent?: Agent; worktree?: Worktree; place?: Place; pendingLaunch?: PendingSessionLaunch };
 type ChoiceOption = { label: string; number: number; answerIndex: number; description?: string };
 type ChoiceQuestion = { text: string; choices: ChoiceOption[]; id: string; source: 'structured' | 'parsed' };
 type QueuedPrompt = { id: string; text: string; createdAt: string; attachments?: Array<{ name: string; size: number }> };
@@ -2022,7 +2023,11 @@ function MobileTerminalKeys({ id }: { id: string }) {
 }
 
 // render the agent prompt controls
-function Prompt({ id, ready = true, lifecycleControl, launchControl, history, onHistoryChanged, canCancel, cancelling, deleting, restarting, clearing, deactivating, onCancel, onDelete, onRestart, onRestartAs, onClear, onDeactivate, onPromptFocus, onOperationFeedback, projectUrl, browserOpen, onBrowserToggle, question, worktreeId, newTaskConfigured, stack, review, pinned, onTogglePin, onRenameWorktree, statusSlotRef, historySlotRef, terminalControl, phoneTerminal }: { id: string; ready?: boolean; lifecycleControl?: ReactNode; launchControl?: ReactNode; history: PromptHistoryEntry[]; onHistoryChanged: () => Promise<void>; canCancel: boolean; cancelling: boolean; deleting: boolean; restarting: boolean; clearing: boolean; deactivating: boolean; onCancel: () => void; onDelete?: () => void; onRestart?: () => void; onRestartAs?: RestartAs; onClear?: () => void; onDeactivate?: () => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; projectUrl?: string; browserOpen?: boolean; onBrowserToggle?: () => void; question?: ChoiceQuestion; worktreeId?: string; newTaskConfigured?: boolean; stack?: Stack; review?: ReviewButtonState; pinned?: boolean; onTogglePin?: () => void; onRenameWorktree?: () => void; statusSlotRef?: (element: HTMLSpanElement | null) => void; historySlotRef?: (element: HTMLSpanElement | null) => void; terminalControl?: ReactNode; phoneTerminal?: string }) {
+function Prompt({ id, ready = true, lifecycleControl, launchControl, history, onHistoryChanged, canCancel, cancelling, deleting, restarting, clearing, deactivating, onCancel, onDelete, onRestart, onRestartAs, onClear, onDeactivate, onPromptFocus, onOperationFeedback, projectUrl, browserOpen, onBrowserToggle, question, worktreeId, placeId, newTaskConfigured, stack, review, pinned, onTogglePin, onRenameWorktree, statusSlotRef, historySlotRef, terminalControl, phoneTerminal }: { id: string; ready?: boolean; lifecycleControl?: ReactNode; launchControl?: ReactNode; history: PromptHistoryEntry[]; onHistoryChanged: () => Promise<void>; canCancel: boolean; cancelling: boolean; deleting: boolean; restarting: boolean; clearing: boolean; deactivating: boolean; onCancel: () => void; onDelete?: () => void; onRestart?: () => void; onRestartAs?: RestartAs; onClear?: () => void; onDeactivate?: () => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; projectUrl?: string; browserOpen?: boolean; onBrowserToggle?: () => void; question?: ChoiceQuestion; worktreeId?: string; placeId?: string; newTaskConfigured?: boolean; stack?: Stack; review?: ReviewButtonState; pinned?: boolean; onTogglePin?: () => void; onRenameWorktree?: () => void; statusSlotRef?: (element: HTMLSpanElement | null) => void; historySlotRef?: (element: HTMLSpanElement | null) => void; terminalControl?: ReactNode; phoneTerminal?: string }) {
+  // the notes this composer saves into, and the notes fly-out to refresh: the Place's (a Worktree's
+  // Place id is its Worktree id), keyed as the Workspace's notes are
+  const notesPlaceId = placeId ?? worktreeId;
+  const notesViewId = notesPlaceId ?? `agent:${id}`;
   const [value, setValue] = usePromptDraft(id);
   const [commandToken, setCommandToken] = useState<CommandToken>();
   const [activeCommand, setActiveCommand] = useState(0);
@@ -2330,7 +2335,7 @@ function Prompt({ id, ready = true, lifecycleControl, launchControl, history, on
       });
       if (queuedPromptEdit?.id === queued.id) setQueuedPromptEdit(undefined);
       // refetch the sibling notes fly-out so the new Note appears there
-      noteReloadRequests.get(worktreeId ?? `agent:${id}`)?.();
+      noteReloadRequests.get(notesViewId)?.();
     } catch { setQueuedPromptError('Unable to save this queued prompt as a note.'); }
     finally { setQueuedPromptAction(undefined); }
   };
@@ -2338,7 +2343,7 @@ function Prompt({ id, ready = true, lifecycleControl, launchControl, history, on
   const saveDraftAsNote = async () => {
     const text = value;
     const submittedAttachments = attachments;
-    const base = persistenceResourceBase(worktreeId, id);
+    const base = persistenceResourceBase(notesPlaceId, id);
     const title = text.trim() ? assistantNoteTitle(text) : submittedAttachments[0]?.name.slice(0, 120);
     // serialize saves and sends while allowing attachment-only drafts
     if (!ready || draftNotePending || base === undefined || title === undefined || !beginPendingOperation(pendingKey)) return;
@@ -2361,7 +2366,7 @@ function Prompt({ id, ready = true, lifecycleControl, launchControl, history, on
       // release only files included in the successful snapshot
       setAttachments(current => current.filter(file => !submittedAttachments.includes(file)));
       // refetch the sibling notes fly-out so the new Note appears there
-      noteReloadRequests.get(worktreeId ?? `agent:${id}`)?.();
+      noteReloadRequests.get(notesViewId)?.();
       onOperationFeedback({ tone: 'success', message: 'Draft saved to notes', detail: note.title ?? 'Note', worktreeId });
     } catch { onOperationFeedback({ tone: 'error', message: 'Unable to save draft as a note', detail: 'The console could not be reached, or this project has reached its note limit.', worktreeId }); }
     finally { setDraftNotePending(false); setPendingOperation(pendingKey, false); }
@@ -4307,7 +4312,8 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
 }
 
 // reuse the owning view's note persistence and prompt draft
-type TerminalSelectionActions = { canCreateNote: boolean; createNote: (text: string) => Promise<boolean>; addToPrompt: (text: string) => void };
+// `addToPrompt` is absent where the tab has no composer (an agentless directory-Project or Scratch Place)
+type TerminalSelectionActions = { canCreateNote: boolean; createNote: (text: string) => Promise<boolean>; addToPrompt?: (text: string) => void };
 // let the split supply visibility and selection actions to terminal columns
 type TerminalColumnProps = { mobileHidden?: boolean; selectionActions?: TerminalSelectionActions };
 // keep each rendered terminal keyed by its stable tmux pane id
@@ -4493,8 +4499,8 @@ function ResizableLogSplit({ worktreeId, output, note, browser, code, terminals,
       return created;
     },
     // show the composer without submitting the selected output
-    addToPrompt: text => {
-      terminalSelectionActions.addToPrompt(text);
+    addToPrompt: terminalSelectionActions.addToPrompt === undefined ? undefined : text => {
+      terminalSelectionActions.addToPrompt?.(text);
       setMobilePanel('agent');
     }
   };
@@ -4769,7 +4775,7 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
     {/* keep selection actions hidden with their terminal panel */}
     {selection && <div className="output-selection-toolbar" role="toolbar" aria-label={`Selection actions for terminal ${name}`} style={{ top: selection.top, left: selection.left }} onPointerDown={event => event.preventDefault()}>
       <button type="button" disabled={!selectionActions?.canCreateNote || selection.text.length > 30_000} onClick={async () => { /* reveal only successfully created notes */ if (await selectionActions?.createNote(selection.text)) setExpanded(false); }}>Create note</button>
-      <button type="button" disabled={selectionActions === undefined} onClick={() => { /* reveal the draft without sending it */ setExpanded(false); selectionActions?.addToPrompt(selection.text); }}>Add to prompt</button>
+      <button type="button" disabled={selectionActions?.addToPrompt === undefined} onClick={() => { /* reveal the draft without sending it */ setExpanded(false); selectionActions?.addToPrompt?.(selection.text); }}>Add to prompt</button>
       <button type="button" onClick={() => void copySelectionRef.current(selection.text)}>Copy</button>
     </div>}
   </section>;
@@ -4831,9 +4837,8 @@ function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; termina
     </div></FlyoutPortal>}</>;
 }
 
-// The split columns and the composer control for a Worktree's Terminals, shared by the
-// active AgentCard and the agentless WorktreeCard. A Worktree-less target (Scratch) gets
-// neither: Console shells are keyed by Worktree.
+// The split columns and the composer control for a Place's Terminals, shared by the Agent tab
+// and the agentless Worktree and Place tabs. A target the dashboard placed nowhere gets neither.
 function useTerminalViews(worktreeId: string | undefined): { columns?: TerminalColumn[]; control?: ReactNode } {
   const terminals = useWorktreeTerminals(worktreeId);
   if (worktreeId === undefined) return {};
@@ -5140,11 +5145,12 @@ function GitStatus({ id, worktreeId, branch, summary, prSummary, pullRequest, on
   return <span ref={wrapRef} className={`git-status-wrap${expanded ? ' expanded' : ''}`}><button className={`git-status-summary ${state}${pullRequest === undefined ? '' : ` has-pull-request status-${pullRequest.status}`}`} type="button" aria-label={label} aria-expanded={expanded} title={label} onClick={onToggle}><svg className="git-branch-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2.5" /><circle cx="6" cy="19" r="2.5" /><circle cx="18" cy="7" r="2.5" /><path d="M6 7.5v9M18 9.5v1a6 6 0 0 1-6 6H6" /></svg><span className="git-status-dot" aria-hidden="true" /><span className="git-branch">{branch}</span><span className="git-status-separator" aria-hidden="true">·</span><span className="git-worktree-state">{stateLabel}</span>{/* retain compact pr indicators beside the prompt */}{pullRequest !== undefined && <PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} />}</button>{expanded && <FlyoutPortal onDismiss={() => onToggle?.()}><div className="git-status-panel" role="region" aria-label="Changed files" aria-busy={repositoryTabVisible && loadingPrSwitch} style={panelStyle}>{activePanel}<span className="git-status-tabs" role="tablist" aria-label="Branch views"><button type="button" role="tab" aria-selected={tab === 'working'} onClick={() => setTab('working')}>Working</button><button type="button" role="tab" aria-selected={tab === 'prs'} aria-busy={loadingPrSwitch} disabled={id === undefined} title={id === undefined ? 'Launch agent to load pull requests' : undefined} onClick={() => { /* keep preloading while changing views */ setTab('prs'); }}>PRs{loadingPrSwitch && <span className="spinner" aria-hidden="true" />}</button><button type="button" role="tab" aria-selected={tab === 'branches'} aria-busy={loadingPrSwitch} disabled={id === undefined} title={id === undefined ? 'Launch agent to load branches' : undefined} onClick={() => { /* keep preloading while changing views */ setTab('branches'); }}>Branches{loadingPrSwitch && <span className="spinner" aria-hidden="true" />}</button></span></div></FlyoutPortal>}{removingBranch !== undefined && worktreeId !== undefined && <RemoveBranchDialog worktreeId={worktreeId} branch={removingBranch} onClose={() => setRemovingBranch(undefined)} onDeleted={branchRemoved} />}</span>;
 }
 
-// The Place a Workspace shows: the fields it reads from a Worktree or an Agent. `id` keys the
-// Place's panels and their browser storage; the web's panel hooks are still Worktree-keyed, so
-// today it is the Worktree wire id, and a scratch or directory Agent passes none (and so opens no
-// Terminals).
-type WorkspacePlace = { id?: string; projectUrl?: string; projectProxied?: boolean; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; pullRequest?: PullRequestSummary; attention?: AttentionState };
+// The Place a Workspace shows: the fields it reads from a Worktree, a directory-Project or Scratch
+// Place, or an Agent. `id` is the Place id (a Worktree's is its Worktree id), which keys the
+// Terminals, notes, browser and split sizes and their browser storage. `worktreeId` is set only
+// when the Place is a git Worktree: the Code panel's Comparisons and the Named conversations are
+// git-only routes. An Agent the dashboard placed nowhere passes neither.
+type WorkspacePlace = { id?: string; worktreeId?: string; projectUrl?: string; projectProxied?: boolean; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; pullRequest?: PullRequestSummary; attention?: AttentionState };
 // What the Place's notes need from the Agent there (or, with no Agent, how a note's Run launches one).
 type WorkspaceNotesOptions = { agentWorking?: boolean; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean; onPromptHistoryChanged?: () => void | Promise<void>; promptHistory?: PromptHistoryEntry[]; schedulePrefill?: SchedulePrefill; onLaunchAndRun?: (noteId: string) => Promise<boolean>; launchRunLabel?: string };
 
@@ -5153,12 +5159,12 @@ type WorkspaceNotesOptions = { agentWorking?: boolean; latestAssistantMessage?: 
 // Terminals; the Workspace renders it.
 function useWorkspace(place: WorkspacePlace, { agentId, noteOptions: notes, onNavigateWorktree, onOperationFeedback }: { agentId?: string; noteOptions: WorkspaceNotesOptions; onNavigateWorktree?: (worktreeId: string) => void; onOperationFeedback?: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
   const browser = useProjectBrowser(place.projectUrl, place.id, place.projectProxied);
-  const code = useCodePanel(place.id, request, comparisonChangeSignal(place.gitStatus, place.gitPrStatus, place.attention));
+  const code = useCodePanel(place.worktreeId, request, comparisonChangeSignal(place.gitStatus, place.gitPrStatus, place.attention));
   const terminals = useTerminalViews(place.id);
   // The Terminal the phone shows as the single panel (the split reports it), so the composer swaps
   // for that pane's helper keys (spec, the phone footer).
   const [phoneTerminal, setPhoneTerminal] = useState<string>();
-  const conversations = useWorktreeConversations(place.id, agentId, { onNavigateWorktree, onOperationFeedback });
+  const conversations = useWorktreeConversations(place.worktreeId, agentId, { onNavigateWorktree, onOperationFeedback });
   const placeNotes = useWorktreeNotes(place.id, agentId, notes.agentWorking, notes.latestAssistantMessage, notes.latestAssistantMessageOverflows, notes.onPromptHistoryChanged, notes.promptHistory, notes.schedulePrefill, notes.onLaunchAndRun, notes.launchRunLabel);
   const [gitExpanded, setGitExpanded] = useState(false);
   return { place, browser, code, terminals, phoneTerminal, setPhoneTerminal, conversations, notes: placeNotes, gitExpanded, setGitExpanded };
@@ -5179,7 +5185,7 @@ function WorkspaceGitStatus({ workspace, actions, onToggle }: { workspace: Works
 // Render one Place's panels in the resizable split: the agent output first (or, with no Agent,
 // the card's idle placeholder in its column), then Terminals, note, browser and code. The git
 // status portals into the composer's status slot.
-function Workspace({ workspace, output, idle = false, git, onGitToggle, onAddToPrompt, statusSlot }: { workspace: WorkspaceState; output: ReactNode; idle?: boolean; git?: WorkspaceGitActions; onGitToggle?: () => void; onAddToPrompt: (text: string) => void; statusSlot: HTMLElement | null }) {
+function Workspace({ workspace, output, idle = false, git, onGitToggle, onAddToPrompt, statusSlot }: { workspace: WorkspaceState; output: ReactNode; idle?: boolean; git?: WorkspaceGitActions; onGitToggle?: () => void; onAddToPrompt?: (text: string) => void; statusSlot: HTMLElement | null }) {
   const { place, browser, code, notes } = workspace;
   // Terminal selections save into this Place's notes or go to the card's composer.
   const terminalSelectionActions: TerminalSelectionActions = {
@@ -5753,7 +5759,7 @@ function More({ id, worktreeId, newTaskConfigured = false, onOperationFeedback, 
   if (id === undefined) return null;
   const newTaskReason = !newTaskConfigured ? 'Not configured for this worktree.' : newTask === undefined ? 'Checking availability…' : newTask.enabled ? 'Start a fresh task for this worktree.' : newTask.reason ?? 'New Task is currently unavailable.';
   // append worktree state controls only when this agent belongs to one
-  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} onClick={toggleMenu}>⋮</button></span>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="more-menu flyout-menu" ref={flyoutRef} style={style} aria-busy={loadingGithubActions || loadingNewTask}>{loadingGithubActions ? <button className="github-actions-loading" type="button" disabled><span className="spinner" />GitHub Actions</button> : githubActionsUrl === undefined ? <button type="button" disabled title="GitHub Actions unavailable"><MoreMenuIcon name="actions" />GitHub Actions</button> : <a className="more-menu-link" href={githubActionsUrl} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)}><MoreMenuIcon name="actions" />GitHub Actions</a>}<div className="new-task-option"><button disabled={!newTaskConfigured || loadingNewTask || !newTask?.enabled || startingNewTask} onClick={() => void startNewTask()}>{loadingNewTask || startingNewTask ? <><span className="spinner" />{startingNewTask ? 'Starting New Task' : 'New Task'}</> : <><MoreMenuIcon name="new-task" />New Task</>}</button><span className="more-menu-reason" role="status">{newTaskReason}</span></div>{onRenameWorktree !== undefined && <button onClick={() => { setMenuOpen(false); onRenameWorktree(); }}><MoreMenuIcon name="rename" />Rename worktree</button>}{onTogglePin !== undefined && <button className="more-pin-toggle" aria-pressed={pinned === true} onClick={() => { setMenuOpen(false); onTogglePin(); }}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6Zm3 11v5" /></svg>{pinned ? 'Unpin worktree' : 'Pin worktree'}</button>}</div></FlyoutPortal>}</>;
+  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} onClick={toggleMenu}>⋮</button></span>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="more-menu flyout-menu" ref={flyoutRef} style={style} aria-busy={loadingGithubActions || loadingNewTask}>{loadingGithubActions ? <button className="github-actions-loading" type="button" disabled><span className="spinner" />GitHub Actions</button> : githubActionsUrl === undefined ? <button type="button" disabled title="GitHub Actions unavailable"><MoreMenuIcon name="actions" />GitHub Actions</button> : <a className="more-menu-link" href={githubActionsUrl} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)}><MoreMenuIcon name="actions" />GitHub Actions</a>}<div className="new-task-option"><button disabled={!newTaskConfigured || loadingNewTask || !newTask?.enabled || startingNewTask} onClick={() => void startNewTask()}>{loadingNewTask || startingNewTask ? <><span className="spinner" />{startingNewTask ? 'Starting New Task' : 'New Task'}</> : <><MoreMenuIcon name="new-task" />New Task</>}</button><span className="more-menu-reason" role="status">{newTaskReason}</span></div>{onRenameWorktree !== undefined && <button onClick={() => { setMenuOpen(false); onRenameWorktree(); }}><MoreMenuIcon name="rename" />Rename worktree</button>}{onTogglePin !== undefined && <button className="more-pin-toggle" aria-pressed={pinned === true} onClick={() => { setMenuOpen(false); onTogglePin(); }}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6Zm3 11v5" /></svg>{`${pinned ? 'Unpin' : 'Pin'} ${worktreeId === undefined ? 'folder' : 'worktree'}`}</button>}</div></FlyoutPortal>}</>;
 }
 
 // render an active agent
@@ -5776,7 +5782,7 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
   const [latestAssistantMessage, setLatestAssistantMessage] = useState<string>();
   const [latestAssistantMessageOverflows, setLatestAssistantMessageOverflows] = useState(false);
   const promptHistory = usePromptHistory(agent.id);
-  const workspace = useWorkspace({ id: agent.worktreeId, projectUrl: agent.projectUrl, projectProxied: agent.projectProxied, branch: agent.branch, gitStatus: agent.gitStatus, gitPrStatus: agent.gitPrStatus, pullRequest: agent.pullRequest, attention: agent.attention }, { agentId: agent.id, noteOptions: { agentWorking: active, latestAssistantMessage, latestAssistantMessageOverflows, onPromptHistoryChanged: promptHistory.refresh, promptHistory: promptHistory.history, schedulePrefill }, onNavigateWorktree, onOperationFeedback });
+  const workspace = useWorkspace({ id: agent.placeId ?? agent.worktreeId, worktreeId: agent.worktreeId, projectUrl: agent.projectUrl, projectProxied: agent.projectProxied, branch: agent.branch, gitStatus: agent.gitStatus, gitPrStatus: agent.gitPrStatus, pullRequest: agent.pullRequest, attention: agent.attention }, { agentId: agent.id, noteOptions: { agentWorking: active, latestAssistantMessage, latestAssistantMessageOverflows, onPromptHistoryChanged: promptHistory.refresh, promptHistory: promptHistory.history, schedulePrefill }, onNavigateWorktree, onOperationFeedback });
   const { browser: projectBrowser, code: projectCode, setGitExpanded } = workspace;
   // keep the latest response the output reports
   const reportMetadata = useCallback((message: string | undefined, overflow: boolean) => {
@@ -5963,7 +5969,7 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
   // selected output and Terminal text append to the Agent's draft without queueing it
   const addToPrompt = (text: string) => setPromptDraft(agent.id, current => appendTextBlock(current, text));
   const output = <Log id={agent.id} onQuestion={setQuestion} onMetadata={reportMetadata} onAddToPrompt={addToPrompt} controls={<>{cleanupControl}{responseFiles.control}{workspace.conversations.control}{workspace.notes.control}</>} notes={workspace.notes} onOpenUrl={openOutputUrl} onOpenFile={openFileInCode} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />;
-  return <article className="agent-view"><Workspace workspace={workspace} output={output} git={gitActions} onGitToggle={() => setHistoryOpen(false)} onAddToPrompt={addToPrompt} statusSlot={statusSlot} />{historySlot && createPortal(<PromptHistoryControl agentId={agent.id} history={promptHistory.history} refreshHistory={promptHistory.refresh} notes={workspace.notes} open={historyOpen} onOpenChange={changeHistoryOpen} />, historySlot)}{tabBar}{upstreamRebase}<Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onRestartAs={!active && agent.worktreeId !== undefined ? { label: displayLabel, resolution: agent.launch, onLaunch: choice => void restart(choice) } : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} stack={agent.stack} review={review} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} statusSlotRef={setStatusSlot} historySlotRef={setHistorySlot} terminalControl={workspace.terminals.control} phoneTerminal={workspace.phoneTerminal} /></article>;
+  return <article className="agent-view"><Workspace workspace={workspace} output={output} git={gitActions} onGitToggle={() => setHistoryOpen(false)} onAddToPrompt={addToPrompt} statusSlot={statusSlot} />{historySlot && createPortal(<PromptHistoryControl agentId={agent.id} history={promptHistory.history} refreshHistory={promptHistory.refresh} notes={workspace.notes} open={historyOpen} onOpenChange={changeHistoryOpen} />, historySlot)}{tabBar}{upstreamRebase}<Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onRestartAs={!active && agent.worktreeId !== undefined ? { label: displayLabel, resolution: agent.launch, onLaunch: choice => void restart(choice) } : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} stack={agent.stack} review={review} placeId={workspace.place.id} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} statusSlotRef={setStatusSlot} historySlotRef={setHistorySlot} terminalControl={workspace.terminals.control} phoneTerminal={workspace.phoneTerminal} /></article>;
 }
 
 function launchError(response: Response): Promise<string> {
@@ -6009,7 +6015,7 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperatio
   const launchKind = pendingWorktreeLaunches.get(worktree.id)?.kind ?? worktree.launch?.kind;
   const presentation = inactiveWorktreePresentation(worktree.label, launchKind, { startingNewTask, restarting, turningOff, launching });
   // The Workspace works with no live Agent: Terminals, notes, browser and code all open here.
-  const workspace = useWorkspace(worktree, { noteOptions: { schedulePrefill, onLaunchAndRun: noteId => launchAndRun(noteId), launchRunLabel: `${launchKind === undefined ? 'an agent' : agentKindLabel[launchKind]} on ${worktree.label}` }, onNavigateWorktree, onOperationFeedback });
+  const workspace = useWorkspace({ ...worktree, worktreeId: worktree.id }, { noteOptions: { schedulePrefill, onLaunchAndRun: noteId => launchAndRun(noteId), launchRunLabel: `${launchKind === undefined ? 'an agent' : agentKindLabel[launchKind]} on ${worktree.label}` }, onNavigateWorktree, onOperationFeedback });
   const { browser: projectBrowser } = workspace;
   const [statusSlot, setStatusSlot] = useState<HTMLElement | null>(null);
   const [error, setError] = useState('');
@@ -6125,6 +6131,59 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperatio
     setPromptOpened(true);
   };
   return <article className="agent-view"><Workspace workspace={workspace} output={output} idle git={gitActions} onAddToPrompt={addToPrompt} statusSlot={statusSlot} />{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} />{prompt}</article>;
+}
+
+// How an agentless Place tab launches: the directory Project in place or the configured Scratch
+// folder, shown with the Launch profile that path actually resolves
+type PlaceLaunch = { resolution?: LaunchResolution; start: (choice?: LaunchChoice) => void };
+
+// A Place's open-terminal count (when it has any) and its pin toggle, as the launcher rows and an
+// agentless Place tab show them. `noun` names the Place kind in the toggle's tooltip.
+function PlaceShellsAndPin({ place, className = 'launcher-icon launcher-pin', noun = 'folder', showShells = false, onTogglePin }: { place: { label: string; pinned: boolean; consoleShells?: number }; className?: string; noun?: string; showShells?: boolean; onTogglePin: () => void }) {
+  const shellCount = place.consoleShells ?? 0;
+  const shellsLabel = `${shellCount} open terminal${shellCount === 1 ? '' : 's'}`;
+  return <>{showShells && shellCount > 0 && <span className="launcher-shells" title={shellsLabel} aria-label={shellsLabel}><LauncherRowIcon name="terminal" />{shellCount}</span>}<button type="button" className={`${className}${place.pinned ? ' pinned' : ''}`} aria-pressed={place.pinned} aria-label={`${place.pinned ? 'Unpin' : 'Pin'} ${place.label}`} title={`${place.pinned ? 'Unpin' : 'Pin'} ${noun}`} onClick={onTogglePin}><LauncherRowIcon name="pin" /></button></>;
+}
+
+// render a directory-Project or Scratch Place with no Agent: its Workspace (Terminals, notes)
+// beside an idle placeholder, with a pin toggle, the Terminal picker and, unless the Place is an
+// ad-hoc Scratch folder the console cannot launch into, a Launch button
+function PlaceCard({ place, tabBar, cleanupControl, launchDisabled, launch, onLaunched, onTogglePin, onOperationFeedback, schedulePrefill }: { place: Place; tabBar: ReactNode; cleanupControl?: ReactNode; launchDisabled: boolean; launch?: PlaceLaunch; onLaunched: (agentId: string) => void; onTogglePin: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; schedulePrefill?: SchedulePrefill }) {
+  const [running, setRunning] = useState(false);
+  // launch a fresh agent at this Place and run one note on it, then hand the new agent off so
+  // the tab switches to it (the Place's notes Run route launches as a Launch here would)
+  const launchAndRun = async (noteId: string): Promise<boolean> => {
+    if (running) return false;
+    setRunning(true);
+    onOperationFeedback({ tone: 'pending', message: `Starting ${place.label}…`, detail: 'Launching an agent to run the note.' });
+    try {
+      const response = await request(`/api/worktrees/${encodeURIComponent(place.id)}/notes/${encodeURIComponent(noteId)}/run`, { method: 'POST' });
+      if (!response.ok) {
+        onOperationFeedback({ tone: 'error', message: `${place.label} could not run the note`, detail: await launchError(response) });
+        return false;
+      }
+      const payload = await response.json() as { agentId?: unknown };
+      if (typeof payload.agentId !== 'string') {
+        onOperationFeedback({ tone: 'error', message: `${place.label} could not be opened`, detail: 'The agent started but could not be opened.' });
+        return false;
+      }
+      onLaunched(payload.agentId);
+      onOperationFeedback({ tone: 'success', message: `${place.label} is running the note`, detail: 'The new agent session is ready and its output is connecting.' });
+      return true;
+    } catch {
+      onOperationFeedback({ tone: 'error', message: `${place.label} could not start`, detail: 'Unable to reach the console while launching the agent.' });
+      return false;
+    } finally {
+      setRunning(false);
+    }
+  };
+  const launchKind = launch?.resolution?.kind;
+  const workspace = useWorkspace({ id: place.id }, { noteOptions: { schedulePrefill, ...(launch === undefined ? {} : { onLaunchAndRun: launchAndRun, launchRunLabel: `${launchKind === undefined ? 'an agent' : agentKindLabel[launchKind]} on ${place.label}` }) }, onOperationFeedback });
+  // an ad-hoc Scratch folder has no launch: only its terminals and notes live here
+  const detail = launch === undefined ? 'This folder has no agent. Its terminals and notes stay here.' : 'This place is available. Launch an agent when you are ready to continue.';
+  const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className="log-loading inactive" role={running ? 'status' : undefined}>{running ? <span className="spinner" /> : null}<strong>{running ? 'Starting agent…' : 'Agent is off'}</strong><span>{detail}</span></div><span className={`status log-status ${running ? 'connecting' : 'inactive'}`}>{running ? 'Starting' : 'Off'}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{workspace.notes.control}</div></div></div></div>;
+  const pin = <PlaceShellsAndPin place={place} className="icon-button place-pin" onTogglePin={onTogglePin} />;
+  return <article className="agent-view"><Workspace workspace={workspace} output={output} idle statusSlot={null} />{tabBar}<section className="prompt"><textarea aria-label="Prompt" disabled /><div className="prompt-actions">{pin}<span className="prompt-actions-spacer" aria-hidden="true" />{workspace.terminals.control}{launch !== undefined && <LaunchSplitButton label={place.label} resolution={launch.resolution} disabled={launchDisabled || running} pending={running} onLaunch={launch.start} />}</div></section></article>;
 }
 
 // render a scratch or directory session before discovery publishes its agent identity
@@ -6508,6 +6567,8 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const latestDashboardServerStartedAt = useRef<number | undefined>(undefined);
   const latestDashboardGeneration = useRef<number | undefined>(undefined);
   const selectedItemKey = useRef<string | undefined>(undefined);
+  // the Place behind the selected Agent tab, so its agentless tab can take the selection over
+  const selectedPlaceId = useRef<string | undefined>(undefined);
   const dashboardMounted = useRef(true);
   const showOperationFeedback = useCallback((feedback: Omit<OperationFeedback, 'id'>) => {
     operationFeedbackId.current += 1;
@@ -6655,7 +6716,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       // preserve newer navigation choices
       if (shouldActivate) setActivateAgentId(replacement.id);
     }
-    const content = JSON.stringify([nextPayload.agents, nextPayload.projects, nextPayload.cleanupPending ?? 0, nextPayload.reviewTour, nextPayload.reviews, nextPayload.notesRevision, nextPayload.serverStartedAt]);
+    const content = JSON.stringify([nextPayload.agents, nextPayload.projects, nextPayload.places ?? [], nextPayload.cleanupPending ?? 0, nextPayload.reviewTour, nextPayload.reviews, nextPayload.notesRevision, nextPayload.serverStartedAt]);
     if (content !== dashboardContent.current || pendingCompletions.current.size > 0) {
       dashboardContent.current = content;
       setData(nextPayload);
@@ -6886,11 +6947,18 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       const operation = worktreePendingOperation(worktree);
       return { key: `worktree-${worktree.id}`, label: worktree.label, state: 'closed' as const, order: worktree.order, unread: false, operation, worktree };
     }),
+    // a directory-Project or Scratch Place with no Agent there keeps a tab while it is pinned or
+    // holds a Console shell, so turning its Agent off never hides the operator's terminals
+    ...(data.places ?? []).filter(place => !data.agents.some(agent => agent.placeId === place.id && !isEmbeddedUpdateAdvisor(agent)) && (place.pinned || (place.consoleShells ?? 0) > 0)).map(place => ({ key: `place-${place.id}`, label: place.label, state: 'closed' as const, order: Number.MAX_SAFE_INTEGER, unread: false, place })),
     ...pendingSessionLaunches.map(pendingLaunch => ({ key: `pending-${pendingLaunch.id}`, label: pendingLaunch.label, state: 'closed' as const, order: Number.MAX_SAFE_INTEGER, unread: false, operation: pendingLaunch.phase === 'failed' ? undefined : 'launching' as const, pendingLaunch }))
   ].sort((left, right) => left.order - right.order);
   const tabKey = items.map(item => item.key).join('\u0000');
   const selectedIndex = selectedItemKey.current === undefined ? -1 : items.findIndex(candidate => candidate.key === selectedItemKey.current);
-  const visibleActive = selectedIndex < 0 ? Math.min(active, Math.max(items.length - 1, 0)) : selectedIndex;
+  // when a selected Agent's tab goes (turned off or closed) and its directory-Project or Scratch
+  // Place keeps an agentless tab, select that tab; a Worktree's idle tab already takes the Agent's slot
+  const placeTakeover = selectedIndex >= 0 || selectedPlaceId.current === undefined ? -1 : items.findIndex(candidate => candidate.place?.id === selectedPlaceId.current);
+  if (selectedIndex >= 0) selectedPlaceId.current = items[selectedIndex]?.agent?.placeId;
+  const visibleActive = selectedIndex >= 0 ? selectedIndex : placeTakeover >= 0 ? placeTakeover : Math.min(active, Math.max(items.length - 1, 0));
   const activeItemKey = items[visibleActive]?.key;
   // establish the first visible selection
   if (selectedItemKey.current === undefined) selectedItemKey.current = activeItemKey;
@@ -7146,6 +7214,13 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     if (tabsRef.current) observer.observe(tabsRef.current);
     return () => observer.disconnect();
   }, [items.length, launcherOpen, activeItemKey]);
+  // an agentless Place tab launches like its launcher row: the directory Project in place, or the
+  // configured Scratch folder; an ad-hoc Scratch folder has no launch
+  const placeLaunch = (place: Place): PlaceLaunch | undefined => {
+    if (place.kind === 'scratch') return place.adhoc === true ? undefined : { resolution: data?.scratchLaunch, start: choice => createAgent(choice) };
+    const project = data?.projects.find(candidate => candidate.id === place.projectId);
+    return project === undefined ? undefined : { resolution: project.launch, start: choice => launchProjectDirectory(project, choice) };
+  };
   // start from the launcher
   const launchWorktree = async (worktree: Worktree, choice?: LaunchChoice) => {
     const key = launchOperationKey(worktree.id);
@@ -7202,9 +7277,10 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     if (index >= 0) return select(index);
     setActivateWorktreeId(worktreeId);
   };
-  // pin or unpin one Worktree so an idle checkout keeps (or drops) its tab
-  const togglePin = async (worktree: Worktree) => {
-    const response = await request(`/api/worktrees/${encodeURIComponent(worktree.id)}/pin`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pinned: !worktree.pinned }) }).catch(() => undefined);
+  // pin or unpin one Place (a Worktree, directory Project or Scratch folder) so it keeps (or
+  // drops) its tab while no Agent runs there
+  const togglePin = async (place: Pick<Place, 'id' | 'pinned'>) => {
+    const response = await request(`/api/worktrees/${encodeURIComponent(place.id)}/pin`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pinned: !place.pinned }) }).catch(() => undefined);
     if (response?.ok) await refresh();
   };
   // a worktree just created from the launcher: close everything, refresh, and select its
@@ -7295,6 +7371,9 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const activeWorktreeId = item?.agent?.worktreeId ?? item?.worktree?.id;
   // the discovered Worktree behind the active agent tab, for its pin toggle
   const activeWorktree = item?.agent?.worktreeId === undefined ? undefined : worktrees.find(worktree => worktree.id === item.agent!.worktreeId);
+  // the directory-Project or Scratch Place behind an active agent tab that has no Worktree, for its pin toggle
+  const activePlace = activeWorktree !== undefined || item?.agent?.placeId === undefined ? undefined : data.places?.find(place => place.id === item.agent!.placeId);
+  const activePinTarget = activeWorktree ?? activePlace;
   // the Project owning the active tab's Worktree, so an idle tab gates Remove on manageability
   const activeProject = data.projects.find(project => project.id === (item?.worktree?.projectId ?? item?.agent?.projectId));
   // the Schedule pre-fill and the note pane's Adapter/target picker rows for a note pane: the
@@ -7402,9 +7481,13 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     if (openAgent !== undefined) action = <button type="button" className="launch-compact" aria-label={`Open ${worktree.label}`} onClick={() => { setLauncherOpen(false); selectTarget({ worktreeId: worktree.id, agentId: openAgent.id }); }}>Open</button>;
     // launch one inactive worktree
     else action = <LaunchSplitButton label={worktree.label} resolution={worktree.launch} compact disabled={creatingAgent || pendingOperations.has(launchOperationKey(worktree.id))} onLaunch={choice => void launchWorktree(worktree, choice)} />;
-    const shellCount = worktree.consoleShells ?? 0;
-    return <>{shellCount > 0 && <span className="launcher-shells" title={`${shellCount} open terminal${shellCount === 1 ? '' : 's'}`} aria-label={`${shellCount} open terminal${shellCount === 1 ? '' : 's'}`}><LauncherRowIcon name="terminal" />{shellCount}</span>}<button type="button" className={`launcher-icon launcher-pin${worktree.pinned ? ' pinned' : ''}`} aria-pressed={worktree.pinned} aria-label={`${worktree.pinned ? 'Unpin' : 'Pin'} ${worktree.label}`} title={worktree.pinned ? 'Unpin worktree' : 'Pin worktree'} onClick={() => void togglePin(worktree)}><LauncherRowIcon name="pin" /></button><button type="button" className="launcher-icon launcher-rename" disabled={creatingAgent} aria-label={`Rename ${worktree.label}`} title="Rename worktree" onClick={() => setRenameWorktreeId(worktree.id)}><LauncherRowIcon name="rename" /></button><button type="button" className="launcher-icon launcher-remove" disabled={creatingAgent || openAgent !== undefined || removeReason !== undefined} aria-label={`Remove ${worktree.label}`} title={openAgent === undefined ? removeReason ?? 'Remove worktree' : 'Turn off the open agent before removing this worktree'} onClick={() => setRemoveWorktreeId(worktree.id)}><LauncherRowIcon name="trash" /></button>{action}</>;
+    return <><PlaceShellsAndPin place={worktree} noun="worktree" showShells onTogglePin={() => void togglePin(worktree)} /><button type="button" className="launcher-icon launcher-rename" disabled={creatingAgent} aria-label={`Rename ${worktree.label}`} title="Rename worktree" onClick={() => setRenameWorktreeId(worktree.id)}><LauncherRowIcon name="rename" /></button><button type="button" className="launcher-icon launcher-remove" disabled={creatingAgent || openAgent !== undefined || removeReason !== undefined} aria-label={`Remove ${worktree.label}`} title={openAgent === undefined ? removeReason ?? 'Remove worktree' : 'Turn off the open agent before removing this worktree'} onClick={() => setRemoveWorktreeId(worktree.id)}><LauncherRowIcon name="trash" /></button>{action}</>;
   };
+  // the shell count and pin toggle a directory-Project or Scratch launcher row shows before its Launch
+  const launcherPlaceControls = (place: Place | undefined): ReactNode => place === undefined ? null : <PlaceShellsAndPin place={place} showShells onTogglePin={() => void togglePin(place)} />;
+  // the listed Place of a directory Project, and the configured Scratch folder's
+  const directoryPlace = (projectId: string) => data.places?.find(place => place.kind === 'directory' && place.projectId === projectId);
+  const scratchPlace = data.places?.find(place => place.kind === 'scratch' && place.adhoc !== true);
   // render one launcher project at the selected density
   const launcherProject = (project: Project): ReactNode => {
     const inlineWorktree = !dynamicWorktrees && project.worktrees.length === 1 ? project.worktrees[0] : undefined;
@@ -7412,7 +7495,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     const staleCount = project.stalePaths?.length ?? 0;
     // render every non-compacted worktree row
     const rows = visibleWorktrees.map(worktree => <div key={worktree.id} className="launcher-row"><span className="launcher-row-label">{launcherRowLabel(worktree, project)}</span>{launcherWorktreeControls(worktree, project)}</div>);
-    return <div key={project.id} className="launcher-project" role="group" aria-label={project.label}><div className={`launcher-project-header${inlineWorktree === undefined ? '' : ' inline-worktree'}`}><span>{project.label}</span>{staleCount > 0 && <button type="button" className="launcher-prune" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setPruneProjectId(project.id)}>{staleCount} stale · Prune</button>}{inlineWorktree !== undefined && <div className="launcher-project-worktree-controls" role="group" aria-label={`${project.label} worktree controls`}>{launcherWorktreeControls(inlineWorktree, project)}</div>}</div>{rows}{project.mode === 'directory' && <div className="launcher-row"><span className="launcher-row-label">{project.label}</span><LaunchSplitButton label={project.label} resolution={project.launch} compact disabled={creatingAgent} onLaunch={choice => void launchProjectDirectory(project, choice)} /></div>}{dynamicWorktrees && <button type="button" className="launcher-new-worktree" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setNewWorktreeProjectId(project.id)}><LauncherLabelIcon name="add" /><span>New worktree…</span></button>}</div>;
+    return <div key={project.id} className="launcher-project" role="group" aria-label={project.label}><div className={`launcher-project-header${inlineWorktree === undefined ? '' : ' inline-worktree'}`}><span>{project.label}</span>{staleCount > 0 && <button type="button" className="launcher-prune" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setPruneProjectId(project.id)}>{staleCount} stale · Prune</button>}{inlineWorktree !== undefined && <div className="launcher-project-worktree-controls" role="group" aria-label={`${project.label} worktree controls`}>{launcherWorktreeControls(inlineWorktree, project)}</div>}</div>{rows}{project.mode === 'directory' && <div className="launcher-row"><span className="launcher-row-label">{project.label}</span>{launcherPlaceControls(directoryPlace(project.id))}<LaunchSplitButton label={project.label} resolution={project.launch} compact disabled={creatingAgent} onLaunch={choice => void launchProjectDirectory(project, choice)} /></div>}{dynamicWorktrees && <button type="button" className="launcher-new-worktree" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setNewWorktreeProjectId(project.id)}><LauncherLabelIcon name="add" /><span>New worktree…</span></button>}</div>;
   };
   const tabBar = <><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees">{items.map((entry, index) => {
     const transition = dashboardOperationLabel(entry.operation);
@@ -7420,10 +7503,10 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     const kind = entry.agent?.kind ?? entry.pendingLaunch?.kind;
     const sandboxed = entry.agent?.sandboxed ?? entry.pendingLaunch?.sandboxed;
     return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === visibleActive} aria-controls={`panel-${index}`} tabIndex={index === visibleActive ? 0 : -1} className={`${index === visibleActive ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{kind !== undefined && <LaunchTabBadge kind={kind} sandboxed={sandboxed} />}{entry.worktree?.locked === true && <span className="tab-git-lock" aria-hidden="true" title="Git has locked this worktree">🔒</span>}{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
-  })}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label launcher-symbol-label"><LauncherLabelIcon name="scratch" /><span>Scratch</span></span><LaunchSplitButton label="~ Scratch" resolution={data.scratchLaunch} compact disabled={creatingAgent} onLaunch={choice => void createAgent(choice)} /></div>{data.projects.map(launcherProject)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav><ToastRegion feedback={visibleOperationFeedback} onDismissFeedback={() => setOperationFeedback(undefined)} launchErrorMessage={launchErrorMessage} /></>;
+  })}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label launcher-symbol-label"><LauncherLabelIcon name="scratch" /><span>Scratch</span></span>{launcherPlaceControls(scratchPlace)}<LaunchSplitButton label="~ Scratch" resolution={data.scratchLaunch} compact disabled={creatingAgent} onLaunch={choice => void createAgent(choice)} /></div>{data.projects.map(launcherProject)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav><ToastRegion feedback={visibleOperationFeedback} onDismissFeedback={() => setOperationFeedback(undefined)} launchErrorMessage={launchErrorMessage} /></>;
   const consoleClass = `console${davo.enabled && voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view"><ServerSwitcher className="output-server-switcher" />{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
-  return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${visibleActive}`} aria-labelledby={`tab-${visibleActive}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onNavigateWorktree={navigateToWorktree} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: item.agent.projectId })} {...(activeWorktree === undefined ? {} : { pinned: activeWorktree.pinned, onTogglePin: () => void togglePin(activeWorktree), onRenameWorktree: () => setRenameWorktreeId(activeWorktree.id), worktreeLabel: activeWorktree.label })} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onOperationFeedback={showOperationFeedback} onNavigateWorktree={navigateToWorktree} onRename={() => setRenameWorktreeId(item.worktree!.id)} schedulePrefill={resolveSchedulePrefill({ projectId: item.worktree.projectId })} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}{item?.pendingLaunch && <PendingSessionCard key={item.pendingLaunch.id} launch={item.pendingLaunch} tabBar={tabBar} cleanupControl={cleanupControl} retrying={creatingAgent} onRetry={choice => { /* retain the same pending draft on retry */ void runPendingSessionLaunch(item.pendingLaunch!, choice); }} onDiscard={() => { /* discard only the selected failed placeholder */ discardPendingSessionLaunch(item.pendingLaunch!.id); }} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
+  return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${visibleActive}`} aria-labelledby={`tab-${visibleActive}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onNavigateWorktree={navigateToWorktree} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: item.agent.projectId ?? (activePlace?.kind === 'directory' ? activePlace.projectId : undefined) })} {...(activePinTarget === undefined ? {} : { pinned: activePinTarget.pinned, onTogglePin: () => void togglePin(activePinTarget) })} {...(activeWorktree === undefined ? {} : { onRenameWorktree: () => setRenameWorktreeId(activeWorktree.id), worktreeLabel: activeWorktree.label })} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onOperationFeedback={showOperationFeedback} onNavigateWorktree={navigateToWorktree} onRename={() => setRenameWorktreeId(item.worktree!.id)} schedulePrefill={resolveSchedulePrefill({ projectId: item.worktree.projectId })} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}{item?.place && <PlaceCard key={item.place.id} place={item.place} tabBar={tabBar} cleanupControl={cleanupControl} launchDisabled={creatingAgent} launch={placeLaunch(item.place)} onLaunched={agentId => { setActivateAgentId(agentId); void refresh(); }} onTogglePin={() => void togglePin(item.place!)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: item.place.kind === 'directory' ? item.place.projectId : undefined })} />}{item?.pendingLaunch && <PendingSessionCard key={item.pendingLaunch.id} launch={item.pendingLaunch} tabBar={tabBar} cleanupControl={cleanupControl} retrying={creatingAgent} onRetry={choice => { /* retain the same pending draft on retry */ void runPendingSessionLaunch(item.pendingLaunch!, choice); }} onDiscard={() => { /* discard only the selected failed placeholder */ discardPendingSessionLaunch(item.pendingLaunch!.id); }} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
 }
 
 // coordinate console session and update lifecycle

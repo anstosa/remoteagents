@@ -769,7 +769,7 @@ describe('DiscoveryService Places', () => {
     expect(dashboard.places).toEqual([
       { id: 'notes:/data/notes', kind: 'directory', projectId: 'notes', label: 'Notes', home: '/data/notes', pinned: true, consoleShells: 2 },
       { id: 'scratch:/home/me/scratch', kind: 'scratch', projectId: 'scratch', label: '~ Scratch', home: '/home/me/scratch', pinned: false },
-      { id: 'scratch:/opt/shell-only', kind: 'scratch', projectId: 'scratch', label: 'shell-only', home: '/opt/shell-only', pinned: false, consoleShells: 1 }
+      { id: 'scratch:/opt/shell-only', kind: 'scratch', projectId: 'scratch', label: 'shell-only', home: '/opt/shell-only', adhoc: true, pinned: false, consoleShells: 1 }
     ]);
   });
 
@@ -798,7 +798,7 @@ describe('DiscoveryService Places', () => {
       const dashboard = await discovery.dashboard();
 
       expect(dashboard.places.map(place => place.id)).toEqual([`notes:${root}/notes`, 'scratch:/home/me/scratch', `scratch:${root}/tools`]);
-      expect(dashboard.places.at(-1)).toEqual({ id: `scratch:${root}/tools`, kind: 'scratch', projectId: 'scratch', label: 'tools', home: `${root}/tools`, pinned: true });
+      expect(dashboard.places.at(-1)).toEqual({ id: `scratch:${root}/tools`, kind: 'scratch', projectId: 'scratch', label: 'tools', home: `${root}/tools`, adhoc: true, pinned: true });
       // the listed Place resolves by id with its server-side shape; an unlisted one does not
       await expect(discovery.place(`scratch:${root}/tools`)).resolves.toMatchObject({ kind: 'scratch', home: `${root}/tools`, adhoc: true });
       await expect(discovery.place(`scratch:${root}/gone`)).resolves.toBeUndefined();

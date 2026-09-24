@@ -803,7 +803,11 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     // require one current agent target
     if (target === undefined) return undefined;
     const worktree = configuredWorktreeForWorkspace(discovery.worktreesNow(), target.agent.home);
-    return { agent: target.agent, worktree, saveKey: worktree?.projectId ?? folderNoteKey(target.agent.home), noteLabel: worktree?.label ?? (basename(target.agent.home) || 'workspace') };
+    // an Agent with no Worktree of its own keeps its notes with its Place, so an Agent in a
+    // subfolder of a directory Project or Scratch folder shares the notes its Place tab shows
+    const place = worktree === undefined && target.agent.placeId !== undefined ? await resolvePlace(target.agent.placeId) : undefined;
+    const saveKey = worktree?.projectId ?? (place === undefined ? folderNoteKey(target.agent.home) : placeNoteKey(place));
+    return { agent: target.agent, worktree, saveKey, noteLabel: worktree?.label ?? place?.label ?? (basename(target.agent.home) || 'workspace') };
   };
   // resolve one queue scope to its note key and current operator-facing label
   const notePersistenceForQueueScope = async (scope: string): Promise<{ saveKey: string; noteLabel: string } | undefined> => {

@@ -1521,3 +1521,96 @@ test('End removes an idle Console shell silently and confirms a busy one', async
   expect(dialogs).toBe(1);
   await expect(picker.getByRole('menuitem', { name: /server/u })).toHaveCount(0);
 });
+
+// A directory-Project or Scratch Place: Terminals, pane lists, Console shells and notes are all
+// keyed by the Place id, whether an Agent runs there or not.
+const notesPlaceId = 'notes:/data/notes';
+const notesPlacePath = `/api/worktrees/${encodeURIComponent(notesPlaceId)}`;
+const notesProject = { id: 'notes', label: 'Notes', mode: 'directory', available: true, manageWorktrees: false, stalePaths: [], worktrees: [] };
+const notesPlace = (consoleShells: number) => ({ id: notesPlaceId, kind: 'directory', projectId: 'notes', label: 'Notes', home: '/data/notes', pinned: false, ...(consoleShells > 0 ? { consoleShells } : {}) });
+const notesAgent = { id: 'agent-9', sessionId: 'socket:$4', home: '/data/notes', placeId: notesPlaceId, displayLabel: 'Notes', title: 'Ready', attention: 'finished', queuedPromptCount: 0 };
+// a Scratch Agent elsewhere, whose tab sorts after the directory Agent's
+const scratchAgent = { id: 'agent-7', sessionId: 'socket:$7', home: '/home/me/scratch', placeId: 'scratch:/home/me/scratch', displayLabel: '~ Scratch', title: 'Ready', attention: 'finished', queuedPromptCount: 0 };
+
+// route one directory-Project Place, recording every request path; `agentRunning` flips when the
+// Agent is deleted, so the next dashboard read reports the Place without it
+const routePlace = (page: Page, panes: Pane[], requests: string[], options: { agentRunning: boolean; onShell?: () => string }) =>
+  page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    requests.push(`${request.method()} ${path}`);
+    if (path === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [...options.agentRunning ? [notesAgent] : [], scratchAgent], projects: [notesProject], places: [notesPlace(panes.filter(pane => pane.role === 'shell').length)] } });
+    if (path === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (path === '/api/agents/agent-9/tickets' || path === `${notesPlacePath}/tickets`) return route.fulfill({ json: { ticket: 'pane-ticket' } });
+    if (path === '/api/agents/agent-9/saved-prompts' || path === '/api/agents/agent-9/prompt-history' || path === '/api/agents/agent-9/queued-prompts') return route.fulfill({ json: { prompts: [] } });
+    if (path === '/api/agents/agent-9' && request.method() === 'DELETE') { options.agentRunning = false; return route.fulfill({ status: 204 }); }
+    if (path === `${notesPlacePath}/notes` && request.method() === 'GET') return route.fulfill({ json: { notes: [] } });
+    if (path === `${notesPlacePath}/panes` && request.method() === 'GET') return route.fulfill({ json: { panes } });
+    if (path === `${notesPlacePath}/shells` && request.method() === 'POST') return route.fulfill({ status: 201, json: { paneId: options.onShell ? options.onShell() : '%9' } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+test('a directory-Project Agent opens Terminals and notes at its Place', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await installPaneMock(page);
+  const created: Pane = { paneId: '%9', session: '$4', window: '@3', role: 'shell', name: '', command: 'zsh', path: '/data/notes', title: '', agent: false, busy: false };
+  const panes: Pane[] = [{ paneId: '%8', session: '$4', window: '@0', command: 'codex', path: '/data/notes', title: '', agent: true }];
+  const requests: string[] = [];
+  await routePlace(page, panes, requests, { agentRunning: true, onShell: () => { panes.push(created); return '%9'; } });
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-9', 80, 24);
+
+  // the Agent's notes are the Place's notes
+  await expect.poll(() => requests).toContain(`GET ${notesPlacePath}/notes`);
+
+  // New shell creates a Console shell at the Place and opens it as a Terminal
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: 'New shell' }).click();
+  await seedPaneSize(page, '%9', 80, 24);
+  await pushBytes(page, '%9', 'shell at the notes place\r\n');
+  await expect(page.locator('.terminal-pane[data-panel-key="%9"]')).toBeVisible();
+  expect(requests).toContain(`POST ${notesPlacePath}/shells`);
+  // the open Terminal is remembered under the Place id
+  expect(await page.evaluate(key => localStorage.getItem(key), `rac.terminals:${notesPlaceId}`)).toContain('%9');
+
+  // the Agent's More menu pins its Place
+  await page.getByRole('button', { name: 'More options' }).click();
+  await expect(page.getByRole('button', { name: 'Pin folder' })).toHaveAttribute('aria-pressed', 'false');
+
+  // the git-only routes are never asked of a Place that is no Worktree, and the Agent's own notes
+  // route is not used in place of the Place's
+  expect(requests.filter(entry => /\/(comparison|conversations)|GET \/api\/agents\/agent-9\/notes/u.test(entry))).toEqual([]);
+});
+
+test('a directory-Project Place with a Console shell keeps a tab after its Agent is deleted, and it can open a Terminal', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await installPaneMock(page);
+  const panes: Pane[] = [
+    { paneId: '%8', session: '$4', window: '@0', command: 'codex', path: '/data/notes', title: '', agent: true },
+    { paneId: '%5', session: '$4', window: '@1', role: 'shell', name: 'build', command: 'zsh', path: '/data/notes', title: '', agent: false, busy: false }
+  ];
+  const requests: string[] = [];
+  await routePlace(page, panes, requests, { agentRunning: true });
+  await page.goto('/');
+  await seedPaneSize(page, 'agent-9', 80, 24);
+  // the running Agent's tab stands for its Place; there is no second tab for it
+  await expect(page.getByRole('tab', { name: /^Notes/u })).toHaveCount(1);
+  await expect(page.getByRole('tab', { name: /^Notes/u })).toHaveAttribute('aria-selected', 'true');
+
+  // deleting the directory-Project Agent leaves its Place's tab, since a Console shell is open
+  // there, and the selection moves to it rather than to the Scratch Agent's tab that slides into
+  // the deleted tab's position
+  await page.getByRole('button', { name: 'Delete agent' }).click();
+  panes.shift();
+  await expect(page.getByRole('tab', { name: 'Notes — Agent closed' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: /^Notes/u })).toHaveCount(1);
+
+  // the agentless tab opens the Place's Console shell as a Terminal
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  await pushBytes(page, '%5', 'shell in an agentless place\r\n');
+  await expect(page.locator('.terminal-pane[data-panel-key="%5"]')).toBeVisible();
+});

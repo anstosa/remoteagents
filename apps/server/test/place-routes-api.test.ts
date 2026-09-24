@@ -173,6 +173,23 @@ describe('Notes at an idle directory-Project or Scratch Place', () => {
     } finally { await app.close(); }
   });
 
+  it('keys an Agent’s own notes by its Place, so an Agent in a subfolder shares the Place notes', async () => {
+    const notes = new WorktreeNoteService(await tempFile('notes.json'));
+    const placeNote = await notes.createWithText(folderNoteKey('/host/notes'), 'Plan', 'Draft the plan');
+    // started by hand in a subfolder of the directory Project, on the host side of the bridge
+    const agent = stated({ id: 'socket:%3', paneId: '%3', sessionId: 'socket:$4', socketFingerprint: 'socket', home: '/host/notes/2026', placeId: directoryPlace.id, title: 'Ready' });
+    const app = await start({ notes, discovery: { target: async (id: string) => id === agent.id ? { agent, socket: testSocket } : undefined } });
+    try {
+      const listed = await app.inject({ method: 'GET', url: `/api/agents/${encodeURIComponent(agent.id)}/notes`, headers: read });
+      expect(listed.json().notes.map((note: { id: string }) => note.id)).toEqual([placeNote!.id]);
+      const created = await app.inject({ method: 'POST', url: `/api/agents/${encodeURIComponent(agent.id)}/notes`, headers: mutate, payload: { title: 'Saved draft', text: 'From the composer' } });
+      expect(created.statusCode).toBe(201);
+      // the Place tab lists the note the Agent saved
+      const atPlace = await app.inject({ method: 'GET', url: url(directoryPlace.id, '/notes'), headers: read });
+      expect(atPlace.json().notes.map((note: { id: string }) => note.id).sort()).toEqual([placeNote!.id, created.json().id].sort());
+    } finally { await app.close(); }
+  });
+
   it('runs a note by launching at its Place', async () => {
     const notes = new WorktreeNoteService(await tempFile('notes.json'));
     const directoryNote = await notes.createWithText(folderNoteKey('/host/notes'), 'Report', 'Draft the report');

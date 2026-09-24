@@ -73,5 +73,6 @@ export type DashboardProject = { id: string; label: string; mode: 'repository' |
 // One directory-Project or Scratch Place on the wire, beside the Worktrees `projects[]` already
 // lists (a Worktree is a Place too, with the same id). Lists every available directory Project,
 // the configured Scratch folder, and any other Scratch Place holding an Agent or a Console shell.
-export type DashboardPlace = { id: string; kind: 'directory' | 'scratch'; projectId: string; label: string; home: string; pinned: boolean; consoleShells?: number };
+// `adhoc` marks such an other Scratch Place: the console cannot launch an Agent into it.
+export type DashboardPlace = { id: string; kind: 'directory' | 'scratch'; projectId: string; label: string; home: string; adhoc?: true; pinned: boolean; consoleShells?: number };
 export type Dashboard = { generation: number; serverStartedAt?: number; adapters: Partial<Record<AgentKind, AdapterCapability>>; agents: Agent[]; projects: DashboardProject[]; places: DashboardPlace[] };
