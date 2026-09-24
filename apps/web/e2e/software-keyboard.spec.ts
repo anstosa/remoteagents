@@ -64,14 +64,14 @@ test('hides the tablist under the keyboard and keeps pane focus across streamed 
   const terminalInput = page.locator('.log-canvas .xterm-helper-textarea');
   await output.locator('.xterm-screen').click();
   await expect(terminalInput).toBeFocused();
-  await expect(page.locator('.log')).toHaveClass(/input-active/u);
+  await expect(page.locator('.log-output')).toHaveClass(/input-active/u);
   await setViewportHeight(500);
   await expect(tabs).toBeHidden();
 
   // Streamed output while typing never steals focus.
   await pushBytes(page, 'agent-1', 'Updated output while typing\r\n');
   await expect(terminalInput).toBeFocused();
-  await expect(page.locator('.log')).toHaveClass(/input-active/u);
+  await expect(page.locator('.log-output')).toHaveClass(/input-active/u);
   await expect(tabs).toBeHidden();
 
   // Closing the keyboard restores the tabs.

@@ -35,7 +35,7 @@ test('focusing the pane marks it input-active and forwards typed control keys', 
   // Clicking the pane focuses it and marks the panel input-active (which collapses the
   // composer to the terminal helper keys on a phone).
   await page.getByLabel('Live log').locator('.xterm-screen').click();
-  await expect(page.locator('.log')).toHaveClass(/input-active/u);
+  await expect(page.locator('.log-output')).toHaveClass(/input-active/u);
   await expect(page.locator('.xterm-helper-textarea:focus')).toHaveCount(1);
 
   // Control keys typed into the focused pane go out as input, byte for byte.
@@ -61,7 +61,7 @@ test('keys stay local when the composer or a dialog owns focus', async ({ page }
   // Focusing the composer blurs the pane; Escape there never reaches it.
   const prompt = page.getByRole('textbox', { name: 'Prompt' });
   await prompt.focus();
-  await expect(page.locator('.log')).not.toHaveClass(/input-active/u);
+  await expect(page.locator('.log-output')).not.toHaveClass(/input-active/u);
   await page.keyboard.press('Escape');
   await page.waitForTimeout(100);
   expect(await paneInputText(page, 'agent-1')).toBe('');
@@ -129,6 +129,7 @@ for (const touch of [false, true]) {
         // create enough history to expose the jump control
         await pushBytes(page, 'agent-1', Array.from({ length: 160 }, (_, index) => `output row ${index}\r\n`).join(''));
         const log = page.locator('.log');
+        const outputPanel = log.locator('.log-output');
         const focusTarget = inputActive ? log.locator('.xterm-helper-textarea') : page.getByRole('textbox', { name: 'Prompt', exact: true });
         await focusTarget.focus();
         // wheel over the scrollbar to avoid letterboxing and mobile text-selection overlays
@@ -143,8 +144,8 @@ for (const touch of [false, true]) {
         await expect(jump).toBeHidden();
         await expect(focusTarget).toBeFocused();
         // preserve the mode that controls the output border and mobile composer
-        if (inputActive) await expect(log).toHaveClass(/input-active/u);
-        else await expect(log).not.toHaveClass(/input-active/u);
+        if (inputActive) await expect(outputPanel).toHaveClass(/input-active/u);
+        else await expect(outputPanel).not.toHaveClass(/input-active/u);
         // keep subsequent output pinned to the latest line
         await pushBytes(page, 'agent-1', 'new output after jump\r\n');
         await expect(jump).toBeHidden();

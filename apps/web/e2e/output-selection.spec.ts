@@ -65,7 +65,7 @@ test('shows selection actions for a terminal drag selection and adds to the prom
   await page.mouse.up();
 
   const toolbar = page.getByRole('toolbar', { name: 'Output selection actions' });
-  await expect(page.locator('.log')).toHaveClass(/selection-active/u);
+  await expect(page.locator('.log-output')).toHaveClass(/selection-active/u);
   await expect(toolbar).toBeVisible();
   await expect(toolbar.getByRole('button', { name: 'Create note' })).toBeVisible();
   await expect(toolbar.getByRole('button', { name: 'Copy' })).toBeVisible();
@@ -174,7 +174,7 @@ test('a native output selection creates and appends notes, copies, and guards th
 
   // The selection does not steal terminal focus, and the toolbar offers the note/prompt
   // actions (Append is absent until a note is open).
-  await expect(page.locator('.log')).not.toHaveClass(/input-active/u);
+  await expect(page.locator('.log-output')).not.toHaveClass(/input-active/u);
   await expect(page.locator('.xterm-helper-textarea:focus')).toHaveCount(0);
   const toolbar = page.getByRole('toolbar', { name: 'Output selection actions' });
   await expect(toolbar).toBeVisible();
@@ -275,7 +275,7 @@ for (const platform of ['Linux x86_64', 'Win32', 'MacIntel']) {
     await page.mouse.up();
 
     const toolbar = page.getByRole('toolbar', { name: 'Output selection actions' });
-    await expect(page.locator('.log')).toHaveClass(/selection-active/u);
+    await expect(page.locator('.log-output')).toHaveClass(/selection-active/u);
     await expect(toolbar).toBeVisible();
     await toolbar.getByRole('button', { name: 'Copy' }).click();
     // read the first copied selection
@@ -367,7 +367,7 @@ test('freezes coarse-pointer output while a native selection is active', async (
   await selectNativeRange(selectedRow, 0, 'Freeze'.length);
 
   const toolbar = page.getByRole('toolbar', { name: 'Output selection actions' });
-  await expect(page.locator('.log')).toHaveClass(/selection-active/u);
+  await expect(page.locator('.log-output')).toHaveClass(/selection-active/u);
   await expect(toolbar).toBeVisible();
   await toolbar.getByRole('button', { name: 'Copy' }).click();
   // read the native selection before output arrives

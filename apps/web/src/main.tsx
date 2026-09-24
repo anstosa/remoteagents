@@ -1012,9 +1012,6 @@ const updateCommitDate = (value: string): string => {
   // preserve malformed server values visibly
   return Number.isNaN(date.valueOf()) ? value : date.toLocaleString();
 };
-const emptyPromptHistory: PromptHistoryEntry[] = [];
-// keep embedded output history stable
-const refreshEmbeddedHistory = async (): Promise<void> => {};
 
 // render one isolated full advisor output
 function EmbeddedAgentOutput({ id, onMetadata }: { id: string; onMetadata: (response: string | undefined, question: ChoiceQuestion | undefined) => void }) {
@@ -1032,7 +1029,7 @@ function EmbeddedAgentOutput({ id, onMetadata }: { id: string; onMetadata: (resp
     questionRef.current = question;
     onMetadataRef.current(responseRef.current, question);
   }, []);
-  return <div className="update-advisor-output" aria-label="Update advisor output"><Log id={id} history={emptyPromptHistory} refreshHistory={refreshEmbeddedHistory} onQuestion={publishQuestion} onMetadata={publishResponse} embedded /><MobileTerminalKeys id={id} /></div>;
+  return <div className="update-advisor-output" aria-label="Update advisor output"><section className="log-shell embedded-log-shell"><div className="log embedded-log"><ResizableLogSplit output={<Log id={id} onQuestion={publishQuestion} onMetadata={publishResponse} embedded />} /></div></section><MobileTerminalKeys id={id} /></div>;
 }
 
 // review and launch one exact server update
@@ -3996,6 +3993,7 @@ function useWorktreeNotes(worktreeId?: string, agentId?: string, agentWorking = 
   const pane = activeNote === undefined ? null : <><section className={`note-pane${expanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onDragEnter={dragNoteFiles} onDragOver={dragNoteFiles} onDragLeave={leaveNoteFiles} onDrop={dropNoteFiles} onPaste={pasteNoteFiles} onKeyDown={event => { if (event.key === 'Escape' && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><div className="note-pane-head"><header className="note-toolbar" role="toolbar" aria-label="Note actions">{renaming ? <form className="note-title-form" onSubmit={event => { event.preventDefault(); void saveTitle(); }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); setRenaming(false); } }}><input ref={titleEditorRef} aria-label="Note name" value={titleDraft} maxLength={120} disabled={renamePending} onChange={event => setTitleDraft(event.target.value)} /><button type="submit" disabled={renamePending || !titleDraft.trim()} aria-label="Save note name" title="Save note name"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={renamePending} aria-label="Cancel note rename" title="Cancel" onClick={() => setRenaming(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form> : <><strong title={activeNote.title ?? 'Note'}>{activeNote.title ?? 'Note'}</strong><button className="note-rename" type="button" disabled={deleting || renamePending} aria-label="Rename note" title="Rename note" onClick={() => { setTitleDraft(activeNote.title ?? ''); setRenaming(true); }}><svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.pencil} /></svg></button></>}{saveStatus === 'error' && <span className="note-save-status error" role="alert" aria-live="assertive">Unable to save</span>}{actionStatus && <span className={`note-action-status${copyState === 'error' || sendState === 'error' ? ' error' : ''}`} role={copyState === 'error' || sendState === 'error' ? 'alert' : 'status'}>{actionStatus}</span>}<button className={`note-copy${copyState === 'copied' ? ' copied' : ''}`} type="button" disabled={deleting} aria-label={copyState === 'copied' ? 'Note copied' : 'Copy note'} title={copyState === 'copied' ? 'Copied' : 'Copy note'} onClick={() => void copy()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={copyState === 'copied' ? 'm5 12 4 4L19 6' : 'M9 9h10v10H9zM5 15H4V5h10v1'} /></svg></button>{noteAttachButton}{launchAndRunMode ? <button className="note-send note-launch-run" type="button" disabled={noteFilesDisabled || !noteHasContent({ ...activeNote, text: draft })} aria-label="Launch and run note" title={launchRunLabel === undefined ? 'Launch an agent and run this note' : `Launch and run (${launchRunLabel})`} onClick={() => { const note = activeNoteRef.current; if (note !== undefined) void runNote(note); }}>{menuRunningId !== undefined ? <span className="spinner" /> : 'Launch and run'}</button> : <button className="note-send" type="button" disabled={agentId === undefined || noteFilesDisabled || promptPending || !noteHasContent({ ...activeNote, text: draft })} aria-label={`${noteActionLabel} as prompt`} title={agentId === undefined ? 'Launch an agent to send this note' : `${noteActionLabel} as prompt`} onClick={() => void send()}>{sendState === 'sending' ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d={noteActionIcon} /></svg>}</button>}{noteLockButton}{!activeNote.locked && <button className="note-delete" type="button" disabled={noteFilesDisabled} aria-label="Delete note" title="Delete note" onClick={remove}>{deleting ? <span className="spinner" /> : <svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.trash} /></svg>}</button>}<button className="note-expand" type="button" disabled={noteFilesDisabled} aria-label={expanded ? 'Restore note' : 'Expand note'} title={expanded ? 'Restore note' : 'Expand note'} aria-pressed={expanded} onClick={toggleExpanded}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button><button className="note-close" type="button" disabled={noteFilesDisabled} aria-label="Close note" title="Close note" onClick={close}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></header>{lockError && <p className="note-lock-error" role="alert">{lockError}</p>}{scheduleArea}{noteAttachmentPicker}{noteAttachmentControls}</div>{draggingNoteFiles && <div className="prompt-drop-overlay" role="status">Drop files to attach to this note</div>}{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}{noteFilePreview.dialog}</>;
   return { active: activeNote !== undefined, expanded: activeNote !== undefined && expanded, appendToActive, canAppendToActive, canCreate: !loading, control, createWithText: create, pane };
 }
+type WorktreeNotes = ReturnType<typeof useWorktreeNotes>;
 
 const browserViewportKey = (worktreeId: string) => `rac.browser-viewport:${worktreeId}`;
 const browserSplitKey = (worktreeId: string) => `rac.browser-split:${worktreeId}`;
@@ -5142,147 +5140,96 @@ function GitStatus({ id, worktreeId, branch, summary, prSummary, pullRequest, on
   return <span ref={wrapRef} className={`git-status-wrap${expanded ? ' expanded' : ''}`}><button className={`git-status-summary ${state}${pullRequest === undefined ? '' : ` has-pull-request status-${pullRequest.status}`}`} type="button" aria-label={label} aria-expanded={expanded} title={label} onClick={onToggle}><svg className="git-branch-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2.5" /><circle cx="6" cy="19" r="2.5" /><circle cx="18" cy="7" r="2.5" /><path d="M6 7.5v9M18 9.5v1a6 6 0 0 1-6 6H6" /></svg><span className="git-status-dot" aria-hidden="true" /><span className="git-branch">{branch}</span><span className="git-status-separator" aria-hidden="true">·</span><span className="git-worktree-state">{stateLabel}</span>{/* retain compact pr indicators beside the prompt */}{pullRequest !== undefined && <PullRequestIndicators checks={pullRequest.checks} issues={pullRequest.issues} />}</button>{expanded && <FlyoutPortal onDismiss={() => onToggle?.()}><div className="git-status-panel" role="region" aria-label="Changed files" aria-busy={repositoryTabVisible && loadingPrSwitch} style={panelStyle}>{activePanel}<span className="git-status-tabs" role="tablist" aria-label="Branch views"><button type="button" role="tab" aria-selected={tab === 'working'} onClick={() => setTab('working')}>Working</button><button type="button" role="tab" aria-selected={tab === 'prs'} aria-busy={loadingPrSwitch} disabled={id === undefined} title={id === undefined ? 'Launch agent to load pull requests' : undefined} onClick={() => { /* keep preloading while changing views */ setTab('prs'); }}>PRs{loadingPrSwitch && <span className="spinner" aria-hidden="true" />}</button><button type="button" role="tab" aria-selected={tab === 'branches'} aria-busy={loadingPrSwitch} disabled={id === undefined} title={id === undefined ? 'Launch agent to load branches' : undefined} onClick={() => { /* keep preloading while changing views */ setTab('branches'); }}>Branches{loadingPrSwitch && <span className="spinner" aria-hidden="true" />}</button></span></div></FlyoutPortal>}{removingBranch !== undefined && worktreeId !== undefined && <RemoveBranchDialog worktreeId={worktreeId} branch={removingBranch} onClose={() => setRemovingBranch(undefined)} onDeleted={branchRemoved} />}</span>;
 }
 
-type LogProps = { id: string; agentWorking?: boolean; worktreeId?: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; pullRequest?: PullRequestSummary; history: PromptHistoryEntry[]; refreshHistory: () => Promise<void>; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined) => void; cleanupControl?: ReactNode; browserUrl?: string; browserHomeUrl?: string; browserProxied?: boolean; browserNavigationRequest?: ProjectBrowserNavigationRequest; onBrowserNavigate?: (url: string) => boolean; onBrowserOpen?: (url: string) => boolean; onBrowserClose?: () => void; code?: CodePanelController; embedded?: boolean; onReview?: (scope: ReviewScope) => void; reviewOpen?: boolean; reviewUnavailable?: string; pushAction?: PromptAction; processingLabel?: string; processingDetail?: string; statusSlot?: HTMLElement | null; historySlot?: HTMLElement | null; onSelectTarget?: (target: DashboardTarget) => void; onNavigateWorktree?: (worktreeId: string) => void; onOperationFeedback?: (feedback: Omit<OperationFeedback, 'id'>) => void; schedulePrefill?: SchedulePrefill; terminals?: TerminalColumn[]; onPhoneTerminal?: (paneId: string | undefined) => void };
+// The Place a Workspace shows: the fields it reads from a Worktree or an Agent. `id` keys the
+// Place's panels and their browser storage; the web's panel hooks are still Worktree-keyed, so
+// today it is the Worktree wire id, and a scratch or directory Agent passes none (and so opens no
+// Terminals).
+type WorkspacePlace = { id?: string; projectUrl?: string; projectProxied?: boolean; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; pullRequest?: PullRequestSummary; attention?: AttentionState };
+// What the Place's notes need from the Agent there (or, with no Agent, how a note's Run launches one).
+type WorkspaceNotesOptions = { agentWorking?: boolean; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean; onPromptHistoryChanged?: () => void | Promise<void>; promptHistory?: PromptHistoryEntry[]; schedulePrefill?: SchedulePrefill; onLaunchAndRun?: (noteId: string) => Promise<boolean>; launchRunLabel?: string };
 
-// render reusable live agent output
-function Log({ id, agentWorking = false, worktreeId, branch, gitStatus, gitPrStatus, pullRequest, history, refreshHistory, onQuestion, onMetadata, cleanupControl, browserUrl, browserHomeUrl, browserProxied = true, browserNavigationRequest, onBrowserNavigate, onBrowserOpen, onBrowserClose, code, embedded = false, onReview, reviewOpen = false, reviewUnavailable, pushAction = defaultPushAction, processingLabel, processingDetail, statusSlot, historySlot, onSelectTarget, onNavigateWorktree, onOperationFeedback, schedulePrefill, terminals, onPhoneTerminal }: LogProps) {
+// The Place-scoped panel state behind one tab: browser, Code panel, Terminals, notes, conversations
+// and git expansion. The tab's card holds it because its composer drives the same browser and
+// Terminals; the Workspace renders it.
+function useWorkspace(place: WorkspacePlace, { agentId, noteOptions: notes, onNavigateWorktree, onOperationFeedback }: { agentId?: string; noteOptions: WorkspaceNotesOptions; onNavigateWorktree?: (worktreeId: string) => void; onOperationFeedback?: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
+  const browser = useProjectBrowser(place.projectUrl, place.id, place.projectProxied);
+  const code = useCodePanel(place.id, request, comparisonChangeSignal(place.gitStatus, place.gitPrStatus, place.attention));
+  const terminals = useTerminalViews(place.id);
+  // The Terminal the phone shows as the single panel (the split reports it), so the composer swaps
+  // for that pane's helper keys (spec, the phone footer).
+  const [phoneTerminal, setPhoneTerminal] = useState<string>();
+  const conversations = useWorktreeConversations(place.id, agentId, { onNavigateWorktree, onOperationFeedback });
+  const placeNotes = useWorktreeNotes(place.id, agentId, notes.agentWorking, notes.latestAssistantMessage, notes.latestAssistantMessageOverflows, notes.onPromptHistoryChanged, notes.promptHistory, notes.schedulePrefill, notes.onLaunchAndRun, notes.launchRunLabel);
+  const [gitExpanded, setGitExpanded] = useState(false);
+  return { place, browser, code, terminals, phoneTerminal, setPhoneTerminal, conversations, notes: placeNotes, gitExpanded, setGitExpanded };
+}
+type WorkspaceState = ReturnType<typeof useWorkspace>;
+// The git actions only an Agent offers (push, fixup, guided review); an agentless Workspace passes
+// just the reason review is unavailable.
+type WorkspaceGitActions = Omit<Parameters<typeof GitStatus>[0], 'branch' | 'summary' | 'prSummary' | 'pullRequest' | 'expanded' | 'onToggle' | 'onOpenFile' | 'onViewChanges'>;
+
+// The Place's git status control. Opening a changed file or the changes collapses it and shows them
+// in the Code panel.
+function WorkspaceGitStatus({ workspace, actions, onToggle }: { workspace: WorkspaceState; actions?: WorkspaceGitActions; onToggle?: () => void }) {
+  const { place, code, setGitExpanded } = workspace;
+  const onReview = actions?.onReview;
+  return <GitStatus {...actions} branch={place.branch} summary={place.gitStatus} prSummary={place.gitPrStatus} pullRequest={place.pullRequest} expanded={workspace.gitExpanded} onToggle={() => { onToggle?.(); setGitExpanded(value => !value); }} onOpenFile={(path, mode) => { setGitExpanded(false); code.openChanges(mode, path); }} onViewChanges={mode => { setGitExpanded(false); code.openChanges(mode); }} onReview={onReview === undefined ? undefined : scope => { setGitExpanded(false); onReview(scope); }} />;
+}
+
+// Render one Place's panels in the resizable split: the agent output first (or, with no Agent,
+// the card's idle placeholder in its column), then Terminals, note, browser and code. The git
+// status portals into the composer's status slot.
+function Workspace({ workspace, output, idle = false, git, onGitToggle, onAddToPrompt, statusSlot }: { workspace: WorkspaceState; output: ReactNode; idle?: boolean; git?: WorkspaceGitActions; onGitToggle?: () => void; onAddToPrompt: (text: string) => void; statusSlot: HTMLElement | null }) {
+  const { place, browser, code, notes } = workspace;
+  // Terminal selections save into this Place's notes or go to the card's composer.
+  const terminalSelectionActions: TerminalSelectionActions = {
+    canCreateNote: notes.canCreate,
+    createNote: text => notes.createWithText(text, assistantNoteTitle(text)),
+    addToPrompt: onAddToPrompt
+  };
+  const browserPane = browser.url === undefined || browser.homeUrl === undefined ? null : <ProjectBrowserPane url={browser.url} homeUrl={browser.homeUrl} proxied={browser.proxied} worktreeId={place.id} navigationRequest={browser.navigationRequest} onNavigate={browser.navigate} onClose={browser.close} />;
+  // With no Agent there is no output to split against, so the Code panel opens filling the Workspace.
+  const codePane = code.open ? <CodePane controller={code} prAvailable={place.gitPrStatus !== undefined} startExpanded={idle || undefined} /> : null;
+  return <section className="log-shell"><div className={`log${idle ? ' inactive-log' : ''}`}><ResizableLogSplit worktreeId={place.id} output={output} note={notes.pane} browser={browserPane} code={codePane} terminals={workspace.terminals.columns} terminalSelectionActions={terminalSelectionActions} onPhoneTerminal={workspace.setPhoneTerminal} /></div>{statusSlot && createPortal(<WorkspaceGitStatus workspace={workspace} actions={git} onToggle={onGitToggle} />, statusSlot)}</section>;
+}
+
+type LogProps = { id: string; embedded?: boolean; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined, overflow: boolean) => void; controls?: ReactNode; notes?: WorktreeNotes; onAddToPrompt?: (text: string) => void; onOpenUrl?: (url: string) => boolean; onOpenFile?: (path: string) => void; processingLabel?: string; processingDetail?: string };
+
+// Render one Agent's live output panel: the streamed pane, its loading and status overlays, the
+// selection toolbar, and the footer controls the owning card hands it. The Workspace around it
+// owns everything Place-scoped (notes, browser, code, Terminals, git).
+function Log({ id, embedded = false, onQuestion, onMetadata, controls, notes, onAddToPrompt, onOpenUrl, onOpenFile, processingLabel, processingDetail }: LogProps) {
   const canvas = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<XTerm | undefined>(undefined);
   // A Log mounts whenever its tab becomes active. Existing agents therefore
   // begin by attaching to their live output, not by starting a new process.
   const [status, setStatus] = useState('Connecting');
   const [hasRendered, setHasRendered] = useState(false);
-  const [latestAssistantMessage, setLatestAssistantMessage] = useState<string>();
-  const [latestAssistantMessageOverflows, setLatestAssistantMessageOverflows] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [historyAnswerId, setHistoryAnswerId] = useState<string>();
-  const [toolbarExpanded, setToolbarExpanded] = useState<'git'>();
   // Full-screen promote/restore for the agent output panel: transient, and mirrored on every other
   // panel (note/browser/terminal/code). The `.expanded` class the split's `:has()` rule promotes to
   // fill the workspace; the control is hidden on phones (styles.css), where it is a no-op.
   const [expanded, setExpanded] = useState(false);
-  const { anchorRef: historyAnchorRef, flyoutRef: historyFlyoutRef, style: historyFlyoutStyle } = useViewportFlyout(historyOpen);
-  const historyListRef = useRef<HTMLDivElement | null>(null);
-  const historyPanelOpenRef = useRef(false);
-  const historyPinnedToLatestRef = useRef(true);
-  const historyScrollIntentRef = useRef(false);
   const [inputActive, setInputActive] = useState(false);
   const [selectionActive, setSelectionActive] = useState(false);
   const [selectionToolbar, setSelectionToolbar] = useState<{ text: string; top: number }>();
   const copyOutputSelectionRef = useRef<(value: string) => Promise<void>>(copyText);
   const onMetadataRef = useRef(onMetadata);
   onMetadataRef.current = onMetadata;
-  const worktreeConversations = useWorktreeConversations(worktreeId, id, { onNavigateWorktree, onOperationFeedback });
-  const worktreeNotes = useWorktreeNotes(worktreeId, id, agentWorking, embedded ? undefined : latestAssistantMessage, embedded ? false : latestAssistantMessageOverflows, refreshHistory, history, schedulePrefill);
-  // share the agent's note and prompt actions with its terminal columns
-  const terminalSelectionActions: TerminalSelectionActions = {
-    canCreateNote: worktreeNotes.canCreate,
-    // persist selected shell output through the existing note editor
-    createNote: text => worktreeNotes.createWithText(text, assistantNoteTitle(text)),
-    // append selected output without queueing a prompt
-    addToPrompt: text => setPromptDraft(id, current => appendTextBlock(current, text))
-  };
-  // Open a response-file row or a pane file link in the Code panel's File view, fetched from the
-  // agent-keyed preview endpoint so the `/tmp` screenshot bridge keeps working. A no-op when the panel
-  // is unavailable (the embedded update-advisor pane threads no code controller).
-  const openFileInCode = useCallback((path: string) => code?.openFilePreview(path, `/api/agents/${encodeURIComponent(id)}/file-preview`), [code, id]);
-  const responseFiles = useLatestAssistantFiles(id, embedded ? undefined : latestAssistantMessage, openFileInCode);
-  const pushPendingKey = `prompt:${id}`;
-  const pushPending = usePendingOperation(pushPendingKey);
   // retain the file opener across terminal reconnections (pane file links call it)
-  const openOutputFileRef = useRef(openFileInCode);
-  openOutputFileRef.current = openFileInCode;
+  const openOutputFileRef = useRef(onOpenFile);
+  openOutputFileRef.current = onOpenFile;
   // retain browser routing across terminal connections
-  const openOutputUrlRef = useRef<(url: string) => boolean>(() => false);
-  // intercept matching links only while preview is open
-  openOutputUrlRef.current = url => browserUrl !== undefined && browserHomeUrl !== undefined && onBrowserOpen !== undefined && outputUrlMatchesHost(url, browserHomeUrl) && onBrowserOpen(url);
-  // deep-link one changed branch file into the Code panel, filtered to that file's diff
-  const openGitFile = (path: string, viewMode: CodePanelMode) => {
-    setToolbarExpanded(undefined);
-    code?.openChanges(viewMode, path);
-  };
-  // refresh open history while answers arrive
-  useEffect(() => {
-    // require visible history
-    if (!historyOpen) return;
-    void refreshHistory();
-    // catch completion persistence after the panel opens
-    const interval = window.setInterval(() => { void refreshHistory(); }, 1_000);
-    return () => window.clearInterval(interval);
-  }, [historyOpen, refreshHistory]);
-  // dismiss the history popup on Escape, like the command menu and note panes
-  useEffect(() => {
-    if (!historyOpen) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      setHistoryOpen(false);
-      setHistoryAnswerId(undefined);
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [historyOpen]);
-  useLayoutEffect(() => {
-    const list = historyListRef.current;
-    // reset closed history tracking
-    if (!historyOpen || list === null) {
-      historyPanelOpenRef.current = false;
-      historyScrollIntentRef.current = false;
-      return;
-    }
-    const opening = !historyPanelOpenRef.current;
-    historyPanelOpenRef.current = true;
-    // reset user intent for each opening
-    if (opening) historyScrollIntentRef.current = false;
-    let alignmentFrame: number | undefined;
-    // follow latest only when opening or already pinned
-    if (opening || historyPinnedToLatestRef.current) {
-      // align after both current and pending layout
-      const alignLatest = () => {
-        list.scrollTop = list.scrollHeight;
-        historyPinnedToLatestRef.current = true;
-      };
-      alignLatest();
-      alignmentFrame = window.requestAnimationFrame(() => {
-        // preserve immediate user scrolling
-        if (historyPinnedToLatestRef.current) alignLatest();
-      });
-    }
-    const openAnswer = list.querySelector<HTMLElement>('.prompt-history-entry.answer-open');
-    // keep the selected answer visible
-    if (openAnswer !== null) openAnswer.scrollIntoView({ block: 'nearest' });
-    const observer = new ResizeObserver(() => {
-      // follow layout changes only while pinned
-      if (historyPinnedToLatestRef.current) list.scrollTop = list.scrollHeight;
-    });
-    observer.observe(list);
-    return () => {
-      observer.disconnect();
-      // cancel pending alignment
-      if (alignmentFrame !== undefined) window.cancelAnimationFrame(alignmentFrame);
-    };
-  }, [historyOpen, history, historyAnswerId]);
-  // mark deliberate history navigation
-  const markHistoryScrollIntent = () => { historyScrollIntentRef.current = true; };
-  // track whether history should follow new prompts
-  const updateHistoryPin = () => {
-    const list = historyListRef.current;
-    // ignore closed or programmatic scrolling
-    if (list === null || !historyScrollIntentRef.current) return;
-    historyPinnedToLatestRef.current = Math.abs(list.scrollHeight - list.clientHeight - list.scrollTop) <= 1;
-  };
+  const openOutputUrlRef = useRef(onOpenUrl);
+  openOutputUrlRef.current = onOpenUrl;
   useEffect(() => {
     // The Agent's pane — and the embedded update advisor's pane — stream over `/ws/pane/:id`:
     // the streamed terminal component (xterm 6.0) is the only pane viewer. `embedded` drops the
-    // panel chrome (git, notes, response files, the global font shortcut) but shares this mount.
+    // panel chrome (server switcher, footer controls, the global font shortcut) but shares this mount.
     let disposed = false;
     let latestQuestion: InlineQuestion | undefined;
     let dismissedQuestionId = dismissedQuestionIds.get(id);
     setStatus('Connecting');
     setHasRendered(false);
-    setToolbarExpanded(undefined);
-    setLatestAssistantMessage(undefined);
-    setLatestAssistantMessageOverflows(false);
     setInputActive(false);
     setSelectionActive(false);
     setSelectionToolbar(undefined);
@@ -5306,15 +5253,12 @@ function Log({ id, agentWorking = false, worktreeId, branch, gitStatus, gitPrSta
       connect: createAgentPaneConnector(id, request),
       // Typed keys pass through the panel's sticky mobile modifiers before reaching the pane.
       transformInput: data => applyStickyModifiers(id, data),
-      onOpenUrl: url => openOutputUrlRef.current(url),
-      onOpenFile: path => { void openOutputFileRef.current(path); },
+      onOpenUrl: url => openOutputUrlRef.current?.(url) ?? false,
+      onOpenFile: path => { openOutputFileRef.current?.(path); },
       onQuestion: question => { latestQuestion = (question ?? undefined) as InlineQuestion | undefined; applyQuestion(); },
       onMetadata: metadata => {
         if (disposed) return;
-        const message = metadata.message.trim() || undefined;
-        setLatestAssistantMessage(message);
-        setLatestAssistantMessageOverflows(metadata.overflow);
-        onMetadataRef.current?.(message);
+        onMetadataRef.current?.(metadata.message.trim() || undefined, metadata.overflow);
       }
     });
     // size the handle around the current output controls
@@ -5380,16 +5324,105 @@ function Log({ id, agentWorking = false, worktreeId, branch, gitStatus, gitPrSta
   const loading = !hasRendered || processing;
   const visibleStatus = processing ? 'Starting' : status;
   const loadingLabel = processingLabel ?? (status === 'Live' ? 'Waiting for output' : status);
-  const selectionActions = selectionToolbar === undefined || (!embedded && worktreeNotes.expanded) ? null : createPortal(<div className={`output-selection-toolbar${embedded ? ' embedded' : ''}`} role="toolbar" aria-label="Output selection actions" style={{ top: selectionToolbar.top }} onPointerDown={event => event.preventDefault()}>
-    {!embedded && <button type="button" disabled={!worktreeNotes.canCreate || selectionToolbar.text.length > 30_000} onClick={() => void worktreeNotes.createWithText(selectionToolbar.text, assistantNoteTitle(selectionToolbar.text))}>Create note</button>}
-    {!embedded && worktreeNotes.active && <button type="button" disabled={!worktreeNotes.canAppendToActive(selectionToolbar.text)} onClick={() => worktreeNotes.appendToActive(selectionToolbar.text)}>Append to note</button>}
-    {!embedded && <button type="button" onClick={() => setPromptDraft(id, current => appendTextBlock(current, selectionToolbar.text))}>Add to prompt</button>}
+  const selectionActions = selectionToolbar === undefined || notes?.expanded === true ? null : createPortal(<div className={`output-selection-toolbar${embedded ? ' embedded' : ''}`} role="toolbar" aria-label="Output selection actions" style={{ top: selectionToolbar.top }} onPointerDown={event => event.preventDefault()}>
+    {notes !== undefined && <button type="button" disabled={!notes.canCreate || selectionToolbar.text.length > 30_000} onClick={() => void notes.createWithText(selectionToolbar.text, assistantNoteTitle(selectionToolbar.text))}>Create note</button>}
+    {notes?.active === true && <button type="button" disabled={!notes.canAppendToActive(selectionToolbar.text)} onClick={() => notes.appendToActive(selectionToolbar.text)}>Append to note</button>}
+    {onAddToPrompt !== undefined && <button type="button" onClick={() => onAddToPrompt(selectionToolbar.text)}>Add to prompt</button>}
     <button type="button" onClick={() => void copyOutputSelectionRef.current(selectionToolbar.text)}>Copy</button>
   </div>, document.body);
+  // Esc restores the promoted agent panel, but never steals the terminal's own Escape (a shell app
+  // needs it), so it only fires when focus is outside the live-log canvas.
+  const restoreAgentOnEscape = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Escape' || !expanded || (event.target as HTMLElement).closest('.log-canvas') !== null) return;
+    event.preventDefault();
+    setExpanded(false);
+  };
+  return <><div className={`log-output${expanded ? ' expanded' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`} onKeyDown={restoreAgentOnEscape}>{!embedded && <ServerSwitcher className="output-server-switcher" />}<div className="log-canvas" ref={canvas} aria-label="Live log" />{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!embedded && <div className="log-controls-bottom"><div className="page-controls">{controls}<button type="button" className="log-control page-arrow log-expand" aria-label={expanded ? 'Restore agent output' : 'Expand agent output'} aria-pressed={expanded} title={expanded ? 'Restore' : 'Fullscreen'} onClick={() => setExpanded(value => !value)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button></div></div>}</div></div>{selectionActions}</>;
+}
+
+// The composer's prompt-history button and flyout for one Agent. The open state is the caller's,
+// so opening history can collapse the Workspace's git status and toggling git can close history.
+function PromptHistoryControl({ agentId, history, refreshHistory, notes, open, onOpenChange }: { agentId: string; history: PromptHistoryEntry[]; refreshHistory: () => Promise<void>; notes: WorktreeNotes; open: boolean; onOpenChange: (open: boolean) => void }) {
+  const [historyAnswerId, setHistoryAnswerId] = useState<string>();
+  const { anchorRef: historyAnchorRef, flyoutRef: historyFlyoutRef, style: historyFlyoutStyle } = useViewportFlyout(open);
+  const historyListRef = useRef<HTMLDivElement | null>(null);
+  const historyPanelOpenRef = useRef(false);
+  const historyPinnedToLatestRef = useRef(true);
+  const historyScrollIntentRef = useRef(false);
+  // refresh open history while answers arrive
+  useEffect(() => {
+    // require visible history
+    if (!open) return;
+    void refreshHistory();
+    // catch completion persistence after the panel opens
+    const interval = window.setInterval(() => { void refreshHistory(); }, 1_000);
+    return () => window.clearInterval(interval);
+  }, [open, refreshHistory]);
+  // dismiss the history popup on Escape, like the command menu and note panes
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      onOpenChange(false);
+      setHistoryAnswerId(undefined);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, onOpenChange]);
+  useLayoutEffect(() => {
+    const list = historyListRef.current;
+    // reset closed history tracking
+    if (!open || list === null) {
+      historyPanelOpenRef.current = false;
+      historyScrollIntentRef.current = false;
+      return;
+    }
+    const opening = !historyPanelOpenRef.current;
+    historyPanelOpenRef.current = true;
+    // reset user intent for each opening
+    if (opening) historyScrollIntentRef.current = false;
+    let alignmentFrame: number | undefined;
+    // follow latest only when opening or already pinned
+    if (opening || historyPinnedToLatestRef.current) {
+      // align after both current and pending layout
+      const alignLatest = () => {
+        list.scrollTop = list.scrollHeight;
+        historyPinnedToLatestRef.current = true;
+      };
+      alignLatest();
+      alignmentFrame = window.requestAnimationFrame(() => {
+        // preserve immediate user scrolling
+        if (historyPinnedToLatestRef.current) alignLatest();
+      });
+    }
+    const openAnswer = list.querySelector<HTMLElement>('.prompt-history-entry.answer-open');
+    // keep the selected answer visible
+    if (openAnswer !== null) openAnswer.scrollIntoView({ block: 'nearest' });
+    const observer = new ResizeObserver(() => {
+      // follow layout changes only while pinned
+      if (historyPinnedToLatestRef.current) list.scrollTop = list.scrollHeight;
+    });
+    observer.observe(list);
+    return () => {
+      observer.disconnect();
+      // cancel pending alignment
+      if (alignmentFrame !== undefined) window.cancelAnimationFrame(alignmentFrame);
+    };
+  }, [open, history, historyAnswerId]);
+  // mark deliberate history navigation
+  const markHistoryScrollIntent = () => { historyScrollIntentRef.current = true; };
+  // track whether history should follow new prompts
+  const updateHistoryPin = () => {
+    const list = historyListRef.current;
+    // ignore closed or programmatic scrolling
+    if (list === null || !historyScrollIntentRef.current) return;
+    historyPinnedToLatestRef.current = Math.abs(list.scrollHeight - list.clientHeight - list.scrollTop) <= 1;
+  };
   // restore a previous prompt
   const useHistoryEntry = (entry: PromptHistoryEntry) => {
-    setPromptDraft(id, entry.text);
-    setHistoryOpen(false);
+    setPromptDraft(agentId, entry.text);
+    onOpenChange(false);
     setHistoryAnswerId(undefined);
     window.requestAnimationFrame(() => {
       const input = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Prompt"]');
@@ -5403,72 +5436,18 @@ function Log({ id, agentWorking = false, worktreeId, branch, gitStatus, gitPrSta
   const saveHistoryAnswer = (entry: PromptHistoryEntry) => {
     // require a bounded final answer
     if (entry.answer === undefined || entry.answer.length > 30_000) return;
-    setHistoryOpen(false);
+    onOpenChange(false);
     setHistoryAnswerId(undefined);
-    void worktreeNotes.createWithText(entry.answer, assistantNoteTitle(entry.answer));
+    void notes.createWithText(entry.answer, assistantNoteTitle(entry.answer));
   };
-  const historyPanel = historyOpen && <FlyoutPortal onDismiss={() => { setHistoryOpen(false); setHistoryAnswerId(undefined); }}><section className="prompt-history-menu more-menu flyout-menu" ref={historyFlyoutRef} style={historyFlyoutStyle} aria-label="Prompt history"><header><strong>Prompt history</strong><span>{history.length}</span></header><div className="prompt-history-list" ref={historyListRef} onScroll={updateHistoryPin} onWheel={markHistoryScrollIntent} onTouchStart={markHistoryScrollIntent} onPointerDown={markHistoryScrollIntent} onKeyDown={markHistoryScrollIntent}>{history.length === 0 ? <p>No prompts have been queued for this worktree yet.</p> : [...history].reverse().map(entry => <div className={`prompt-history-entry${historyAnswerId === entry.id ? ' answer-open' : ''}`} key={entry.id}><button className="prompt-history-prompt" type="button" title={entry.text} onClick={() => useHistoryEntry(entry)}><span>{entry.text}</span><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time></button><button className="prompt-history-answer-toggle" type="button" disabled={entry.answer === undefined} title={entry.answer === undefined ? 'Answer not recorded yet' : 'View final answer'} aria-label={`View answer for ${entry.text}`} aria-expanded={historyAnswerId === entry.id} onClick={() => toggleHistoryAnswer(entry)}>View answer</button>{historyAnswerId === entry.id && entry.answer !== undefined && <div className="prompt-history-answer" role="region" aria-label={`Answer for ${entry.text}`}><button className="prompt-history-save-note" type="button" disabled={!worktreeNotes.canCreate || entry.answer.length > 30_000} onClick={() => saveHistoryAnswer(entry)}>Save as note</button><div className="prompt-history-answer-text">{entry.answer}</div></div>}</div>)}</div></section></FlyoutPortal>;
+  const historyPanel = open && <FlyoutPortal onDismiss={() => { onOpenChange(false); setHistoryAnswerId(undefined); }}><section className="prompt-history-menu more-menu flyout-menu" ref={historyFlyoutRef} style={historyFlyoutStyle} aria-label="Prompt history"><header><strong>Prompt history</strong><span>{history.length}</span></header><div className="prompt-history-list" ref={historyListRef} onScroll={updateHistoryPin} onWheel={markHistoryScrollIntent} onTouchStart={markHistoryScrollIntent} onPointerDown={markHistoryScrollIntent} onKeyDown={markHistoryScrollIntent}>{history.length === 0 ? <p>No prompts have been queued for this worktree yet.</p> : [...history].reverse().map(entry => <div className={`prompt-history-entry${historyAnswerId === entry.id ? ' answer-open' : ''}`} key={entry.id}><button className="prompt-history-prompt" type="button" title={entry.text} onClick={() => useHistoryEntry(entry)}><span>{entry.text}</span><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time></button><button className="prompt-history-answer-toggle" type="button" disabled={entry.answer === undefined} title={entry.answer === undefined ? 'Answer not recorded yet' : 'View final answer'} aria-label={`View answer for ${entry.text}`} aria-expanded={historyAnswerId === entry.id} onClick={() => toggleHistoryAnswer(entry)}>View answer</button>{historyAnswerId === entry.id && entry.answer !== undefined && <div className="prompt-history-answer" role="region" aria-label={`Answer for ${entry.text}`}><button className="prompt-history-save-note" type="button" disabled={!notes.canCreate || entry.answer.length > 30_000} onClick={() => saveHistoryAnswer(entry)}>Save as note</button><div className="prompt-history-answer-text">{entry.answer}</div></div>}</div>)}</div></section></FlyoutPortal>;
   // open or close prompt history
   const toggleHistory = () => {
-    const open = !historyOpen;
-    setHistoryOpen(open);
-    // close the toolbar before opening history
-    if (open) setToolbarExpanded(undefined);
+    onOpenChange(!open);
     // discard closed answer details
-    else setHistoryAnswerId(undefined);
+    if (open) setHistoryAnswerId(undefined);
   };
-  const historyToggle = <><span className="prompt-history-anchor" ref={historyAnchorRef}><button className={`prompt-history-toggle${historyOpen ? ' active' : ''}`} type="button" aria-label={`Prompt history (${history.length})`} title="Prompt history" aria-expanded={historyOpen} onClick={event => { event.stopPropagation(); toggleHistory(); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5M12 7v5l3 2" /></svg></button></span>{historyPanel}</>;
-  // queue the configured commit and push prompt
-  const queuePush = async () => {
-    // prevent duplicate prompt submissions
-    if (pushPending || !beginPendingOperation(pushPendingKey)) return false;
-    try {
-      const response = await request(`/api/agents/${encodeURIComponent(id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: pushAction.prompt, attachments: [] }) });
-      // keep the branch flyout open after rejection
-      if (!response.ok) return false;
-      await refreshHistory();
-      return true;
-    } catch {
-      // keep the branch flyout open after connection failure
-      return false;
-    } finally {
-      setPendingOperation(pushPendingKey, false);
-    }
-  };
-  // serialize fixup with other prompt submissions across popup remounts
-  const queueFixup = async () => {
-    // retain the shared prompt lock outside the popup lifecycle
-    if (pushPending || !beginPendingOperation(pushPendingKey)) return false;
-    try {
-      const response = await request(`/api/agents/${encodeURIComponent(id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) });
-      // explain rejected submissions before allowing a retry
-      if (!response.ok) {
-        onOperationFeedback?.({ tone: 'error', message: 'Unable to queue $fixup', detail: await launchError(response), worktreeId });
-        return false;
-      }
-      await refreshHistory();
-      return true;
-    } catch {
-      // preserve uncertainty when the connection drops before acceptance
-      onOperationFeedback?.({ tone: 'error', message: 'Could not confirm $fixup was queued', detail: 'The console could not be reached. Check prompt history before trying again.', worktreeId });
-      return false;
-    } finally {
-      setPendingOperation(pushPendingKey, false);
-    }
-  };
-  const gitSection = embedded ? null : <GitStatus id={id} worktreeId={worktreeId} branch={branch} summary={gitStatus} prSummary={gitPrStatus} pullRequest={pullRequest} onFixup={queueFixup} expanded={toolbarExpanded === 'git'} onToggle={() => { setHistoryOpen(false); setToolbarExpanded(current => current === 'git' ? undefined : 'git'); }} onOpenFile={openGitFile} onViewChanges={code === undefined ? undefined : mode => { setToolbarExpanded(undefined); code.openChanges(mode); }} onReview={scope => { setToolbarExpanded(undefined); onReview?.(scope); }} reviewOpen={reviewOpen} reviewUnavailable={reviewUnavailable} pushAction={pushAction} pushPending={pushPending} onPush={queuePush} onSelectTarget={onSelectTarget} onOperationFeedback={onOperationFeedback} />;
-  // distinguish retained output from live frames
-  // Esc restores the promoted agent panel, but never steals the terminal's own Escape (a shell app
-  // needs it), so it only fires when focus is outside the live-log canvas.
-  const restoreAgentOnEscape = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'Escape' || !expanded || (event.target as HTMLElement).closest('.log-canvas') !== null) return;
-    event.preventDefault();
-    setExpanded(false);
-  };
-  const output = <div className={`log-output${expanded ? ' expanded' : ''}`} onKeyDown={restoreAgentOnEscape}>{!embedded && <ServerSwitcher className="output-server-switcher" />}<div className="log-canvas" ref={canvas} aria-label="Live log" />{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!embedded && <div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{responseFiles.control}{worktreeConversations.control}{worktreeNotes.control}<button type="button" className="log-control page-arrow log-expand" aria-label={expanded ? 'Restore agent output' : 'Expand agent output'} aria-pressed={expanded} title={expanded ? 'Restore' : 'Fullscreen'} onClick={() => setExpanded(value => !value)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6' : 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6'} /></svg></button></div></div>}</div></div>;
-  const browserPane = browserUrl === undefined || browserHomeUrl === undefined || onBrowserNavigate === undefined || onBrowserClose === undefined ? null : <ProjectBrowserPane url={browserUrl} homeUrl={browserHomeUrl} proxied={browserProxied} worktreeId={worktreeId} navigationRequest={browserNavigationRequest} onNavigate={onBrowserNavigate} onClose={onBrowserClose} />;
-  const codePane = embedded || code === undefined || !code.open ? null : <CodePane controller={code} prAvailable={gitPrStatus !== undefined} />;
-  return <section className={`log-shell${embedded ? ' embedded-log-shell' : ''}`}><div className={`log${embedded ? ' embedded-log' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><ResizableLogSplit worktreeId={worktreeId} output={output} note={embedded ? undefined : worktreeNotes.pane} browser={browserPane} code={codePane} terminals={embedded ? undefined : terminals} terminalSelectionActions={terminalSelectionActions} onPhoneTerminal={onPhoneTerminal} /></div>{selectionActions}{!embedded && statusSlot && createPortal(gitSection, statusSlot)}{!embedded && historySlot && createPortal(historyToggle, historySlot)}</section>;
+  return <><span className="prompt-history-anchor" ref={historyAnchorRef}><button className={`prompt-history-toggle${open ? ' active' : ''}`} type="button" aria-label={`Prompt history (${history.length})`} title="Prompt history" aria-expanded={open} onClick={event => { event.stopPropagation(); toggleHistory(); }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5M12 7v5l3 2" /></svg></button></span>{historyPanel}</>;
 }
 
 type MoreMenuIconName = 'actions'|'attachment'|'new-task'|'push'|'rename';
@@ -5789,18 +5768,34 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
   const [clearing, setClearing] = useState(false);
   const [deactivating, setDeactivating] = useState(false);
   const [question, setQuestion] = useState<ChoiceQuestion>();
-  // git status and prompt history live in Log with their note and preview hooks, then portal
-  // into Prompt's shortcut rail and bottom action row
+  // git status and prompt history portal into Prompt's shortcut rail and bottom action row
   const [statusSlot, setStatusSlot] = useState<HTMLElement | null>(null);
   const [historySlot, setHistorySlot] = useState<HTMLElement | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  // the latest response the output reported, for the note and response-file shortcuts
+  const [latestAssistantMessage, setLatestAssistantMessage] = useState<string>();
+  const [latestAssistantMessageOverflows, setLatestAssistantMessageOverflows] = useState(false);
   const promptHistory = usePromptHistory(agent.id);
-  const projectBrowser = useProjectBrowser(agent.projectUrl, agent.worktreeId, agent.projectProxied);
-  const projectCode = useCodePanel(agent.worktreeId, request, comparisonChangeSignal(agent.gitStatus, agent.gitPrStatus, agent.attention));
-  // Terminal panels for this Worktree: a column per open pane and the composer's picker.
-  const { columns: terminalColumns, control: terminalControl } = useTerminalViews(agent.worktreeId);
-  // The Terminal the phone shows as the single panel (Log reports it from the split), so the
-  // footer swaps the composer for that pane's helper keys (spec, the phone footer).
-  const [phoneTerminal, setPhoneTerminal] = useState<string>();
+  const workspace = useWorkspace({ id: agent.worktreeId, projectUrl: agent.projectUrl, projectProxied: agent.projectProxied, branch: agent.branch, gitStatus: agent.gitStatus, gitPrStatus: agent.gitPrStatus, pullRequest: agent.pullRequest, attention: agent.attention }, { agentId: agent.id, noteOptions: { agentWorking: active, latestAssistantMessage, latestAssistantMessageOverflows, onPromptHistoryChanged: promptHistory.refresh, promptHistory: promptHistory.history, schedulePrefill }, onNavigateWorktree, onOperationFeedback });
+  const { browser: projectBrowser, code: projectCode, setGitExpanded } = workspace;
+  // keep the latest response the output reports
+  const reportMetadata = useCallback((message: string | undefined, overflow: boolean) => {
+    setLatestAssistantMessage(message);
+    setLatestAssistantMessageOverflows(overflow);
+  }, []);
+  // opening history collapses the git status; toggling git closes history
+  const changeHistoryOpen = useCallback((open: boolean) => {
+    setHistoryOpen(open);
+    if (open) setGitExpanded(false);
+  }, [setGitExpanded]);
+  // Open a response-file row or a pane file link in the Code panel's File view, fetched from the
+  // agent-keyed preview endpoint so the `/tmp` screenshot bridge keeps working.
+  const openFileInCode = useCallback((path: string) => { void projectCode.openFilePreview(path, `/api/agents/${encodeURIComponent(agent.id)}/file-preview`); }, [projectCode, agent.id]);
+  const responseFiles = useLatestAssistantFiles(agent.id, latestAssistantMessage, openFileInCode);
+  // route output links to the project browser only while its preview is open and the host matches
+  const openOutputUrl = (url: string) => projectBrowser.url !== undefined && projectBrowser.homeUrl !== undefined && outputUrlMatchesHost(url, projectBrowser.homeUrl) && projectBrowser.openUrl(url);
+  const pushPendingKey = `prompt:${agent.id}`;
+  const pushPending = usePendingOperation(pushPendingKey);
   const startingNewTask = usePendingOperation(newTaskOperationKey(agent.worktreeId ?? agent.id));
   // cancel active agent work
   const cancel = async () => { if (cancelling) return; setCancelling(true); try { await request(`/api/agents/${encodeURIComponent(agent.id)}/cancel`, { method: 'POST' }); } finally { setCancelling(false); } };
@@ -5922,7 +5917,53 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
   };
   // reserve Remote Agents repository updates for the reviewed host update flow
   const upstreamRebase = agent.projectId === 'remoteagents' ? null : <UpstreamRebaseBanner summary={agent.gitUpstream} onRebase={queueRebase} />;
-  return <article className="agent-view"><Log id={agent.id} agentWorking={active} worktreeId={agent.worktreeId} branch={agent.branch} gitStatus={agent.gitStatus} gitPrStatus={agent.gitPrStatus} pullRequest={agent.pullRequest} history={promptHistory.history} refreshHistory={promptHistory.refresh} onQuestion={setQuestion} cleanupControl={cleanupControl} browserUrl={projectBrowser.url} browserHomeUrl={projectBrowser.homeUrl} browserProxied={projectBrowser.proxied} browserNavigationRequest={projectBrowser.navigationRequest} onBrowserNavigate={projectBrowser.navigate} onBrowserOpen={projectBrowser.openUrl} onBrowserClose={projectBrowser.close} code={projectCode} onReview={agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen()} reviewOpen={review !== undefined} reviewUnavailable={review === undefined ? reviewUnavailable : undefined} pushAction={agent.push} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} schedulePrefill={schedulePrefill} statusSlot={statusSlot} historySlot={historySlot} onSelectTarget={onSelectTarget} onNavigateWorktree={onNavigateWorktree} onOperationFeedback={onOperationFeedback} terminals={terminalColumns} onPhoneTerminal={setPhoneTerminal} />{tabBar}{upstreamRebase}<Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onRestartAs={!active && agent.worktreeId !== undefined ? { label: displayLabel, resolution: agent.launch, onLaunch: choice => void restart(choice) } : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} stack={agent.stack} review={review} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} statusSlotRef={setStatusSlot} historySlotRef={setHistorySlot} terminalControl={terminalControl} phoneTerminal={phoneTerminal} /></article>;
+  // the configured commit-and-push prompt, or the default one
+  const pushAction = agent.push ?? defaultPushAction;
+  // queue the configured commit and push prompt
+  const queuePush = async () => {
+    // prevent duplicate prompt submissions
+    if (pushPending || !beginPendingOperation(pushPendingKey)) return false;
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: pushAction.prompt, attachments: [] }) });
+      // keep the branch flyout open after rejection
+      if (!response.ok) return false;
+      await promptHistory.refresh();
+      return true;
+    } catch {
+      // keep the branch flyout open after connection failure
+      return false;
+    } finally {
+      setPendingOperation(pushPendingKey, false);
+    }
+  };
+  // serialize fixup with other prompt submissions across popup remounts
+  const queueFixup = async () => {
+    // retain the shared prompt lock outside the popup lifecycle
+    if (pushPending || !beginPendingOperation(pushPendingKey)) return false;
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '$fixup', attachments: [] }) });
+      // explain rejected submissions before allowing a retry
+      if (!response.ok) {
+        onOperationFeedback({ tone: 'error', message: 'Unable to queue $fixup', detail: await launchError(response), worktreeId: agent.worktreeId });
+        return false;
+      }
+      await promptHistory.refresh();
+      return true;
+    } catch {
+      // preserve uncertainty when the connection drops before acceptance
+      onOperationFeedback({ tone: 'error', message: 'Could not confirm $fixup was queued', detail: 'The console could not be reached. Check prompt history before trying again.', worktreeId: agent.worktreeId });
+      return false;
+    } finally {
+      setPendingOperation(pushPendingKey, false);
+    }
+  };
+  // the Agent's push, fixup and guided-review actions on the git status
+  const gitActions: WorkspaceGitActions = { id: agent.id, worktreeId: agent.worktreeId, onFixup: queueFixup, onReview: agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen(), reviewOpen: review !== undefined, reviewUnavailable: review === undefined ? reviewUnavailable : undefined, pushAction, pushPending, onPush: queuePush, onSelectTarget, onOperationFeedback };
+  // the Agent's live output fills the Workspace's first column
+  // selected output and Terminal text append to the Agent's draft without queueing it
+  const addToPrompt = (text: string) => setPromptDraft(agent.id, current => appendTextBlock(current, text));
+  const output = <Log id={agent.id} onQuestion={setQuestion} onMetadata={reportMetadata} onAddToPrompt={addToPrompt} controls={<>{cleanupControl}{responseFiles.control}{workspace.conversations.control}{workspace.notes.control}</>} notes={workspace.notes} onOpenUrl={openOutputUrl} onOpenFile={openFileInCode} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />;
+  return <article className="agent-view"><Workspace workspace={workspace} output={output} git={gitActions} onGitToggle={() => setHistoryOpen(false)} onAddToPrompt={addToPrompt} statusSlot={statusSlot} />{historySlot && createPortal(<PromptHistoryControl agentId={agent.id} history={promptHistory.history} refreshHistory={promptHistory.refresh} notes={workspace.notes} open={historyOpen} onOpenChange={changeHistoryOpen} />, historySlot)}{tabBar}{upstreamRebase}<Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onRestartAs={!active && agent.worktreeId !== undefined ? { label: displayLabel, resolution: agent.launch, onLaunch: choice => void restart(choice) } : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} stack={agent.stack} review={review} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} statusSlotRef={setStatusSlot} historySlotRef={setHistorySlot} terminalControl={workspace.terminals.control} phoneTerminal={workspace.phoneTerminal} /></article>;
 }
 
 function launchError(response: Response): Promise<string> {
@@ -5967,33 +6008,11 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperatio
   // prefer the explicitly selected pending agent
   const launchKind = pendingWorktreeLaunches.get(worktree.id)?.kind ?? worktree.launch?.kind;
   const presentation = inactiveWorktreePresentation(worktree.label, launchKind, { startingNewTask, restarting, turningOff, launching });
-  const worktreeConversations = useWorktreeConversations(worktree.id, undefined, { onNavigateWorktree, onOperationFeedback });
-  const worktreeNotes = useWorktreeNotes(worktree.id, undefined, false, undefined, false, undefined, undefined, schedulePrefill, (noteId: string) => launchAndRun(noteId), `${launchKind === undefined ? 'an agent' : agentKindLabel[launchKind]} on ${worktree.label}`);
-  // keep terminal selection actions available before an agent is launched
-  const terminalSelectionActions: TerminalSelectionActions = {
-    canCreateNote: worktreeNotes.canCreate,
-    // persist selected shell output in this worktree's notes
-    createNote: text => worktreeNotes.createWithText(text, assistantNoteTitle(text)),
-    // open the existing inactive-worktree composer with the selected output
-    addToPrompt: text => {
-      setPromptDraft(draftId, current => appendTextBlock(current, text));
-      setPromptOpened(true);
-    }
-  };
-  const projectBrowser = useProjectBrowser(worktree.projectUrl, worktree.id, worktree.projectProxied);
-  const projectCode = useCodePanel(worktree.id, request, comparisonChangeSignal(worktree.gitStatus, worktree.gitPrStatus));
-  // Terminals work even with no live Agent: an agentless Worktree tab can open a shell.
-  const { columns: terminalColumns, control: terminalControl } = useTerminalViews(worktree.id);
-  // The Terminal the phone shows as the single panel, so its helper keys replace the composer.
-  const [phoneTerminal, setPhoneTerminal] = useState<string>();
-  const [gitExpanded, setGitExpanded] = useState(false);
+  // The Workspace works with no live Agent: Terminals, notes, browser and code all open here.
+  const workspace = useWorkspace(worktree, { noteOptions: { schedulePrefill, onLaunchAndRun: noteId => launchAndRun(noteId), launchRunLabel: `${launchKind === undefined ? 'an agent' : agentKindLabel[launchKind]} on ${worktree.label}` }, onNavigateWorktree, onOperationFeedback });
+  const { browser: projectBrowser } = workspace;
   const [statusSlot, setStatusSlot] = useState<HTMLElement | null>(null);
   const [error, setError] = useState('');
-  // deep-link one inactive-worktree file into the Code panel, filtered to that file's diff
-  const openGitFile = (path: string, viewMode: CodePanelMode) => {
-    setGitExpanded(false);
-    projectCode.openChanges(viewMode, path);
-  };
   useEffect(() => {
     if (!error) return;
     const timer = window.setTimeout(() => setError(''), 5_000);
@@ -6089,22 +6108,23 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperatio
   const powerMenu = onRemove !== undefined
     ? <AgentPowerMenu mode="idle" pending={processing} onRemove={onRemove} onRename={onRename} {...(removeDisabledReason === undefined ? {} : { removeDisabledReason })} />
     : null;
-  const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className="log-loading inactive" role={processing ? 'status' : undefined} aria-label={presentation.ariaLabel}>{processing ? <span className="spinner" /> : null}<strong>{presentation.heading}</strong><span>{presentation.detail}</span></div><span className={`status log-status ${processing ? 'connecting' : 'inactive'}`}>{presentation.status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{worktreeConversations.control}{worktreeNotes.control}</div></div></div></div>;
-  const browserPane = projectBrowser.url === undefined || projectBrowser.homeUrl === undefined ? null : <ProjectBrowserPane url={projectBrowser.url} homeUrl={projectBrowser.homeUrl} proxied={projectBrowser.proxied} worktreeId={worktree.id} onNavigate={projectBrowser.navigate} onClose={projectBrowser.close} />;
-  // A Worktree with no running Agent has no agent output to split against, so its changes open filling
-  // the workspace — the Code panel is the full-screen host here.
-  const codePane = projectCode.open ? <CodePane controller={projectCode} prAvailable={worktree.gitPrStatus !== undefined} startExpanded /> : null;
-  // keep worktree file inspection available in either composer layout
-  const gitStatus = <GitStatus branch={worktree.branch} summary={worktree.gitStatus} prSummary={worktree.gitPrStatus} pullRequest={worktree.pullRequest} expanded={gitExpanded} onToggle={() => { /* toggle file inspection */ setGitExpanded(value => !value); }} onOpenFile={openGitFile} onViewChanges={mode => { setGitExpanded(false); projectCode.openChanges(mode); }} reviewUnavailable="Launch agent to review" />;
+  const output = <div className="log-output"><ServerSwitcher className="output-server-switcher" /><div className="log-loading inactive" role={processing ? 'status' : undefined} aria-label={presentation.ariaLabel}>{processing ? <span className="spinner" /> : null}<strong>{presentation.heading}</strong><span>{presentation.detail}</span></div><span className={`status log-status ${processing ? 'connecting' : 'inactive'}`}>{presentation.status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{workspace.conversations.control}{workspace.notes.control}</div></div></div></div>;
+  // guided review needs an Agent
+  const gitActions: WorkspaceGitActions = { reviewUnavailable: 'Launch agent to review' };
   // preserve the idle recovery actions alongside the prepared draft
   const launchControl = processing ? undefined
     : <LaunchSplitButton label={worktree.label} resolution={worktree.launch} disabled={!worktree.available} pending={false} onLaunch={choice => { /* retry launch */ void start(choice); }} />;
   // reuse the complete composer while deferring agent-only operations
   const prompt = launching || promptOpened ? <>
     {error && <p className="launch-error" role="alert">{error}</p>}
-    <Prompt id={draftId} ready={false} history={[]} onHistoryChanged={async () => { /* no agent history yet */ }} canCancel={false} cancelling={false} deleting={false} restarting={restarting} clearing={false} deactivating={turningOff} onCancel={() => { /* startup cannot be cancelled here */ }} onPromptFocus={() => { /* draft belongs to the inactive worktree */ }} onOperationFeedback={onOperationFeedback} worktreeId={worktree.id} projectUrl={worktree.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} stack={worktree.stack} lifecycleControl={powerMenu ?? undefined} launchControl={launchControl} statusSlotRef={setStatusSlot} terminalControl={terminalControl} phoneTerminal={phoneTerminal} />
-  </> : <section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions">{powerMenu}{gitStatus}<span className="prompt-actions-spacer" aria-hidden="true" />{terminalControl}<ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} /><LaunchSplitButton label={worktree.label} resolution={worktree.launch} disabled={!worktree.available} pending={processing} onLaunch={choice => void start(choice)} /></div></section>;
-  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><ResizableLogSplit worktreeId={worktree.id} output={output} note={worktreeNotes.pane} browser={browserPane} code={codePane} terminals={terminalColumns} terminalSelectionActions={terminalSelectionActions} onPhoneTerminal={setPhoneTerminal} /></div>{statusSlot && createPortal(gitStatus, statusSlot)}</section>{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} />{prompt}</article>;
+    <Prompt id={draftId} ready={false} history={[]} onHistoryChanged={async () => { /* no agent history yet */ }} canCancel={false} cancelling={false} deleting={false} restarting={restarting} clearing={false} deactivating={turningOff} onCancel={() => { /* startup cannot be cancelled here */ }} onPromptFocus={() => { /* draft belongs to the inactive worktree */ }} onOperationFeedback={onOperationFeedback} worktreeId={worktree.id} projectUrl={worktree.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} stack={worktree.stack} lifecycleControl={powerMenu ?? undefined} launchControl={launchControl} statusSlotRef={setStatusSlot} terminalControl={workspace.terminals.control} phoneTerminal={workspace.phoneTerminal} />
+  </> : <section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions">{powerMenu}<WorkspaceGitStatus workspace={workspace} actions={gitActions} /><span className="prompt-actions-spacer" aria-hidden="true" />{workspace.terminals.control}<ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} /><LaunchSplitButton label={worktree.label} resolution={worktree.launch} disabled={!worktree.available} pending={processing} onLaunch={choice => void start(choice)} /></div></section>;
+  // a Terminal selection added to the prompt opens the draft composer
+  const addToPrompt = (text: string) => {
+    setPromptDraft(draftId, current => appendTextBlock(current, text));
+    setPromptOpened(true);
+  };
+  return <article className="agent-view"><Workspace workspace={workspace} output={output} idle git={gitActions} onAddToPrompt={addToPrompt} statusSlot={statusSlot} />{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} />{prompt}</article>;
 }
 
 // render a scratch or directory session before discovery publishes its agent identity

@@ -226,12 +226,12 @@ test('opens an advisor for flagged update paths before enabling Update', async (
   expect(selectedRowBounds).not.toBeNull();
   await page.mouse.dblclick(selectedRowBounds!.x + selectedRowBounds!.width * 0.2, selectedRowBounds!.y + selectedRowBounds!.height / 2);
   const selectionToolbar = page.getByRole('toolbar', { name: 'Output selection actions' });
-  await expect(output.locator('.log')).toHaveClass(/selection-active/u);
+  await expect(output.locator('.log-output')).toHaveClass(/selection-active/u);
   await expect(selectionToolbar.getByRole('button', { name: 'Copy' })).toBeVisible();
   await expect(selectionToolbar.getByRole('button', { name: 'Add to prompt' })).toHaveCount(0);
   await output.getByLabel('Live log').click({ position: { x: 180, y: 80 } });
   await expect(selectionToolbar).toHaveCount(0);
-  await expect(output.locator('.log')).toHaveClass(/input-active/u);
+  await expect(output.locator('.log-output')).toHaveClass(/input-active/u);
   await expect(output.getByLabel('Terminal keys')).toBeVisible();
   const inputBounds = await output.evaluate(element => {
     const bounds = element.getBoundingClientRect();
@@ -253,7 +253,7 @@ test('opens an advisor for flagged update paths before enabling Update', async (
   await dialog.getByRole('checkbox').check();
   await expect(update).toBeEnabled();
   await dialog.getByLabel('Approval or feedback').fill('Double-check the rollback steps.');
-  await expect(output.locator('.log')).not.toHaveClass(/input-active/u);
+  await expect(output.locator('.log-output')).not.toHaveClass(/input-active/u);
   await expect(output.getByLabel('Terminal keys')).toBeHidden();
   await dialog.getByRole('button', { name: 'Send' }).click();
   await expect(update).toBeDisabled();

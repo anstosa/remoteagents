@@ -629,7 +629,7 @@ test('terminal fullscreen clears an agent selection and releases queued output',
   const output = page.locator('.log-output');
   await selectTerminalText(page, output, 'Agent selection before fullscreen');
   const toolbar = page.getByRole('toolbar', { name: 'Output selection actions' });
-  await expect(page.locator('.log')).toHaveClass(/\bselection-active\b/u);
+  await expect(page.locator('.log-output')).toHaveClass(/\bselection-active\b/u);
   await expect(toolbar).toBeVisible();
   const acknowledged = await paneAckTotal(page, 'agent-1');
   await pushBytes(page, 'agent-1', '\r\x1b[2Kagent output released behind fullscreen');
@@ -640,7 +640,7 @@ test('terminal fullscreen clears an agent selection and releases queued output',
   await terminal.getByRole('button', { name: 'Enter terminal fullscreen build' }).click();
   await expect(output).toBeHidden();
   await expect(toolbar).toBeHidden();
-  await expect(page.locator('.log')).not.toHaveClass(/\bselection-active\b/u);
+  await expect(page.locator('.log-output')).not.toHaveClass(/\bselection-active\b/u);
   await expect(output.locator('.xterm-selection > div')).toHaveCount(0);
   await expect.poll(() => paneAckTotal(page, 'agent-1')).toBeGreaterThan(acknowledged);
 
@@ -1107,6 +1107,8 @@ test('an agentless Worktree Terminal can create a note and prepare its prompt', 
   await expect(prompt).toBeEnabled();
   await expect(prompt).toHaveValue(selectedText);
   await expect(toolbar).toBeVisible();
+  // the opened draft composer carries the Worktree's git status
+  await expect(page.getByRole('button', { name: /^Git status:/u })).toBeVisible();
 
   await toolbar.getByRole('button', { name: 'Create note', exact: true }).click();
   const notePane = page.getByRole('dialog', { name: 'Note' });
@@ -1385,7 +1387,7 @@ test('on a phone the helper keys drive the visible Terminal, and the Agent pane 
   await switches.locator('.mobile-agent-switch').click();
   await expect(page.locator('.log-output')).toBeVisible();
   await page.locator('.log-output .xterm-screen').click();
-  await expect(page.locator('.log')).toHaveClass(/input-active/u);
+  await expect(page.locator('.log-output')).toHaveClass(/input-active/u);
   await page.getByRole('button', { name: 'Esc' }).click();
   await expect.poll(() => paneInputText(page, 'agent-1')).toContain(esc);
 });

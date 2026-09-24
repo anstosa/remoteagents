@@ -20,17 +20,29 @@ test('focusing and submitting the prompt keeps keyboard input in the composer', 
 
   await page.goto('/');
   const output = page.getByLabel('Live log');
-  const log = page.locator('.log');
+  const outputPanel = page.locator('.log-output');
   const prompt = page.getByRole('textbox', { name: 'Prompt' });
   await expect(output).toBeVisible();
 
+  // the output panel's own ring reads sky only while the pane holds keyboard input
+  const ring = () => outputPanel.evaluate(element => {
+    const probe = document.createElement('span');
+    document.body.append(probe);
+    probe.style.color = 'var(--sky)';
+    const sky = getComputedStyle(probe).color;
+    probe.remove();
+    return { border: getComputedStyle(element, '::after').borderTopColor, sky };
+  });
+  expect((await ring()).border).not.toBe((await ring()).sky);
   await output.click();
-  await expect(log).toHaveClass(/input-active/u);
+  await expect(outputPanel).toHaveClass(/input-active/u);
   await expect(page.locator('.xterm-helper-textarea:focus')).toHaveCount(1);
+  const focused = await ring();
+  expect(focused.border).toBe(focused.sky);
 
   await prompt.focus();
   await expect(prompt).toBeFocused();
-  await expect(log).not.toHaveClass(/input-active/u);
+  await expect(outputPanel).not.toHaveClass(/input-active/u);
   await expect(page.locator('.xterm-helper-textarea:focus')).toHaveCount(0);
   await prompt.fill('Keep this prompt');
   await prompt.press('Control+c');
