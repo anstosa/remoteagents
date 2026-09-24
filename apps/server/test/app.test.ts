@@ -459,10 +459,12 @@ describe('client control', () => {
 describe('agent launches', () => {
   it('waits for a discovered Codex pane and returns its id to the client', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/home/ubuntu', title: '' });
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/home/ubuntu', placeId: 'scratch:/home/ubuntu', title: '' });
+    // an Agent at another Place appears first; only the Scratch Place's is the launched one
+    const stranger = stated({ id: 'socket:%2', paneId: '%2', sessionId: 'socket:$2', socketFingerprint: 'socket', home: '/srv/tools', placeId: 'scratch:/srv/tools', title: '' });
     let dashboards = 0;
-    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: ++dashboards, places: [], agents: dashboards === 1 ? [] : [agent], projects: [] }) };
-    const launch = { launch: async () => true, launchHome: async () => true };
+    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: ++dashboards, places: [], agents: dashboards === 1 ? [] : dashboards === 2 ? [stranger] : [stranger, agent], projects: [] }) };
+    const launch = { launch: async () => true, launchHome: async () => true, scratchPlace: async () => ({ id: 'scratch:/home/ubuntu' }) };
     const launchApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 3).toString('base64url')), discovery: discovery as never, launch: launch as never });
     try {
       const boot = await launchApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
@@ -498,11 +500,11 @@ describe('agent launches', () => {
 
   it('forwards a requested launch kind and rejects an unknown one', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
-    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/home/ubuntu', title: '' });
+    const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/home/ubuntu', placeId: 'scratch:/home/ubuntu', title: '' });
     let dashboards = 0;
     const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: ++dashboards, places: [], agents: dashboards === 1 ? [] : [agent], projects: [] }) };
     const kinds: Array<string | undefined> = [];
-    const launch = { launch: async () => true, launchHome: async (kind?: string) => { kinds.push(kind); return true; } };
+    const launch = { launch: async () => true, launchHome: async (kind?: string) => { kinds.push(kind); return true; }, scratchPlace: async () => ({ id: 'scratch:/home/ubuntu' }) };
     const launchApp = await buildApp(config, { auth: new AuthService(hash, Buffer.alloc(32, 9).toString('base64url')), discovery: discovery as never, launch: launch as never });
     try {
       const boot = await launchApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
@@ -520,17 +522,19 @@ describe('agent launches', () => {
   it('launches a non-git directory Project in place and returns its labeled agent id', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const directoryConfig = { ...config, projects: [testProject({ id: 'notes', label: 'Notes', path: '/home/me/notes', identity: '/home/me/notes', mode: 'directory', available: true })] };
-    const agent = stated({ id: 'socket:%5', paneId: '%5', sessionId: 'socket:$5', socketFingerprint: 'socket', home: '/home/me/notes', displayLabel: 'Notes', title: '' });
+    const agent = stated({ id: 'socket:%5', paneId: '%5', sessionId: 'socket:$5', socketFingerprint: 'socket', home: '/home/me/notes', displayLabel: 'Notes', placeId: 'notes:/home/me/notes', title: '' });
+    // an Agent at another Place appears first; only the Project's Place match picks the launched one
+    const stranger = stated({ id: 'socket:%6', paneId: '%6', sessionId: 'socket:$6', socketFingerprint: 'socket', home: '/home/me', placeId: 'scratch:/home/me', title: '' });
     let dashboards = 0;
-    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: ++dashboards, places: [], agents: dashboards === 1 ? [] : [agent], projects: [] }) };
+    const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: ++dashboards, places: [], agents: dashboards === 1 ? [] : dashboards === 2 ? [stranger] : [stranger, agent], projects: [] }) };
     const kinds: Array<string | undefined> = [];
-    const launch = { launchProjectDirectory: async (id: string, kind?: string) => { kinds.push(kind); return id === 'notes'; } };
+    const launch = { launchProjectDirectory: async (id: string, kind?: string) => { kinds.push(kind); return id === 'notes'; }, directoryPlace: async (id: string) => (id === 'notes' ? { id: 'notes:/home/me/notes' } : undefined) };
     const launchApp = await buildApp(directoryConfig, { auth: new AuthService(hash, Buffer.alloc(32, 12).toString('base64url')), discovery: discovery as never, launch: launch as never, launchPollDelay: async () => {} });
     try {
       const boot = await launchApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
       const login = await launchApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
       const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
-      // the new session is matched back by its Project display label
+      // the new Agent is matched back by the Project's Place
       const ok = await launchApp.inject({ method: 'POST', url: '/api/projects/notes/launch', headers, payload: { kind: 'codex' } });
       expect(ok.statusCode).toBe(201);
       expect(ok.json()).toEqual({ agentId: agent.id });
@@ -542,12 +546,12 @@ describe('agent launches', () => {
     } finally { await launchApp.close(); }
   }, 15_000);
 
-  it('refuses an in-place launch for a git repository Project or an unknown id, before any handoff', async () => {
+  it('refuses an in-place launch when the id resolves to no directory-Project Place, before any handoff', async () => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const repoConfig = { ...config, projects: [testProject({ id: 'repo', label: 'Repo', mode: 'repository', available: true })] };
     let called = false;
     const discovery = { worktreesNow: () => [], dashboard: async () => ({ generation: 1, places: [], agents: [], projects: [] }) };
-    const launch = { launchProjectDirectory: async () => { called = true; return true; } };
+    const launch = { launchProjectDirectory: async () => { called = true; return true; }, directoryPlace: async () => undefined };
     const launchApp = await buildApp(repoConfig, { auth: new AuthService(hash, Buffer.alloc(32, 13).toString('base64url')), discovery: discovery as never, launch: launch as never, launchPollDelay: async () => {} });
     try {
       const boot = await launchApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
@@ -884,11 +888,12 @@ describe('Console shells server lifecycle', () => {
   const consoleShellBusy = (pane: { command: string }) => pane.command !== 'zsh';
   let secret = 30;
   // build the app with the given fakes and return a logged-in session's headers
-  const start = async (deps: { discovery?: object; launch?: object; tmux?: object; worktreeCommands?: object }) => {
+  // `realLaunch` leaves the launch service to buildApp, so its Place-session lookup is the app's own wiring
+  const start = async (deps: { discovery?: object; launch?: object; realLaunch?: true; tmux?: object; worktreeCommands?: object }) => {
     const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
     const discovery = { worktreesNow: () => [worktree], dashboard: async () => idleDashboard, target: async () => undefined, ...deps.discovery };
     const launch = { launchResolutions: async () => new Map(), ...deps.launch };
-    const app = await buildApp({ ...config }, { auth: new AuthService(hash, Buffer.alloc(32, secret++).toString('base64url')), discovery: discovery as never, launch: launch as never, tmux: (deps.tmux ?? {}) as never, ...(deps.worktreeCommands === undefined ? {} : { worktreeCommands: deps.worktreeCommands as never }) });
+    const app = await buildApp({ ...config }, { auth: new AuthService(hash, Buffer.alloc(32, secret++).toString('base64url')), discovery: discovery as never, ...(deps.realLaunch ? {} : { launch: launch as never }), tmux: (deps.tmux ?? {}) as never, ...(deps.worktreeCommands === undefined ? {} : { worktreeCommands: deps.worktreeCommands as never }) });
     const boot = await app.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
     const login = await app.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
     const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
@@ -910,15 +915,15 @@ describe('Console shells server lifecycle', () => {
     } finally { await app.close(); }
   }, 15_000);
 
-  it('opens a Console shell beside a live Agent, forwarding the Agent session', async () => {
+  it('opens a Console shell beside a live Agent, in the Agent session', async () => {
     const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready', placeId: 'cora', worktreeId: 'cora' });
-    const createConsoleShell = vi.fn(async () => '%9');
-    const { app, headers } = await start({ discovery: { dashboard: async () => ({ ...idleDashboard, agents: [agent] }), target: async (id: string) => id === agent.id ? { agent, socket } : undefined }, launch: { createConsoleShell } });
+    const createConsoleShellWindow = vi.fn(async () => '%9');
+    const { app, headers } = await start({ discovery: { dashboard: async () => ({ ...idleDashboard, agents: [agent] }), target: async (id: string) => id === agent.id ? { agent, socket } : undefined }, realLaunch: true, tmux: { createConsoleShellWindow } });
     try {
       const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload: { name: 'build' } });
       expect(response.statusCode).toBe(201);
       expect(response.json()).toEqual({ paneId: '%9' });
-      expect(createConsoleShell).toHaveBeenCalledWith(worktreePlace(worktree as never), 'build', { socket, session: '$1' });
+      expect(createConsoleShellWindow).toHaveBeenCalledWith(socket, '$1', '/worktrees/cora', expect.any(Array), 'build');
     } finally { await app.close(); }
   }, 15_000);
 
@@ -928,7 +933,7 @@ describe('Console shells server lifecycle', () => {
     try {
       const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload: {} });
       expect(response.statusCode).toBe(201);
-      expect(createConsoleShell).toHaveBeenCalledWith(worktreePlace(worktree as never), '', undefined);
+      expect(createConsoleShell).toHaveBeenCalledWith(worktreePlace(worktree as never), '');
     } finally { await app.close(); }
   }, 15_000);
 

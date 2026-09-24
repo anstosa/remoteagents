@@ -12,21 +12,26 @@ export const launchPollAttempts = launchReadyTimeoutSeconds * 1_000 / launchPoll
 export const launchPollDelay = async (): Promise<void> => await new Promise(resolve => setTimeout(resolve, launchPollIntervalMs));
 
 /**
- * Poll discovery for a freshly launched agent — one whose id is not in `before`,
- * optionally narrowed to a Worktree or a display label — for up to sixty seconds.
+ * Poll discovery for a freshly launched agent — one whose id is not in `before` and which
+ * `matches` (its Place, Worktree or modal label) — for up to sixty seconds.
  * Extracted from `buildApp` so the launch routes and the Run primitive share one
  * poll (Scheduled prompts). `pollDelay` is the injectable inter-attempt wait.
  */
-export type AgentWaiter = (before: Set<string>, worktreeId?: string, displayLabel?: string) => Promise<Agent | undefined>;
+export type AgentWaiter = (before: Set<string>, matches: (agent: Agent) => boolean) => Promise<Agent | undefined>;
+
+// the waiter match for an Agent launched at a directory-Project or Scratch Place
+export const atPlace = (placeId: string) => (agent: Agent): boolean => agent.placeId === placeId;
+// the waiter match for an Agent launched in a Worktree: the same Place match (discovery sets
+// `worktreeId` exactly when the Agent's Place is that Worktree), kept on the field every Worktree
+// flow already reads
+export const inWorktree = (worktreeId: string) => (agent: Agent): boolean => agent.worktreeId === worktreeId;
 
 export function createAgentWaiter(discovery: { dashboard(force?: boolean): Promise<Dashboard> }, pollDelay: () => Promise<void>): AgentWaiter {
-  return async (before, worktreeId, displayLabel) => {
+  return async (before, matches) => {
     // poll for up to sixty seconds
     for (let attempt = 0; attempt < launchPollAttempts; attempt += 1) {
       const dashboard = await discovery.dashboard();
-      const agent = dashboard.agents.find(candidate => !before.has(candidate.id)
-        && (worktreeId === undefined || candidate.worktreeId === worktreeId)
-        && (displayLabel === undefined || candidate.displayLabel === displayLabel));
+      const agent = dashboard.agents.find(candidate => !before.has(candidate.id) && matches(candidate));
       // return the ready agent
       if (agent) return agent;
       // pause before retrying

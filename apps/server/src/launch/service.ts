@@ -59,11 +59,23 @@ export type ConsoleShellPlace = Pick<Place, 'id' | 'kind' | 'projectId' | 'home'
 // one worktree launch request: which conversation (if any) and whether to confine it
 type LaunchRequest = { mode: LaunchMode; conversationId?: string; sandboxed: boolean };
 
+// one tmux session on its socket: the session a launch or a Console shell at a Place joins
+export type TmuxSession = { socket: SocketRef; session: string };
+
+// where a launch runs: the folder tmux opens it in (the host-visible one under the bridge) and
+// the HOME its shell exports (`$HOME` leaves a local shell's own)
+type LaunchSite = { cwd: string; home: string };
+
 export function expandHomeCommand(command: string, home: string): string {
   return expandCommand(command, { identity: home });
 }
 
 export const scratchLabel = scratchPlaceLabel;
+
+// The session a directory-Project or Scratch Place's launches and Console shells start in, named
+// for its folder. tmux turns `.` into `_` in a session name, so the name is written that way up
+// front and the free-name check compares what tmux will actually list.
+const placeSessionName = (place: Pick<Place, 'home' | 'hostPath'>): string => worktreeSessionName(placeHostRoot(place)).replaceAll('.', '_');
 // allow approved host repairs and verification
 const updateAdvisorArgs = ['--dangerously-bypass-approvals-and-sandbox', '--no-alt-screen'];
 
@@ -82,7 +94,9 @@ export class LaunchService {
   // `openTerminals` returns the `fingerprint\0paneId` keys of panes a browser currently has
   // open as a Terminal (a live pane-socket subscriber); adoption and Remove's blind kill skip
   // them so a Launch never pastes into, or kills, a pane the operator is reading (spec).
-  constructor(private readonly config: ValidatedConfig, private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly panes: TmuxAdapter = new TmuxAdapter(), private readonly paneRoot: (path: string) => Promise<string> = workspaceRoot, private readonly worktreeStore: WorktreeLaunchStore = new WorktreeLaunchStore(), private readonly discoveredWorktrees: () => Worktree[] = () => [], private readonly openTerminals: () => ReadonlySet<string> = () => new Set(), private readonly root = `/tmp/remote-agent-console-${process.getuid?.() ?? 0}`) {}
+  // `placeAgentSession` finds the session of a live Agent at a Place (from discovery, since an
+  // Agent adopted into the operator's own session lives wherever), which a Place launch joins.
+  constructor(private readonly config: ValidatedConfig, private readonly finder: SocketFinder = new ProcSocketFinder(), private readonly panes: TmuxAdapter = new TmuxAdapter(), private readonly paneRoot: (path: string) => Promise<string> = workspaceRoot, private readonly worktreeStore: WorktreeLaunchStore = new WorktreeLaunchStore(), private readonly discoveredWorktrees: () => Worktree[] = () => [], private readonly openTerminals: () => ReadonlySet<string> = () => new Set(), private readonly placeAgentSession: (placeId: string) => Promise<TmuxSession | undefined> = async () => undefined, private readonly root = `/tmp/remote-agent-console-${process.getuid?.() ?? 0}`) {}
 
   // a pane the operator currently has open as a Terminal (a live pane-socket subscriber)
   private paneHasOpenTerminal(pane: Pane): boolean {
@@ -205,25 +219,48 @@ export class LaunchService {
     return configuredPlaces(this.discoveredWorktrees(), this.config.projects, await this.scratchHomeValue);
   }
 
+  // the configured Scratch folder's Place, which a Scratch launch joins
+  async scratchPlace(): Promise<Place> {
+    const place = (await this.places()).find(candidate => candidate.kind === 'scratch');
+    // configuredPlaces always lists the configured Scratch folder
+    if (place === undefined) throw new Error('no configured Scratch Place');
+    return place;
+  }
+
+  // the Place of an available directory Project, which its in-place launch joins
+  async directoryPlace(projectId: string): Promise<Place | undefined> {
+    return (await this.places()).find(candidate => candidate.kind === 'directory' && candidate.projectId === projectId);
+  }
+
   // the id of the Place a pane belongs to; a pane already at a Worktree's root needs no git
   // resolution (it is its own toplevel), any other cwd resolves its root as discovery does
   private async placeIdOf(places: readonly Place[], paneCwd: string): Promise<string> {
     const atWorktree = places.some(place => place.kind === 'worktree' && (place.home === paneCwd || place.hostPath === paneCwd));
     return placeForRoot(places, atWorktree ? paneCwd : await this.paneRoot(paneCwd)).id;
   }
+  // An idle login shell a launch could adopt: never a transient stack-command pane, a Console
+  // shell (its own, operator-owned pane) or a pane the operator has open as a Terminal, so a
+  // Launch cannot paste into what someone is typing into or reading.
+  private idleLandingShell(pane: Pane): boolean {
+    if (pane.sessionName?.startsWith('rac-stack-')) return false;
+    if (pane.role === 'shell' || this.paneHasOpenTerminal(pane)) return false;
+    return pane.command === this.hostShellName;
+  }
+
+  // every pane on every socket, the sockets listed concurrently, in discovery order
+  private async listedPanes(): Promise<Array<{ socket: SocketRef; pane: Pane }>> {
+    const sockets = await this.finder.find();
+    const listed = await Promise.all(sockets.map(async socket => ({ socket, panes: await this.panes.listPanes(socket) })));
+    return listed.flatMap(({ socket, panes }) => panes.map(pane => ({ socket, pane })));
+  }
+
   // find one unlabeled worktree shell that no modal or scratch flow owns
   private async existingPane(worktree: Worktree): Promise<{ socket: SocketRef; pane: Pane } | undefined> {
-    const sockets = await this.finder.find();
-    // list every socket concurrently; the first match in discovery order still wins
-    const listed = await Promise.all(sockets.map(async socket => ({ socket, panes: await this.panes.listPanes(socket) })));
-    for (const { socket, panes } of listed) for (const pane of panes) {
+    // the first match in discovery order wins
+    for (const { socket, pane } of await this.listedPanes()) {
       // preserve labeled scratch and modal panes
       if (pane.displayLabel !== undefined) continue;
-      if (pane.sessionName?.startsWith('rac-stack-')) continue;
-      // never adopt a Console shell (its own, operator-owned pane) or a pane the operator has
-      // open as a Terminal, so a Launch cannot paste into what someone is typing into or reading
-      if (pane.role === 'shell' || this.paneHasOpenTerminal(pane)) continue;
-      if (pane.command !== this.hostShellName) continue;
+      if (!this.idleLandingShell(pane)) continue;
       // reuse a shell only when its git toplevel is exactly this worktree, never a
       // parent whose subtree holds a nested checkout (a `.claude/worktrees/<n>` the
       // agent's own tool created); a subdirectory of the worktree still resolves here.
@@ -235,20 +272,42 @@ export class LaunchService {
     return undefined;
   }
 
+  // The idle shell a directory-Project or Scratch launch adopts: one an earlier launch at this
+  // Place created (its Agent exited back to the shell), whose root is still the Place home itself.
+  // The Place label is the proof of origin: only a Place launch writes it, on a pane it created or
+  // on one that already carried it, whereas `@rac_console_managed` is also set on an operator's own
+  // shell a Worktree launch adopted. A Scratch home is often the account home, where the
+  // operator's own tmux shells start, so nothing else is ever pasted into; and never a subfolder,
+  // as a Worktree adopts only a shell at its own toplevel.
+  private async adoptablePlaceShell(place: Place): Promise<{ socket: SocketRef; pane: Pane } | undefined> {
+    for (const { socket, pane } of await this.listedPanes()) {
+      if (pane.displayLabel !== place.label || pane.consoleManaged !== true || !this.idleLandingShell(pane)) continue;
+      const root = await this.paneRoot(pane.path);
+      if (root !== place.home && root !== place.hostPath) continue;
+      return { socket, pane };
+    }
+    return undefined;
+  }
+
+  // the session a launch or a Console shell at a Place joins: its live Agent's, else the one
+  // holding its Console shells (a Worktree launch joins only the latter; see dispatchWorktreeLaunch)
+  private async placeSession(place: Pick<Place, 'id'>): Promise<TmuxSession | undefined> {
+    const agent = await this.placeAgentSession(place.id);
+    if (agent !== undefined) return agent;
+    const shell = (await this.placeConsoleShells(place))[0];
+    return shell === undefined ? undefined : { socket: shell.socket, session: shell.sessionId };
+  }
+
   // Kill every idle interactive shell sitting exactly in this Worktree — Remove's first
   // step, so a removed checkout leaves no dangling shell pane behind. Matches the same
   // panes `existingPane` would reuse (the login shell, cwd exactly the Worktree, never a
   // `rac-stack-*` session), but every one rather than the first. An agent that adopted the
   // shell no longer reports the shell command, so a running Agent's pane is never touched.
   async killWorktreeShells(worktree: Worktree): Promise<void> {
-    const sockets = await this.finder.find();
-    const listed = await Promise.all(sockets.map(async socket => ({ socket, panes: await this.panes.listPanes(socket) })));
-    for (const { socket, panes } of listed) for (const pane of panes) {
-      if (pane.sessionName?.startsWith('rac-stack-')) continue;
+    for (const { socket, pane } of await this.listedPanes()) {
       // leave a Console shell and any pane open as a Terminal alone; the operator ends those
       // deliberately (Remove is separately refused while a Console shell exists)
-      if (pane.role === 'shell' || this.paneHasOpenTerminal(pane)) continue;
-      if (pane.command !== this.hostShellName) continue;
+      if (!this.idleLandingShell(pane)) continue;
       if (!await this.paneRootIsWorktree(worktree, pane.path)) continue;
       await this.panes.close(socket, pane.paneId).catch(() => false);
     }
@@ -294,22 +353,18 @@ export class LaunchService {
     if (worktreeMatchesWorkspace(worktree, paneCwd)) return true;
     return worktreeMatchesWorkspace(worktree, await this.paneRoot(paneCwd));
   }
-  private async labelScratchSession(session: string, label = scratchLabel): Promise<boolean> {
-    const socket = this.hostSocket === undefined ? [] : ['-S', this.hostSocket];
-    return (await run(this.tmux, [...socket, 'set-option', '-p', '-t', session, '@rac_display_label', label])).code === 0;
+  // label a pane (or a session's active pane) so its tab reads as its Place or modal flow
+  private async labelPane(socketPath: string | undefined, target: string, label: string): Promise<boolean> {
+    const socket = socketPath === undefined ? [] : ['-S', socketPath];
+    return (await run(this.tmux, [...socket, 'set-option', '-p', '-t', target, '@rac_display_label', label])).code === 0;
   }
-  // launch one ordinary home scratch agent of the resolved (or requested) kind
+  // launch one ordinary scratch agent of the resolved (or requested) kind at the Scratch Place:
+  // the configured Scratch directory when set, else the account home
   async launchHome(kind?: AgentKind): Promise<boolean> {
     const resolved = await this.resolveLaunchKind(scratchLaunchKey, kind);
     // refuse an unconfigured or unlaunchable kind
     if (resolved === undefined) return false;
-    // launch in the configured Scratch directory when set, else the account home; the
-    // shell's exported HOME stays the account home either way (agentHome)
-    const home = this.agentHome();
-    const cwd = this.config.scratchDirectory ?? home;
-    const command = await this.scratchCommand(resolved, cwd);
-    if (command === undefined) return false;
-    const launched = await this.launchScratch(cwd, scratchLabel, command, home);
+    const launched = await this.launchInPlace(await this.scratchPlace(), resolved);
     // remember the Scratch group's last-used kind
     // persisting the profile is best-effort; a storage failure never fails a live launch
     if (launched) await this.worktreeStore.rememberLaunchProfile(scratchLaunchKey, resolved).catch(() => {});
@@ -317,23 +372,18 @@ export class LaunchService {
   }
 
   // launch one agent directly in a non-git `directory` Project — the same in-place spawn
-  // Scratch uses (a fresh session, no Worktree, no shell reuse), labeled with the Project
-  // so its tab reads as the Project and discovery keeps its notes and console-named
-  // conversations under the Scratch persistence key for the directory. Only an available `directory` Project
+  // Scratch uses (no Worktree), joining the Project's Place and labeled with the Project so
+  // its tab reads as the Project; discovery keeps its notes and console-named conversations
+  // under the Scratch persistence key for the directory. Only an available `directory` Project
   // launches this way: a `repository` Project launches through its Worktrees, and an
   // unavailable one has nothing to launch into. Remembers the kind under the Project scope.
   async launchProjectDirectory(projectId: string, kind?: AgentKind): Promise<boolean> {
-    const project = this.config.projects.find(candidate => candidate.id === projectId);
-    if (project === undefined || !project.available || project.mode !== 'directory') return false;
+    const place = await this.directoryPlace(projectId);
+    if (place === undefined) return false;
     const resolved = await this.resolveLaunchKind(projectId, kind);
     // refuse an unconfigured or unlaunchable kind
     if (resolved === undefined) return false;
-    // launch in the Project directory; under the Docker bridge its host-visible path is what
-    // the host tmux can cd into. HOME stays the account home, as Scratch resolves it.
-    const cwd = project.hostPath ?? project.path;
-    const command = await this.scratchCommand(resolved, cwd);
-    if (command === undefined) return false;
-    const launched = await this.launchScratch(cwd, project.label, command, this.agentHome());
+    const launched = await this.launchInPlace(place, resolved);
     // remember the Project group's last-used kind; storage failure never fails a live launch
     if (launched) await this.worktreeStore.rememberLaunchProfile(projectId, resolved).catch(() => {});
     return launched;
@@ -350,35 +400,88 @@ export class LaunchService {
     // but only when its resolved program is the configured one
     const configured = this.config.adapters.codex;
     const command = composeLaunch(program, updateAdvisorArgs, [], {}, {}, program === configured?.program ? configured.setup : undefined);
-    return await this.launchScratch(repository, updateAdvisorPendingLabel(targetSha), command, this.agentHome());
-  }
-
-  // launch one uniquely labeled scratch session with an already-composed command
-  private async launchScratch(directory: string, label: string, command: string, home = directory): Promise<boolean> {
-    const key = `scratch:${directory}:${label}`;
-    // serialize matching scratch launches
+    const label = updateAdvisorPendingLabel(targetSha);
+    // the advisor is a modal flow, never part of a Place: its own uniquely named session every time
+    const key = `advisor:${repository}:${label}`;
     if (this.pending.has(key)) return false;
     this.pending.add(key);
     try {
       const id = randomBytes(18).toString('base64url');
       const session = `rac-${id.slice(0, 12)}`;
-      const expanded = expandHomeCommand(command, directory);
-      // launch through the host bridge when configured
-      if (this.hostSocket !== undefined) {
-        if ((await run(this.tmux, ['-S', this.hostSocket, 'new-session', '-d', '-s', session, '-c', directory, this.hostShell, '-lc', interactiveShellBootstrap(hostCommand(expanded, home), home, this.hostShell)])).code !== 0) return false;
-        return await this.labelScratchSession(session, label);
-      }
-      await mkdir(this.root, { recursive: true, mode: 0o700 });
-      const descriptor = join(this.root, `${id}.json`);
-      const handle = await open(descriptor, 'wx', 0o600);
-      await handle.writeFile(JSON.stringify({ program: this.localShell, args: ['-lc', interactiveShellBootstrap(expanded, home, this.localShell)], cwd: directory }));
-      await handle.close();
-      const runner = new URL('./runner.js', import.meta.url).pathname;
-      const created = await run(this.tmux, ['new-session', '-d', '-s', session, process.execPath, runner, descriptor]);
-      // clean failed launch descriptors
-      if (created.code !== 0) { await unlink(descriptor).catch(() => {}); return false; }
-      return await this.labelScratchSession(session, label);
+      const pane = await this.startLaunchSession({ cwd: repository, home: this.agentHome() }, command, id, session);
+      return pane !== undefined && await this.labelPane(this.hostSocket, pane, label);
     } finally { this.pending.delete(key); }
+  }
+
+  // Launch into a directory-Project or Scratch Place the way a Worktree launch joins its own:
+  // adopt the Place's idle console-launched shell, else open a window in the session holding its
+  // live Agent or its Console shells, else start a session named for the Place. The Agent is
+  // labelled with the Place so its tab reads as the Place. One launch per Place at a time.
+  private async launchInPlace(place: Place, kind: AgentKind): Promise<boolean> {
+    if (this.pending.has(place.id)) { console.warn(`[launch] ${place.home}: a launch is already in progress`); return false; }
+    this.pending.add(place.id);
+    try {
+      // under the Docker bridge the host-visible path is what the host tmux can cd into; HOME is
+      // the default account home for every directory-Project and Scratch launch
+      const site: LaunchSite = { cwd: placeHostRoot(place), home: this.agentHome() };
+      const command = await this.scratchCommand(kind, site.cwd);
+      if (command === undefined) { console.warn(`[launch] ${place.home}: agent kind ${kind} produced no launch command`); return false; }
+      const id = randomBytes(18).toString('base64url');
+      const existing = await this.adoptablePlaceShell(place);
+      if (existing !== undefined) {
+        const reused = await this.launchInShell(existing, command, id, false) && await this.labelPane(existing.socket.path, existing.pane.paneId, place.label);
+        if (!reused) console.error(`[launch] ${place.home}: could not send the launch into reused shell ${existing.pane.paneId}`);
+        return reused;
+      }
+      const joined = await this.placeSession(place);
+      if (joined !== undefined) {
+        const pane = await this.launchInSessionWindow(site, command, id, false, joined, place.home);
+        return pane !== undefined && await this.labelPane(joined.socket.path, pane, place.label);
+      }
+      const session = await this.availableSessionName(placeSessionName(place));
+      const pane = await this.startLaunchSession(site, command, id, session);
+      if (pane === undefined) { console.error(`[launch] ${place.home}: tmux could not start session '${session}'`); return false; }
+      return await this.labelPane(this.hostSocket, pane, place.label) && await this.markConsoleManaged(this.hostSocket, pane);
+    } finally {
+      this.pending.delete(place.id);
+    }
+  }
+
+  // Start a detached session running the composed launch at the site — the host bootstrap on the
+  // bridge socket, else the local runner, which keeps the command out of the process table — and
+  // return its pane id, which later options target: a bare session name can resolve to a window
+  // of the same name in another session.
+  private async startLaunchSession(site: LaunchSite, command: string, id: string, session: string): Promise<string | undefined> {
+    let created: { code: number; stdout: string; stderr: string };
+    if (this.hostSocket !== undefined) created = await run(this.tmux, ['-S', this.hostSocket, 'new-session', '-d', '-s', session, '-c', site.cwd, '-P', '-F', '#{pane_id}', ...this.hostLaunchArgv(site, command)]);
+    else {
+      const { descriptor, runner } = await this.writeLaunchDescriptor(id, command, site);
+      created = await run(this.tmux, ['new-session', '-d', '-s', session, '-P', '-F', '#{pane_id}', process.execPath, runner, descriptor]);
+      // clean failed launch descriptors
+      if (created.code !== 0) await unlink(descriptor).catch(() => {});
+    }
+    if (created.code !== 0) { console.error(`[launch] ${site.cwd}: tmux new-session '${session}' failed (code ${created.code})${created.stderr.trim() === '' ? '' : `: ${created.stderr.trim()}`}`); return undefined; }
+    return created.stdout.trim();
+  }
+
+  // the host login shell running the composed launch at the site, through the interactive bootstrap
+  private hostLaunchArgv(site: LaunchSite, command: string): string[] {
+    return [this.hostShell, '-lc', interactiveShellBootstrap(hostCommand(expandHomeCommand(command, site.cwd), site.home), site.home, this.hostShell)];
+  }
+
+  // where a worktree launch runs: its host root with its Project's account home on the bridge,
+  // else the checkout with the local shell's own HOME
+  private worktreeSite(worktree: Worktree): LaunchSite {
+    return this.hostSocket === undefined ? { cwd: worktree.identity, home: '$HOME' } : { cwd: worktreeHostRoot(worktree), home: this.agentHome(worktree.projectId) };
+  }
+
+  // send a composed launch into an adopted idle shell, marking it console-managed (and Sandboxed)
+  private async launchInShell(existing: { socket: SocketRef; pane: Pane }, command: string, id: string, sandboxed: boolean): Promise<boolean> {
+    const buffer = `rac-launch-${id}`;
+    return await this.panes.pastePrompt(existing.socket, existing.pane.paneId, buffer, command)
+      && await this.panes.enter(existing.socket, existing.pane.paneId)
+      && await this.markConsoleManaged(existing.socket.path, existing.pane.paneId)
+      && await this.markSandboxed(existing.socket.path, existing.pane.paneId, sandboxed);
   }
 
   // launch a fresh agent in a worktree, resolving the kind (or using the requested one)
@@ -445,11 +548,7 @@ export class LaunchService {
     const existing = await this.existingPane(worktree);
     // send through the shell context
     if (existing !== undefined) {
-      const buffer = `rac-launch-${id}`;
-      const reused = await this.panes.pastePrompt(existing.socket, existing.pane.paneId, buffer, command)
-        && await this.panes.enter(existing.socket, existing.pane.paneId)
-        && await this.markConsoleManaged(existing.socket.path, existing.pane.paneId)
-        && await this.markSandboxed(existing.socket.path, existing.pane.paneId, sandboxed);
+      const reused = await this.launchInShell(existing, command, id, sandboxed);
       if (!reused) console.error(`[launch] ${worktree.identity}: could not send the launch into reused shell ${existing.pane.paneId}`);
       return reused;
     }
@@ -458,14 +557,13 @@ export class LaunchService {
     // shells together, rather than opening a separate session (spec, Console shells)
     const shells = await this.placeConsoleShells(worktree);
     const shellSession = shells[0];
-    if (shellSession !== undefined) return await this.launchInSessionWindow(worktree, command, id, sandboxed, shellSession.socket, shellSession.sessionId);
+    const site = this.worktreeSite(worktree);
+    if (shellSession !== undefined) return await this.launchInSessionWindow(site, command, id, sandboxed, { socket: shellSession.socket, session: shellSession.sessionId }, worktree.identity) !== undefined;
     const session = worktreeSessionName(worktreeHostRoot(worktree));
-    // launch host-mounted worktrees on the host socket
+    // launch host-mounted worktrees on the host socket, the site keeping credentials and CLI
+    // state rooted in the authenticated account
     if (this.hostSocket !== undefined) {
-      const hostWorktree = { ...worktree, identity: worktreeHostRoot(worktree) };
-      // keep credentials and CLI state rooted in the authenticated account
-      const home = this.agentHome(worktree.projectId);
-      const tail = ['-c', hostWorktree.identity, this.hostShell, '-lc', interactiveShellBootstrap(hostCommand(expandCommand(command, hostWorktree), home), home, this.hostShell)];
+      const tail = ['-c', site.cwd, ...this.hostLaunchArgv(site, command)];
       // the host socket is RAC's own, so displacing a same-named session in place is safe
       if (!await startNamedReplacementSession(this.tmux, this.hostSocket, session, session, tail)) {
         console.error(`[launch] ${worktree.identity}: tmux could not start host session '${session}'`);
@@ -474,7 +572,7 @@ export class LaunchService {
       return await this.markConsoleManaged(this.hostSocket, session)
         && await this.markSandboxed(this.hostSocket, session, sandboxed);
     }
-    const { descriptor, runner } = await this.writeLaunchDescriptor(id, command, worktree);
+    const { descriptor, runner } = await this.writeLaunchDescriptor(id, command, site);
     // Unlike the host socket, the default socket is shared with the operator's own tmux,
     // so a same-named session is just as likely theirs. Suffix past a taken name
     // (`-2`/`-3`, as startWorktreeShell does) rather than a bare new-session that fails —
@@ -491,33 +589,33 @@ export class LaunchService {
       && await this.markSandboxed(undefined, name, sandboxed);
   }
 
-  // launch the Agent in a new detached window of an existing session (the session already
-  // holding the Worktree's Console shells), mirroring the fresh-session dispatch but with
-  // `new-window` — the same host bootstrap / local runner split, marked on the new pane
-  private async launchInSessionWindow(worktree: Worktree, command: string, id: string, sandboxed: boolean, socket: SocketRef, session: string): Promise<boolean> {
+  // Launch the Agent in a new detached window of an existing session (the session holding the
+  // Place's Console shells or live Agent), mirroring the fresh-session dispatch but with
+  // `new-window` — the same host bootstrap / local runner split. Returns the new pane, marked
+  // console-managed (and Sandboxed when asked), or undefined; `logName` names the Place in logs.
+  private async launchInSessionWindow(site: LaunchSite, command: string, id: string, sandboxed: boolean, { socket, session }: TmuxSession, logName: string): Promise<string | undefined> {
+    const logFailure = (created: { code: number; stderr: string }) => console.error(`[launch] ${logName}: tmux new-window in '${session}' failed (code ${created.code})${created.stderr.trim() === '' ? '' : `: ${created.stderr.trim()}`}`);
     let pane: string;
     if (this.hostSocket !== undefined) {
-      const hostWorktree = { ...worktree, identity: worktreeHostRoot(worktree) };
-      const home = this.agentHome(worktree.projectId);
-      const created = await run(this.tmux, ['-S', socket.path, 'new-window', '-d', '-t', session, '-c', hostWorktree.identity, '-P', '-F', '#{pane_id}', '--', this.hostShell, '-lc', interactiveShellBootstrap(hostCommand(expandCommand(command, hostWorktree), home), home, this.hostShell)]);
-      if (created.code !== 0) { console.error(`[launch] ${worktree.identity}: tmux new-window in '${session}' failed (code ${created.code})${created.stderr.trim() === '' ? '' : `: ${created.stderr.trim()}`}`); return false; }
+      const created = await run(this.tmux, ['-S', socket.path, 'new-window', '-d', '-t', session, '-c', site.cwd, '-P', '-F', '#{pane_id}', '--', ...this.hostLaunchArgv(site, command)]);
+      if (created.code !== 0) { logFailure(created); return undefined; }
       pane = created.stdout.trim();
     } else {
-      const { descriptor, runner } = await this.writeLaunchDescriptor(id, command, worktree);
+      const { descriptor, runner } = await this.writeLaunchDescriptor(id, command, site);
       const created = await run(this.tmux, ['-S', socket.path, 'new-window', '-d', '-t', session, '-P', '-F', '#{pane_id}', process.execPath, runner, descriptor]);
-      if (created.code !== 0) { console.error(`[launch] ${worktree.identity}: tmux new-window in '${session}' failed (code ${created.code})${created.stderr.trim() === '' ? '' : `: ${created.stderr.trim()}`}`); await unlink(descriptor).catch(() => {}); return false; }
+      if (created.code !== 0) { logFailure(created); await unlink(descriptor).catch(() => {}); return undefined; }
       pane = created.stdout.trim();
     }
-    return await this.markConsoleManaged(socket.path, pane) && await this.markSandboxed(socket.path, pane, sandboxed);
+    return await this.markConsoleManaged(socket.path, pane) && await this.markSandboxed(socket.path, pane, sandboxed) ? pane : undefined;
   }
 
   // Write the local-runner launch descriptor (the composed command wrapped in the interactive
   // bootstrap, run out of the process table) and return the descriptor path plus the runner
-  // entrypoint. Shared by the fresh-session dispatch and the join-an-existing-session path.
-  private async writeLaunchDescriptor(id: string, command: string, worktree: Worktree): Promise<{ descriptor: string; runner: string }> {
+  // entrypoint. Shared by every local launch: a fresh session or a window in an existing one.
+  private async writeLaunchDescriptor(id: string, command: string, site: LaunchSite): Promise<{ descriptor: string; runner: string }> {
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     const descriptor = join(this.root, `${id}.json`);
-    const payload = { program: this.localShell, args: ['-lc', interactiveShellBootstrap(expandCommand(command, worktree), '$HOME', this.localShell)], cwd: worktree.identity };
+    const payload = { program: this.localShell, args: ['-lc', interactiveShellBootstrap(expandHomeCommand(command, site.cwd), site.home, this.localShell)], cwd: site.cwd };
     const handle = await open(descriptor, 'wx', 0o600);
     await handle.writeFile(JSON.stringify(payload));
     await handle.close();
@@ -574,19 +672,17 @@ export class LaunchService {
   // Placement (spec): a detached window in the session of the Place's live Agent (the caller
   // resolves it from discovery), else the session already holding the Place's Console shells,
   // else a fresh console session named for the Place — so agent and shells stay in one session.
-  async createConsoleShell(place: ConsoleShellPlace, name: string, agentSession?: { socket: SocketRef; session: string }): Promise<string | undefined> {
+  async createConsoleShell(place: ConsoleShellPlace, name: string): Promise<string | undefined> {
     const { cwd, argv } = this.consoleShellCommand(place);
-    if (agentSession !== undefined) return await this.panes.createConsoleShellWindow(agentSession.socket, agentSession.session, cwd, argv, name);
-    const shells = await this.placeConsoleShells(place);
-    const existing = shells[0];
-    if (existing !== undefined) return await this.panes.createConsoleShellWindow(existing.socket, existing.sessionId, cwd, argv, name);
+    const joined = await this.placeSession(place);
+    if (joined !== undefined) return await this.panes.createConsoleShellWindow(joined.socket, joined.session, cwd, argv, name);
     return await this.createConsoleShellSession(place, cwd, argv, name);
   }
 
   // create the Place's first Console shell as a fresh console session named for the Place
   // (the no-live-Agent path); a later Launch adds its window to this session
   private async createConsoleShellSession(place: ConsoleShellPlace, cwd: string, argv: string[], name: string): Promise<string | undefined> {
-    const session = await this.availableSessionName(worktreeSessionName(placeHostRoot(place)));
+    const session = await this.availableSessionName(placeSessionName(place));
     const socketArgs = this.hostSocket === undefined ? [] : ['-S', this.hostSocket];
     const created = await run(this.tmux, [...socketArgs, 'new-session', '-d', '-s', session, '-c', cwd, '-P', '-F', '#{pane_id}', '--', ...argv]);
     if (created.code !== 0) return undefined;
@@ -605,7 +701,8 @@ export class LaunchService {
     return (await run(this.tmux, [...socket, 'set-option', '-p', '-t', pane, '@rac_pane_name', name])).code === 0;
   }
 
-  // mark panes the console deliberately owns so retained OMX workers remain launchable
+  // mark panes the console deliberately owns, so retained OMX workers remain launchable; with the
+  // Place label, it also lets a later launch at that Place adopt the pane (adoptablePlaceShell)
   private async markConsoleManaged(socketPath: string | undefined, target: string): Promise<boolean> {
     const socket = socketPath === undefined ? [] : ['-S', socketPath];
     return (await run(this.tmux, [...socket, 'set-option', '-p', '-t', target, '@rac_console_managed', '1'])).code === 0;

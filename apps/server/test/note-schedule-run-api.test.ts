@@ -288,7 +288,7 @@ describe('POST /api/worktrees/:id/notes/:noteId/schedule/run', () => {
   it('launches fresh for a Scratch target through launchHome', async () => {
     const tmux = recordingTmux();
     const launch = launchFake();
-    const discovery = appearingDiscovery({ worktree, agent: { ...codexPane, home: '/scratch', attention: 'finished' }, socket: testSocket });
+    const discovery = appearingDiscovery({ worktree, agent: { ...codexPane, home: '/scratch', placeId: 'scratch:/scratch', attention: 'finished' }, socket: testSocket });
     const { notes, queued, noteId } = await scheduledNote({ target: { scratch: true } });
     const server = await runApp({ notes, queued, tmux, launch, discovery });
     try {
@@ -303,7 +303,7 @@ describe('POST /api/worktrees/:id/notes/:noteId/schedule/run', () => {
   it('launches fresh for a directory Project target through launchProjectDirectory', async () => {
     const tmux = recordingTmux();
     const launch = launchFake();
-    const fresh: Agent = { ...codexPane, id: 'agent-1', home: '/dir', displayLabel: 'Dir Proj', attention: 'finished' };
+    const fresh: Agent = { ...codexPane, id: 'agent-1', home: '/dir', placeId: 'dir-proj:/dir-proj', attention: 'finished' };
     const discovery = appearingDiscovery({ worktree, agent: fresh, socket: testSocket });
     const projects = [testProject({ id: 'proj' }), testProject({ id: 'dir-proj', label: 'Dir Proj', mode: 'directory', path: '/dir', identity: '/dir', available: true })];
     const { notes, queued, noteId } = await scheduledNote({ target: { projectId: 'dir-proj' } });
@@ -380,6 +380,47 @@ describe('POST /api/worktrees/:id/notes/:noteId/schedule/run', () => {
     try {
       expect((await server.inject(runNow(noteId))).json().schedule.lastRun).toMatchObject({ status: 'launched', agentId: 'agent-2' });
       expect(launch.kinds).toEqual(['codex']);
+      expect(tmux.pasted.some(text => text.trim() === '/new')).toBe(false);
+    } finally { await server.close(); }
+  }, 15_000);
+
+  it("reuses a Scratch Schedule's remembered pane wherever in the Scratch Place it runs", async () => {
+    // the pane sits in a subfolder of the Scratch folder: its root is not the Scratch home, its Place is
+    const idle: Agent = { ...codexPane, home: '/scratch/probe', worktreeId: undefined, placeId: 'scratch:/scratch', attention: 'finished' };
+    const working: Agent = { ...idle, attention: 'working', title: '⠋ Working' };
+    const { discovery, tmux } = reuseWorld({ worktree, socket: testSocket, agent: idle, afterReset: index => (index === 0 ? working : idle) });
+    const { notes, queued, noteId } = await scheduledNote({ target: { scratch: true } }, 'agent-1');
+    const launch = launchFake();
+    const server = await runApp({ notes, queued, tmux, launch, discovery });
+    try {
+      expect((await server.inject(runNow(noteId))).json().schedule.lastRun).toMatchObject({ status: 'launched', agentId: 'agent-1' });
+      expect(tmux.pasted[0]?.trim()).toBe('/new');
+      expect(launch.calls).toEqual([]);
+    } finally { await server.close(); }
+  }, 15_000);
+
+  it("launches fresh when a directory Project Schedule's remembered pane is at another Place, waiting for the Agent at the Project's Place", async () => {
+    // same folder name, but discovery placed it elsewhere (a deeper Place took it)
+    const stale: Agent = { ...codexPane, id: 'stale-agent', home: '/dir-proj', worktreeId: undefined, placeId: 'scratch:/dir-proj', attention: 'finished' };
+    const stranger: Agent = { ...codexPane, id: 'agent-3', home: '/elsewhere', worktreeId: undefined, placeId: 'scratch:/elsewhere', attention: 'finished' };
+    const fresh: Agent = { ...codexPane, id: 'agent-2', home: '/dir-proj', worktreeId: undefined, placeId: 'dir-proj:/dir-proj', attention: 'finished' };
+    let dashboards = 0;
+    const discovery = {
+      invalidateWorktrees: () => {},
+      worktreesNow: () => [worktree],
+      worktrees: async () => [worktree],
+      // an unrelated Agent appears first, so only the Place match picks the launched one
+      dashboard: async (): Promise<Dashboard> => ({ generation: ++dashboards, places: [], adapters: {}, agents: dashboards > 2 ? [stale, stranger, fresh] : dashboards > 1 ? [stale, stranger] : [stale], projects: [] }),
+      target: async (id: string) => [stale, stranger, fresh].map(agent => ({ agent, socket: testSocket })).find(target => target.agent.id === id),
+    };
+    const tmux = recordingTmux();
+    const launch = launchFake();
+    const projects = [testProject({ id: 'proj' }), testProject({ id: 'dir-proj', label: 'Dir Proj', mode: 'directory', path: '/dir-proj', identity: '/dir-proj', available: true })];
+    const { notes, queued, noteId } = await scheduledNote({ kind: 'codex', target: { projectId: 'dir-proj' } }, 'stale-agent');
+    const server = await runApp({ notes, queued, tmux, launch, discovery, projects });
+    try {
+      expect((await server.inject(runNow(noteId))).json().schedule.lastRun).toMatchObject({ status: 'launched', agentId: 'agent-2' });
+      expect(launch.calls).toEqual([{ via: 'project', kind: 'codex' }]);
       expect(tmux.pasted.some(text => text.trim() === '/new')).toBe(false);
     } finally { await server.close(); }
   }, 15_000);

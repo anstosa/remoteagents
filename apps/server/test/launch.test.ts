@@ -8,7 +8,7 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LaunchService, composeCommand, composeLaunch, expandCommand, expandHomeCommand, scratchLabel } from '../src/launch/service.js';
+import { LaunchService, composeCommand, composeLaunch, expandCommand, expandHomeCommand, scratchLabel, type TmuxSession } from '../src/launch/service.js';
 import { hostCommand, interactiveShellPath } from '../src/tmux/interactive-shell.js';
 import { startNamedReplacementSession, worktreeSessionName } from '../src/tmux/session-name.js';
 import type { SocketRef, Worktree } from '../src/domain/models.js';
@@ -123,13 +123,15 @@ describe('LaunchService', () => {
 
   it('marks home-launched agents as Scratch without replacing their tmux title', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
-    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
-    const service = new LaunchService(codex);
+    run.mockImplementation(async (_bin: string, args: string[]) => ({ code: 0, stdout: args.includes('new-session') ? '%5' : '', stderr: '' }));
+    const service = new LaunchService(codex, { find: async () => [] });
 
     await expect(service.launchHome()).resolves.toBe(true);
 
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['/usr/bin/zsh', '-lc', expect.stringContaining('source "$HOME/.zshrc"')]));
-    expect(run).toHaveBeenLastCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', expect.stringMatching(/^rac-[\w-]+$/u), '@rac_display_label', scratchLabel]);
+    // the pane is labelled, not retitled: its tmux title stays the agent's own
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%5', '@rac_display_label', scratchLabel]);
+    expect(run.mock.calls.some(call => (call[1] as string[]).some(arg => arg.includes('pane_title') || arg === 'select-pane'))).toBe(false);
   });
 
   it('launches a scratch agent in the configured scratchDirectory while HOME stays the account home', async () => {
@@ -149,18 +151,18 @@ describe('LaunchService', () => {
 
   it('launches a non-git directory Project in place, labeled with the Project and remembering its kind', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
-    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    run.mockImplementation(async (_bin: string, args: string[]) => ({ code: 0, stdout: args.includes('new-session') ? '%5' : '', stderr: '' }));
     const remembered: Array<[string, string]> = [];
     const store = { launchProfiles: async () => ({}), rememberLaunchProfile: async (key: string, kind: string) => { remembered.push([key, kind]); } };
     const config = { adapters: { codex: { program: codexProgram, args: [], env: {}, launchable: true } }, projects: [{ id: 'notes', label: 'Notes', path: '/home/me/notes', identity: '/home/me/notes', mode: 'directory', available: true }] };
-    const service = new LaunchService(config as never, undefined, undefined, undefined, store as never);
+    const service = new LaunchService(config as never, { find: async () => [] }, undefined, undefined, store as never);
 
     await expect(service.launchProjectDirectory('notes')).resolves.toBe(true);
 
-    // the pane opens in the Project directory, like Scratch (a fresh session, no worktree)
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['-c', '/home/me/notes']));
-    // the session is labeled with the Project so its tab reads as the Project
-    expect(run).toHaveBeenLastCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', expect.stringMatching(/^rac-[\w-]+$/u), '@rac_display_label', 'Notes']);
+    // the pane opens in the Project directory, like Scratch (no worktree), in a session named for it
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['new-session', '-d', '-s', 'notes', '-c', '/home/me/notes']));
+    // the new pane is labeled with the Project so its tab reads as the Project
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%5', '@rac_display_label', 'Notes']);
     // the resolved kind is remembered under the Project scope, seeding the next launch
     expect(remembered).toEqual([['notes', 'codex']]);
   });
@@ -199,10 +201,12 @@ describe('LaunchService', () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     process.env.RAC_CODEX_BIN = '/container/bin/codex';
     process.env.RAC_HOST_CODEX_BIN = '/host/bin/codex';
-    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    run.mockImplementation(async (_bin: string, args: string[]) => ({ code: 0, stdout: args.includes('new-session') ? '%5' : '', stderr: '' }));
     const service = new LaunchService({ adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true } }, projects: [{ hostPath: '/home/ubuntu/remoteagents' }] } as never);
 
     await expect(service.launchUpdateAdvisor('/home/ubuntu/remoteagents', '2'.repeat(40))).resolves.toBe(true);
+    // its own uniquely named session, never a Place's
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['new-session', '-s', expect.stringMatching(/^rac-[\w-]+$/u)]));
 
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['new-session', '-c', '/home/ubuntu/remoteagents']));
     const command = (run.mock.calls[0]?.[1] as string[]).join(' ');
@@ -212,7 +216,7 @@ describe('LaunchService', () => {
     expect(command).not.toContain("export HOME='/home/ubuntu/remoteagents'");
     expect(command).not.toContain('--sandbox read-only');
     expect(command).not.toContain('--ask-for-approval never');
-    expect(run).toHaveBeenLastCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', expect.stringMatching(/^rac-[\w-]+$/u), '@rac_display_label', 'Update Advisor Starting v4 2222222']);
+    expect(run).toHaveBeenLastCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%5', '@rac_display_label', 'Update Advisor Starting v4 2222222']);
   });
 
   it('gives the host update advisor the configured codex setup, but not when RAC_HOST_CODEX_BIN overrides the program', async () => {
@@ -426,7 +430,7 @@ describe('LaunchService', () => {
     // default socket; the runner path must step around it, not collide on new-session
     run.mockImplementation(async (_binary: string, args: string[]) => args.includes('list-sessions') ? { code: 0, stdout: 'owen\n', stderr: '' } : { code: 0, stdout: '', stderr: '' });
     const worktree = testWorktree({ id: 'owen', projectId: 'proj', path: '/worktrees/owen', identity: '/worktrees/owen', main: false });
-    const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree], () => new Set(), root);
+    const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree], () => new Set(), undefined, root);
 
     await expect(service.launch(worktree.id)).resolves.toBe(true);
 
@@ -698,9 +702,9 @@ describe('LaunchService', () => {
       run.mockResolvedValue({ code: 0, stdout: '%9', stderr: '' });
       const socket: SocketRef = { fingerprint: 'sock', path: '/tmp/tmux/default', device: 1, inode: 1 };
       const worktree = alex();
-      const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
+      const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree], () => new Set(), async placeId => (placeId === 'alex' ? { socket, session: '$1' } : undefined));
 
-      await expect(service.createConsoleShell(worktreePlace(worktree), 'build', { socket, session: '$1' })).resolves.toBe('%9');
+      await expect(service.createConsoleShell(worktreePlace(worktree), 'build')).resolves.toBe('%9');
 
       const newWindow = run.mock.calls.find(call => call[1].includes('new-window'));
       expect(newWindow?.[1]).toEqual(['-S', '/tmp/tmux/default', 'new-window', '-d', '-t', '$1', '-c', '/worktrees/alex', '-P', '-F', '#{pane_id}', '--', interactiveShellPath(), '-l']);
@@ -876,6 +880,167 @@ describe('LaunchService', () => {
 
         expect(panes.map(pane => pane.paneId)).toEqual(['%1', '%2']);
       });
+    });
+  });
+
+  describe('Launching into a directory Project or Scratch joins its Place', () => {
+    const socket: SocketRef = { fingerprint: 'sock', path: '/host-tmux/default', device: 1, inode: 2 };
+    const notes = { id: 'notes', label: 'Notes', path: '/data/notes', identity: '/data/notes', mode: 'directory', hostPath: '/host/notes', available: true };
+    const config = { ...(codex as object), projects: [notes], scratchDirectory: '/home/me/scratch' } as never;
+    const store = { launchProfiles: async () => ({}), rememberLaunchProfile: async () => {} };
+    const pane = (over: Record<string, unknown>) => ({ paneId: '%1', sessionId: '$1', pid: 1, path: '/host/notes', command: 'zsh', title: '', socket, ...over });
+    // non-git fake paths are their own roots, as a real `git rev-parse` failure resolves them
+    const service = (panes: Array<Record<string, unknown>>, agentSession: (placeId: string) => Promise<TmuxSession | undefined> = async () => undefined, extra: Record<string, unknown> = {}, placeConfig = config) =>
+      new LaunchService(placeConfig, { find: async () => [socket] }, { listPanes: async () => panes.map(pane), pastePrompt: vi.fn(async () => true), enter: vi.fn(async () => true), ...extra } as never, async path => path, store as never, () => [], () => new Set(), agentSession);
+    const tmuxCall = (verb: string) => run.mock.calls.find(call => (call[1] as string[]).includes(verb))?.[1] as string[] | undefined;
+    beforeEach(() => { process.env.RAC_HOST_TMUX_DIR = '/host-tmux'; });
+
+    it("adopts the Place's idle console-launched shell, never a Console shell, a stranger's shell, a subfolder or another label", async () => {
+      const pastePrompt = vi.fn(async () => true);
+      const launch = service([
+        { paneId: '%1', role: 'shell', consoleManaged: true, displayLabel: 'Notes' }, // a Console shell
+        { paneId: '%2' },                                                            // the operator's own shell
+        { paneId: '%6', consoleManaged: true },                                      // the operator's shell a Worktree launch once adopted
+        { paneId: '%3', path: '/host/notes/drafts', consoleManaged: true, displayLabel: 'Notes' }, // a subfolder
+        { paneId: '%4', consoleManaged: true, displayLabel: 'Update Advisor' },     // another launch's label
+        { paneId: '%7', command: 'codex', consoleManaged: true, displayLabel: 'Notes' }, // a running Agent
+        { paneId: '%5', consoleManaged: true, displayLabel: 'Notes' }               // the Project's last Agent, exited
+      ], undefined, { pastePrompt });
+
+      await expect(launch.launchProjectDirectory('notes')).resolves.toBe(true);
+
+      expect(pastePrompt).toHaveBeenCalledTimes(1);
+      expect(pastePrompt).toHaveBeenCalledWith(socket, '%5', expect.stringMatching(/^rac-launch-/u), codexProgram);
+      expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%5', '@rac_display_label', 'Notes']);
+      expect(tmuxCall('new-session')).toBeUndefined();
+      expect(tmuxCall('new-window')).toBeUndefined();
+    });
+
+    it('adopts at the Place home itself for a Scratch Place and an unbridged directory Project', async () => {
+      const pastePrompt = vi.fn(async (_socket: SocketRef, _pane: string, _buffer: string, _text: string) => true);
+      const local = { ...(config as object), projects: [{ ...notes, hostPath: undefined }] } as never;
+      const launch = service([
+        { paneId: '%1', path: '/data/notes', consoleManaged: true, displayLabel: 'Notes' },
+        { paneId: '%2', path: '/home/me/scratch', consoleManaged: true, displayLabel: scratchLabel }
+      ], undefined, { pastePrompt }, local);
+
+      await expect(launch.launchProjectDirectory('notes')).resolves.toBe(true);
+      await expect(launch.launchHome()).resolves.toBe(true);
+
+      expect(pastePrompt.mock.calls.map(call => call[1])).toEqual(['%1', '%2']);
+      expect(tmuxCall('new-session')).toBeUndefined();
+    });
+
+    it("opens a Scratch launch as a window in the session holding the Scratch folder's Console shells", async () => {
+      run.mockResolvedValue({ code: 0, stdout: '%9', stderr: '' });
+      // another Place's shell comes first, and a stranger's shell sits in the Scratch folder
+      const launch = service([
+        { paneId: '%2', sessionId: '$1', role: 'shell' },
+        { paneId: '%1', sessionId: '$4', role: 'shell', path: '/home/me/scratch/probe' },
+        { paneId: '%6', sessionId: '$5', path: '/home/me/scratch' }
+      ]);
+
+      await expect(launch.launchHome()).resolves.toBe(true);
+
+      expect(tmuxCall('new-window')?.slice(0, 8)).toEqual(['-S', '/host-tmux/default', 'new-window', '-d', '-t', '$4', '-c', '/home/me/scratch']);
+      expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%9', '@rac_display_label', scratchLabel]);
+      expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%9', '@rac_console_managed', '1']);
+      expect(tmuxCall('new-session')).toBeUndefined();
+    });
+
+    it("opens a directory-Project launch as a window in its live Agent's session when it has no Console shells", async () => {
+      run.mockResolvedValue({ code: 0, stdout: '%9', stderr: '' });
+      const agentSocket: SocketRef = { fingerprint: 'mine', path: '/run/user/1000/tmux/default', device: 3, inode: 4 };
+      const asked: string[] = [];
+      const launch = service([{ paneId: '%3', sessionId: '$2', role: 'shell', path: '/home/me/scratch' }], async placeId => { asked.push(placeId); return placeId === 'notes:/data/notes' ? { socket: agentSocket, session: '$7' } : undefined; });
+
+      await expect(launch.launchProjectDirectory('notes')).resolves.toBe(true);
+
+      expect(asked).toEqual(['notes:/data/notes']);
+      const window = tmuxCall('new-window');
+      expect(window?.slice(0, 8)).toEqual(['-S', '/run/user/1000/tmux/default', 'new-window', '-d', '-t', '$7', '-c', '/host/notes']);
+      // the host bootstrap exports the account home, as a fresh directory launch does
+      expect(window?.join(' ')).toContain("export HOME='/host'");
+      expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/run/user/1000/tmux/default', 'set-option', '-p', '-t', '%9', '@rac_display_label', 'Notes']);
+    });
+
+    it('starts a session named for the Place when it has nothing to adopt or join', async () => {
+      let panes = 0;
+      run.mockImplementation(async (_bin: string, args: string[]) => ({ code: 0, stdout: args.includes('new-session') ? `%${++panes}` : '', stderr: '' }));
+      const launch = service([]);
+
+      await expect(launch.launchProjectDirectory('notes')).resolves.toBe(true);
+      await expect(launch.launchHome()).resolves.toBe(true);
+
+      const sessions = run.mock.calls.filter(call => (call[1] as string[]).includes('new-session')).map(call => (call[1] as string[]).slice(0, 8));
+      expect(sessions).toEqual([
+        ['-S', '/host-tmux/default', 'new-session', '-d', '-s', 'notes', '-c', '/host/notes'],
+        ['-S', '/host-tmux/default', 'new-session', '-d', '-s', 'scratch', '-c', '/home/me/scratch']
+      ]);
+      // options target the new pane, never the bare session name (which can resolve to a window elsewhere)
+      expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%1', '@rac_display_label', 'Notes']);
+      expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%1', '@rac_console_managed', '1']);
+      expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%2', '@rac_display_label', scratchLabel]);
+    });
+
+    it('writes a dotted Place folder as tmux will list its session, so the free-name check sees it', async () => {
+      run.mockImplementation(async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('list-sessions') ? 'example_com\n' : args.includes('new-session') ? '%5' : '', stderr: '' }));
+      const dotted = { ...(config as object), projects: [{ ...notes, hostPath: '/srv/example.com' }] } as never;
+
+      await expect(service([], undefined, {}, dotted).launchProjectDirectory('notes')).resolves.toBe(true);
+
+      expect(tmuxCall('new-session')?.slice(0, 6)).toEqual(['-S', '/host-tmux/default', 'new-session', '-d', '-s', 'example_com-2']);
+    });
+
+    it('suffixes the Place session past a name another session already holds', async () => {
+      run.mockImplementation(async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('list-sessions') ? 'notes\n' : args.includes('new-session') ? '%5' : '', stderr: '' }));
+
+      await expect(service([]).launchProjectDirectory('notes')).resolves.toBe(true);
+
+      expect(tmuxCall('new-session')?.slice(0, 6)).toEqual(['-S', '/host-tmux/default', 'new-session', '-d', '-s', 'notes-2']);
+    });
+
+    it('launches a local Place window through the runner, keeping the command out of the process table', async () => {
+      delete process.env.RAC_HOST_TMUX_DIR;
+      const root = await mkdtemp(join(tmpdir(), 'rac-launch-'));
+      tempDirs.push(root);
+      run.mockResolvedValue({ code: 0, stdout: '%9', stderr: '' });
+      const local: SocketRef = { fingerprint: 'mine', path: '/tmp/tmux-1000/default', device: 3, inode: 4 };
+      const launch = new LaunchService(config, { find: async () => [] }, { listPanes: async () => [] } as never, async path => path, store as never, () => [], () => new Set(), async () => ({ socket: local, session: '$7' }), root);
+
+      await expect(launch.launchHome()).resolves.toBe(true);
+
+      expect(tmuxCall('new-window')?.slice(0, 10)).toEqual(['-S', '/tmp/tmux-1000/default', 'new-window', '-d', '-t', '$7', '-P', '-F', '#{pane_id}', process.execPath]);
+      expect(tmuxCall('new-window')?.join(' ')).not.toContain(codexProgram);
+    });
+
+    it('refuses a second launch into the same Place while the first is in flight, but not one into another Place', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      let lists = 0;
+      const launch = new LaunchService(config, { find: async () => [socket] }, { listPanes: async () => { lists += 1; if (lists === 1) await gate; return []; } } as never, async path => path, store as never, () => []);
+
+      const first = launch.launchProjectDirectory('notes');
+      await vi.waitFor(() => expect(lists).toBe(1));
+      await expect(launch.launchProjectDirectory('notes')).resolves.toBe(false);
+      await expect(launch.launchHome()).resolves.toBe(true);
+      run.mockResolvedValue({ code: 0, stdout: '%5', stderr: '' });
+      release();
+      await expect(first).resolves.toBe(true);
+      // the Place is free again once its launch settles
+      await expect(launch.launchProjectDirectory('notes')).resolves.toBe(true);
+    });
+
+    it('resolves the Place each in-place launch joins', async () => {
+      const launch = service([]);
+
+      await expect(launch.directoryPlace('notes')).resolves.toMatchObject({ id: 'notes:/data/notes', kind: 'directory', label: 'Notes' });
+      await expect(launch.directoryPlace('absent')).resolves.toBeUndefined();
+      // a repository Project launches through its Worktrees, an unavailable one has nothing to join
+      const refused = service([], undefined, {}, { ...(config as object), projects: [{ ...notes, mode: 'repository' }, { ...notes, id: 'gone', available: false }] } as never);
+      await expect(refused.directoryPlace('notes')).resolves.toBeUndefined();
+      await expect(refused.directoryPlace('gone')).resolves.toBeUndefined();
+      await expect(launch.scratchPlace()).resolves.toMatchObject({ id: 'scratch:/home/me/scratch', kind: 'scratch', label: scratchLabel });
     });
   });
 });

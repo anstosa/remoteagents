@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { mkdtemp as mkdtempAsync, rm as rmAsync } from 'node:fs/promises';
+import { mkdtemp as mkdtempAsync, realpath, rm as rmAsync } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,6 +15,7 @@ import { run } from '../src/tmux/command.js';
 import { interactiveShellPath } from '../src/tmux/interactive-shell.js';
 import type { SocketRef, Worktree } from '../src/domain/models.js';
 import { testConfig, testProject, testWorktree } from './helpers/config.js';
+import { worktreePlace } from '../src/places/places.js';
 
 // The Console-shell lifecycle against a throwaway tmux server on a private socket: the adapter
 // creating a marked shell window, the markers showing in a real `list-panes`, a rename writing
@@ -124,10 +125,10 @@ describe.skipIf(!tmuxSocketsWork)('Console shells (real tmux)', () => {
   it('opens a Console shell beside a session with both markers, renames it, and reads the busy state', async () => {
     const fixture = await fixtureSession();
     const worktree = testWorktree({ id: 'proj:wt', projectId: 'proj', path: fixture.worktreeDir, identity: fixture.worktreeDir, main: false });
-    const launch = new LaunchService(testConfig() as never, { find: async () => [fixture.socket] }, new TmuxAdapter(), undefined, undefined, () => [worktree]);
+    const launch = new LaunchService(testConfig() as never, { find: async () => [fixture.socket] }, new TmuxAdapter(), undefined, undefined, () => [worktree], () => new Set(), async () => ({ socket: fixture.socket, session: fixture.session }));
 
     // created beside the fixture session, it is a login shell in the Worktree, marked and named
-    const pane = await launch.createConsoleShell(worktree, 'build', { socket: fixture.socket, session: fixture.session });
+    const pane = await launch.createConsoleShell(worktreePlace(worktree), 'build');
     expect(pane).toMatch(/^%\d+$/);
     const shells = await launch.placeConsoleShells(worktree);
     expect(shells).toHaveLength(1);
@@ -207,11 +208,40 @@ describe.skipIf(!tmuxSocketsWork)('Console shells (real tmux)', () => {
 
     const store = { rememberLaunchProfile: async () => {}, launchProfiles: async () => ({}) } as never;
     const config = testConfig({ adapters: { codex: { program: '/bin/echo', args: [], env: {}, launchable: true } } } as never);
-    const launch = new LaunchService(config as never, { find: async () => [fixture.socket] }, new TmuxAdapter(), undefined, store, () => [worktree], () => new Set(), join(fixture.worktreeDir, '.rac-launch'));
+    const launch = new LaunchService(config as never, { find: async () => [fixture.socket] }, new TmuxAdapter(), undefined, store, () => [worktree], () => new Set(), undefined, join(fixture.worktreeDir, '.rac-launch'));
 
     expect(await launch.launch(worktree.id)).toBe(true);
 
     // the launch added a window to the shells' session rather than opening a new session
     expect((await windowIds()).length).toBe(before + 1);
   });
+
+  // A directory-Project or Scratch launch joins its Place the way a Worktree launch does. The
+  // fixture pane runs `cat` (no adoptable shell) and the runner exits at once under the test
+  // runner, so `remain-on-exit` keeps the launched window to read its label from.
+  for (const kind of ['directory', 'scratch'] as const) {
+    it(`joins the session holding a ${kind} Place's Console shells and labels the launched pane`, async () => {
+      const fixture = await fixtureSession();
+      const home = await realpath(fixture.worktreeDir);
+      await run(tmux, ['-S', fixture.socketPath, 'set-option', '-g', 'remain-on-exit', 'on']);
+      expect(await new TmuxAdapter().createConsoleShellWindow(fixture.socket, fixture.session, home, [interactiveShellPath(), '-l'], '')).toMatch(/^%\d+$/);
+      const windowIds = async () => (await run(tmux, ['-S', fixture.socketPath, 'list-windows', '-t', fixture.session, '-F', '#{window_id}'])).stdout.trim().split('\n').filter(Boolean);
+      const before = await windowIds();
+
+      const store = { rememberLaunchProfile: async () => {}, launchProfiles: async () => ({}) } as never;
+      const notes = testProject({ id: 'notes', label: 'Notes', mode: 'directory', path: home, identity: home });
+      const config = testConfig({ adapters: { codex: { program: '/bin/echo', args: [], env: {}, launchable: true } }, ...(kind === 'directory' ? { projects: [notes] } : { projects: [], scratchDirectory: home }) } as never);
+      const launch = new LaunchService(config as never, { find: async () => [fixture.socket] }, new TmuxAdapter(), undefined, store, () => [], () => new Set(), undefined, join(home, '.rac-launch'));
+
+      expect(kind === 'directory' ? await launch.launchProjectDirectory('notes') : await launch.launchHome()).toBe(true);
+
+      // a window in the shells' session rather than a new session, labelled with the Place
+      const after = await windowIds();
+      expect(after).toHaveLength(before.length + 1);
+      const added = after.find(id => !before.includes(id))!;
+      const label = (await run(tmux, ['-S', fixture.socketPath, 'display-message', '-p', '-t', added, '#{@rac_display_label}'])).stdout.trim();
+      expect(label).toBe(kind === 'directory' ? 'Notes' : '~ Scratch');
+      expect((await run(tmux, ['-S', fixture.socketPath, 'list-sessions', '-F', '#{session_name}'])).stdout.trim().split('\n')).toEqual([fixture.session]);
+    });
+  }
 });

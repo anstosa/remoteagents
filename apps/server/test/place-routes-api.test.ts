@@ -36,7 +36,8 @@ const url = (id: string, rest: string) => `/api/worktrees/${encodeURIComponent(i
 const shell = (over: Record<string, unknown> = {}) => ({ paneId: '%9', sessionId: '$4', windowId: '@2', pid: 9, path: '/data/notes', command: 'zsh', role: 'shell', title: '', socket: testSocket, ...over });
 const idleDashboard = { generation: 1, adapters: {}, agents: [] as unknown[], projects: [], places: [] };
 
-async function start(deps: { discovery?: object; launch?: object; tmux?: object; notes?: WorktreeNoteService; worktreeStore?: WorktreeLaunchStore; workspaceFiles?: object } = {}) {
+// `realLaunch` leaves the launch service to buildApp, so its Place-session lookup is the app's own wiring
+async function start(deps: { discovery?: object; launch?: object; realLaunch?: true; tmux?: object; notes?: WorktreeNoteService; worktreeStore?: WorktreeLaunchStore; workspaceFiles?: object } = {}) {
   const discovery = {
     worktreesNow: () => [worktree],
     invalidateWorktrees: () => {},
@@ -48,7 +49,8 @@ async function start(deps: { discovery?: object; launch?: object; tmux?: object;
   const launch = { launchResolutions: async () => new Map(), consoleShellBusy: (pane: { command: string }) => pane.command !== 'zsh', ...deps.launch };
   return await buildApp(testConfig({ publicOrigin: new URL(`https://${host}`), projects: [testProject({ id: 'proj' }), testProject({ id: 'notes', label: 'Notes', path: '/data/notes', identity: '/data/notes', mode: 'directory', hostPath: '/host/notes' })], scratchDirectory: '/home/me/scratch' }), {
     auth, control, dashboardUpdates, launchPollDelay: zeroPollDelay,
-    discovery: discovery as never, launch: launch as never, tmux: (deps.tmux ?? {}) as never,
+    discovery: discovery as never, tmux: (deps.tmux ?? {}) as never,
+    ...(deps.realLaunch ? {} : { launch: launch as never }),
     ...(deps.notes === undefined ? {} : { notes: deps.notes }),
     ...(deps.worktreeStore === undefined ? {} : { worktreeStore: deps.worktreeStore }),
     ...(deps.workspaceFiles === undefined ? {} : { workspaceFiles: deps.workspaceFiles as never }),
@@ -80,10 +82,10 @@ describe('Terminals at a directory-Project or Scratch Place with no Agent', () =
       const directory = await app.inject({ method: 'POST', url: url(directoryPlace.id, '/shells'), headers: mutate, payload: { name: 'build' } });
       expect(directory.statusCode).toBe(201);
       // the listed Place carries its bridge host path, where the host tmux starts the shell
-      expect(createConsoleShell).toHaveBeenCalledWith(directoryPlace, 'build', undefined);
+      expect(createConsoleShell).toHaveBeenCalledWith(directoryPlace, 'build');
       const scratch = await app.inject({ method: 'POST', url: url(scratchPlace.id, '/shells'), headers: mutate, payload: {} });
       expect(scratch.statusCode).toBe(201);
-      expect(createConsoleShell).toHaveBeenLastCalledWith(scratchPlace, '', undefined);
+      expect(createConsoleShell).toHaveBeenLastCalledWith(scratchPlace, '');
     } finally { await app.close(); }
   });
 
@@ -91,15 +93,16 @@ describe('Terminals at a directory-Project or Scratch Place with no Agent', () =
     // an Agent at another Place comes first, so only the Place match picks the right session
     const elsewhere = stated({ id: 'socket:%3', paneId: '%3', sessionId: 'socket:$2', socketFingerprint: 'socket', home: '/repo', placeId: worktree.id, worktreeId: worktree.id, title: 'Ready' });
     const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$7', socketFingerprint: 'socket', home: '/home/me/scratch', placeId: scratchPlace.id, title: 'Ready' });
-    const createConsoleShell = vi.fn(async () => '%9');
+    const createConsoleShellWindow = vi.fn(async () => '%9');
     const app = await start({
-      launch: { createConsoleShell },
+      realLaunch: true,
+      tmux: { createConsoleShellWindow },
       discovery: { dashboard: async () => ({ ...idleDashboard, agents: [elsewhere, agent] }), target: async (id: string) => [elsewhere, agent].map(candidate => ({ agent: candidate, socket: testSocket })).find(target => target.agent.id === id) },
     });
     try {
       const response = await app.inject({ method: 'POST', url: url(scratchPlace.id, '/shells'), headers: mutate, payload: {} });
       expect(response.statusCode).toBe(201);
-      expect(createConsoleShell).toHaveBeenCalledWith(scratchPlace, '', { socket: testSocket, session: '$7' });
+      expect(createConsoleShellWindow).toHaveBeenCalledWith(testSocket, '$7', '/home/me/scratch', expect.any(Array), '');
     } finally { await app.close(); }
   });
 

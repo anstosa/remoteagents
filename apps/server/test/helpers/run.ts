@@ -1,4 +1,5 @@
 import type { Agent, Dashboard, SocketRef, Worktree } from '../../src/domain/models.js';
+import type { Place } from '../../src/places/places.js';
 
 /**
  * The fakes the Run primitive's HTTP-seam tests drive `buildApp` with, kept here so the
@@ -14,12 +15,16 @@ export const zeroPollDelay = async (): Promise<void> => {};
  * saw. It covers the three Run targets — a Worktree (`launch`), a directory Project
  * (`launchProjectDirectory`) and Scratch (`launchHome`) — and reports every kind launchable unless
  * `unlaunchable` is set, so the Run primitive's launchability precondition can be exercised.
+ * A directory Project's Place is `<projectId>:/<projectId>` and the Scratch Place `scratch:/scratch`;
+ * a launched Agent there is matched back by that `placeId`.
  */
 export type LaunchVia = 'worktree' | 'project' | 'home';
 export function launchFake(options: { refuse?: boolean; unlaunchable?: boolean } = {}): {
   launch: (worktreeId: string, kind?: string) => Promise<boolean>;
   launchProjectDirectory: (projectId: string, kind?: string) => Promise<boolean>;
   launchHome: (kind?: string) => Promise<boolean>;
+  directoryPlace: (projectId: string) => Promise<Place>;
+  scratchPlace: () => Promise<Place>;
   isLaunchableKind: (kind: string) => boolean;
   kinds: Array<string | undefined>;
   // which launch method fired, so a test can tell the three target dispatches apart
@@ -32,6 +37,8 @@ export function launchFake(options: { refuse?: boolean; unlaunchable?: boolean }
     launch: async (_worktreeId, kind) => record('worktree', kind),
     launchProjectDirectory: async (_projectId, kind) => record('project', kind),
     launchHome: async kind => record('home', kind),
+    directoryPlace: async projectId => ({ id: `${projectId}:/${projectId}`, kind: 'directory', projectId, label: projectId, home: `/${projectId}` }),
+    scratchPlace: async () => ({ id: 'scratch:/scratch', kind: 'scratch', projectId: 'scratch', label: '~ Scratch', home: '/scratch' }),
     isLaunchableKind: () => !options.unlaunchable,
     kinds,
     calls,

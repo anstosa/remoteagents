@@ -18,8 +18,8 @@ import { TmuxAdapter } from './tmux/adapter.js';
 import { maxPromptAttachments, maxPromptAttachmentBytes, PromptService, type PromptAttachment } from './prompts/service.js';
 import { promptAttachmentBytes, promptAttachmentData, promptAttachmentName, validPrompt, validPromptAttachments } from './prompts/validation.js';
 import { QueuedPromptService, type QueuedPrompt } from './prompts/queue.js';
-import { LaunchService } from './launch/service.js';
-import { createAgentWaiter, launchPollAttempts, launchPollDelay as defaultLaunchPollDelay, launchReadyTimeoutSeconds } from './launch/wait.js';
+import { LaunchService, type TmuxSession } from './launch/service.js';
+import { atPlace, createAgentWaiter, inWorktree, launchPollAttempts, launchPollDelay as defaultLaunchPollDelay, launchReadyTimeoutSeconds } from './launch/wait.js';
 import { scratchLaunchKey, WorktreeLaunchStore } from './worktrees/store.js';
 import { folderNoteKey, placeLaunchScope, placeNoteKey, worktreePlace, type Place } from './places/places.js';
 import { safeEnv } from './tmux/command.js';
@@ -104,7 +104,7 @@ const promptAttachments = (value: unknown): PromptAttachment[] | undefined => {
 const noteAttachmentBodyLimit = Math.ceil(maxPromptAttachmentBytes * 1.4);
 // build the console server
 export async function buildApp(config: ValidatedConfig, deps: Dependencies = {}): Promise<FastifyInstance> {
-  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore, undefined, config.scratchDirectory); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow(), () => paneStream.openPaneKeys()); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const prompts = deps.prompts ?? new PromptService(discovery, tmux, promptHistory, queuedPrompts, (scope: string, prompt: QueuedPrompt) => drainUndelivered(scope, prompt), undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const consoleNamed = deps.consoleNamed ?? new ConsoleNamedConversationService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const comparison = deps.comparison ?? new ComparisonService(async worktreeId => worktreePrBase(await discovery.dashboard(), worktreeId)); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboardFingerprint); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
+  const auth = deps.auth ?? new AuthService(process.env.RAC_PASSWORD_HASH ?? '', process.env.RAC_SESSION_SECRET ?? ''); const control = deps.control ?? new ControlService(); const devices = deps.devices ?? new DeviceService(); const tmux = deps.tmux ?? new TmuxAdapter(); const worktreeStore = deps.worktreeStore ?? new WorktreeLaunchStore(); const discovery = deps.discovery ?? new DiscoveryService(undefined, tmux, undefined, undefined, config.adapters, config.projects, worktreeStore, undefined, config.scratchDirectory); const tickets = deps.tickets ?? new TicketStore(); const launch = deps.launch ?? new LaunchService(config, undefined, tmux, undefined, worktreeStore, () => discovery.worktreesNow(), () => paneStream.openPaneKeys(), async placeId => await placeAgentSession(placeId)); const promptHistory = deps.promptHistory ?? new PromptHistoryService(); const queuedPrompts = deps.queuedPrompts ?? new QueuedPromptService(); const prompts = deps.prompts ?? new PromptService(discovery, tmux, promptHistory, queuedPrompts, (scope: string, prompt: QueuedPrompt) => drainUndelivered(scope, prompt), undefined, kind => config.adapters[kind]?.teardown); const notes = deps.notes ?? new WorktreeNoteService(); const consoleNamed = deps.consoleNamed ?? new ConsoleNamedConversationService(); const commandCatalog = deps.commandCatalog ?? new CommandCatalogService(); const workspaceFiles = deps.workspaceFiles ?? new WorkspaceFileService(); const comparison = deps.comparison ?? new ComparisonService(async worktreeId => worktreePrBase(await discovery.dashboard(), worktreeId)); const push = deps.push ?? new PushService(); const notifications = deps.notifications ?? new AgentNotificationCoordinator(() => {}); const worktreeManagement = deps.worktreeManagement ?? new WorktreeManagementService(() => config.projects); const cleanup = deps.cleanup ?? new CleanupService(discovery, undefined, tmux, undefined, worktreeManagement); const stackCommands = deps.worktreeCommands ?? new WorktreeCommandService(config, discovery); const prSwitch = deps.prSwitch ?? new PullRequestSwitchService(config, discovery); const newTask = deps.newTask ?? new NewTaskService(config, discovery, tmux); const dashboardUpdates = deps.dashboardUpdates ?? new DashboardUpdates<DashboardPayload>(dashboardFingerprint); const codexProgram = resolveCodexProgram(config); const reviewTours = deps.reviewTours ?? new ReviewTourService(discovery, new CodexExecReviewTourGenerator(codexProgram)); const reviewStore = deps.reviewStore ?? new ReviewTourStore(); const serverAdmin = deps.serverAdmin ?? new ServerAdminService(config);
   const temporaryPreviews = deps.temporaryPreviews ?? new TemporaryPreviewService();
   // freeze the checkout identity serving this process
   const deployedRevision = serverAdmin.revision();
@@ -1660,35 +1660,26 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // Adapter's own budget, not this cap, ends the wait. The injectable poll delay paces it in tests.
   const resetSettleAttempts = 20;
   // how to launch, match and reuse each Schedule target, mirroring the launcher rows; undefined
-  // when the target no longer resolves (a removed Worktree, an unavailable directory Project)
-  type RunPlan = { matches: (workspace: string) => boolean; launch: () => Promise<boolean>; waitForNewAgent: (before: Set<string>) => Promise<Agent | undefined> };
-  const resolveRunPlan = (target: ScheduleTarget, kind: AgentKind | undefined): RunPlan | undefined => {
+  // when the target no longer resolves (a removed Worktree, an unavailable directory Project).
+  // A directory Project or Scratch matches its Agents by Place, wherever in the Place they run.
+  type RunPlan = { matches: (agent: Agent) => boolean; launch: () => Promise<boolean>; waitForNewAgent: (before: Set<string>) => Promise<Agent | undefined> };
+  const resolveRunPlan = async (target: ScheduleTarget, kind: AgentKind | undefined): Promise<RunPlan | undefined> => {
     if ('worktreeId' in target) {
       const worktree = configuredWorktree(target.worktreeId);
       if (worktree === undefined) return undefined;
       return {
-        matches: workspace => worktreeMatchesWorkspace(worktree, workspace),
+        matches: agent => worktreeMatchesWorkspace(worktree, agent.home),
         launch: () => launch.launch(target.worktreeId, kind),
-        waitForNewAgent: before => waitForAgent(before, target.worktreeId),
+        waitForNewAgent: before => waitForAgent(before, inWorktree(target.worktreeId)),
       };
     }
-    if ('projectId' in target) {
-      const project = config.projects.find(candidate => candidate.id === target.projectId);
-      // only an available directory Project launches in place (a repository Project runs through its Worktrees)
-      if (project === undefined || !project.available || project.mode !== 'directory') return undefined;
-      return {
-        // a bridged Project launches at its host path but is discovered at its console path, so match either
-        matches: workspace => workspace === project.path || (project.hostPath !== undefined && workspace === project.hostPath),
-        launch: () => launch.launchProjectDirectory(target.projectId, kind),
-        waitForNewAgent: before => waitForAgent(before, undefined, project.label),
-      };
-    }
-    const directory = config.scratchDirectory ?? launchHome;
-    return {
-      matches: workspace => workspace === directory,
-      launch: () => launch.launchHome(kind),
-      waitForNewAgent: before => waitForAgent(before),
-    };
+    // only an available directory Project launches in place (a repository Project runs through its Worktrees)
+    const inPlace = 'projectId' in target
+      ? { place: await launch.directoryPlace(target.projectId), launch: () => launch.launchProjectDirectory(target.projectId, kind) }
+      : { place: await launch.scratchPlace(), launch: () => launch.launchHome(kind) };
+    const place = inPlace.place;
+    if (place === undefined) return undefined;
+    return { matches: atPlace(place.id), launch: inPlace.launch, waitForNewAgent: before => waitForAgent(before, atPlace(place.id)) };
   };
   // reuse the Schedule's own idle pane: reset the conversation, wait for the Adapter's settle
   // rule, then submit the Note's text with the reset instant so Codex completion anchors on the
@@ -1753,7 +1744,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   const runOnce = async (input: { text: string; attachments: PromptAttachment[]; kind: AgentKind | undefined; target: ScheduleTarget; previousAgentId?: string; unattended?: boolean; conversationName?: string }): Promise<RunOutcome> => {
     // preconditions — a failure records `skipped` with the reason and pastes nothing
     if (!validPrompt(input.text, input.attachments)) return { status: 'skipped', detail: 'note is empty' };
-    const plan = resolveRunPlan(input.target, input.kind);
+    const plan = await resolveRunPlan(input.target, input.kind);
     if (plan === undefined) return { status: 'skipped', detail: 'target is gone' };
     // whether the kind can launch is checked at Run time, since configuration can change
     if (input.kind !== undefined && !launch.isLaunchableKind(input.kind)) return { status: 'skipped', detail: `${input.kind} is not available` };
@@ -1766,7 +1757,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       if (input.previousAgentId !== undefined && capability !== undefined) {
         const prior = await discovery.target(input.previousAgentId, true);
         // a live previous agent of another kind or workspace was retargeted: leave it alone, launch fresh
-        if (prior !== undefined && prior.agent.kind === input.kind && plan.matches(prior.agent.home)) return await runReuse(prior, capability, input.text, input.attachments);
+        if (prior !== undefined && prior.agent.kind === input.kind && plan.matches(prior.agent)) return await runReuse(prior, capability, input.text, input.attachments);
       }
     }
     return await runFresh(plan, input.text, input.attachments, input.unattended ? input.conversationName : undefined);
@@ -1992,7 +1983,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const before = new Set(dashboard.agents.map(agent => agent.id));
     // launch inside the fixed host checkout
     if (!await launch.launchUpdateAdvisor(advisor.repository, targetSha)) return undefined;
-    const agent = await waitForAgent(before, undefined, updateAdvisorPendingLabel(targetSha));
+    const agent = await waitForAgent(before, candidate => candidate.displayLabel === updateAdvisorPendingLabel(targetSha));
     // stop after a failed discovery handoff
     if (agent === undefined) return undefined;
     // close an unprompted scratch pane
@@ -2062,7 +2053,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         await dashboardUpdates.refresh().catch(() => undefined);
         return { status: 'failed', worktreeId, reason: 'launch-failed', error: 'The agent closed, but it could not be resumed.' };
       }
-      const agent = await waitForAgent(before, worktree.id);
+      const agent = await waitForAgent(before, inWorktree(worktree.id));
       // retain recovery controls after a timeout
       if (agent === undefined) {
         await dashboardUpdates.refresh().catch(() => undefined);
@@ -2268,7 +2259,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const before = new Set(current.agents.map(agent => agent.id));
     // launch an inactive worktree directly into the Conversation, through its own Adapter
     if (!await launch.resumeConversation(worktree.id, conversationId, resumeKind)) return reply.code(409).send({ error: 'Could not resume the conversation.' });
-    const agent = await waitForAgent(before, worktree.id);
+    const agent = await waitForAgent(before, inWorktree(worktree.id));
     // surface slow or failed resume handoffs
     if (agent === undefined) return reply.code(504).send({ error: `The conversation started, but the agent did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
     await dashboardUpdates.refresh().catch(() => undefined);
@@ -2298,7 +2289,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const before = new Set((await discovery.dashboard()).agents.map(agent => agent.id));
     // require a successful launch handoff (refuses an unconfigured or unlaunchable kind)
     if (!await launch.launch(worktreeId, kind.kind)) return reply.code(409).send({ error: 'Could not start the worktree agent.' });
-    const agent = await waitForAgent(before, worktreeId);
+    const agent = await waitForAgent(before, inWorktree(worktreeId));
     // report a true timeout
     if (!agent) return reply.code(504).send({ error: `The worktree session started, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
     return reply.code(201).send({ agentId: agent.id });
@@ -2334,20 +2325,20 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return reply.code(failure.code).send({ error: failure.error });
   });
   // launch an agent in place in a non-git `directory` Project (it has no Worktrees). The
-  // new session is labeled with the Project, so it is matched back by display label.
+  // launch joins the Project's Place, so the new Agent is matched back by its Place.
   app.post('/api/projects/:id/launch', async (request, reply) => {
     controlled(request, true);
     const projectId = (request.params as { id: string }).id;
     const kind = requestedKind(request);
     // reject an unknown kind before any handoff
     if (kind.invalid) return reply.code(400).send({ error: 'invalid agent kind' });
-    const project = config.projects.find(candidate => candidate.id === projectId);
-    // only an available non-git directory Project launches in place
-    if (project === undefined || !project.available || project.mode !== 'directory') return reply.code(404).send({ error: 'project unavailable' });
+    // only an available non-git directory Project launches in place, joining its Place
+    const place = await launch.directoryPlace(projectId);
+    if (place === undefined) return reply.code(404).send({ error: 'project unavailable' });
     const before = new Set((await discovery.dashboard()).agents.map(agent => agent.id));
     // require a successful launch handoff (refuses an unconfigured or unlaunchable kind)
     if (!await launch.launchProjectDirectory(projectId, kind.kind)) return reply.code(409).send({ error: 'Could not start the project agent.' });
-    const agent = await waitForAgent(before, undefined, project.label);
+    const agent = await waitForAgent(before, atPlace(place.id));
     // report a true timeout
     if (!agent) return reply.code(504).send({ error: `The project session started, but the agent did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
     return reply.code(201).send({ agentId: agent.id });
@@ -2411,7 +2402,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         await launch.startWorktreeShell(worktree);
         const before = new Set((await discovery.dashboard()).agents.map(agent => agent.id));
         // report the agent when it appears, but never fail the creation on a slow launch
-        if (await launch.launch(worktreeId)) agentId = (await waitForAgent(before, worktreeId))?.id;
+        if (await launch.launch(worktreeId)) agentId = (await waitForAgent(before, inWorktree(worktreeId)))?.id;
         else launchError = 'The worktree was created, but the agent could not be started.';
       }
     }
@@ -2422,8 +2413,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
   // the session + socket of a Place's live Agent, so a new Console shell opens beside it
   // (an Agent adopted into the operator's own session lives wherever, so it is resolved from
   // discovery, never by session name)
-  const placeAgentSession = async (place: Place): Promise<{ socket: SocketRef; session: string } | undefined> => {
-    const agent = (await discovery.dashboard()).agents.find(candidate => candidate.placeId === place.id);
+  const placeAgentSession = async (placeId: string): Promise<TmuxSession | undefined> => {
+    const agent = (await discovery.dashboard()).agents.find(candidate => candidate.placeId === placeId);
     if (agent === undefined) return undefined;
     const target = await discovery.target(agent.id);
     return target === undefined ? undefined : { socket: target.socket, session: agentTmuxSession(target.agent) };
@@ -2461,7 +2452,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (place === undefined) return reply.code(404).send({ error: 'place unavailable' });
     const name = body(request).name;
     if (name !== undefined && (typeof name !== 'string' || name.length > 120 || name.includes('\0') || /[\r\n]/u.test(name))) return reply.code(400).send({ error: 'invalid terminal name' });
-    const paneId = await launch.createConsoleShell(place, typeof name === 'string' ? name : '', await placeAgentSession(place));
+    const paneId = await launch.createConsoleShell(place, typeof name === 'string' ? name : '');
     if (paneId === undefined) return reply.code(500).send({ error: 'could not open a terminal' });
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(201).send({ paneId });
@@ -2640,7 +2631,8 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (kind.invalid) return reply.code(400).send({ error: 'invalid agent kind' });
     const before = new Set((await discovery.dashboard()).agents.map(agent => agent.id));
     if (!await launch.launchHome(kind.kind)) return reply.code(409).send({ error: 'Could not start a new agent session.' });
-    const agent = await waitForAgent(before);
+    const scratch = await launch.scratchPlace();
+    const agent = await waitForAgent(before, atPlace(scratch.id));
     // report a true timeout
     if (!agent) return reply.code(504).send({ error: `The new session started, but Codex did not become ready within ${launchReadyTimeoutSeconds} seconds.` });
     return reply.code(201).send({ agentId: agent.id });
