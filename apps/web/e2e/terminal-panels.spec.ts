@@ -1162,6 +1162,40 @@ test('an agentless Worktree tab can open a Terminal', async ({ page }) => {
   await expect(page.locator('.terminal-pane[data-panel-key="%5"]')).toBeVisible();
 });
 
+// with no agent panel, a phone's Terminal still takes the whole footer for its helper keys
+test('on a phone an agentless Workspace\'s Terminal gives the toolbar over to its helper keys', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await installPaneMock(page);
+  const panes: Pane[] = [{ paneId: '%5', session: '$1', window: '@1', role: 'shell', name: 'build', command: 'zsh', path: '/worktrees/cora', title: '', agent: false, busy: false }];
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [], projects: [{ id: 'repo', label: 'Repo', available: true, worktrees: [
+      { id: 'cora', projectId: 'repo', label: 'Cora', path: '/worktrees/cora', main: true, detached: false, locked: false, available: true, pinned: true, order: 0, branch: 'main' }
+    ] }] } });
+    if (path === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (path === '/api/worktrees/cora/tickets') return route.fulfill({ json: { ticket: 'pane-ticket' } });
+    if (path === '/api/worktrees/cora/notes') return route.fulfill({ json: { notes: [] } });
+    if (path === '/api/worktrees/cora/launch-resolution') return route.fulfill({ json: { adapters: [] } });
+    if (path === '/api/worktrees/cora/panes' && request.method() === 'GET') return route.fulfill({ json: { panes } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  await page.goto('/');
+
+  const workspaceToolbar = page.getByRole('region', { name: 'Workspace toolbar' });
+  await expect(workspaceToolbar.getByRole('button', { name: 'Open a terminal' })).toBeVisible();
+  await openPicker(page);
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await seedPaneSize(page, '%5', 80, 24);
+  await expect(page.locator('.terminal-pane[data-panel-key="%5"]')).toBeInViewport({ ratio: 0.99 });
+
+  // as on an agent's Workspace, the keys replace the rest of the toolbar
+  await expect(page.getByRole('button', { name: 'Esc' })).toBeVisible();
+  await expect(workspaceToolbar.getByRole('button', { name: 'Open a terminal' })).toBeHidden();
+  await expect(workspaceToolbar.getByRole('button', { name: 'More options' })).toBeHidden();
+});
+
 // agentless terminal actions retain worktree-local notes and launch drafts
 test('an agentless Worktree Terminal can create a note and prepare its prompt', async ({ context, page }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
