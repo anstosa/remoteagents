@@ -1727,7 +1727,9 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .launch-split { display: inline-flex; flex: none; align-items: stretch; overflow: hidden; border-radius: var(--control-radius); background: linear-gradient(135deg, var(--mauve), var(--blue)); transition: filter .15s ease; }
 /* one wrapper gradient paints continuously beneath both button segments */
 .launch-split .launch-primary { gap: .4rem; border-right: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; background: transparent; box-shadow: none; }
-.launch-split .launch-chevron { display: inline-flex; flex: 0 0 2.1rem; align-items: center; justify-content: center; height: var(--standard-control-size); padding: 0; border: 1px solid color-mix(in srgb, var(--lavender) 54%, transparent); border-left: 1px solid color-mix(in srgb, var(--crust) 65%, transparent); border-radius: 0 var(--control-radius) var(--control-radius) 0; background: transparent; color: var(--crust); box-shadow: none; }
+/* an explicit width, not just the basis: Firefox sizes the overflow-hidden split from its items'
+   content widths, which would clip a basis-only chevron to its icon */
+.launch-split .launch-chevron { display: inline-flex; flex: 0 0 2.1rem; width: 2.1rem; align-items: center; justify-content: center; height: var(--standard-control-size); padding: 0; border: 1px solid color-mix(in srgb, var(--lavender) 54%, transparent); border-left: 1px solid color-mix(in srgb, var(--crust) 65%, transparent); border-radius: 0 var(--control-radius) var(--control-radius) 0; background: transparent; color: var(--crust); box-shadow: none; }
 .launch-split:has(> button:not(:disabled):hover) { filter: brightness(1.08); }
 :is(.workspace-toolbar-actions, .empty-workspace-actions) .launch-split > button:not(:disabled):hover, .launcher-menu .launch-split > button:not(:disabled):hover { filter: none; }
 .launch-split .launch-chevron:disabled { opacity: .5; }
