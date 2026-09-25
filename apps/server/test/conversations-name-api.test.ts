@@ -42,7 +42,7 @@ function namingDiscovery(kind: AgentKind, conversationId: string, worktrees: Ret
     worktreesNow: () => worktrees,
     dashboard: async () => ({ generation: 1, places: [], adapters: {}, agents: [agent], projects: [] }),
     conversationId: async () => conversationId,
-    paneWorkingDirectory: () => cwd,
+    paneDirectory: () => cwd,
     // the row the naming route re-lists to return; the store intersection sets consoleNamed
     conversations: async (directories: readonly string[]) => directories.includes(cwd)
       ? [{ kind, id: conversationId, name: 'Wire the adapter', lastActiveAt: 500, directory: cwd }]

@@ -178,6 +178,33 @@ describe('DiscoveryService dashboard', () => {
     }
   });
 
+  it("reads each reported Claude conversation's name though two Agents share its folder", async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const finder = { find: async () => [socket] };
+    // two Claude Agents launched in the same folder, each reporting its own session
+    const tmux = { listPanes: async () => [
+      { paneId: '%1', sessionId: '$0', pid: 123, path: '/host/cora', title: 'Cora', reportedSession: '11111111-1111-4111-8111-111111111111' },
+      { paneId: '%2', sessionId: '$0', pid: 456, path: '/host/cora', title: 'Cora', reportedSession: '22222222-2222-4222-8222-222222222222' }
+    ] };
+    const config = await mkdtemp(join(tmpdir(), 'rac-claude-config-'));
+    const previous = process.env.RAC_CLAUDE_CONFIG_DIR;
+    try {
+      const project = join(config, 'projects', '-host-cora');
+      await mkdir(project, { recursive: true });
+      await writeFile(join(project, '11111111-1111-4111-8111-111111111111.jsonl'), `${JSON.stringify({ type: 'custom-title', customTitle: 'Testing', sessionId: '11111111-1111-4111-8111-111111111111' })}\n`);
+      await writeFile(join(project, '22222222-2222-4222-8222-222222222222.jsonl'), `${JSON.stringify({ type: 'ai-title', aiTitle: 'Commit the changes', sessionId: '22222222-2222-4222-8222-222222222222' })}\n`);
+      process.env.RAC_CLAUDE_CONFIG_DIR = config;
+      const service = new DiscoveryService(finder, tmux as never, processInspector({ kind: 'claude' }));
+      const agents = await service.refresh();
+
+      await expect(service.conversation(agents[0]!.id)).resolves.toEqual({ id: '11111111-1111-4111-8111-111111111111', title: 'Testing' });
+      await expect(service.conversation(agents[1]!.id)).resolves.toEqual({ id: '22222222-2222-4222-8222-222222222222', title: 'Commit the changes' });
+    } finally {
+      if (previous === undefined) delete process.env.RAC_CLAUDE_CONFIG_DIR; else process.env.RAC_CLAUDE_CONFIG_DIR = previous;
+      await rm(config, { recursive: true, force: true });
+    }
+  });
+
   it('falls back to the fd-walk and isolates each pane to its own conversation', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const finder = { find: async () => [socket] };

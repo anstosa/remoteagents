@@ -1310,7 +1310,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
           || !await tmux.sendKeys(target.socket, target.agent.paneId, rename.keys)) return reply.code(502).send({ error: 'Could not deliver the rename to the agent.' });
       } finally { releaseMutation(); }
       // read the name back from the agent's own store until it reports the submitted name
-      const cwd = discovery.paneWorkingDirectory(id);
+      const cwd = discovery.paneDirectory(id);
       let confirmed = false;
       for (let attempt = 0; attempt < conversationNamePollAttempts; attempt += 1) {
         await conversationNamePollDelay();
@@ -1627,7 +1627,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
         if (!await tmux.pastePrompt(target.socket, target.agent.paneId, buffer, rename.text)
           || !await tmux.sendKeys(target.socket, target.agent.paneId, rename.keys)) return false;
       } finally { releaseMutation(); }
-      const cwd = discovery.paneWorkingDirectory(agentId);
+      const cwd = discovery.paneDirectory(agentId);
       for (let attempt = 0; attempt < conversationNamePollAttempts; attempt += 1) {
         await conversationNamePollDelay();
         if (await conversations.readName(conversationId, cwd).catch(() => undefined) === clean) {

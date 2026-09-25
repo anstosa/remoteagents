@@ -280,6 +280,13 @@ export class DiscoveryService {
     return path;
   }
 
+  // the pane's own working directory, for reading a conversation already known by id (Claude
+  // keys its transcripts by that folder). A sibling in the same folder is harmless here: the id
+  // is exact, so unlike `paneWorkingDirectory` this does not fail closed when a folder is shared.
+  paneDirectory(id: string): string | undefined {
+    return this.paneCwds.get(id);
+  }
+
   // resolve the selected pane, its Adapter, and the pane facts its conversation lives under
   private async conversationContext(id: string): Promise<{ agent: Agent; adapter: Adapter['conversations'] & {}; pane: { pid: number; cwd?: string } } | undefined> {
     const target = await this.target(id);
@@ -314,7 +321,7 @@ export class DiscoveryService {
     // a reported id skips the fd-walk; its name is read by id (Codex) or by id and
     // the pane's working directory (Claude, whose transcript is keyed by cwd)
     if (reported !== undefined) {
-      const name = await context.adapter.readName?.(reported, context.pane.cwd);
+      const name = await context.adapter.readName?.(reported, this.paneDirectory(context.agent.id));
       return { id: reported, ...(name === undefined ? {} : { title: name }) };
     }
     // the fd-walk fallback takes `discover`'s message-derived title, not the store
