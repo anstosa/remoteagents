@@ -71,3 +71,37 @@ test('animates an unread success tab with a green glow and status dot', async ({
   expect(treatment.dotAnimation).toBe('tab-unread-dot');
   expect(treatment.dotColor).toBe('rgb(166, 227, 161)');
 });
+
+test('the Reduced motion setting keeps the peach working treatment but stills the shimmer', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('rac.reduced-motion', 'enabled'));
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [{ id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeLabel: 'Cora', title: '⠋ Working', attention: 'working' }], projects: [] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    if (url.pathname === '/api/agents/agent-1/tickets') return route.fulfill({ json: { ticket: 'log-ticket' } });
+    if (url.pathname === '/api/agents/agent-1/saved-prompts' && request.method() === 'GET') return route.fulfill({ json: { prompts: [] } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  const workingTab = page.getByRole('tab', { name: 'Cora — Working' });
+  await expect(workingTab).toBeVisible();
+  const treatment = await workingTab.evaluate(element => {
+    const label = getComputedStyle(element.querySelector('.tab-label')!);
+    return {
+      sweepAnimation: getComputedStyle(element, '::before').animationName,
+      dotAnimation: getComputedStyle(element, '::after').animationName,
+      dotColor: getComputedStyle(element, '::after').backgroundColor,
+      labelAnimation: label.animationName,
+      labelBackground: label.backgroundImage
+    };
+  });
+  expect(treatment.sweepAnimation).toBe('none');
+  expect(treatment.dotAnimation).toBe('none');
+  expect(treatment.labelAnimation).toBe('none');
+  // the peach gradient text and status dot stay
+  expect(treatment.labelBackground).toContain('linear-gradient');
+  expect(treatment.dotColor).toBe('rgb(250, 179, 135)');
+});

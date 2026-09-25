@@ -152,7 +152,18 @@ test('shows agent versions, updates one agent, and aggregates availability on se
   expect(reducedMotionStyle.shadow).toContain('inset');
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await expect.poll(() => trigger.evaluate(element => element.getAnimations().length)).toBeGreaterThan(0);
+  // the in-app Reduced motion setting stills the pulse but keeps the dot
   await trigger.click();
+  const reducedMotion = settingsPage.getByRole('switch', { name: 'Reduced motion' });
+  await expect(reducedMotion).not.toBeChecked();
+  await reducedMotion.check();
+  await expect(reducedMotion).toBeChecked();
+  await expect.poll(() => trigger.evaluate(element => element.getAnimations().length)).toBe(0);
+  await expect(trigger.locator('.server-switcher-settings-update-dot')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('rac.reduced-motion'))).toBe('enabled');
+  await reducedMotion.uncheck();
+  await expect.poll(() => trigger.evaluate(element => element.getAnimations().length)).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('rac.reduced-motion'))).toBeNull();
   await expect(settingsPage.getByRole('radio', { name: 'Codex' }).locator('.client-settings-agent-version')).toHaveText('v0.152.1 → v0.153.2');
   await expect(settingsPage.getByRole('radio', { name: 'OMX' }).locator('.client-settings-agent-version')).toHaveText('v0.21.3');
   await settingsPage.getByRole('button', { name: 'Update Codex to 0.153.2' }).click();

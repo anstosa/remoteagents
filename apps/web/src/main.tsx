@@ -21,6 +21,7 @@ import { isPromptKeyboardTarget, useShiftArrowTabCycling } from './tab-navigatio
 import { defaultTerminalFontSize, maxTerminalFontSize, minTerminalFontSize, resetTerminalFontSize, stepTerminalFontSize, useTerminalFontSize } from './terminal-font-size.js';
 import { applyColorTheme, setColorTheme, useColorTheme } from './color-theme.js';
 import { setDynamicWorktrees, useDynamicWorktrees } from './dynamic-worktrees.js';
+import { applyReducedMotion, setReducedMotion, useReducedMotion } from './reduced-motion.js';
 import { UpstreamRebaseBanner, type GitUpstreamSummary } from './upstream-rebase.js';
 import { useViewportFlyout } from './viewport-flyout.js';
 import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
@@ -1286,6 +1287,7 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const terminalFontSize = useTerminalFontSize();
   const colorTheme = useColorTheme();
   const dynamicWorktrees = useDynamicWorktrees();
+  const reducedMotion = useReducedMotion();
   const terminalFontIsDefault = terminalFontSize === defaultTerminalFontSize();
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<'client' | 'server' | 'account-login' | 'account-rename'>();
@@ -1773,6 +1775,8 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
   const terminalFontSetting = <div className="client-settings-setting client-settings-terminal-font" role="group" aria-label="Terminal font"><header><small>TERMINAL FONT</small></header><div className="client-settings-terminal-control"><span className="client-settings-terminal-preview" aria-label="Terminal font preview" style={{ fontSize: `${terminalFontSize}px` }}>Aa ~/agent $</span><div className="client-settings-stepper"><button className={`client-settings-font-reset${terminalFontIsDefault ? ' reserved' : ''}`} type="button" aria-label="Reset terminal font" aria-hidden={terminalFontIsDefault} tabIndex={terminalFontIsDefault ? -1 : undefined} disabled={terminalFontIsDefault} onClick={() => resetTerminalFontSize()}>Reset</button><button type="button" aria-label="Smaller terminal font" disabled={terminalFontSize <= minTerminalFontSize} onClick={() => stepTerminalFontSize(-1)}>−</button><strong aria-live="polite">{terminalFontSize}px</strong><button type="button" aria-label="Larger terminal font" disabled={terminalFontSize >= maxTerminalFontSize} onClick={() => stepTerminalFontSize(1)}>+</button></div></div></div>;
   // switch the persisted browser theme
   const themeSetting = <div className="client-settings-setting client-settings-color-theme" role="group" aria-label="Theme"><header><small>THEME</small></header><div className="client-settings-segmented" role="radiogroup" aria-label="Theme">{/* render each theme choice */}{([['mocha', 'Dark'], ['latte', 'Light']] as const).map(([theme, label]) => <button key={theme} type="button" role="radio" aria-checked={colorTheme === theme} aria-label={`${label} theme`} className={colorTheme === theme ? 'active' : undefined} onClick={() => setColorTheme(theme)}>{label}</button>)}</div></div>;
+  // switch the persisted browser motion preference
+  const reducedMotionSetting = <div className="client-settings-setting client-settings-reduced-motion" role="group" aria-label="Reduced motion setting"><header><small>MOTION</small><label className="client-settings-toggle"><input aria-label="Reduced motion" role="switch" type="checkbox" checked={reducedMotion} onChange={event => setReducedMotion(event.currentTarget.checked)} /><span className="client-settings-switch-state">{reducedMotion ? 'On' : 'Off'}</span><span className="client-settings-switch-track" aria-hidden="true" /></label></header><strong>Reduced motion</strong><span>Keep status colours but stop shimmers and pulses.</span></div>;
   // switch the persisted worktree launcher mode
   const dynamicWorktreesSetting = <div className="client-settings-setting client-settings-dynamic-worktrees" role="group" aria-label="Dynamic worktrees setting"><header><small>WORKTREES</small><label className="client-settings-toggle"><input aria-label="Dynamic worktrees" role="switch" type="checkbox" checked={dynamicWorktrees} onChange={event => setDynamicWorktrees(event.currentTarget.checked)} /><span className="client-settings-switch-state">{dynamicWorktrees ? 'On' : 'Off'}</span><span className="client-settings-switch-track" aria-hidden="true" /></label></header><strong>Dynamic worktrees</strong><span>Create and manage multiple worktrees from the launcher.</span></div>;
   let serverRevisionContent: ReactNode = 'Revision unavailable';
@@ -1792,7 +1796,7 @@ function ClientSettingsMenu({ settings }: { settings: ClientSettings }) {
       <span>{serverHostLabel(settings.serverUrl)}</span>
       <span className="client-settings-server-revision" aria-label={serverRevision === undefined ? 'Server revision unavailable' : `Server revision ${serverRevision.sha.slice(0, 7)}, committed ${updateCommitDate(serverRevision.committedAt)}`}>{serverRevisionContent}</span>
     </div>
-    {terminalFontSetting}{themeSetting}{dynamicWorktreesSetting}{agentsSetting}
+    {terminalFontSetting}{themeSetting}{reducedMotionSetting}{dynamicWorktreesSetting}{agentsSetting}
   </div>;
   // configure the optional voice surface without an outer card
   const davoTitle = davoDraft.name.trim() || 'Davo';
@@ -8106,4 +8110,5 @@ if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js'
 // registered so `--base` resolves for the browser-chrome colour. A future ticket
 // moves this ahead of first paint with an inline head script.
 applyColorTheme();
+applyReducedMotion();
 createRoot(document.getElementById('root')!).render(<ConsoleBoundary><App /></ConsoleBoundary>);

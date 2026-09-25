@@ -1,5 +1,6 @@
 import { createPortal } from 'react-dom';
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { prefersReducedMotion } from './reduced-motion.js';
 
 // The diff renderer pulls in `@pierre/diffs` (~177 kB), so it is loaded on demand — this dialog is in
 // the eager dashboard bundle and a static import would drag the library in. Same lazy boundary the
@@ -394,7 +395,7 @@ export function ReviewTourDialog({ launch, request, minimized, initialTour, onMi
     // ignore repeated minimize requests
     if (closing) return;
     setClosing(true);
-    const delay = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : transitionMs;
+    const delay = prefersReducedMotion() ? 0 : transitionMs;
     minimizeTimer.current = window.setTimeout(() => {
       minimizeTimer.current = undefined;
       onMinimize();
