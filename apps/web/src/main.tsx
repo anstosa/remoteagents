@@ -4796,6 +4796,8 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
   const [renamePending, setRenamePending] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
   const [deleteError, setDeleteError] = useState(false);
+  // the stream's status until its seed lands (Connecting, Reconnecting…); undefined while live
+  const [connection, setConnection] = useState<string | undefined>('Connecting');
   // preserve the panel when deletion fails or confirmation is cancelled
   const deleteShell = async () => {
     // ignore duplicate deletion or non-managed panes
@@ -4823,10 +4825,12 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
     // mount only after the terminal canvas exists
     if (container === null) return;
     setSelection(undefined);
+    setConnection('Connecting');
     const handle = mountStreamedTerminal(container, {
       connect: createWorktreePaneConnector(worktreeId, paneId, request),
       transformInput: data => applyStickyModifiers(paneId, data),
-      onExit: () => onExitRef.current()
+      onExit: () => onExitRef.current(),
+      onStatus: setConnection
     });
     const selection = attachTerminalSelection(container, handle, {
       onSelection: setSelection,
@@ -4862,7 +4866,9 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
   if (onDelete !== undefined) secondary.push({ key: 'delete', label: `Delete terminal ${name}`, title: 'Delete shell (ends the running shell)', className: 'pane-delete', disabled: deletePending || renamePending, icon: deletePending ? <span className="spinner" /> : <PanelIcon path={actionIconPaths.trash} />, onSelect: () => void deleteShell() });
   return <section className={`terminal-pane${expanded ? ' expanded' : ''}${focused ? ' focused' : ''}${selection ? ' selection-active' : ''}`} data-panel-key={paneId}>
     <PanelHeader panelKey={paneId} label={`terminal ${name}`} expandDisabled={deletePending} secondary={secondary} close={{ key: 'minimize', label: `Minimize terminal ${name}`, title: 'Minimize terminal (the shell keeps running)', className: 'pane-minimize', disabled: deletePending, icon: <PanelIcon path="M5 12h14" />, onSelect: onMinimize }} title={<>
-      <span className={`pane-status${deleteError ? ' error' : ''}`} role={deleteError ? 'alert' : 'status'} title={deleteError ? 'Could not delete shell. Try again.' : undefined}>{deleteError ? 'Delete failed' : 'Live'}</span>
+      {deleteError
+      ? <span className="pane-status error" role="alert" title="Could not delete shell. Try again.">Delete failed</span>
+      : connection !== undefined && <span className="pane-status" role="status">{connection}</span>}
       {renaming
       ? <form className="pane-rename" onSubmit={event => { event.preventDefault(); void submitRename(); }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); setRenaming(false); } }}><input aria-label={`Name for terminal ${name}`} value={renameDraft} maxLength={maxTerminalNameLength} autoFocus disabled={renamePending} onChange={event => setRenameDraft(event.target.value)} /><button type="submit" disabled={renamePending || renameDraft.trim() === ''} aria-label="Save terminal name" title="Save terminal name"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={renamePending} aria-label="Cancel terminal rename" title="Cancel" onClick={() => setRenaming(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></form>
       : <span className="pane-title" title={name}>{name}</span>}

@@ -858,7 +858,7 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 /* match the existing note and browser fullscreen dimensions */
 .terminal-pane.expanded { width: 100%; height: 100%; border: 0; }
 /* scale the shared agent pill down for the shell toolbar */
-.terminal-pane .pane-status { --log-status-color: var(--green); height: 1.25rem; padding: 0 .4rem; font-size: .58rem; white-space: nowrap; }
+.terminal-pane .pane-status { height: 1.25rem; padding: 0 .4rem; font-size: .58rem; white-space: nowrap; }
 .terminal-pane .pane-status.error { --log-status-color: var(--red); }
 .terminal-pane .pane-title { flex: 0 1 auto; min-width: 0; padding-right: .3rem; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .terminal-pane .pane-rename { display: flex; flex: 1; align-items: center; gap: .2rem; min-width: 0; }

@@ -31,6 +31,9 @@ export interface StreamedTerminalOptions {
   transformInput?: (data: string) => string;
   // How long a lost stream shows its status before re-subscribing.
   reconnectDelayMs?: number;
+  // The status notice changed: its text while the stream is lost or refreshing, undefined
+  // once a fresh seed lands (a panel header can mirror it).
+  onStatus?: (status: string | undefined) => void;
 }
 
 export interface StreamedTerminalHandle {
@@ -302,10 +305,12 @@ export const mountStreamedTerminal = (container: HTMLElement, options: StreamedT
     statusMessage.textContent = text;
     status.hidden = false;
     container.dataset.status = text;
+    options.onStatus?.(text);
   };
   const hideStatus = () => {
     status.hidden = true;
     delete container.dataset.status;
+    options.onStatus?.(undefined);
   };
 
   const handleDisconnect = (reason: string) => {

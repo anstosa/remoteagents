@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { installPaneMock, seedPaneSize, pushBytes, pushExit, paneAckTotal, paneInputText } from './pane-stream-mock.js';
+import { installPaneMock, seedPaneSize, pushBytes, pushExit, dropPane, paneAckTotal, paneConnectCount, paneInputText } from './pane-stream-mock.js';
 import { clickPanelAction, expectPanelAction } from './panel-header';
 
 // Terminal panels (First-class terminal panes, Console shells): the composer's terminal icon
@@ -183,33 +183,31 @@ test('lists panes with the agent and a claimed window disabled, and opens a colu
   await expect(shell).toBeEnabled();
 
   await shell.click();
-  await seedPaneSize(page, '%5', 80, 24);
-  await pushBytes(page, '%5', 'shell ready\r\n');
   const column = page.locator('.terminal-pane[data-panel-key="%5"]');
   await expect(column).toBeVisible();
   await expect(column.getByText('build')).toBeVisible();
   const header = column.locator(':scope > .panel-header .panel-header-title');
   const status = header.locator('.pane-status');
+  // until the seed lands the header reads the stream's status, ahead of the name
+  await expect(status).toHaveText('Connecting');
   await expect(header.locator(':scope > *').first()).toHaveClass(/\bpane-status\b/u);
   await expect(status).toHaveAttribute('role', 'status');
-  await expect(status).toHaveText('Live');
   await expect(header.locator('.pane-dot, .pane-live')).toHaveCount(0);
-  // resolve the theme green
-  const green = await page.evaluate(() => {
+  // resolve the theme yellow
+  const yellow = await page.evaluate(() => {
     const probe = document.createElement('span');
-    probe.style.color = 'var(--green)';
+    probe.style.color = 'var(--yellow)';
     document.body.append(probe);
     const color = getComputedStyle(probe).color;
     probe.remove();
     return color;
   });
-  await expect(status).toHaveCSS('background-color', green);
+  await expect(status).toHaveCSS('background-color', yellow);
   // share the agent panel's connection pill styling (the pill only shows while
   // the agent's stream is not live, so probe one in the agent panel's title pill)
-  await page.locator('.agent-panel .panel-header-title').evaluate(title => { const probe = document.createElement('span'); probe.className = 'status log-status live agent-status-probe'; probe.textContent = 'Live'; title.append(probe); });
+  await page.locator('.agent-panel .panel-header-title').evaluate(title => { const probe = document.createElement('span'); probe.className = 'status log-status connecting agent-status-probe'; probe.textContent = 'Connecting'; title.append(probe); });
   const agentStatus = page.locator('.agent-status-probe');
-  // compare state-independent visual properties
-  for (const property of ['color', 'border-radius', 'box-shadow', 'font-family', 'font-weight', 'text-transform']) {
+  for (const property of ['color', 'background-color', 'border-radius', 'box-shadow', 'font-family', 'font-weight', 'text-transform']) {
     const reference = await agentStatus.evaluate((element, key) => getComputedStyle(element).getPropertyValue(key), property);
     await expect(status).toHaveCSS(property, reference);
   }
@@ -221,6 +219,18 @@ test('lists panes with the agent and a claimed window disabled, and opens a colu
   const agentFontSize = await agentStatus.evaluate(element => parseFloat(getComputedStyle(element).fontSize));
   const shellFontSize = await status.evaluate(element => parseFloat(getComputedStyle(element).fontSize));
   expect(shellFontSize).toBeCloseTo(agentFontSize, 3);
+  // a live stream shows no status
+  await seedPaneSize(page, '%5', 80, 24);
+  await pushBytes(page, '%5', 'shell ready\r\n');
+  await expect(status).toHaveCount(0);
+  // a dropped stream shows its reconnect until the fresh seed lands
+  const connects = await paneConnectCount(page, '%5');
+  await dropPane(page, '%5');
+  await expect(status).toHaveText('Reconnecting…');
+  await expect.poll(() => paneConnectCount(page, '%5'), { timeout: 5000 }).toBeGreaterThan(connects);
+  await seedPaneSize(page, '%5', 80, 24);
+  await pushBytes(page, '%5', 'shell back\r\n');
+  await expect(status).toHaveCount(0);
   await expect(page.locator('.log-split.has-terminals')).toBeVisible();
   // a resizer sits between the agent and the new column
   await expect(page.locator('.log-split .split-resizer')).toHaveCount(1);
