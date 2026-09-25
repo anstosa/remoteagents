@@ -196,6 +196,23 @@ test('Esc from the View options control closes its fly-out before it restores th
   await expect(region).not.toHaveClass(/\bexpanded\b/u);
 });
 
+test('on a desktop the view options drop from the header as a card, not a full-height drawer', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mountPanel(page, patchOf([trackedFile('src/app.ts')]));
+  const region = panel(page);
+  const options = region.getByRole('button', { name: 'View options', exact: true });
+  await options.click();
+  const flyout = region.getByRole('dialog', { name: 'View options' });
+  await expect(flyout).toBeVisible();
+  const [flyoutBox, regionBox, optionsBox] = await Promise.all([flyout.boundingBox(), region.boundingBox(), options.boundingBox()]);
+  expect(flyoutBox!.height).toBeLessThan(regionBox!.height / 2);
+  // it sits just beneath the header, its right edge by the button that opened it
+  expect(flyoutBox!.y).toBeGreaterThanOrEqual(optionsBox!.y + optionsBox!.height);
+  expect(flyoutBox!.y - (optionsBox!.y + optionsBox!.height)).toBeLessThan(40);
+  expect(flyoutBox!.x + flyoutBox!.width).toBeGreaterThanOrEqual(optionsBox!.x + optionsBox!.width);
+  expect(flyoutBox!.x + flyoutBox!.width).toBeLessThanOrEqual(regionBox!.x + regionBox!.width);
+});
+
 test('covers a size-capped file with a Load anyway placeholder instead of a diff', async ({ page }) => {
   await mountPanel(page, patchOf([trackedFile('src/app.ts'), cappedFile('src/generated.ts')]));
 

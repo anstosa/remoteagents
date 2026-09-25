@@ -10,9 +10,8 @@ const patchOf = (files: ComparisonFile[]): ComparisonPatch => ({ kind: 'working'
 const codePanel = (page: Page) => page.getByRole('region', { name: 'Code changes' });
 const agentOutput = (page: Page) => page.locator('.log-output');
 
-// On a phone the Code panel must join the panel carousel (like note / browser / terminal) rather
-// than stacking on top of the agent output — even when it is the only extra panel open.
-test('shows the Code panel as a switchable mobile panel, not stacked on the agent', async ({ page }) => {
+// a phone with the agent's Workspace open and its Code panel opened from the git popup
+const mount = async (page: Page) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await installPaneMock(page);
   await page.route('**/api/**', async route => {
@@ -32,6 +31,12 @@ test('shows the Code panel as a switchable mobile panel, not stacked on the agen
   await pushBytes(page, 'agent-1', 'Ready\n');
   await page.getByRole('button', { name: /^Git status:/u }).click();
   await page.getByRole('button', { name: 'View changes', exact: true }).click();
+};
+
+// On a phone the Code panel must join the panel carousel (like note / browser / terminal) rather
+// than stacking on top of the agent output — even when it is the only extra panel open.
+test('shows the Code panel as a switchable mobile panel, not stacked on the agent', async ({ page }) => {
+  await mount(page);
 
   // opening the Code panel adds it to the phone carousel and scrolls to it, the newly opened panel
   // (the regression: without the Code panel counting as a panel, it stacked on the agent output).
@@ -48,4 +53,18 @@ test('shows the Code panel as a switchable mobile panel, not stacked on the agen
   await expect(split).toHaveClass(/\bmobile-agent-view\b/u);
   await expect(agentOutput(page)).toBeInViewport({ ratio: 0.99 });
   await expect(codePanel(page)).not.toBeInViewport();
+});
+
+// the view options drop from the header's top-right as a card sized to its options, as on desktop
+test('opens the view options as a card beneath the header, not a full-height drawer', async ({ page }) => {
+  await mount(page);
+  await expect(codePanel(page)).toBeInViewport({ ratio: 0.99 });
+  await codePanel(page).getByRole('button', { name: 'More code panel actions' }).click();
+  await page.getByRole('group', { name: 'More code panel actions' }).getByRole('button', { name: 'View options' }).click();
+  const flyout = codePanel(page).getByRole('dialog', { name: 'View options' });
+  await expect(flyout).toBeVisible();
+  const [flyoutBox, panelBox] = await Promise.all([flyout.boundingBox(), codePanel(page).boundingBox()]);
+  expect(flyoutBox!.height).toBeLessThan(panelBox!.height / 2);
+  expect(flyoutBox!.x).toBeGreaterThanOrEqual(panelBox!.x);
+  expect(flyoutBox!.x + flyoutBox!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width);
 });
