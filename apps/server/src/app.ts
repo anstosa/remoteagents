@@ -2066,12 +2066,20 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       const queued = await queuedPrompts.list(promptStorageKeyForAgent(observed)).then(prompts => prompts?.length).catch(() => undefined);
       // preserve queued or unreadable prompt work
       if (queued === undefined || queued > 0) return { status: 'skipped', worktreeId, reason: 'not-idle', error: 'The worktree has queued prompts.' };
+      // With other Agents at the Worktree, "continue the latest" could pick up a sibling's
+      // Conversation: a restart resumes this Agent's own, and starts fresh when it cannot (another
+      // kind, or no Conversation reported yet).
+      const hasSiblings = current.agents.some(agent => agent.id !== id && agent.worktreeId === worktree.id);
+      const ownConversation = threadId === undefined && hasSiblings && (kind === undefined || kind === observed.kind) && observed.conversationId !== undefined && adapterFor(observed.kind)?.conversations?.validId(observed.conversationId) === true ? observed.conversationId : undefined;
+      const resumeThread = threadId ?? ownConversation;
+      const resumeKind = ownConversation === undefined ? kind : observed.kind;
       // validate exact resume before closing the current agent
-      if (threadId !== undefined && !launch.canResumeConversation(worktree.id)) return { status: 'failed', worktreeId, reason: 'launch-failed', error: 'Exact chat resume is not configured for this worktree.' };
+      if (resumeThread !== undefined && !launch.canResumeConversation(worktree.id)) return { status: 'failed', worktreeId, reason: 'launch-failed', error: 'Exact chat resume is not configured for this worktree.' };
       const before = new Set(current.agents.map(agent => agent.id));
       // require the original agent to close
       if (!await prompts.close(id)) return { status: 'skipped', worktreeId, reason: 'unavailable', error: 'The worktree agent could not be closed.' };
-      const resumed = threadId === undefined ? await launch.resume(worktree.id, kind) : await launch.resumeConversation(worktree.id, threadId, kind);
+      const resumed = resumeThread !== undefined ? await launch.resumeConversation(worktree.id, resumeThread, resumeKind)
+        : hasSiblings ? await launch.launch(worktree.id, kind) : await launch.resume(worktree.id, kind);
       // require the resumed agent to start
       if (!resumed) {
         await dashboardUpdates.refresh().catch(() => undefined);
@@ -2434,11 +2442,12 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     await dashboardUpdates.refresh().catch(() => undefined);
     return reply.code(201).send({ worktreeId, ...(agentId === undefined ? {} : { agentId }), ...(launchError === undefined ? {} : { launchError }), ...(setupError === undefined ? {} : { setupError }) });
   });
-  // the session + socket of a Place's live Agent, so a new Console shell opens beside it
+  // the session + socket of a Place's live Agent, so a new Console shell or Agent opens beside it
   // (an Agent adopted into the operator's own session lives wherever, so it is resolved from
-  // discovery, never by session name)
+  // discovery, never by session name). The scan is forced: a restart closes its Agent and
+  // relaunches inside the dashboard cache window, and a cached Agent's session may be gone.
   const placeAgentSession = async (placeId: string): Promise<TmuxSession | undefined> => {
-    const agent = (await discovery.dashboard()).agents.find(candidate => candidate.placeId === placeId);
+    const agent = (await discovery.dashboard(true)).agents.find(candidate => candidate.placeId === placeId);
     if (agent === undefined) return undefined;
     const target = await discovery.target(agent.id);
     return target === undefined ? undefined : { socket: target.socket, session: agentTmuxSession(target.agent) };

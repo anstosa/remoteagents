@@ -290,7 +290,7 @@ export class LaunchService {
   }
 
   // the session a launch or a Console shell at a Place joins: its live Agent's, else the one
-  // holding its Console shells (a Worktree launch joins only the latter; see dispatchWorktreeLaunch)
+  // holding its Console shells
   private async placeSession(place: Pick<Place, 'id'>): Promise<TmuxSession | undefined> {
     const agent = await this.placeAgentSession(place.id);
     if (agent !== undefined) return agent;
@@ -552,13 +552,12 @@ export class LaunchService {
       if (!reused) console.error(`[launch] ${worktree.identity}: could not send the launch into reused shell ${existing.pane.paneId}`);
       return reused;
     }
-    // no adoptable idle shell: if the Worktree already has Console shells, add the Agent's
-    // window to the session holding them, so an attached terminal keeps the agent and the
-    // shells together, rather than opening a separate session (spec, Console shells)
-    const shells = await this.placeConsoleShells(worktree);
-    const shellSession = shells[0];
+    // no adoptable idle shell: join the Place's session — its live Agent's (a second Agent at
+    // the Worktree), else the one holding its Console shells — so an attached terminal keeps
+    // the Place's Agents and shells together, and a running Agent's session is never replaced
+    const joined = await this.placeSession(worktree);
     const site = this.worktreeSite(worktree);
-    if (shellSession !== undefined) return await this.launchInSessionWindow(site, command, id, sandboxed, { socket: shellSession.socket, session: shellSession.sessionId }, worktree.identity) !== undefined;
+    if (joined !== undefined) return await this.launchInSessionWindow(site, command, id, sandboxed, joined, worktree.identity) !== undefined;
     const session = worktreeSessionName(worktreeHostRoot(worktree));
     // launch host-mounted worktrees on the host socket, the site keeping credentials and CLI
     // state rooted in the authenticated account

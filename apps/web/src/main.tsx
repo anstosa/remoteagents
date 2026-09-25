@@ -60,7 +60,8 @@ type GitComparisonSummary = { base: string; files: number; changes?: GitStatusCh
 // Attention state also refreshes at each turn boundary, which catches an in-place edit that leaves
 // the +/- counts unchanged (numstat reports counts, not content). JSON.stringify keeps it free of
 // delimiter collisions on paths that contain separator characters.
-const comparisonChangeSignal = (status?: GitStatusSummary, pr?: GitComparisonSummary, attention?: AttentionState): string => {
+// `attention` is the Place's Agents' attention, so any of them ending a turn refreshes it
+const comparisonChangeSignal = (status?: GitStatusSummary, pr?: GitComparisonSummary, attention?: string): string => {
   const changes = (list?: GitStatusChange[]) => (list ?? []).map(change => [change.code, change.path, change.additions ?? null, change.deletions ?? null]);
   return JSON.stringify([attention ?? null,
     status?.files ?? 0, status?.staged ?? 0, status?.unstaged ?? 0, status?.untracked ?? 0, status?.conflicted ?? 0, changes(status?.changes),
@@ -172,7 +173,25 @@ const isBranchRemovalFacts = (value: unknown): value is BranchRemovalFacts => va
 type AgentState = 'working' | 'prompt-done' | 'action-required' | 'closed';
 type DashboardOperation = 'launching'|'restarting'|'clearing'|'deactivating'|'new-task';
 type PendingSessionLaunch = { id: string; draftId: string; label: string; resolution?: LaunchResolution; choice?: LaunchChoice; kind?: AgentKind; sandboxed?: boolean; phase: 'launching'|'confirming'|'delayed'|'failed'; agentId?: string; error?: string; confirmationTimer?: number } & ({ scope: 'scratch' } | { scope: 'directory'; projectId: string });
-type DashboardItem = { key: string; label: string; state: AgentState; order: number; unread: boolean; operation?: DashboardOperation; agent?: Agent; worktree?: Worktree; place?: Place; pendingLaunch?: PendingSessionLaunch };
+// One tab: a Place (its Agents, and its Worktree or directory-Project/Scratch Place when listed),
+// an Agent the dashboard placed nowhere, or a scratch/directory launch not yet discovered.
+// `placeId` is the Place the tab stands for; `state` and `unread` roll up its Agents.
+type DashboardItem = { key: string; label: string; state: AgentState; order: number; unread: boolean; operation?: DashboardOperation; agents: Agent[]; placeId?: string; worktree?: Worktree; place?: Place; pendingLaunch?: PendingSessionLaunch };
+// the Place an Agent's tab groups under (discovery stamps `placeId`; a Worktree Agent's is its Worktree id)
+const agentPlaceId = (agent: Pick<Agent, 'placeId' | 'worktreeId'>): string | undefined => agent.placeId ?? agent.worktreeId;
+// the tab key of a Place (a Worktree, directory Project or Scratch folder)
+const placeItemKey = (placeId: string): string => `place-${placeId}`;
+// the tab key an Agent is shown under: its Place's, or its own when placed nowhere
+const agentItemKey = (agent: Pick<Agent, 'id' | 'placeId' | 'worktreeId'>): string => { const placeId = agentPlaceId(agent); return placeId === undefined ? `agent-${agent.id}` : placeItemKey(placeId); };
+// A Place tab's rolled-up state, most urgent first: a question, then unread output, then work.
+// There are no counts; the switcher lists each Agent's own state.
+function placeTabState(agents: readonly Agent[]): { state: AgentState; unread: boolean } {
+  const states = agents.map(agentState);
+  if (states.includes('action-required')) return { state: 'action-required', unread: false };
+  if (agents.some(agent => agent.unread === true)) return { state: 'prompt-done', unread: true };
+  if (states.includes('working')) return { state: 'working', unread: false };
+  return { state: states.length === 0 ? 'closed' : 'prompt-done', unread: false };
+}
 type ChoiceOption = { label: string; number: number; answerIndex: number; description?: string };
 type ChoiceQuestion = { text: string; choices: ChoiceOption[]; id: string; source: 'structured' | 'parsed' };
 type QueuedPrompt = { id: string; text: string; createdAt: string; attachments?: Array<{ name: string; size: number }> };
@@ -442,7 +461,9 @@ const pendingOperations = new Set<string>();
 const pendingOperationListeners = new Map<string, Set<() => void>>();
 const pendingNewTaskSources = new Map<string, string>();
 // retain launch handoffs by worktree
-type PendingWorktreeLaunch = { operationKey: string; kind?: AgentKind; sourceAgentId?: string; agentId?: string; confirmationTimer?: number };
+// `excludedAgentIds` are the Agents already at the Worktree when the launch began (a restart's
+// siblings), none of which can be the launch's replacement
+type PendingWorktreeLaunch = { operationKey: string; kind?: AgentKind; sourceAgentId?: string; excludedAgentIds?: readonly string[]; agentId?: string; confirmationTimer?: number };
 const pendingWorktreeLaunches = new Map<string, PendingWorktreeLaunch>();
 const worktreeLaunchConfirmationMs = 30_000;
 const pullRequestSwitchCache = new Map<string, PullRequestSwitchAvailability>();
@@ -583,16 +604,18 @@ const stackLog = async (worktreeId: string): Promise<StackOperationLog | undefin
   return payload;
 };
 function usePromptHistory(agentId: string) {
-  const [history, setHistory] = useState<PromptHistoryEntry[]>([]);
+  // stamped with its Agent, so a response that lands after the switcher moves on is never shown
+  const [loaded, setLoaded] = useState<{ agentId: string; prompts: PromptHistoryEntry[] }>();
   const refresh = useCallback(async () => {
     const response = await request(`/api/agents/${encodeURIComponent(agentId)}/prompt-history`);
     if (!response.ok) return;
     const payload: unknown = await response.json();
     if (payload === null || typeof payload !== 'object' || !Array.isArray((payload as { prompts?: unknown }).prompts)) return;
     const prompts = (payload as { prompts: unknown[] }).prompts.filter(isPromptHistoryEntry);
-    if (prompts.length === (payload as { prompts: unknown[] }).prompts.length) setHistory(prompts);
+    if (prompts.length === (payload as { prompts: unknown[] }).prompts.length) setLoaded({ agentId, prompts });
   }, [agentId]);
-  useEffect(() => { setHistory([]); void refresh(); }, [refresh]);
+  useEffect(() => { void refresh(); }, [refresh]);
+  const history = useMemo(() => loaded?.agentId === agentId ? loaded.prompts : [], [loaded, agentId]);
   return { history, refresh };
 }
 const maxAttachmentMegabytes = 25;
@@ -5167,13 +5190,13 @@ function GitStatus({ id, worktreeId, branch, summary, prSummary, pullRequest, on
 // when the Place is a git Worktree: the Code panel's Comparisons and the Named conversations are
 // git-only routes. An Agent the dashboard placed nowhere passes neither. `path` is the folder the
 // toolbar shows for a Place without git, and `stack` the Worktree's stack commands.
-type WorkspacePlace = { id?: string; worktreeId?: string; path?: string; stack?: Stack; projectUrl?: string; projectProxied?: boolean; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; pullRequest?: PullRequestSummary; attention?: AttentionState };
+type WorkspacePlace = { id?: string; worktreeId?: string; path?: string; stack?: Stack; projectUrl?: string; projectProxied?: boolean; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; pullRequest?: PullRequestSummary; attention?: string };
 // What the Place's notes need from the Agent there (or, with no Agent, how a note's Run launches one).
 type WorkspaceNotesOptions = { agentWorking?: boolean; latestAssistantMessage?: string; latestAssistantMessageOverflows?: boolean; onPromptHistoryChanged?: () => void | Promise<void>; promptHistory?: PromptHistoryEntry[]; schedulePrefill?: SchedulePrefill; onLaunchAndRun?: (noteId: string) => Promise<boolean>; launchRunLabel?: string };
 
 // The Place-scoped panel state behind one tab: browser, Code panel, Terminals, notes, conversations
-// and git expansion. The tab's card holds it because its composer drives the same browser and
-// Terminals; the Workspace renders it.
+// and git expansion. The tab's card holds it, so it outlives a switch between the Agents there;
+// the agent panel's composer drives the same browser and Terminals, and the Workspace renders it.
 function useWorkspace(place: WorkspacePlace, { agentId, noteOptions: notes, onNavigateWorktree, onOperationFeedback }: { agentId?: string; noteOptions: WorkspaceNotesOptions; onNavigateWorktree?: (worktreeId: string) => void; onOperationFeedback?: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
   const browser = useProjectBrowser(place.projectUrl, place.id, place.projectProxied);
   const code = useCodePanel(place.worktreeId, request, comparisonChangeSignal(place.gitStatus, place.gitPrStatus, place.attention));
@@ -5801,30 +5824,26 @@ function PlaceMenu({ agentId, worktreeId, git = false, newTaskConfigured = false
   return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} title="Workspace options" onClick={toggleMenu}>⋮</button></span>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="more-menu flyout-menu place-menu" ref={flyoutRef} style={style} aria-busy={loadingGithubActions || loadingNewTask}>{pinToggle}{rename}{githubActions}{newTaskOption}{removal}</div></FlyoutPortal>}</>;
 }
 
-// render an active agent
-function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, review, onReview, onDeleted, onSelectTarget, onNavigateWorktree, onPromptFocus, onOperationFeedback, launch, pinned, onTogglePin, onRenameWorktree, onRemoveWorktree, removeDisabledReason, worktreeLabel, schedulePrefill }: { agent: Agent; active: boolean; tabBar: ReactNode; cleanupControl?: ReactNode; reviewCapability?: ReviewTourCapability; review?: ReviewButtonState; onReview: (launch: ReviewLaunch) => void; onDeleted: () => Promise<void>; onSelectTarget: (target: DashboardTarget) => void; onNavigateWorktree: (worktreeId: string) => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; launch?: ToolbarLaunch; pinned?: boolean; onTogglePin?: () => void; onRenameWorktree?: () => void; onRemoveWorktree?: () => void; removeDisabledReason?: string; worktreeLabel?: string; schedulePrefill?: SchedulePrefill }) {
+// render the Workspace of a Place where Agents run: the Place's panels and toolbar, with the agent
+// panel showing the Agent chosen in its switcher. Only the agent panel follows the switcher; the
+// Terminals, notes, browser and code belong to the Place and stay open across a switch.
+function AgentPlaceCard({ agent, agents, onSelectAgent, active, tabBar, cleanupControl, reviewCapability, review, onReview, onDeleted, onSelectTarget, onNavigateWorktree, onPromptFocus, onOperationFeedback, launch, pinned, onTogglePin, onRenameWorktree, onRemoveWorktree, removeDisabledReason, worktreeLabel, schedulePrefill }: { agent: Agent; agents: readonly Agent[]; onSelectAgent: (agentId: string) => void; active: boolean; tabBar: ReactNode; cleanupControl?: ReactNode; reviewCapability?: ReviewTourCapability; review?: ReviewButtonState; onReview: (launch: ReviewLaunch) => void; onDeleted: () => Promise<void>; onSelectTarget: (target: DashboardTarget) => void; onNavigateWorktree: (worktreeId: string) => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; launch?: ToolbarLaunch; pinned?: boolean; onTogglePin?: () => void; onRenameWorktree?: () => void; onRemoveWorktree?: () => void; removeDisabledReason?: string; worktreeLabel?: string; schedulePrefill?: SchedulePrefill }) {
   // an Agent's Worktree label drives its feedback and power-menu copy; the server carries it on
   // the Worktree now, so it is resolved at the top level and passed in
   const displayLabel = worktreeLabel ?? agent.worktreeLabel ?? agentLabel(agent);
-  const mounted = useRef(true);
-  const [cancelling, setCancelling] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [restarting, setRestarting] = useState(false);
-  const [clearing, setClearing] = useState(false);
-  const [deactivating, setDeactivating] = useState(false);
-  const [question, setQuestion] = useState<ChoiceQuestion>();
   const [historyOpen, setHistoryOpen] = useState(false);
-  // the latest response the output reported, for the note and response-file shortcuts
-  const [latestAssistantMessage, setLatestAssistantMessage] = useState<string>();
-  const [latestAssistantMessageOverflows, setLatestAssistantMessageOverflows] = useState(false);
+  // the latest response the current Agent's output reported, for the note and response-file shortcuts
+  const [latest, setLatest] = useState<{ agentId: string; message?: string; overflows: boolean }>();
+  const latestAssistantMessage = latest?.agentId === agent.id ? latest.message : undefined;
+  const latestAssistantMessageOverflows = latest?.agentId === agent.id && latest.overflows;
+  // the current Agent's prompt history (the hook refetches when the switcher changes Agent)
   const promptHistory = usePromptHistory(agent.id);
-  const workspace = useWorkspace({ id: agent.placeId ?? agent.worktreeId, worktreeId: agent.worktreeId, path: agent.home, stack: agent.stack, projectUrl: agent.projectUrl, projectProxied: agent.projectProxied, branch: agent.branch, gitStatus: agent.gitStatus, gitPrStatus: agent.gitPrStatus, pullRequest: agent.pullRequest, attention: agent.attention }, { agentId: agent.id, noteOptions: { agentWorking: active, latestAssistantMessage, latestAssistantMessageOverflows, onPromptHistoryChanged: promptHistory.refresh, promptHistory: promptHistory.history, schedulePrefill }, onNavigateWorktree, onOperationFeedback });
+  const workspace = useWorkspace({ id: agent.placeId ?? agent.worktreeId, worktreeId: agent.worktreeId, path: agent.home, stack: agent.stack, projectUrl: agent.projectUrl, projectProxied: agent.projectProxied, branch: agent.branch, gitStatus: agent.gitStatus, gitPrStatus: agent.gitPrStatus, pullRequest: agent.pullRequest, attention: agents.map(candidate => candidate.attention ?? '').join(' ') }, { agentId: agent.id, noteOptions: { agentWorking: active, latestAssistantMessage, latestAssistantMessageOverflows, onPromptHistoryChanged: promptHistory.refresh, promptHistory: promptHistory.history, schedulePrefill }, onNavigateWorktree, onOperationFeedback });
   const { browser: projectBrowser, code: projectCode, setGitExpanded } = workspace;
-  // keep the latest response the output reports
-  const reportMetadata = useCallback((message: string | undefined, overflow: boolean) => {
-    setLatestAssistantMessage(message);
-    setLatestAssistantMessageOverflows(overflow);
-  }, []);
+  // keep the latest response each Agent's output reports
+  const reportMetadata = useCallback((agentId: string, message: string | undefined, overflows: boolean) => setLatest({ agentId, message, overflows }), []);
+  // a switch closes the previous Agent's history
+  useEffect(() => { setHistoryOpen(false); }, [agent.id]);
   // opening history collapses the git status; toggling git closes history
   const changeHistoryOpen = useCallback((open: boolean) => {
     setHistoryOpen(open);
@@ -5833,114 +5852,10 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
   // Open a response-file row or a pane file link in the Code panel's File view, fetched from the
   // agent-keyed preview endpoint so the `/tmp` screenshot bridge keeps working.
   const openFileInCode = useCallback((path: string) => { void projectCode.openFilePreview(path, `/api/agents/${encodeURIComponent(agent.id)}/file-preview`); }, [projectCode, agent.id]);
-  const responseFiles = useLatestAssistantFiles(agent.id, latestAssistantMessage, openFileInCode);
   // route output links to the project browser only while its preview is open and the host matches
   const openOutputUrl = (url: string) => projectBrowser.url !== undefined && projectBrowser.homeUrl !== undefined && outputUrlMatchesHost(url, projectBrowser.homeUrl) && projectBrowser.openUrl(url);
   const pushPendingKey = `prompt:${agent.id}`;
   const pushPending = usePendingOperation(pushPendingKey);
-  const startingNewTask = usePendingOperation(newTaskOperationKey(agent.worktreeId ?? agent.id));
-  // cancel active agent work
-  const cancel = async () => { if (cancelling) return; setCancelling(true); try { await request(`/api/agents/${encodeURIComponent(agent.id)}/cancel`, { method: 'POST' }); } finally { setCancelling(false); } };
-  // turn off an Agent outside a Worktree (Scratch, a directory Project): its session closes
-  const remove = async () => {
-    // prevent duplicate closure
-    if (deleting) return;
-    setDeleting(true);
-    const label = displayLabel;
-    onOperationFeedback({ tone: 'pending', message: `Turning off ${label}…`, detail: 'The session is being stopped and removed from the console.' });
-    try {
-      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}`, { method: 'DELETE' });
-      // surface failed closure
-      if (!response.ok) return onOperationFeedback({ tone: 'error', message: `${label} could not be turned off`, detail: await launchError(response) });
-      await onDeleted();
-      onOperationFeedback({ tone: 'success', message: `${label} is off`, detail: 'The session was removed successfully.' });
-    } catch { onOperationFeedback({ tone: 'error', message: `${label} could not be turned off`, detail: 'The console could not be reached. The agent may still be running.' }); }
-    finally { if (mounted.current) setDeleting(false); }
-  };
-  // deactivate one configured agent
-  const deactivate = async () => {
-    // require an idle configured target
-    if (deactivating || agent.worktreeId === undefined || !beginPendingOperation(deactivateOperationKey(agent.worktreeId))) return;
-    setDeactivating(true);
-    const label = displayLabel;
-    onOperationFeedback({ tone: 'pending', message: `Turning off ${label}…`, detail: 'Stopping the agent while keeping the worktree available to start again.', worktreeId: agent.worktreeId });
-    try {
-      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/deactivate`, { method: 'POST' });
-      // surface failed deactivation
-      if (!response.ok) return onOperationFeedback({ tone: 'error', message: `${label} could not be turned off`, detail: await launchError(response), worktreeId: agent.worktreeId });
-      await onDeleted();
-      onOperationFeedback({ tone: 'success', message: `${label} is off`, detail: 'The worktree is still available. Use Launch agent whenever you want to turn it back on.', worktreeId: agent.worktreeId });
-    } catch { onOperationFeedback({ tone: 'error', message: `${label} could not be turned off`, detail: 'The console could not be reached. The agent may still be running.', worktreeId: agent.worktreeId }); }
-    finally {
-      setPendingOperation(deactivateOperationKey(agent.worktreeId), false);
-      setDeactivating(false);
-    }
-  };
-  // restart one configured agent, optionally under a different kind ("Restart as…")
-  const restart = async (choice?: LaunchChoice) => {
-    // require an idle configured target
-    if (restarting || agent.worktreeId === undefined || !beginPendingOperation(restartOperationKey(agent.worktreeId))) return;
-    const operationKey = restartOperationKey(agent.worktreeId);
-    pendingWorktreeLaunches.set(agent.worktreeId, { operationKey, sourceAgentId: agent.id });
-    setRestarting(true);
-    const label = displayLabel;
-    onOperationFeedback({ tone: 'pending', message: `Restarting ${label}…`, detail: 'Closing the agent, running the resume alias, and waiting for the conversation to reconnect.', worktreeId: agent.worktreeId });
-    try {
-      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/restart`, choice === undefined ? { method: 'POST' } : launchRequestInit(choice));
-      // surface failed restarts after refreshing the closed agent; the errors are global because
-      // an unpinned Worktree's tab closes with its agent, taking a tab-scoped message with it
-      if (!response.ok) {
-        const message = await launchError(response);
-        await onDeleted();
-        return onOperationFeedback({ tone: 'error', message: `${label} could not restart`, detail: message });
-      }
-      const payload = await response.json() as { agentId?: unknown };
-      // require the discovered replacement agent
-      if (typeof payload.agentId !== 'string') {
-        await onDeleted();
-        return onOperationFeedback({ tone: 'error', message: `${label} could not restart`, detail: 'The resume alias ran, but the replacement agent could not be opened.' });
-      }
-      pendingWorktreeLaunches.set(agent.worktreeId, { operationKey, sourceAgentId: agent.id, agentId: payload.agentId });
-      await onDeleted();
-      onOperationFeedback({ tone: 'success', message: `${label} restarted`, detail: 'The previous Codex conversation resumed and its output is reconnecting.', worktreeId: agent.worktreeId });
-    } catch {
-      await onDeleted().catch(() => undefined);
-      onOperationFeedback({ tone: 'error', message: `${label} could not restart`, detail: 'The console could not confirm the restart. Check the worktree before trying again.' });
-    }
-    finally {
-      pendingWorktreeLaunches.delete(agent.worktreeId);
-      setPendingOperation(operationKey, false);
-      // avoid updating an unmounted agent card
-      if (mounted.current) setRestarting(false);
-    }
-  };
-  // clear one configured agent conversation
-  const clear = async () => {
-    const operationKey = clearOperationKey(agent.id);
-    // serialize clear requests
-    if (clearing || !beginPendingOperation(operationKey)) return;
-    setClearing(true);
-    const label = displayLabel;
-    onOperationFeedback({ tone: 'pending', message: `Clearing ${label}…`, detail: 'Sending /clear to reset the current Codex conversation.', worktreeId: agent.worktreeId });
-    try {
-      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '/clear', attachments: [] }) });
-      // surface failed clears
-      if (!response.ok) return onOperationFeedback({ tone: 'error', message: `${label} could not clear`, detail: await launchError(response), worktreeId: agent.worktreeId });
-      await promptHistory.refresh();
-      onOperationFeedback({ tone: 'success', message: `${label} cleared`, detail: 'The /clear command was sent and the conversation is resetting.', worktreeId: agent.worktreeId });
-    } catch {
-      onOperationFeedback({ tone: 'error', message: `${label} could not clear`, detail: 'The console could not be reached. The conversation was not cleared.', worktreeId: agent.worktreeId });
-    }
-    finally {
-      setPendingOperation(operationKey, false);
-      // avoid updating an unmounted agent card
-      if (mounted.current) setClearing(false);
-    }
-  };
-  useEffect(() => {
-    mounted.current = true;
-    return () => { mounted.current = false; };
-  }, [agent.id]);
   // explain review availability
   const reviewUnavailable = agent.worktreeId === undefined
     ? 'Guided review requires a configured worktree'
@@ -5949,9 +5864,6 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
       : reviewCapability?.reason === 'authentication_required'
         ? 'Authenticate Codex to use guided review'
         : 'Guided review unavailable on this server';
-  // the inline question the dashboard reported for this agent (OMX files); the
-  // Log socket supplies the parsed one, and the dashboard's takes precedence
-  const dashboardQuestion = agent.question === undefined ? undefined : choiceQuestionFromInline(agent.question);
   const rebaseUpstream = agent.gitUpstream?.upstream;
   const queueRebase = rebaseUpstream === undefined ? undefined : async () => {
     const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: `$rebase ${rebaseUpstream}`, attachments: [] }) });
@@ -6002,18 +5914,183 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
   };
   // the Agent's push, fixup and guided-review actions on the git status
   const gitActions: WorkspaceGitActions = { id: agent.id, worktreeId: agent.worktreeId, onFixup: queueFixup, onReview: agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen(), reviewOpen: review !== undefined, reviewUnavailable: review === undefined ? reviewUnavailable : undefined, pushAction, pushPending, onPush: queuePush, onSelectTarget, onOperationFeedback };
-  // selected output and Terminal text append to the Agent's draft without queueing it
+  // selected output and Terminal text append to the current Agent's draft without queueing it
   const addToPrompt = (text: string) => setPromptDraft(agent.id, current => appendTextBlock(current, text));
+  // the panel is keyed by Agent, so a switch swaps its output, draft, queue and pending actions
+  const output = <AgentPanel key={agent.id} agent={agent} agents={agents} onSelectAgent={onSelectAgent} active={active} displayLabel={displayLabel} workspace={workspace} promptHistory={promptHistory} historyOpen={historyOpen} onHistoryOpenChange={changeHistoryOpen} latestAssistantMessage={latestAssistantMessage} onMetadata={reportMetadata} onAddToPrompt={addToPrompt} onOpenFile={openFileInCode} onOpenUrl={openOutputUrl} onDeleted={onDeleted} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} />;
+  return <article className="agent-view"><Workspace workspace={workspace} output={output} git={gitActions} onAddToPrompt={addToPrompt} />{tabBar}{upstreamRebase}<WorkspaceToolbar workspace={workspace} hasAgent launch={launch} git={gitActions} onGitToggle={() => setHistoryOpen(false)} review={review} cleanupControl={cleanupControl} menu={{ agentId: agent.id, worktreeId: agent.worktreeId, git: agent.worktreeId !== undefined || agent.placeId === undefined, newTaskConfigured: agent.newTaskConfigured, pinned, onTogglePin, onRenameWorktree, onRemoveWorktree, removeDisabledReason, onOperationFeedback }} phoneKeys={workspace.phoneTerminal ?? agent.id} /></article>;
+}
+
+// One Agent's panel inside its Place's Workspace: the live output under the floating header (the
+// switcher, state, conversations, response files and power menu) and the composer at its foot.
+// Keyed by Agent, so its pending lifecycle actions and parsed question never leak across a switch.
+function AgentPanel({ agent, agents, onSelectAgent, active, displayLabel, workspace, promptHistory, historyOpen, onHistoryOpenChange, latestAssistantMessage, onMetadata, onAddToPrompt, onOpenFile, onOpenUrl, onDeleted, onPromptFocus, onOperationFeedback }: { agent: Agent; agents: readonly Agent[]; onSelectAgent: (agentId: string) => void; active: boolean; displayLabel: string; workspace: WorkspaceState; promptHistory: ReturnType<typeof usePromptHistory>; historyOpen: boolean; onHistoryOpenChange: (open: boolean) => void; latestAssistantMessage?: string; onMetadata: (agentId: string, message: string | undefined, overflows: boolean) => void; onAddToPrompt: (text: string) => void; onOpenFile: (path: string) => void; onOpenUrl: (url: string) => boolean; onDeleted: () => Promise<void>; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
+  const mounted = useRef(true);
+  const [cancelling, setCancelling] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [deactivating, setDeactivating] = useState(false);
+  const [question, setQuestion] = useState<ChoiceQuestion>();
+  const startingNewTask = usePendingOperation(newTaskOperationKey(agent.worktreeId ?? agent.id));
+  const reportMetadata = useCallback((message: string | undefined, overflows: boolean) => onMetadata(agent.id, message, overflows), [onMetadata, agent.id]);
+  const responseFiles = useLatestAssistantFiles(agent.id, latestAssistantMessage, onOpenFile);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  // cancel active agent work
+  const cancel = async () => { if (cancelling) return; setCancelling(true); try { await request(`/api/agents/${encodeURIComponent(agent.id)}/cancel`, { method: 'POST' }); } finally { if (mounted.current) setCancelling(false); } };
+  // turn off an Agent outside a Worktree (Scratch, a directory Project): its pane closes
+  const remove = async () => {
+    // prevent duplicate closure
+    if (deleting) return;
+    setDeleting(true);
+    const label = displayLabel;
+    onOperationFeedback({ tone: 'pending', message: `Turning off ${label}…`, detail: 'The session is being stopped and removed from the console.' });
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}`, { method: 'DELETE' });
+      // surface failed closure
+      if (!response.ok) return onOperationFeedback({ tone: 'error', message: `${label} could not be turned off`, detail: await launchError(response) });
+      await onDeleted();
+      onOperationFeedback({ tone: 'success', message: `${label} is off`, detail: 'The session was removed successfully.' });
+    } catch { onOperationFeedback({ tone: 'error', message: `${label} could not be turned off`, detail: 'The console could not be reached. The agent may still be running.' }); }
+    finally { if (mounted.current) setDeleting(false); }
+  };
+  // deactivate one configured agent
+  const deactivate = async () => {
+    // require an idle configured target
+    if (deactivating || agent.worktreeId === undefined || !beginPendingOperation(deactivateOperationKey(agent.worktreeId))) return;
+    setDeactivating(true);
+    const label = displayLabel;
+    onOperationFeedback({ tone: 'pending', message: `Turning off ${label}…`, detail: 'Stopping the agent while keeping the worktree available to start again.', worktreeId: agent.worktreeId });
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/deactivate`, { method: 'POST' });
+      // surface failed deactivation
+      if (!response.ok) return onOperationFeedback({ tone: 'error', message: `${label} could not be turned off`, detail: await launchError(response), worktreeId: agent.worktreeId });
+      await onDeleted();
+      onOperationFeedback({ tone: 'success', message: `${label} is off`, detail: 'The worktree is still available. Use Launch agent whenever you want to turn it back on.', worktreeId: agent.worktreeId });
+    } catch { onOperationFeedback({ tone: 'error', message: `${label} could not be turned off`, detail: 'The console could not be reached. The agent may still be running.', worktreeId: agent.worktreeId }); }
+    finally {
+      setPendingOperation(deactivateOperationKey(agent.worktreeId), false);
+      if (mounted.current) setDeactivating(false);
+    }
+  };
+  // restart one configured agent, optionally under a different kind ("Restart as…")
+  const restart = async (choice?: LaunchChoice) => {
+    // require an idle configured target
+    if (restarting || agent.worktreeId === undefined || !beginPendingOperation(restartOperationKey(agent.worktreeId))) return;
+    const operationKey = restartOperationKey(agent.worktreeId);
+    // the other Agents at the Worktree keep running and are never the replacement
+    const excludedAgentIds = agents.filter(candidate => candidate.id !== agent.id).map(candidate => candidate.id);
+    pendingWorktreeLaunches.set(agent.worktreeId, { operationKey, sourceAgentId: agent.id, excludedAgentIds });
+    setRestarting(true);
+    const label = displayLabel;
+    onOperationFeedback({ tone: 'pending', message: `Restarting ${label}…`, detail: 'Closing the agent, running the resume alias, and waiting for the conversation to reconnect.', worktreeId: agent.worktreeId });
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/restart`, choice === undefined ? { method: 'POST' } : launchRequestInit(choice));
+      // surface failed restarts after refreshing the closed agent; the errors are global because
+      // an unpinned Worktree's tab closes with its last agent, taking a tab-scoped message with it
+      if (!response.ok) {
+        const message = await launchError(response);
+        await onDeleted();
+        return onOperationFeedback({ tone: 'error', message: `${label} could not restart`, detail: message });
+      }
+      const payload = await response.json() as { agentId?: unknown };
+      // require the discovered replacement agent
+      if (typeof payload.agentId !== 'string') {
+        await onDeleted();
+        return onOperationFeedback({ tone: 'error', message: `${label} could not restart`, detail: 'The resume alias ran, but the replacement agent could not be opened.' });
+      }
+      pendingWorktreeLaunches.set(agent.worktreeId, { operationKey, sourceAgentId: agent.id, excludedAgentIds, agentId: payload.agentId });
+      await onDeleted();
+      onOperationFeedback({ tone: 'success', message: `${label} restarted`, detail: 'The previous Codex conversation resumed and its output is reconnecting.', worktreeId: agent.worktreeId });
+    } catch {
+      await onDeleted().catch(() => undefined);
+      onOperationFeedback({ tone: 'error', message: `${label} could not restart`, detail: 'The console could not confirm the restart. Check the worktree before trying again.' });
+    }
+    finally {
+      pendingWorktreeLaunches.delete(agent.worktreeId);
+      setPendingOperation(operationKey, false);
+      // avoid updating an unmounted agent panel
+      if (mounted.current) setRestarting(false);
+    }
+  };
+  // clear one configured agent conversation
+  const clear = async () => {
+    const operationKey = clearOperationKey(agent.id);
+    // serialize clear requests
+    if (clearing || !beginPendingOperation(operationKey)) return;
+    setClearing(true);
+    const label = displayLabel;
+    onOperationFeedback({ tone: 'pending', message: `Clearing ${label}…`, detail: 'Sending /clear to reset the current Codex conversation.', worktreeId: agent.worktreeId });
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(agent.id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: '/clear', attachments: [] }) });
+      // surface failed clears
+      if (!response.ok) return onOperationFeedback({ tone: 'error', message: `${label} could not clear`, detail: await launchError(response), worktreeId: agent.worktreeId });
+      await promptHistory.refresh();
+      onOperationFeedback({ tone: 'success', message: `${label} cleared`, detail: 'The /clear command was sent and the conversation is resetting.', worktreeId: agent.worktreeId });
+    } catch {
+      onOperationFeedback({ tone: 'error', message: `${label} could not clear`, detail: 'The console could not be reached. The conversation was not cleared.', worktreeId: agent.worktreeId });
+    }
+    finally {
+      setPendingOperation(operationKey, false);
+      // avoid updating an unmounted agent panel
+      if (mounted.current) setClearing(false);
+    }
+  };
+  // the inline question the dashboard reported for this agent (OMX files); the
+  // Log socket supplies the parsed one, and the dashboard's takes precedence
+  const dashboardQuestion = agent.question === undefined ? undefined : choiceQuestionFromInline(agent.question);
   const conversationName = useCurrentConversationName(agent.id, [agent.conversationId, workspace.conversations.currentName]);
   const panelState = agentPanelState(agent, startingNewTask);
   // Cancel interrupts work in progress; the power menu waits until the Agent is idle
   const cancelButton = active && <button type="button" className="panel-header-action agent-cancel" disabled={cancelling} aria-label="Cancel agent" title="Cancel agent" onClick={() => void cancel()}>{cancelling ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>}</button>;
   const power = <AgentPowerMenu className="panel-header-action agent-power" pending={restarting || clearing || deactivating || deleting} {...(active ? { disabledReason: 'Cancel the agent’s work before restarting, clearing or turning it off' } : {})} onClear={() => void clear()} onTurnOff={() => void (agent.worktreeId === undefined ? remove() : deactivate())} {...(agent.worktreeId === undefined ? {} : { onRestart: () => void restart(), restartAs: { label: displayLabel, resolution: agent.launch, onLaunch: choice => void restart(choice) } })} />;
-  const header = (connection: string) => <PanelHeader panelKey="agent" label="agent output" title={<AgentPanelTitle kind={agent.kind} sandboxed={agent.sandboxed} title={conversationName ?? displayLabel} state={panelState} connection={connection} />} actions={<>{cancelButton}{workspace.conversations.control}{responseFiles.control}</>} close={power} />;
-  const prompt = <Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} placeId={workspace.place.id} historyControl={<PromptHistoryControl agentId={agent.id} history={promptHistory.history} refreshHistory={promptHistory.refresh} notes={workspace.notes} open={historyOpen} onOpenChange={changeHistoryOpen} />} />;
+  const title = conversationName ?? displayLabel;
+  const switcher = <AgentSwitcher agent={agent} agents={agents} title={title} placeLabel={displayLabel} onSelect={onSelectAgent} />;
+  const header = (connection: string) => <PanelHeader panelKey="agent" label="agent output" title={<AgentPanelTitle kind={agent.kind} sandboxed={agent.sandboxed} title={title} switcher={switcher} state={panelState} connection={connection} />} actions={<>{cancelButton}{workspace.conversations.control}{responseFiles.control}</>} close={power} />;
+  const prompt = <Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} placeId={workspace.place.id} historyControl={<PromptHistoryControl agentId={agent.id} history={promptHistory.history} refreshHistory={promptHistory.refresh} notes={workspace.notes} open={historyOpen} onOpenChange={onHistoryOpenChange} />} />;
   const composer = agent.paneMode === undefined ? prompt : <><PaneModeNotice agentId={agent.id} mode={agent.paneMode} worktreeId={agent.worktreeId} onOperationFeedback={onOperationFeedback} />{prompt}</>;
-  const output = <Log id={agent.id} onQuestion={setQuestion} onMetadata={reportMetadata} onAddToPrompt={addToPrompt} header={header} composer={composer} notes={workspace.notes} onOpenUrl={openOutputUrl} onOpenFile={openFileInCode} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />;
-  return <article className="agent-view"><Workspace workspace={workspace} output={output} git={gitActions} onAddToPrompt={addToPrompt} />{tabBar}{upstreamRebase}<WorkspaceToolbar workspace={workspace} hasAgent launch={launch} git={gitActions} onGitToggle={() => setHistoryOpen(false)} review={review} cleanupControl={cleanupControl} menu={{ agentId: agent.id, worktreeId: agent.worktreeId, git: agent.worktreeId !== undefined || agent.placeId === undefined, newTaskConfigured: agent.newTaskConfigured, pinned, onTogglePin, onRenameWorktree, onRemoveWorktree, removeDisabledReason, onOperationFeedback }} phoneKeys={workspace.phoneTerminal ?? agent.id} /></article>;
+  return <Log id={agent.id} onQuestion={setQuestion} onMetadata={reportMetadata} onAddToPrompt={onAddToPrompt} header={header} composer={composer} notes={workspace.notes} onOpenUrl={onOpenUrl} onOpenFile={onOpenFile} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />;
+}
+
+// whether an Agent has something for the operator: a question, or a finished turn not yet seen
+const agentNeedsOperator = (agent: Agent): boolean => agentState(agent) === 'action-required' || agent.unread === true;
+
+// The agent panel's title as the Agent switcher: the current conversation name ▾, the number of
+// Agents at the Place (when more than one), and a pulsing dot while another Agent here needs an
+// answer or has unread output. Its menu lists every Agent at the Place with its kind, name and
+// state; launching another Agent stays a toolbar action.
+function AgentSwitcher({ agent, agents, title, placeLabel, onSelect }: { agent: Agent; agents: readonly Agent[]; title: string; placeLabel: string; onSelect: (agentId: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const { anchorRef, flyoutRef, style } = useViewportFlyout(open);
+  const othersNeedYou = agents.some(candidate => candidate.id !== agent.id && agentNeedsOperator(candidate));
+  const label = `Switch Agent at ${placeLabel}${othersNeedYou ? ' — another Agent needs you' : ''}`;
+  const choose = (agentId: string) => {
+    setOpen(false);
+    if (agentId !== agent.id) onSelect(agentId);
+  };
+  return <><span className="agent-switcher-wrap" ref={anchorRef}><button type="button" className="agent-switcher" aria-label={label} aria-haspopup="menu" aria-expanded={open} title={label} onClick={() => setOpen(value => !value)}>
+    <span className="agent-panel-title">{title}</span>
+    {agents.length > 1 && <span className="agent-switcher-count" aria-hidden="true">{agents.length}</span>}
+    {othersNeedYou && <i className="agent-switcher-attention" aria-hidden="true" />}
+    <svg className="agent-switcher-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+  </button></span>{open && <FlyoutPortal onDismiss={() => setOpen(false)}><div className="more-menu flyout-menu agent-switcher-menu" ref={flyoutRef} style={style} role="menu" aria-label={`Agents at ${placeLabel}`}>
+    {agents.map(candidate => <AgentSwitcherRow key={candidate.id} agent={candidate} current={candidate.id === agent.id} onChoose={() => choose(candidate.id)} />)}
+    <p className="agent-switcher-note">Launch another agent here from the toolbar. Each agent keeps its own draft, queue and history.</p>
+  </div></FlyoutPortal>}</>;
+}
+
+// One switcher row: the Agent's kind, its current conversation's name and its state.
+function AgentSwitcherRow({ agent, current, onChoose }: { agent: Agent; current: boolean; onChoose: () => void }) {
+  const name = useCurrentConversationName(agent.id, [agent.conversationId]) ?? (agent.kind === undefined ? agentLabel(agent) : agentKindLabel[agent.kind]);
+  const state = agentPanelState(agent, false);
+  return <button type="button" role="menuitemradio" aria-checked={current} className={`agent-switcher-row${current ? ' current' : ''}`} onClick={onChoose}>
+    {agent.kind !== undefined && <LaunchTabBadge kind={agent.kind} sandboxed={agent.sandboxed} />}
+    <span className="agent-switcher-row-text"><strong>{name}</strong><small>{agent.kind === undefined ? '' : `${agentKindLabel[agent.kind]} · `}{state.label}</small></span>
+    <span className={`agent-state-pill ${state.tone}`} aria-hidden="true" />
+  </button>;
 }
 
 // The agent panel's state pill: its words and the tone that colours it.
@@ -6046,12 +6123,12 @@ function useCurrentConversationName(agentId: string, refreshOn: readonly unknown
   return name?.agentId === agentId ? name.name : undefined;
 }
 
-// The agent panel's title pill: the kind mark, the title, the state and, while the output is not
-// live, its connection status.
-function AgentPanelTitle({ kind, sandboxed, title, state, connection = 'Live' }: { kind?: AgentKind; sandboxed?: boolean; title: string; state: AgentPanelState; connection?: string }) {
+// The agent panel's title pill: the kind mark, the title (the Agent switcher, once an Agent runs),
+// the state and, while the output is not live, its connection status.
+function AgentPanelTitle({ kind, sandboxed, title, switcher, state, connection = 'Live' }: { kind?: AgentKind; sandboxed?: boolean; title: string; switcher?: ReactNode; state: AgentPanelState; connection?: string }) {
   return <>
     {kind !== undefined && <LaunchTabBadge kind={kind} sandboxed={sandboxed} />}
-    <span className="agent-panel-title" title={title}>{title}</span>
+    {switcher ?? <span className="agent-panel-title" title={title}>{title}</span>}
     <span className={`agent-state-pill ${state.tone}`}>{state.label}</span>
     {connection !== 'Live' && <span className={`status log-status ${connection.toLowerCase()}`}>{connection}</span>}
   </>;
@@ -6310,8 +6387,9 @@ function PanelNotice({ busy = false, ariaLabel, heading, detail, className = '',
 }
 
 // How an agentless Place tab launches: the directory Project in place or the configured Scratch
-// folder, shown with the Launch profile that path actually resolves
-type PlaceLaunch = { resolution?: LaunchResolution; start: (choice?: LaunchChoice) => void };
+// folder, shown with the Launch profile that path actually resolves; `endpoint` is the route that
+// launches there, which the toolbar also uses to start another Agent beside a running one
+type PlaceLaunch = { resolution?: LaunchResolution; endpoint: string; start: (choice?: LaunchChoice) => void };
 
 // A Place's open-terminal count (when it has any) and its pin toggle, as a launcher row shows them.
 // `noun` names the Place kind in the toggle's tooltip.
@@ -6389,6 +6467,20 @@ function PendingSessionCard({ launch, tabBar, cleanupControl, retrying, onRetry,
   // only a failed start offers Launch, which retries without replacing the prepared draft
   const retry: ToolbarLaunch | undefined = launch.phase === 'failed' ? { label: launch.label, resolution: launch.resolution, disabled: retrying, start: onRetry } : undefined;
   return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><PendingAgentPanel kind={kind} title={launch.label} state={state} loading={loading} close={discard} composer={<PreparingPrompt id={launch.draftId} onOperationFeedback={onOperationFeedback} />} /></div></section>{tabBar}{launch.error !== undefined && <p className="launch-error" role="alert">{launch.error}</p>}<WorkspaceToolbar launch={retry} cleanupControl={cleanupControl} /></article>;
+}
+
+// A tab's marks: one overlapping kind mark per Agent at the Place (or the kind a launch is
+// starting), else a terminal glyph for a Place holding only shells, else a dashed square for an
+// empty one.
+function TabKindStack({ entry }: { entry: DashboardItem }) {
+  const kinds = entry.agents.length > 0 ? entry.agents.flatMap(agent => agent.kind === undefined ? [] : [{ key: agent.id, kind: agent.kind, sandboxed: agent.sandboxed }])
+    : entry.pendingLaunch?.kind !== undefined ? [{ key: entry.pendingLaunch.id, kind: entry.pendingLaunch.kind, sandboxed: entry.pendingLaunch.sandboxed }] : [];
+  if (kinds.length > 0) return <span className="tab-kind-stack">{kinds.map(({ key, kind, sandboxed }) => <LaunchTabBadge key={key} kind={kind} sandboxed={sandboxed} />)}</span>;
+  if (entry.agents.length > 0 || entry.pendingLaunch !== undefined) return null;
+  const shells = (entry.worktree?.consoleShells ?? entry.place?.consoleShells ?? 0) > 0;
+  return <span className="tab-kind-stack" aria-hidden="true">{shells
+    ? <span className="tab-place-mark shells" title="Terminals only"><LauncherRowIcon name="terminal" /></span>
+    : <span className="tab-place-mark empty" title="Empty workspace"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" strokeDasharray="3 3" /></svg></span>}</span>;
 }
 
 // render browser notification enrollment
@@ -6705,6 +6797,8 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const [unavailable, setUnavailable] = useState(false);
   const [active, setActive] = useState(0);
   const [creatingAgent, setCreatingAgent] = useState(false);
+  // the Place tab whose toolbar Launch is starting another Agent beside its running ones
+  const [launchingAnotherAt, setLaunchingAnotherAt] = useState<string>();
   const [pendingSessionLaunches, setPendingSessionLaunches] = useState<PendingSessionLaunch[]>([]);
   const pendingSessionLaunchesRef = useRef<PendingSessionLaunch[]>([]);
   const pendingSessionLaunchSequence = useRef(0);
@@ -6746,8 +6840,13 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const latestDashboardServerStartedAt = useRef<number | undefined>(undefined);
   const latestDashboardGeneration = useRef<number | undefined>(undefined);
   const selectedItemKey = useRef<string | undefined>(undefined);
-  // the Place behind the selected Agent tab, so its agentless tab can take the selection over
-  const selectedPlaceId = useRef<string | undefined>(undefined);
+  // the Agent each Place tab's switcher shows, by tab key; a tab with no choice (or whose chosen
+  // Agent is gone) shows its first Agent
+  const [agentChoice, setAgentChoice] = useState<Readonly<Record<string, string>>>({});
+  // choose the Agent a tab's switcher shows
+  const chooseAgent = useCallback((key: string, agentId: string) => setAgentChoice(current => current[key] === agentId ? current : { ...current, [key]: agentId }), []);
+  // the Agent in view (the active tab's switcher choice), so its notifications stay quiet
+  const viewedAgentId = useRef<string | undefined>(undefined);
   const dashboardMounted = useRef(true);
   const showOperationFeedback = useCallback((feedback: Omit<OperationFeedback, 'id'>) => {
     operationFeedbackId.current += 1;
@@ -6833,7 +6932,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       activeWorktreeIds.add(agent.worktreeId);
       const pendingLaunch = pendingWorktreeLaunches.get(agent.worktreeId);
       // never hand a replacement draft to the old or mismatched session
-      if (pendingLaunch?.sourceAgentId === agent.id || pendingNewTaskSources.get(agent.worktreeId) === agent.id
+      if (pendingLaunch?.sourceAgentId === agent.id || pendingLaunch?.excludedAgentIds?.includes(agent.id) === true || pendingNewTaskSources.get(agent.worktreeId) === agent.id
         || pendingLaunch?.agentId !== undefined && pendingLaunch.agentId !== agent.id) continue;
       handoffPromptDraft(worktreePromptId(agent.worktreeId), agent.id);
     }
@@ -6847,10 +6946,11 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       // cancel stale-agent recovery after discovery confirms the session
       if (pendingLaunch.confirmationTimer !== undefined) window.clearTimeout(pendingLaunch.confirmationTimer);
       confirmedSessionLaunchIds.add(pendingLaunch.id);
-      // preserve navigation away from the pending tab
-      if (shouldActivate) {
-        selectedItemKey.current = `agent-${pendingLaunch.agentId}`;
-        setActivateAgentId(pendingLaunch.agentId);
+      // preserve navigation away from the pending tab: follow the Agent into its Place's tab
+      const discovered = nextPayload.agents.find(agent => agent.id === pendingLaunch.agentId);
+      if (shouldActivate && discovered !== undefined) {
+        selectedItemKey.current = agentItemKey(discovered);
+        setActivateAgentId(discovered.id);
       }
     }
     // remove only dashboard-confirmed placeholders
@@ -6883,11 +6983,11 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     // finish launches only after their dashboard agent appears
     for (const [worktreeId, pendingLaunch] of pendingWorktreeLaunches) {
       const replacement = pendingLaunch.agentId === undefined
-        ? nextPayload.agents.find(agent => agent.worktreeId === worktreeId && agent.id !== pendingLaunch.sourceAgentId)
+        ? nextPayload.agents.find(agent => agent.worktreeId === worktreeId && agent.id !== pendingLaunch.sourceAgentId && pendingLaunch.excludedAgentIds?.includes(agent.id) !== true)
         : nextPayload.agents.find(agent => agent.id === pendingLaunch.agentId && agent.worktreeId === worktreeId);
       // wait for the matching agent identity
       if (replacement === undefined) continue;
-      const shouldActivate = selectedItemKey.current === `worktree-${worktreeId}`;
+      const shouldActivate = selectedItemKey.current === placeItemKey(worktreeId);
       // cancel confirmation recovery
       if (pendingLaunch.confirmationTimer !== undefined) window.clearTimeout(pendingLaunch.confirmationTimer);
       pendingWorktreeLaunches.delete(worktreeId);
@@ -6920,9 +7020,8 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   useEffect(() => {
     // wait for an active review binding
     if (reviewLaunch === undefined || data === undefined) return;
-    const current = data.agents.find(agent => agent.worktreeId === reviewLaunch.worktreeId);
-    // clear replaced or removed agent bindings
-    if (current?.id !== reviewLaunch.agentId) { setReviewLaunch(undefined); setReviewInitialTour(undefined); setReviewIndicator({ generating: false, stale: false }); }
+    // clear replaced or removed agent bindings (a sibling Agent at the Worktree is not a replacement)
+    if (!data.agents.some(agent => agent.id === reviewLaunch.agentId && agent.worktreeId === reviewLaunch.worktreeId)) { setReviewLaunch(undefined); setReviewInitialTour(undefined); setReviewIndicator({ generating: false, stale: false }); }
   }, [data, reviewLaunch]);
   const closeCleanup = useCallback(() => {
     setCleanupOpen(false);
@@ -7068,7 +7167,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       const previous = agentStates.current.get(agent.id);
       const tag = agentNotificationTag(agent);
       const names = agentNotificationNames(agent, data.projects);
-      const focused = selectedItemKey.current === `agent-${agent.id}` && pageFocused();
+      const focused = viewedAgentId.current === agent.id && pageFocused();
       const hasQueuedPrompt = agent.queuedPromptCount > 0;
       observed.add(agent.id);
       const pendingCompletion = pendingCompletions.current.get(agent.id);
@@ -7104,49 +7203,78 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     agentStates.current = next;
   }, [data, viewAgent]);
   const worktrees = data === undefined ? [] : allWorktrees(data);
-  // an Agent shows and orders by its Worktree (the server no longer stamps the label/order on
-  // the agent); a Scratch agent falls back to its own label and sorts last
-  const worktreeOrderById = new Map(worktrees.map(worktree => [worktree.id, worktree.order] as const));
+  // a Place tab shows and orders by its Worktree (the server no longer stamps the label/order on
+  // the agent); a directory-Project or Scratch Place, and an Agent placed nowhere, sort last
   const worktreeLabelById = new Map(worktrees.map(worktree => [worktree.id, worktree.label] as const));
-  const items: DashboardItem[] = data === undefined ? [] : [
-    ...data.agents.filter(agent => !isEmbeddedUpdateAdvisor(agent)).map(agent => {
-      const operation = agentPendingOperation(agent);
-      const order = (agent.worktreeId === undefined ? undefined : worktreeOrderById.get(agent.worktreeId)) ?? agent.worktreeOrder ?? Number.MAX_SAFE_INTEGER;
-      const label = (agent.worktreeId === undefined ? undefined : worktreeLabelById.get(agent.worktreeId)) ?? agent.worktreeLabel ?? agentLabel(agent);
-      return { key: `agent-${agent.id}`, label, state: agentState(agent), order, unread: agent.unread === true, operation, agent };
-    }),
-    ...worktrees.filter(worktree => {
-      // a Worktree with a live agent is shown by its agent tab, never a second idle tab
-      if (data.agents.some(agent => agent.worktreeId === worktree.id)) return false;
+  const items: DashboardItem[] = [];
+  if (data !== undefined) {
+    // one tab per Place, however many Agents run there, in discovery order within the Place
+    const agentsByPlace = new Map<string, Agent[]>();
+    for (const agent of data.agents) {
+      if (isEmbeddedUpdateAdvisor(agent)) continue;
+      const key = agentItemKey(agent);
+      agentsByPlace.set(key, [...(agentsByPlace.get(key) ?? []), agent]);
+    }
+    for (const [key, agents] of agentsByPlace) {
+      const first = agents[0]!;
+      const placeId = agentPlaceId(first);
+      const worktree = placeId === undefined ? undefined : worktrees.find(candidate => candidate.id === placeId);
+      const place = worktree !== undefined || placeId === undefined ? undefined : data.places?.find(candidate => candidate.id === placeId);
+      const order = worktree?.order ?? first.worktreeOrder ?? Number.MAX_SAFE_INTEGER;
+      const label = worktree?.label ?? place?.label ?? first.worktreeLabel ?? agentLabel(first);
+      const operation = agents.map(agentPendingOperation).find(candidate => candidate !== undefined);
+      items.push({ key, label, ...placeTabState(agents), order, operation, agents, placeId, worktree, place });
+    }
+    for (const worktree of worktrees) {
+      // a Worktree with a live agent is already its Place's tab
+      if (agentsByPlace.has(placeItemKey(worktree.id))) continue;
       const draftId = worktreePromptId(worktree.id);
       // retain pinned, pending and prepared idle tabs, and any Worktree that still has an
       // open Console shell so stopping the Agent never hides the operator's terminals
-      return worktree.pinned || (worktree.consoleShells ?? 0) > 0 || pendingNewTaskSources.has(worktree.id) || pendingWorktreeLaunches.has(worktree.id) || Boolean(getPromptDraft(draftId)) || promptAttachments.has(draftId);
-    }).map(worktree => {
-      const operation = worktreePendingOperation(worktree);
-      return { key: `worktree-${worktree.id}`, label: worktree.label, state: 'closed' as const, order: worktree.order, unread: false, operation, worktree };
-    }),
+      if (!(worktree.pinned || (worktree.consoleShells ?? 0) > 0 || pendingNewTaskSources.has(worktree.id) || pendingWorktreeLaunches.has(worktree.id) || Boolean(getPromptDraft(draftId)) || promptAttachments.has(draftId))) continue;
+      items.push({ key: placeItemKey(worktree.id), label: worktree.label, state: 'closed', order: worktree.order, unread: false, operation: worktreePendingOperation(worktree), agents: [], placeId: worktree.id, worktree });
+    }
     // a directory-Project or Scratch Place with no Agent there keeps a tab while it is pinned or
     // holds a Console shell, so turning its Agent off never hides the operator's terminals
-    ...(data.places ?? []).filter(place => !data.agents.some(agent => agent.placeId === place.id && !isEmbeddedUpdateAdvisor(agent)) && (place.pinned || (place.consoleShells ?? 0) > 0)).map(place => ({ key: `place-${place.id}`, label: place.label, state: 'closed' as const, order: Number.MAX_SAFE_INTEGER, unread: false, place })),
-    ...pendingSessionLaunches.map(pendingLaunch => ({ key: `pending-${pendingLaunch.id}`, label: pendingLaunch.label, state: 'closed' as const, order: Number.MAX_SAFE_INTEGER, unread: false, operation: pendingLaunch.phase === 'failed' ? undefined : 'launching' as const, pendingLaunch }))
-  ].sort((left, right) => left.order - right.order);
+    for (const place of data.places ?? []) {
+      if (agentsByPlace.has(placeItemKey(place.id)) || !(place.pinned || (place.consoleShells ?? 0) > 0)) continue;
+      items.push({ key: placeItemKey(place.id), label: place.label, state: 'closed', order: Number.MAX_SAFE_INTEGER, unread: false, agents: [], placeId: place.id, place });
+    }
+    for (const pendingLaunch of pendingSessionLaunches) items.push({ key: `pending-${pendingLaunch.id}`, label: pendingLaunch.label, state: 'closed', order: Number.MAX_SAFE_INTEGER, unread: false, operation: pendingLaunch.phase === 'failed' ? undefined : 'launching', agents: [], pendingLaunch });
+    items.sort((left, right) => left.order - right.order);
+  }
+  // the Agent a Place tab's switcher shows
+  const currentAgentOf = (entry: DashboardItem | undefined): Agent | undefined => entry === undefined ? undefined : entry.agents.find(agent => agent.id === agentChoice[entry.key]) ?? entry.agents[0];
   const tabKey = items.map(item => item.key).join('\u0000');
   const selectedIndex = selectedItemKey.current === undefined ? -1 : items.findIndex(candidate => candidate.key === selectedItemKey.current);
-  // when a selected Agent's tab goes (turned off or closed) and its directory-Project or Scratch
-  // Place keeps an agentless tab, select that tab; a Worktree's idle tab already takes the Agent's slot
-  const placeTakeover = selectedIndex >= 0 || selectedPlaceId.current === undefined ? -1 : items.findIndex(candidate => candidate.place?.id === selectedPlaceId.current);
-  if (selectedIndex >= 0) selectedPlaceId.current = items[selectedIndex]?.agent?.placeId;
-  const visibleActive = selectedIndex >= 0 ? selectedIndex : placeTakeover >= 0 ? placeTakeover : Math.min(active, Math.max(items.length - 1, 0));
+  const visibleActive = selectedIndex >= 0 ? selectedIndex : Math.min(active, Math.max(items.length - 1, 0));
   const activeItemKey = items[visibleActive]?.key;
   // establish the first visible selection
   if (selectedItemKey.current === undefined) selectedItemKey.current = activeItemKey;
+  viewedAgentId.current = currentAgentOf(items[visibleActive])?.id;
   // keep numeric tab state aligned without rendering a different key between snapshots
   useLayoutEffect(() => {
     // adopt the fallback only after a selected item disappears
     if (selectedIndex < 0) selectedItemKey.current = activeItemKey;
     setActive(current => current === visibleActive ? current : visibleActive);
   }, [activeItemKey, selectedIndex, tabKey, visibleActive]);
+  // when the switcher's Agent goes (turned off) and the panel falls back to a sibling, the
+  // operator is now looking at the sibling's output: mark it read, as choosing it would
+  const shownAgentId = viewedAgentId.current;
+  const lastShown = useRef<{ key?: string; agentId?: string }>({});
+  useEffect(() => {
+    const previous = lastShown.current;
+    lastShown.current = { key: activeItemKey, agentId: shownAgentId };
+    const agents = items[visibleActive]?.agents ?? [];
+    if (previous.key !== activeItemKey || previous.agentId === undefined || previous.agentId === shownAgentId || agents.some(agent => agent.id === previous.agentId)) return;
+    const shown = agents.find(agent => agent.id === shownAgentId);
+    if (shown !== undefined) viewAgent(shown);
+  }, [activeItemKey, shownAgentId]);
+  // forget the switcher choice of a tab that has gone, so the record stays bounded by the tabs
+  useEffect(() => {
+    const keys = new Set(tabKey.split('\u0000'));
+    setAgentChoice(current => Object.keys(current).every(key => keys.has(key)) ? current : Object.fromEntries(Object.entries(current).filter(([key]) => keys.has(key))));
+  }, [tabKey]);
   useEffect(() => {
     // activate initial and same-document links
     const activateLinkedItem = () => {
@@ -7156,13 +7284,16 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       let target = '';
       try { target = decodeURIComponent(hash.slice(separator + 1)); } catch { /* retain the current tab */ }
       let linked = -1;
+      let linkedAgentId: string | undefined;
       // resolve each supported dashboard destination explicitly
       switch (kind) {
         case 'worktree':
-          linked = items.findIndex(item => item.agent?.worktreeId === target || item.worktree?.id === target);
+          linked = items.findIndex(item => item.placeId === target);
           break;
         case 'agent':
-          linked = items.findIndex(item => item.agent?.id === target);
+          // an Agent opens its Place's tab with the Agent chosen in the switcher
+          linked = items.findIndex(item => item.agents.some(agent => agent.id === target));
+          if (linked >= 0) linkedAgentId = target;
           break;
         case 'launch':
           linked = items.findIndex(item => item.pendingLaunch?.id === target);
@@ -7173,37 +7304,43 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       }
       // ignore unavailable destinations
       if (linked < 0) return;
-      const linkedItem = items[linked];
+      const linkedItem = items[linked]!;
       // keep linked navigation aligned with the stable selection key
-      selectedItemKey.current = linkedItem?.key;
+      selectedItemKey.current = linkedItem.key;
+      if (linkedAgentId !== undefined) chooseAgent(linkedItem.key, linkedAgentId);
       setActive(linked);
       // clear the selected notification state
-      if (linkedItem?.agent !== undefined) viewAgent(linkedItem.agent);
+      const viewed = linkedItem.agents.find(agent => agent.id === linkedAgentId) ?? currentAgentOf(linkedItem);
+      if (viewed !== undefined) viewAgent(viewed);
     };
     activateLinkedItem();
     window.addEventListener('hashchange', activateLinkedItem);
     return () => window.removeEventListener('hashchange', activateLinkedItem);
   }, [tabKey, viewAgent]);
-  // select a stable dashboard item and publish its deep link
-  const select = (index: number) => {
+  // select a stable dashboard item (and, given `agentId`, that Agent in its switcher) and publish
+  // its deep link
+  const select = (index: number, agentId?: string) => {
     const item = items[index];
     // ignore stale navigation indices
     if (!item) return;
-    const changed = selectedItemKey.current !== item.key;
+    const previousAgent = selectedItemKey.current === item.key ? currentAgentOf(item) : undefined;
     selectedItemKey.current = item.key;
-    // mark newly selected agent output as read
-    if (changed && item.agent !== undefined) viewAgent(item.agent);
+    const chosen = item.agents.find(agent => agent.id === agentId);
+    if (chosen !== undefined) chooseAgent(item.key, chosen.id);
+    const agent = chosen ?? currentAgentOf(item);
+    // mark newly viewed agent output as read
+    if (agent !== undefined && agent.id !== previousAgent?.id) viewAgent(agent);
     let target = `tab=${encodeURIComponent(item.label)}`;
     // keep pending launches distinct from same-label sessions
     if (item.pendingLaunch !== undefined) target = `launch=${encodeURIComponent(item.pendingLaunch.id)}`;
     // use the exact identity once discovery completes
-    else if (item.agent !== undefined) target = `agent=${encodeURIComponent(item.agent.id)}`;
+    else if (agent !== undefined) target = `agent=${encodeURIComponent(agent.id)}`;
     history.replaceState(null, '', `${location.pathname}${location.search}#${target}`);
     setActive(index);
   };
   // select one canonical worktree from voice
   const selectVoiceWorktree = (worktreeId: string) => {
-    const index = items.findIndex(candidate => candidate.agent?.worktreeId === worktreeId || candidate.worktree?.id === worktreeId);
+    const index = items.findIndex(candidate => candidate.placeId === worktreeId);
     // reject worktrees without a visible tab
     if (index < 0) return undefined;
     const selected = items[index];
@@ -7215,16 +7352,16 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   useShiftArrowTabCycling(visibleActive, items.length, select);
   useEffect(() => {
     if (activateAgentId === undefined) return;
-    const index = items.findIndex(candidate => candidate.agent?.id === activateAgentId);
+    const index = items.findIndex(candidate => candidate.agents.some(agent => agent.id === activateAgentId));
     if (index < 0) return;
-    select(index);
+    select(index, activateAgentId);
     setActivateAgentId(undefined);
-  }, [activateAgentId, tabKey]);
+  }, [activateAgentId, data]);
   // activate one newly opened worktree tab
   useEffect(() => {
     // wait for the pending tab
     if (activateWorktreeId === undefined) return;
-    const index = items.findIndex(candidate => candidate.worktree?.id === activateWorktreeId);
+    const index = items.findIndex(candidate => candidate.placeId === activateWorktreeId);
     // wait for the matching item
     if (index < 0) return;
     select(index);
@@ -7317,7 +7454,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       pendingWorktreeLaunches.delete(worktree.id);
       setPendingOperation(operationKey, false);
       // preserve newer navigation choices
-      if (selectedItemKey.current === `worktree-${worktree.id}`) setActivateAgentId(agentId);
+      if (selectedItemKey.current === placeItemKey(worktree.id)) setActivateAgentId(agentId);
     }
     void refresh();
   };
@@ -7396,9 +7533,32 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   // an agentless Place tab launches like its launcher row: the directory Project in place, or the
   // configured Scratch folder; an ad-hoc Scratch folder has no launch
   const placeLaunch = (place: Place): PlaceLaunch | undefined => {
-    if (place.kind === 'scratch') return place.adhoc === true ? undefined : { resolution: data?.scratchLaunch, start: choice => createAgent(choice) };
+    if (place.kind === 'scratch') return place.adhoc === true ? undefined : { resolution: data?.scratchLaunch, endpoint: '/api/agents/launch', start: choice => createAgent(choice) };
     const project = data?.projects.find(candidate => candidate.id === place.projectId);
-    return project === undefined ? undefined : { resolution: project.launch, start: choice => launchProjectDirectory(project, choice) };
+    return project === undefined ? undefined : { resolution: project.launch, endpoint: `/api/projects/${encodeURIComponent(project.id)}/launch`, start: choice => launchProjectDirectory(project, choice) };
+  };
+  // Launch another Agent at a Place that already has one, from its toolbar. It joins the Place's
+  // session; the running Agents stay in view until the server reports it discovered, and then the
+  // switcher shows it (the tab too, unless the operator has moved on).
+  const launchAnother = async ({ key, label, endpoint, worktreeId }: { key: string; label: string; endpoint: string; worktreeId?: string }, choice?: LaunchChoice) => {
+    if (launchingAnotherAt !== undefined) return;
+    setLaunchingAnotherAt(key);
+    showOperationFeedback({ tone: 'pending', message: `Starting another agent at ${label}…`, detail: 'The running agents stay open while the new one starts.', worktreeId });
+    try {
+      const response = await request(endpoint, choice === undefined ? { method: 'POST' } : launchRequestInit(choice));
+      if (!response.ok) return showOperationFeedback({ tone: 'error', message: `${label} could not start another agent`, detail: await launchError(response), worktreeId });
+      const payload = await response.json() as { agentId?: unknown };
+      if (typeof payload.agentId !== 'string') return showOperationFeedback({ tone: 'error', message: `${label} could not open the new agent`, detail: 'The agent started but could not be opened.', worktreeId });
+      const agentId = payload.agentId;
+      chooseAgent(key, agentId);
+      if (selectedItemKey.current === key) setActivateAgentId(agentId);
+      showOperationFeedback({ tone: 'success', message: `${label} started another agent`, detail: 'The new agent session is ready and its output is connecting.', worktreeId });
+      await refresh();
+    } catch {
+      showOperationFeedback({ tone: 'error', message: `${label} could not start another agent`, detail: 'Unable to reach the console while launching the agent.', worktreeId });
+    } finally {
+      if (dashboardMounted.current) setLaunchingAnotherAt(undefined);
+    }
   };
   // start from the launcher
   const launchWorktree = async (worktree: Worktree, choice?: LaunchChoice) => {
@@ -7443,8 +7603,8 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     }
   };
   const selectTarget = (target: DashboardTarget) => {
-    const index = items.findIndex(candidate => (target.agentId !== undefined && candidate.agent?.id === target.agentId) || candidate.agent?.worktreeId === target.worktreeId || candidate.worktree?.id === target.worktreeId);
-    if (index >= 0) return select(index);
+    const index = items.findIndex(candidate => (target.agentId !== undefined && candidate.agents.some(agent => agent.id === target.agentId)) || candidate.placeId === target.worktreeId);
+    if (index >= 0) return select(index, target.agentId);
     const worktree = worktrees.find(candidate => candidate.id === target.worktreeId);
     if (worktree !== undefined) void launchWorktree(worktree);
   };
@@ -7452,7 +7612,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   // conversation resume already drives the handoff, so this never starts a fresh agent the way
   // selectTarget's PR-switch fallback does
   const navigateToWorktree = (worktreeId: string) => {
-    const index = items.findIndex(candidate => candidate.agent?.worktreeId === worktreeId || candidate.worktree?.id === worktreeId);
+    const index = items.findIndex(candidate => candidate.placeId === worktreeId);
     if (index >= 0) return select(index);
     setActivateWorktreeId(worktreeId);
   };
@@ -7547,21 +7707,23 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   };
   const cleanupDialog = !cleanupOpen ? null : createPortal(<div className="dialog cleanup-dialog" role="dialog" aria-modal="true" aria-labelledby="cleanup-title"><div><header className="cleanup-header"><div><h2 id="cleanup-title">Cleanup</h2><p>Select items to clean up. Unchecked items will be dismissed.</p></div><button className="cleanup-close" type="button" aria-label="Close cleanup" disabled={cleanupLoading} onClick={closeCleanup}>×</button></header>{cleanupLoading && cleanupTargets.length === 0 ? <p className="cleanup-loading" role="status"><span className="spinner" />Searching for cleanup targets…</p> : cleanupTargets.length === 0 ? <p className="cleanup-empty">No cleanup targets remain.</p> : <fieldset className="cleanup-targets" disabled={cleanupLoading}><legend className="sr-only">Cleanup targets</legend>{cleanupTargets.map(target => <label key={target.id} className="cleanup-target"><input type="checkbox" checked={cleanupChecked.has(target.id)} onChange={event => setCleanupChecked(current => { const next = new Set(current); if (event.target.checked) next.add(target.id); else next.delete(target.id); return next; })} /><span><strong><small>{cleanupKindLabel[target.kind]}</small>{target.label}</strong><span>{target.detail}</span></span></label>)}</fieldset>}{cleanupError && <p className="cleanup-error" role="alert">{cleanupError}</p>}<footer className="cleanup-actions"><span>{cleanupTargets.length === 0 ? 'Nothing selected' : `${cleanupChecked.size} of ${cleanupTargets.length} selected`}</span><button type="button" disabled={cleanupLoading || cleanupError === 'Unable to load cleanup targets.'} onClick={() => void resolveCleanup()}>{cleanupLoading ? <><span className="spinner" />Working…</> : cleanupChecked.size === 0 ? 'Dismiss all' : 'Cleanup'}</button></footer></div></div>, document.body);
   const stateLabel: Record<AgentState, string> = { working: 'Working', 'prompt-done': 'Prompt done', 'action-required': 'Action required', closed: 'Agent closed' };
-  const activeWorktreeId = item?.agent?.worktreeId ?? item?.worktree?.id;
-  // the discovered Worktree behind the active agent tab, for its pin toggle
-  const activeWorktree = item?.agent?.worktreeId === undefined ? undefined : worktrees.find(worktree => worktree.id === item.agent!.worktreeId);
-  // the directory-Project or Scratch Place behind an active agent tab that has no Worktree, for its pin toggle
-  const activePlace = activeWorktree !== undefined || item?.agent?.placeId === undefined ? undefined : data.places?.find(place => place.id === item.agent!.placeId);
+  // the Agent the active tab's switcher shows
+  const agent = currentAgentOf(item);
+  const activeWorktreeId = item?.worktree?.id ?? agent?.worktreeId;
+  // the discovered Worktree behind the active tab, for its pin toggle and Place actions
+  const activeWorktree = item?.worktree;
+  // the directory-Project or Scratch Place behind an active tab that has no Worktree, for its pin toggle
+  const activePlace = item?.place;
   const activePinTarget = activeWorktree ?? activePlace;
-  // the toolbar's Launch on an Agent tab: a directory Project or Scratch starts another Agent that
-  // joins the Place's session; a Worktree's launch would open a session of its own beside the
-  // running Agent's, so it waits for the Agent switcher to share one
+  // the toolbar's Launch on a tab with Agents starts another Agent that joins the Place's session;
+  // an ad-hoc Scratch folder, and an Agent placed nowhere, have no launch
   const activePlaceLaunch = activePlace === undefined ? undefined : placeLaunch(activePlace);
-  const activeLaunch: ToolbarLaunch | undefined = activeWorktree !== undefined
-    ? { label: activeWorktree.label, resolution: activeWorktree.launch, disabled: true, disabledReason: 'An agent already runs in this worktree', start: () => undefined }
-    : activePlace !== undefined && activePlaceLaunch !== undefined ? { label: activePlace.label, resolution: activePlaceLaunch.resolution, disabled: creatingAgent, start: activePlaceLaunch.start } : undefined;
+  const activeLaunchEndpoint = activeWorktree !== undefined ? `/api/worktrees/${encodeURIComponent(activeWorktree.id)}/launch` : activePlaceLaunch?.endpoint;
+  const activeLaunchResolution = activeWorktree !== undefined ? activeWorktree.launch : activePlaceLaunch?.resolution;
+  const activeLaunch: ToolbarLaunch | undefined = item === undefined || activeLaunchEndpoint === undefined ? undefined
+    : { label: item.label, resolution: activeLaunchResolution, disabled: creatingAgent || launchingAnotherAt !== undefined || activeWorktree?.available === false, pending: launchingAnotherAt === item.key, start: choice => void launchAnother({ key: item.key, label: item.label, endpoint: activeLaunchEndpoint, worktreeId: activeWorktree?.id }, choice) };
   // the Project owning the active tab's Worktree, so an idle tab gates Remove on manageability
-  const activeProject = data.projects.find(project => project.id === (item?.worktree?.projectId ?? item?.agent?.projectId));
+  const activeProject = data.projects.find(project => project.id === (item?.worktree?.projectId ?? agent?.projectId));
   // the Schedule pre-fill and the note pane's Adapter/target picker rows for a note pane: the
   // pre-fill is the Project's main worktree, the directory itself for a directory Project, or
   // Scratch with that target's resolved launch kind; the pickers mirror the launcher's rows so a
@@ -7596,7 +7758,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     }
     return { target: { scratch: true }, kind: fallbackKind(data.scratchLaunch?.kind), runsOnText: 'Scratch', ...rows };
   };
-  const voiceContext = { server: serverInfo.name, serverUrl: serverInfo.url, openWorktrees: otherOpenWorktrees(data.agents, activeWorktreeId, worktreeLabelById), ...(activeWorktreeId === undefined ? {} : { worktreeId: activeWorktreeId, worktree: worktrees.find(worktree => worktree.id === activeWorktreeId)?.label ?? item?.agent?.worktreeLabel ?? (item?.agent === undefined ? activeWorktreeId : agentLabel(item.agent)) }), ...(item?.agent === undefined ? {} : { agentId: item.agent.id, agent: activeWorktree?.label ?? item.agent.worktreeLabel ?? agentLabel(item.agent) }) };
+  const voiceContext = { server: serverInfo.name, serverUrl: serverInfo.url, openWorktrees: otherOpenWorktrees(data.agents, activeWorktreeId, worktreeLabelById), ...(activeWorktreeId === undefined ? {} : { worktreeId: activeWorktreeId, worktree: worktrees.find(worktree => worktree.id === activeWorktreeId)?.label ?? agent?.worktreeLabel ?? (agent === undefined ? activeWorktreeId : agentLabel(agent)) }), ...(agent === undefined ? {} : { agentId: agent.id, agent: activeWorktree?.label ?? agent.worktreeLabel ?? agentLabel(agent) }) };
   const voiceDialog = davo.enabled ? <VoiceDialog name={davo.name} open={voiceOpen} callRequest={voiceCallRequest} context={voiceContext} request={request} onClose={closeVoice} onSelectWorktree={selectVoiceWorktree} onActiveChange={setVoiceActive} /> : null;
   const visibleOperationFeedback = operationFeedback?.worktreeId === undefined || operationFeedback.worktreeId === activeWorktreeId ? operationFeedback : undefined;
   // minimize without discarding the cached review
@@ -7654,9 +7816,9 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const pruneDialog = pruneProject === undefined ? null : <PruneWorktreesDialog project={pruneProject} request={request} onClose={() => setPruneProjectId(undefined)} onPruned={() => void worktreesPruned()} />;
   const worktreeManagementDialogs = <>{newWorktreeDialog}{removeWorktreeDialog}{renameWorktreeDialog}{pruneDialog}</>;
   const reviewDialog = reviewLaunch === undefined ? null : <ReviewTourDialog key={`${reviewLaunch.worktreeId}:${reviewLaunch.scope}:${reviewInitialTour?.fingerprint ?? 'generated'}`} launch={reviewLaunch} request={request} minimized={reviewMinimized} initialTour={reviewInitialTour} onMinimize={minimizeReview} onDismiss={dismissReview} onIndicatorChange={setReviewIndicator} onReady={notifyReviewReady} />;
-  const storedReview = item?.agent?.worktreeId === undefined ? undefined : data.reviews?.find(review => review.worktreeId === item.agent!.worktreeId);
-  const localReview = item?.agent?.worktreeId !== undefined && item.agent.worktreeId === reviewLaunch?.worktreeId;
-  const activeReview = localReview ? { ...reviewIndicator, onOpen: openLocalReview } : item?.agent !== undefined && storedReview !== undefined ? { generating: reviewRestoringWorktreeId === storedReview.worktreeId, stale: false, onOpen: () => void openStoredReview(item.agent!, storedReview) } : undefined;
+  const storedReview = agent?.worktreeId === undefined ? undefined : data.reviews?.find(review => review.worktreeId === agent.worktreeId);
+  const localReview = agent?.worktreeId !== undefined && agent.worktreeId === reviewLaunch?.worktreeId;
+  const activeReview = localReview ? { ...reviewIndicator, onOpen: openLocalReview } : agent !== undefined && storedReview !== undefined ? { generating: reviewRestoringWorktreeId === storedReview.worktreeId, stale: false, onOpen: () => void openStoredReview(agent, storedReview) } : undefined;
   // render one worktree's launcher actions
   const launcherWorktreeControls = (worktree: Worktree, project: Project): ReactNode => {
     // bind active worktrees to their existing agent
@@ -7667,7 +7829,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     if (openAgent !== undefined) action = <button type="button" className="launch-compact" aria-label={`Open ${worktree.label}`} onClick={() => { setLauncherOpen(false); selectTarget({ worktreeId: worktree.id, agentId: openAgent.id }); }}>Open</button>;
     // launch one inactive worktree
     else action = <LaunchSplitButton label={worktree.label} resolution={worktree.launch} compact disabled={creatingAgent || pendingOperations.has(launchOperationKey(worktree.id))} onLaunch={choice => void launchWorktree(worktree, choice)} />;
-    return <><PlaceShellsAndPin place={worktree} noun="worktree" onTogglePin={() => void togglePin(worktree)} /><button type="button" className="launcher-icon launcher-rename" disabled={creatingAgent} aria-label={`Rename ${worktree.label}`} title="Rename worktree" onClick={() => setRenameWorktreeId(worktree.id)}><LauncherRowIcon name="rename" /></button><button type="button" className="launcher-icon launcher-remove" disabled={creatingAgent || openAgent !== undefined || removeReason !== undefined} aria-label={`Remove ${worktree.label}`} title={openAgent === undefined ? removeReason ?? 'Remove worktree' : 'Turn off the open agent before removing this worktree'} onClick={() => setRemoveWorktreeId(worktree.id)}><LauncherRowIcon name="trash" /></button>{action}</>;
+    return <><PlaceShellsAndPin place={worktree} noun="worktree" onTogglePin={() => void togglePin(worktree)} /><button type="button" className="launcher-icon launcher-rename" disabled={creatingAgent} aria-label={`Rename ${worktree.label}`} title="Rename worktree" onClick={() => setRenameWorktreeId(worktree.id)}><LauncherRowIcon name="rename" /></button><button type="button" className="launcher-icon launcher-remove" disabled={creatingAgent || openAgent !== undefined || removeReason !== undefined} aria-label={`Remove ${worktree.label}`} title={openAgent === undefined ? removeReason ?? 'Remove worktree' : 'Turn off the agents here before removing this worktree'} onClick={() => setRemoveWorktreeId(worktree.id)}><LauncherRowIcon name="trash" /></button>{action}</>;
   };
   // the shell count and pin toggle a directory-Project or Scratch launcher row shows before its Launch
   const launcherPlaceControls = (place: Place | undefined): ReactNode => place === undefined ? null : <PlaceShellsAndPin place={place} onTogglePin={() => void togglePin(place)} />;
@@ -7686,13 +7848,11 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const tabBar = <><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees"><TabRowLead />{items.map((entry, index) => {
     const transition = dashboardOperationLabel(entry.operation);
     const label = transition ?? stateLabel[entry.state];
-    const kind = entry.agent?.kind ?? entry.pendingLaunch?.kind;
-    const sandboxed = entry.agent?.sandboxed ?? entry.pendingLaunch?.sandboxed;
-    return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === visibleActive} aria-controls={`panel-${index}`} tabIndex={index === visibleActive ? 0 : -1} className={`${index === visibleActive ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{kind !== undefined && <LaunchTabBadge kind={kind} sandboxed={sandboxed} />}{entry.worktree?.locked === true && <span className="tab-git-lock" aria-hidden="true" title="Git has locked this worktree">🔒</span>}{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
+    return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === visibleActive} aria-controls={`panel-${index}`} tabIndex={index === visibleActive ? 0 : -1} className={`${index === visibleActive ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}><TabKindStack entry={entry} />{entry.worktree?.locked === true && <span className="tab-git-lock" aria-hidden="true" title="Git has locked this worktree">🔒</span>}{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
   })}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label launcher-symbol-label"><LauncherLabelIcon name="scratch" /><span>Scratch</span></span>{launcherPlaceControls(scratchPlace)}<LaunchSplitButton label="~ Scratch" resolution={data.scratchLaunch} compact disabled={creatingAgent} onLaunch={choice => void createAgent(choice)} /></div>{data.projects.map(launcherProject)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav><ToastRegion feedback={visibleOperationFeedback} onDismissFeedback={() => setOperationFeedback(undefined)} launchErrorMessage={launchErrorMessage} /></>;
   const consoleClass = `console${davo.enabled && voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
-  return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${visibleActive}`} aria-labelledby={`tab-${visibleActive}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onNavigateWorktree={navigateToWorktree} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: item.agent.projectId ?? (activePlace?.kind === 'directory' ? activePlace.projectId : undefined) })} launch={activeLaunch} {...(activePinTarget === undefined ? {} : { pinned: activePinTarget.pinned, onTogglePin: () => void togglePin(activePinTarget) })} {...(activeWorktree === undefined ? {} : { onRenameWorktree: () => setRenameWorktreeId(activeWorktree.id), worktreeLabel: activeWorktree.label, ...(activeWorktree.main ? {} : { onRemoveWorktree: () => setRemoveWorktreeId(activeWorktree.id), removeDisabledReason: 'Turn off the open agent before removing this worktree' }) })} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onOperationFeedback={showOperationFeedback} onNavigateWorktree={navigateToWorktree} onTogglePin={() => void togglePin(item.worktree!)} onRename={() => setRenameWorktreeId(item.worktree!.id)} schedulePrefill={resolveSchedulePrefill({ projectId: item.worktree.projectId })} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}{item?.place && <PlaceCard key={item.place.id} place={item.place} tabBar={tabBar} cleanupControl={cleanupControl} launchDisabled={creatingAgent} launch={placeLaunch(item.place)} onLaunched={agentId => { setActivateAgentId(agentId); void refresh(); }} onTogglePin={() => void togglePin(item.place!)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: item.place.kind === 'directory' ? item.place.projectId : undefined })} />}{item?.pendingLaunch && <PendingSessionCard key={item.pendingLaunch.id} launch={item.pendingLaunch} tabBar={tabBar} cleanupControl={cleanupControl} retrying={creatingAgent} onRetry={choice => { /* retain the same pending draft on retry */ void runPendingSessionLaunch(item.pendingLaunch!, choice); }} onDiscard={() => { /* discard only the selected failed placeholder */ discardPendingSessionLaunch(item.pendingLaunch!.id); }} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
+  return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${visibleActive}`} aria-labelledby={`tab-${visibleActive}`} tabIndex={0}>{item !== undefined && agent !== undefined && <AgentPlaceCard key={item.key} agent={agent} agents={item.agents} onSelectAgent={agentId => select(visibleActive, agentId)} active={agentState(agent) === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onNavigateWorktree={navigateToWorktree} onPromptFocus={() => viewAgent(agent)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: agent.projectId ?? (activePlace?.kind === 'directory' ? activePlace.projectId : undefined) })} launch={activeLaunch} {...(activePinTarget === undefined ? {} : { pinned: activePinTarget.pinned, onTogglePin: () => void togglePin(activePinTarget) })} {...(activeWorktree === undefined ? {} : { onRenameWorktree: () => setRenameWorktreeId(activeWorktree.id), worktreeLabel: activeWorktree.label, ...(activeWorktree.main ? {} : { onRemoveWorktree: () => setRemoveWorktreeId(activeWorktree.id), removeDisabledReason: 'Turn off the agents here before removing this worktree' }) })} />}{item?.worktree !== undefined && agent === undefined && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onOperationFeedback={showOperationFeedback} onNavigateWorktree={navigateToWorktree} onTogglePin={() => void togglePin(item.worktree!)} onRename={() => setRenameWorktreeId(item.worktree!.id)} schedulePrefill={resolveSchedulePrefill({ projectId: item.worktree.projectId })} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}{item?.place !== undefined && agent === undefined && <PlaceCard key={item.place.id} place={item.place} tabBar={tabBar} cleanupControl={cleanupControl} launchDisabled={creatingAgent} launch={placeLaunch(item.place)} onLaunched={agentId => { setActivateAgentId(agentId); void refresh(); }} onTogglePin={() => void togglePin(item.place!)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: item.place.kind === 'directory' ? item.place.projectId : undefined })} />}{item?.pendingLaunch && <PendingSessionCard key={item.pendingLaunch.id} launch={item.pendingLaunch} tabBar={tabBar} cleanupControl={cleanupControl} retrying={creatingAgent} onRetry={choice => { /* retain the same pending draft on retry */ void runPendingSessionLaunch(item.pendingLaunch!, choice); }} onDiscard={() => { /* discard only the selected failed placeholder */ discardPendingSessionLaunch(item.pendingLaunch!.id); }} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
 }
 
 // coordinate console session and update lifecycle

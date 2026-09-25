@@ -741,6 +741,22 @@ describe('LaunchService', () => {
       expect(newWindow?.[1]).toEqual(expect.arrayContaining(['-S', '/host-tmux/default', 'new-window', '-d', '-t', '$1']));
     });
 
+    it("launches a second Agent at a Worktree as a window in the running Agent's session, never replacing it", async () => {
+      process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+      run.mockResolvedValue({ code: 0, stdout: '%9', stderr: '' });
+      const socket: SocketRef = { fingerprint: 'sock', path: '/host-tmux/default', device: 1, inode: 2 };
+      const worktree = alex();
+      // the live Agent's pane runs the agent, not a shell, so nothing is adoptable
+      const panes = { listPanes: async () => [shellPane({ command: 'codex' }, socket)], pastePrompt: vi.fn(async () => true), enter: vi.fn(async () => true) };
+      const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree], () => new Set(), async placeId => (placeId === 'alex' ? { socket, session: '$3' } : undefined));
+
+      await expect(service.launch('alex')).resolves.toBe(true);
+
+      const newWindow = run.mock.calls.find(call => call[1].includes('new-window'));
+      expect(newWindow?.[1]).toEqual(expect.arrayContaining(['-S', '/host-tmux/default', 'new-window', '-d', '-t', '$3']));
+      expect(run.mock.calls.some(call => call[1].includes('new-session') || call[1].includes('rename-session'))).toBe(false);
+    });
+
     it('never adopts a pane the operator currently has open as a Terminal', async () => {
       process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
       run.mockResolvedValue({ code: 0, stdout: '%9', stderr: '' });

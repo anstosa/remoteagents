@@ -76,15 +76,13 @@ test('renders the same toolbar for a Worktree with and without an Agent', async 
   await expect(page.getByRole('button', { name: 'Worktree power options' })).toHaveCount(0);
   await expect(page.locator('.place-pin')).toHaveCount(0);
 
-  // a second Agent in a busy Worktree waits for the Agent switcher: its Launch says why
-  await page.getByRole('tab', { name: /^Cora/u }).click();
-  const busyLaunch = toolbar(page).getByRole('button', { name: 'Launch Claude' });
-  await expect(busyLaunch).toBeDisabled();
-  await expect(busyLaunch).toHaveAttribute('title', 'An agent already runs in this worktree');
   // an idle Worktree's Launch starts its Agent
-  await page.getByRole('tab', { name: /^Idle/u }).click();
   await toolbar(page).getByRole('button', { name: 'Launch Claude' }).click();
   await expect.poll(harness.launches).toEqual([`/api/worktrees/${idle}/launch`]);
+  // a busy Worktree's Launch starts another Agent beside the running one
+  await page.getByRole('tab', { name: /^Cora/u }).click();
+  await toolbar(page).getByRole('button', { name: 'Launch Claude' }).click();
+  await expect.poll(harness.launches).toEqual([`/api/worktrees/${idle}/launch`, `/api/worktrees/${cora}/launch`]);
 });
 
 test('the ⋮ holds the Place actions, and Remove waits until no Agent runs', async ({ page }) => {
@@ -106,7 +104,7 @@ test('the ⋮ holds the Place actions, and Remove waits until no Agent runs', as
   await toolbar(page).getByRole('button', { name: 'More options' }).click();
   const remove = menu.getByRole('button', { name: 'Remove worktree…' });
   await expect(remove).toBeDisabled();
-  await expect(remove).toHaveAttribute('title', 'Turn off the open agent before removing this worktree');
+  await expect(remove).toHaveAttribute('title', 'Turn off the agents here before removing this worktree');
 });
 
 test('a Place without git shows its path instead of Code, git and stack', async ({ page }) => {

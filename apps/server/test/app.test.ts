@@ -878,6 +878,51 @@ describe('configured worktree deactivation', () => {
       expect(events).toEqual(['close:agent-1', 'resume:cora']);
     } finally { await restartApp.close(); await rm(directory, { recursive: true, force: true }); }
   }, 15_000);
+
+  it("restarts one of two Agents at a Worktree into its own conversation, never the sibling's latest", async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rac-restart-sibling-'));
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', projectId: 'cora', label: 'Cora', path: '/worktrees/cora', identity: '/worktrees/cora', available: true, pinned: false };
+    const conversationId = '0f8fad5b-d9cb-469f-a165-70867728950e';
+    const restarting = stated({ id: 'agent-1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready', worktreeId: 'cora', conversationId });
+    const sibling = { ...restarting, id: 'agent-3', paneId: '%3', conversationId: '7c9e6679-7425-40de-944b-e07fc1f90ae7' };
+    const replacement = { ...restarting, id: 'agent-2', paneId: '%2' };
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    const events: string[] = [];
+    let resumed = false;
+    const discovery = { worktreesNow: () => [worktree],
+      dashboard: async () => ({ generation: resumed ? 2 : 1, places: [], agents: resumed ? [sibling, replacement] : [restarting, sibling], projects: [] }),
+      target: async (id: string) => id === restarting.id ? { agent: restarting, socket } : undefined
+    };
+    const launch = {
+      launchHome: async () => false,
+      isLaunchableKind: () => true,
+      canResumeConversation: () => true,
+      resume: async (id: string) => { events.push(`resume:${id}`); resumed = true; return true; },
+      resumeConversation: async (id: string, threadId: string, kind?: string) => { events.push(`resume:${id}:${threadId}:${kind}`); resumed = true; return true; },
+      launch: async (id: string, kind?: string) => { events.push(`fresh:${id}:${kind}`); resumed = true; return true; }
+    };
+    const restartApp = await buildApp({ ...config }, { auth: new AuthService(hash, Buffer.alloc(32, 23).toString('base64url')), discovery: discovery as never, launch: launch as never, tmux: { close: async () => { events.push(`close:${restarting.id}`); return true; } } as never, queuedPrompts: new QueuedPromptService(join(directory, 'queue.json')), launchPollDelay: async () => {} });
+    try {
+      const boot = await restartApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await restartApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', origin: 'https://agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0], 'x-csrf-token': login.json().csrfToken };
+
+      const restarted = await restartApp.inject({ method: 'POST', url: '/api/agents/agent-1/restart', headers });
+
+      expect(restarted.statusCode).toBe(201);
+      expect(restarted.json()).toEqual({ agentId: 'agent-2' });
+      expect(events).toEqual(['close:agent-1', `resume:cora:${conversationId}:codex`]);
+
+      // Restart as another kind cannot resume this Agent's conversation, and "the latest" could be
+      // the sibling's: it starts fresh instead
+      events.length = 0;
+      resumed = false;
+      const restartedAs = await restartApp.inject({ method: 'POST', url: '/api/agents/agent-1/restart', headers, payload: { kind: 'claude' } });
+      expect(restartedAs.statusCode).toBe(201);
+      expect(events).toEqual(['close:agent-1', 'fresh:cora:claude']);
+    } finally { await restartApp.close(); await rm(directory, { recursive: true, force: true }); }
+  }, 15_000);
 });
 
 describe('Console shells server lifecycle', () => {
@@ -924,6 +969,22 @@ describe('Console shells server lifecycle', () => {
       expect(response.statusCode).toBe(201);
       expect(response.json()).toEqual({ paneId: '%9' });
       expect(createConsoleShellWindow).toHaveBeenCalledWith(socket, '$1', '/worktrees/cora', expect.any(Array), 'build');
+    } finally { await app.close(); }
+  }, 15_000);
+
+  it("joins the Place's live Agent session from a fresh discovery, never a cached Agent that has just closed", async () => {
+    // a restart closes its Agent and relaunches within the dashboard cache window: the cached
+    // snapshot still lists the closed Agent (session $1), a forced scan sees only the live one ($2)
+    const closed = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready', placeId: 'cora', worktreeId: 'cora' });
+    const live = { ...closed, id: 'socket:%2', paneId: '%2', sessionId: 'socket:$2' };
+    const createConsoleShellWindow = vi.fn(async () => '%9');
+    const dashboard = async (force = false) => ({ ...idleDashboard, agents: [force ? live : closed] });
+    const target = async (id: string) => id === live.id ? { agent: live, socket } : id === closed.id ? { agent: closed, socket } : undefined;
+    const { app, headers } = await start({ discovery: { dashboard, target }, realLaunch: true, tmux: { createConsoleShellWindow } });
+    try {
+      const response = await app.inject({ method: 'POST', url: '/api/worktrees/cora/shells', headers, payload: { name: 'build' } });
+      expect(response.statusCode).toBe(201);
+      expect(createConsoleShellWindow).toHaveBeenCalledWith(socket, '$2', '/worktrees/cora', expect.any(Array), 'build');
     } finally { await app.close(); }
   }, 15_000);
 
