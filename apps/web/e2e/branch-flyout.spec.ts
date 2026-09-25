@@ -171,6 +171,10 @@ test('queues the configured push prompt and falls back to the default action', a
     if (queueSize === null || reviewSize === null || customSize === null) throw new Error('responsive branch action bounds unavailable');
     expect(reviewSize.height).toBeCloseTo(queueSize.height, 1);
     expect(customSize.height).toBeCloseTo(queueSize.height, 1);
+    // a desktop gets a fixed-width flyout on screen; a phone's spans the screen within its edges
+    const flyoutBox = () => branchFlyout.evaluate(element => { const box = element.getBoundingClientRect(); return { left: Math.round(box.left), width: Math.round(box.width) }; });
+    if (viewport.width > 600) await expect.poll(flyoutBox).toEqual({ left: viewport.width - 6 - 720, width: 720 });
+    else await expect.poll(flyoutBox).toEqual({ left: 6, width: viewport.width - 12 });
   }
   await custom.click();
   await expect.poll(() => queued).toEqual(['$finish']);

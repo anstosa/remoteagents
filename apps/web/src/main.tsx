@@ -5058,9 +5058,12 @@ function GitStatus({ id, worktreeId, branch, summary, prSummary, pullRequest, on
       const maxHeight = Math.max(0, anchorTop - viewportTop - gap);
     // open upward from the branch shortcut and clamp to the viewport
       const edge = rootFontSize * .375;
-      // a phone's toolbar packs the git status near its right end, so the popup spans the screen
-      const left = window.matchMedia('(max-width: 600px)').matches ? edge : Math.min(Math.max(edge, anchorRect.left), window.innerWidth - edge);
-      setPanelStyle({ position: 'fixed', top: 'auto', left, right: 'auto', bottom: window.innerHeight - anchorTop + gap, maxHeight, maxWidth: `calc(100vw - ${left}px - ${edge}px)`, visibility: 'visible' });
+      // a phone's toolbar packs the git status near its right end, so the popup spans the screen;
+      // wider screens get a fixed width from the button, shifted left to stay on screen
+      const phone = window.matchMedia('(max-width: 600px)').matches;
+      const width = phone ? window.innerWidth - 2 * edge : Math.min(rootFontSize * 45, window.innerWidth - 2 * edge);
+      const left = phone ? edge : Math.max(edge, Math.min(anchorRect.left, window.innerWidth - edge - width));
+      setPanelStyle({ position: 'fixed', top: 'auto', left, right: 'auto', bottom: window.innerHeight - anchorTop + gap, width, maxHeight, maxWidth: `calc(100vw - ${left}px - ${edge}px)`, visibility: 'visible' });
     };
     const observer = new ResizeObserver(syncPanelPosition);
     observer.observe(wrap);
