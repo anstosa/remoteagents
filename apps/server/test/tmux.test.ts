@@ -52,7 +52,40 @@ describe('TmuxAdapter capture', () => {
       socket
     }]);
 
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_question}\t#{@rac_console_managed}\t#{@rac_role}\t#{@rac_pane_name}\t#{window_id}']);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_question}\t#{@rac_console_managed}\t#{@rac_role}\t#{@rac_pane_name}\t#{window_id}\t#{?pane_in_mode,#{pane_mode},}']);
+  });
+
+  // a picker (tree-mode) swallows console input and is invisible in the streamed pane, so the
+  // dashboard must see it; a history view is left by input itself and stays unreported
+  it('reports a pane held in a mode the console cannot leave by typing', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValueOnce({ code: 0, stdout: '%2\t$1\tmain\t99\t/w\tnode\tclaude\t\t\t\t\t\t\t\t\t\t@3\ttree-mode\n%3\t$1\tmain\t98\t/w\tnode\tclaude\t\t\t\t\t\t\t\t\t\t@4\tcopy-mode\n%4\t$1\tmain\t97\t/w\tnode\tclaude\t\t\t\t\t\t\t\t\t\t@5\t\n', stderr: '' });
+
+    const panes = await new TmuxAdapter().listPanes(socket);
+
+    expect(panes.map(pane => [pane.paneId, pane.paneMode])).toEqual([['%2', 'tree-mode'], ['%3', undefined], ['%4', undefined]]);
+  });
+
+  it('leaves every pane mode on one exact pane', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+
+    await expect(new TmuxAdapter().exitPaneMode(socket, '%2')).resolves.toBe(true);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'copy-mode', '-q', '-t', '%2']);
+    // never pass an unchecked target to tmux
+    run.mockClear();
+    await expect(new TmuxAdapter().exitPaneMode(socket, 'main:1')).resolves.toBe(false);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('reads the mode that holds a pane, ignoring history views', async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValueOnce({ code: 0, stdout: '1\ttree-mode\n', stderr: '' });
+    await expect(new TmuxAdapter().heldPaneMode(socket, '%2')).resolves.toBe('tree-mode');
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'display-message', '-p', '-t', '%2', '#{pane_in_mode}\t#{pane_mode}']);
+    run.mockResolvedValueOnce({ code: 0, stdout: '1\tcopy-mode\n', stderr: '' });
+    await expect(new TmuxAdapter().heldPaneMode(socket, '%2')).resolves.toBeUndefined();
+    run.mockResolvedValueOnce({ code: 0, stdout: '0\t\n', stderr: '' });
+    await expect(new TmuxAdapter().heldPaneMode(socket, '%2')).resolves.toBeUndefined();
   });
 
   it('reads the reported Inline question payload from its pane option', async () => {

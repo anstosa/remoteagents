@@ -1499,6 +1499,9 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     return reply.code(201).send(decorateNote(note));
   });
   app.post('/api/agents/:id/cancel', async (request, reply) => { controlled(request, true); const outcome = await prompts.cancel((request.params as { id: string }).id); if (outcome === 'unavailable') return reply.code(404).send({ error: 'target unavailable' }); if (outcome === 'not-working') return reply.code(409).send({ error: 'The agent is not working; there is nothing to interrupt.' }); return reply.code(204).send(); });
+  // leave a tmux mode holding the Agent's pane (a picker opened by a hook): input is refused
+  // there, so prompts sit queued until it closes; the queue drains on the next observe
+  app.post('/api/agents/:id/pane-mode/exit', async (request, reply) => { controlled(request, true); const target = await discovery.target((request.params as { id: string }).id); if (target === undefined) return reply.code(404).send({ error: 'target unavailable' }); if (!await tmux.exitPaneMode(target.socket, target.agent.paneId)) return reply.code(503).send({ error: 'Unable to leave the pane mode.' }); await dashboardUpdates.refresh().catch(() => undefined); return reply.code(204).send(); });
   app.post('/api/agents/:id/review-tour/jobs', { bodyLimit: REVIEW_REQUEST_BODY_BYTES }, async (request, reply) => {
     const owner = controlled(request, true).id;
     const input = parseReviewTourInput(request.body);
@@ -2883,8 +2886,11 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
       });
       // route input to the pane byte-exact; the Agent's own pane takes the mutation lock and
       // routes a lone Ctrl+C through queued-prompt cancellation
+      // a refused keystroke ends the stream unless a pane mode (a picker) refused it: the
+      // stream is fine then, and reconnecting would only loop until the mode is left
+      const refused = async () => { if (await tmux.heldPaneMode(socketRef, pane).catch(() => undefined) === undefined) socket.close(1011); };
       const handleInput = async (bytes: Buffer): Promise<void> => {
-        if (!isAgentPane) { if (!await paneClient.sendInput(pane, bytes)) socket.close(1011); return; }
+        if (!isAgentPane) { if (!await paneClient.sendInput(pane, bytes)) await refused(); return; }
         const release = prompts.beginAgentMutation(id);
         // a restart reservation holds the lock; refuse with a policy close (1008), not 1011
         if (release === undefined) { socket.close(1008); return; }
@@ -2893,7 +2899,7 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
           const ok = isInterrupt
             ? await prompts.cancel(id).then(outcome => outcome === 'not-working' ? paneClient.sendInput(pane, bytes) : outcome === 'ok')
             : await paneClient.sendInput(pane, bytes);
-          if (!ok) socket.close(1011);
+          if (!ok) await refused();
         } finally {
           release();
         }

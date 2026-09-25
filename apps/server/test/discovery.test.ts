@@ -325,6 +325,19 @@ describe('DiscoveryService dashboard', () => {
     expect(unset).toEqual(['%9']);
   });
 
+  it('publishes the tmux mode holding an agent pane so the panel can offer to leave it', async () => {
+    const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
+    const finder = { find: async () => [socket] };
+    const tmux = { listPanes: async () => [{ paneId: '%1', sessionId: '$0', pid: 123, path: '/tmp', title: 'Ready', paneMode: 'tree-mode' }, { paneId: '%2', sessionId: '$0', pid: 124, path: '/tmp', title: 'Ready' }] };
+    const processes = { recognizeAgent: async (pid: number) => ({ kind: 'claude' as const, pid, wrapped: false }) };
+    const service = new DiscoveryService(finder, tmux as never, processes);
+
+    const dashboard = await service.dashboard();
+
+    expect(dashboard.agents.find(agent => agent.paneId === '%1')).toMatchObject({ paneMode: 'tree-mode' });
+    expect(dashboard.agents.find(agent => agent.paneId === '%2')).not.toHaveProperty('paneMode');
+  });
+
   it('records a sandboxed agent only for the exact @rac_sandboxed sentinel and ignores an empty session', async () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const finder = { find: async () => [socket] };

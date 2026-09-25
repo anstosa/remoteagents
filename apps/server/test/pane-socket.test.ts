@@ -40,11 +40,12 @@ function fakePaneStream() {
   // windowId is the pane socket's liveness signal (a gone pane has none), so a closed pane is
   // simulated by clearing it, not by failing size()
   let windowId: string | undefined = '@7';
+  let inputAccepted = true;
   const client: PaneClient = {
     subscribe(_pane, sub) { subscriber = sub; return () => {}; },
     capture: async () => captureText,
     windowId: async () => windowId,
-    sendInput: async (_pane, bytes) => { inputs.push(Buffer.from(bytes)); return true; },
+    sendInput: async (_pane, bytes) => { inputs.push(Buffer.from(bytes)); return inputAccepted; },
     seed: async (_pane, depth) => { seedDepths.push(depth); return seedBytes; }
   };
   const provider: PaneStreamProvider = { get: () => client, openPaneKeys: () => new Set(), closeAll: () => {} };
@@ -54,6 +55,7 @@ function fakePaneStream() {
     seedDepths,
     setSeed: (value: Buffer) => { seedBytes = value; },
     setWindowId: (value: string | undefined) => { windowId = value; },
+    refuseInput: () => { inputAccepted = false; },
     setCapture: (value: string) => { captureText = value; },
     setAssistantMessage: (value: string | undefined) => { assistantMessage = value; },
     assistantMessage: () => assistantMessage,
@@ -245,6 +247,29 @@ describe('/ws/pane seed and size', () => {
 });
 
 describe('/ws/pane input', () => {
+  // a picker on the pane (tmux `choose-tree`) refuses input; closing would only loop the
+  // browser through "Reconnecting…" while the panel's notice offers the way out
+  it('keeps the stream open when a pane mode refuses the keystroke', async () => {
+    const stream = fakePaneStream();
+    const { tmux } = fakeTmux(stream, { heldPaneMode: async () => 'tree-mode' });
+    const conn = await connect(stream.provider, { tmux, prompts: fakePrompts().prompts });
+    stream.refuseInput();
+    conn.send({ type: 'input', data: encode('x') });
+    await waitFor(() => stream.inputs.length > 0);
+    await delay(100);
+    expect(conn.closeCode()).toBeUndefined();
+  });
+
+  it('closes 1011 when input fails with no pane mode to blame', async () => {
+    const stream = fakePaneStream();
+    const { tmux } = fakeTmux(stream, { heldPaneMode: async () => undefined });
+    const conn = await connect(stream.provider, { tmux, prompts: fakePrompts().prompts });
+    stream.refuseInput();
+    conn.send({ type: 'input', data: encode('x') });
+    await waitFor(() => conn.closeCode() !== undefined);
+    expect(conn.closeCode()).toBe(1011);
+  });
+
   it('types base64url bytes into the pane byte-exact, taking and releasing the mutation lock', async () => {
     const stream = fakePaneStream();
     const { tmux } = fakeTmux(stream);

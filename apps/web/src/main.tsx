@@ -74,7 +74,7 @@ type AttentionState = 'working' | 'finished' | 'question';
 // `worktreeLabel`/`worktreeOrder` are no longer on the wire (the server carries them on the
 // Worktree); they remain as optional read-only fallbacks the tab bar consults when an Agent's
 // Worktree is not present in the payload, absent from the real server.
-type Agent = { id: string; sessionId: string; home: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; placeId?: string; projectId?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion; stack?: Stack; unread?: boolean; queuedPromptCount: number; launch?: LaunchResolution };
+type Agent = { id: string; sessionId: string; home: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind?: AgentKind; attention?: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; placeId?: string; projectId?: string; worktreeId?: string; worktreeLabel?: string; worktreeOrder?: number; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion; paneMode?: string; stack?: Stack; unread?: boolean; queuedPromptCount: number; launch?: LaunchResolution };
 type Worktree = { id: string; projectId: string; label: string; customLabel?: boolean; path: string; main: boolean; detached: boolean; locked: boolean; branch?: string; sha?: string; consoleShells?: number; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; available: boolean; pinned: boolean; order: number; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; stack?: Stack; launch?: LaunchResolution };
 // `mode: 'directory'` marks a non-git Project the console launches in place (like Scratch);
 // `launch` is its resolved Launch profile for the Project-level Launch button. A git
@@ -6002,7 +6002,8 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
   const cancelButton = active && <button type="button" className="panel-header-action agent-cancel" disabled={cancelling} aria-label="Cancel agent" title="Cancel agent" onClick={() => void cancel()}>{cancelling ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>}</button>;
   const power = <AgentPowerMenu mode="active" className="panel-header-action agent-power" pending={restarting || clearing || deactivating || deleting} {...(active ? { disabledReason: 'Cancel the agent’s work before restarting, clearing or turning it off' } : {})} onClear={() => void clear()} onTurnOff={() => void (agent.worktreeId === undefined ? remove() : deactivate())} {...(agent.worktreeId === undefined ? {} : { onRestart: () => void restart(), restartAs: { label: displayLabel, resolution: agent.launch, onLaunch: choice => void restart(choice) } })} />;
   const header = (connection: string) => <PanelHeader panelKey="agent" label="agent output" title={<AgentPanelTitle kind={agent.kind} sandboxed={agent.sandboxed} title={conversationName ?? displayLabel} state={panelState} connection={connection} />} actions={<>{cancelButton}{workspace.conversations.control}{responseFiles.control}</>} close={power} />;
-  const composer = <Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} placeId={workspace.place.id} historyControl={<PromptHistoryControl agentId={agent.id} history={promptHistory.history} refreshHistory={promptHistory.refresh} notes={workspace.notes} open={historyOpen} onOpenChange={changeHistoryOpen} />} />;
+  const prompt = <Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} placeId={workspace.place.id} historyControl={<PromptHistoryControl agentId={agent.id} history={promptHistory.history} refreshHistory={promptHistory.refresh} notes={workspace.notes} open={historyOpen} onOpenChange={changeHistoryOpen} />} />;
+  const composer = agent.paneMode === undefined ? prompt : <><PaneModeNotice agentId={agent.id} mode={agent.paneMode} worktreeId={agent.worktreeId} onOperationFeedback={onOperationFeedback} />{prompt}</>;
   const output = <Log id={agent.id} onQuestion={setQuestion} onMetadata={reportMetadata} onAddToPrompt={addToPrompt} header={header} composer={composer} notes={workspace.notes} onOpenUrl={openOutputUrl} onOpenFile={openFileInCode} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />;
   return <article className="agent-view"><Workspace workspace={workspace} output={output} git={gitActions} onAddToPrompt={addToPrompt} />{tabBar}{upstreamRebase}<WorkspaceBar phoneKeys={workspace.phoneTerminal ?? agent.id}>
     <WorkspaceGitStatus workspace={workspace} actions={gitActions} onToggle={() => setHistoryOpen(false)} />
@@ -6075,6 +6076,25 @@ function ReviewTourButton({ review }: { review?: ReviewButtonState }) {
 // helper keys of the pane in focus (`phoneKeys`, the shown Terminal or the Agent).
 function WorkspaceBar({ children, phoneKeys }: { children: ReactNode; phoneKeys?: string }) {
   return <section className="workspace-bar" aria-label="Workspace controls"><div className="prompt-actions">{children}</div>{phoneKeys !== undefined && <MobileTerminalKeys key={phoneKeys} id={phoneKeys} />}</section>;
+}
+
+// what a tmux mode holding the Agent's pane looks like to the operator; the stream never
+// shows it (tmux draws a mode for attached terminals, not into the pane's output)
+const paneModeLabels: Record<string, string> = { 'tree-mode': 'tmux’s session picker', 'client-mode': 'tmux’s client picker', 'buffer-mode': 'tmux’s paste buffer picker', 'options-mode': 'tmux’s options editor', 'clock-mode': 'tmux’s clock' };
+// a pane held by a tmux mode refuses prompts and keystrokes alike; offer the way out
+function PaneModeNotice({ agentId, mode, worktreeId, onOperationFeedback }: { agentId: string; mode: string; worktreeId?: string; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
+  const [leaving, setLeaving] = useState(false);
+  const label = paneModeLabels[mode] ?? `tmux ${mode}`;
+  const leave = async () => {
+    if (leaving) return;
+    setLeaving(true);
+    try {
+      const response = await request(`/api/agents/${encodeURIComponent(agentId)}/pane-mode/exit`, { method: 'POST' });
+      if (!response.ok) onOperationFeedback({ tone: 'error', message: `Could not close ${label}`, detail: await launchError(response), worktreeId });
+    } catch { onOperationFeedback({ tone: 'error', message: `Could not close ${label}`, detail: 'The console could not be reached.', worktreeId }); }
+    finally { setLeaving(false); }
+  };
+  return <div className="pane-mode-notice" role="alert"><p><strong>The agent’s pane is stuck in {label}.</strong> Prompts and keystrokes can’t reach the agent until it closes; queued prompts send once it does.</p><button type="button" disabled={leaving} onClick={() => void leave()}>{leaving ? <span className="spinner" /> : 'Close it'}</button></div>;
 }
 
 function launchError(response: Response): Promise<string> {

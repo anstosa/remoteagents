@@ -911,6 +911,11 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .prompt { position: relative; display: grid; min-width: 0; gap: .375rem; }
 /* the agent panel's composer: history above attach, the prompt, queued prompts above send */
 .agent-composer { grid-template-columns: var(--standard-control-size) minmax(0, 1fr) var(--standard-control-size); align-items: end; padding: .375rem; border-top: 1px solid var(--surface-0); background: color-mix(in srgb, var(--mantle) 60%, transparent); }
+.pane-mode-notice { display: flex; align-items: center; gap: .75rem; padding: .5rem .75rem; border-top: 1px solid color-mix(in srgb, var(--yellow) 45%, var(--surface-0)); color: var(--text); background: color-mix(in srgb, var(--yellow) 12%, var(--mantle)); font-size: .82rem; }
+.pane-mode-notice p { flex: 1; margin: 0; }
+.pane-mode-notice strong { color: var(--yellow); }
+.pane-mode-notice button { flex: none; min-width: 5.5rem; padding: .35rem .7rem; border: 1px solid color-mix(in srgb, var(--yellow) 55%, var(--surface-1)); border-radius: .4rem; color: var(--yellow); background: var(--surface-0); font: inherit; font-weight: 600; cursor: pointer; }
+.pane-mode-notice button:disabled { cursor: progress; opacity: .7; }
 .agent-composer-column { --prompt-control-border: var(--surface-1); --prompt-control-background: color-mix(in srgb, var(--mantle) 88%, transparent); --prompt-control-foreground: var(--subtext-0); --prompt-control-hover-border: var(--lavender); --prompt-control-hover-background: color-mix(in srgb, var(--lavender) 13%, var(--mantle)); --prompt-control-hover-foreground: var(--text); display: grid; gap: .375rem; }
 .agent-composer-column button { box-sizing: border-box; display: grid; width: var(--standard-control-size); height: var(--standard-control-size); padding: 0; place-items: center; border-radius: var(--control-radius); box-shadow: none; transition: background-color .15s ease, border-color .15s ease, color .15s ease, filter .15s ease; }
 .agent-composer-column :is(.attachment-button, .queued-prompts-toggle) { border-color: var(--prompt-control-border); background: var(--prompt-control-background); color: var(--prompt-control-foreground); filter: none; }

@@ -136,13 +136,27 @@ export class TmuxAdapter {
     return (await run(this.binary, ['-S', socket.path, 'send-keys', '-X', '-t', pane, 'cancel'])).code === 0;
   }
 
+  // the mode holding a pane that input cannot leave (a picker such as `choose-tree`'s
+  // tree-mode); a history view is left by the next keystroke, so it reads as none
+  async heldPaneMode(socket: SocketRef, pane: string): Promise<string | undefined> {
+    if (!paneId.test(pane)) return undefined;
+    const status = await run(this.binary, ['-S', socket.path, 'display-message', '-p', '-t', pane, paneModeFormat]);
+    const match = status.code === 0 ? /^1\t([^\r\n]+)\r?\n?$/u.exec(status.stdout) : null;
+    return match === null || inputBlockingPaneModes.has(match[1]!) ? undefined : match[1];
+  }
+
+  // leave whatever mode holds a pane, pickers included (`copy-mode -q` cancels every mode)
+  async exitPaneMode(socket: SocketRef, pane: string): Promise<boolean> {
+    return paneId.test(pane) && (await run(this.binary, ['-S', socket.path, 'copy-mode', '-q', '-t', pane])).code === 0;
+  }
+
   // read pane identity and console-owned launch metadata
   async listPanes(socket: SocketRef): Promise<Pane[]> {
-    const out = await run(this.binary, ['-S', socket.path, 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_question}\t#{@rac_console_managed}\t#{@rac_role}\t#{@rac_pane_name}\t#{window_id}']);
+    const out = await run(this.binary, ['-S', socket.path, 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_question}\t#{@rac_console_managed}\t#{@rac_role}\t#{@rac_pane_name}\t#{window_id}\t#{?pane_in_mode,#{pane_mode},}']);
     if (out.code !== 0) return [];
     return out.stdout.trim().split('\n').filter(Boolean).flatMap((line) => {
-      const [id, session, name, pid, path, command, title, displayLabel, startCommand, attention, sessionRef, sandboxed, question, consoleManaged, role, paneName, windowId] = line.split('\t');
-      return paneId.test(id) && sessionId.test(session) && name && /^\d+$/.test(pid) && path ? [{ paneId: id, sessionId: session, sessionName: name, pid: Number(pid), path, command: command ?? '', title: title ?? '', ...(displayLabel ? { displayLabel } : {}), ...(startCommand ? { startCommand } : {}), ...(attention ? { reportedAttention: attention } : {}), ...(sessionRef ? { reportedSession: sessionRef } : {}), ...(sandboxed ? { reportedSandboxed: sandboxed } : {}), ...(question ? { reportedQuestion: question } : {}), ...(consoleManaged === '1' ? { consoleManaged: true } : {}), ...(role ? { role } : {}), ...(paneName ? { paneName } : {}), ...(windowId ? { windowId } : {}), socket }] : [];
+      const [id, session, name, pid, path, command, title, displayLabel, startCommand, attention, sessionRef, sandboxed, question, consoleManaged, role, paneName, windowId, mode] = line.split('\t');
+      return paneId.test(id) && sessionId.test(session) && name && /^\d+$/.test(pid) && path ? [{ paneId: id, sessionId: session, sessionName: name, pid: Number(pid), path, command: command ?? '', title: title ?? '', ...(displayLabel ? { displayLabel } : {}), ...(startCommand ? { startCommand } : {}), ...(attention ? { reportedAttention: attention } : {}), ...(sessionRef ? { reportedSession: sessionRef } : {}), ...(sandboxed ? { reportedSandboxed: sandboxed } : {}), ...(question ? { reportedQuestion: question } : {}), ...(consoleManaged === '1' ? { consoleManaged: true } : {}), ...(role ? { role } : {}), ...(paneName ? { paneName } : {}), ...(windowId ? { windowId } : {}), ...(mode && !inputBlockingPaneModes.has(mode) ? { paneMode: mode } : {}), socket }] : [];
     });
   }
 

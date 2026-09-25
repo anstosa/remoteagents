@@ -225,7 +225,7 @@ export class DiscoveryService {
       if (pane.reportedQuestion !== undefined && pane.reportedQuestion.length > 0) paneQuestionPayloads.set(id, pane.reportedQuestion);
       const attention = resolveAttention({ kind: recognized.kind, title: pane.title, reported, hasQuestion: false });
       const conversationId = pane.reportedSession !== undefined && pane.reportedSession.length > 0 ? pane.reportedSession : undefined;
-      const agent: Agent = { id, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, home, title: pane.title, kind: recognized.kind, attention, ...(pane.reportedSandboxed === '1' ? { sandboxed: true } : {}), ...(conversationId === undefined ? {} : { conversationId }), ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }) };
+      const agent: Agent = { id, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, home, title: pane.title, kind: recognized.kind, attention, ...(pane.reportedSandboxed === '1' ? { sandboxed: true } : {}), ...(conversationId === undefined ? {} : { conversationId }), ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }), ...(pane.paneMode === undefined ? {} : { paneMode: pane.paneMode }) };
       // the Agent the server acts on keeps `home` as its pane root, the folder it runs in (a
       // teardown, attachments, file links and conversations all act there); only the dashboard
       // publishes its Place's home. The snapshot Place may trail a fresh Worktree scan by one tick.

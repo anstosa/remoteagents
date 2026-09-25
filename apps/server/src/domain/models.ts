@@ -5,7 +5,7 @@ export type SocketRef = { fingerprint: string; path: string; device: number; ino
 // operator created, so launch adoption, Remove's blind kill and cleanup all skip it, and
 // discovery can count a Worktree's shells. `paneName` (`@rac_pane_name`) is the operator's
 // name for a Console shell, empty by default (the picker then falls back to `command · ~/path`).
-export type Pane = { paneId: string; sessionId: string; sessionName?: string; windowId?: string; pid: number; path: string; title: string; displayLabel?: string; command: string; startCommand?: string; reportedAttention?: string; reportedSession?: string; reportedSandboxed?: string; reportedQuestion?: string; consoleManaged?: boolean; role?: string; paneName?: string; socket: SocketRef };
+export type Pane = { paneId: string; sessionId: string; sessionName?: string; windowId?: string; pid: number; path: string; title: string; displayLabel?: string; command: string; startCommand?: string; reportedAttention?: string; reportedSession?: string; reportedSandboxed?: string; reportedQuestion?: string; consoleManaged?: boolean; role?: string; paneName?: string; paneMode?: string; socket: SocketRef };
 export type PullRequestIssues = { mergeConflicts?: boolean; failingChecks?: boolean; unresolvedComments?: boolean };
 export type PullRequestCheckStatus = 'passed' | 'pending' | 'failed';
 export type PullRequestSummary = { number: number; title: string; status: 'draft' | 'open' | 'merged'; url: string; baseBranch?: string; checks?: PullRequestCheckStatus; issues?: PullRequestIssues };
@@ -21,7 +21,7 @@ export type GitStatusChange = { code: string; path: string; originalPath?: strin
 export type GitStatusSummary = { files: number; staged: number; unstaged: number; untracked: number; conflicted: number; changes?: GitStatusChange[] };
 export type GitComparisonSummary = { base: string; files: number; changes?: GitStatusChange[] };
 export type GitUpstreamSummary = { upstream: string; ahead: number; behind: number };
-export type Agent = { id: string; paneId: string; sessionId: string; socketFingerprint: string; home: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind: AgentKind; attention: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; placeId?: string; projectId?: string; worktreeId?: string; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion };
+export type Agent = { id: string; paneId: string; sessionId: string; socketFingerprint: string; home: string; branch?: string; gitStatus?: GitStatusSummary; gitPrStatus?: GitComparisonSummary; gitUpstream?: GitUpstreamSummary; title: string; kind: AgentKind; attention: AttentionState; sandboxed?: boolean; conversationId?: string; displayLabel?: string; placeId?: string; projectId?: string; worktreeId?: string; newTaskConfigured?: boolean; push?: PromptAction; projectUrl?: string; projectProxied?: boolean; pullRequest?: PullRequestSummary; question?: InlineQuestion; paneMode?: string };
 // An Agent's `sessionId` is the console's composite id `${socketFingerprint}:${tmuxSession}`
 // (discovery keys agents that way). Recover the raw tmux session name a command targets.
 export const agentTmuxSession = (agent: Pick<Agent, 'sessionId' | 'socketFingerprint'>): string => agent.sessionId.slice(agent.socketFingerprint.length + 1);
