@@ -274,8 +274,8 @@ test('agent tab glyphs stay unboxed, full-size, and tightly spaced on desktop an
   // verify both desktop and mobile layouts
   for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
     await page.setViewportSize(viewport);
-    // verify all five configured tab kinds
-    for (const expected of expectedTabs) {
+    // verify all five configured tab kinds; a phone's tab row holds only the current Workspace
+    for (const expected of viewport.width > 768 ? expectedTabs : expectedTabs.slice(0, 1)) {
       const tab = page.getByRole('tab', { name: new RegExp(expected.label, 'u') });
       const badge = tab.locator('.launch-tab-badge');
       const mark = badge.locator('.launch-kind-mark');
@@ -289,7 +289,18 @@ test('agent tab glyphs stay unboxed, full-size, and tightly spaced on desktop an
     }
   }
 
+  // the phone's Workspace sheet shows every tab's glyph at the same full size
+  await page.getByRole('tab', { selected: true }).click();
+  for (const expected of expectedTabs) {
+    const mark = page.getByRole('dialog', { name: 'Workspaces' }).getByRole('button', { name: new RegExp(expected.label, 'u') }).locator('.launch-tab-badge .launch-kind-mark');
+    await expect(mark).toHaveText(expected.glyph);
+    await expect(mark).toHaveCSS('width', '20px');
+    await expect(mark).toHaveCSS('font-size', '20px');
+  }
+  await page.keyboard.press('Escape');
+
   // keep the sandbox indicator beside its agent glyph
+  await page.setViewportSize({ width: 1280, height: 800 });
   await expect(page.getByRole('tab', { name: /Claude tab/u }).locator('.launch-tab-badge .launch-lock')).toBeVisible();
 });
 

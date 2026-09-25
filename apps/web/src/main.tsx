@@ -506,6 +506,13 @@ const worktreePendingOperation = (worktree: Worktree): DashboardOperation | unde
 const dashboardOperationLabels: Record<DashboardOperation, string> = { launching: 'Starting agent', restarting: 'Restarting', clearing: 'Clearing', deactivating: 'Turning off', 'new-task': 'Starting new task' };
 // label one optional dashboard transition
 const dashboardOperationLabel = (operation: DashboardOperation | undefined) => operation === undefined ? undefined : dashboardOperationLabels[operation];
+const tabStateLabels: Record<AgentState, string> = { working: 'Working', 'prompt-done': 'Prompt done', 'action-required': 'Action required', closed: 'Agent closed' };
+// a tab's status as its label and classes say it: a transition in flight outranks its Agents' state
+const tabStatus = (entry: DashboardItem) => {
+  const transition = dashboardOperationLabel(entry.operation);
+  const label = `${transition ?? tabStateLabels[entry.state]}${entry.unread ? ' — Unread' : ''}`;
+  return { transition, label, className: `${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}` };
+};
 const defaultPushAction: PromptAction = { label: 'Commit/Push', prompt: 'review, commit, and push' };
 const subscribeToPendingOperation = (key: string, listener: () => void) => {
   const listeners = pendingOperationListeners.get(key) ?? new Set();
@@ -6580,6 +6587,47 @@ function TabKindStack({ entry }: { entry: DashboardItem }) {
     : <span className="tab-place-mark empty" title="Empty workspace"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" strokeDasharray="3 3" /></svg></span>}</span>;
 }
 
+// The Agents outside `current` that wait on the operator: those with a question, and those with
+// unread output (an Agent with both counts once, as a question).
+function otherWorkspacesWaiting(items: readonly DashboardItem[], current: DashboardItem) {
+  const agents = items.filter(entry => entry !== current).flatMap(entry => entry.agents);
+  const questions = agents.filter(agent => agentState(agent) === 'action-required').length;
+  return { questions, unread: agents.filter(agentNeedsOperator).length - questions };
+}
+const countLabel = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+// a Workspace's line in the phone sheet: its Agent and shell counts, then its state when it has one
+function workspaceSheetDetail(entry: DashboardItem): string {
+  const transition = dashboardOperationLabel(entry.operation);
+  const state = transition !== undefined ? `${transition}…` : entry.state === 'action-required' ? 'Needs answer' : entry.unread ? 'Unread' : entry.state === 'working' ? 'Working' : undefined;
+  const shells = entry.worktree?.consoleShells ?? entry.place?.consoleShells ?? 0;
+  return [countLabel(entry.agents.length, 'Agent'), countLabel(shells, 'shell'), ...(state === undefined ? [] : [state])].join(' · ');
+}
+
+// The phone tab row's one tab, the current Workspace as a dropdown: its marks, label and rolled-up
+// state, with a badge counting the Agents in other Workspaces that wait on the operator. It opens a
+// bottom sheet listing every Workspace, then New Workspace…, which opens the + menu.
+function WorkspaceDropdown({ items, current, onSelect, onNewWorkspace }: { items: readonly DashboardItem[]; current: number; onSelect: (index: number) => void; onNewWorkspace: () => void }) {
+  const [open, setOpen] = useState(false);
+  const entry = items[current];
+  if (entry === undefined) return null;
+  const { transition, label, className } = tabStatus(entry);
+  const { questions, unread } = otherWorkspacesWaiting(items, entry);
+  const waiting = questions + unread;
+  const waitingLabel = `Other Workspaces: ${questions} need an answer, ${unread} unread`;
+  const choose = (action: () => void) => { setOpen(false); action(); };
+  return <><button id={`tab-${current}`} type="button" role="tab" aria-selected="true" aria-controls={`panel-${current}`} className={`workspace-dropdown active ${className}`} aria-haspopup="dialog" aria-expanded={open} aria-busy={transition !== undefined} aria-label={`${entry.label} — ${label}`} aria-description={waiting > 0 ? waitingLabel : undefined} title="Switch Workspace" onClick={() => setOpen(value => !value)}>
+    <TabKindStack entry={entry} />
+    <span className={`workspace-dropdown-label${entry.state === 'working' && transition === undefined ? ' tab-label' : ''}`}>{transition !== undefined && <span className="spinner" aria-hidden="true" />}{entry.label}</span>
+    {waiting > 0 && <span className={`workspace-dropdown-badge${questions > 0 ? ' question' : ''}`} title={waitingLabel} aria-hidden="true">{waiting}</span>}
+    <svg className="workspace-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+  </button>{open && <FlyoutPortal onDismiss={() => setOpen(false)}><div className="workspace-sheet" role="dialog" aria-label="Workspaces">
+    <h2 className="workspace-sheet-heading">Workspaces</h2>
+    {items.map((candidate, index) => <button key={candidate.key} type="button" className={`workspace-sheet-entry ${tabStatus(candidate).className}`} aria-current={index === current ? 'true' : undefined} autoFocus={index === current} onClick={() => choose(() => onSelect(index))}><TabKindStack entry={candidate} /><span className="workspace-sheet-copy"><strong>{candidate.label}</strong><small>{workspaceSheetDetail(candidate)}</small></span></button>)}
+    <hr />
+    <button type="button" className="workspace-sheet-entry workspace-sheet-new" onClick={() => choose(onNewWorkspace)}><span className="tab-kind-stack" aria-hidden="true"><span className="tab-place-mark"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg></span></span><span className="workspace-sheet-copy"><strong>New Workspace…</strong><small>Launch, Terminal or Empty workspace</small></span></button>
+  </div></FlyoutPortal>}</>;
+}
+
 // render browser notification enrollment
 function NotificationControl() {
   const supported = 'Notification' in window;
@@ -6907,6 +6955,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     setPendingSessionLaunches(next);
   }, []);
   const [launcherOpen, setLauncherOpen] = useState(false);
+  const phone = usePhoneLayout();
   // Places opened from + (Terminal, Empty workspace) that keep a tab while the operator is on it
   // though nothing keeps them yet (no Agent, shell, pin or draft); leaving one closes it
   const [openedPlaces, setOpenedPlaces] = useState<ReadonlySet<string>>(() => new Set());
@@ -7872,7 +7921,6 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     'merged-branch': 'Merged branch'
   };
   const cleanupDialog = !cleanupOpen ? null : createPortal(<div className="dialog cleanup-dialog" role="dialog" aria-modal="true" aria-labelledby="cleanup-title"><div><header className="cleanup-header"><div><h2 id="cleanup-title">Cleanup</h2><p>Select items to clean up. Unchecked items will be dismissed.</p></div><button className="cleanup-close" type="button" aria-label="Close cleanup" disabled={cleanupLoading} onClick={closeCleanup}>×</button></header>{cleanupLoading && cleanupTargets.length === 0 ? <p className="cleanup-loading" role="status"><span className="spinner" />Searching for cleanup targets…</p> : cleanupTargets.length === 0 ? <p className="cleanup-empty">No cleanup targets remain.</p> : <fieldset className="cleanup-targets" disabled={cleanupLoading}><legend className="sr-only">Cleanup targets</legend>{cleanupTargets.map(target => <label key={target.id} className="cleanup-target"><input type="checkbox" checked={cleanupChecked.has(target.id)} onChange={event => setCleanupChecked(current => { const next = new Set(current); if (event.target.checked) next.add(target.id); else next.delete(target.id); return next; })} /><span><strong><small>{cleanupKindLabel[target.kind]}</small>{target.label}</strong><span>{target.detail}</span></span></label>)}</fieldset>}{cleanupError && <p className="cleanup-error" role="alert">{cleanupError}</p>}<footer className="cleanup-actions"><span>{cleanupTargets.length === 0 ? 'Nothing selected' : `${cleanupChecked.size} of ${cleanupTargets.length} selected`}</span><button type="button" disabled={cleanupLoading || cleanupError === 'Unable to load cleanup targets.'} onClick={() => void resolveCleanup()}>{cleanupLoading ? <><span className="spinner" />Working…</> : cleanupChecked.size === 0 ? 'Dismiss all' : 'Cleanup'}</button></footer></div></div>, document.body);
-  const stateLabel: Record<AgentState, string> = { working: 'Working', 'prompt-done': 'Prompt done', 'action-required': 'Action required', closed: 'Agent closed' };
   // the Agent the active tab's switcher shows
   const agent = currentAgentOf(item);
   const activeWorktreeId = item?.worktree?.id ?? agent?.worktreeId;
@@ -8026,10 +8074,9 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     const rows = visibleWorktrees.map(worktree => <div key={worktree.id} className="launcher-row"><span className="launcher-row-label">{launcherRowLabel(worktree, project)}</span>{launcherWorktreeControls(worktree, project)}</div>);
     return <div key={project.id} className="launcher-project" role="group" aria-label={project.label}><div className={`launcher-project-header${inlineWorktree === undefined ? '' : ' inline-worktree'}`}><span>{project.label}</span>{staleCount > 0 && <button type="button" className="launcher-prune" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setPruneProjectId(project.id)}>{staleCount} stale · Prune</button>}{inlineWorktree !== undefined && <div className="launcher-project-worktree-controls" role="group" aria-label={`${project.label} worktree controls`}>{launcherWorktreeControls(inlineWorktree, project)}</div>}</div>{rows}{project.mode === 'directory' && <div className="launcher-row"><span className="launcher-row-label">{project.label}</span>{launcherPlaceControls(directoryPlace(project.id))}{launcherPlaceSplit(project.label, directoryPlace(project.id), project.launch, `/api/projects/${encodeURIComponent(project.id)}/launch`, choice => void launchProjectDirectory(project, choice))}</div>}{dynamicWorktrees && <button type="button" className="launcher-new-worktree" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setNewWorktreeProjectId(project.id)}><LauncherLabelIcon name="add" /><span>New worktree…</span></button>}</div>;
   };
-  const tabBar = <><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees"><TabRowLead />{items.map((entry, index) => {
-    const transition = dashboardOperationLabel(entry.operation);
-    const label = transition ?? stateLabel[entry.state];
-    return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === visibleActive} aria-controls={`panel-${index}`} tabIndex={index === visibleActive ? 0 : -1} className={`${index === visibleActive ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}><TabKindStack entry={entry} />{entry.worktree?.locked === true && <span className="tab-git-lock" aria-hidden="true" title="Git has locked this worktree">🔒</span>}{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
+  const tabBar = <><nav className={`tabs${phone ? ' workspace-dropdown-row' : ''}`} ref={tabsRef} role="tablist" aria-label="Agents and worktrees"><TabRowLead />{phone ? <WorkspaceDropdown items={items} current={visibleActive} onSelect={index => select(index)} onNewWorkspace={() => setLauncherOpen(true)} /> : items.map((entry, index) => {
+    const { transition, label, className } = tabStatus(entry);
+    return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === visibleActive} aria-controls={`panel-${index}`} tabIndex={index === visibleActive ? 0 : -1} className={`${index === visibleActive ? 'active ' : ''}${className}`} title={label} aria-label={`${entry.label} — ${label}`} aria-busy={transition !== undefined} onClick={() => select(index)}><TabKindStack entry={entry} />{entry.worktree?.locked === true && <span className="tab-git-lock" aria-hidden="true" title="Git has locked this worktree">🔒</span>}{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
   })}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label launcher-symbol-label"><LauncherLabelIcon name="scratch" /><span>Scratch</span></span>{launcherPlaceControls(scratchPlace)}{launcherPlaceSplit('~ Scratch', scratchPlace, data.scratchLaunch, '/api/agents/launch', choice => void createAgent(choice))}</div>{data.projects.map(launcherProject)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav><ToastRegion feedback={visibleOperationFeedback} onDismissFeedback={() => setOperationFeedback(undefined)} launchErrorMessage={launchErrorMessage} /></>;
   const consoleClass = `console${davo.enabled && voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;

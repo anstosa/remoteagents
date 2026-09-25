@@ -171,12 +171,15 @@ test('renders inline questions from the pane stream and answers through one endp
   await pushQuestion(page, 'agent-1', strictQuestion);
   await expect(page.getByText('Agent question')).toHaveCount(0);
 
-  // and survives a tab remount
-  const tabs = page.getByRole('tab');
-  await tabs.nth(1).click();
-  await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true');
-  await tabs.nth(0).click();
-  await expect(tabs.nth(0)).toHaveAttribute('aria-selected', 'true');
+  // and survives a tab remount, switching away and back through the phone's Workspace sheet
+  const currentTab = page.getByRole('tab', { selected: true });
+  const workspaces = page.getByRole('dialog', { name: 'Workspaces' }).getByRole('button');
+  await currentTab.click();
+  await workspaces.nth(1).click();
+  await expect(currentTab).toHaveAttribute('id', 'tab-1');
+  await currentTab.click();
+  await workspaces.nth(0).click();
+  await expect(currentTab).toHaveAttribute('id', 'tab-0');
   await expect(page.getByText('Agent question')).toHaveCount(0);
 
   // a frame carrying no question clears the dismissal

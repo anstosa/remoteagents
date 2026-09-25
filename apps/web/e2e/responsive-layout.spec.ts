@@ -27,9 +27,11 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   });
 
   await page.goto('/');
-  const activeTab = page.getByRole('tab', { name: /^📱 Remote Agents/u });
-  await activeTab.click();
-  await expect(activeTab).toHaveAttribute('aria-selected', 'true');
+  // a phone picks its Workspace from the current-Workspace dropdown's sheet
+  const dropdown = page.locator('.tabs .workspace-dropdown');
+  await dropdown.click();
+  await page.getByRole('dialog', { name: 'Workspaces' }).getByRole('button', { name: /^📱 Remote Agents/u }).click();
+  await expect(dropdown).toContainText('📱 Remote Agents');
   await expect(page.getByLabel('Live log')).toBeVisible();
   // the phone tab row opens on the server selector, an icon-only Call and settings
   const lead = page.locator('.tabs > .tab-row-lead');
@@ -67,7 +69,7 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
       viewportWidth: innerWidth,
       documentWidth: document.documentElement.scrollWidth,
       bodyWidth: document.body.scrollWidth,
-      activeTab: bounds('[role="tab"][aria-selected="true"]'),
+      activeTab: bounds('.tabs .workspace-dropdown'),
       output: bounds('.log'),
       outputBorder: (() => {
         const style = getComputedStyle(document.querySelector<HTMLElement>('.log')!);
@@ -148,4 +150,97 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   expect(Math.abs(grown.prompt.bottom - layout.prompt.bottom)).toBeLessThanOrEqual(1);
   expect(Math.abs(grown.send.bottom - layout.send.bottom)).toBeLessThanOrEqual(1);
   expect(Math.abs(grown.bar.top - layout.bar.top)).toBeLessThanOrEqual(1);
+});
+
+// the dashboard the phone Workspace dropdown tests: the current Workspace, two Agents elsewhere that
+// wait on the operator (a question, unread output), and an agentless directory Place with shells
+const workspacesDashboard = {
+  generation: 1,
+  agents: [
+    { id: 'agent-5', sessionId: 'socket:$5', home: '/worktrees/remote-agents', worktreeId: 'remote-agents', displayLabel: '📱 Remote Agents', title: 'Ready', attention: 'finished', queuedPromptCount: 0 },
+    { id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', displayLabel: '🥔 Cora', title: 'Ready', attention: 'question', queuedPromptCount: 0 },
+    { id: 'agent-2', sessionId: 'socket:$2', home: '/worktrees/owen', displayLabel: '🥔 Owen', title: 'Ready', attention: 'finished', unread: true, queuedPromptCount: 0 }
+  ],
+  places: [{ id: 'notes:/data/notes', kind: 'directory', projectId: 'notes', label: 'Notes', home: '/data/notes', pinned: true, consoleShells: 2 }],
+  projects: []
+};
+
+test('a phone shows only the current Workspace, as a dropdown over a sheet of every Workspace', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  let dashboard = workspacesDashboard;
+  await page.route('**/api/**', async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: dashboard });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  await page.goto('/');
+
+  const tabs = page.locator('nav.tabs');
+  // the row's one tab is the current Workspace, and it opens a sheet rather than switching
+  const dropdown = tabs.getByRole('tab');
+  await expect(dropdown).toHaveCount(1);
+  await expect(dropdown).toHaveAccessibleName('📱 Remote Agents — Prompt done');
+  await expect(dropdown).toHaveAttribute('aria-selected', 'true');
+  await expect(dropdown).toHaveAttribute('aria-haspopup', 'dialog');
+  await expect(dropdown).toHaveAccessibleDescription('Other Workspaces: 1 need an answer, 1 unread');
+  // the badge counts the Agents in other Workspaces waiting on the operator, red while any has a question
+  const badge = dropdown.locator('.workspace-dropdown-badge');
+  await expect(badge).toHaveText('2');
+  await expect(badge).toHaveClass(/\bquestion\b/u);
+
+  // one row that never scrolls sideways: server selector, Call, settings, the dropdown filling the rest, +
+  const row = await tabs.evaluate(nav => {
+    const box = (element: Element) => { const rect = element.getBoundingClientRect(); return { left: rect.left, right: rect.right, middle: Math.round(rect.top + rect.height / 2) }; };
+    return { overflow: nav.scrollWidth - nav.clientWidth, width: nav.getBoundingClientRect().width, lead: box(nav.querySelector('.tab-row-lead')!), dropdown: box(nav.querySelector('.workspace-dropdown')!), plus: box(nav.querySelector('.launcher')!) };
+  });
+  expect(row.overflow).toBeLessThanOrEqual(0);
+  expect(new Set([row.lead.middle, row.dropdown.middle, row.plus.middle]).size).toBe(1);
+  expect(Math.abs(row.dropdown.left - row.lead.right)).toBeLessThanOrEqual(1);
+  expect(Math.abs(row.plus.left - row.dropdown.right)).toBeLessThanOrEqual(1);
+  expect(Math.abs(row.plus.right - row.width)).toBeLessThanOrEqual(1);
+
+  // the sheet lists every Workspace with its Agent and shell counts and its state, then New Workspace…
+  await dropdown.click();
+  const sheet = page.getByRole('dialog', { name: 'Workspaces' });
+  const entries = sheet.getByRole('button');
+  await expect(entries).toHaveText([
+    /📱 Remote Agents\s*1 Agent · 0 shells$/u,
+    /🥔 Cora\s*1 Agent · 0 shells · Needs answer$/u,
+    /🥔 Owen\s*1 Agent · 0 shells · Unread$/u,
+    /Notes\s*0 Agents · 2 shells$/u,
+    /New Workspace…\s*Launch, Terminal or Empty workspace$/u
+  ]);
+  await expect(entries.first()).toHaveAttribute('aria-current', 'true');
+  // a sheet across the screen's bottom edge, once it has risen into place
+  await expect.poll(async () => { const box = (await sheet.boundingBox())!; return [box.x, box.width, box.y + box.height].map(Math.round); }).toEqual([0, 390, 844]);
+
+  // picking Cora switches to it, leaving only Owen's unread output elsewhere: a green badge
+  await entries.filter({ hasText: 'Cora' }).click();
+  await expect(sheet).toHaveCount(0);
+  await expect(dropdown).toContainText('🥔 Cora');
+  await expect(badge).toHaveText('1');
+  await expect(badge).not.toHaveClass(/\bquestion\b/u);
+  // picking Owen reads its output, so only Cora's question waits elsewhere
+  await dropdown.click();
+  await entries.filter({ hasText: 'Owen' }).click();
+  await expect(dropdown).toContainText('🥔 Owen');
+  await expect(badge).toHaveText('1');
+  await expect(badge).toHaveClass(/\bquestion\b/u);
+  // once Cora's question is answered elsewhere, the next dashboard clears the badge
+  dashboard = { ...workspacesDashboard, generation: 2, agents: workspacesDashboard.agents.map(agent => agent.id === 'agent-1' ? { ...agent, attention: 'finished' } : agent.id === 'agent-2' ? { ...agent, unread: false } : agent) };
+  await expect(badge).toHaveCount(0, { timeout: 10_000 });
+
+  // New Workspace… opens the + menu
+  await dropdown.click();
+  await entries.filter({ hasText: 'New Workspace…' }).click();
+  await expect(sheet).toHaveCount(0);
+  await expect(page.getByRole('group', { name: 'Agent launcher' })).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  // a desktop keeps the full tab row
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(tabs.getByRole('tab')).toHaveCount(4);
+  await expect(tabs.locator('.workspace-dropdown')).toHaveCount(0);
 });
