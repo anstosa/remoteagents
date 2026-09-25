@@ -84,7 +84,7 @@ const routeApi = (page: Page, options: { panes: () => Pane[]; onShell?: () => st
     return route.fulfill({ status: 404, json: { error: 'not mocked' } });
   });
 
-const openPicker = (page: Page) => page.getByRole('button', { name: 'Open a terminal' }).click();
+const openPicker = (page: Page) => page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'Open a terminal' }).click();
 
 // drag across live terminal text
 const selectTerminalText = async (page: Page, terminal: Locator, text: string) => {

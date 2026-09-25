@@ -141,3 +141,153 @@ test('launcher keeps a worktree visible while its agent is already open', async 
   await expect(launcher).toHaveCount(0);
   await expect(page.getByRole('tab', { name: /^📱 Remote Agents —/u })).toHaveAttribute('aria-selected', 'true');
 });
+
+// A dashboard of one Project with a pinned Main and an idle `feature` Worktree, whose Console
+// shells, pins and running Agent a test can change; the panes and shells routes of every
+// Worktree answer from the same state, so a New shell is seen through a real refresh.
+type Shell = { paneId: string; name: string };
+async function mountWorkspaces(page: import('@playwright/test').Page, options: { shells?: Record<string, Shell[]>; agentAt?: string } = {}) {
+  const shells: Record<string, Shell[]> = { 'repo:/repo': [], 'repo:/repo/feature': [], ...options.shells };
+  const pinned = new Set(['repo:/repo']);
+  const created: string[] = [];
+  const pins: Array<{ id: string; pinned: boolean }> = [];
+  let nextPane = 9;
+  const worktree = (id: string, label: string, path: string, order: number, branch: string) => ({ id, projectId: 'repo', label, path, main: order === 0, detached: false, locked: false, available: true, pinned: pinned.has(id), order, branch, consoleShells: shells[id]!.length, launch: { kind: 'codex', origin: 'worktree' } });
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (path === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (path === '/api/dashboard') return route.fulfill({ json: {
+      generation: 1,
+      adapters: { codex: { launchable: true, program: '/bin/codex', stateSource: 'both', turnCapture: true, inlineQuestions: false, commands: true, sandbox: false } },
+      agents: options.agentAt === undefined ? [] : [{ id: 'agent-1', sessionId: 'socket:$1', home: '/repo/feature', projectId: 'repo', worktreeId: options.agentAt, placeId: options.agentAt, title: 'Ready', kind: 'codex', attention: 'finished', queuedPromptCount: 0 }],
+      projects: [{ id: 'repo', label: 'Repo', available: true, worktrees: [worktree('repo:/repo', 'Repo', '/repo', 0, 'main'), worktree('repo:/repo/feature', 'Feature', '/repo/feature', 1, 'feature')] }]
+    } });
+    if (path === '/api/push/public-key') return route.fulfill({ json: {} });
+    const match = /^\/api\/worktrees\/([^/]+)\/(panes|shells|pin|notes)$/u.exec(path);
+    const id = match === null ? undefined : decodeURIComponent(match[1]!);
+    // as the real route does, the Agent's own pane and a hand-made landing shell come before the Console shells
+    const others = id === options.agentAt ? [{ paneId: '%1', session: '$7', window: '@0', command: 'codex', path: '/repo/feature', title: '', agent: true }, { paneId: '%2', session: '$7', window: '@0', command: 'zsh', path: '/repo/feature', title: '', agent: false }] : [];
+    if (match?.[2] === 'panes' && request.method() === 'GET') return route.fulfill({ json: { panes: [...others, ...(shells[id!] ?? []).map(shell => ({ paneId: shell.paneId, session: '$7', window: `@${shell.paneId.slice(1)}`, role: 'shell', name: shell.name, command: 'zsh', path: '/repo', title: '', agent: false, busy: false }))] } });
+    if (match?.[2] === 'shells' && request.method() === 'POST') {
+      created.push(id!);
+      const shell = { paneId: `%${nextPane++}`, name: 'shell' };
+      shells[id!]!.push(shell);
+      return route.fulfill({ status: 201, json: { paneId: shell.paneId } });
+    }
+    if (match?.[2] === 'pin' && request.method() === 'POST') {
+      const body = request.postDataJSON() as { pinned: boolean };
+      pins.push({ id: id!, pinned: body.pinned });
+      if (body.pinned) pinned.add(id!); else pinned.delete(id!);
+      return route.fulfill({ status: 204 });
+    }
+    if (match?.[2] === 'notes' && request.method() === 'GET') return route.fulfill({ json: { notes: [] } });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  await page.goto('/');
+  return { created, pins };
+}
+
+// open one + row's dropdown (its chevron), check it, and choose an entry
+const chooseFromRow = async (page: import('@playwright/test').Page, row: string, entry: 'Terminal' | 'Empty workspace', check?: (menu: import('@playwright/test').Locator, row: import('@playwright/test').Locator) => Promise<void>) => {
+  await page.locator('.new-agent-tab').click();
+  const launcher = page.getByRole('group', { name: 'Agent launcher' });
+  const rowLocator = launcher.locator('.launcher-row, .launcher-project-worktree-controls').filter({ hasText: row }).first();
+  await rowLocator.getByRole('button', { name: 'More ways to open' }).click();
+  const menu = page.locator('.launch-menu');
+  await check?.(menu, rowLocator);
+  await menu.getByRole('menuitem', { name: new RegExp(`^${entry}`, 'u') }).click();
+  await expect(launcher).toHaveCount(0);
+};
+
+test('Terminal from + opens an idle Worktree with a new shell, focused, and never a second one', async ({ page }) => {
+  const { created } = await mountWorkspaces(page);
+  // the row keeps Launch as its default; the dropdown lists the kinds, then Terminal and Empty workspace
+  await chooseFromRow(page, 'Feature', 'Terminal', async (menu, row) => {
+    await expect(row.getByRole('button', { name: 'Launch Codex' })).toBeVisible();
+    await expect(menu.getByRole('menuitem')).toHaveText([/Codex/u, /^Terminal/u, /^Empty workspace/u]);
+    await expect(menu.getByRole('menuitem', { name: /^Terminal/u })).toContainText('Open the Workspace with a new shell');
+  });
+  // the Place's tab opens with the new shell as a focused Terminal panel
+  await expect(page.getByRole('tab', { name: /^Feature —/u })).toHaveAttribute('aria-selected', 'true');
+  const terminal = page.locator('.terminal-pane[data-panel-key="%9"]');
+  await expect(terminal).toBeVisible();
+  await expect(terminal).toHaveClass(/\bfocused\b/u);
+  expect(created).toEqual(['repo:/repo/feature']);
+
+  // the shell keeps the Workspace after leaving it, and a second Terminal from + focuses that
+  // shell instead of creating another
+  await page.getByRole('tab', { name: /^Repo —/u }).click();
+  await expect(page.getByRole('tab', { name: /^Feature —/u })).toBeVisible();
+  await chooseFromRow(page, 'Feature', 'Terminal', async menu => {
+    await expect(menu.getByRole('menuitem', { name: /^Terminal/u })).toContainText('Focus its shell');
+  });
+  await expect(page.getByRole('tab', { name: /^Feature —/u })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.terminal-pane')).toHaveCount(1);
+  await expect(terminal).toHaveClass(/\bfocused\b/u);
+  expect(created).toEqual(['repo:/repo/feature']);
+});
+
+test('Terminal from + at a Worktree with an Agent opens its minimized shell without creating one', async ({ page }) => {
+  const { created } = await mountWorkspaces(page, { agentAt: 'repo:/repo/feature', shells: { 'repo:/repo/feature': [{ paneId: '%5', name: 'build' }] } });
+  // a row with a running Agent keeps Open as its default, beside the same dropdown
+  await chooseFromRow(page, 'Feature', 'Terminal', async (menu, row) => {
+    await expect(row.getByRole('button', { name: 'Open Feature' })).toBeVisible();
+    await expect(menu.getByRole('menuitem')).toHaveText([/Codex/u, /^Terminal/u, /^Empty workspace/u]);
+  });
+  await expect(page.getByRole('tab', { name: /^Feature —/u })).toHaveAttribute('aria-selected', 'true');
+  const terminal = page.locator('.terminal-pane[data-panel-key="%5"]');
+  await expect(terminal).toBeVisible();
+  await expect(terminal).toHaveClass(/\bfocused\b/u);
+  expect(created).toEqual([]);
+});
+
+test('Empty workspace opens a panel-less Workspace that closes when left, unless pinned', async ({ page }) => {
+  const { pins } = await mountWorkspaces(page);
+  await expect(page.getByRole('tab')).toHaveCount(1);
+  // the pinned Main Workspace is empty, but pinned, so it does not warn
+  await expect(page.getByRole('region', { name: 'Empty workspace' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Empty workspace' })).not.toContainText('closes when you switch away');
+
+  await chooseFromRow(page, 'Feature', 'Empty workspace');
+  const tab = page.getByRole('tab', { name: /^Feature —/u });
+  await expect(tab).toHaveAttribute('aria-selected', 'true');
+  // the body repeats the toolbar's controls and warns the Workspace is transient
+  const empty = page.getByRole('region', { name: 'Empty workspace' });
+  await expect(empty).toContainText('Feature');
+  await expect(empty).toContainText('/repo/feature');
+  await expect(empty.getByRole('button', { name: 'Launch Codex' })).toBeVisible();
+  await expect(empty.getByRole('button', { name: 'Open a terminal' })).toBeVisible();
+  await expect(empty.getByRole('button', { name: 'Browser' })).toBeVisible();
+  await expect(empty.getByRole('button', { name: 'Code', exact: true })).toBeVisible();
+  await expect(empty).toContainText('closes when you switch away');
+  await expect(page.locator('.terminal-pane, .note-pane')).toHaveCount(0);
+  // its Notes opens the Place's notes menu
+  await empty.getByRole('button', { name: 'Notes' }).click();
+  await expect(page.locator('.notes-menu')).toBeVisible();
+  await page.locator('.flyout-backdrop').click({ position: { x: 5, y: 5 } });
+  await expect(page.locator('.notes-menu')).toHaveCount(0);
+
+  // leaving it closes it
+  await page.getByRole('tab', { name: /^Repo —/u }).click();
+  await expect(tab).toHaveCount(0);
+
+  // an existing Workspace is focused as it is, its panels kept
+  await chooseFromRow(page, 'main', 'Terminal');
+  await expect(page.locator('.terminal-pane')).toHaveCount(1);
+  // from another Workspace, so Main's remounts from what this device remembers of it
+  await chooseFromRow(page, 'Feature', 'Empty workspace');
+  await chooseFromRow(page, 'main', 'Empty workspace');
+  await expect(page.getByRole('tab')).toHaveCount(1);
+  await expect(page.getByRole('tab', { name: /^Repo —/u })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.terminal-pane')).toHaveCount(1);
+
+  // Pin keeps it after leaving
+  await chooseFromRow(page, 'Feature', 'Empty workspace');
+  await page.getByRole('region', { name: 'Empty workspace' }).getByRole('button', { name: 'Pin it' }).click();
+  await expect.poll(() => pins).toEqual([{ id: 'repo:/repo/feature', pinned: true }]);
+  await expect(page.getByRole('region', { name: 'Empty workspace' })).not.toContainText('closes when you switch away');
+  await page.getByRole('tab', { name: /^Repo —/u }).click();
+  await expect(tab).toBeVisible();
+});

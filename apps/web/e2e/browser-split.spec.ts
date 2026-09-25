@@ -333,7 +333,7 @@ test('opens the configured project in desktop and mobile split views', async ({ 
   await browser.getByRole('button', { name: 'Close browser' }).click();
   await expect(note).toBeVisible();
   await page.getByRole('tab', { name: 'Delta — Agent closed' }).click();
-  await page.getByRole('button', { name: 'Browser', exact: true }).click();
+  await page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'Browser', exact: true }).click();
   await expect(browser.locator('.browser-frame-shell')).toHaveClass(/desktop/u);
   await browser.getByRole('button', { name: 'Close browser' }).click();
 

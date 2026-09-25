@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom';
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { useViewportFlyout } from './viewport-flyout.js';
 
 // The closed registry of agent kinds, in resolution/priority order (duplicated from the
@@ -64,13 +64,23 @@ const launchHint = (adapters: AdapterCapabilities | undefined, resolution: Launc
     : configuredKinds(adapters).length === 0 ? 'No agents configured — add an adapters entry to the console config.'
       : 'No configured agent is launchable right now';
 
+// A non-launch action a menu lists after the kinds (the + rows' Terminal and Empty workspace).
+export type LaunchMenuEntry = { key: string; label: string; detail: string; icon: ReactNode; onSelect: () => void };
+
+// the entries after the kinds, divided from them
+function LaunchMenuEntries({ entries }: { entries: readonly LaunchMenuEntry[] }) {
+  if (entries.length === 0) return null;
+  return <><hr className="more-menu-divider" />{entries.map(entry => <button key={entry.key} type="button" role="menuitem" className="launch-row launch-row-entry" onClick={entry.onSelect}><span className="launch-kind-mark launch-entry-icon" aria-hidden="true">{entry.icon}</span><span className="launch-row-copy"><strong>{entry.label}</strong><small>{entry.detail}</small></span></button>)}</>;
+}
+
 // The menu of launch actions: one row per configured kind (the resolved one annotated
 // with why), unavailable kinds disabled with their reason, then "without sandbox" rows for
-// kinds that default to Sandboxed, and a footnote when a remembered kind was skipped.
-export function LaunchMenu({ verb, label, resolution, onLaunch }: { verb: LaunchVerb; label: string; resolution: LaunchResolution | undefined; onLaunch: (choice: LaunchChoice) => void }) {
+// kinds that default to Sandboxed, a footnote when a remembered kind was skipped, and last any
+// `entries` the caller adds. `launchDisabled` holds every launch row back, leaving the entries.
+export function LaunchMenu({ verb, label, resolution, onLaunch, entries = [], launchDisabled = false }: { verb: LaunchVerb; label: string; resolution: LaunchResolution | undefined; onLaunch: (choice: LaunchChoice) => void; entries?: readonly LaunchMenuEntry[]; launchDisabled?: boolean }) {
   const adapters = useContext(AdaptersContext);
   const kinds = configuredKinds(adapters);
-  if (kinds.length === 0) return <p className="launch-menu-empty">No agents configured. Add an <code>adapters</code> entry to the console config to launch agents.</p>;
+  if (kinds.length === 0) return <><p className="launch-menu-empty">No agents configured. Add an <code>adapters</code> entry to the console config to launch agents.</p><LaunchMenuEntries entries={entries} /></>;
   const unsandboxable = kinds.filter(kind => adapters?.[kind]?.launchable === true && defaultSandboxed(adapters?.[kind]));
   const skipped = resolution?.skipped;
   return <>
@@ -79,25 +89,32 @@ export function LaunchMenu({ verb, label, resolution, onLaunch }: { verb: Launch
       const capability = adapters![kind]!;
       const sandboxed = defaultSandboxed(capability);
       const resolved = resolution?.kind === kind;
-      return <button key={kind} type="button" role="menuitem" className="launch-row" disabled={!capability.launchable} title={capability.unavailableReason} onClick={() => onLaunch({ kind, sandboxed })}>
+      return <button key={kind} type="button" role="menuitem" className="launch-row" disabled={!capability.launchable || launchDisabled} title={capability.unavailableReason} onClick={() => onLaunch({ kind, sandboxed })}>
         <KindMark kind={kind} />
         <span className="launch-row-copy"><strong>{agentKindLabel[kind]}{resolved && <em> · {originCopy(resolution?.origin)}</em>}</strong><small>{capability.launchable ? sandboxCopy(kind, capability, sandboxed) : capability.unavailableReason ?? 'Unavailable'}</small></span>
         {capability.launchable && sandboxed && <LockIcon />}
       </button>;
     })}
-    {unsandboxable.length > 0 && <><hr className="more-menu-divider" /><p className="launch-menu-heading launch-menu-subheading">Without sandbox — this launch only</p>{unsandboxable.map(kind => <button key={`${kind}-unsandboxed`} type="button" role="menuitem" className="launch-row launch-row-unsandboxed" onClick={() => onLaunch({ kind, sandboxed: false })}><KindMark kind={kind} /><span className="launch-row-copy"><strong>{agentKindLabel[kind]}</strong><small>{sandboxCopy(kind, adapters?.[kind], false)}</small></span><UnlockIcon /></button>)}</>}
+    {unsandboxable.length > 0 && <><hr className="more-menu-divider" /><p className="launch-menu-heading launch-menu-subheading">Without sandbox — this launch only</p>{unsandboxable.map(kind => <button key={`${kind}-unsandboxed`} type="button" role="menuitem" className="launch-row launch-row-unsandboxed" disabled={launchDisabled} onClick={() => onLaunch({ kind, sandboxed: false })}><KindMark kind={kind} /><span className="launch-row-copy"><strong>{agentKindLabel[kind]}</strong><small>{sandboxCopy(kind, adapters?.[kind], false)}</small></span><UnlockIcon /></button>)}</>}
     {skipped !== undefined && <p className="launch-menu-note">Remembered {agentKindLabel[skipped.kind]} ({scopeCopy(skipped.origin)}) skipped — {skipped.reason}</p>}
+    <LaunchMenuEntries entries={entries} />
   </>;
 }
+
+// What a split button's primary does instead of launching: the + rows open the Agent already
+// running at their Place.
+export type LaunchPrimary = { label: string; ariaLabel: string; onSelect: () => void };
 
 // The split button: primary launches the resolved kind in one click (naming it, with a
 // lock when Sandboxed); the chevron opens the actions menu. `compact` gives the launcher
 // rows the same control sized to a row, its menu the same anchored flyout. `quiet` is the Workspace
 // toolbar's Launch beside a running Agent: the kind mark and the verb on a plain control.
-// `disabledReason` titles a disabled primary with why it cannot launch. When the
+// `disabledReason` titles a disabled primary with why it cannot launch. `primary` replaces the
+// launch with another default action, and `entries` follow the kinds in the menu;
+// `launchDisabled` holds back only the launches, so the other two stay usable. When the
 // dashboard carries no resolution (`resolution === undefined`) the control degrades to a
 // single plain "Launch agent" that launches without a kind, as before the split button.
-export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch, disabled = false, disabledReason, pending = false, compact = false, quiet = false }: { verb?: LaunchVerb; label: string; resolution: LaunchResolution | undefined; onLaunch: (choice?: LaunchChoice) => void; disabled?: boolean; disabledReason?: string; pending?: boolean; compact?: boolean; quiet?: boolean }) {
+export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch, disabled = false, disabledReason, pending = false, compact = false, quiet = false, primary, entries = [], launchDisabled = false }: { verb?: LaunchVerb; label: string; resolution: LaunchResolution | undefined; onLaunch: (choice?: LaunchChoice) => void; disabled?: boolean; disabledReason?: string; pending?: boolean; compact?: boolean; quiet?: boolean; primary?: LaunchPrimary; entries?: readonly LaunchMenuEntry[]; launchDisabled?: boolean }) {
   const adapters = useContext(AdaptersContext);
   const [open, setOpen] = useState(false);
   const { anchorRef, flyoutRef, style } = useViewportFlyout<HTMLSpanElement>(open);
@@ -116,28 +133,31 @@ export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch
   }, [open]);
   const primaryClass = compact ? 'launch-compact' : 'queue';
   const launch = (choice?: LaunchChoice) => { setOpen(false); onLaunch(choice); };
-  // no resolution from the server: a plain, chevron-less launch of the default kind,
-  // rendered exactly like the pre-split-button launch control
-  if (resolution === undefined) {
-    return <button type="button" className={`${primaryClass}${quiet ? ' launch-quiet' : ''}`} disabled={disabled || pending} onClick={() => launch()}>{pending ? <span className="spinner" /> : null}{actionCopy(verb, undefined)}</button>;
-  }
+  // an entry closes the menu before it acts, as a launch does
+  const menuEntries = entries.map(entry => ({ ...entry, onSelect: () => { setOpen(false); entry.onSelect(); } }));
+  const primaryButton = primary === undefined ? undefined : <button type="button" className={`${primaryClass} launch-primary`} aria-label={primary.ariaLabel} disabled={disabled} onClick={() => { setOpen(false); primary.onSelect(); }}>{primary.label}</button>;
+  // no resolution from the server: a plain, chevron-less launch of the default kind (or the
+  // replacement primary), rendered exactly like the pre-split-button launch control
+  if (resolution === undefined) return primaryButton ?? <button type="button" className={`${primaryClass}${quiet ? ' launch-quiet' : ''}`} disabled={disabled || launchDisabled || pending} onClick={() => launch()}>{pending ? <span className="spinner" /> : null}{actionCopy(verb, undefined)}</button>;
   const none = configuredKinds(adapters).length === 0;
   const resolvedKind = resolution.kind;
   const sandboxed = defaultSandboxed(resolvedKind === undefined ? undefined : adapters?.[resolvedKind]);
-  const hint = launchHint(adapters, resolution);
-  const menu = <LaunchMenu verb={verb} label={label} resolution={resolution} onLaunch={launch} />;
+  const hint = primary === undefined ? launchHint(adapters, resolution) : undefined;
+  const menu = <LaunchMenu verb={verb} label={label} resolution={resolution} onLaunch={launch} entries={menuEntries} launchDisabled={launchDisabled} />;
+  // with entries beside the kinds, the chevron opens more than a choice of agent
+  const menuLabel = entries.length > 0 ? 'More ways to open' : 'Choose agent';
   // let the icon identify compact agents without widening the new-task column
   const visibleAction = (compact || quiet) && resolvedKind !== undefined ? verb : actionCopy(verb, resolvedKind);
   const primaryTitle = (disabled ? disabledReason : undefined) ?? hint ?? (resolvedKind === undefined ? undefined : `${agentKindLabel[resolvedKind]} — ${originCopy(resolution.origin)}${sandboxed ? ' — sandboxed' : ''}`);
   return <>
     {!compact && hint !== undefined && <small className="launch-hint">{hint}</small>}
     <span className={`launch-split${compact ? ' compact' : ''}${quiet ? ' quiet' : ''}`} role="group" aria-label={`${verb} agent`} ref={anchorRef}>
-      <button type="button" className={`${primaryClass} launch-primary`} aria-label={actionCopy(verb, resolvedKind)} disabled={resolvedKind === undefined || disabled || pending} title={primaryTitle} onClick={() => resolvedKind !== undefined && launch({ kind: resolvedKind, sandboxed })}>
+      {primaryButton ?? <button type="button" className={`${primaryClass} launch-primary`} aria-label={actionCopy(verb, resolvedKind)} disabled={resolvedKind === undefined || disabled || launchDisabled || pending} title={primaryTitle} onClick={() => resolvedKind !== undefined && launch({ kind: resolvedKind, sandboxed })}>
         {pending ? <span className="spinner" /> : resolvedKind !== undefined && <KindMark kind={resolvedKind} />}{visibleAction}{sandboxed && <LockIcon />}
-      </button>
-      <button type="button" className={`launch-chevron${compact ? ' compact' : ''}`} aria-label="Choose agent" aria-haspopup="menu" aria-expanded={open} disabled={none || disabled || pending} onClick={() => setOpen(value => !value)}><ChevronIcon /></button>
+      </button>}
+      <button type="button" className={`launch-chevron${compact ? ' compact' : ''}`} aria-label={menuLabel} aria-haspopup="menu" aria-expanded={open} disabled={(none && entries.length === 0) || disabled || pending} onClick={() => setOpen(value => !value)}><ChevronIcon /></button>
     </span>
-    {open && createPortal(<div ref={flyoutRef} style={style} className="more-menu flyout-menu launch-menu" role="menu" aria-label="Choose agent">{menu}</div>, document.body)}
+    {open && createPortal(<div ref={flyoutRef} style={style} className="more-menu flyout-menu launch-menu" role="menu" aria-label={menuLabel}>{menu}</div>, document.body)}
   </>;
 }
 

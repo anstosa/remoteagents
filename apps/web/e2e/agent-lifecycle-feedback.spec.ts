@@ -61,7 +61,7 @@ test('keeps agent on/off progress visible across lifecycle transitions', async (
   const offSuccess = page.getByRole('status').filter({ hasText: 'Cora is off' });
   await expect(offSuccess).toContainText('Launch agent whenever you want to turn it back on');
   await expect(page.getByRole('tab', { name: 'Cora — Agent closed' })).toBeVisible();
-  await expect(page.getByText('Agent is off', { exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Empty workspace' })).toBeVisible();
   // the agentless Worktree view has no floating server switcher; the tab row leads with it
   await expect(page.locator('.server-switcher, .output-server-switcher')).toHaveCount(0);
   await expect(page.locator('.tabs > .tab-row-lead .server-selector')).toBeVisible();
@@ -188,7 +188,7 @@ test('turns off an idle agent and keeps the tab of its pinned worktree', async (
 
   await expect.poll(harness.turnOffRequests).toBe(1);
   await expect(page.getByRole('tab', { name: 'Cora — Agent closed' })).toBeVisible();
-  await expect(page.getByText('Agent is off', { exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Empty workspace' })).toBeVisible();
   // the agentless Worktree view has no floating server switcher; the tab row leads with it
   await expect(page.locator('.server-switcher, .output-server-switcher')).toHaveCount(0);
   await expect(page.locator('.tabs > .tab-row-lead .server-selector')).toBeVisible();

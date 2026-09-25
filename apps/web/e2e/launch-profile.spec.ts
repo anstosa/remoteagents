@@ -30,12 +30,14 @@ async function mount(page: Page, dashboard: Dashboard): Promise<LaunchPost[]> {
 }
 
 const pinnedWorktree = (launch: unknown, overrides: Record<string, unknown> = {}) => ({ id: 'cora', label: 'Cora', path: '/worktrees/cora', available: true, pinned: true, order: 1, launch, ...overrides });
+// the Workspace toolbar; an empty Workspace repeats its Launch in the body
+const toolbar = (page: Page) => page.getByRole('region', { name: 'Workspace toolbar' });
 
 test('launches the resolved kind in one click and lists every configured kind in the menu', async ({ page }) => {
   const posts = await mount(page, { generation: 1, adapters: { codex, claude }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'claude', origin: 'worktree' })] }] });
-  const primary = page.getByRole('button', { name: 'Launch Claude' });
+  const primary = toolbar(page).getByRole('button', { name: 'Launch Claude' });
   await expect(primary).toBeEnabled();
-  await page.getByRole('button', { name: 'Choose agent' }).click();
+  await toolbar(page).getByRole('button', { name: 'Choose agent' }).click();
   const menu = page.locator('.launch-menu');
   await expect(menu.getByText('Launch · Cora')).toBeVisible();
   await expect(menu.getByRole('menuitem', { name: /Codex/ })).toBeVisible();
@@ -48,10 +50,10 @@ test('launches the resolved kind in one click and lists every configured kind in
 test('OMX is its own kind: badged ◈, listed beside Codex, and launched as omx', async ({ page }) => {
   const omx = adapter('/bin/omx', { stateSource: 'title', turnCapture: true, inlineQuestions: true });
   const posts = await mount(page, { generation: 1, adapters: { codex, omx }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'omx', origin: 'worktree' })] }] });
-  const primary = page.getByRole('button', { name: 'Launch OMX' });
+  const primary = toolbar(page).getByRole('button', { name: 'Launch OMX' });
   await expect(primary).toBeEnabled();
   await expect(primary.locator('.launch-kind-omx')).toHaveText('◈');
-  await page.getByRole('button', { name: 'Choose agent' }).click();
+  await toolbar(page).getByRole('button', { name: 'Choose agent' }).click();
   const menu = page.locator('.launch-menu');
   // both kinds are offered; OMX runs the Codex TUI, so it names Codex's own sandbox like Codex does
   await expect(menu.getByRole('menuitem', { name: /^Codex/ })).toBeVisible();
@@ -64,7 +66,7 @@ test('OMX is its own kind: badged ◈, listed beside Codex, and launched as omx'
 
 test('one click on the primary launches the resolved kind unsandboxed', async ({ page }) => {
   const posts = await mount(page, { generation: 1, adapters: { codex, claude }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'codex', origin: 'default' })] }] });
-  await page.getByRole('button', { name: 'Launch Codex' }).click();
+  await toolbar(page).getByRole('button', { name: 'Launch Codex' }).click();
   await expect.poll(() => posts).toEqual([{ path: '/api/worktrees/cora/launch', body: { kind: 'codex', sandboxed: false } }]);
 });
 
@@ -73,8 +75,8 @@ test('a sandbox-capable kind defaults to a locked launch and offers a without-sa
   const sandboxedClaude = adapter('/bin/claude', { sandbox: true });
   const posts = await mount(page, { generation: 1, adapters: { codex, claude: sandboxedClaude }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'claude', origin: 'worktree' })] }] });
   // the primary names the sandboxed default with a lock
-  await expect(page.getByRole('button', { name: 'Launch Claude' }).locator('.launch-lock')).toBeVisible();
-  await page.getByRole('button', { name: 'Choose agent' }).click();
+  await expect(toolbar(page).getByRole('button', { name: 'Launch Claude' }).locator('.launch-lock')).toBeVisible();
+  await toolbar(page).getByRole('button', { name: 'Choose agent' }).click();
   const menu = page.locator('.launch-menu');
   await expect(menu.getByText('Sandbox enforced by console')).toBeVisible();
   await expect(menu.getByText('Without sandbox — this launch only')).toBeVisible();
@@ -86,14 +88,14 @@ test('a sandbox-capable kind defaults to a locked launch and offers a without-sa
 test('the primary launches a sandbox-capable kind sandboxed', async ({ page }) => {
   const sandboxedClaude = adapter('/bin/claude', { sandbox: true });
   const posts = await mount(page, { generation: 1, adapters: { claude: sandboxedClaude }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'claude', origin: 'worktree' })] }] });
-  await page.getByRole('button', { name: 'Launch Claude' }).click();
+  await toolbar(page).getByRole('button', { name: 'Launch Claude' }).click();
   await expect.poll(() => posts).toEqual([{ path: '/api/worktrees/cora/launch', body: { kind: 'claude', sandboxed: true } }]);
 });
 
 test('an unavailable kind is disabled in the menu with its reason', async ({ page }) => {
   const unavailable = adapter('/bin/claude', { launchable: false, unavailableReason: '/bin/claude is not executable' });
   await mount(page, { generation: 1, adapters: { codex, claude: unavailable }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'codex', origin: 'default' })] }] });
-  await page.getByRole('button', { name: 'Choose agent' }).click();
+  await toolbar(page).getByRole('button', { name: 'Choose agent' }).click();
   const claudeRow = page.locator('.launch-menu').getByRole('menuitem', { name: /Claude/ });
   await expect(claudeRow).toBeDisabled();
   await expect(claudeRow).toContainText('/bin/claude is not executable');
@@ -106,14 +108,14 @@ test('zero configured adapters disables the primary with the config hint and a d
   await expect(primary).toHaveText('Launch agent');
   await expect(primary).toBeDisabled();
   await expect(page.locator('.workspace-toolbar-actions .launch-chevron')).toBeDisabled();
-  await expect(page.getByText('No agents configured — add an adapters entry to the console config.')).toBeVisible();
+  await expect(toolbar(page).getByText('No agents configured — add an adapters entry to the console config.')).toBeVisible();
 });
 
 test('configured but none launchable disables the primary yet still opens the menu', async ({ page }) => {
   const brokenCodex = adapter('/bin/codex', { launchable: false, unavailableReason: '/bin/codex is not executable' });
   await mount(page, { generation: 1, adapters: { codex: brokenCodex }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({})] }] });
   await expect(page.locator('.workspace-toolbar-actions .launch-primary')).toBeDisabled();
-  await expect(page.getByText('No configured agent is launchable right now')).toBeVisible();
+  await expect(toolbar(page).getByText('No configured agent is launchable right now')).toBeVisible();
   await page.locator('.workspace-toolbar-actions .launch-chevron').click();
   await expect(page.locator('.launch-menu').getByRole('menuitem', { name: /Codex/ })).toBeDisabled();
 });
@@ -121,7 +123,7 @@ test('configured but none launchable disables the primary yet still opens the me
 test('a remembered kind that is no longer launchable is skipped with a footnote', async ({ page }) => {
   const unavailable = adapter('/bin/claude', { launchable: false, unavailableReason: '/bin/claude is not executable' });
   await mount(page, { generation: 1, adapters: { codex, claude: unavailable }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'codex', origin: 'default', skipped: { kind: 'claude', origin: 'worktree', reason: '/bin/claude is not executable' } })] }] });
-  await page.getByRole('button', { name: 'Choose agent' }).click();
+  await toolbar(page).getByRole('button', { name: 'Choose agent' }).click();
   await expect(page.locator('.launch-menu-note')).toContainText('Remembered Claude (here) skipped — /bin/claude is not executable');
 });
 
@@ -156,7 +158,7 @@ test('the launcher offers Scratch and each worktree the same split button', asyn
   // both new-task and full-size launch buttons show their resolved agent icon
   await expect(rowLaunch.locator('.launch-kind-mark')).toHaveText('✳');
   await expect(launcher.locator('.launcher-row').filter({ hasText: 'Scratch' }).getByRole('button', { name: 'Launch Codex' }).locator('.launch-kind-mark')).toHaveText('◆');
-  await expect(page.locator('.launch-split:not(.compact)').getByRole('button', { name: 'Launch Claude' }).locator('.launch-kind-mark')).toHaveText('✳');
+  await expect(page.locator('.workspace-toolbar .launch-split:not(.compact)').getByRole('button', { name: 'Launch Claude' }).locator('.launch-kind-mark')).toHaveText('✳');
   // the scratch row primary launches its own resolved kind
   await launcher.locator('.launcher-row').filter({ hasText: 'Scratch' }).getByRole('button', { name: 'Launch Codex' }).click();
   await expect.poll(() => posts).toEqual([{ path: '/api/agents/launch', body: { kind: 'codex', sandboxed: false } }]);
@@ -175,7 +177,7 @@ test('launch buttons show transparent per-agent glyphs in every size', async ({ 
   ];
   await mount(page, { generation: 1, adapters, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'claude', origin: 'worktree' })] }], scratchLaunch: { kind: 'codex', origin: 'scratch' } });
 
-  const fullPrimary = page.locator('.launch-split:not(.compact)').getByRole('button', { name: 'Launch Claude' });
+  const fullPrimary = page.locator('.workspace-toolbar .launch-split:not(.compact)').getByRole('button', { name: 'Launch Claude' });
   await expect(fullPrimary.locator('.launch-kind-mark')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   await expect(fullPrimary.locator('.launch-kind-mark')).toHaveCSS('color', 'rgb(250, 179, 135)');
   await expect(fullPrimary.locator('.launch-kind-mark')).toHaveCSS('font-size', '18.4px');
@@ -193,7 +195,7 @@ test('launch buttons show transparent per-agent glyphs in every size', async ({ 
   await expect(worktreePrimary.locator('.launch-kind-mark')).toHaveCSS('font-size', '16px');
   await expect(worktreePrimary.locator('.launch-lock')).toBeVisible();
 
-  await launcher.locator('.launcher-row').filter({ hasText: 'Cora' }).getByRole('button', { name: 'Choose agent' }).click();
+  await launcher.locator('.launcher-row').filter({ hasText: 'Cora' }).getByRole('button', { name: 'More ways to open' }).click();
   const menu = page.locator('.launch-menu');
   // verify every chooser glyph fills its space without losing its color
   for (const kind of kinds) {
@@ -222,7 +224,7 @@ test('a launcher row menu is one fixed-width flyout that an outside press closes
   await expect(menu).toHaveCount(0);
   await expect(launcher).toBeVisible();
   // the row label no longer sizes the menu, so every row's sandbox line wraps the same way
-  await row('Cora').getByRole('button', { name: 'Choose agent' }).click();
+  await row('Cora').getByRole('button', { name: 'More ways to open' }).click();
   await expect(menu.getByText('Launch · Cora')).toBeVisible();
   expect((await menu.boundingBox())!.width).toBe(scratchWidth);
 });
@@ -289,4 +291,47 @@ test('agent tab glyphs stay unboxed, full-size, and tightly spaced on desktop an
 
   // keep the sandbox indicator beside its agent glyph
   await expect(page.getByRole('tab', { name: /Claude tab/u }).locator('.launch-tab-badge .launch-lock')).toBeVisible();
+});
+
+// Terminal and Empty workspace belong to the + rows only: the toolbar Launch, Restart as… and a
+// failed pending launch's retry share the same menu without them.
+test('the Place entries stay out of the launch menus the + rows share', async ({ page }) => {
+  const agent = { id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 1, title: 'Ready', kind: 'codex', attention: 'finished', queuedPromptCount: 0, launch: { kind: 'codex', origin: 'worktree' } };
+  await page.route('**/api/**', async (route: Route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    if (url.pathname === '/api/dashboard') return route.fulfill({ json: { generation: 1, adapters: { codex, claude }, agents: [agent], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'claude', origin: 'worktree' }, { id: 'dora', label: 'Dora', path: '/worktrees/dora', order: 2 })] }], scratchLaunch: { kind: 'codex', origin: 'scratch' }, places: [{ id: 'scratch:/home/me/scratch', kind: 'scratch', projectId: 'scratch', label: '~ Scratch', home: '/home/me/scratch', pinned: false }] } });
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    // a Scratch launch fails, leaving its pending tab to retry
+    if (request.method() === 'POST' && url.pathname === '/api/agents/launch') return route.fulfill({ status: 500, json: { error: 'no tmux' } });
+    if (request.method() === 'GET') return route.fulfill({ json: {} });
+    return route.fulfill({ status: 204 });
+  });
+  await page.goto('/');
+  const menu = page.locator('.launch-menu, .agent-power-menu');
+  const placeEntries = menu.getByRole('menuitem', { name: /^(Terminal|Empty workspace)/u });
+
+  // Restart as… on the Agent's power menu
+  await page.getByRole('button', { name: 'Agent power options' }).click();
+  await page.getByRole('menuitem', { name: 'Restart as…' }).click();
+  await expect(menu.getByText('Restart · Cora')).toBeVisible();
+  await expect(placeEntries).toHaveCount(0);
+  await page.keyboard.press('Escape');
+
+  // the agentless Worktree toolbar's Launch
+  await page.getByRole('tab', { name: /^Dora —/u }).click();
+  await page.locator('.workspace-toolbar').getByRole('button', { name: 'Choose agent' }).click();
+  await expect(menu.getByText('Launch · Dora')).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: /^Claude/u })).toBeVisible();
+  await expect(placeEntries).toHaveCount(0);
+  await page.locator('.workspace-toolbar').getByRole('button', { name: 'Choose agent' }).click();
+
+  // a failed Scratch launch's retry
+  await page.locator('.new-agent-tab').click();
+  await page.locator('.launcher-row').filter({ hasText: 'Scratch' }).getByRole('button', { name: 'Launch Codex' }).click();
+  await expect(page.getByText('Agent did not start')).toBeVisible();
+  await page.locator('.workspace-toolbar').getByRole('button', { name: 'Choose agent' }).click();
+  await expect(menu.getByText('Launch · Scratch')).toBeVisible();
+  await expect(placeEntries).toHaveCount(0);
 });

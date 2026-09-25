@@ -163,12 +163,12 @@ test('an agentless Workspace gives an open note the whole width', async ({ page 
   await page.setViewportSize({ width: 1280, height: 800 });
   await mockConsole(page, undefined, { notes: [{ id: 'note-1', text: 'Deploy checklist' }] });
   await page.goto('/');
-  await expect(page.locator('.workspace-empty')).toContainText('Agent is off');
+  await expect(page.getByRole('region', { name: 'Empty workspace' })).toBeVisible();
   await workspaceControls(page).getByRole('button', { name: 'Notes (1)' }).click();
   await page.locator('.notes-menu .note-choice').first().click();
   const note = page.getByRole('dialog', { name: 'Note' });
   await expect(note).toBeVisible();
-  await expect(page.locator('.workspace-empty')).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Empty workspace' })).toHaveCount(0);
   const [noteBox, workspaceBox] = await Promise.all([note.boundingBox(), page.locator('.log').boundingBox()]);
   expect(noteBox!.width).toBeGreaterThan(workspaceBox!.width - 4);
 });

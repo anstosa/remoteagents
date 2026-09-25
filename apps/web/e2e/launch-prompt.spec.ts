@@ -228,7 +228,7 @@ const verifyPendingSessionHandoff = async (page: Page, scope: 'scratch' | 'direc
 // verify delayed desktop launch handoff
 test('keeps the complete launch composer editable through tab changes and delayed dashboard handoff', async ({ page }) => {
   const harness = await mountLifecycle(page);
-  await page.getByRole('button', { name: 'Launch Codex' }).click();
+  await page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'Launch Codex' }).click();
   await expect.poll(harness.attempts).toBe(1);
 
   const composer = page.getByRole('region', { name: 'Prompt composer' });
@@ -286,7 +286,7 @@ test('keeps the complete launch composer editable through tab changes and delaye
 // verify retry draft preservation
 test('preserves the prepared draft and files after launch failure and retry', async ({ page }) => {
   const harness = await mountLifecycle(page, { failFirst: true });
-  await page.getByRole('button', { name: 'Launch Codex' }).click();
+  await page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'Launch Codex' }).click();
   await expect.poll(harness.attempts).toBe(1);
 
   const prompt = page.getByRole('textbox', { name: 'Prompt' });
@@ -318,7 +318,7 @@ test('preserves the prepared draft and files after launch failure and retry', as
 test('shows the editable launch composer without overflowing a mobile viewport', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const harness = await mountLifecycle(page);
-  await page.getByRole('button', { name: 'Launch Codex' }).click();
+  await page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'Launch Codex' }).click();
   await expect.poll(harness.attempts).toBe(1);
 
   const composer = page.getByRole('region', { name: 'Prompt composer' });

@@ -83,8 +83,8 @@ test('opens the Code view full screen for a Worktree with no running agent', asy
   });
 
   await page.goto('/');
-  // the inactive worktree has no agent panel: its empty Workspace says so until changes are opened
-  const empty = page.locator('.workspace-empty');
+  // the inactive worktree has no agent panel: its Workspace is empty until changes are opened
+  const empty = page.getByRole('region', { name: 'Empty workspace' });
   await expect(empty).toBeVisible();
   await expect(agentOutput(page)).toHaveCount(0);
   await page.getByRole('button', { name: /^Git status:/u }).click();

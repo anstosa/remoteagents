@@ -66,7 +66,8 @@ test('dynamic worktrees defaults on and compacts single-worktree projects when d
   await expect(soloControls.getByRole('button', { name: 'Pin Solo main' })).toBeVisible();
   await expect(soloControls.getByRole('button', { name: 'Rename Solo main' })).toBeVisible();
   await expect(soloControls.getByRole('button', { name: 'Remove Solo main' })).toBeVisible();
-  const [nameBounds, openBounds] = await Promise.all([soloHeader.locator(':scope > span').boundingBox(), soloControls.getByRole('button', { name: 'Open Solo main' }).boundingBox()]);
+  // Open is the default of the same split control Launch uses, so the two line up
+  const [nameBounds, openBounds] = await Promise.all([soloHeader.locator(':scope > span').boundingBox(), soloControls.getByRole('group', { name: 'Launch agent' }).boundingBox()]);
   // require rendered inline controls
   if (nameBounds === null || openBounds === null) throw new Error('inline worktree controls did not render');
   expect(Math.abs(nameBounds.y + nameBounds.height / 2 - (openBounds.y + openBounds.height / 2))).toBeLessThanOrEqual(1);

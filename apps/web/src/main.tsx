@@ -26,7 +26,7 @@ import { UpstreamRebaseBanner, type GitUpstreamSummary } from './upstream-rebase
 import { useViewportFlyout } from './viewport-flyout.js';
 import { isReviewTour, ReviewTourDialog, type ReviewLaunch, type ReviewScope, type ReviewTour, type ReviewTourIndicator } from './review-tour.js';
 import { VoiceDialog, type VoiceWorktree } from './voice/voice-dialog.js';
-import { AdaptersContext, agentKindGlyph, agentKindLabel, agentKinds, configuredKinds, defaultSandboxed, LaunchMenu, LaunchSplitButton, LaunchTabBadge, launchRequestInit, originCopy, sandboxCopy, type AdapterCapabilities, type AgentKind, type LaunchResolution, type LaunchChoice } from './launch-profile.js';
+import { AdaptersContext, agentKindGlyph, agentKindLabel, agentKinds, configuredKinds, defaultSandboxed, LaunchMenu, LaunchSplitButton, LaunchTabBadge, launchRequestInit, originCopy, sandboxCopy, type AdapterCapabilities, type AgentKind, type LaunchMenuEntry, type LaunchResolution, type LaunchChoice } from './launch-profile.js';
 import { ScheduleEditor, lastRunNeedsAttention, scheduleInvalid, type Schedule, type ScheduleAdapterOption, type ScheduleSetBody, type ScheduleTarget, type ScheduleTargetOption } from './schedule-editor.js';
 import './styles.css';
 
@@ -175,8 +175,9 @@ type DashboardOperation = 'launching'|'restarting'|'clearing'|'deactivating'|'ne
 type PendingSessionLaunch = { id: string; draftId: string; label: string; resolution?: LaunchResolution; choice?: LaunchChoice; kind?: AgentKind; sandboxed?: boolean; phase: 'launching'|'confirming'|'delayed'|'failed'; agentId?: string; error?: string; confirmationTimer?: number } & ({ scope: 'scratch' } | { scope: 'directory'; projectId: string });
 // One tab: a Place (its Agents, and its Worktree or directory-Project/Scratch Place when listed),
 // an Agent the dashboard placed nowhere, or a scratch/directory launch not yet discovered.
-// `placeId` is the Place the tab stands for; `state` and `unread` roll up its Agents.
-type DashboardItem = { key: string; label: string; state: AgentState; order: number; unread: boolean; operation?: DashboardOperation; agents: Agent[]; placeId?: string; worktree?: Worktree; place?: Place; pendingLaunch?: PendingSessionLaunch };
+// `placeId` is the Place the tab stands for; `state` and `unread` roll up its Agents. A
+// `transient` tab is a Place opened from + that nothing keeps yet, so it closes when left.
+type DashboardItem = { key: string; label: string; state: AgentState; order: number; unread: boolean; operation?: DashboardOperation; agents: Agent[]; placeId?: string; worktree?: Worktree; place?: Place; pendingLaunch?: PendingSessionLaunch; transient?: boolean };
 // the Place an Agent's tab groups under (discovery stamps `placeId`; a Worktree Agent's is its Worktree id)
 const agentPlaceId = (agent: Pick<Agent, 'placeId' | 'worktreeId'>): string | undefined => agent.placeId ?? agent.worktreeId;
 // the tab key of a Place (a Worktree, directory Project or Scratch folder)
@@ -353,6 +354,8 @@ const handoffPromptDraft = (from: string, to: string) => {
 };
 const terminalInputs = new Map<string, (value: string) => boolean>();
 const exitTerminalInput = new Map<string, () => void>();
+// focus a mounted Terminal panel's xterm, by pane id
+const terminalFocusers = new Map<string, () => void>();
 const answeredQuestionActions = new Map<string, (question: ChoiceQuestion) => void>();
 // the id of a just-answered question, kept per agent so its optimistic dismissal survives a remount
 const dismissedQuestionIds = new Map<string, string>();
@@ -3940,7 +3943,7 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   };
 
   // hide notes without any persistence context
-  if (resourceBase === undefined) return { active: false, appendToActive, canAppendToActive, canCreate: false, control: null, createWithText: create, pane: null };
+  if (resourceBase === undefined) return { active: false, appendToActive, canAppendToActive, canCreate: false, control: null, createWithText: create, pane: null, toggleMenu: undefined };
   const noteCount = notes?.length ?? 0;
   const substantialResponse = latestSubstantialResponse(latestAssistantMessage, promptHistory);
   const latestResponseAvailable = notes !== undefined && substantialResponse !== undefined && !notes.some(note => note.text === substantialResponse);
@@ -4044,7 +4047,7 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
   ];
   // Esc closes the note, unless it is expanded: then the Workspace restores its siblings first
   const pane = activeNote === undefined ? null : <><section className={`note-pane${expanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onDragEnter={dragNoteFiles} onDragOver={dragNoteFiles} onDragLeave={leaveNoteFiles} onDrop={dropNoteFiles} onPaste={pasteNoteFiles} onKeyDown={event => { if (event.key === 'Escape' && !expanded && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><PanelHeader panelKey="note" label="note" title={noteTitlePill} actions={noteSendAction} secondary={noteSecondary} expandDisabled={noteFilesDisabled} close={{ key: 'close', label: 'Close note', className: 'note-close', disabled: noteFilesDisabled, icon: <PanelIcon path={panelIcons.close} />, onSelect: close }} /><div className="note-pane-head">{lockError && <p className="note-lock-error" role="alert">{lockError}</p>}{scheduleArea}{noteAttachmentPicker}{noteAttachmentControls}</div>{draggingNoteFiles && <div className="prompt-drop-overlay" role="status">Drop files to attach to this note</div>}{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}{noteFilePreview.dialog}{notePicker}</>;
-  return { active: activeNote !== undefined, appendToActive, canAppendToActive, canCreate: !loading, control, createWithText: create, pane };
+  return { active: activeNote !== undefined, appendToActive, canAppendToActive, canCreate: !loading, control, createWithText: create, pane, toggleMenu: toggle };
 }
 type WorktreeNotes = ReturnType<typeof useWorktreeNotes>;
 
@@ -4624,6 +4627,60 @@ const saveTerminals = (worktreeId: string | undefined, open: OpenTerminal[]) => 
   try { localStorage.setItem(worktreeTerminalsKey(worktreeId), JSON.stringify(open.slice(0, maxOpenTerminals).map(terminal => ({ paneId: terminal.paneId, name: clampTerminalName(terminal.name) })))); }
   catch { /* browser storage is optional */ }
 };
+// forget the panels a Place last had open on this device (Terminals, browser, note), so its
+// Workspace opens empty
+const forgetOpenPanels = (placeId: string) => {
+  saveTerminals(placeId, []);
+  saveBrowserSplit(placeId, false);
+  clearWorktreeNoteView(placeId);
+};
+// a Place's live panes, or undefined when they could not be listed
+const listPlacePanes = async (placeId: string): Promise<WorktreePane[] | undefined> => {
+  try {
+    const response = await request(`/api/worktrees/${encodeURIComponent(placeId)}/panes`);
+    if (!response.ok) return undefined;
+    const body = await response.json() as { panes?: WorktreePane[] };
+    return Array.isArray(body.panes) ? body.panes : [];
+  } catch { return undefined; }
+};
+// a Console shell the console opened, as against the Agent's own pane or a hand-made one
+const isConsoleShell = (pane: WorktreePane): boolean => pane.role === 'shell' && !pane.agent;
+// open a new Console shell at a Place: its pane id, or the reason it could not
+const createPlaceShell = async (placeId: string): Promise<{ paneId: string } | { error: string }> => {
+  try {
+    const response = await request(`/api/worktrees/${encodeURIComponent(placeId)}/shells`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) });
+    const body = await response.json().catch(() => ({})) as { paneId?: unknown; error?: unknown };
+    if (response.ok && typeof body.paneId === 'string') return { paneId: body.paneId };
+    return { error: typeof body.error === 'string' ? body.error : 'The console could not open a shell there.' };
+  } catch { return { error: 'Unable to reach the console.' }; }
+};
+// The + menu's Terminal asks a Place's Workspace to show one pane as a focused Terminal panel. The
+// panel is saved as open first, so a Workspace that mounts afterwards opens it too; a mounted
+// Workspace hears the request. A panel already mounted takes focus at once, and one still to
+// mount takes it when it does.
+const terminalOpenListeners = new Set<(placeId: string, terminal: OpenTerminal) => void>();
+// The requested pane ids, each until it expires so a panel that never mounts (the operator left,
+// the shell died) neither steals focus later nor stays pinned open: those awaiting their panel's
+// mount to take focus, and those whose panel must survive a pane listing older than the shell.
+const terminalRequestWindowMs = 10_000;
+const pendingTerminalFocus = new Map<string, number>();
+const requestedTerminals = new Map<string, number>();
+const stillRequested = (requests: Map<string, number>, paneId: string): boolean => {
+  const expires = requests.get(paneId);
+  if (expires !== undefined && expires <= Date.now()) requests.delete(paneId);
+  return requests.has(paneId);
+};
+const requestTerminalFocus = (placeId: string, terminal: OpenTerminal) => {
+  const now = Date.now();
+  for (const requests of [pendingTerminalFocus, requestedTerminals]) for (const [paneId, expires] of requests) if (expires <= now) requests.delete(paneId);
+  requestedTerminals.set(terminal.paneId, now + terminalRequestWindowMs);
+  const open = savedTerminals(placeId);
+  if (!open.some(candidate => candidate.paneId === terminal.paneId)) saveTerminals(placeId, [...open, terminal]);
+  terminalOpenListeners.forEach(listener => listener(placeId, terminal));
+  const focus = terminalFocusers.get(terminal.paneId);
+  if (focus === undefined) pendingTerminalFocus.set(terminal.paneId, now + terminalRequestWindowMs);
+  else focus();
+};
 // The open Terminal panels of one Worktree and the picker's live pane list. Panels persist
 // per Worktree by pane id and are reconciled against the live panes on mount, so a reload
 // reopens the ones whose pane still exists and forgets the rest (spec, Terminals as Panels).
@@ -4632,14 +4689,9 @@ function useWorktreeTerminals(worktreeId: string | undefined) {
   const [panes, setPanes] = useState<WorktreePane[]>([]);
   const refreshPanes = useCallback(async (): Promise<WorktreePane[] | undefined> => {
     if (worktreeId === undefined) return undefined;
-    try {
-      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/panes`);
-      if (!response.ok) return undefined;
-      const body = await response.json() as { panes?: WorktreePane[] };
-      const list = Array.isArray(body.panes) ? body.panes : [];
-      setPanes(list);
-      return list;
-    } catch { return undefined; }
+    const list = await listPlacePanes(worktreeId);
+    if (list !== undefined) setPanes(list);
+    return list;
   }, [worktreeId]);
   useEffect(() => {
     // show this Worktree's stored panels at once, then reconcile against the live panes
@@ -4651,7 +4703,8 @@ function useWorktreeTerminals(worktreeId: string | undefined) {
       if (cancelled || list === undefined) return;
       const byId = new Map(list.map(pane => [pane.paneId, pane] as const));
       setOpen(current => {
-        const kept = current.filter(terminal => byId.has(terminal.paneId)).map(terminal => ({ paneId: terminal.paneId, name: terminalPaneLabel(byId.get(terminal.paneId)!) }));
+        // a pane the + menu's Terminal just asked for may postdate this listing
+        const kept = current.filter(terminal => byId.has(terminal.paneId) || stillRequested(requestedTerminals, terminal.paneId)).map(terminal => { const pane = byId.get(terminal.paneId); return pane === undefined ? terminal : { paneId: terminal.paneId, name: terminalPaneLabel(pane) }; });
         if (kept.length !== current.length || kept.some((terminal, index) => terminal.name !== current[index]?.name)) saveTerminals(worktreeId, kept);
         return kept;
       });
@@ -4664,6 +4717,12 @@ function useWorktreeTerminals(worktreeId: string | undefined) {
     saveTerminals(worktreeId, next);
     return next;
   }), [worktreeId]);
+  // open the panel the + menu's Terminal asks this Place for
+  useEffect(() => {
+    const listener = (placeId: string, terminal: OpenTerminal) => { if (placeId === worktreeId) openPane(terminal.paneId, terminal.name); };
+    terminalOpenListeners.add(listener);
+    return () => { terminalOpenListeners.delete(listener); };
+  }, [worktreeId, openPane]);
   const closePane = useCallback((paneId: string) => setOpen(current => {
     if (!current.some(terminal => terminal.paneId === paneId)) return current;
     const next = current.filter(terminal => terminal.paneId !== paneId);
@@ -4785,10 +4844,13 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
     const blur = () => handle.terminal.blur();
     terminalInputs.set(paneId, handle.sendInput);
     exitTerminalInput.set(paneId, blur);
+    terminalFocusers.set(paneId, handle.focus);
     const onFocusIn = () => setFocused(true);
     const onFocusOut = () => setFocused(false);
     container.addEventListener('focusin', onFocusIn);
     container.addEventListener('focusout', onFocusOut);
+    // the + menu's Terminal asked for this pane before its panel mounted
+    if (stillRequested(pendingTerminalFocus, paneId)) { pendingTerminalFocus.delete(paneId); handle.focus(); }
     // release selection listeners before disposing the terminal
     return () => {
       selection.dispose();
@@ -4797,6 +4859,7 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
       // only clear our own registrations, so a fast remount of the same pane id keeps the new one
       if (terminalInputs.get(paneId) === handle.sendInput) terminalInputs.delete(paneId);
       if (exitTerminalInput.get(paneId) === blur) exitTerminalInput.delete(paneId);
+      if (terminalFocusers.get(paneId) === handle.focus) terminalFocusers.delete(paneId);
       handle.dispose();
     };
   }, [worktreeId, paneId]);
@@ -4835,12 +4898,12 @@ function TerminalPicker({ worktreeId, terminals }: { worktreeId: string; termina
   const newShell = async () => {
     setBusy(true);
     try {
-      const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/shells`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) });
-      if (!response.ok) return;
-      const { paneId } = await response.json() as { paneId: string };
+      const created = await createPlaceShell(worktreeId);
+      if (!('paneId' in created)) return;
+      const { paneId } = created;
       const list = await refreshPanes();
-      const created = list?.find(pane => pane.paneId === paneId);
-      openPane(paneId, created ? terminalPaneLabel(created) : 'shell');
+      const shell = list?.find(pane => pane.paneId === paneId);
+      openPane(paneId, shell ? terminalPaneLabel(shell) : 'shell');
       setMenuOpen(false);
     } finally { setBusy(false); }
   };
@@ -6237,7 +6300,7 @@ const inactiveWorktreePresentation = (label: string, kind: AgentKind | undefined
 };
 
 // render an inactive worktree
-function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperationFeedback, onNavigateWorktree, onTogglePin, onRename, onRemove, removeDisabledReason, schedulePrefill }: { worktree: Worktree; tabBar: ReactNode; cleanupControl?: ReactNode; onLaunched: (agentId: string, worktree: Worktree, operationKey: string) => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; onNavigateWorktree: (worktreeId: string) => void; onTogglePin: () => void; onRename: () => void; onRemove?: () => void; removeDisabledReason?: string; schedulePrefill?: SchedulePrefill }) {
+function WorktreeCard({ worktree, tabBar, cleanupControl, transient = false, onLaunched, onOperationFeedback, onNavigateWorktree, onTogglePin, onRename, onRemove, removeDisabledReason, schedulePrefill }: { worktree: Worktree; tabBar: ReactNode; cleanupControl?: ReactNode; transient?: boolean; onLaunched: (agentId: string, worktree: Worktree, operationKey: string) => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; onNavigateWorktree: (worktreeId: string) => void; onTogglePin: () => void; onRename: () => void; onRemove?: () => void; removeDisabledReason?: string; schedulePrefill?: SchedulePrefill }) {
   const launchKey = launchOperationKey(worktree.id);
   const restartKey = restartOperationKey(worktree.id);
   const launching = usePendingOperation(launchKey);
@@ -6365,13 +6428,17 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperatio
   const agentPanel = starting || promptOpened
     ? <PendingAgentPanel kind={launchKind} title={worktree.label} state={processing ? { label: presentation.status, tone: presentation.tone } : { label: 'Off', tone: 'off' }} loading={<PanelNotice busy={processing} ariaLabel={presentation.ariaLabel} heading={presentation.heading} detail={presentation.detail} />} close={starting ? undefined : discardDraft} composer={<Prompt id={draftId} ready={false} history={[]} onHistoryChanged={async () => { /* no agent history yet */ }} onPromptFocus={() => { /* draft belongs to the inactive worktree */ }} onOperationFeedback={onOperationFeedback} worktreeId={worktree.id} />} />
     : undefined;
-  const empty = <PanelNotice className="workspace-empty" busy={processing} ariaLabel={presentation.ariaLabel} heading={presentation.heading} detail={presentation.detail} />;
+  const launch: ToolbarLaunch = { label: worktree.label, resolution: worktree.launch, disabled: !worktree.available, pending: processing, start: choice => void start(choice) };
+  // a starting or stopping Agent says so; otherwise, with no panel open, the Workspace is empty
+  const empty = processing
+    ? <PanelNotice className="workspace-empty" busy ariaLabel={presentation.ariaLabel} heading={presentation.heading} detail={presentation.detail} />
+    : <EmptyWorkspace workspace={workspace} label={worktree.label} detail={worktree.branch === undefined ? worktree.path : `${worktree.path} · ${worktree.branch}`} launch={launch} onPin={transient ? onTogglePin : undefined} />;
   // a Terminal selection added to the prompt opens the draft composer
   const addToPrompt = (text: string) => {
     setPromptDraft(draftId, current => appendTextBlock(current, text));
     setPromptOpened(true);
   };
-  return <article className="agent-view"><Workspace workspace={workspace} output={agentPanel} empty={empty} git={gitActions} onAddToPrompt={addToPrompt} />{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} />{error && <p className="launch-error" role="alert">{error}</p>}<WorkspaceToolbar workspace={workspace} launch={{ label: worktree.label, resolution: worktree.launch, disabled: !worktree.available, pending: processing, start: choice => void start(choice) }} conversations={workspace.conversations.control} git={gitActions} cleanupControl={cleanupControl} menu={{ worktreeId: worktree.id, git: true, pinned: worktree.pinned, onTogglePin, onRenameWorktree: onRename, onRemoveWorktree: onRemove, removeDisabledReason: processing ? 'An agent is starting or stopping here' : removeDisabledReason, onOperationFeedback }} phoneKeys={workspace.phoneTerminal} /></article>;
+  return <article className="agent-view"><Workspace workspace={workspace} output={agentPanel} empty={empty} git={gitActions} onAddToPrompt={addToPrompt} />{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} />{error && <p className="launch-error" role="alert">{error}</p>}<WorkspaceToolbar workspace={workspace} launch={launch} conversations={workspace.conversations.control} git={gitActions} cleanupControl={cleanupControl} menu={{ worktreeId: worktree.id, git: true, pinned: worktree.pinned, onTogglePin, onRenameWorktree: onRename, onRemoveWorktree: onRemove, removeDisabledReason: processing ? 'An agent is starting or stopping here' : removeDisabledReason, onOperationFeedback }} phoneKeys={workspace.phoneTerminal} /></article>;
 }
 
 // The agent panel before its Agent exists: the kind, the Place and a state pill in the header,
@@ -6384,6 +6451,26 @@ function PendingAgentPanel({ kind, title, state, loading, composer, close }: { k
 // A startup, failure or idle notice centred in a panel or an empty Workspace.
 function PanelNotice({ busy = false, ariaLabel, heading, detail, className = '', role }: { busy?: boolean; ariaLabel?: string; heading: string; detail: string; className?: string; role?: 'status' }) {
   return <div className={`log-loading inactive${className === '' ? '' : ` ${className}`}`} role={role ?? (busy ? 'status' : undefined)} aria-label={ariaLabel}>{busy ? <span className="spinner" /> : null}<strong>{heading}</strong><span>{detail}</span></div>;
+}
+
+// A Workspace with no panel open: the Place, the toolbar's controls repeated where the eye lands,
+// and, given `onPin` (unpinned, with nothing running here), the warning that it closes when the
+// operator switches away. Notes opens the toolbar's own notes menu.
+function EmptyWorkspace({ workspace, label, detail, launch, onPin }: { workspace: WorkspaceState; label: string; detail: string; launch?: ToolbarLaunch; onPin?: () => void }) {
+  const toggleNotes = workspace.notes.toggleMenu;
+  return <div className="empty-workspace" role="region" aria-label="Empty workspace"><div className="empty-workspace-card">
+    <small className="empty-workspace-kicker">Empty workspace</small>
+    <h2>{label}</h2>
+    <p className="empty-workspace-detail">{detail}</p>
+    <div className="empty-workspace-actions">
+      {launch !== undefined && <LaunchSplitButton label={launch.label} resolution={launch.resolution} disabled={launch.disabled} disabledReason={launch.disabledReason} pending={launch.pending} onLaunch={launch.start} />}
+      {workspace.terminals.control}
+      {toggleNotes !== undefined && <button type="button" className="toolbar-button" aria-label="Notes" title="Open the notes here" onClick={() => void toggleNotes()}><svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg><span className="toolbar-label">Notes</span></button>}
+      <BrowserToggle browser={workspace.browser} />
+      {workspace.place.worktreeId !== undefined && <CodeToggle code={workspace.code} />}
+    </div>
+    {onPin !== undefined && <p className="empty-workspace-warning">Nothing runs here, so this Workspace closes when you switch away.<button type="button" onClick={onPin}>Pin it</button></p>}
+  </div></div>;
 }
 
 // How an agentless Place tab launches: the directory Project in place or the configured Scratch
@@ -6402,7 +6489,7 @@ function PlaceShellsAndPin({ place, noun = 'folder', onTogglePin }: { place: { l
 // render a directory-Project or Scratch Place with no Agent: its Workspace (Terminals, notes)
 // beside an idle placeholder, and the toolbar with its pin in the ⋮ and, unless the Place is an
 // ad-hoc Scratch folder the console cannot launch into, a Launch button
-function PlaceCard({ place, tabBar, cleanupControl, launchDisabled, launch, onLaunched, onTogglePin, onOperationFeedback, schedulePrefill }: { place: Place; tabBar: ReactNode; cleanupControl?: ReactNode; launchDisabled: boolean; launch?: PlaceLaunch; onLaunched: (agentId: string) => void; onTogglePin: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; schedulePrefill?: SchedulePrefill }) {
+function PlaceCard({ place, tabBar, cleanupControl, transient = false, launchDisabled, launch, onLaunched, onTogglePin, onOperationFeedback, schedulePrefill }: { place: Place; tabBar: ReactNode; cleanupControl?: ReactNode; transient?: boolean; launchDisabled: boolean; launch?: PlaceLaunch; onLaunched: (agentId: string) => void; onTogglePin: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; schedulePrefill?: SchedulePrefill }) {
   const [running, setRunning] = useState(false);
   // launch a fresh agent at this Place and run one note on it, then hand the new agent off so
   // the tab switches to it (the Place's notes Run route launches as a Launch here would)
@@ -6434,11 +6521,11 @@ function PlaceCard({ place, tabBar, cleanupControl, launchDisabled, launch, onLa
   const launchKind = launch?.resolution?.kind;
   const workspace = useWorkspace({ id: place.id, path: place.home }, { noteOptions: { schedulePrefill, ...(launch === undefined ? {} : { onLaunchAndRun: launchAndRun, launchRunLabel: `${launchKind === undefined ? 'an agent' : agentKindLabel[launchKind]} on ${place.label}` }) }, onOperationFeedback });
   // an ad-hoc Scratch folder has no launch: only its terminals and notes live here
-  const detail = launch === undefined ? 'This folder has no agent. Its terminals and notes stay here.' : 'This place is available. Launch an agent when you are ready to continue.';
-  const empty = <PanelNotice className="workspace-empty" heading="Agent is off" detail={detail} />;
+  const toolbarLaunch: ToolbarLaunch | undefined = launch === undefined ? undefined : { label: place.label, resolution: launch.resolution, disabled: launchDisabled || running, pending: running, start: launch.start };
+  const empty = <EmptyWorkspace workspace={workspace} label={place.label} detail={`${place.home} · ${place.kind === 'scratch' ? 'Scratch folder' : 'directory Project'}`} launch={toolbarLaunch} onPin={transient ? onTogglePin : undefined} />;
   // a note's Run launches here: the agent panel shows the start
   const agentPanel = running ? <PendingAgentPanel kind={launchKind} title={place.label} state={{ label: 'Starting', tone: 'starting' }} loading={<PanelNotice busy heading={`Starting ${launchKind === undefined ? 'agent' : agentKindLabel[launchKind]} at ${place.label}…`} detail="Launching an agent to run the note." />} /> : undefined;
-  return <article className="agent-view"><Workspace workspace={workspace} output={agentPanel} empty={empty} />{tabBar}<WorkspaceToolbar workspace={workspace} launch={launch === undefined ? undefined : { label: place.label, resolution: launch.resolution, disabled: launchDisabled || running, pending: running, start: launch.start }} cleanupControl={cleanupControl} menu={{ pinned: place.pinned, onTogglePin, onOperationFeedback }} phoneKeys={workspace.phoneTerminal} /></article>;
+  return <article className="agent-view"><Workspace workspace={workspace} output={agentPanel} empty={empty} />{tabBar}<WorkspaceToolbar workspace={workspace} launch={toolbarLaunch} cleanupControl={cleanupControl} menu={{ pinned: place.pinned, onTogglePin, onOperationFeedback }} phoneKeys={workspace.phoneTerminal} /></article>;
 }
 
 // render a scratch or directory session before discovery publishes its agent identity
@@ -6810,6 +6897,11 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     setPendingSessionLaunches(next);
   }, []);
   const [launcherOpen, setLauncherOpen] = useState(false);
+  // Places opened from + (Terminal, Empty workspace) that keep a tab while the operator is on it
+  // though nothing keeps them yet (no Agent, shell, pin or draft); leaving one closes it
+  const [openedPlaces, setOpenedPlaces] = useState<ReadonlySet<string>>(() => new Set());
+  // the Places whose + Terminal is still finding or creating a shell, so a repeat waits
+  const terminalOpening = useRef(new Set<string>());
   const tabsRef = useRef<HTMLElement | null>(null);
   const { anchorRef: launcherRef, flyoutRef: launcherMenuRef, style: launcherStyle } = useViewportFlyout(launcherOpen);
   const plusRef = useRef<HTMLButtonElement | null>(null);
@@ -7231,14 +7323,17 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
       const draftId = worktreePromptId(worktree.id);
       // retain pinned, pending and prepared idle tabs, and any Worktree that still has an
       // open Console shell so stopping the Agent never hides the operator's terminals
-      if (!(worktree.pinned || (worktree.consoleShells ?? 0) > 0 || pendingNewTaskSources.has(worktree.id) || pendingWorktreeLaunches.has(worktree.id) || Boolean(getPromptDraft(draftId)) || promptAttachments.has(draftId))) continue;
-      items.push({ key: placeItemKey(worktree.id), label: worktree.label, state: 'closed', order: worktree.order, unread: false, operation: worktreePendingOperation(worktree), agents: [], placeId: worktree.id, worktree });
+      const kept = worktree.pinned || (worktree.consoleShells ?? 0) > 0 || pendingNewTaskSources.has(worktree.id) || pendingWorktreeLaunches.has(worktree.id) || Boolean(getPromptDraft(draftId)) || promptAttachments.has(draftId);
+      if (!kept && !openedPlaces.has(worktree.id)) continue;
+      items.push({ key: placeItemKey(worktree.id), label: worktree.label, state: 'closed', order: worktree.order, unread: false, operation: worktreePendingOperation(worktree), agents: [], placeId: worktree.id, worktree, transient: !kept });
     }
     // a directory-Project or Scratch Place with no Agent there keeps a tab while it is pinned or
     // holds a Console shell, so turning its Agent off never hides the operator's terminals
     for (const place of data.places ?? []) {
-      if (agentsByPlace.has(placeItemKey(place.id)) || !(place.pinned || (place.consoleShells ?? 0) > 0)) continue;
-      items.push({ key: placeItemKey(place.id), label: place.label, state: 'closed', order: Number.MAX_SAFE_INTEGER, unread: false, agents: [], placeId: place.id, place });
+      if (agentsByPlace.has(placeItemKey(place.id))) continue;
+      const kept = place.pinned || (place.consoleShells ?? 0) > 0;
+      if (!kept && !openedPlaces.has(place.id)) continue;
+      items.push({ key: placeItemKey(place.id), label: place.label, state: 'closed', order: Number.MAX_SAFE_INTEGER, unread: false, agents: [], placeId: place.id, place, transient: !kept });
     }
     for (const pendingLaunch of pendingSessionLaunches) items.push({ key: `pending-${pendingLaunch.id}`, label: pendingLaunch.label, state: 'closed', order: Number.MAX_SAFE_INTEGER, unread: false, operation: pendingLaunch.phase === 'failed' ? undefined : 'launching', agents: [], pendingLaunch });
     items.sort((left, right) => left.order - right.order);
@@ -7270,6 +7365,21 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     const shown = agents.find(agent => agent.id === shownAgentId);
     if (shown !== undefined) viewAgent(shown);
   }, [activeItemKey, shownAgentId]);
+  // a Place opened from + closes once the operator leaves its tab; a pin, shell or Agent there
+  // keeps it by the usual rules instead
+  const previousActiveKey = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const left = previousActiveKey.current;
+    previousActiveKey.current = activeItemKey;
+    if (left === undefined || left === activeItemKey) return;
+    setOpenedPlaces(current => {
+      const placeId = [...current].find(candidate => placeItemKey(candidate) === left);
+      if (placeId === undefined) return current;
+      const next = new Set(current);
+      next.delete(placeId);
+      return next;
+    });
+  }, [activeItemKey]);
   // forget the switcher choice of a tab that has gone, so the record stays bounded by the tabs
   useEffect(() => {
     const keys = new Set(tabKey.split('\u0000'));
@@ -7622,6 +7732,52 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     const response = await request(`/api/worktrees/${encodeURIComponent(place.id)}/pin`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pinned: !place.pinned }) }).catch(() => undefined);
     if (response?.ok) await refresh();
   };
+  // open a Place's Workspace from +: its tab stays while the operator is there, and is selected
+  const openPlace = (placeId: string) => {
+    setLauncherOpen(false);
+    setOpenedPlaces(current => current.has(placeId) ? current : new Set(current).add(placeId));
+    navigateToWorktree(placeId);
+  };
+  // the tab standing for a Place: its own, or a Scratch or directory launch there not yet discovered
+  const placeTabIndex = (placeId: string): number => {
+    const place = data?.places?.find(candidate => candidate.id === placeId && candidate.adhoc !== true);
+    return items.findIndex(candidate => candidate.placeId === placeId || (place !== undefined && candidate.pendingLaunch !== undefined
+      && (candidate.pendingLaunch.scope === 'scratch' ? place.kind === 'scratch' : place.kind === 'directory' && candidate.pendingLaunch.projectId === place.projectId)));
+  };
+  // Empty workspace from +: focus the Place's Workspace when it has one, else open it with no panels
+  const openEmptyWorkspace = (placeId: string) => {
+    const index = placeTabIndex(placeId);
+    if (index >= 0) {
+      setLauncherOpen(false);
+      return select(index);
+    }
+    forgetOpenPanels(placeId);
+    openPlace(placeId);
+  };
+  // Terminal from +: open the Place's Workspace with one of its Console shells as a focused
+  // Terminal panel (one already open here first), creating a shell only when the Place has none
+  const openTerminalAt = async (placeId: string, label: string) => {
+    if (terminalOpening.current.has(placeId)) return;
+    terminalOpening.current.add(placeId);
+    openPlace(placeId);
+    const fail = (detail: string) => showOperationFeedback({ tone: 'error', message: `Could not open a terminal at ${label}`, detail, worktreeId: placeId });
+    try {
+      const panes = await listPlacePanes(placeId);
+      if (panes === undefined) return fail('Unable to list the terminals there.');
+      const open = new Set(savedTerminals(placeId).map(terminal => terminal.paneId));
+      const shells = panes.filter(isConsoleShell);
+      let shell: WorktreePane | undefined = shells.find(pane => open.has(pane.paneId)) ?? shells[0];
+      let paneId = shell?.paneId;
+      if (paneId === undefined) {
+        const created = await createPlaceShell(placeId);
+        if (!('paneId' in created)) return fail(created.error);
+        paneId = created.paneId;
+        shell = (await listPlacePanes(placeId))?.find(pane => pane.paneId === paneId);
+      }
+      requestTerminalFocus(placeId, { paneId, name: shell === undefined ? 'shell' : terminalPaneLabel(shell) });
+      void refresh();
+    } finally { terminalOpening.current.delete(placeId); }
+  };
   // a worktree just created from the launcher: close everything, refresh, and select its
   // new tab (its agent when one launched, else the idle worktree)
   const worktreeCreated = async (result: WorktreeCreated) => {
@@ -7819,16 +7975,31 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
   const storedReview = agent?.worktreeId === undefined ? undefined : data.reviews?.find(review => review.worktreeId === agent.worktreeId);
   const localReview = agent?.worktreeId !== undefined && agent.worktreeId === reviewLaunch?.worktreeId;
   const activeReview = localReview ? { ...reviewIndicator, onOpen: openLocalReview } : agent !== undefined && storedReview !== undefined ? { generating: reviewRestoringWorktreeId === storedReview.worktreeId, stale: false, onOpen: () => void openStoredReview(agent, storedReview) } : undefined;
+  // a + row's dropdown entries after the Agent kinds: Terminal and Empty workspace at its Place
+  const placeEntries = (place: { id: string; label: string; consoleShells?: number } | undefined): LaunchMenuEntry[] => place === undefined ? [] : [
+    { key: 'terminal', label: 'Terminal', detail: (place.consoleShells ?? 0) > 0 ? 'Focus its shell' : 'Open the Workspace with a new shell', icon: <LauncherRowIcon name="terminal" />, onSelect: () => void openTerminalAt(place.id, place.label) },
+    { key: 'empty', label: 'Empty workspace', detail: placeTabIndex(place.id) >= 0 ? 'Already open: focuses it' : 'No panels; add them from the toolbar', icon: <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" strokeDasharray="3 3" /></svg>, onSelect: () => openEmptyWorkspace(place.id) }
+  ];
+  // a + row's control while an Agent runs at its Place: Open selects it, and a kind from the menu
+  // launches another beside it through `endpoint`, held back as the toolbar's launch-another is
+  const openAgentSplit = (place: { id: string; label: string; consoleShells?: number }, agent: Agent, resolution: LaunchResolution | undefined, endpoint: string, { worktreeId, unavailable = false }: { worktreeId?: string; unavailable?: boolean } = {}): ReactNode =>
+    <LaunchSplitButton label={place.label} resolution={resolution} compact primary={{ label: 'Open', ariaLabel: `Open ${place.label}`, onSelect: () => { setLauncherOpen(false); selectTarget({ worktreeId: place.id, agentId: agent.id }); } }} entries={placeEntries(place)} launchDisabled={creatingAgent || launchingAnotherAt !== undefined || unavailable} onLaunch={choice => { setLauncherOpen(false); navigateToWorktree(place.id); void launchAnother({ key: placeItemKey(place.id), label: place.label, endpoint, worktreeId }, choice); }} />;
+  // a directory-Project or Scratch row's control: Open while an Agent runs at its Place, else Launch
+  const launcherPlaceSplit = (label: string, place: Place | undefined, resolution: LaunchResolution | undefined, endpoint: string, launch: (choice?: LaunchChoice) => void): ReactNode => {
+    const running = place === undefined ? undefined : data.agents.find(agent => agentPlaceId(agent) === place.id);
+    if (place !== undefined && running !== undefined) return openAgentSplit(place, running, resolution, endpoint);
+    return <LaunchSplitButton label={label} resolution={resolution} compact launchDisabled={creatingAgent} entries={placeEntries(place)} onLaunch={launch} />;
+  };
   // render one worktree's launcher actions
   const launcherWorktreeControls = (worktree: Worktree, project: Project): ReactNode => {
     // bind active worktrees to their existing agent
     const openAgent = data.agents.find(agent => agent.worktreeId === worktree.id);
     const removeReason = worktreeRemoveDisabledReason(worktree, project);
     let action: ReactNode;
-    // open the existing agent instead of launching another one
-    if (openAgent !== undefined) action = <button type="button" className="launch-compact" aria-label={`Open ${worktree.label}`} onClick={() => { setLauncherOpen(false); selectTarget({ worktreeId: worktree.id, agentId: openAgent.id }); }}>Open</button>;
+    // open the existing agent instead of launching another one; its kinds launch another beside it
+    if (openAgent !== undefined) action = openAgentSplit(worktree, openAgent, worktree.launch, `/api/worktrees/${encodeURIComponent(worktree.id)}/launch`, { worktreeId: worktree.id, unavailable: !worktree.available });
     // launch one inactive worktree
-    else action = <LaunchSplitButton label={worktree.label} resolution={worktree.launch} compact disabled={creatingAgent || pendingOperations.has(launchOperationKey(worktree.id))} onLaunch={choice => void launchWorktree(worktree, choice)} />;
+    else action = <LaunchSplitButton label={worktree.label} resolution={worktree.launch} compact launchDisabled={creatingAgent || pendingOperations.has(launchOperationKey(worktree.id))} entries={placeEntries(worktree)} onLaunch={choice => void launchWorktree(worktree, choice)} />;
     return <><PlaceShellsAndPin place={worktree} noun="worktree" onTogglePin={() => void togglePin(worktree)} /><button type="button" className="launcher-icon launcher-rename" disabled={creatingAgent} aria-label={`Rename ${worktree.label}`} title="Rename worktree" onClick={() => setRenameWorktreeId(worktree.id)}><LauncherRowIcon name="rename" /></button><button type="button" className="launcher-icon launcher-remove" disabled={creatingAgent || openAgent !== undefined || removeReason !== undefined} aria-label={`Remove ${worktree.label}`} title={openAgent === undefined ? removeReason ?? 'Remove worktree' : 'Turn off the agents here before removing this worktree'} onClick={() => setRemoveWorktreeId(worktree.id)}><LauncherRowIcon name="trash" /></button>{action}</>;
   };
   // the shell count and pin toggle a directory-Project or Scratch launcher row shows before its Launch
@@ -7843,16 +8014,16 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     const staleCount = project.stalePaths?.length ?? 0;
     // render every non-compacted worktree row
     const rows = visibleWorktrees.map(worktree => <div key={worktree.id} className="launcher-row"><span className="launcher-row-label">{launcherRowLabel(worktree, project)}</span>{launcherWorktreeControls(worktree, project)}</div>);
-    return <div key={project.id} className="launcher-project" role="group" aria-label={project.label}><div className={`launcher-project-header${inlineWorktree === undefined ? '' : ' inline-worktree'}`}><span>{project.label}</span>{staleCount > 0 && <button type="button" className="launcher-prune" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setPruneProjectId(project.id)}>{staleCount} stale · Prune</button>}{inlineWorktree !== undefined && <div className="launcher-project-worktree-controls" role="group" aria-label={`${project.label} worktree controls`}>{launcherWorktreeControls(inlineWorktree, project)}</div>}</div>{rows}{project.mode === 'directory' && <div className="launcher-row"><span className="launcher-row-label">{project.label}</span>{launcherPlaceControls(directoryPlace(project.id))}<LaunchSplitButton label={project.label} resolution={project.launch} compact disabled={creatingAgent} onLaunch={choice => void launchProjectDirectory(project, choice)} /></div>}{dynamicWorktrees && <button type="button" className="launcher-new-worktree" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setNewWorktreeProjectId(project.id)}><LauncherLabelIcon name="add" /><span>New worktree…</span></button>}</div>;
+    return <div key={project.id} className="launcher-project" role="group" aria-label={project.label}><div className={`launcher-project-header${inlineWorktree === undefined ? '' : ' inline-worktree'}`}><span>{project.label}</span>{staleCount > 0 && <button type="button" className="launcher-prune" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setPruneProjectId(project.id)}>{staleCount} stale · Prune</button>}{inlineWorktree !== undefined && <div className="launcher-project-worktree-controls" role="group" aria-label={`${project.label} worktree controls`}>{launcherWorktreeControls(inlineWorktree, project)}</div>}</div>{rows}{project.mode === 'directory' && <div className="launcher-row"><span className="launcher-row-label">{project.label}</span>{launcherPlaceControls(directoryPlace(project.id))}{launcherPlaceSplit(project.label, directoryPlace(project.id), project.launch, `/api/projects/${encodeURIComponent(project.id)}/launch`, choice => void launchProjectDirectory(project, choice))}</div>}{dynamicWorktrees && <button type="button" className="launcher-new-worktree" disabled={creatingAgent || project.manageWorktrees === false} title={project.manageWorktrees === false ? project.manageWorktreesReason : undefined} onClick={() => setNewWorktreeProjectId(project.id)}><LauncherLabelIcon name="add" /><span>New worktree…</span></button>}</div>;
   };
   const tabBar = <><nav className="tabs" ref={tabsRef} role="tablist" aria-label="Agents and worktrees"><TabRowLead />{items.map((entry, index) => {
     const transition = dashboardOperationLabel(entry.operation);
     const label = transition ?? stateLabel[entry.state];
     return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === visibleActive} aria-controls={`panel-${index}`} tabIndex={index === visibleActive ? 0 : -1} className={`${index === visibleActive ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}><TabKindStack entry={entry} />{entry.worktree?.locked === true && <span className="tab-git-lock" aria-hidden="true" title="Git has locked this worktree">🔒</span>}{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
-  })}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label launcher-symbol-label"><LauncherLabelIcon name="scratch" /><span>Scratch</span></span>{launcherPlaceControls(scratchPlace)}<LaunchSplitButton label="~ Scratch" resolution={data.scratchLaunch} compact disabled={creatingAgent} onLaunch={choice => void createAgent(choice)} /></div>{data.projects.map(launcherProject)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav><ToastRegion feedback={visibleOperationFeedback} onDismissFeedback={() => setOperationFeedback(undefined)} launchErrorMessage={launchErrorMessage} /></>;
+  })}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label launcher-symbol-label"><LauncherLabelIcon name="scratch" /><span>Scratch</span></span>{launcherPlaceControls(scratchPlace)}{launcherPlaceSplit('~ Scratch', scratchPlace, data.scratchLaunch, '/api/agents/launch', choice => void createAgent(choice))}</div>{data.projects.map(launcherProject)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav><ToastRegion feedback={visibleOperationFeedback} onDismissFeedback={() => setOperationFeedback(undefined)} launchErrorMessage={launchErrorMessage} /></>;
   const consoleClass = `console${davo.enabled && voiceOpen ? ' voice-visible' : ''}`;
   if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
-  return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${visibleActive}`} aria-labelledby={`tab-${visibleActive}`} tabIndex={0}>{item !== undefined && agent !== undefined && <AgentPlaceCard key={item.key} agent={agent} agents={item.agents} onSelectAgent={agentId => select(visibleActive, agentId)} active={agentState(agent) === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onNavigateWorktree={navigateToWorktree} onPromptFocus={() => viewAgent(agent)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: agent.projectId ?? (activePlace?.kind === 'directory' ? activePlace.projectId : undefined) })} launch={activeLaunch} {...(activePinTarget === undefined ? {} : { pinned: activePinTarget.pinned, onTogglePin: () => void togglePin(activePinTarget) })} {...(activeWorktree === undefined ? {} : { onRenameWorktree: () => setRenameWorktreeId(activeWorktree.id), worktreeLabel: activeWorktree.label, ...(activeWorktree.main ? {} : { onRemoveWorktree: () => setRemoveWorktreeId(activeWorktree.id), removeDisabledReason: 'Turn off the agents here before removing this worktree' }) })} />}{item?.worktree !== undefined && agent === undefined && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onOperationFeedback={showOperationFeedback} onNavigateWorktree={navigateToWorktree} onTogglePin={() => void togglePin(item.worktree!)} onRename={() => setRenameWorktreeId(item.worktree!.id)} schedulePrefill={resolveSchedulePrefill({ projectId: item.worktree.projectId })} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}{item?.place !== undefined && agent === undefined && <PlaceCard key={item.place.id} place={item.place} tabBar={tabBar} cleanupControl={cleanupControl} launchDisabled={creatingAgent} launch={placeLaunch(item.place)} onLaunched={agentId => { setActivateAgentId(agentId); void refresh(); }} onTogglePin={() => void togglePin(item.place!)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: item.place.kind === 'directory' ? item.place.projectId : undefined })} />}{item?.pendingLaunch && <PendingSessionCard key={item.pendingLaunch.id} launch={item.pendingLaunch} tabBar={tabBar} cleanupControl={cleanupControl} retrying={creatingAgent} onRetry={choice => { /* retain the same pending draft on retry */ void runPendingSessionLaunch(item.pendingLaunch!, choice); }} onDiscard={() => { /* discard only the selected failed placeholder */ discardPendingSessionLaunch(item.pendingLaunch!.id); }} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
+  return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${visibleActive}`} aria-labelledby={`tab-${visibleActive}`} tabIndex={0}>{item !== undefined && agent !== undefined && <AgentPlaceCard key={item.key} agent={agent} agents={item.agents} onSelectAgent={agentId => select(visibleActive, agentId)} active={agentState(agent) === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onNavigateWorktree={navigateToWorktree} onPromptFocus={() => viewAgent(agent)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: agent.projectId ?? (activePlace?.kind === 'directory' ? activePlace.projectId : undefined) })} launch={activeLaunch} {...(activePinTarget === undefined ? {} : { pinned: activePinTarget.pinned, onTogglePin: () => void togglePin(activePinTarget) })} {...(activeWorktree === undefined ? {} : { onRenameWorktree: () => setRenameWorktreeId(activeWorktree.id), worktreeLabel: activeWorktree.label, ...(activeWorktree.main ? {} : { onRemoveWorktree: () => setRemoveWorktreeId(activeWorktree.id), removeDisabledReason: 'Turn off the agents here before removing this worktree' }) })} />}{item?.worktree !== undefined && agent === undefined && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} transient={item.transient === true} onLaunched={worktreeLaunched} onOperationFeedback={showOperationFeedback} onNavigateWorktree={navigateToWorktree} onTogglePin={() => void togglePin(item.worktree!)} onRename={() => setRenameWorktreeId(item.worktree!.id)} schedulePrefill={resolveSchedulePrefill({ projectId: item.worktree.projectId })} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}{item?.place !== undefined && agent === undefined && <PlaceCard key={item.place.id} place={item.place} tabBar={tabBar} cleanupControl={cleanupControl} transient={item.transient === true} launchDisabled={creatingAgent} launch={placeLaunch(item.place)} onLaunched={agentId => { setActivateAgentId(agentId); void refresh(); }} onTogglePin={() => void togglePin(item.place!)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: item.place.kind === 'directory' ? item.place.projectId : undefined })} />}{item?.pendingLaunch && <PendingSessionCard key={item.pendingLaunch.id} launch={item.pendingLaunch} tabBar={tabBar} cleanupControl={cleanupControl} retrying={creatingAgent} onRetry={choice => { /* retain the same pending draft on retry */ void runPendingSessionLaunch(item.pendingLaunch!, choice); }} onDiscard={() => { /* discard only the selected failed placeholder */ discardPendingSessionLaunch(item.pendingLaunch!.id); }} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
 }
 
 // coordinate console session and update lifecycle
