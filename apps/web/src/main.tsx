@@ -5058,7 +5058,8 @@ function GitStatus({ id, worktreeId, branch, summary, prSummary, pullRequest, on
       const maxHeight = Math.max(0, anchorTop - viewportTop - gap);
     // open upward from the branch shortcut and clamp to the viewport
       const edge = rootFontSize * .375;
-      const left = Math.min(Math.max(edge, anchorRect.left), window.innerWidth - edge);
+      // a phone's toolbar packs the git status near its right end, so the popup spans the screen
+      const left = window.matchMedia('(max-width: 600px)').matches ? edge : Math.min(Math.max(edge, anchorRect.left), window.innerWidth - edge);
       setPanelStyle({ position: 'fixed', top: 'auto', left, right: 'auto', bottom: window.innerHeight - anchorTop + gap, maxHeight, maxWidth: `calc(100vw - ${left}px - ${edge}px)`, visibility: 'visible' });
     };
     const observer = new ResizeObserver(syncPanelPosition);
