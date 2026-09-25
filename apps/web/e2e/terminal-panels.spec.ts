@@ -122,8 +122,8 @@ const expectFullSplitHeight = async (panel: Locator) => {
   })).toEqual({ top: 0, height: 0 });
 };
 
-// preserve the accessible icon trigger across desktop and phone layouts
-test('terminal picker uses a standard icon button on desktop and phone', async ({ page }) => {
+// the toolbar's Terminal button: labelled on desktop, a square icon button on the phone
+test('terminal picker is the toolbar’s Terminal button on desktop and phone', async ({ page }) => {
   await installPaneMock(page);
   await routeApi(page);
   await page.goto('/');
@@ -134,7 +134,7 @@ test('terminal picker uses a standard icon button on desktop and phone', async (
     await page.setViewportSize(viewport);
     const trigger = page.getByRole('button', { name: 'Open a terminal', exact: true });
     await expect(trigger).toBeVisible();
-    await expect(trigger).toHaveClass(/\bicon-button\b/u);
+    await expect(trigger).toHaveClass(/\btoolbar-button\b/u);
     await expect(trigger).toHaveAttribute('title', 'Open a terminal');
     await expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
     await expect(trigger).toHaveAttribute('aria-expanded', 'false');
@@ -149,9 +149,12 @@ test('terminal picker uses a standard icon button on desktop and phone', async (
     const triggerBox = await trigger.boundingBox();
     expect(triggerBox).not.toBeNull();
     expect(referenceBox).not.toBeNull();
-    expect(triggerBox!.width).toBeCloseTo(referenceBox!.width, 1);
     expect(triggerBox!.height).toBeCloseTo(referenceBox!.height, 1);
-    expect(triggerBox!.width).toBeCloseTo(triggerBox!.height, 1);
+    const phone = viewport.width < 600;
+    // the label shows beside the glyph on desktop and folds away on the phone
+    await expect(trigger.locator('.toolbar-label')).toBeVisible({ visible: !phone });
+    if (phone) expect(triggerBox!.width).toBeCloseTo(triggerBox!.height, 1);
+    else expect(triggerBox!.width).toBeGreaterThan(triggerBox!.height);
 
     await trigger.click();
     await expect(trigger).toHaveAttribute('aria-expanded', 'true');
@@ -839,7 +842,7 @@ for (const panels of ['note', 'browser', 'note and browser']) {
     await pushBytes(page, 'agent-1', 'agent ready\r\n');
 
     // open the requested supplemental panels before the shell
-    if (panels.includes('browser')) await page.getByRole('button', { name: 'Open project in split view' }).click();
+    if (panels.includes('browser')) await page.getByRole('button', { name: 'Browser', exact: true }).click();
     // select the saved note when this combination includes it
     if (panels.includes('note')) {
       await page.getByRole('button', { name: 'Notes (1)' }).click();
@@ -1006,7 +1009,7 @@ const openFourPanels = async (page: Page) => {
   await page.goto('/');
   await seedPaneSize(page, 'agent-1', 80, 24);
   await pushBytes(page, 'agent-1', 'agent ready\r\n');
-  await page.getByRole('button', { name: 'Open project in split view' }).click();
+  await page.getByRole('button', { name: 'Browser', exact: true }).click();
   await page.getByRole('button', { name: 'Notes (2)' }).click();
   await page.getByRole('button', { name: 'Expandable note…', exact: true }).click();
   await openPicker(page);
@@ -1052,7 +1055,7 @@ test('every panel kind expands to fill the Workspace and Esc restores its siblin
   await expect(visiblePanels).toHaveCount(1);
   await browser.getByRole('button', { name: 'Close browser', exact: true }).click();
   await expect(visiblePanels).toHaveCount(3);
-  await page.getByRole('button', { name: 'Open project in split view' }).click();
+  await page.getByRole('button', { name: 'Browser', exact: true }).click();
   await expect(browser).toBeVisible();
   await expect(browser).not.toHaveClass(/\bexpanded\b/u);
   await expect(visiblePanels).toHaveCount(4);

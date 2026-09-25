@@ -28,7 +28,7 @@ async function mockConsole(page: Page, agent: MockAgent | undefined, { conversat
 }
 
 const agentPanel = (page: Page) => page.locator('.log-split > .log-output');
-const workspaceControls = (page: Page) => page.getByRole('region', { name: 'Workspace controls' });
+const workspaceControls = (page: Page) => page.getByRole('region', { name: 'Workspace toolbar' });
 
 test('the agent output is a panel with a floating header and the composer at its foot', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });

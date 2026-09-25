@@ -159,7 +159,7 @@ test('creates, previews, edits, autosaves, and deletes per-worktree notes', asyn
 });
 
 // preserve leftward note flyouts inside the output
-test('keeps note flyouts left-aligned and shifts long menus within the output boundary', async ({ page }) => {
+test('opens note flyouts above the toolbar’s Notes button and shifts long menus onto the screen', async ({ page }) => {
   const originalTitle = 'W'.repeat(120);
   const notes = Array.from({ length: 4 }, (_, index) => ({ id: `note-identifier-${String(index + 1).padStart(3, '0')}`, text: `Sticky note option ${index + 1}`, ...(index === 0 ? { title: originalTitle } : {}) }));
   let visibleNotes: typeof notes = [];
@@ -212,27 +212,25 @@ test('keeps note flyouts left-aligned and shifts long menus within the output bo
   await notesButton.click();
   const menu = page.getByLabel('Worktree notes');
   await expect(menu).toBeVisible();
-  const [menuBounds, notesButtonBounds, outputBounds] = await Promise.all([renderedBounds(menu), renderedBounds(notesButton), renderedBounds(page.locator('.log'))]);
-  expect(menuBounds.x).toBeGreaterThanOrEqual(outputBounds.x);
-  expect(menuBounds.x + menuBounds.width).toBeLessThan(notesButtonBounds.x);
-  // The notes control sits at the footer's bottom now that paging is gone, so the flyout
-  // opens at or above it and stays within the output rather than aligning to its top.
-  expect(menuBounds.y).toBeLessThanOrEqual(notesButtonBounds.y + 1);
-  expect(menuBounds.y).toBeGreaterThanOrEqual(outputBounds.y);
-  expect(menuBounds.y + menuBounds.height).toBeLessThanOrEqual(outputBounds.y + outputBounds.height);
+  const [menuBounds, notesButtonBounds] = await Promise.all([renderedBounds(menu), renderedBounds(notesButton)]);
+  // the Notes button sits at the left of the toolbar, so its flyout opens above it, lined up with
+  // its left edge
+  expect(Math.abs(menuBounds.x - notesButtonBounds.x)).toBeLessThanOrEqual(1);
+  expect(menuBounds.y + menuBounds.height).toBeLessThanOrEqual(notesButtonBounds.y);
+  expect(menuBounds.y).toBeGreaterThanOrEqual(0);
 
   visibleNotes = notes;
   await page.reload();
   const longMenuButton = page.getByRole('button', { name: 'Notes (4)', exact: true });
   await longMenuButton.click();
-  const [longMenuBounds, longMenuButtonBounds, longOutputBounds] = await Promise.all([renderedBounds(menu), renderedBounds(longMenuButton), renderedBounds(page.locator('.log'))]);
-  expect(longMenuBounds.x).toBeGreaterThanOrEqual(longOutputBounds.x);
-  expect(longMenuBounds.x + longMenuBounds.width).toBeLessThan(longMenuButtonBounds.x);
+  const [longMenuBounds, longMenuButtonBounds] = await Promise.all([renderedBounds(menu), renderedBounds(longMenuButton)]);
+  // a menu too wide to start at the button shifts left to stay on screen
   expect(longMenuBounds.width).toBeGreaterThan(288);
-  expect(longMenuBounds.x - longOutputBounds.x).toBeLessThanOrEqual(10);
-  expect(longMenuBounds.y).toBeLessThan(longMenuButtonBounds.y);
-  expect(longMenuBounds.y).toBeGreaterThanOrEqual(longOutputBounds.y);
-  expect(longMenuBounds.y + longMenuBounds.height).toBeLessThanOrEqual(longOutputBounds.y + longOutputBounds.height);
+  expect(longMenuBounds.x).toBeGreaterThanOrEqual(8);
+  expect(longMenuBounds.x).toBeLessThanOrEqual(longMenuButtonBounds.x);
+  expect(longMenuBounds.x + longMenuBounds.width).toBeLessThanOrEqual(520 - 8 + 1);
+  expect(longMenuBounds.y + longMenuBounds.height).toBeLessThanOrEqual(longMenuButtonBounds.y);
+  expect(longMenuBounds.y).toBeGreaterThanOrEqual(0);
 
   await menu.getByRole('button', { name: `Rename note: ${originalTitle}` }).click();
   const noteName = menu.getByRole('textbox', { name: 'Note name' });

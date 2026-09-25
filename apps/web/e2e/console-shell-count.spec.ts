@@ -83,18 +83,23 @@ test('a directory-Project and a Scratch Place show their shell count and pin, an
   await expect(page.getByRole('tab', { name: /^tools/u })).toBeVisible();
   await expect(page.getByRole('tab', { name: /Scratch/u })).toHaveCount(0);
 
-  // the directory Place's tab offers its pin and launches its Project in place
+  // the directory Place's toolbar offers its pin (in the ⋮) and launches its Project in place
   await page.getByRole('tab', { name: /^Notes/u }).click();
   // the agentless Place view has no floating server switcher; the tab row leads with it
   await expect(page.locator('.server-switcher, .output-server-switcher')).toHaveCount(0);
   await expect(page.locator('.tabs > .tab-row-lead .server-selector')).toBeVisible();
-  const prompt = page.locator('.prompt-actions');
-  await expect(prompt.getByRole('button', { name: 'Pin Notes' })).toHaveAttribute('aria-pressed', 'false');
+  const prompt = page.getByRole('region', { name: 'Workspace toolbar' });
+  const placeMenu = page.locator('.place-menu');
+  await prompt.getByRole('button', { name: 'More options' }).click();
+  await expect(placeMenu.getByRole('button', { name: 'Pin folder' })).toHaveAttribute('aria-pressed', 'false');
+  await page.keyboard.press('Escape');
   await prompt.getByRole('button', { name: /^Launch/u }).click();
   await expect.poll(() => launches).toEqual(['/api/projects/notes/launch']);
   // the ad-hoc folder's tab can be unpinned but has no Launch
   await page.getByRole('tab', { name: /^tools/u }).click();
-  await expect(prompt.getByRole('button', { name: 'Unpin tools' })).toHaveAttribute('aria-pressed', 'true');
+  await prompt.getByRole('button', { name: 'More options' }).click();
+  await expect(placeMenu.getByRole('button', { name: 'Unpin folder' })).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Escape');
   await expect(prompt.getByRole('button', { name: /^Launch/u })).toHaveCount(0);
 
   await page.locator('.new-agent-tab').click();

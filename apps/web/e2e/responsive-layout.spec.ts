@@ -69,14 +69,14 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
       queued: bounds('.agent-composer .queued-prompts-toggle'),
       send: bounds('.agent-composer .queue'),
       prompt: bounds('.agent-composer textarea'),
-      gitSummary: bounds('.workspace-bar .git-status-summary'),
-      gitBranchDisplay: getComputedStyle(document.querySelector<HTMLElement>('.workspace-bar .git-branch')!).display,
+      gitSummary: bounds('.workspace-toolbar .git-status-summary'),
+      gitBranchDisplay: getComputedStyle(document.querySelector<HTMLElement>('.workspace-toolbar .git-branch')!).display,
       tabRowLead: bounds('.tab-row-lead'),
       serverSettings: bounds('.tab-row-lead .server-switcher-settings'),
       tabs: bounds('.tabs'),
-      bar: bounds('.workspace-bar'),
-      barActions: bounds('.workspace-bar .prompt-actions'),
-      controls: [...document.querySelectorAll<HTMLElement>('.workspace-bar .prompt-actions button, .workspace-bar .prompt-actions .project-open')].map(element => {
+      bar: bounds('.workspace-toolbar'),
+      barActions: bounds('.workspace-toolbar .workspace-toolbar-actions'),
+      controls: [...document.querySelectorAll<HTMLElement>('.workspace-toolbar .workspace-toolbar-actions button, .workspace-toolbar .workspace-toolbar-actions .project-open')].map(element => {
         const rect = element.getBoundingClientRect();
         return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
       })
@@ -130,7 +130,7 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
       const rect = document.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
       return { top: rect.top, bottom: rect.bottom };
     };
-    return { prompt: bounds('.agent-composer textarea'), send: bounds('.agent-composer .queue'), bar: bounds('.workspace-bar') };
+    return { prompt: bounds('.agent-composer textarea'), send: bounds('.agent-composer .queue'), bar: bounds('.workspace-toolbar') };
   });
   // grow the prompt upward without moving send or the row beneath the tabs
   expect(grown.prompt.top).toBeLessThan(layout.prompt.top);

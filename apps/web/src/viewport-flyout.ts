@@ -1,12 +1,14 @@
 import { type CSSProperties, useLayoutEffect, useRef, useState } from 'react';
 
 type ViewportFlyoutPlacement = 'vertical'|'above'|'left';
-type ViewportFlyoutOptions = { placement?: ViewportFlyoutPlacement; boundarySelector?: string; boundaryRootSelector?: string; contentSized?: boolean; matchAnchorWidth?: boolean };
+// `align` picks which anchor edge a vertical flyout lines up with: its right edge (`end`, the
+// default, for controls at the right of a row) or its left edge (`start`, for controls at the left).
+type ViewportFlyoutOptions = { placement?: ViewportFlyoutPlacement; align?: 'start'|'end'; boundarySelector?: string; boundaryRootSelector?: string; contentSized?: boolean; matchAnchorWidth?: boolean };
 type ViewportFlyoutStyle = CSSProperties & { '--flyout-available-height'?: string };
 
 // position one portal flyout within the viewport
 export function useViewportFlyout<T extends HTMLElement = HTMLSpanElement>(open: boolean, options: ViewportFlyoutOptions = {}) {
-  const { placement = 'vertical', boundarySelector, boundaryRootSelector, contentSized = false, matchAnchorWidth = false } = options;
+  const { placement = 'vertical', align = 'end', boundarySelector, boundaryRootSelector, contentSized = false, matchAnchorWidth = false } = options;
   const anchorRef = useRef<T | null>(null);
   const flyoutRef = useRef<HTMLDivElement | null>(null);
   const [style, setStyle] = useState<ViewportFlyoutStyle>({ visibility: 'hidden' });
@@ -41,10 +43,11 @@ export function useViewportFlyout<T extends HTMLElement = HTMLSpanElement>(open:
       const above = top - gap;
       const side = placement === 'above' || below < above ? 'above' : 'below';
       const maxHeight = Math.max(1, side === 'below' ? below : above);
-      const height = Math.min(flyout.scrollHeight, maxHeight);
+      // a content-sized flyout keeps its own CSS width and height cap, told only the room it has
+      const height = Math.min(contentSized ? flyout.offsetHeight : flyout.scrollHeight, maxHeight);
       const flyoutTop = side === 'below' ? bottom + gap : top - height - gap;
-      const left = Math.max(margin, Math.min(right - width, window.innerWidth - width - margin));
-      setStyle({ position: 'fixed', top: flyoutTop, left, right: 'auto', bottom: 'auto', width, maxWidth: `${window.innerWidth - margin * 2}px`, maxHeight: `${maxHeight}px`, visibility: 'visible' });
+      const left = Math.max(margin, Math.min(align === 'start' ? anchorLeft : right - width, window.innerWidth - width - margin));
+      setStyle({ position: 'fixed', top: flyoutTop, left, right: 'auto', bottom: 'auto', width: contentSized ? 'max-content' : width, maxWidth: `${window.innerWidth - margin * 2}px`, ...(contentSized ? { '--flyout-available-height': `${maxHeight}px` } : { maxHeight: `${maxHeight}px` }), visibility: 'visible' });
     };
     position();
     const observer = new ResizeObserver(position);
@@ -53,6 +56,6 @@ export function useViewportFlyout<T extends HTMLElement = HTMLSpanElement>(open:
     window.addEventListener('resize', position);
     window.addEventListener('scroll', position, true);
     return () => { observer.disconnect(); window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true); };
-  }, [boundaryRootSelector, boundarySelector, contentSized, matchAnchorWidth, open, placement]);
+  }, [align, boundaryRootSelector, boundarySelector, contentSized, matchAnchorWidth, open, placement]);
   return { anchorRef, flyoutRef, style };
 }

@@ -87,7 +87,7 @@ test('copies a note and sends its current contents as a prompt', async ({ page }
   await page.keyboard.press('Escape');
   await expect(menu).toHaveCount(0);
   await page.getByRole('button', { name: 'More options' }).click();
-  const moreEdit = page.getByRole('button', { name: 'Rename worktree', exact: true });
+  const moreEdit = page.getByRole('button', { name: 'Rename worktree…', exact: true });
   await expect(moreEdit.locator('path')).toHaveAttribute('d', pencilPath);
   await expect(moreEdit.locator('svg')).toHaveCSS('fill', 'none');
 });

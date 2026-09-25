@@ -51,6 +51,8 @@ test('reviews hourly cleanup targets from the alert and glowing cleanup button',
   const cleanupButton = page.getByRole('button', { name: 'Review 5 cleanup targets' });
   await expect(cleanupButton).toBeVisible();
   await expect(cleanupButton).toHaveClass(/cleanup-toggle/);
+  // cleanup waits in the Workspace toolbar while it is pending
+  await expect(page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'Review 5 cleanup targets' })).toBeVisible();
   await expect(cleanupButton.locator('svg.broom-icon')).toBeVisible();
   await expect(cleanupButton.locator('svg.broom-icon')).toHaveCSS('fill', 'rgb(249, 226, 175)');
   await expect(cleanupButton.locator('.cleanup-count')).toHaveText('5');

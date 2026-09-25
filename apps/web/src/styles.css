@@ -250,7 +250,7 @@ html.software-keyboard-open .tabs { display: none; }
 .panel { position: relative; min-width: 0; min-height: 0; outline-offset: 4px; touch-action: pan-y; }
 .agent-view, .worktree-view { width: 100%; height: 100%; min-width: 0; min-height: 0; display: grid; gap: 1rem; overflow: visible; }
 .agent-view { position: relative; grid-template-rows: minmax(0, 1fr) auto; gap: 0; }
-.agent-view > .workspace-bar { margin: .375rem .375rem .375rem; }
+.agent-view > .workspace-toolbar { margin: .375rem .375rem .375rem; }
 .worktree-view { align-content: start; }
 .agent-view h2, .worktree-view h2 { color: var(--lavender); margin: 0; }
 .agent-view p, .worktree-view p { color: var(--subtext-0); margin: 0; }
@@ -830,7 +830,7 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-prompt):focus-within) .log-split:is(.has-note, .has-browser, .has-code, .has-terminals) > :is(.note-pane, .browser-pane, .code-pane, .terminal-pane, .split-resizer, .mobile-split-switches) { display: none; }
 html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-prompt):focus-within) .log-split:is(.has-note, .has-browser, .has-code, .has-terminals) > .log-output { display: grid; }
 /* typing above a software keyboard leaves room for the output: the row beneath the tabs folds away */
-html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-prompt):focus-within) > .workspace-bar { display: none; }
+html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-prompt):focus-within) > .workspace-toolbar { display: none; }
 .xterm { height: 100%; }
 /* A Terminal panel: a floating header over a streamed pane, focusable, with a sky inset ring
    marking the panel that receives keys (First-class terminal panes, composition A). */
@@ -928,11 +928,11 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .agent-composer-column .queue:not(:disabled):hover { filter: brightness(1.08); }
 .agent-composer-column .queue svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .agent-composer .prompt-composer textarea { min-height: calc(var(--standard-control-size) + var(--standard-control-size) + .375rem); }
-/* the row beneath the tab row: the Workspace's controls, until the Workspace toolbar replaces it */
-.workspace-bar { position: relative; display: grid; min-width: 0; }
-:where(.workspace-bar) .page-arrow { position: relative; display: grid; width: var(--standard-control-size); height: var(--standard-control-size); min-height: 0; padding: 0; place-items: center; opacity: 1; overflow: visible; }
-.workspace-bar .page-arrow svg { width: 1rem; height: 1rem; stroke-width: 2; }
-.workspace-bar .page-arrow .spinner { width: 1rem; height: 1rem; }
+/* the Workspace toolbar beneath the tab row */
+.workspace-toolbar { position: relative; display: grid; min-width: 0; }
+:where(.workspace-toolbar) .page-arrow { position: relative; display: grid; width: var(--standard-control-size); height: var(--standard-control-size); min-height: 0; padding: 0; place-items: center; opacity: 1; overflow: visible; }
+.workspace-toolbar .page-arrow svg { width: 1rem; height: 1rem; stroke-width: 2; }
+.workspace-toolbar .page-arrow .spinner { width: 1rem; height: 1rem; }
 .prompt-content { display: flex; min-width: 0; flex-direction: column; gap: .375rem; }
 /* overlay the drop target without shifting the draft or its controls */
 .prompt-drop-overlay { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; border: 2px dashed var(--lavender); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 94%, transparent); color: var(--lavender); font-size: .85rem; font-weight: 600; pointer-events: none; }
@@ -946,30 +946,55 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .command-menu code { color: var(--mauve); font: 700 .76rem var(--font-mono); }
 .command-menu span { min-width: 0; overflow: hidden; font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
 .command-menu-empty { padding: .5rem; color: var(--overlay-0); font: 600 .72rem var(--font-mono); }
-.prompt-actions { --prompt-control-border: var(--surface-1); --prompt-control-background: color-mix(in srgb, var(--mantle) 88%, transparent); --prompt-control-foreground: var(--subtext-0); --prompt-control-hover-border: var(--lavender); --prompt-control-hover-background: color-mix(in srgb, var(--lavender) 13%, var(--mantle)); --prompt-control-hover-foreground: var(--text); display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: .375rem; }
-.prompt-actions button, .project-open { box-sizing: border-box; height: var(--standard-control-size); border-radius: var(--control-radius); padding: .4rem .6rem; font-size: .75rem; font-weight: 700; box-shadow: none; transition: background-color .15s ease, border-color .15s ease, color .15s ease, filter .15s ease; }
-.prompt-actions .icon-button { display: inline-grid; flex: 0 0 var(--standard-control-size); width: var(--standard-control-size); height: var(--standard-control-size); padding: 0; place-items: center; }
-.prompt-actions .icon-button svg { display: block; width: 1rem; height: 1rem; }
-/* balance the terminal glyph with the adjacent stack icon */
-.prompt-actions .terminal-picker-toggle svg { width: 1.25rem; height: 1.25rem; }
-/* an agentless Place tab's pin toggle: a prompt control, filled while Pinned like the launcher's */
-.prompt-actions .place-pin { border-color: var(--prompt-control-border); background: var(--prompt-control-background); color: var(--prompt-control-foreground); }
-.prompt-actions .place-pin svg { width: 1.1rem; height: 1.1rem; }
-.prompt-actions .place-pin.pinned { border-color: var(--lavender); background: var(--lavender); color: var(--crust); }
-.prompt-actions :is(.review-tour-toggle, .more, .terminal-picker-toggle, .project-browser-toggle, .project-stack-toggle), .prompt-actions .project-open { border-color: var(--prompt-control-border); background: var(--prompt-control-background); color: var(--prompt-control-foreground); filter: none; }
-.prompt-actions .outline-button { border-color: var(--surface-2); background: transparent; color: var(--prompt-control-foreground); filter: none; }
-.prompt-actions :is(.review-tour-toggle, .more, .terminal-picker-toggle, .project-browser-toggle, .project-stack-toggle, .outline-button):not(:disabled):hover, .prompt-actions .project-open:hover { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); filter: none; }
-.prompt-actions :is(.more, .terminal-picker-toggle, .project-browser-toggle, .project-stack-toggle)[aria-expanded='true'], .prompt-actions .outline-button.active { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); }
-.prompt-actions-spacer { flex: 1; }
-.question-prompt .prompt-actions { justify-content: flex-start; }
+.workspace-toolbar-actions { --prompt-control-border: var(--surface-1); --prompt-control-background: color-mix(in srgb, var(--mantle) 88%, transparent); --prompt-control-foreground: var(--subtext-0); --prompt-control-hover-border: var(--lavender); --prompt-control-hover-background: color-mix(in srgb, var(--lavender) 13%, var(--mantle)); --prompt-control-hover-foreground: var(--text); display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: .375rem; }
+.workspace-toolbar-actions button, .project-open { box-sizing: border-box; height: var(--standard-control-size); border-radius: var(--control-radius); padding: .4rem .6rem; font-size: .75rem; font-weight: 700; box-shadow: none; transition: background-color .15s ease, border-color .15s ease, color .15s ease, filter .15s ease; }
+.workspace-toolbar-actions .icon-button { display: inline-grid; flex: 0 0 var(--standard-control-size); width: var(--standard-control-size); height: var(--standard-control-size); padding: 0; place-items: center; }
+.workspace-toolbar-actions .icon-button svg { display: block; width: 1rem; height: 1rem; }
+/* balance the terminal glyph with the stroke weight of its neighbours */
+.workspace-toolbar-actions .toolbar-button.terminal-picker-toggle svg { width: 1.25rem; height: 1.25rem; }
+.workspace-toolbar-actions :is(.review-tour-toggle, .more, .toolbar-button), .workspace-toolbar-actions .project-open { border-color: var(--prompt-control-border); background: var(--prompt-control-background); color: var(--prompt-control-foreground); filter: none; }
+.workspace-toolbar-actions .outline-button { border-color: var(--surface-2); background: transparent; color: var(--prompt-control-foreground); filter: none; }
+.workspace-toolbar-actions :is(.review-tour-toggle, .more, .toolbar-button, .outline-button):not(:disabled):hover, .workspace-toolbar-actions .project-open:hover { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); filter: none; }
+.workspace-toolbar-actions :is(.more, .toolbar-button)[aria-expanded='true'], .workspace-toolbar-actions .outline-button.active { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); }
+.toolbar-spacer { flex: 1; }
+/* a labelled toolbar button: its glyph, its name and, inline, its count. `--toolbar-accent` is the
+   colour of the panel it opens, which tints the button while that panel is open */
+.workspace-toolbar-actions .toolbar-button { --toolbar-accent: var(--lavender); position: relative; display: inline-flex; flex: none; width: auto; min-width: var(--standard-control-size); height: var(--standard-control-size); align-items: center; justify-content: center; gap: .4rem; padding: 0 .6rem; overflow: visible; white-space: nowrap; }
+.workspace-toolbar-actions .toolbar-button svg { display: block; flex: none; width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.workspace-toolbar-actions .toolbar-button .saved-prompts-count { position: static; box-shadow: none; }
+.toolbar-label { font-size: .74rem; font-weight: 700; }
+.workspace-toolbar-actions .terminal-picker-toggle { --toolbar-accent: var(--green); }
+.workspace-toolbar-actions .notes-toggle { --toolbar-accent: var(--yellow); }
+.workspace-toolbar-actions .browser-toggle { --toolbar-accent: var(--blue); }
+.workspace-toolbar-actions .code-toggle { --toolbar-accent: var(--mauve); }
+.workspace-toolbar-actions .toolbar-button.panel-open { border-color: color-mix(in srgb, var(--toolbar-accent) 70%, var(--surface-1)); background: color-mix(in srgb, var(--toolbar-accent) 12%, var(--mantle)); color: var(--toolbar-accent); }
+.workspace-toolbar-actions .toolbar-button:disabled { opacity: .45; }
+/* the Notes button's unread-queued alert outranks the neutral toolbar colours */
+.workspace-toolbar-actions .notes-toggle.unread-queued-prompts { border-color: var(--red); color: var(--red); }
+/* a Place without git shows its folder where the git status would be */
+.toolbar-path { min-width: 0; max-width: 28rem; overflow: hidden; color: var(--overlay-1); font: 600 .7rem var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+/* the git status reads as one more toolbar button */
+.workspace-toolbar-actions .git-status-wrap, .workspace-toolbar-actions .git-status-wrap.expanded { flex: 0 1 auto; min-width: 0; max-width: 24rem; margin-left: 0; }
+.workspace-toolbar-actions .git-branch-icon { display: block; flex: none; width: .95rem; height: .95rem; }
+.workspace-toolbar-actions .git-status-summary { height: var(--standard-control-size); border: 1px solid var(--prompt-control-border); border-radius: var(--control-radius); padding: 0 .6rem; background: var(--prompt-control-background); }
+.workspace-toolbar-actions .git-status-summary:hover, .workspace-toolbar-actions .git-status-summary[aria-expanded='true'] { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); }
+.project-stack-status-text { color: var(--overlay-1); font-size: .68rem; font-weight: 600; }
+/* beside a running Agent, Launch is a plain control rather than the gradient primary */
+.workspace-toolbar-actions .launch-split.quiet { background: var(--prompt-control-background); box-shadow: inset 0 0 0 1px var(--prompt-control-border); }
+.workspace-toolbar-actions .launch-split.quiet > button { border: 0; background: transparent; color: var(--prompt-control-foreground); }
+.workspace-toolbar-actions .launch-split.quiet .launch-chevron { border-left: 1px solid var(--prompt-control-border); }
+.workspace-toolbar-actions .launch-split.quiet:has(> button:not(:disabled):hover) { box-shadow: inset 0 0 0 1px var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); filter: none; }
+.workspace-toolbar-actions .launch-split.quiet > button:not(:disabled):hover { color: var(--prompt-control-hover-foreground); }
+.workspace-toolbar-actions .launch-split.quiet .launch-lock { stroke: currentColor; }
+@media (max-width: 600px) { .workspace-toolbar-actions :is(.toolbar-label, .project-stack-status-text) { display: none; } .workspace-toolbar-actions .toolbar-button { padding: 0; width: var(--standard-control-size); } .toolbar-path { display: none; } }
+.prompt-actions { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: .375rem; }
+.prompt-actions button { box-sizing: border-box; height: var(--standard-control-size); border-radius: var(--control-radius); font-size: .75rem; font-weight: 700; transition: background-color .15s ease, border-color .15s ease, color .15s ease, filter .15s ease; }
 .danger svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .danger svg rect { fill: currentColor; stroke: none; }
-.prompt-actions .danger { display: inline-grid; width: var(--standard-control-size); border-color: var(--red); background: transparent; color: var(--red); filter: none; place-items: center; padding: 0; }
-.prompt-actions .danger:not(:disabled):hover { border-color: var(--red); background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--red); filter: none; }
 .power-menu-wrap { display: inline-flex; flex: none; }
-.prompt-actions .queue { margin-left: 0; border-color: color-mix(in srgb, var(--lavender) 54%, transparent); background: linear-gradient(135deg, var(--mauve), var(--blue)); color: var(--crust); filter: none; }
-.prompt-actions .queue:not(:disabled):hover { filter: brightness(1.08); }
-.prompt-actions .queue svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.workspace-toolbar-actions .queue { margin-left: 0; border-color: color-mix(in srgb, var(--lavender) 54%, transparent); background: linear-gradient(135deg, var(--mauve), var(--blue)); color: var(--crust); filter: none; }
+.workspace-toolbar-actions .queue:not(:disabled):hover { filter: brightness(1.08); }
+.workspace-toolbar-actions .queue svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .queued-prompts-toggle svg { width: 1.05rem; height: 1.05rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .queued-prompts-count { background: var(--blue); }
 .more-menu.queued-prompts-panel { display: grid; width: calc(100vw - 1rem); max-width: calc(100vw - 1rem); max-height: min(34rem, calc(100vh - 1rem)); overflow: hidden; }
@@ -998,18 +1023,14 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .project-open { display: inline-flex; align-items: center; gap: .35rem; border: 1px solid var(--surface-1); text-decoration: none; }
 .project-open svg { width: .8rem; height: .8rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .project-open-group { position: relative; display: inline-flex; align-items: center; }
-.prompt-actions :is(.project-browser-toggle, .project-stack-toggle) { flex: 0 0 2.6rem; width: 2.6rem; border-left: 0; padding: 0; place-items: center; }
-.prompt-actions .project-browser-toggle { display: grid; border-radius: 0 var(--control-radius) var(--control-radius) 0; }
-.prompt-actions .project-stack-toggle { position: relative; display: grid; overflow: visible; border-left: 1px solid var(--prompt-control-border); border-radius: var(--control-radius); }
-:is(.project-browser-toggle, .project-stack-toggle) svg { width: .9rem; height: .9rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.2; }
+.workspace-toolbar-actions .project-stack-toggle { overflow: visible; }
+.project-stack-toggle svg { width: .9rem; height: .9rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.2; }
 .project-stack-trigger .project-stack-server-icon { width: 1.15rem; height: 1.15rem; stroke-width: 1.8; }
 .project-stack-status-dot { position: absolute; top: .2rem; right: .2rem; width: .5rem; height: .5rem; border: 1px solid var(--mantle); border-radius: 50%; pointer-events: none; }
 .project-stack-status-dot { background: var(--overlay-0); box-shadow: 0 0 .4rem color-mix(in srgb, var(--overlay-0) 60%, transparent); }
 .project-stack-status-dot:is(.status-healthy, .status-running) { background: var(--green); box-shadow: 0 0 .45rem color-mix(in srgb, var(--green) 75%, transparent); }
 .project-stack-status-dot:is(.status-down, .status-stopped) { background: var(--red); box-shadow: 0 0 .45rem color-mix(in srgb, var(--red) 75%, transparent); }
 .project-stack-status-dot.status-working { background: var(--peach); box-shadow: 0 0 .45rem color-mix(in srgb, var(--peach) 75%, transparent); }
-.project-browser-toggle[aria-pressed='true'] { color: var(--blue); }
-.project-open-group.has-browser-control .project-open { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .more-menu.stack-menu { width: 13rem; }
 .more-menu.stack-menu .stack-log-menu-button { display: flex; align-items: center; gap: .45rem; color: var(--green); }
 .project-stack-view-actions { display: flex; width: 100%; align-items: stretch; margin-top: .3rem; border-top: 1px solid var(--surface-2); }
@@ -1133,7 +1154,7 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 @media (prefers-reduced-motion: reduce) { .tabs button.status-working::before, .tabs button.status-working::after, .tabs button.status-working .tab-label, .tabs button.unread, .tabs button.unread::after, .cleanup-toggle, .notes-toggle.unread-queued-prompts, .server-switcher-settings-wrap .server-switcher-settings.updates-available, .review-tour-toggle.generating, .browser-refresh.loading, .review-tour-backdrop, .review-tour, .voice-soundwave i { animation: none; } }
 /* the Reduced motion setting stills the same animations regardless of the OS */
 :root[data-motion="reduced"] .tabs button.status-working::before, :root[data-motion="reduced"] .tabs button.status-working::after, :root[data-motion="reduced"] .tabs button.status-working .tab-label, :root[data-motion="reduced"] .tabs button.unread, :root[data-motion="reduced"] .tabs button.unread::after, :root[data-motion="reduced"] .cleanup-toggle, :root[data-motion="reduced"] .notes-toggle.unread-queued-prompts, :root[data-motion="reduced"] .server-switcher-settings-wrap .server-switcher-settings.updates-available, :root[data-motion="reduced"] .review-tour-toggle.generating, :root[data-motion="reduced"] .browser-refresh.loading, :root[data-motion="reduced"] .review-tour-backdrop, :root[data-motion="reduced"] .review-tour, :root[data-motion="reduced"] .voice-soundwave i { animation: none; }
-@media (max-width: 600px) { :root { --edge: .75rem; }.tabs button { font-size: .75rem; padding: .3rem .45rem; }.worktree-view { gap: .75rem; }.prompt-actions { flex-wrap: wrap; }.agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .workspace-bar { display: block; padding: .25rem; border: 1px solid color-mix(in srgb, var(--surface-2) 78%, transparent); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 88%, transparent); box-shadow: 0 .35rem 1.2rem #0009, inset 0 1px color-mix(in srgb, var(--text) 7%, transparent); }.agent-view:has(.agent-panel):has(.log-output.input-active, .log-split.mobile-terminal-view) > .workspace-bar > .prompt-actions, .log-output.input-active > .agent-composer { display: none; }.agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .workspace-bar .mobile-terminal-keys { display: flex; justify-content: center; gap: .7rem; }.mobile-key-modifiers { display: grid; grid-template-columns: repeat(2, 3.15rem); gap: .2rem; }.mobile-arrow-keys { display: grid; grid-template-columns: repeat(3, 2rem); gap: .2rem; }.mobile-terminal-keys button { display: grid; width: 2rem; height: 2rem; padding: 0; place-items: center; border-color: var(--surface-2); border-radius: var(--control-radius); background: color-mix(in srgb, var(--surface-0) 90%, transparent); color: var(--text); box-shadow: none; }.mobile-key-modifiers button { width: 3.15rem; font: 800 .65rem var(--font-mono); }.mobile-terminal-keys button svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }.mobile-terminal-keys button.active { border-color: var(--sky); background: color-mix(in srgb, var(--sky) 32%, var(--surface-0)); color: var(--sky); } }
+@media (max-width: 600px) { :root { --edge: .75rem; }.tabs button { font-size: .75rem; padding: .3rem .45rem; }.worktree-view { gap: .75rem; }.workspace-toolbar-actions { flex-wrap: wrap; }.agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .workspace-toolbar { display: block; padding: .25rem; border: 1px solid color-mix(in srgb, var(--surface-2) 78%, transparent); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 88%, transparent); box-shadow: 0 .35rem 1.2rem #0009, inset 0 1px color-mix(in srgb, var(--text) 7%, transparent); }.agent-view:has(.agent-panel):has(.log-output.input-active, .log-split.mobile-terminal-view) > .workspace-toolbar > .workspace-toolbar-actions, .log-output.input-active > .agent-composer { display: none; }.agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .workspace-toolbar .mobile-terminal-keys { display: flex; justify-content: center; gap: .7rem; }.mobile-key-modifiers { display: grid; grid-template-columns: repeat(2, 3.15rem); gap: .2rem; }.mobile-arrow-keys { display: grid; grid-template-columns: repeat(3, 2rem); gap: .2rem; }.mobile-terminal-keys button { display: grid; width: 2rem; height: 2rem; padding: 0; place-items: center; border-color: var(--surface-2); border-radius: var(--control-radius); background: color-mix(in srgb, var(--surface-0) 90%, transparent); color: var(--text); box-shadow: none; }.mobile-key-modifiers button { width: 3.15rem; font: 800 .65rem var(--font-mono); }.mobile-terminal-keys button svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }.mobile-terminal-keys button.active { border-color: var(--sky); background: color-mix(in srgb, var(--sky) 32%, var(--surface-0)); color: var(--sky); } }
 .tabs .new-agent-tab { flex: 1 1 auto; justify-content: center; min-height: 2.6rem; margin: 0; border: 0; border-left: 1px solid color-mix(in srgb, var(--lavender) 45%, var(--surface-1)); border-radius: 0; background: linear-gradient(145deg, var(--surface-1), var(--surface-0)); color: var(--lavender); white-space: nowrap; padding: .5rem .75rem; font: 700 .78rem var(--font-mono); letter-spacing: .035em; box-shadow: inset 0 1px color-mix(in srgb, var(--text) 9%, transparent); }
 .tabs .new-agent-tab:hover { background: linear-gradient(145deg, var(--mauve), var(--blue)); color: var(--crust); }
 .tabs .launcher,.tabs .tab-spacer{flex:0 0 2.8rem;min-height:2.6rem}.tabs .launcher{position:relative;display:block}.tabs .launcher .new-agent-tab{width:100%;height:100%}.tabs .tab-spacer{border-left:1px solid color-mix(in srgb,var(--surface-1) 82%,transparent);background:linear-gradient(145deg,color-mix(in srgb,var(--surface-0) 82%,transparent),color-mix(in srgb,var(--mantle) 90%,transparent))}.launcher-menu{z-index:var(--layer-popover)}.launcher-menu button{justify-content:flex-start!important;border:0!important;padding:.55rem!important;text-align:left}
@@ -1534,11 +1555,10 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .prompt-attachments button { display: grid; flex: 0 0 1rem; width: 1rem; height: 1rem; padding: 0; place-items: center; border: 0; background: transparent; color: var(--overlay-1); font-size: 1rem; line-height: 1; }
 .prompt-attachments button:hover { color: var(--red); }
 .attachment-error { margin: 0; color: var(--red); font-size: .75rem; }
-.prompt-actions .more { font-size: 1.4rem; line-height: 1; }
-.prompt-actions .danger svg { width: 1.35rem; height: 1.35rem; }
+.workspace-toolbar-actions .more { font-size: 1.4rem; line-height: 1; }
 
 @media (max-width: 600px) {
-  .agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .workspace-bar .mobile-terminal-keys { display: grid; grid-template-columns: 3.15rem auto auto; align-items: start; justify-content: center; gap: .45rem .7rem; }
+  .agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .workspace-toolbar .mobile-terminal-keys { display: grid; grid-template-columns: 3.15rem auto auto; align-items: start; justify-content: center; gap: .45rem .7rem; }
   .mobile-control-keys { display: grid; grid-template-columns: 3.15rem; gap: .2rem; }
   .mobile-control-keys button { width: 3.15rem; font: 800 .65rem var(--font-mono); }
 }
@@ -1604,10 +1624,10 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .review-tour-summary li > span.skipped { color: var(--yellow); }
 .review-tour-summary > p { color: var(--subtext-0); }
 .review-tour-sent { color: var(--green) !important; }
-.prompt-actions .review-tour-toggle { border-color: color-mix(in srgb, var(--blue) 68%, var(--surface-2)); color: var(--sky); }
-.prompt-actions .review-tour-toggle svg { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
-.prompt-actions .review-tour-toggle.generating { border-color: color-mix(in srgb, var(--blue) 68%, var(--surface-2)); animation: review-generating-glow 1.2s ease-in-out infinite; }
-.prompt-actions .review-tour-toggle.stale { border-color: color-mix(in srgb, var(--yellow) 72%, var(--surface-2)); color: var(--yellow); }
+.workspace-toolbar-actions .review-tour-toggle { border-color: color-mix(in srgb, var(--blue) 68%, var(--surface-2)); color: var(--sky); }
+.workspace-toolbar-actions .review-tour-toggle svg { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
+.workspace-toolbar-actions .review-tour-toggle.generating { border-color: color-mix(in srgb, var(--blue) 68%, var(--surface-2)); animation: review-generating-glow 1.2s ease-in-out infinite; }
+.workspace-toolbar-actions .review-tour-toggle.stale { border-color: color-mix(in srgb, var(--yellow) 72%, var(--surface-2)); color: var(--yellow); }
 
 @media (max-width: 760px) {
   .review-tour-header { padding: .75rem; }
@@ -1653,7 +1673,7 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .launch-split .launch-primary { gap: .4rem; border-right: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; background: transparent; box-shadow: none; }
 .launch-split .launch-chevron { display: inline-flex; flex: 0 0 2.1rem; align-items: center; justify-content: center; height: var(--standard-control-size); padding: 0; border: 1px solid color-mix(in srgb, var(--lavender) 54%, transparent); border-left: 1px solid color-mix(in srgb, var(--crust) 65%, transparent); border-radius: 0 var(--control-radius) var(--control-radius) 0; background: transparent; color: var(--crust); box-shadow: none; }
 .launch-split:has(> button:not(:disabled):hover) { filter: brightness(1.08); }
-.prompt-actions .launch-split > button:not(:disabled):hover, .launcher-menu .launch-split > button:not(:disabled):hover { filter: none; }
+.workspace-toolbar-actions .launch-split > button:not(:disabled):hover, .launcher-menu .launch-split > button:not(:disabled):hover { filter: none; }
 .launch-split .launch-chevron:disabled { opacity: .5; }
 .launch-chevron-icon { width: .9rem; height: .9rem; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
 .queue.launch-primary .launch-lock { stroke: var(--crust); }

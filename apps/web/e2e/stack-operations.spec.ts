@@ -31,7 +31,7 @@ test('keeps the stack flyout available during an operation', async ({ page }) =>
 
 test('consolidates managed project controls into one server flyout', async ({ page }) => {
   await page.goto('/');
-  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="prompt-actions"><div id="control-root"></div></div>');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
   await page.evaluate(async () => {
     const { renderProjectOpenControls } = await import('/e2e/project-open-fixture.tsx');
     renderProjectOpenControls(document.querySelector<HTMLElement>('#control-root')!);
@@ -78,7 +78,7 @@ test('consolidates managed project controls into one server flyout', async ({ pa
 
 test('keeps project view controls available while the stack is stopped', async ({ page }) => {
   await page.goto('/');
-  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="prompt-actions"><div id="control-root"></div></div>');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
   await page.evaluate(async () => {
     const { renderStoppedProjectOpenControls } = await import('/e2e/project-open-fixture.tsx');
     renderStoppedProjectOpenControls(document.querySelector<HTMLElement>('#control-root')!);
@@ -88,7 +88,6 @@ test('keeps project view controls available while the stack is stopped', async (
   await expect(root.getByRole('link')).toHaveCount(0);
   const toggle = root.getByRole('button', { name: 'Stack controls: down' });
   await expect(toggle).toBeVisible();
-  await expect(root.locator('.project-open-group')).toHaveClass(/has-browser-control/u);
   await toggle.click();
   await expect(page.getByRole('link', { name: 'Open', exact: true })).not.toHaveAttribute('aria-disabled', 'true');
   await expect(page.getByRole('button', { name: 'Split', exact: true })).toBeEnabled();
@@ -96,7 +95,7 @@ test('keeps project view controls available while the stack is stopped', async (
 
 test('keeps direct project controls visible independently of managed stack state', async ({ page }) => {
   await page.goto('/');
-  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="prompt-actions"><div id="direct-root"></div><div id="unavailable-root"></div></div>');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="direct-root"></div><div id="unavailable-root"></div></div>');
   await page.evaluate(async () => {
     const { renderDirectProjectOpenControls, renderUnavailableDirectProjectOpenControls } = await import('/e2e/project-open-fixture.tsx');
     renderDirectProjectOpenControls(document.querySelector<HTMLElement>('#direct-root')!);
@@ -105,11 +104,8 @@ test('keeps direct project controls visible independently of managed stack state
 
   const direct = page.locator('#direct-root');
   await expect(direct.getByRole('link', { name: 'Open' })).toHaveAttribute('href', 'https://external-preview.example/map/');
-  const directSplit = direct.getByRole('button', { name: 'Open project in split view' });
-  await expect(directSplit).toBeEnabled();
-  await expect(direct.getByRole('button', { name: 'Stack controls' })).toHaveCount(0);
-  await directSplit.click();
-  await expect(directSplit).toHaveAttribute('aria-pressed', 'true');
+  // the Workspace toolbar's Browser button opens the split, so a direct project shows only its link
+  await expect(direct.getByRole('button')).toHaveCount(0);
 
   const unavailable = page.locator('#unavailable-root');
   const unavailableToggle = unavailable.getByRole('button', { name: 'Stack controls: down' });
@@ -123,7 +119,7 @@ test('keeps direct project controls visible independently of managed stack state
 
 test('shows stack controls when the worktree has commands but no project URL', async ({ page }) => {
   await page.goto('/');
-  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="prompt-actions"><div id="control-root"></div></div>');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
   await page.evaluate(async () => {
     const { renderStackOnlyControls } = await import('/e2e/project-open-fixture.tsx');
     renderStackOnlyControls(document.querySelector<HTMLElement>('#control-root')!);
@@ -143,7 +139,7 @@ test('shows stack controls when the worktree has commands but no project URL', a
 test('shows accessible running, stopped, and unknown states on stack-only controls', async ({ page }) => {
   // render every published running state
   await page.goto('/');
-  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="prompt-actions"><div id="control-root"></div></div>');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
   await page.evaluate(async () => {
     const { renderStackOnlyStatuses } = await import('/e2e/project-open-fixture.tsx');
     renderStackOnlyStatuses(document.querySelector<HTMLElement>('#control-root')!);

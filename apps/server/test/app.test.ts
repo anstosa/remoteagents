@@ -1034,6 +1034,28 @@ describe('agent GitHub Actions route', () => {
       expect(missing.statusCode).toBe(404);
     } finally { await actionsApp.close(); }
   }, 15_000);
+
+  it('looks up a Worktree’s actions URL from its checkout, with no Agent running there', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const worktree = { id: 'cora', projectId: 'demo', identity: '/worktrees/cora', path: '/worktrees/cora', label: 'Cora', main: false, detached: false, locked: false };
+    const requested: string[] = [];
+    const actionsApp = await buildApp(config, {
+      auth: new AuthService(hash, Buffer.alloc(32, 8).toString('base64url')),
+      discovery: { worktreesNow: () => [worktree] } as never,
+      prSwitch: { actionsUrlAt: async (workspace: string) => { requested.push(workspace); return 'https://github.com/octo/repo/actions'; } } as never
+    });
+    try {
+      const boot = await actionsApp.inject({ method: 'GET', url: '/api/auth/bootstrap', headers: { host: 'agents.example.com' } });
+      const login = await actionsApp.inject({ method: 'POST', url: '/api/auth/login', headers: { host: 'agents.example.com', origin: 'https://agents.example.com', 'x-csrf-token': boot.json().csrfToken }, payload: { password: 'synthetic-password' } });
+      const headers = { host: 'agents.example.com', cookie: String(login.headers['set-cookie']).split(';')[0] };
+      const actions = await actionsApp.inject({ method: 'GET', url: '/api/worktrees/cora/github-actions', headers });
+      const unknown = await actionsApp.inject({ method: 'GET', url: '/api/worktrees/nope/github-actions', headers });
+
+      expect(actions.json()).toEqual({ url: 'https://github.com/octo/repo/actions' });
+      expect(requested).toEqual(['/worktrees/cora']);
+      expect(unknown.statusCode).toBe(404);
+    } finally { await actionsApp.close(); }
+  }, 15_000);
 });
 
 describe('guided review API boundary', () => {

@@ -66,7 +66,7 @@ test('keeps agent on/off progress visible across lifecycle transitions', async (
   await expect(page.locator('.server-switcher, .output-server-switcher')).toHaveCount(0);
   await expect(page.locator('.tabs > .tab-row-lead .server-selector')).toBeVisible();
 
-  await page.locator('.prompt-actions').getByRole('button', { name: 'Choose agent' }).click();
+  await page.locator('.workspace-toolbar-actions').getByRole('button', { name: 'Choose agent' }).click();
   await page.getByRole('menu', { name: 'Choose agent' }).getByRole('menuitem', { name: /^OMX/u }).click();
   const pendingLaunch = page.getByRole('status').filter({ hasText: 'Starting Cora' });
   await expect(pendingLaunch).toContainText('waiting for the agent session to become ready');
@@ -193,8 +193,11 @@ test('turns off an idle agent and keeps the tab of its pinned worktree', async (
   await expect(page.locator('.server-switcher, .output-server-switcher')).toHaveCount(0);
   await expect(page.locator('.tabs > .tab-row-lead .server-selector')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Wake up' })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Worktree power options' }).click();
-  await expect(page.getByRole('menu', { name: 'Worktree power options' }).getByRole('menuitem')).toHaveText(['Rename worktree', 'Remove worktree']);
+  // with no agent panel, Rename and Remove wait in the toolbar's ⋮ of Place actions
+  await page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'More options' }).click();
+  const placeMenu = page.locator('.place-menu');
+  await expect(placeMenu.getByRole('button', { name: 'Rename worktree…' })).toBeEnabled();
+  await expect(placeMenu.getByRole('button', { name: 'Remove worktree…' })).toBeVisible();
 });
 
 // verify an unpinned Worktree's tab closes with its agent

@@ -102,19 +102,19 @@ test('an unavailable kind is disabled in the menu with its reason', async ({ pag
 test('zero configured adapters disables the primary with the config hint and a disabled chevron', async ({ page }) => {
   await mount(page, { generation: 1, adapters: {}, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({})] }] });
   // scope to the card's split button — the "+" launcher tab shares the "Launch agent" name
-  const primary = page.locator('.prompt-actions .launch-primary');
+  const primary = page.locator('.workspace-toolbar-actions .launch-primary');
   await expect(primary).toHaveText('Launch agent');
   await expect(primary).toBeDisabled();
-  await expect(page.locator('.prompt-actions .launch-chevron')).toBeDisabled();
+  await expect(page.locator('.workspace-toolbar-actions .launch-chevron')).toBeDisabled();
   await expect(page.getByText('No agents configured — add an adapters entry to the console config.')).toBeVisible();
 });
 
 test('configured but none launchable disables the primary yet still opens the menu', async ({ page }) => {
   const brokenCodex = adapter('/bin/codex', { launchable: false, unavailableReason: '/bin/codex is not executable' });
   await mount(page, { generation: 1, adapters: { codex: brokenCodex }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({})] }] });
-  await expect(page.locator('.prompt-actions .launch-primary')).toBeDisabled();
+  await expect(page.locator('.workspace-toolbar-actions .launch-primary')).toBeDisabled();
   await expect(page.getByText('No configured agent is launchable right now')).toBeVisible();
-  await page.locator('.prompt-actions .launch-chevron').click();
+  await page.locator('.workspace-toolbar-actions .launch-chevron').click();
   await expect(page.locator('.launch-menu').getByRole('menuitem', { name: /Codex/ })).toBeDisabled();
 });
 
@@ -135,7 +135,7 @@ test('the launcher offers Scratch and each worktree the same split button', asyn
   const rowLaunch = worktreeRow.getByRole('button', { name: 'Launch Claude' });
   await expect(rowLaunch).toBeVisible();
   // the wrapper paints one gradient beneath both transparent button segments
-  const fullSplit = page.locator('.prompt-actions .launch-split');
+  const fullSplit = page.locator('.workspace-toolbar-actions .launch-split');
   const compactSplit = worktreeRow.locator('.launch-split.compact');
   await expect(fullSplit).toHaveCSS('background-image', /linear-gradient/);
   await expect(compactSplit).toHaveCSS('background-image', /linear-gradient/);

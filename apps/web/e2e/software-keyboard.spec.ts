@@ -81,7 +81,7 @@ test('hides the tablist under the keyboard and keeps pane focus across streamed 
   // The split-view browser keeps the output full-width across keyboard aspect changes.
   await page.setViewportSize({ width: 900, height: 1200 });
   await setViewportHeight(1200);
-  await page.getByRole('button', { name: 'Open project in split view' }).click();
+  await page.getByRole('button', { name: 'Browser', exact: true }).click();
   const browser = page.getByRole('dialog', { name: 'Browser' });
   await expect(browser).toBeVisible();
   await expect.poll(() => output.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThanOrEqual(899);

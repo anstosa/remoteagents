@@ -86,7 +86,7 @@ test('keeps launch state on its worktree tab and does not pull focus back after 
   });
 
   await page.goto('/');
-  const launchButton = page.locator('.prompt-actions .queue');
+  const launchButton = page.locator('.workspace-toolbar-actions .queue');
   await launchButton.click();
   await expect(launchButton).toBeDisabled();
 

@@ -333,7 +333,7 @@ test('opens the configured project in desktop and mobile split views', async ({ 
   await browser.getByRole('button', { name: 'Close browser' }).click();
   await expect(note).toBeVisible();
   await page.getByRole('tab', { name: 'Delta — Agent closed' }).click();
-  await page.getByRole('button', { name: 'Open project in split view' }).click();
+  await page.getByRole('button', { name: 'Browser', exact: true }).click();
   await expect(browser.locator('.browser-frame-shell')).toHaveClass(/desktop/u);
   await browser.getByRole('button', { name: 'Close browser' }).click();
 
@@ -467,7 +467,7 @@ test.describe('phone browser split', () => {
     await page.goto('/');
     expect(await page.evaluate(() => navigator.userAgent)).toContain('Mobile');
     expect(await page.evaluate(() => navigator.maxTouchPoints)).toBeGreaterThan(0);
-    await page.getByRole('button', { name: 'Open project in split view' }).click();
+    await page.getByRole('button', { name: 'Browser', exact: true }).click();
 
     const browser = page.getByRole('dialog', { name: 'Browser' });
     const output = page.locator('.log-output');

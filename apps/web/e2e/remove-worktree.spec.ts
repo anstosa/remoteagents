@@ -72,14 +72,14 @@ test('removes a linked worktree with discard and branch-delete from the launcher
   await expect(dialog).toBeHidden();
 });
 
-test('removes a linked worktree from the idle tab power menu', async ({ page }) => {
+test('removes a linked worktree from the idle tab toolbar menu', async ({ page }) => {
   let deleted: unknown;
   await stub(page, { onDelete: body => { deleted = body; } });
   await page.goto('/');
-  // the pinned idle worktree has its own tab; open it, then its power menu → Remove
+  // the pinned idle worktree has its own tab; open it, then the toolbar's ⋮ → Remove
   await page.getByRole('tab', { name: /Repo · feat/u }).click();
-  await page.getByRole('button', { name: 'Worktree power options' }).click();
-  await page.getByRole('menuitem', { name: 'Remove worktree' }).click();
+  await page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'More options' }).click();
+  await page.locator('.place-menu').getByRole('button', { name: 'Remove worktree…' }).click();
   const dialog = page.getByRole('dialog', { name: 'Remove worktree' });
   await expect(dialog).toBeVisible();
   await dialog.getByLabel('Discard uncommitted changes').check();

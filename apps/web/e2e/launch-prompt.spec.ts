@@ -400,7 +400,7 @@ test('keeps one returned scratch launch pending beyond the discovery timeout', a
   await expect(prompt).toHaveValue('Late scratch handoff');
   await expect(page.getByLabel('Selected attachments')).toContainText('late-context.txt');
   // no retry while the launch is still under way: it would sit in the row beneath the tabs
-  await expect(page.getByRole('region', { name: 'Workspace controls' }).getByRole('button', { name: 'Launch Codex' })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'Launch Codex' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Discard failed launch' })).toHaveCount(0);
   expect(harness.launchRequests()).toBe(1);
 

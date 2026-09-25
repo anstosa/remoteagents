@@ -92,10 +92,12 @@ export function LaunchMenu({ verb, label, resolution, onLaunch }: { verb: Launch
 
 // The split button: primary launches the resolved kind in one click (naming it, with a
 // lock when Sandboxed); the chevron opens the actions menu. `compact` gives the launcher
-// rows the same control sized to a row, its menu the same anchored flyout. When the
+// rows the same control sized to a row, its menu the same anchored flyout. `quiet` is the Workspace
+// toolbar's Launch beside a running Agent: the kind mark and the verb on a plain control.
+// `disabledReason` titles a disabled primary with why it cannot launch. When the
 // dashboard carries no resolution (`resolution === undefined`) the control degrades to a
 // single plain "Launch agent" that launches without a kind, as before the split button.
-export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch, disabled = false, pending = false, compact = false }: { verb?: LaunchVerb; label: string; resolution: LaunchResolution | undefined; onLaunch: (choice?: LaunchChoice) => void; disabled?: boolean; pending?: boolean; compact?: boolean }) {
+export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch, disabled = false, disabledReason, pending = false, compact = false, quiet = false }: { verb?: LaunchVerb; label: string; resolution: LaunchResolution | undefined; onLaunch: (choice?: LaunchChoice) => void; disabled?: boolean; disabledReason?: string; pending?: boolean; compact?: boolean; quiet?: boolean }) {
   const adapters = useContext(AdaptersContext);
   const [open, setOpen] = useState(false);
   const { anchorRef, flyoutRef, style } = useViewportFlyout<HTMLSpanElement>(open);
@@ -117,7 +119,7 @@ export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch
   // no resolution from the server: a plain, chevron-less launch of the default kind,
   // rendered exactly like the pre-split-button launch control
   if (resolution === undefined) {
-    return <button type="button" className={primaryClass} disabled={disabled || pending} onClick={() => launch()}>{pending ? <span className="spinner" /> : null}{actionCopy(verb, undefined)}</button>;
+    return <button type="button" className={`${primaryClass}${quiet ? ' launch-quiet' : ''}`} disabled={disabled || pending} onClick={() => launch()}>{pending ? <span className="spinner" /> : null}{actionCopy(verb, undefined)}</button>;
   }
   const none = configuredKinds(adapters).length === 0;
   const resolvedKind = resolution.kind;
@@ -125,11 +127,11 @@ export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch
   const hint = launchHint(adapters, resolution);
   const menu = <LaunchMenu verb={verb} label={label} resolution={resolution} onLaunch={launch} />;
   // let the icon identify compact agents without widening the new-task column
-  const visibleAction = compact && resolvedKind !== undefined ? verb : actionCopy(verb, resolvedKind);
-  const primaryTitle = hint ?? (resolvedKind === undefined ? undefined : `${agentKindLabel[resolvedKind]} — ${originCopy(resolution.origin)}${sandboxed ? ' — sandboxed' : ''}`);
+  const visibleAction = (compact || quiet) && resolvedKind !== undefined ? verb : actionCopy(verb, resolvedKind);
+  const primaryTitle = (disabled ? disabledReason : undefined) ?? hint ?? (resolvedKind === undefined ? undefined : `${agentKindLabel[resolvedKind]} — ${originCopy(resolution.origin)}${sandboxed ? ' — sandboxed' : ''}`);
   return <>
     {!compact && hint !== undefined && <small className="launch-hint">{hint}</small>}
-    <span className={`launch-split${compact ? ' compact' : ''}`} role="group" aria-label={`${verb} agent`} ref={anchorRef}>
+    <span className={`launch-split${compact ? ' compact' : ''}${quiet ? ' quiet' : ''}`} role="group" aria-label={`${verb} agent`} ref={anchorRef}>
       <button type="button" className={`${primaryClass} launch-primary`} aria-label={actionCopy(verb, resolvedKind)} disabled={resolvedKind === undefined || disabled || pending} title={primaryTitle} onClick={() => resolvedKind !== undefined && launch({ kind: resolvedKind, sandboxed })}>
         {pending ? <span className="spinner" /> : resolvedKind !== undefined && <KindMark kind={resolvedKind} />}{visibleAction}{sandboxed && <LockIcon />}
       </button>

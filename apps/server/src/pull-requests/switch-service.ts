@@ -120,6 +120,11 @@ export class PullRequestSwitchService {
     return await this.pullRequests.actionsUrl(worktree?.identity ?? target.agent.home);
   }
 
+  // the Actions page of the GitHub repository checked out at one folder, with no Agent needed
+  async actionsUrlAt(checkout: string): Promise<string | undefined> {
+    return await this.pullRequests.actionsUrl(checkout);
+  }
+
   async switch(agentId: string, number: number): Promise<BranchSwitchResult> {
     // reject invalid or concurrent branch mutations
     if (!Number.isInteger(number) || number < 1 || this.branchMutationInProgress) return 'unavailable';

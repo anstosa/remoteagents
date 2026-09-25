@@ -30,7 +30,10 @@ test('keeps attachments and repository choices out of the more menu', async ({ p
   await page.goto('/');
   const attachmentShortcut = page.locator('.agent-composer-column').getByRole('button', { name: 'Attach files', exact: true });
   await expect(attachmentShortcut).toBeVisible();
-  await page.getByRole('button', { name: 'More options' }).click();
+  // the ⋮ of Place actions ends the Workspace toolbar
+  const more = page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'More options' });
+  await expect(page.locator('.workspace-toolbar-actions > :last-child')).toContainText('⋮');
+  await more.click();
   const menu = page.locator('.more-menu');
   await expect(menu.getByRole('button', { name: 'Attach files', exact: true })).toHaveCount(0);
   await expect(menu.getByText('Pull requests', { exact: true })).toHaveCount(0);
