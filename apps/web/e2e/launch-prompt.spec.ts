@@ -293,6 +293,9 @@ test('preserves the prepared draft and files after launch failure and retry', as
   await prompt.fill('Retry this prepared prompt');
   await attach(page, 'retry-context.txt', 'retry context');
   await expect(page.locator('.launch-error')).toContainText('Agent launch failed for the test.');
+  // the pending-launch view has no floating server switcher; the tab row leads with it
+  await expect(page.locator('.server-switcher, .output-server-switcher')).toHaveCount(0);
+  await expect(page.locator('.tabs > .tab-row-lead .server-selector')).toBeVisible();
   await expect(prompt).toHaveValue('Retry this prepared prompt');
   await expect(page.getByLabel('Selected attachments')).toContainText('retry-context.txt');
   await expect(page.getByRole('button', { name: 'Queue', exact: true })).toBeDisabled();

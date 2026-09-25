@@ -31,8 +31,11 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   await activeTab.click();
   await expect(activeTab).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByLabel('Live log')).toBeVisible();
-  const callDavo = page.locator('.output-server-switcher').getByRole('button', { name: 'Call Davo' });
-  await expect(callDavo.locator('span')).toHaveText('Call Davo');
+  // the phone tab row opens on the server selector, an icon-only Call and settings
+  const lead = page.locator('.tabs > .tab-row-lead');
+  await expect(lead.getByRole('button', { name: 'Call Davo' }).locator('svg')).toBeVisible();
+  await expect(lead.getByRole('button', { name: 'Call Davo' }).locator('span')).toBeHidden();
+  await expect(lead.locator('.server-selector-name')).toBeHidden();
   const gitStatus = page.getByLabel('Git status: feature/output-git-summary; 3 changes (1 staged file, 2 unstaged files, 1 untracked file)');
   await expect(gitStatus).toBeVisible();
   await gitStatus.click();
@@ -68,9 +71,8 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
       stackTrigger: bounds('.project-stack-trigger'),
       stackDot: bounds('.project-stack-status-dot'),
       logStatus: bounds('.log-status'),
-      serverSwitcher: bounds('.output-server-switcher'),
-      serverSettings: bounds('.output-server-switcher .server-switcher-settings'),
-      promptMore: bounds('.prompt-actions .more'),
+      tabRowLead: bounds('.tab-row-lead'),
+      serverSettings: bounds('.tab-row-lead .server-switcher-settings'),
       logStatusStyle: (() => {
         const style = getComputedStyle(document.querySelector<HTMLElement>('.log-status')!);
         return { position: style.position, boxShadow: style.boxShadow, backgroundColor: style.backgroundColor, color: style.color, backdropFilter: style.backdropFilter };
@@ -113,16 +115,15 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   expect(layout.logStatusStyle.backgroundColor).toBe('rgb(249, 226, 175)');
   expect(layout.logStatusStyle.color).toBe('rgb(17, 17, 27)');
   expect(layout.logStatusStyle.backdropFilter).toBe('none');
-  expect(layout.logStatus.top).toBeGreaterThan(layout.serverSwitcher.bottom);
-  expect(Math.abs(layout.logStatus.left - layout.serverSwitcher.left)).toBeLessThanOrEqual(1);
-  expect(layout.logStatus.height).toBeLessThan(layout.serverSwitcher.height);
+  // nothing floats over the output's top-left corner but the status pill
+  expect(Math.abs(layout.logStatus.top - layout.output.top - 6)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.logStatus.left - layout.output.left - 6)).toBeLessThanOrEqual(1);
   expect(Math.abs(layout.logStatus.height - 32)).toBeLessThanOrEqual(1);
-  expect(Math.abs(layout.serverSwitcher.height - layout.promptMore.height)).toBeLessThanOrEqual(1);
-  expect(Math.abs(layout.serverSettings.width - layout.promptMore.width)).toBeLessThanOrEqual(1);
-  expect(Math.abs(layout.serverSettings.height - layout.promptMore.height)).toBeLessThanOrEqual(1);
-  expect(Math.abs(layout.serverSwitcher.left - layout.prompt.left)).toBeLessThanOrEqual(1);
-  expect(layout.serverSwitcher.right).toBeLessThanOrEqual(layout.prompt.right);
-  expect(layout.serverSwitcher.width).toBeLessThan(layout.prompt.width);
+  // the server selector, Call and settings lead the tab row at tab height
+  expect(Math.abs(layout.tabRowLead.left - layout.tabs.left)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.tabRowLead.top - layout.tabs.top)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.serverSettings.height - layout.activeTab.height)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.serverSettings.width - layout.serverSettings.height)).toBeLessThanOrEqual(1);
   // the upper toolbar is gone: tabs sit directly under the output, and no .log-topbar exists
   expect(Math.abs(layout.tabs.top - layout.output.bottom)).toBeLessThanOrEqual(1);
   await expect(page.locator('.log-topbar')).toHaveCount(0);

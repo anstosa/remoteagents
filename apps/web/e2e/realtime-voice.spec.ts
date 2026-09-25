@@ -85,7 +85,7 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
 
   await page.goto('/');
   const settings = page.getByRole('button', { name: 'Global settings' });
-  await expect(page.locator('.output-server-switcher > :last-child').getByRole('button', { name: 'Global settings' })).toBeVisible();
+  await expect(page.locator('.tabs > .tab-row-lead > :last-child').getByRole('button', { name: 'Global settings' })).toBeVisible();
   await expect(settings).toHaveText('');
   await expect(settings.locator('svg')).toHaveCount(1);
   await expect.poll(() => settings.evaluate(button => { const box = button.getBoundingClientRect(); return Math.abs(box.width - box.height); })).toBeLessThanOrEqual(1);
@@ -116,8 +116,12 @@ test('opens Davo with the selected canonical context', async ({ page }) => {
   await expect(serverRenameDialog).toHaveCount(0);
   expect(renamedServer).toEqual({ name: 'Garage Server' });
   await settingsPage.getByRole('button', { name: 'Back to console' }).click();
-  const callTrigger = page.locator('.output-server-switcher').getByRole('button', { name: 'Call Davo' });
-  await expect(page.locator('.output-server-switcher > button').first()).toHaveAttribute('aria-label', 'Call Davo');
+  const callTrigger = page.locator('.tab-row-lead').getByRole('button', { name: 'Call Davo' });
+  // the server selector leads the row, then Call and settings
+  await expect(page.locator('.tab-row-lead > :first-child')).toHaveClass(/server-selector/u);
+  await expect(page.locator('.tab-row-lead > :nth-child(2)')).toHaveAttribute('aria-label', 'Call Davo');
+  await expect(callTrigger.locator('span')).toHaveText('Call Davo');
+  await expect(callTrigger.locator('span')).toBeVisible();
   await expect(callTrigger.locator('svg')).toHaveCount(1);
   await callTrigger.click();
   await expect(page.getByRole('heading', { name: 'Davo' })).toBeVisible();
@@ -199,7 +203,7 @@ test('shows graceful Davo context fallbacks without worktree or instance data', 
   });
 
   await page.goto('/');
-  await page.locator('.output-server-switcher').getByRole('button', { name: 'Call Davo' }).click();
+  await page.locator('.tab-row-lead').getByRole('button', { name: 'Call Davo' }).click();
   const context = page.getByRole('region', { name: 'Davo connection context' });
   await expect(context.locator('.voice-context-active > strong')).toHaveText('No worktree selected');
   await expect(context.locator('.voice-context-server > strong')).toHaveText('Unavailable');
@@ -276,12 +280,13 @@ test('mobile swaps between an ongoing Davo call and the main UI', async ({ page 
 
   await page.goto('/');
   expect(await page.evaluate(() => (window as unknown as { davoWakeLockState: { requests: number } }).davoWakeLockState.requests)).toBe(0);
-  await page.locator('.output-server-switcher').getByRole('button', { name: 'Call Davo' }).click();
+  await page.locator('.tab-row-lead').getByRole('button', { name: 'Call Davo' }).click();
   await credentialRequest;
   await expect.poll(() => page.evaluate(() => (window as unknown as { davoWakeLockState: { requests: number } }).davoWakeLockState.requests)).toBe(1);
   const ongoingCall = page.getByRole('button', { name: 'Ongoing Davo call', exact: true });
   await expect(ongoingCall).toHaveAttribute('aria-pressed', 'true');
-  await expect(ongoingCall.locator('span')).toHaveText('Ongoing');
+  // the phone shows Call as an icon only
+  await expect(ongoingCall.locator('span')).toBeHidden();
   expect(await ongoingCall.evaluate(element => getComputedStyle(element).color)).toBe('rgb(166, 227, 161)');
   await page.getByRole('button', { name: 'Ongoing Davo call — show main UI' }).click();
   await expect(page.getByRole('heading', { name: 'Davo' })).toHaveCount(0);
@@ -397,16 +402,16 @@ test('waits for MCP tools and requests a spoken follow-up after tool completion'
   });
 
   await page.goto('/');
-  await page.locator('.output-server-switcher').getByRole('button', { name: 'Call Davo' }).click();
+  await page.locator('.tab-row-lead').getByRole('button', { name: 'Call Davo' }).click();
   const calling = page.getByRole('button', { name: 'Calling...' });
   await expect(calling).toBeVisible();
-  await expect(page.locator('.output-server-switcher .server-switcher-voice')).toBeHidden();
+  await expect(page.locator('.tab-row-lead .server-switcher-voice')).toBeHidden();
   // keep Davo at phone width beside the usable desktop UI
   const split = await page.evaluate(() => {
     const voice = document.querySelector<HTMLElement>('.voice-dialog')?.getBoundingClientRect();
     const panel = document.querySelector<HTMLElement>('.console > .panel')?.getBoundingClientRect();
     const output = document.querySelector<HTMLElement>('.log')?.getBoundingClientRect();
-    const buttons = document.querySelector<HTMLElement>('.output-server-switcher')?.getBoundingClientRect();
+    const buttons = document.querySelector<HTMLElement>('.tab-row-lead')?.getBoundingClientRect();
     return { voiceLeft: voice?.left, voiceRight: voice?.right, voiceWidth: voice?.width, panelLeft: panel?.left, outputLeft: output?.left, outputRight: output?.right, buttonsLeft: buttons?.left, viewportWidth: window.innerWidth };
   });
   expect(split.voiceLeft).toBe(0);
@@ -414,7 +419,7 @@ test('waits for MCP tools and requests a spoken follow-up after tool completion'
   expect(split.panelLeft).toBe(split.voiceRight);
   expect(split.outputLeft).toBe(split.voiceRight);
   expect(split.outputRight).toBe(split.viewportWidth);
-  expect(split.buttonsLeft).toBeGreaterThan(split.voiceRight ?? 0);
+  expect(split.buttonsLeft).toBeGreaterThanOrEqual(split.voiceRight ?? 0);
   await expect(page.getByLabel('Live log')).toBeVisible();
   // verify centered symmetric call controls
   const callButtonStyle = await calling.evaluate(button => { const style = getComputedStyle(button); return { left: style.paddingLeft, right: style.paddingRight, alignment: style.justifyContent }; });
@@ -619,7 +624,7 @@ test('waits for MCP tools and requests a spoken follow-up after tool completion'
   await expect(dialogCall).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as { davoHangupPlays?: number }).davoHangupPlays ?? 0)).toBe(1);
   await expect(page.locator('.voice-dialog')).toHaveCount(0, { timeout: 2_500 });
-  await page.locator('.output-server-switcher').getByRole('button', { name: 'Call Davo' }).click();
+  await page.locator('.tab-row-lead').getByRole('button', { name: 'Call Davo' }).click();
   await expect(page.getByText('Loading Davo tools…')).toBeVisible();
   await page.evaluate(() => (window as unknown as { davoChannel: EventTarget }).davoChannel.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'mcp_list_tools.completed' }) })));
   await page.getByRole('button', { name: 'Hang up' }).click();
@@ -627,7 +632,7 @@ test('waits for MCP tools and requests a spoken follow-up after tool completion'
   await expect.poll(() => page.evaluate(() => (window as unknown as { davoHangupPlays?: number }).davoHangupPlays ?? 0)).toBe(2);
   await expect(page.locator('.voice-dialog')).toHaveCount(0, { timeout: 2_500 });
   // keep unexpected provider disconnects visible
-  await page.locator('.output-server-switcher').getByRole('button', { name: 'Call Davo' }).click();
+  await page.locator('.tab-row-lead').getByRole('button', { name: 'Call Davo' }).click();
   await expect(page.getByText('Loading Davo tools…')).toBeVisible();
   await page.evaluate(() => (window as unknown as { davoChannel: EventTarget }).davoChannel.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'mcp_list_tools.completed' }) })));
   await page.evaluate(() => { const data = (window as unknown as { davoChannel: EventTarget }).davoChannel; data.dispatchEvent(new Event('close')); });

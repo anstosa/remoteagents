@@ -262,20 +262,20 @@ test('shows every pull request target while keeping checkout and worktree action
 
   // close without activating a covered control
   const deltaTab = page.getByRole('tab', { name: /^Delta/u });
-  const settings = page.getByRole('button', { name: 'Global settings' }).first();
+  const prompt = page.getByRole('textbox', { name: 'Prompt' });
   await expect(deltaTab).toHaveAttribute('aria-selected', 'false');
-  await expect(settings).toHaveAttribute('aria-expanded', 'false');
-  const [settingsBox, menuBox] = await Promise.all([settings.boundingBox(), menu.boundingBox()]);
-  expect(settingsBox).not.toBeNull();
+  await expect(prompt).not.toBeFocused();
+  const [promptBox, menuBox] = await Promise.all([prompt.boundingBox(), menu.boundingBox()]);
+  expect(promptBox).not.toBeNull();
   expect(menuBox).not.toBeNull();
   // require rendered menu bounds
-  if (settingsBox === null || menuBox === null) throw new Error('menu dismissal bounds unavailable');
-  const settingsPoint = { x: settingsBox.x + settingsBox.width / 2, y: settingsBox.y + settingsBox.height / 2 };
-  const settingsOutsideMenu = settingsPoint.x < menuBox.x || settingsPoint.x > menuBox.x + menuBox.width || settingsPoint.y < menuBox.y || settingsPoint.y > menuBox.y + menuBox.height;
-  expect(settingsOutsideMenu).toBe(true);
-  await page.mouse.click(settingsPoint.x, settingsPoint.y);
+  if (promptBox === null || menuBox === null) throw new Error('menu dismissal bounds unavailable');
+  const promptPoint = { x: promptBox.x + promptBox.width / 2, y: promptBox.y + promptBox.height / 2 };
+  const promptOutsideMenu = promptPoint.x < menuBox.x || promptPoint.x > menuBox.x + menuBox.width || promptPoint.y < menuBox.y || promptPoint.y > menuBox.y + menuBox.height;
+  expect(promptOutsideMenu).toBe(true);
+  await page.mouse.click(promptPoint.x, promptPoint.y);
   await expect(menu).toBeHidden();
-  await expect(settings).toHaveAttribute('aria-expanded', 'false');
+  await expect(prompt).not.toBeFocused();
   await expect(deltaTab).toHaveAttribute('aria-selected', 'false');
 
   // reopen for the explicit switch action
