@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-type MockAgent = { id: string; kind: 'claude' | 'codex'; attention?: 'working' | 'finished' | 'question'; unread?: boolean; conversation?: string; history?: string[] };
+type MockAgent = { id: string; kind: 'claude' | 'codex'; attention?: 'working' | 'finished' | 'question'; unread?: boolean; conversation?: string | null; history?: string[] };
 type Console = { agents: MockAgent[]; dismissed: string[] };
 
 const worktree = { id: 'app:/worktrees/cora', projectId: 'app', label: 'Cora', path: '/worktrees/cora', main: false, detached: false, locked: false, branch: 'cora', available: true, pinned: false, order: 0 };
@@ -31,7 +31,11 @@ async function mockConsole(page: Page, state: Console) {
         state.agents = state.agents.map(agent => agent.id === id ? { ...agent, unread: false } : agent);
         return route.fulfill({ status: 204 });
       }
-      if (rest === 'conversation') return route.fulfill({ json: { name: state.agents.find(agent => agent.id === id)?.conversation ?? `Conversation ${id}` } });
+      if (rest === 'conversation') {
+        // `null` stands for an untitled conversation: the server reports no name
+        const name = state.agents.find(agent => agent.id === id)?.conversation;
+        return route.fulfill({ json: name === null ? {} : { name: name ?? `Conversation ${id}` } });
+      }
     }
     if (/^\/api\/worktrees\/[^/]+\/notes$/u.test(path)) return route.fulfill({ json: { notes: [] } });
     if (/^\/api\/worktrees\/[^/]+\/panes$/u.test(path)) return route.fulfill({ json: { panes: [] } });
@@ -83,6 +87,14 @@ test('the switcher swaps the output, draft and history between the Agents at a P
   await switcher(page).click();
   await page.getByRole('menu', { name: 'Agents at Cora' }).getByRole('menuitemradio', { name: /Conversation agent-1/u }).click();
   await expect(prompt).toHaveValue('draft for the first agent');
+});
+
+test('an untitled conversation reads as untitled in the switcher, beside the named one', async ({ page }) => {
+  await mockConsole(page, { agents: [{ id: 'agent-1', kind: 'claude', attention: 'finished', conversation: null }, { id: 'agent-2', kind: 'claude', attention: 'finished', conversation: 'Testing' }], dismissed: [] });
+  await page.goto('/');
+  await switcher(page).click();
+  // each row names its conversation, with the Agent's kind and state beneath
+  await expect(page.getByRole('menu', { name: 'Agents at Cora' }).getByRole('menuitemradio')).toHaveText([/Untitled conversation\s*Claude · Idle$/u, /Testing\s*Claude · Idle$/u]);
 });
 
 test('the tab rolls up the most urgent state and viewing an Agent through the switcher marks it read', async ({ page }) => {

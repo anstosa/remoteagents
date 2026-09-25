@@ -6151,7 +6151,9 @@ function AgentSwitcher({ agent, agents, title, placeLabel, onSelect }: { agent: 
 
 // One switcher row: the Agent's kind, its current conversation's name and its state.
 function AgentSwitcherRow({ agent, current, onChoose }: { agent: Agent; current: boolean; onChoose: () => void }) {
-  const name = useCurrentConversationName(agent.id, [agent.conversationId]) ?? (agent.kind === undefined ? agentLabel(agent) : agentKindLabel[agent.kind]);
+  // an untitled conversation says so; its kind stays on the line beneath, beside its state
+  const conversation = useCurrentConversationName(agent.id, [agent.conversationId]);
+  const name = conversation === null ? 'Untitled conversation' : conversation ?? (agent.kind === undefined ? agentLabel(agent) : agentKindLabel[agent.kind]);
   const state = agentPanelState(agent, false);
   return <button type="button" role="menuitemradio" aria-checked={current} className={`agent-switcher-row${current ? ' current' : ''}`} onClick={onChoose}>
     {agent.kind !== undefined && <LaunchTabBadge kind={agent.kind} sandboxed={agent.sandboxed} />}
@@ -6174,8 +6176,8 @@ function agentPanelState(agent: Agent, starting: boolean): AgentPanelState {
 
 // The current Conversation's name, which titles the agent panel. It is read once per Agent and
 // again whenever `refreshOn` changes (a new conversation id after Clear, a name given from the
-// Conversations fly-out); undefined until read or when the Conversation has no name.
-function useCurrentConversationName(agentId: string, refreshOn: readonly unknown[]): string | undefined {
+// Conversations fly-out); undefined until read, and null once read when the Conversation has no name.
+function useCurrentConversationName(agentId: string, refreshOn: readonly unknown[]): string | null | undefined {
   const [name, setName] = useState<{ agentId: string; name?: string }>();
   const refreshKey = JSON.stringify(refreshOn);
   useEffect(() => {
@@ -6187,7 +6189,7 @@ function useCurrentConversationName(agentId: string, refreshOn: readonly unknown
     }).catch(() => { /* keep the last name; the panel falls back to its label */ });
     return () => { cancelled = true; };
   }, [agentId, refreshKey]);
-  return name?.agentId === agentId ? name.name : undefined;
+  return name?.agentId === agentId ? name.name ?? null : undefined;
 }
 
 // The agent panel's title pill: the kind mark, the title (the Agent switcher, once an Agent runs),
