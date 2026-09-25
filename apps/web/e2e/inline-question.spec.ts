@@ -84,6 +84,13 @@ test('renders inline questions from the pane stream and answers through one endp
   await pushQuestion(page, 'agent-1', strictQuestion);
 
   await expect(page.getByText('Agent question')).toBeVisible();
+  // the answer layout lives inside the agent panel, below its floating header
+  const panel = page.locator('.agent-panel');
+  const question = panel.getByRole('region', { name: 'Agent question' });
+  await expect(question).toBeVisible();
+  const [panelBounds, questionBounds, headerBounds] = await Promise.all([panel.boundingBox(), question.boundingBox(), panel.locator('.panel-header-actions').boundingBox()]);
+  expect(questionBounds!.y).toBeGreaterThanOrEqual(headerBounds!.y + headerBounds!.height);
+  expect(questionBounds!.y + questionBounds!.height).toBeLessThanOrEqual(panelBounds!.y + panelBounds!.height + 1);
   await expect(page.locator('.question-copy')).toContainText('Which strict-mode end state should govern this cleanup?');
   const choices = page.locator('.question-choice');
   await expect(choices).toHaveCount(4);

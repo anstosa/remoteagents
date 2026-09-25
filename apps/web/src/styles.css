@@ -81,7 +81,6 @@
   --control-radius: .3rem;
   --standard-control-size: 2.6rem;
   /* share the output toolbar inset with the visible scroll handle */
-  --output-control-inset: .375rem;
   --output-font-size: 11px;
   --layer-popover: 300;
   --layer-dialog: 500;
@@ -216,7 +215,7 @@ main { max-width: 1100px; margin: auto; padding: var(--edge); }
 .reconnecting-overlay { position: fixed; inset: 0; z-index: 1000; isolation: isolate; display: grid; place-items: center; overflow: hidden; color: var(--subtext-0); background: radial-gradient(circle at 50% 42%, var(--surface-0) 0, var(--mantle) 26rem, var(--crust) 70rem); }
 .reconnecting-overlay::before { position: absolute; inset: 0; z-index: -1; content: ''; opacity: .28; background-image: linear-gradient(color-mix(in srgb, var(--surface-2) 8%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--surface-2) 8%, transparent) 1px, transparent 1px); background-size: 2rem 2rem; mask-image: radial-gradient(circle at center, #000 0, transparent 68%); }
 /* hide pane notices beneath the console-wide status screen */
-body:has(.reconnecting-overlay) :is(.streamed-terminal-status, .log-output > .log-loading, .log-output > .log-stale-overlay) { visibility: hidden; }
+body:has(.reconnecting-overlay) :is(.streamed-terminal-status, .log-output > .log-loading, .log-output > .log-stale-overlay, .agent-output > .log-loading, .agent-output > .log-stale-overlay) { visibility: hidden; }
 .loading-console { display: grid; gap: .8rem; min-width: min(20rem, calc(100vw - 2rem)); padding: 1rem 1.2rem; border: 1px solid color-mix(in srgb, var(--surface-1) 85%, transparent); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 72%, transparent); box-shadow: 0 1rem 3rem color-mix(in srgb, var(--crust) 65%, transparent); }
 .loading-line { display: flex; align-items: center; gap: .65rem; color: var(--text); font: 600 .75rem var(--font-mono); letter-spacing: .06em; }
 .loading-bars { display: flex; gap: .22rem; height: .2rem; overflow: hidden; border-radius: var(--control-radius); }
@@ -251,7 +250,7 @@ html.software-keyboard-open .tabs { display: none; }
 .panel { position: relative; min-width: 0; min-height: 0; outline-offset: 4px; touch-action: pan-y; }
 .agent-view, .worktree-view { width: 100%; height: 100%; min-width: 0; min-height: 0; display: grid; gap: 1rem; overflow: visible; }
 .agent-view { position: relative; grid-template-rows: minmax(0, 1fr) auto; gap: 0; }
-.agent-view > .prompt, .worktree-view > .prompt { margin: .375rem .375rem .375rem; }
+.agent-view > .workspace-bar { margin: .375rem .375rem .375rem; }
 .worktree-view { align-content: start; }
 .agent-view h2, .worktree-view h2 { color: var(--lavender); margin: 0; }
 .agent-view p, .worktree-view p { color: var(--subtext-0); margin: 0; }
@@ -259,21 +258,46 @@ html.software-keyboard-open .tabs { display: none; }
 .log { position: relative; width: 100vw; height: 100%; min-height: 0; margin-left: calc(50% - 50vw); overflow: hidden; container: output-area / size; background: var(--base); border: 0; border-bottom: 1px solid color-mix(in srgb, var(--lavender) 28%, var(--surface-1)); border-radius: 0; padding: 0; box-shadow: inset 0 0 1.25rem #00000040; }
 .log-split { position: relative; display: grid; width: 100%; height: 100%; min-width: 0; min-height: 0; grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
 /* exclude terminal layouts without outranking the phone's single-row override */
-.log-split.has-note:not(.has-browser):where(:not(.has-terminals)), .log-split.has-browser:not(.has-note):where(:not(.has-terminals)) { grid-template-rows: repeat(2, minmax(8rem, 1fr)); }
-.log-split.has-note.has-browser:where(:not(.has-terminals)) { grid-template-rows: repeat(3, minmax(8rem, 1fr)); }
-/* Terminals make the split a list of panels; in a portrait area they stack as rows, in a
-   wide area they become columns (below), and on a phone one panel shows at a time. */
-.log-split.has-terminals, .log-split.has-code { grid-template: none; grid-template-columns: minmax(0, 1fr); grid-auto-flow: row; grid-auto-rows: minmax(8rem, 1fr); }
+.log-split.has-note:not(.has-browser):where(:not(.has-terminals, .no-agent)), .log-split.has-browser:not(.has-note):where(:not(.has-terminals, .no-agent)) { grid-template-rows: repeat(2, minmax(8rem, 1fr)); }
+.log-split.has-note.has-browser:where(:not(.has-terminals, .no-agent)) { grid-template-rows: repeat(3, minmax(8rem, 1fr)); }
+/* Terminals, Code or no agent panel make the split a list of panels; in a portrait area they stack
+   as rows, in a wide area they become columns (below), and on a phone one panel shows at a time. */
+.log-split.has-terminals, .log-split.has-code, .log-split.no-agent { grid-template: none; grid-template-columns: minmax(0, 1fr); grid-auto-flow: row; grid-auto-rows: minmax(8rem, 1fr); }
 .split-resizer { display: none; }
 .mobile-split-switches { display: none; }
 .log-output { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
 .log-output.expanded { width: 100%; height: 100%; }
+/* the agent panel: the output under the floating header, the composer at its foot */
+.log > .log-output.agent-panel { height: 100%; }
+.log-output.agent-panel { --panel-accent: var(--lavender); display: grid; grid-template-rows: minmax(0, 1fr) auto; padding-top: var(--panel-header-clearance); }
+.agent-output { position: relative; min-width: 0; min-height: 0; }
+.log-output.agent-panel::after { content: none; }
+.agent-panel .agent-panel-title { flex: 0 1 auto; min-width: 0; overflow: hidden; padding: 0 .2rem; color: var(--text); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.agent-panel .panel-header-title { gap: .35rem; }
+.agent-panel .launch-tab-badge { display: inline-flex; flex: none; align-items: center; gap: .15rem; color: var(--launch-kind); }
+.agent-state-pill { --agent-state-color: var(--overlay-1); display: inline-flex; flex: none; align-items: center; gap: .3rem; height: 1.25rem; padding: 0 .45rem; border: 1px solid color-mix(in srgb, var(--agent-state-color) 70%, var(--surface-1)); border-radius: 999px; color: var(--agent-state-color); font: 800 .56rem var(--font-mono); letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+.agent-state-pill::before { width: .4rem; height: .4rem; border-radius: 50%; background: currentColor; content: ''; }
+.agent-state-pill.working, .agent-state-pill.starting, .agent-state-pill.restarting { --agent-state-color: var(--peach); }
+.agent-state-pill.working::before, .agent-state-pill.starting::before, .agent-state-pill.restarting::before { animation: tab-working-dot 1.25s ease-in-out infinite; }
+.agent-state-pill.needs-answer, .agent-state-pill.failed { --agent-state-color: var(--red); }
+.agent-state-pill.done { --agent-state-color: var(--green); }
+.agent-panel .panel-header .log-status { position: static; height: 1.25rem; padding: 0 .4rem; font-size: .58rem; white-space: nowrap; }
+/* the header's popup controls (conversations, response files) and its cancel and power buttons */
+/* :where keeps a toggle's own state colours (active, unread) ahead of these resting styles */
+:where(.panel-header) .page-arrow { position: relative; display: grid; width: 1.9rem; min-height: 0; height: 1.9rem; padding: 0; place-items: center; border-color: transparent; background: transparent; opacity: 1; overflow: visible; }
+:where(.panel-header) .page-arrow:hover:not(:disabled) { border-color: var(--panel-accent); color: var(--text); }
+.panel-header .page-arrow svg { width: 1rem; height: 1rem; stroke-width: 2; }
+.panel-header .page-arrow .saved-prompts-count { top: -.3rem; right: -.3rem; }
+.panel-header .power-menu-wrap { display: inline-flex; }
+.panel-header-action:is(.agent-power, .agent-cancel, .agent-discard) { color: var(--red); }
+.panel-header-action:is(.agent-power, .agent-cancel, .agent-discard):hover:not(:disabled) { border-color: var(--red); color: var(--red); }
+.panel-header-action.agent-cancel svg rect { fill: currentColor; stroke: none; }
 /* let any supplemental split fill the output area without unmounting siblings */
 .log-split:has(> :is(.log-output, .note-pane, .browser-pane, .code-pane, .terminal-pane).expanded) { display: block; }
 .log-split:has(> :is(.log-output, .note-pane, .browser-pane, .code-pane, .terminal-pane).expanded) > :not(.expanded) { display: none; }
-.log-output::after { position: absolute; inset: 0; z-index: 30; box-sizing: border-box; border: 3px solid transparent; content: ''; pointer-events: none; }
-.log-output.input-active::after { border-color: var(--sky); box-shadow: inset 0 0 1.4rem #00000066, inset 0 0 1.35rem color-mix(in srgb, var(--sky) 34%, transparent); }
-.log-output.selection-active::after { border-color: var(--subtext-0); box-shadow: inset 0 0 1.35rem #00000080, inset 0 0 1.2rem color-mix(in srgb, var(--overlay-2) 25%, transparent), 0 0 1rem color-mix(in srgb, var(--overlay-2) 35%, transparent); }
+:is(.log-output, .agent-output)::after { position: absolute; inset: 0; z-index: 30; box-sizing: border-box; border: 3px solid transparent; content: ''; pointer-events: none; }
+:is(.log-output.input-active, .agent-panel.input-active > .agent-output)::after { border-color: var(--sky); box-shadow: inset 0 0 1.4rem #00000066, inset 0 0 1.35rem color-mix(in srgb, var(--sky) 34%, transparent); }
+:is(.log-output.selection-active, .agent-panel.selection-active > .agent-output)::after { border-color: var(--subtext-0); box-shadow: inset 0 0 1.35rem #00000080, inset 0 0 1.2rem color-mix(in srgb, var(--overlay-2) 25%, transparent), 0 0 1rem color-mix(in srgb, var(--overlay-2) 35%, transparent); }
 .output-selection-toolbar { position: fixed; left: 50%; z-index: 250; display: flex; max-width: calc(100vw - 1rem); overflow-x: auto; border: 1px solid color-mix(in srgb, var(--mauve) 65%, var(--surface-1)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 96%, transparent); box-shadow: 0 .7rem 1.8rem color-mix(in srgb, var(--crust) 80%, transparent), inset 0 1px color-mix(in srgb, var(--text) 7%, transparent); transform: translateX(-50%); scrollbar-width: none; }
 .output-selection-toolbar::-webkit-scrollbar { display: none; }
 .output-selection-toolbar button { flex: 0 0 auto; min-height: 2.35rem; border: 0; border-right: 1px solid color-mix(in srgb, var(--surface-1) 80%, transparent); border-radius: 0; padding: .45rem .65rem; background: transparent; color: var(--text); font: 700 .68rem var(--font-mono); box-shadow: none; white-space: nowrap; }
@@ -292,9 +316,7 @@ html.software-keyboard-open .tabs { display: none; }
 .log-stale-overlay::after { position: absolute; inset: -20%; content: ''; background: radial-gradient(ellipse at 50% 48%, transparent 25%, color-mix(in srgb, var(--crust) 36%, transparent) 76%); filter: blur(1rem); }
 /* confine the cached-output border and hatching to terminal output */
 .streamed-terminal-status::before { position: absolute; inset: 0; z-index: 13; overflow: hidden; border: 2px solid color-mix(in srgb, var(--yellow) 58%, transparent); pointer-events: none; background: repeating-linear-gradient(135deg, transparent 0 18px, color-mix(in srgb, var(--yellow) 5%, transparent) 18px 20px); box-shadow: inset 0 0 3.5rem color-mix(in srgb, var(--yellow) 8%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--crust) 75%, transparent); }
-.log-footer { position: absolute; right: 0; bottom: 0; left: 0; z-index: 20; display: grid; pointer-events: none; }
 /* the status chip and prompt-history control portal into these slots in the bottom composer row */
-.prompt-status-slot, .prompt-history-slot { display: contents; }
 .prompt-history-anchor { display: inline-flex; flex: none; }
 .prompt-history-toggle { display: grid; flex: 0 0 var(--standard-control-size); width: var(--standard-control-size); height: var(--standard-control-size); place-items: center; border: 1px solid var(--prompt-control-border, var(--surface-1)); border-radius: var(--control-radius); padding: 0; background: var(--prompt-control-background, transparent); color: var(--prompt-control-foreground, var(--subtext-0)); box-shadow: none; }
 .prompt-history-toggle:hover, .prompt-history-toggle.active { border-color: var(--lavender); color: var(--lavender); }
@@ -401,14 +423,7 @@ html.software-keyboard-open .tabs { display: none; }
 .log-control { z-index: 20; padding: .3rem .5rem; border-color: var(--surface-1); background: color-mix(in srgb, var(--mantle) 88%, transparent); color: var(--subtext-0); font-size: .7rem; font-weight: 700; box-shadow: none; opacity: .82; }
 .log-control:hover { color: var(--text); opacity: 1; }
 .log-control:disabled { pointer-events: none; }
-.log-controls-bottom { position: relative; display: flex; align-items: end; padding: 0 var(--edge) .45rem; pointer-events: none; }
-.log-controls-bottom button { pointer-events: auto; }
 .mobile-terminal-keys { display: none; }
-.page-controls { position: relative; z-index: 0; display: grid; gap: .375rem; margin-left: auto; margin-right: calc(var(--output-control-inset) - var(--edge)); pointer-events: auto; }
-/* Absorb near-misses around paging controls instead of focusing the terminal underneath. */
-.page-controls::before { position: absolute; inset: -.375rem; z-index: 0; content: ''; }
-.page-controls > * { justify-self: end; }
-.page-controls .page-arrow { position: relative; z-index: 1; display: grid; width: 2.6rem; min-height: 2.6rem; padding: .25rem; place-items: center; }
 .page-arrow svg { width: 1.2rem; height: 1.2rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.35; }
 .cleanup-toggle { overflow: visible; border-color: var(--yellow); color: var(--yellow); box-shadow: inset 0 0 1rem color-mix(in srgb, var(--yellow) 14%, transparent), 0 0 .8rem color-mix(in srgb, var(--yellow) 42%, transparent); animation: cleanup-glow 1.6s ease-in-out infinite; }
 .cleanup-toggle:hover { border-color: var(--yellow); color: var(--yellow); }
@@ -416,6 +431,7 @@ html.software-keyboard-open .tabs { display: none; }
 .cleanup-count { background: var(--yellow); color: var(--crust); }
 .cleanup-empty-view { position: relative; }
 .cleanup-standalone { position: absolute; right: var(--edge); bottom: var(--edge); margin: 0; }
+.cleanup-standalone .page-arrow { display: grid; width: 2.6rem; min-height: 2.6rem; padding: .25rem; place-items: center; }
 .response-files-control { position: relative; z-index: 4; }
 .response-files-toggle { overflow: visible; }
 .response-files-toggle.active { border-color: var(--blue); color: var(--blue); }
@@ -763,16 +779,17 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
 .code-pane-view { min-width: 0; min-height: 0; flex: 1; overflow: auto; }
 @keyframes note-pane-appear { from { opacity: 0; } to { opacity: 1; } }
 @container output-area (min-aspect-ratio: 1 / 1) {
-  .log-split.has-note:not(.has-browser):not(.has-terminals):not(.has-code) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)); }
-  .log-split.has-browser:not(.has-note):not(.has-terminals):not(.has-code) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--browser-split)); }
-  .log-split.has-note.has-browser:not(.has-terminals):not(.has-code) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)) .45rem minmax(var(--split-pane-min-width), var(--browser-split)); }
-  /* With one or more Terminals or a Code panel the split is a generic list of columns (agent,
-     terminals, note, browser, code), each `minmax(390px, <weight>fr)`, built in JS as `--split-cols`. */
-  .log-split.has-terminals, .log-split.has-code { grid-template: minmax(0, 1fr) / var(--split-cols); }
+  .log-split.has-note:not(.has-browser):not(.has-terminals):not(.has-code):not(.no-agent) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)); }
+  .log-split.has-browser:not(.has-note):not(.has-terminals):not(.has-code):not(.no-agent) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--browser-split)); }
+  .log-split.has-note.has-browser:not(.has-terminals):not(.has-code):not(.no-agent) { grid-template: minmax(0, 1fr) / minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)) .45rem minmax(var(--split-pane-min-width), var(--browser-split)); }
+  /* With one or more Terminals, a Code panel or no agent panel the split is a generic list of
+     columns (agent, terminals, note, browser, code), each `minmax(390px, <weight>fr)`, built in JS
+     as `--split-cols`. */
+  .log-split.has-terminals, .log-split.has-code, .log-split.no-agent { grid-template: minmax(0, 1fr) / var(--split-cols); }
   /* remove the hidden browser divider's track when fixing the mobile preview width */
-  .log-split.has-terminals:has(> .browser-pane.mobile:not(.expanded)) { --browser-split-cols: var(--split-pane-min-width); }
-  .log-split.has-browser:not(.has-note):not(.has-terminals):has(> .browser-pane.mobile:not(.expanded)) { grid-template-columns: minmax(var(--split-pane-min-width), var(--agent-split)) var(--split-pane-min-width); }
-  .log-split.has-note.has-browser:not(.has-terminals):has(> .browser-pane.mobile:not(.expanded)) { grid-template-columns: minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)) var(--split-pane-min-width); }
+  .log-split:is(.has-terminals, .no-agent):has(> .browser-pane.mobile:not(.expanded)) { --browser-split-cols: var(--split-pane-min-width); }
+  .log-split.has-browser:not(.has-note):not(.has-terminals):not(.no-agent):has(> .browser-pane.mobile:not(.expanded)) { grid-template-columns: minmax(var(--split-pane-min-width), var(--agent-split)) var(--split-pane-min-width); }
+  .log-split.has-note.has-browser:not(.has-terminals):not(.no-agent):has(> .browser-pane.mobile:not(.expanded)) { grid-template-columns: minmax(var(--split-pane-min-width), var(--agent-split)) .45rem minmax(var(--split-pane-min-width), var(--note-split)) var(--split-pane-min-width); }
   .split-resizer { position: relative; z-index: 5; display: block; width: .45rem; min-width: .45rem; height: 100%; cursor: col-resize; touch-action: none; outline: 0; }
   .split-resizer::after { position: absolute; inset: 0 calc(50% - .5px); background: var(--surface-1); content: ''; transition: background .12s ease, box-shadow .12s ease; }
   .split-resizer:is(:hover, :focus-visible)::after { background: var(--blue); box-shadow: 0 0 .5rem color-mix(in srgb, var(--blue) 48%, transparent); }
@@ -785,13 +802,13 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
 }
 @media (max-width: 768px) {
   /* supplemental panels already fill phones */
-  :is(.panel-header-expand, .log-output .log-expand) { display: none; }
+  .panel-header-expand { display: none; }
   .browser-frame-shell.mobile iframe { width: 100%; }
   .browser-frame-shell.desktop { overflow: hidden; place-items: start; }
   .browser-frame-shell.desktop iframe { width: var(--browser-desktop-width, 980px); height: var(--browser-desktop-height, 100%); transform: scale(var(--browser-desktop-scale, 1)); transform-origin: top left; }
   .log-split:is(.has-note, .has-browser, .has-code):is(.mobile-agent-view, .mobile-note-view, .mobile-browser-view, .mobile-code-view) { grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
   .log-split.mobile-agent-view > :is(.note-pane, .browser-pane, .code-pane, .split-resizer), .log-split.mobile-note-view > :is(.log-output, .browser-pane, .code-pane, .split-resizer), .log-split.mobile-browser-view > :is(.log-output, .note-pane, .code-pane, .split-resizer), .log-split.mobile-code-view > :is(.log-output, .note-pane, .browser-pane, .split-resizer) { display: none; }
-  .log-split.mobile-agent-view > .log-output { display: block; }
+  .log-split.mobile-agent-view > .log-output { display: grid; }
   .log-split.mobile-note-view > .note-pane, .log-split.mobile-browser-view > .browser-pane, .log-split.mobile-code-view > .code-pane { display: grid; }
   /* Terminals on a phone: one panel shows at a time. Every Terminal is hidden unless it is
      the visible one (mobile-terminal-view + no mobile-hidden), and the agent/note/browser
@@ -801,7 +818,7 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
   .log-split.mobile-agent-view.has-terminals > .terminal-pane, .log-split.mobile-note-view.has-terminals > .terminal-pane, .log-split.mobile-browser-view.has-terminals > .terminal-pane, .log-split.mobile-code-view.has-terminals > .terminal-pane { display: none; }
   .log-split.mobile-terminal-view > :is(.log-output, .note-pane, .browser-pane, .code-pane) { display: none; }
   .log-split.mobile-terminal-view > .terminal-pane.mobile-hidden { display: none; }
-  .log-split:is(.has-note, .has-browser, .has-code, .has-terminals) > .mobile-split-switches { position: absolute; bottom: .45rem; left: .375rem; z-index: 45; display: flex; gap: .35rem; }
+  .log-split:is(.has-note, .has-browser, .has-code, .has-terminals) > .mobile-split-switches { position: absolute; top: calc(var(--panel-header-clearance) + .375rem); left: .375rem; z-index: 45; display: flex; gap: .35rem; }
   .mobile-split-switches button { display: grid; width: 2.6rem; height: 2.6rem; padding: 0; place-items: center; border-color: var(--blue); background: color-mix(in srgb, var(--blue) 22%, var(--mantle)); color: var(--blue); box-shadow: 0 .45rem 1rem color-mix(in srgb, var(--crust) 65%, transparent), inset 0 0 1rem color-mix(in srgb, var(--blue) 18%, transparent); }
   .mobile-split-switches .mobile-note-switch { border-color: var(--yellow); background: color-mix(in srgb, var(--yellow) 18%, var(--mantle)); color: var(--yellow); box-shadow: 0 .45rem 1rem color-mix(in srgb, var(--crust) 65%, transparent), inset 0 0 1rem color-mix(in srgb, var(--yellow) 15%, transparent); }
   .mobile-split-switches .mobile-terminal-switch { border-color: var(--green); background: color-mix(in srgb, var(--green) 18%, var(--mantle)); color: var(--green); box-shadow: 0 .45rem 1rem color-mix(in srgb, var(--crust) 65%, transparent), inset 0 0 1rem color-mix(in srgb, var(--green) 15%, transparent); }
@@ -809,9 +826,11 @@ button.schedule-slot:disabled { cursor: default; opacity: .7; }
   .mobile-split-switches svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 }
 /* preserve output width above software keyboards */
-html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:is(.has-note, .has-browser, .has-code) { grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
-html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:is(.has-note, .has-browser, .has-code) > :is(.note-pane, .browser-pane, .code-pane, .split-resizer, .mobile-split-switches) { display: none; }
-html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:is(.has-note, .has-browser, .has-code) > .log-output { display: block; }
+html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-prompt):focus-within) .log-split:is(.has-note, .has-browser, .has-code, .has-terminals) { grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
+html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-prompt):focus-within) .log-split:is(.has-note, .has-browser, .has-code, .has-terminals) > :is(.note-pane, .browser-pane, .code-pane, .terminal-pane, .split-resizer, .mobile-split-switches) { display: none; }
+html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-prompt):focus-within) .log-split:is(.has-note, .has-browser, .has-code, .has-terminals) > .log-output { display: grid; }
+/* typing above a software keyboard leaves room for the output: the row beneath the tabs folds away */
+html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-prompt):focus-within) > .workspace-bar { display: none; }
 .xterm { height: 100%; }
 /* A Terminal panel: a floating header over a streamed pane, focusable, with a sky inset ring
    marking the panel that receives keys (First-class terminal panes, composition A). */
@@ -856,7 +875,6 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 /* keep both handle widths right-aligned inside xterm's native drag target */
 .xterm .xterm-scrollable-element > .scrollbar.vertical > .slider { left: auto !important; right: 0; }
 /* use the toolbar inset only while any part of the handle overlaps its controls */
-.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider.output-controls-overlap { width: var(--output-control-inset) !important; }
 /* A streamed pane renders at its natural grid top-left; a pane smaller than the panel
    is letterboxed against the terminal background rather than stretched. */
 .streamed-terminal { position: relative; overflow: hidden; background: var(--base); }
@@ -891,21 +909,26 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .log-status.inactive { --log-status-color: var(--overlay-2); color: var(--crust); }
 /* anchor attachment feedback to the prompt */
 .prompt { position: relative; display: grid; min-width: 0; gap: .375rem; }
-/* reserve one vertical shortcut rail beside the normal composer */
-.prompt-with-action-rail { grid-template-columns: var(--standard-control-size) minmax(0, 1fr); align-items: stretch; }
+/* the agent panel's composer: history above attach, the prompt, queued prompts above send */
+.agent-composer { grid-template-columns: var(--standard-control-size) minmax(0, 1fr) var(--standard-control-size); align-items: end; padding: .375rem; border-top: 1px solid var(--surface-0); background: color-mix(in srgb, var(--mantle) 60%, transparent); }
+.agent-composer-column { --prompt-control-border: var(--surface-1); --prompt-control-background: color-mix(in srgb, var(--mantle) 88%, transparent); --prompt-control-foreground: var(--subtext-0); --prompt-control-hover-border: var(--lavender); --prompt-control-hover-background: color-mix(in srgb, var(--lavender) 13%, var(--mantle)); --prompt-control-hover-foreground: var(--text); display: grid; gap: .375rem; }
+.agent-composer-column button { box-sizing: border-box; display: grid; width: var(--standard-control-size); height: var(--standard-control-size); padding: 0; place-items: center; border-radius: var(--control-radius); box-shadow: none; transition: background-color .15s ease, border-color .15s ease, color .15s ease, filter .15s ease; }
+.agent-composer-column :is(.attachment-button, .queued-prompts-toggle) { border-color: var(--prompt-control-border); background: var(--prompt-control-background); color: var(--prompt-control-foreground); filter: none; }
+.agent-composer-column :is(.attachment-button, .queued-prompts-toggle):not(:disabled):hover, .agent-composer-column .queued-prompts-toggle[aria-expanded='true'] { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); }
+.agent-composer-column .queued-prompts-toggle { position: relative; overflow: visible; }
+.agent-composer-column .queued-prompts-toggle:not(:disabled) { border-color: color-mix(in srgb, var(--mauve) 60%, var(--surface-1)); color: var(--mauve); }
+.agent-composer-column button:disabled { opacity: .45; }
+.agent-composer-column .icon-button svg { display: block; width: 1rem; height: 1rem; }
+.agent-composer-column .queue { border-color: color-mix(in srgb, var(--lavender) 54%, transparent); background: linear-gradient(135deg, var(--mauve), var(--blue)); color: var(--crust); filter: none; }
+.agent-composer-column .queue:not(:disabled):hover { filter: brightness(1.08); }
+.agent-composer-column .queue svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.agent-composer .prompt-composer textarea { min-height: calc(var(--standard-control-size) + var(--standard-control-size) + .375rem); }
+/* the row beneath the tab row: the Workspace's controls, until the Workspace toolbar replaces it */
+.workspace-bar { position: relative; display: grid; min-width: 0; }
+:where(.workspace-bar) .page-arrow { position: relative; display: grid; width: var(--standard-control-size); height: var(--standard-control-size); min-height: 0; padding: 0; place-items: center; opacity: 1; overflow: visible; }
+.workspace-bar .page-arrow svg { width: 1rem; height: 1rem; stroke-width: 2; }
+.workspace-bar .page-arrow .spinner { width: 1rem; height: 1rem; }
 .prompt-content { display: flex; min-width: 0; flex-direction: column; gap: .375rem; }
-.prompt-with-action-rail .prompt-composer textarea { min-height: calc(var(--standard-control-size) + var(--standard-control-size) + .375rem); }
-.prompt-action-rail { --prompt-control-border: var(--surface-1); --prompt-control-background: color-mix(in srgb, var(--mantle) 88%, transparent); --prompt-control-foreground: var(--subtext-0); --prompt-control-hover-border: var(--lavender); --prompt-control-hover-background: color-mix(in srgb, var(--lavender) 13%, var(--mantle)); --prompt-control-hover-foreground: var(--text); display: flex; min-width: 0; flex-direction: column; justify-content: flex-end; gap: .375rem; }
-.prompt-action-rail .git-status-wrap, .prompt-action-rail .git-status-wrap.expanded { width: var(--standard-control-size); height: var(--standard-control-size); flex: 0 0 var(--standard-control-size); max-width: none; margin: 0; }
-.prompt-action-rail .git-status-summary { position: relative; display: grid; width: var(--standard-control-size); height: var(--standard-control-size); min-height: var(--standard-control-size); overflow: visible; border: 1px solid var(--prompt-control-border); border-radius: var(--control-radius); padding: 0; background: var(--prompt-control-background); color: var(--prompt-control-foreground); place-items: center; }
-.prompt-action-rail .git-status-summary:not(:disabled):hover { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); }
-.prompt-action-rail .git-branch-icon { display: block; }
-.prompt-action-rail .git-status-dot { display: block; background: currentColor; box-shadow: 0 0 .45rem color-mix(in srgb, currentColor 75%, transparent); }
-.prompt-action-rail :is(.git-branch, .git-status-separator, .git-worktree-state) { display: none; }
-.prompt-action-rail .git-status-summary.clean .git-status-dot { color: var(--green); }
-.prompt-action-rail .git-status-summary.dirty .git-status-dot { color: var(--yellow); }
-.prompt-action-rail .git-status-summary.conflicted .git-status-dot { color: var(--red); }
-.prompt-action-rail .git-status-summary.unavailable .git-status-dot { color: var(--overlay-0); }
 /* overlay the drop target without shifting the draft or its controls */
 .prompt-drop-overlay { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; border: 2px dashed var(--lavender); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 94%, transparent); color: var(--lavender); font-size: .85rem; font-weight: 600; pointer-events: none; }
 .prompt textarea.voice-listening, .prompt textarea.voice-listening:focus-visible { border-color: var(--red); outline: 0; box-shadow: inset 0 0 0 1px var(--red); animation: voice-listening 1s ease-in-out infinite alternate; }
@@ -919,34 +942,29 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .command-menu span { min-width: 0; overflow: hidden; font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
 .command-menu-empty { padding: .5rem; color: var(--overlay-0); font: 600 .72rem var(--font-mono); }
 .prompt-actions { --prompt-control-border: var(--surface-1); --prompt-control-background: color-mix(in srgb, var(--mantle) 88%, transparent); --prompt-control-foreground: var(--subtext-0); --prompt-control-hover-border: var(--lavender); --prompt-control-hover-background: color-mix(in srgb, var(--lavender) 13%, var(--mantle)); --prompt-control-hover-foreground: var(--text); display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: .375rem; }
-:is(.prompt-actions, .prompt-action-rail) button, .project-open { box-sizing: border-box; height: var(--standard-control-size); border-radius: var(--control-radius); padding: .4rem .6rem; font-size: .75rem; font-weight: 700; box-shadow: none; transition: background-color .15s ease, border-color .15s ease, color .15s ease, filter .15s ease; }
-.prompt-actions .icon-button, .prompt-action-rail .icon-button { display: inline-grid; flex: 0 0 var(--standard-control-size); width: var(--standard-control-size); height: var(--standard-control-size); padding: 0; place-items: center; }
-:is(.prompt-actions, .prompt-action-rail) .icon-button svg { display: block; width: 1rem; height: 1rem; }
+.prompt-actions button, .project-open { box-sizing: border-box; height: var(--standard-control-size); border-radius: var(--control-radius); padding: .4rem .6rem; font-size: .75rem; font-weight: 700; box-shadow: none; transition: background-color .15s ease, border-color .15s ease, color .15s ease, filter .15s ease; }
+.prompt-actions .icon-button { display: inline-grid; flex: 0 0 var(--standard-control-size); width: var(--standard-control-size); height: var(--standard-control-size); padding: 0; place-items: center; }
+.prompt-actions .icon-button svg { display: block; width: 1rem; height: 1rem; }
 /* balance the terminal glyph with the adjacent stack icon */
 .prompt-actions .terminal-picker-toggle svg { width: 1.25rem; height: 1.25rem; }
 /* an agentless Place tab's pin toggle: a prompt control, filled while Pinned like the launcher's */
 .prompt-actions .place-pin { border-color: var(--prompt-control-border); background: var(--prompt-control-background); color: var(--prompt-control-foreground); }
 .prompt-actions .place-pin svg { width: 1.1rem; height: 1.1rem; }
 .prompt-actions .place-pin.pinned { border-color: var(--lavender); background: var(--lavender); color: var(--crust); }
-:is(.prompt-actions, .prompt-action-rail) :is(.review-tour-toggle, .more, .attachment-button, .terminal-picker-toggle, .project-browser-toggle, .project-stack-toggle), .prompt-actions .project-open { border-color: var(--prompt-control-border); background: var(--prompt-control-background); color: var(--prompt-control-foreground); filter: none; }
-.prompt-actions :is(.outline-button, .queued-prompts-toggle) { border-color: var(--surface-2); background: transparent; color: var(--prompt-control-foreground); filter: none; }
-:is(.prompt-actions, .prompt-action-rail) :is(.review-tour-toggle, .more, .attachment-button, .terminal-picker-toggle, .project-browser-toggle, .project-stack-toggle, .outline-button, .queued-prompts-toggle):not(:disabled):hover, .prompt-actions .project-open:hover { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); filter: none; }
-.prompt-actions :is(.more, .terminal-picker-toggle, .project-browser-toggle, .project-stack-toggle, .queued-prompts-toggle)[aria-expanded='true'], .prompt-actions .outline-button.active { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); }
+.prompt-actions :is(.review-tour-toggle, .more, .terminal-picker-toggle, .project-browser-toggle, .project-stack-toggle), .prompt-actions .project-open { border-color: var(--prompt-control-border); background: var(--prompt-control-background); color: var(--prompt-control-foreground); filter: none; }
+.prompt-actions .outline-button { border-color: var(--surface-2); background: transparent; color: var(--prompt-control-foreground); filter: none; }
+.prompt-actions :is(.review-tour-toggle, .more, .terminal-picker-toggle, .project-browser-toggle, .project-stack-toggle, .outline-button):not(:disabled):hover, .prompt-actions .project-open:hover { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); filter: none; }
+.prompt-actions :is(.more, .terminal-picker-toggle, .project-browser-toggle, .project-stack-toggle)[aria-expanded='true'], .prompt-actions .outline-button.active { border-color: var(--prompt-control-hover-border); background: var(--prompt-control-hover-background); color: var(--prompt-control-hover-foreground); }
 .prompt-actions-spacer { flex: 1; }
 .question-prompt .prompt-actions { justify-content: flex-start; }
 .danger svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .danger svg rect { fill: currentColor; stroke: none; }
-:is(.prompt-actions, .prompt-action-rail) .danger { display: inline-grid; width: var(--standard-control-size); border-color: var(--red); background: transparent; color: var(--red); filter: none; place-items: center; padding: 0; }
-:is(.prompt-actions, .prompt-action-rail) .danger:not(:disabled):hover { border-color: var(--red); background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--red); filter: none; }
+.prompt-actions .danger { display: inline-grid; width: var(--standard-control-size); border-color: var(--red); background: transparent; color: var(--red); filter: none; place-items: center; padding: 0; }
+.prompt-actions .danger:not(:disabled):hover { border-color: var(--red); background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--red); filter: none; }
 .power-menu-wrap { display: inline-flex; flex: none; }
 .prompt-actions .queue { margin-left: 0; border-color: color-mix(in srgb, var(--lavender) 54%, transparent); background: linear-gradient(135deg, var(--mauve), var(--blue)); color: var(--crust); filter: none; }
 .prompt-actions .queue:not(:disabled):hover { filter: brightness(1.08); }
 .prompt-actions .queue svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
-.queue-prompt-group { position: relative; display: inline-flex; align-items: center; }
-.queue-prompt-group.has-prompt-history .prompt-history-toggle { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-.queue-prompt-group.has-prompt-history .queue { border-left: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
-.queue-prompt-group.has-queued-prompts .queue { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-.prompt-actions .queued-prompts-toggle { position: relative; display: grid; flex: 0 0 var(--standard-control-size); width: var(--standard-control-size); overflow: visible; border-left: 0; border-radius: 0 var(--control-radius) var(--control-radius) 0; padding: 0; place-items: center; }
 .queued-prompts-toggle svg { width: 1.05rem; height: 1.05rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .queued-prompts-count { background: var(--blue); }
 .more-menu.queued-prompts-panel { display: grid; width: calc(100vw - 1rem); max-width: calc(100vw - 1rem); max-height: min(34rem, calc(100vh - 1rem)); overflow: hidden; }
@@ -980,7 +998,7 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .prompt-actions .project-stack-toggle { position: relative; display: grid; overflow: visible; border-left: 1px solid var(--prompt-control-border); border-radius: var(--control-radius); }
 :is(.project-browser-toggle, .project-stack-toggle) svg { width: .9rem; height: .9rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.2; }
 .project-stack-trigger .project-stack-server-icon { width: 1.15rem; height: 1.15rem; stroke-width: 1.8; }
-.prompt-action-rail .git-status-dot, .project-stack-status-dot { position: absolute; top: .2rem; right: .2rem; width: .5rem; height: .5rem; border: 1px solid var(--mantle); border-radius: 50%; pointer-events: none; }
+.project-stack-status-dot { position: absolute; top: .2rem; right: .2rem; width: .5rem; height: .5rem; border: 1px solid var(--mantle); border-radius: 50%; pointer-events: none; }
 .project-stack-status-dot { background: var(--overlay-0); box-shadow: 0 0 .4rem color-mix(in srgb, var(--overlay-0) 60%, transparent); }
 .project-stack-status-dot:is(.status-healthy, .status-running) { background: var(--green); box-shadow: 0 0 .45rem color-mix(in srgb, var(--green) 75%, transparent); }
 .project-stack-status-dot:is(.status-down, .status-stopped) { background: var(--red); box-shadow: 0 0 .45rem color-mix(in srgb, var(--red) 75%, transparent); }
@@ -1030,11 +1048,8 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .git-status-summary.status-draft { --branch-pr-color: var(--overlay-2); }
 .git-status-summary.status-open { --branch-pr-color: var(--green); }
 .git-status-summary.status-merged { --branch-pr-color: var(--mauve); }
-.prompt-action-rail .git-status-summary.has-pull-request, .prompt-action-rail .git-status-summary.has-pull-request:not(:disabled):hover, .git-status-summary.has-pull-request .git-branch { color: var(--branch-pr-color); }
+.git-status-summary.has-pull-request .git-branch { color: var(--branch-pr-color); }
 /* overlay pr health without resizing or shifting the branch glyph */
-.prompt-action-rail .git-status-summary > .pull-request-issues { position: absolute; right: .15rem; bottom: .15rem; justify-content: flex-end; gap: .15rem; padding: 0; }
-.prompt-action-rail .git-status-summary :is(.pull-request-issue, .pull-request-checks) { width: .65rem; height: .65rem; }
-.prompt-action-rail .git-status-summary :is(.pull-request-issue, .pull-request-checks) svg { width: .65rem; height: .65rem; }
 .upstream-rebase-banner { display: grid; min-width: 0; min-height: 3rem; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .7rem; margin: .375rem .375rem 0; border: 1px solid color-mix(in srgb, var(--yellow) 58%, var(--surface-1)); border-radius: var(--control-radius); padding: .5rem .55rem .5rem .7rem; background: color-mix(in srgb, var(--mantle) 90%, var(--yellow)); color: var(--yellow); box-shadow: inset 0 1px color-mix(in srgb, var(--text) 4%, transparent); }
 .upstream-rebase-banner > svg { width: 1.2rem; height: 1.2rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .upstream-rebase-banner > span { display: grid; min-width: 0; gap: .1rem; }
@@ -1111,13 +1126,13 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 @keyframes review-tour-backdrop-out { to { background-color: transparent; backdrop-filter: blur(0); } }
 /* retain static attention colors when motion is reduced */
 @media (prefers-reduced-motion: reduce) { .tabs button.status-working::before, .tabs button.status-working::after, .tabs button.status-working .tab-label, .tabs button.unread, .tabs button.unread::after, .cleanup-toggle, .notes-toggle.unread-queued-prompts, .server-switcher-settings-wrap .server-switcher-settings.updates-available, .review-tour-toggle.generating, .browser-refresh.loading, .review-tour-backdrop, .review-tour, .voice-soundwave i { animation: none; } }
-@media (max-width: 600px) { :root { --edge: .75rem; }.tabs button { font-size: .75rem; padding: .3rem .45rem; }.worktree-view { gap: .75rem; }.prompt-actions { flex-wrap: wrap; }.agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .prompt-with-action-rail { display: block; padding: .25rem; border: 1px solid color-mix(in srgb, var(--surface-2) 78%, transparent); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 88%, transparent); box-shadow: 0 .35rem 1.2rem #0009, inset 0 1px color-mix(in srgb, var(--text) 7%, transparent); }.agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .prompt-with-action-rail > .prompt-action-rail, .agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .prompt-with-action-rail > .prompt-content > .prompt-composer, .agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .prompt-with-action-rail > .prompt-content > .prompt-actions { display: none; }.agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .prompt-with-action-rail .mobile-terminal-keys { display: flex; justify-content: center; gap: .7rem; }.mobile-key-modifiers { display: grid; grid-template-columns: repeat(2, 3.15rem); gap: .2rem; }.mobile-arrow-keys { display: grid; grid-template-columns: repeat(3, 2rem); gap: .2rem; }.mobile-terminal-keys button { display: grid; width: 2rem; height: 2rem; padding: 0; place-items: center; border-color: var(--surface-2); border-radius: var(--control-radius); background: color-mix(in srgb, var(--surface-0) 90%, transparent); color: var(--text); box-shadow: none; }.mobile-key-modifiers button { width: 3.15rem; font: 800 .65rem var(--font-mono); }.mobile-terminal-keys button svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }.mobile-terminal-keys button.active { border-color: var(--sky); background: color-mix(in srgb, var(--sky) 32%, var(--surface-0)); color: var(--sky); } }
+@media (max-width: 600px) { :root { --edge: .75rem; }.tabs button { font-size: .75rem; padding: .3rem .45rem; }.worktree-view { gap: .75rem; }.prompt-actions { flex-wrap: wrap; }.agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .workspace-bar { display: block; padding: .25rem; border: 1px solid color-mix(in srgb, var(--surface-2) 78%, transparent); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 88%, transparent); box-shadow: 0 .35rem 1.2rem #0009, inset 0 1px color-mix(in srgb, var(--text) 7%, transparent); }.agent-view:has(.agent-panel):has(.log-output.input-active, .log-split.mobile-terminal-view) > .workspace-bar > .prompt-actions, .log-output.input-active > .agent-composer { display: none; }.agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .workspace-bar .mobile-terminal-keys { display: flex; justify-content: center; gap: .7rem; }.mobile-key-modifiers { display: grid; grid-template-columns: repeat(2, 3.15rem); gap: .2rem; }.mobile-arrow-keys { display: grid; grid-template-columns: repeat(3, 2rem); gap: .2rem; }.mobile-terminal-keys button { display: grid; width: 2rem; height: 2rem; padding: 0; place-items: center; border-color: var(--surface-2); border-radius: var(--control-radius); background: color-mix(in srgb, var(--surface-0) 90%, transparent); color: var(--text); box-shadow: none; }.mobile-key-modifiers button { width: 3.15rem; font: 800 .65rem var(--font-mono); }.mobile-terminal-keys button svg { width: 1rem; height: 1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }.mobile-terminal-keys button.active { border-color: var(--sky); background: color-mix(in srgb, var(--sky) 32%, var(--surface-0)); color: var(--sky); } }
 .tabs .new-agent-tab { flex: 1 1 auto; justify-content: center; min-height: 2.6rem; margin: 0; border: 0; border-left: 1px solid color-mix(in srgb, var(--lavender) 45%, var(--surface-1)); border-radius: 0; background: linear-gradient(145deg, var(--surface-1), var(--surface-0)); color: var(--lavender); white-space: nowrap; padding: .5rem .75rem; font: 700 .78rem var(--font-mono); letter-spacing: .035em; box-shadow: inset 0 1px color-mix(in srgb, var(--text) 9%, transparent); }
 .tabs .new-agent-tab:hover { background: linear-gradient(145deg, var(--mauve), var(--blue)); color: var(--crust); }
 .tabs .launcher,.tabs .tab-spacer{flex:0 0 2.8rem;min-height:2.6rem}.tabs .launcher{position:relative;display:block}.tabs .launcher .new-agent-tab{width:100%;height:100%}.tabs .tab-spacer{border-left:1px solid color-mix(in srgb,var(--surface-1) 82%,transparent);background:linear-gradient(145deg,color-mix(in srgb,var(--surface-0) 82%,transparent),color-mix(in srgb,var(--mantle) 90%,transparent))}.launcher-menu{z-index:var(--layer-popover)}.launcher-menu button{justify-content:flex-start!important;border:0!important;padding:.55rem!important;text-align:left}
 .tabs .notification-control,.tabs .notification-status{flex:0 0 auto;align-self:center;min-height:2.1rem;margin:0 .4rem;border-radius:var(--control-radius);font:600 .68rem var(--font-mono);letter-spacing:.04em;padding:.35rem .55rem}.tabs .notification-control{border:1px solid var(--blue);background:transparent;color:var(--blue);cursor:pointer}.tabs .notification-control:hover{background:color-mix(in srgb,var(--blue) 14%,transparent)}.tabs .notification-status{color:var(--yellow)}
 /* keep extracted controls from resizing their source terminal */
-.agent-view > .question-prompt { position: absolute; inset: auto 0 0; z-index: var(--layer-popover); max-height: calc(100% - .75rem); overflow-y: auto; overscroll-behavior: contain; border: 1px solid color-mix(in srgb, var(--lavender) 55%, var(--surface-1)); border-radius: var(--control-radius); padding: .65rem; background: color-mix(in srgb, var(--mantle) 96%, var(--base)); box-shadow: 0 -.45rem 1.5rem color-mix(in srgb, var(--crust) 70%, transparent), inset 0 1px color-mix(in srgb, var(--text) 8%, transparent); }
+.log-output > .question-prompt { position: absolute; inset: auto 0 0; z-index: var(--layer-popover); max-height: calc(100% - var(--panel-header-clearance)); overflow-y: auto; overscroll-behavior: contain; border: 1px solid color-mix(in srgb, var(--lavender) 55%, var(--surface-1)); border-radius: var(--control-radius); padding: .65rem; background: color-mix(in srgb, var(--mantle) 96%, var(--base)); box-shadow: 0 -.45rem 1.5rem color-mix(in srgb, var(--crust) 70%, transparent), inset 0 1px color-mix(in srgb, var(--text) 8%, transparent); }
 .question-prompt { gap: .65rem; }
 .question-heading { display: flex; align-items: flex-start; gap: .65rem; }
 .question-copy { display: flex; min-width: 0; flex: 1 1 auto; flex-direction: column; gap: .25rem; color: var(--text); }
@@ -1151,12 +1166,13 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .operation-feedback > button { display: grid; width: 1.65rem; height: 1.65rem; place-items: center; border: 0; padding: 0; background: transparent; color: var(--subtext-0); box-shadow: none; font-size: 1rem; }
 .operation-feedback > button:hover { color: var(--text); }
 /* Float the transient console notices in the top-right corner instead of a strip below the tab bar. */
-.toast-region { position: fixed; top: calc(.6rem + env(safe-area-inset-top, 0px)); right: calc(.6rem + env(safe-area-inset-right, 0px)); z-index: calc(var(--layer-dialog) + 1); display: flex; flex-direction: column; gap: .5rem; width: min(24rem, calc(100vw - 1.2rem)); pointer-events: none; }
+/* toasts sit below the panels' floating header pills, so they never cover a panel's actions */
+.toast-region { position: fixed; top: calc(var(--panel-header-clearance) + .6rem + env(safe-area-inset-top, 0px)); right: calc(.6rem + env(safe-area-inset-right, 0px)); z-index: calc(var(--layer-dialog) + 1); display: flex; flex-direction: column; gap: .5rem; width: min(24rem, calc(100vw - 1.2rem)); pointer-events: none; }
 .toast { pointer-events: auto; animation: toast-in .18s ease-out; }
 .toast-error { display: flex; align-items: center; min-height: 2rem; margin: 0; padding: .5rem .7rem; border: 1px solid color-mix(in srgb, var(--red) 65%, var(--surface-1)); border-radius: var(--control-radius); background: color-mix(in srgb, var(--mantle) 90%, var(--red)); box-shadow: 0 .7rem 1.9rem color-mix(in srgb, var(--crust) 70%, transparent); color: var(--red); font-size: .72rem; line-height: 1.35; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(-.35rem) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
 /* On phones the corner is cramped: span the top edge with side insets instead. */
-@media (max-width: 600px) { .toast-region { top: calc(.5rem + env(safe-area-inset-top, 0px)); right: calc(.5rem + env(safe-area-inset-right, 0px)); left: calc(.5rem + env(safe-area-inset-left, 0px)); width: auto; } }
+@media (max-width: 600px) { .toast-region { top: calc(var(--panel-header-clearance) + .5rem + env(safe-area-inset-top, 0px)); right: calc(.5rem + env(safe-area-inset-right, 0px)); left: calc(.5rem + env(safe-area-inset-left, 0px)); width: auto; } }
 .console-recovery { width: max-content; max-width: calc(100vw - 2rem); justify-items: start; color: var(--subtext-0); }
 .console-recovery .server-switcher-button { flex: none; max-width: none; }
 .console-recovery strong { color: var(--text); }
@@ -1515,7 +1531,7 @@ html.software-keyboard-open .agent-view:has(> .prompt:focus-within) .log-split:i
 .prompt-actions .danger svg { width: 1.35rem; height: 1.35rem; }
 
 @media (max-width: 600px) {
-  .agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .prompt-with-action-rail .mobile-terminal-keys { display: grid; grid-template-columns: 3.15rem auto auto; align-items: start; justify-content: center; gap: .45rem .7rem; }
+  .agent-view:has(.log-output.input-active, .log-split.mobile-terminal-view) > .workspace-bar .mobile-terminal-keys { display: grid; grid-template-columns: 3.15rem auto auto; align-items: start; justify-content: center; gap: .45rem .7rem; }
   .mobile-control-keys { display: grid; grid-template-columns: 3.15rem; gap: .2rem; }
   .mobile-control-keys button { width: 3.15rem; font: 800 .65rem var(--font-mono); }
 }

@@ -83,16 +83,18 @@ test('opens the Code view full screen for a Worktree with no running agent', asy
   });
 
   await page.goto('/');
-  // the inactive worktree shows its placeholder output until changes are opened
-  await expect(agentOutput(page)).toBeVisible();
+  // the inactive worktree has no agent panel: its empty Workspace says so until changes are opened
+  const empty = page.locator('.workspace-empty');
+  await expect(empty).toBeVisible();
+  await expect(agentOutput(page)).toHaveCount(0);
   await page.getByRole('button', { name: /^Git status:/u }).click();
   await page.getByRole('button', { name: 'View changes', exact: true }).click();
 
-  // the Code view opens already promoted, filling the workspace and hiding the placeholder
+  // the Code view opens already promoted, filling the workspace in place of the empty notice
   await expect(codePanel(page)).toBeVisible();
   await expect(codePanel(page)).toHaveClass(/\bexpanded\b/u);
   await expect(codePanel(page).getByRole('button', { name: 'Restore code panel' })).toHaveAttribute('aria-pressed', 'true');
-  await expect(agentOutput(page)).toBeHidden();
+  await expect(empty).toHaveCount(0);
   // with no Agent the review is offered but disabled, with the reason
   const review = codePanel(page).getByRole('button', { name: 'Review', exact: true });
   await expect(review).toBeDisabled();
@@ -101,5 +103,6 @@ test('opens the Code view full screen for a Worktree with no running agent', asy
   // and it restores to the split like any other panel
   await codePanel(page).getByRole('button', { name: 'Restore code panel' }).click();
   await expect(codePanel(page)).not.toHaveClass(/\bexpanded\b/u);
-  await expect(agentOutput(page)).toBeVisible();
+  await expect(codePanel(page)).toBeVisible();
+  await expect(agentOutput(page)).toHaveCount(0);
 });

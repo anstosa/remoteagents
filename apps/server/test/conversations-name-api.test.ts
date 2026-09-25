@@ -350,4 +350,29 @@ describe('conversation naming API', () => {
       await app.close();
     }
   }, 15_000);
+
+  it('reads the current Conversation name for the agent panel title', async () => {
+    const hash = await argon2.hash('synthetic-password', { type: argon2.argon2id });
+    const cora = testWorktree({ id: 'potato:/wt/cora', projectId: 'potato', label: 'Cora', path: '/wt/cora', identity: '/wt/cora', hostPath: cwd });
+    let current: { id: string; title?: string } | undefined = { id: claudeId, title: 'Wire the adapter' };
+    const discovery = { ...namingDiscovery('claude', claudeId, [cora]), conversation: async (id: string) => id === 'agent-1' ? current : undefined };
+    const app = await buildApp(testConfig(), { auth: new AuthService(hash, Buffer.alloc(32, 74).toString('base64url')), discovery: discovery as never, tmux: recordingTmux().tmux as never });
+    try {
+      const headers = await authenticatedHeaders(app);
+      const named = await app.inject({ method: 'GET', url: '/api/agents/agent-1/conversation', headers });
+      expect(named.statusCode).toBe(200);
+      expect(named.json()).toEqual({ name: 'Wire the adapter' });
+      // an unnamed or undiscoverable Conversation answers with no name
+      current = { id: claudeId };
+      expect((await app.inject({ method: 'GET', url: '/api/agents/agent-1/conversation', headers })).json()).toEqual({});
+      current = undefined;
+      expect((await app.inject({ method: 'GET', url: '/api/agents/agent-1/conversation', headers })).json()).toEqual({});
+      // an unknown agent is refused
+      expect((await app.inject({ method: 'GET', url: '/api/agents/agent-9/conversation', headers })).statusCode).toBe(404);
+      // an unauthenticated browser reads nothing
+      expect((await app.inject({ method: 'GET', url: '/api/agents/agent-1/conversation', headers: { host: 'agents.example.com' } })).statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
+  }, 15_000);
 });

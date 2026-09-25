@@ -17,12 +17,18 @@ const readStyle = async (locator: Locator): Promise<ControlStyle> => locator.eva
   };
 });
 
-test('uses consistent prompt control styles while preserving destructive and queue emphasis', async ({ page }) => {
+test('uses consistent Workspace control styles while preserving destructive emphasis and the composer send gradient', async ({ page }) => {
   await page.goto('/');
   await page.setContent(`
     <link rel="stylesheet" href="/src/styles.css">
-    <section class="prompt">
+    <section class="prompt agent-composer">
+      <div class="agent-composer-column">
+        <button class="queue icon-button" aria-label="Queue"><svg viewBox="0 0 24 24"><path d="M22 2 11 13"></path></svg></button>
+      </div>
+    </section>
+    <section class="workspace-bar">
       <div class="prompt-actions">
+        <button class="danger icon-button" aria-label="Delete"></button>
         <button class="more icon-button" aria-label="More"></button>
         <span class="project-open-group">
           <a class="project-open status-healthy" href="#"><i></i>Open</a>
@@ -30,8 +36,6 @@ test('uses consistent prompt control styles while preserving destructive and que
         <span class="project-open-group has-stack-actions">
           <button class="project-stack-toggle project-stack-trigger icon-button" aria-label="Stack"><svg class="project-stack-server-icon" viewBox="0 0 24 24"></svg><i class="project-stack-status-dot status-healthy"></i></button>
         </span>
-        <button class="danger icon-button" aria-label="Delete"></button>
-        <button class="queue icon-button" aria-label="Queue"><svg viewBox="0 0 24 24"><path d="M22 2 11 13"></path></svg></button>
       </div>
     </section>
   `);

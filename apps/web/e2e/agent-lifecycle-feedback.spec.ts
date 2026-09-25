@@ -71,7 +71,7 @@ test('keeps agent on/off progress visible across lifecycle transitions', async (
   const pendingLaunch = page.getByRole('status').filter({ hasText: 'Starting Cora' });
   await expect(pendingLaunch).toContainText('waiting for the agent session to become ready');
   await expect(page.getByRole('tab', { name: 'Cora — Starting agent' })).toHaveAttribute('aria-busy', 'true');
-  await expect(page.getByText('Starting OMX…', { exact: true })).toBeVisible();
+  await expect(page.getByText('Starting OMX at Cora…', { exact: true })).toBeVisible();
   await page.getByRole('tab', { name: 'Delta — Agent closed' }).click();
   await expect(pendingLaunch).toHaveCount(0);
   await page.getByRole('tab', { name: 'Cora — Starting agent' }).click();

@@ -101,7 +101,7 @@ test('appends dropped files, removes a chip, and queues the unchanged draft with
 
   const firstDrop = await dispatchFileDrag(prompt, 'drop', [{ name: 'existing.txt', mimeType: 'text/plain', body: 'existing context' }]);
   expect(firstDrop.defaultAllowed).toBe(false);
-  const appendedDrop = await dispatchFileDrag(composer.getByRole('button', { name: 'More options' }), 'drop', [
+  const appendedDrop = await dispatchFileDrag(composer.getByRole('button', { name: 'Attach files' }), 'drop', [
     { name: 'requirements.md', mimeType: 'text/markdown', body: '# requirements' },
     { name: 'remove-me.json', mimeType: 'application/json', body: '{"remove":true}' }
   ]);
@@ -184,7 +184,7 @@ test('leaves text and link drags unhandled', async ({ page }) => {
   await prompt.fill('Keep browser-owned drag behavior.');
 
   expect(await dispatchTextDrag(prompt, 'dragenter')).toBe(true);
-  expect(await dispatchTextDrag(composer.getByRole('button', { name: 'More options' }), 'dragover')).toBe(true);
+  expect(await dispatchTextDrag(composer.getByRole('button', { name: 'Attach files' }), 'dragover')).toBe(true);
   expect(await dispatchTextDrag(composer, 'drop')).toBe(true);
   await expect(page.getByRole('status').filter({ hasText: 'Drop files to attach' })).toHaveCount(0);
   await expect(page.getByLabel('Selected attachments')).toHaveCount(0);
@@ -197,7 +197,7 @@ test('keeps the file-drop overlay stable while crossing nested composer targets 
   await page.goto('/');
   const composer = promptComposer(page);
   const prompt = page.getByRole('textbox', { name: 'Prompt' });
-  const actions = composer.getByRole('button', { name: 'More options' });
+  const actions = composer.getByRole('button', { name: 'Attach files' });
   const overlay = page.getByRole('status').filter({ hasText: 'Drop files to attach' });
   const before = await composer.boundingBox();
   expect(before).not.toBeNull();

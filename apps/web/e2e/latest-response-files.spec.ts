@@ -46,16 +46,16 @@ test('opens response files and pane file links in the Code panel File view', asy
   await seedPaneSize(page, 'agent-1', 80, 24);
   await expect(page.getByRole('button', { name: 'Notes' })).toBeEnabled({ timeout: 15_000 });
   const emit = async (text: string, message: string) => {
-    // Land the path text in the lower rows so its output-link overlay clears the
-    // top-left server switcher (a click there would otherwise hit the switcher button).
+    // Land the path text in the lower rows so its output-link overlay clears the agent
+    // panel's floating header pills (a click there would otherwise hit a header control).
     await pushBytes(page, 'agent-1', `${'\r\n'.repeat(20)}${text}\r\n`);
     await pushMetadata(page, 'agent-1', message, false);
   };
   await emit('Updated apps/web/src/main.tsx:1444 and docs/setup.md.', 'Updated `apps/web/src/main.tsx:1444` and `docs/setup.md`.');
 
   const panel = page.getByRole('region', { name: 'Code changes' });
-  const filesButton = page.getByRole('button', { name: 'Files from latest response (2)' });
-  const notesButton = page.getByRole('button', { name: 'Notes' });
+  // the response-files control rides in the agent panel's header
+  const filesButton = page.locator('.agent-panel').getByRole('toolbar', { name: 'Agent output actions' }).getByRole('button', { name: 'Files from latest response (2)' });
   await expect(filesButton).toBeVisible();
 
   // clicking a file link in the pane output opens that file in the Code panel (a plain-file view),
@@ -71,9 +71,7 @@ test('opens response files and pane file links in the Code panel File view', asy
   await expect(page.locator('.response-file-dialog')).toHaveCount(0);
   await expect(page.getByRole('dialog', { name: /File preview:/u })).toHaveCount(0);
 
-  // the response-files flyout still lists the files, above Notes; a row opens the same File view
-  const [filesBounds, notesBounds] = await Promise.all([filesButton.boundingBox(), notesButton.boundingBox()]);
-  expect(filesBounds!.y).toBeLessThan(notesBounds!.y);
+  // the response-files flyout still lists the files; a row opens the same File view
   await filesButton.click();
   const filesMenu = page.getByLabel('Files from latest response', { exact: true });
   await expect(filesMenu).toContainText('apps/web/src/main.tsx');

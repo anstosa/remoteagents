@@ -201,24 +201,23 @@ test('lists panes with the agent and a claimed window disabled, and opens a colu
     return color;
   });
   await expect(status).toHaveCSS('background-color', green);
-  // share agent pill styling at a smaller scale
-  const agentStatus = page.locator('.log-output .log-status');
+  // share the agent panel's connection pill styling (the pill only shows while
+  // the agent's stream is not live, so probe one in the agent panel's title pill)
+  await page.locator('.agent-panel .panel-header-title').evaluate(title => { const probe = document.createElement('span'); probe.className = 'status log-status live agent-status-probe'; probe.textContent = 'Live'; title.append(probe); });
+  const agentStatus = page.locator('.agent-status-probe');
   // compare state-independent visual properties
   for (const property of ['color', 'border-radius', 'box-shadow', 'font-family', 'font-weight', 'text-transform']) {
     const reference = await agentStatus.evaluate((element, key) => getComputedStyle(element).getPropertyValue(key), property);
     await expect(status).toHaveCSS(property, reference);
   }
   await expect(status).toHaveCSS('height', '20px');
+  // both header pills are the same size: the agent's connection pill and the shell's status
   const agentStatusBox = (await agentStatus.boundingBox())!;
   const shellStatusBox = (await status.boundingBox())!;
-  expect(shellStatusBox.height).toBeLessThan(agentStatusBox.height);
+  expect(shellStatusBox.height).toBeCloseTo(agentStatusBox.height, 0);
   const agentFontSize = await agentStatus.evaluate(element => parseFloat(getComputedStyle(element).fontSize));
   const shellFontSize = await status.evaluate(element => parseFloat(getComputedStyle(element).fontSize));
-  expect(shellFontSize).toBeLessThan(agentFontSize);
-  // keep letter spacing proportional to the smaller text
-  const agentSpacing = await agentStatus.evaluate(element => parseFloat(getComputedStyle(element).letterSpacing));
-  const shellSpacing = await status.evaluate(element => parseFloat(getComputedStyle(element).letterSpacing));
-  expect(shellSpacing / shellFontSize).toBeCloseTo(agentSpacing / agentFontSize, 3);
+  expect(shellFontSize).toBeCloseTo(agentFontSize, 3);
   await expect(page.locator('.log-split.has-terminals')).toBeVisible();
   // a resizer sits between the agent and the new column
   await expect(page.locator('.log-split .split-resizer')).toHaveCount(1);
@@ -1694,7 +1693,7 @@ test('a directory-Project Agent opens Terminals and notes at its Place', async (
   expect(requests.filter(entry => /\/(comparison|conversations)|GET \/api\/agents\/agent-9\/notes/u.test(entry))).toEqual([]);
 });
 
-test('a directory-Project Place with a Console shell keeps a tab after its Agent is deleted, and it can open a Terminal', async ({ page }) => {
+test('a directory-Project Place with a Console shell keeps a tab after its Agent is turned off, and it can open a Terminal', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
   await installPaneMock(page);
   const panes: Pane[] = [
@@ -1709,10 +1708,11 @@ test('a directory-Project Place with a Console shell keeps a tab after its Agent
   await expect(page.getByRole('tab', { name: /^Notes/u })).toHaveCount(1);
   await expect(page.getByRole('tab', { name: /^Notes/u })).toHaveAttribute('aria-selected', 'true');
 
-  // deleting the directory-Project Agent leaves its Place's tab, since a Console shell is open
+  // turning off the directory-Project Agent leaves its Place's tab, since a Console shell is open
   // there, and the selection moves to it rather than to the Scratch Agent's tab that slides into
   // the deleted tab's position
-  await page.getByRole('button', { name: 'Delete agent' }).click();
+  await page.getByRole('button', { name: 'Agent power options' }).click();
+  await page.getByRole('menuitem', { name: 'Turn off' }).click();
   panes.shift();
   await expect(page.getByRole('tab', { name: 'Notes — Agent closed' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('tab', { name: /^Notes/u })).toHaveCount(1);

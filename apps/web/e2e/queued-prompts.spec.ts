@@ -76,15 +76,15 @@ test('manages waiting prompts from the queue-add control connected to Queue', as
 
   await page.goto('/');
   await expect.poll(() => requested).toContain('GET /api/agents/agent-1/queued-prompts');
+  // the composer's right column: queued prompts above send
   const submissionControls = page.getByRole('group', { name: 'Prompt submission controls' });
-  const history = submissionControls.getByRole('button', { name: 'Prompt history (0)' });
   const queue = submissionControls.getByRole('button', { name: 'Queue', exact: true });
-  const queueAdd = page.getByRole('button', { name: 'Queued prompts (2)' });
+  const queueAdd = submissionControls.getByRole('button', { name: 'Queued prompts (2)' });
   await expect(queueAdd).toBeVisible();
   await expect(queueAdd).toHaveScreenshot('queue-add-control.png');
-  const [historyBounds, queueBounds, queueAddBounds] = await Promise.all([history.boundingBox(), queue.boundingBox(), queueAdd.boundingBox()]);
-  expect(Math.abs(historyBounds!.x + historyBounds!.width - queueBounds!.x)).toBeLessThanOrEqual(1);
-  expect(Math.abs(queueBounds!.x + queueBounds!.width - queueAddBounds!.x)).toBeLessThanOrEqual(1);
+  const [queueBounds, queueAddBounds] = await Promise.all([queue.boundingBox(), queueAdd.boundingBox()]);
+  expect(Math.abs(queueBounds!.x - queueAddBounds!.x)).toBeLessThanOrEqual(1);
+  expect(queueAddBounds!.y + queueAddBounds!.height).toBeLessThanOrEqual(queueBounds!.y);
 
   await queueAdd.click();
   const menu = page.getByLabel('Queued prompts', { exact: true });

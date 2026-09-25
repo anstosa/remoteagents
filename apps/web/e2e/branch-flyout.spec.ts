@@ -260,22 +260,27 @@ test('shows every pull request target while keeping checkout and worktree action
   // the merged switch link sits on its own line below the checkout row, not beside it
   expect(switchBox.y).toBeGreaterThanOrEqual(checkoutBox.y + checkoutBox.height - 2);
 
-  // close without activating a covered control
+  // close without activating a covered control: the prompt where the flyout leaves it bare, else
+  // the agent panel's expand button
   const deltaTab = page.getByRole('tab', { name: /^Delta/u });
   const prompt = page.getByRole('textbox', { name: 'Prompt' });
+  const expand = page.getByRole('button', { name: 'Expand agent output' });
   await expect(deltaTab).toHaveAttribute('aria-selected', 'false');
   await expect(prompt).not.toBeFocused();
-  const [promptBox, menuBox] = await Promise.all([prompt.boundingBox(), menu.boundingBox()]);
+  const [promptBox, expandBox, menuBox] = await Promise.all([prompt.boundingBox(), expand.boundingBox(), menu.boundingBox()]);
   expect(promptBox).not.toBeNull();
+  expect(expandBox).not.toBeNull();
   expect(menuBox).not.toBeNull();
   // require rendered menu bounds
-  if (promptBox === null || menuBox === null) throw new Error('menu dismissal bounds unavailable');
-  const promptPoint = { x: promptBox.x + promptBox.width / 2, y: promptBox.y + promptBox.height / 2 };
-  const promptOutsideMenu = promptPoint.x < menuBox.x || promptPoint.x > menuBox.x + menuBox.width || promptPoint.y < menuBox.y || promptPoint.y > menuBox.y + menuBox.height;
-  expect(promptOutsideMenu).toBe(true);
-  await page.mouse.click(promptPoint.x, promptPoint.y);
+  if (promptBox === null || expandBox === null || menuBox === null) throw new Error('menu dismissal bounds unavailable');
+  const outsideMenu = (point: { x: number; y: number }) => point.x < menuBox.x || point.x > menuBox.x + menuBox.width || point.y < menuBox.y || point.y > menuBox.y + menuBox.height;
+  const coveredPoint = [promptBox.x + 12, promptBox.x + promptBox.width / 2, promptBox.x + promptBox.width - 12].map(x => ({ x, y: promptBox.y + promptBox.height / 2 })).find(outsideMenu)
+    ?? { x: expandBox.x + expandBox.width / 2, y: expandBox.y + expandBox.height / 2 };
+  expect(outsideMenu(coveredPoint)).toBe(true);
+  await page.mouse.click(coveredPoint.x, coveredPoint.y);
   await expect(menu).toBeHidden();
   await expect(prompt).not.toBeFocused();
+  await expect(expand).toHaveAttribute('aria-pressed', 'false');
   await expect(deltaTab).toHaveAttribute('aria-selected', 'false');
 
   // reopen for the explicit switch action

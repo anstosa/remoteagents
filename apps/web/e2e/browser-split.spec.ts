@@ -536,12 +536,13 @@ test.describe('phone browser split', () => {
     await expect(output).toBeVisible();
     await expect(browser).toBeHidden();
     await expect(browserSwitch).toBeVisible();
-    const [browserSwitchBottom, mobileOutputBottom] = await Promise.all([
-      browserSwitch.evaluate(element => element.getBoundingClientRect().bottom),
-      page.locator('.log-output').evaluate(element => element.getBoundingClientRect().bottom)
+    // the switches sit under the agent panel's header pills, clear of the composer at its foot
+    const [browserSwitchTop, mobileOutputTop] = await Promise.all([
+      browserSwitch.evaluate(element => element.getBoundingClientRect().top),
+      page.locator('.log-output').evaluate(element => element.getBoundingClientRect().top)
     ]);
-    expect(browserSwitchBottom).toBeLessThan(mobileOutputBottom);
-    expect(mobileOutputBottom - browserSwitchBottom).toBeLessThan(10);
+    expect(browserSwitchTop).toBeGreaterThan(mobileOutputTop);
+    expect(browserSwitchTop - mobileOutputTop).toBeLessThan(64);
 
     await browserSwitch.click();
     await expect(browser).toBeVisible();

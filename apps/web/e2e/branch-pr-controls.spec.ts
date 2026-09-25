@@ -100,29 +100,15 @@ test('keeps the current pull request in the Working footer and queues one active
   await expect(page.locator('.agent-view > .pull-request-card')).toHaveCount(0);
   await expect(branch).toHaveClass(/\bhas-pull-request\b/u);
   await expect(branch).toHaveClass(/\bstatus-open\b/u);
-  await expect(branch).toHaveCSS('color', 'rgb(166, 227, 161)');
+  await expect(branch.locator('.git-branch')).toHaveCSS('color', 'rgb(166, 227, 161)');
   const shortcutIndicators = branch.locator(':scope > .pull-request-issues');
   await expect(shortcutIndicators).toHaveCount(1);
   await expect(shortcutIndicators.getByRole('img', { name: 'CI checks failed' })).toBeVisible();
   await expect(shortcutIndicators.getByRole('img', { name: 'Merge conflicts' })).toBeVisible();
   await expect(shortcutIndicators.getByRole('img', { name: 'Unresolved review comments' })).toBeVisible();
-  await expect(branch.locator(':scope > .git-status-dot')).toBeVisible();
-  const [branchBox, glyphBox, indicatorsBox, dirtyBox, attachmentBox] = await Promise.all([
-    renderedBox(branch), renderedBox(branch.locator(':scope > .git-branch-icon')), renderedBox(shortcutIndicators), renderedBox(branch.locator(':scope > .git-status-dot')), renderedBox(page.getByRole('button', { name: 'Attach files' }))
-  ]);
-  expect(Math.abs(branchBox.width - attachmentBox.width)).toBeLessThanOrEqual(1);
+  // the row beneath the tabs shows the branch as a standard-height chip, as an agentless tab does
+  const [branchBox, attachmentBox] = await Promise.all([renderedBox(branch), renderedBox(page.getByRole('button', { name: 'Attach files' }))]);
   expect(Math.abs(branchBox.height - attachmentBox.height)).toBeLessThanOrEqual(1);
-  // preserve the centered full-size glyph beneath the corner overlay
-  expect(glyphBox.width).toBeCloseTo(16, 0);
-  expect(glyphBox.height).toBeCloseTo(16, 0);
-  expect(glyphBox.x + glyphBox.width / 2).toBeCloseTo(branchBox.x + branchBox.width / 2, 0);
-  expect(glyphBox.y + glyphBox.height / 2).toBeCloseTo(branchBox.y + branchBox.height / 2, 0);
-  expect(branchBox.x + branchBox.width - indicatorsBox.x - indicatorsBox.width).toBeCloseTo(3.4, 0);
-  expect(branchBox.y + branchBox.height - indicatorsBox.y - indicatorsBox.height).toBeCloseTo(3.4, 0);
-  expect(indicatorsBox.y).toBeLessThan(glyphBox.y + glyphBox.height);
-  await expect(shortcutIndicators).toHaveCSS('position', 'absolute');
-  expect(dirtyBox.x).toBeGreaterThanOrEqual(branchBox.x);
-  expect(dirtyBox.x + dirtyBox.width).toBeLessThanOrEqual(branchBox.x + branchBox.width + 1);
 
   await branch.click();
   const panel = page.getByRole('region', { name: 'Changed files' });
@@ -234,15 +220,14 @@ test('reports fixup failures and allows a successful retry', async ({ page }) =>
   expect(promptRequests).toBe(3);
 });
 
-// verify the narrow stacked footer and fixed shortcut rail
-test('stacks standard-height Working footer controls at 375px without growing the branch shortcut', async ({ page }) => {
+// verify the narrow stacked footer and the standard-height branch chip
+test('stacks standard-height Working footer controls at 375px without growing the branch chip', async ({ page }) => {
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 375, height: 812 });
   await mountDashboard(page, { dashboard: { generation: 1, agents: [activeAgent], projects: [{ id: 'repo', label: 'Repo', available: true, worktrees: [activeWorktree] }] } });
 
   const branch = page.getByRole('button', { name: /^Git status: feature\/current-pr-controls/u });
   const [branchBox, attachmentBox] = await Promise.all([renderedBox(branch), renderedBox(page.getByRole('button', { name: 'Attach files' }))]);
-  expect(Math.abs(branchBox.width - attachmentBox.width)).toBeLessThanOrEqual(1);
   expect(Math.abs(branchBox.height - attachmentBox.height)).toBeLessThanOrEqual(1);
   await branch.click();
 
@@ -316,7 +301,7 @@ test('applies pull request status colors and indicators to active and inactive b
 
   const activeBranch = page.getByRole('button', { name: /^Git status: feature\/current-pr-controls/u });
   await expect(activeBranch).toBeVisible({ timeout: 15_000 });
-  await expect(activeBranch).toHaveCSS('color', 'rgb(166, 227, 161)');
+  await expect(activeBranch.locator('.git-branch')).toHaveCSS('color', 'rgb(166, 227, 161)');
 
   await page.getByRole('tab', { name: /^Draft —/u }).click();
   const draftBranch = page.getByRole('button', { name: /^Git status: feature\/draft/u });

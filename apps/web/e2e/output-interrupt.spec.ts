@@ -87,6 +87,10 @@ test('the mobile terminal keys drive the pane, including the Ctrl latch', async 
   // Focus the pane so the panel is input-active and the mobile keys show.
   await page.getByLabel('Live log').locator('.xterm-screen').click();
   await expect(page.getByLabel('Terminal keys')).toBeVisible();
+  // the keys take the row beneath the tabs, and the agent panel's composer folds away for the output
+  await expect(page.getByRole('region', { name: 'Workspace controls' }).getByLabel('Terminal keys')).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Workspace controls' }).getByRole('button', { name: 'More options' })).toBeHidden();
+  await expect(page.getByRole('region', { name: 'Prompt composer' })).toBeHidden();
   // Direct controls, then modifiers, then arrows, left to right; Esc above Ctrl+C.
   const [controlBounds, modifierBounds, arrowBounds, escBounds, ctrlCBounds] = await Promise.all([
     page.locator('.mobile-control-keys').boundingBox(),

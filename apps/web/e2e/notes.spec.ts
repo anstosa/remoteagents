@@ -271,13 +271,14 @@ test('switches sticky notes between full-screen mobile panes and a horizontal de
   await page.getByRole('button', { name: 'Keep this note beside the output.…', exact: true }).click();
   const log = page.locator('.log');
   const output = page.locator('.log-output');
-  const outputStatus = output.locator('> .log-status');
+  // the agent panel's title and state ride in its floating header's top-left pill
+  const outputStatus = output.locator('.panel-header .panel-header-title');
   const pane = page.getByRole('dialog', { name: 'Note' });
   await pane.evaluate(async element => await Promise.all(element.getAnimations().map(animation => animation.finished)));
   await expect(outputStatus).toHaveCount(1);
   await expect(page.locator('.log > .log-status')).toHaveCount(0);
 
-  // show one full-size pane with a bottom-left switch on phones
+  // show one full-size pane with a top-left switch on phones
   const showOutput = page.getByRole('button', { name: 'Show agent output' });
   await expect(output).toBeHidden();
   await expect(showOutput).toBeVisible();
@@ -287,7 +288,8 @@ test('switches sticky notes between full-screen mobile panes and a horizontal de
   expect(mobileNote[1].width / mobileNote[0].width).toBeGreaterThan(0.95);
   expect(mobileNote[1].height / mobileNote[0].height).toBeGreaterThan(0.95);
   expect(mobileNote[2].x - mobileNote[0].x).toBeLessThan(10);
-  expect(mobileNote[0].y + mobileNote[0].height - mobileNote[2].y - mobileNote[2].height).toBeLessThan(10);
+  // under the header pills, clear of the agent panel's composer at the foot
+  expect(mobileNote[2].y - mobileNote[0].y).toBeLessThan(64);
 
   await showOutput.click();
   const showNote = page.getByRole('button', { name: 'Show note' });

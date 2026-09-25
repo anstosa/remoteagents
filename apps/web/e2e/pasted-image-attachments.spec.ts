@@ -29,7 +29,7 @@ test('converts images pasted into the prompt into queued attachments', async ({ 
   expect(defaultAllowed).toBe(false);
   await expect(prompt).toHaveValue('Describe this screenshot.');
   await expect(page.getByLabel('Selected attachments')).toContainText('clipboard.png');
-  await page.getByRole('button', { name: 'Queue' }).click();
+  await page.getByRole('button', { name: 'Queue', exact: true }).click();
 
   await expect.poll(() => queued).toEqual({
     prompt: 'Describe this screenshot.',

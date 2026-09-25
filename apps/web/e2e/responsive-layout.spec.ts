@@ -60,27 +60,23 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
         const style = getComputedStyle(document.querySelector<HTMLElement>('.log')!);
         return { top: style.borderTopWidth, bottom: style.borderBottomWidth };
       })(),
-      gitSummary: bounds('.git-status-summary'),
-      gitBranchDisplay: getComputedStyle(document.querySelector<HTMLElement>('.git-branch')!).display,
-      gitDotDisplay: getComputedStyle(document.querySelector<HTMLElement>('.git-status-dot')!).display,
-      gitIconDisplay: getComputedStyle(document.querySelector<HTMLElement>('.git-branch-icon')!).display,
-      gitDot: bounds('.git-status-dot'),
-      promptRail: bounds('.prompt-action-rail'),
-      attachment: bounds('.prompt-action-rail .attachment-button'),
-      power: bounds('.prompt-action-rail .deactivate-agent'),
-      stackTrigger: bounds('.project-stack-trigger'),
-      stackDot: bounds('.project-stack-status-dot'),
-      logStatus: bounds('.log-status'),
+      headerTitle: bounds('.agent-panel .panel-header-title'),
+      headerActions: bounds('.agent-panel .panel-header-actions'),
+      power: bounds('.agent-panel .agent-power'),
+      composer: bounds('.agent-composer'),
+      history: bounds('.agent-composer .prompt-history-toggle'),
+      attachment: bounds('.agent-composer .attachment-button'),
+      queued: bounds('.agent-composer .queued-prompts-toggle'),
+      send: bounds('.agent-composer .queue'),
+      prompt: bounds('.agent-composer textarea'),
+      gitSummary: bounds('.workspace-bar .git-status-summary'),
+      gitBranchDisplay: getComputedStyle(document.querySelector<HTMLElement>('.workspace-bar .git-branch')!).display,
       tabRowLead: bounds('.tab-row-lead'),
       serverSettings: bounds('.tab-row-lead .server-switcher-settings'),
-      logStatusStyle: (() => {
-        const style = getComputedStyle(document.querySelector<HTMLElement>('.log-status')!);
-        return { position: style.position, boxShadow: style.boxShadow, backgroundColor: style.backgroundColor, color: style.color, backdropFilter: style.backdropFilter };
-      })(),
       tabs: bounds('.tabs'),
-      prompt: bounds('.prompt'),
-      promptActions: bounds('.prompt-actions'),
-      controls: [...document.querySelectorAll<HTMLElement>('.prompt-actions button, .prompt-actions .project-open')].map(element => {
+      bar: bounds('.workspace-bar'),
+      barActions: bounds('.workspace-bar .prompt-actions'),
+      controls: [...document.querySelectorAll<HTMLElement>('.workspace-bar .prompt-actions button, .workspace-bar .prompt-actions .project-open')].map(element => {
         const rect = element.getBoundingClientRect();
         return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
       })
@@ -93,32 +89,20 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   expect(Math.abs(layout.output.left)).toBeLessThanOrEqual(1);
   expect(Math.abs(layout.output.width - layout.viewportWidth)).toBeLessThanOrEqual(1);
   expect(layout.outputBorder).toEqual({ top: '0px', bottom: '1px' });
-  // the shortcut rail renders branch state as a corner badge
-  expect(layout.gitBranchDisplay).toBe('none');
-  expect(layout.gitDotDisplay).toBe('block');
-  expect(layout.gitIconDisplay).toBe('block');
-  expect(layout.gitSummary.right).toBeLessThanOrEqual(layout.viewportWidth);
-  // match the branch and stack corner badge offsets
-  expect(Math.abs((layout.gitDot.top - layout.gitSummary.top) - (layout.stackDot.top - layout.stackTrigger.top))).toBeLessThanOrEqual(1);
-  expect(Math.abs((layout.gitSummary.right - layout.gitDot.right) - (layout.stackTrigger.right - layout.stackDot.right))).toBeLessThanOrEqual(1);
-  expect(Math.abs(layout.gitDot.width - layout.stackDot.width)).toBeLessThanOrEqual(1);
-  expect(Math.abs(layout.gitDot.height - layout.stackDot.height)).toBeLessThanOrEqual(1);
-  // keep one standard gap between the fixed shortcut rows
-  expect(Math.abs(layout.attachment.top - layout.gitSummary.bottom - 6)).toBeLessThanOrEqual(1);
-  expect(Math.abs(layout.power.top - layout.attachment.bottom - 6)).toBeLessThanOrEqual(1);
-  expect(Math.abs(layout.attachment.left - layout.power.left)).toBeLessThanOrEqual(1);
-  expect(Math.abs(layout.power.bottom - layout.promptRail.bottom)).toBeLessThanOrEqual(1);
-  expect(Math.abs(layout.power.bottom - layout.promptActions.bottom)).toBeLessThanOrEqual(1);
-  expect(Math.abs(layout.power.bottom - layout.prompt.bottom)).toBeLessThanOrEqual(1);
-  expect(layout.logStatusStyle.position).toBe('absolute');
-  expect(layout.logStatusStyle.boxShadow).not.toBe('none');
-  expect(layout.logStatusStyle.backgroundColor).toBe('rgb(249, 226, 175)');
-  expect(layout.logStatusStyle.color).toBe('rgb(17, 17, 27)');
-  expect(layout.logStatusStyle.backdropFilter).toBe('none');
-  // nothing floats over the output's top-left corner but the status pill
-  expect(Math.abs(layout.logStatus.top - layout.output.top - 6)).toBeLessThanOrEqual(1);
-  expect(Math.abs(layout.logStatus.left - layout.output.left - 6)).toBeLessThanOrEqual(1);
-  expect(Math.abs(layout.logStatus.height - 32)).toBeLessThanOrEqual(1);
+  // the agent panel's header pills float over its top corners, power last
+  expect(Math.abs(layout.headerTitle.top - layout.output.top - 6.4)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.headerTitle.left - layout.output.left - 6.4)).toBeLessThanOrEqual(1);
+  expect(layout.headerActions.right).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.power.right).toBeLessThanOrEqual(layout.headerActions.right);
+  // the composer sits inside the panel: history above attach on the left, queued above send on the right
+  expect(layout.composer.bottom).toBeLessThanOrEqual(layout.output.bottom + 1);
+  expect(Math.abs(layout.history.left - layout.attachment.left)).toBeLessThanOrEqual(1);
+  expect(layout.history.bottom).toBeLessThanOrEqual(layout.attachment.top);
+  expect(layout.attachment.right).toBeLessThanOrEqual(layout.prompt.left);
+  expect(Math.abs(layout.queued.left - layout.send.left)).toBeLessThanOrEqual(1);
+  expect(layout.queued.bottom).toBeLessThanOrEqual(layout.send.top);
+  expect(layout.send.left).toBeGreaterThanOrEqual(layout.prompt.right);
+  expect(layout.send.right).toBeLessThanOrEqual(layout.viewportWidth);
   // the server selector, Call and settings lead the tab row at tab height
   expect(Math.abs(layout.tabRowLead.left - layout.tabs.left)).toBeLessThanOrEqual(1);
   expect(Math.abs(layout.tabRowLead.top - layout.tabs.top)).toBeLessThanOrEqual(1);
@@ -128,12 +112,15 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   expect(Math.abs(layout.tabs.top - layout.output.bottom)).toBeLessThanOrEqual(1);
   await expect(page.locator('.log-topbar')).toHaveCount(0);
   await expect(page.locator('.agent-view > .pull-request-card')).toHaveCount(0);
+  // the Workspace's controls sit in the row beneath the tabs, the branch as a chip
+  expect(layout.bar.top).toBeGreaterThanOrEqual(layout.tabs.bottom - 1);
+  expect(layout.gitBranchDisplay).not.toBe('none');
+  expect(layout.gitSummary.right).toBeLessThanOrEqual(layout.viewportWidth);
   expect(layout.controls.every(control => control.left >= 0 && control.right <= layout.viewportWidth)).toBe(true);
   const finalRowTop = Math.max(...layout.controls.map(control => control.top));
   const finalRow = layout.controls.filter(control => Math.abs(control.top - finalRowTop) < 1);
-  expect(finalRow.every(control => Math.abs(control.bottom - layout.power.bottom) <= 1)).toBe(true);
   const finalRowRight = Math.max(...finalRow.map(control => control.right));
-  expect(Math.abs(layout.promptActions.right - finalRowRight)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.barActions.right - finalRowRight)).toBeLessThanOrEqual(1);
 
   const promptBox = page.getByRole('textbox', { name: 'Prompt' });
   await promptBox.fill(Array.from({ length: 10 }, (_, index) => `Growing line ${index + 1}`).join('\n'));
@@ -143,17 +130,11 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
       const rect = document.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
       return { top: rect.top, bottom: rect.bottom };
     };
-    return {
-      prompt: bounds('.prompt'),
-      branch: bounds('.git-status-summary'),
-      power: bounds('.prompt-action-rail .deactivate-agent'),
-      actions: bounds('.prompt-actions')
-    };
+    return { prompt: bounds('.agent-composer textarea'), send: bounds('.agent-composer .queue'), bar: bounds('.workspace-bar') };
   });
-  // grow the prompt upward without moving either bottom control row
+  // grow the prompt upward without moving send or the row beneath the tabs
   expect(grown.prompt.top).toBeLessThan(layout.prompt.top);
   expect(Math.abs(grown.prompt.bottom - layout.prompt.bottom)).toBeLessThanOrEqual(1);
-  expect(Math.abs(grown.branch.top - layout.gitSummary.top)).toBeLessThanOrEqual(1);
-  expect(Math.abs(grown.power.bottom - layout.power.bottom)).toBeLessThanOrEqual(1);
-  expect(Math.abs(grown.actions.bottom - layout.promptActions.bottom)).toBeLessThanOrEqual(1);
+  expect(Math.abs(grown.send.bottom - layout.send.bottom)).toBeLessThanOrEqual(1);
+  expect(Math.abs(grown.bar.top - layout.bar.top)).toBeLessThanOrEqual(1);
 });

@@ -5,7 +5,6 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { pollWhileVisible } from './client-scheduling.js';
 import { outputUrlMatchesHost } from './output-links.js';
-import { attachOutputScrollbar } from './output-scrollbar.js';
 import { mountStreamedTerminal } from './streamed-terminal.js';
 import { attachTerminalSelection, type TerminalSelection } from './terminal-selection.js';
 import { createAgentPaneConnector, createWorktreePaneConnector } from './pane-socket-client.js';
@@ -1978,14 +1977,16 @@ class ConsoleBoundary extends Component<{ children: ReactNode }, { failed: boole
 // `restartAs` (active mode only) adds a "Restart as…" item that opens the Launch menu as
 // a second page within the same flyout, restarting the agent under the chosen kind.
 type RestartAs = { label: string; resolution?: LaunchResolution; onLaunch: (choice: LaunchChoice) => void };
-type AgentPowerMenuProps = { pending: boolean } & (
-  { mode: 'active'; onTurnOff: () => void; onRestart: () => void; onClear: () => void; restartAs?: RestartAs }
+// `disabledReason` holds the menu shut (an Agent at work) and explains why in the button's title.
+type AgentPowerMenuProps = { pending: boolean; disabledReason?: string; className?: string } & (
+  // an Agent outside a Worktree (Scratch, a directory Project) has no Restart: Turn off closes it
+  { mode: 'active'; onTurnOff: () => void; onRestart?: () => void; onClear: () => void; restartAs?: RestartAs }
   // an idle Worktree tab's menu offers Rename and Remove (hidden on Main, disabled with its reason)
   | { mode: 'idle'; onRemove: () => void; removeDisabledReason?: string; onRename: () => void }
 );
 // render configured-agent power choices
 function AgentPowerMenu(props: AgentPowerMenuProps) {
-  const { pending } = props;
+  const { pending, disabledReason, className = 'danger icon-button deactivate-agent' } = props;
   const adapters = useContext(AdaptersContext);
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<'root' | 'restart-as'>('root');
@@ -1999,7 +2000,10 @@ function AgentPowerMenu(props: AgentPowerMenuProps) {
   };
   // "Restart as…" only when there is a configured kind to choose (a legacy config with no
   // `adapters` block has none — its Codex still restarts via plain Restart)
-  const restartAs = props.mode === 'active' && configuredKinds(adapters).length > 0 ? props.restartAs : undefined;
+  const restartAs = props.mode === 'active' && props.onRestart !== undefined && configuredKinds(adapters).length > 0 ? props.restartAs : undefined;
+  const onRestart = props.mode === 'active' ? props.onRestart : undefined;
+  // a held menu closes rather than stranding an open flyout
+  useEffect(() => { if (disabledReason !== undefined) setOpen(false); }, [disabledReason]);
   // the idle Worktree tab renames its Worktree from the power menu
   const rename = props.mode === 'idle' ? props.onRename : undefined;
   const renameAction = rename === undefined ? null : <button type="button" role="menuitem" onClick={() => choose(rename)}><svg className="more-menu-icon action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.pencil} /></svg>Rename worktree</button>;
@@ -2007,14 +2011,14 @@ function AgentPowerMenu(props: AgentPowerMenuProps) {
   // actions, only the Remove at the foot of the menu
   const stateActions = props.mode === 'idle'
     ? null
-    : <><button type="button" role="menuitem" onClick={() => choose(props.onRestart)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart</button>{restartAs !== undefined && <button type="button" role="menuitem" aria-haspopup="menu" onClick={() => setView('restart-as')}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart as…</button>}<button type="button" role="menuitem" onClick={() => choose(props.onClear)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 15 8-8 5 5-8 8H4v-5Zm7-7 5 5M10 20h10" /></svg>Clear</button></>;
+    : <>{onRestart !== undefined && <button type="button" role="menuitem" onClick={() => choose(onRestart)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart</button>}{restartAs !== undefined && <button type="button" role="menuitem" aria-haspopup="menu" onClick={() => setView('restart-as')}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 1-2.3-5.7L20 7.6M20 3v4.6h-4.6" /></svg>Restart as…</button>}<button type="button" role="menuitem" onClick={() => choose(props.onClear)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 15 8-8 5 5-8 8H4v-5Zm7-7 5 5M10 20h10" /></svg>Clear</button></>;
   const restartAsPage = restartAs === undefined ? null : <LaunchMenu verb="Restart" label={restartAs.label} resolution={restartAs.resolution} onLaunch={choice => choose(() => restartAs.onLaunch(choice))} />;
   // the foot of the menu: Remove for an idle Worktree tab, Turn off for a live one
   const footAction = props.mode === 'idle'
     ? <button className="agent-power-off" type="button" role="menuitem" disabled={props.removeDisabledReason !== undefined} title={props.removeDisabledReason} onClick={() => choose(props.onRemove)}><svg className="more-menu-icon action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.trash} /></svg>Remove worktree</button>
     : <button className="agent-power-off" type="button" role="menuitem" onClick={() => choose(props.onTurnOff)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>Turn off</button>;
   const menuLabel = props.mode === 'idle' ? 'Worktree power options' : 'Agent power options';
-  return <><span className="power-menu-wrap" ref={anchorRef}><button className="danger icon-button deactivate-agent" disabled={pending} aria-label={menuLabel} aria-expanded={open} aria-haspopup="menu" title={menuLabel} onClick={() => setOpen(current => !current)}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button></span>{open && <FlyoutPortal onDismiss={() => setOpen(false)}><div className="more-menu flyout-menu agent-power-menu" ref={flyoutRef} style={style} role="menu" aria-label={menuLabel}>{view === 'restart-as' && restartAs !== undefined ? restartAsPage : <>{renameAction}{stateActions}{footAction}</>}</div></FlyoutPortal>}</>;
+  return <><span className="power-menu-wrap" ref={anchorRef}><button className={className} type="button" disabled={pending || disabledReason !== undefined} aria-label={menuLabel} aria-expanded={open} aria-haspopup="menu" title={disabledReason ?? menuLabel} onClick={() => setOpen(current => !current)}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m5.7-5.7a8 8 0 1 1-11.4 0" /></svg>}</button></span>{open && <FlyoutPortal onDismiss={() => setOpen(false)}><div className="more-menu flyout-menu agent-power-menu" ref={flyoutRef} style={style} role="menu" aria-label={menuLabel}>{view === 'restart-as' && restartAs !== undefined ? restartAsPage : <>{renameAction}{stateActions}{footAction}</>}</div></FlyoutPortal>}</>;
 }
 
 // render reusable mobile terminal controls
@@ -2047,8 +2051,9 @@ function MobileTerminalKeys({ id }: { id: string }) {
   return <div className="mobile-terminal-keys" aria-label="Terminal keys"><div className="mobile-control-keys"><button type="button" aria-label="Esc" onPointerDown={event => { event.preventDefault(); mobileControl('\x1b'); }}>Esc</button><button type="button" aria-label="Ctrl+C" onPointerDown={event => { event.preventDefault(); mobileControl('\x03'); }}>Ctrl+C</button></div><div className="mobile-key-modifiers"><button type="button" aria-label="Tab" onPointerDown={event => { event.preventDefault(); mobileKey('tab'); }}>Tab</button><button type="button" className={shiftActive ? 'active' : ''} aria-pressed={shiftActive} onPointerDown={event => { event.preventDefault(); toggleModifier('shift'); }}>Shift</button><button type="button" className={ctrlActive ? 'active' : ''} aria-pressed={ctrlActive} onPointerDown={event => { event.preventDefault(); toggleModifier('ctrl'); }}>Ctrl</button><button type="button" className={altActive ? 'active' : ''} aria-pressed={altActive} onPointerDown={event => { event.preventDefault(); toggleModifier('alt'); }}>Alt</button></div><div className="mobile-arrow-keys"><button type="button" aria-label="Slash" onPointerDown={event => { event.preventDefault(); mobileKey('slash'); }}>/</button><button type="button" aria-label="Up arrow" onPointerDown={event => { event.preventDefault(); mobileKey('up'); }}><MobileKeyIcon name="up" /></button><button type="button" aria-label="Dollar" onPointerDown={event => { event.preventDefault(); mobileKey('dollar'); }}>$</button><button type="button" aria-label="Left arrow" onPointerDown={event => { event.preventDefault(); mobileKey('left'); }}><MobileKeyIcon name="left" /></button><button type="button" aria-label="Down arrow" onPointerDown={event => { event.preventDefault(); mobileKey('down'); }}><MobileKeyIcon name="down" /></button><button type="button" aria-label="Right arrow" onPointerDown={event => { event.preventDefault(); mobileKey('right'); }}><MobileKeyIcon name="right" /></button></div></div>;
 }
 
-// render the agent prompt controls
-function Prompt({ id, ready = true, lifecycleControl, launchControl, history, onHistoryChanged, canCancel, cancelling, deleting, restarting, clearing, deactivating, onCancel, onDelete, onRestart, onRestartAs, onClear, onDeactivate, onPromptFocus, onOperationFeedback, projectUrl, browserOpen, onBrowserToggle, question, worktreeId, placeId, newTaskConfigured, stack, review, pinned, onTogglePin, onRenameWorktree, statusSlotRef, historySlotRef, terminalControl, phoneTerminal }: { id: string; ready?: boolean; lifecycleControl?: ReactNode; launchControl?: ReactNode; history: PromptHistoryEntry[]; onHistoryChanged: () => Promise<void>; canCancel: boolean; cancelling: boolean; deleting: boolean; restarting: boolean; clearing: boolean; deactivating: boolean; onCancel: () => void; onDelete?: () => void; onRestart?: () => void; onRestartAs?: RestartAs; onClear?: () => void; onDeactivate?: () => void; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; projectUrl?: string; browserOpen?: boolean; onBrowserToggle?: () => void; question?: ChoiceQuestion; worktreeId?: string; placeId?: string; newTaskConfigured?: boolean; stack?: Stack; review?: ReviewButtonState; pinned?: boolean; onTogglePin?: () => void; onRenameWorktree?: () => void; statusSlotRef?: (element: HTMLSpanElement | null) => void; historySlotRef?: (element: HTMLSpanElement | null) => void; terminalControl?: ReactNode; phoneTerminal?: string }) {
+// render the agent panel's composer: prompt history above attach on the left, the prompt, and
+// queued prompts above send on the right; a detected question swaps in the answer layout
+function Prompt({ id, ready = true, history, onHistoryChanged, onPromptFocus, onOperationFeedback, question, worktreeId, placeId, historyControl }: { id: string; ready?: boolean; history: PromptHistoryEntry[]; onHistoryChanged: () => Promise<void>; onPromptFocus: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void; question?: ChoiceQuestion; worktreeId?: string; placeId?: string; historyControl?: ReactNode }) {
   // the notes this composer saves into, and the notes fly-out to refresh: the Place's (a Worktree's
   // Place id is its Worktree id), keyed as the Workspace's notes are
   const notesPlaceId = placeId ?? worktreeId;
@@ -2087,7 +2092,7 @@ function Prompt({ id, ready = true, lifecycleControl, launchControl, history, on
   const historyIndex = useRef<number | undefined>(undefined);
   const historyDraft = useRef('');
   const focusPromptAtEnd = useRef(false);
-  const { anchorRef: queuedPromptAnchorRef, flyoutRef: queuedPromptFlyoutRef, style: queuedPromptFlyoutStyle } = useViewportFlyout(queuedPromptsOpen);
+  const { anchorRef: queuedPromptAnchorRef, flyoutRef: queuedPromptFlyoutRef, style: queuedPromptFlyoutStyle } = useViewportFlyout<HTMLDivElement>(queuedPromptsOpen);
   const { anchorRef: commandAnchorRef, flyoutRef: commandFlyoutRef, style: commandFlyoutStyle } = useViewportFlyout<HTMLDivElement>(commandToken !== undefined, { placement: 'above', matchAnchorWidth: true });
   const commandOptions = commandToken === undefined ? [] : promptCommands.filter(command => command.value.startsWith(commandToken.prefix) && command.value.slice(1).toLocaleLowerCase().includes(commandToken.query.toLocaleLowerCase()));
   useEffect(() => { historyIndex.current = undefined; historyDraft.current = ''; }, [id]);
@@ -2502,15 +2507,10 @@ function Prompt({ id, ready = true, lifecycleControl, launchControl, history, on
     }
     voiceHoldStarted.current = false;
   };
-  const cancelButton = <button className="danger icon-button cancel-agent" disabled={!canCancel || cancelling} aria-label="Cancel agent" title="Cancel agent" onClick={onCancel}>{cancelling ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>}</button>;
-  const deleteButton = <button className="danger icon-button delete-agent" disabled={deleting} aria-label="Delete agent" title="Delete agent" onClick={onDelete}>{deleting ? <span className="spinner" /> : <svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.trash} /></svg>}</button>;
-  const powerMenu = onRestart === undefined || onClear === undefined || onDeactivate === undefined ? null : <AgentPowerMenu mode="active" pending={restarting || clearing || deactivating} onRestart={onRestart} onClear={onClear} onTurnOff={onDeactivate} {...(onRestartAs === undefined ? {} : { restartAs: onRestartAs })} />;
-  const stop = lifecycleControl ?? powerMenu ?? (onDelete === undefined ? cancelButton : deleteButton);
   // open the native file chooser
   const attachFiles = () => attachmentInput.current?.click();
   // keep file intake one step above lifecycle controls
   const attachmentButton = <button className="attachment-button icon-button" type="button" disabled={attachmentInputDisabled} aria-label="Attach files" title="Attach files" onClick={attachFiles}><MoreMenuIcon name="attachment" /></button>;
-  const reviewButton = review === undefined ? null : <button className={`review-tour-toggle icon-button${review.generating ? ' generating' : ''}${review.stale ? ' stale' : ''}`} type="button" aria-label={review.generating ? 'Open generating guided review' : review.stale ? 'Open out-of-date guided review' : 'Open guided review'} aria-busy={review.generating} title={review.generating ? 'Guided review is generating' : review.stale ? 'Guided review is out of date' : 'Open guided review'} onClick={review.onOpen}>{review.generating ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 2h8l5 5v4M5 2v20h8M13 2v6h5" /><circle cx="16.5" cy="16.5" r="3.5" /><path d="m19 19 3 3" /></svg>}</button>;
   const selectCommand = (command: PromptCommand) => {
     if (commandToken === undefined) return;
     const next = `${value.slice(0, commandToken.start)}${command.value}${value.slice(commandToken.end)}`;
@@ -2572,19 +2572,18 @@ function Prompt({ id, ready = true, lifecycleControl, launchControl, history, on
   const questionNotesId = `question-notes-${id}`;
   const questionNotes = questionNotesOpen ? <div className="question-notes" id={questionNotesId}><textarea aria-label="Answer notes" maxLength={32_000} placeholder="Type an answer for the agent…" value={value} onFocus={() => { /* leave terminal input */ exitTerminalInput.get(id)?.(); onPromptFocus(); }} onChange={event => { /* update note draft */ setValue(event.target.value); }} /><div className="question-notes-actions"><button type="button" disabled={pending || !value.trim()} aria-label="Submit notes" onClick={() => { /* answer the active question directly */ void answer(value); }}>{pending ? <><span className="spinner" />Submitting</> : 'Submit notes'}</button></div></div> : null;
   // render numbered answers
-  if (question && answerMode) return <section className="prompt question-prompt" aria-label="Agent question" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}><div className="question-heading"><div className="question-copy"><strong>Agent question</strong><span>{question.text}</span></div><div className="question-tools"><button type="button" className="question-notes-toggle" aria-controls={questionNotesId} aria-expanded={questionNotesOpen} onClick={() => { /* toggle answer notes */ setNotesQuestionId(questionNotesOpen ? undefined : question.id); }}>{questionNotesOpen ? 'Hide notes' : 'Add notes'}</button>{questionModeToggle}</div></div><div className="question-choices">{question.choices.map(choice => <button key={`${choice.answerIndex}-${choice.label}`} className="question-choice" disabled={pending} onClick={() => void answer(choice.answerIndex)}><b aria-hidden="true">{choice.number}</b><span>{choice.label}{choice.description && <small>{choice.description}</small>}</span></button>)}</div>{questionNotes}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}<div className="prompt-actions">{stop}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}{ready ? <More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} onOperationFeedback={onOperationFeedback} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} /> : <button className="more icon-button" aria-label="More options" disabled>⋮</button>}</div></section>;
+  if (question && answerMode) return <section className="prompt question-prompt" aria-label="Agent question" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}><div className="question-heading"><div className="question-copy"><strong>Agent question</strong><span>{question.text}</span></div><div className="question-tools"><button type="button" className="question-notes-toggle" aria-controls={questionNotesId} aria-expanded={questionNotesOpen} onClick={() => { /* toggle answer notes */ setNotesQuestionId(questionNotesOpen ? undefined : question.id); }}>{questionNotesOpen ? 'Hide notes' : 'Add notes'}</button>{questionModeToggle}</div></div><div className="question-choices">{question.choices.map(choice => <button key={`${choice.answerIndex}-${choice.label}`} className="question-choice" disabled={pending} onClick={() => void answer(choice.answerIndex)}><b aria-hidden="true">{choice.number}</b><span>{choice.label}{choice.description && <small>{choice.description}</small>}</span></button>)}</div>{questionNotes}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}</section>;
   const queueLabel = pending ? 'Queueing' : 'Queue';
   const queuePanel = queuedPromptsOpen && <FlyoutPortal onDismiss={() => setQueuedPromptsOpen(false)}><section className="queued-prompts-panel more-menu flyout-menu" ref={queuedPromptFlyoutRef} style={queuedPromptFlyoutStyle} aria-label="Queued prompts"><header><strong>Queued prompts</strong></header>{queuedPromptError && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<div className="queued-prompts-list">{queuedPrompts.map((queued, index) => { const label = queued.text || queued.attachments?.map(attachment => attachment.name).join(', ') || 'Attachments only'; const editing = queuedPromptEdit?.id === queued.id; const busy = queuedPromptAction !== undefined; return <div className={`queued-prompt-item${editing ? ' editing' : ''}`} key={queued.id}><span className="queued-prompt-order"><strong className="queued-prompt-position" aria-label={`Queue position ${index + 1}`}>{index + 1}</strong><span className="queued-prompt-order-buttons"><button type="button" disabled={busy || index === 0} aria-label={`Move queued prompt earlier: ${label}`} title="Move earlier" onClick={() => void moveQueuedPrompt(queued, 'earlier')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button><button type="button" disabled={busy || index === queuedPrompts.length - 1} aria-label={`Move queued prompt later: ${label}`} title="Move later" onClick={() => void moveQueuedPrompt(queued, 'later')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></button></span></span>{editing ? <textarea aria-label={`Edit queued prompt: ${label}`} value={queuedPromptEdit.text} maxLength={32_000} autoFocus onChange={event => setQueuedPromptEdit({ id: queued.id, text: event.target.value })} /> : <button className="queued-prompt-copy" type="button" disabled={busy} title={label} onClick={() => setQueuedPromptEdit({ id: queued.id, text: queued.text })}><span>{queued.text || 'Attachments only'}</span>{queued.attachments?.length ? <small>{queued.attachments.map(attachment => attachment.name).join(', ')}</small> : null}</button>}<span className="queued-prompt-actions">{editing ? <><button type="button" disabled={busy || !queuedPromptEdit.text.trim() && queued.attachments === undefined} aria-label={`Save queued prompt changes: ${label}`} title="Save changes" onClick={() => void saveQueuedPromptEdit(queued)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg></button><button type="button" disabled={busy} aria-label={`Stop editing queued prompt: ${label}`} title="Stop editing" onClick={() => setQueuedPromptEdit(undefined)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button></> : <button type="button" disabled={busy} aria-label={`Save queued prompt as note: ${label}`} title="Save as note" onClick={() => void saveQueuedPromptAsNote(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'save' ? <span className="spinner" /> : <svg className="notes-icon" viewBox="0 0 24 24" aria-hidden="true"><path className="notes-icon-sheet" d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>}</button>}<button className="queued-prompt-cancel" type="button" disabled={busy} aria-label={`Cancel queued prompt: ${label}`} title="Cancel queued prompt" onClick={() => void cancelQueuedPrompt(queued)}>{queuedPromptAction?.id === queued.id && queuedPromptAction.kind === 'cancel' ? <span className="spinner" /> : <svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.trash} /></svg>}</button></span></div>; })}</div></section></FlyoutPortal>;
-  const queuedToggle = queuedPrompts.length > 0 ? <button className={`queued-prompts-toggle icon-button${queuedPromptsOpen ? ' active' : ''}`} type="button" disabled={pending} aria-label={`Queued prompts (${queuedPrompts.length})`} aria-expanded={queuedPromptsOpen} title={`${queuedPrompts.length} queued prompt${queuedPrompts.length === 1 ? '' : 's'}`} onClick={() => setQueuedPromptsOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.queue} /></svg><span className="saved-prompts-count queued-prompts-count" aria-hidden="true">{queuedPrompts.length}</span></button> : null;
-  // join history to the submit controls
-  const historySlot = historySlotRef !== undefined ? <span className="prompt-history-slot" ref={historySlotRef} /> : null;
-  const queueControls = <><span className={`queue-prompt-group${historySlot === null ? '' : ' has-prompt-history'}${queuedToggle === null ? '' : ' has-queued-prompts'}`} ref={queuedPromptAnchorRef} role="group" aria-label="Prompt submission controls">{historySlot}<button className="queue icon-button" disabled={!ready || pending || (!value && attachments.length === 0)} aria-label={queueLabel} title={queueLabel} onClick={() => void submit()}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.send} /></svg>}</button>{queuedToggle}</span>{queuePanel}</>;
-  return <section className="prompt prompt-with-action-rail" aria-label="Prompt composer" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}>{draggingAttachments && <div className="prompt-drop-overlay" role="status">Drop files to attach</div>}<div className="prompt-action-rail" aria-label="Prompt shortcuts">{statusSlotRef && <span className="prompt-status-slot" ref={statusSlotRef} />}{attachmentButton}{stop}</div><div className="prompt-content">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{queuedPromptError && !queuedPromptsOpen && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} /><div className="prompt-actions">{questionModeToggle}<span className="prompt-actions-spacer" aria-hidden="true" />{reviewButton}{ready ? <More id={id} worktreeId={worktreeId} newTaskConfigured={newTaskConfigured} onOperationFeedback={onOperationFeedback} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} /> : <button className="more icon-button" aria-label="More options" disabled>⋮</button>}{terminalControl}<ProjectOpen url={projectUrl} stack={stack} browserOpen={browserOpen} onBrowserToggle={onBrowserToggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} />{queueControls}{launchControl}</div><MobileTerminalKeys key={phoneTerminal ?? id} id={phoneTerminal ?? id} /></div></section>;
+  // the queued prompts stay one tap away: counted, and disabled while the queue is empty
+  const queuedToggle = <button className={`queued-prompts-toggle icon-button${queuedPromptsOpen ? ' active' : ''}`} type="button" disabled={pending || queuedPrompts.length === 0} aria-label={`Queued prompts (${queuedPrompts.length})`} aria-expanded={queuedPromptsOpen} title={queuedPrompts.length === 0 ? 'No queued prompts' : `${queuedPrompts.length} queued prompt${queuedPrompts.length === 1 ? '' : 's'}`} onClick={() => setQueuedPromptsOpen(open => !open)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.queue} /></svg>{queuedPrompts.length > 0 && <span className="saved-prompts-count queued-prompts-count" aria-hidden="true">{queuedPrompts.length}</span>}</button>;
+  const sendButton = <button className="queue icon-button" disabled={!ready || pending || (!value && attachments.length === 0)} aria-label={queueLabel} title={queueLabel} onClick={() => void submit()}>{pending ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.send} /></svg>}</button>;
+  return <section className="prompt agent-composer" aria-label="Prompt composer" onDragEnter={dragAttachments} onDragOver={dragAttachments} onDragLeave={leaveAttachmentDrag} onDragEnd={clearAttachmentDrag} onDrop={dropAttachments}>{draggingAttachments && <div className="prompt-drop-overlay" role="status">Drop files to attach</div>}<div className="agent-composer-column" aria-label="Prompt shortcuts">{historyControl}{attachmentButton}</div><div className="prompt-content">{composer}{attachments.length > 0 && <div className="prompt-attachments" aria-label="Selected attachments">{attachments.map((file, index) => <span key={`${file.name}-${index}`} title={file.name}>{file.name}<button type="button" disabled={pending} aria-label={`Remove ${file.name}`} onClick={() => setAttachments(current => current.filter((_, candidate) => candidate !== index))}>×</button></span>)}</div>}{attachmentError && <p className="attachment-error" role="alert">{attachmentError}</p>}{queuedPromptError && !queuedPromptsOpen && <p className="queued-prompt-error" role="alert">{queuedPromptError}</p>}<input ref={attachmentInput} className="attachment-input" type="file" multiple onChange={event => { chooseAttachments(event.target.files); event.target.value = ''; }} />{questionModeToggle && <div className="prompt-actions">{questionModeToggle}</div>}</div><div className="agent-composer-column" ref={queuedPromptAnchorRef} role="group" aria-label="Prompt submission controls">{queuedToggle}{sendButton}</div>{queuePanel}</section>;
 }
 
 // render the complete composer without addressing an agent that discovery has not confirmed
-function PreparingPrompt({ id, lifecycleControl, launchControl, onOperationFeedback }: { id: string; lifecycleControl?: ReactNode; launchControl?: ReactNode; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
-  return <Prompt id={id} ready={false} history={[]} onHistoryChanged={async () => { /* no discovered history */ }} canCancel={false} cancelling={false} deleting={false} restarting={false} clearing={false} deactivating={false} onCancel={() => { /* no discovered process */ }} onPromptFocus={() => { /* retain local draft focus */ }} onOperationFeedback={onOperationFeedback} lifecycleControl={lifecycleControl} launchControl={launchControl} />;
+function PreparingPrompt({ id, onOperationFeedback }: { id: string; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
+  return <Prompt id={id} ready={false} history={[]} onHistoryChanged={async () => { /* no discovered history */ }} onPromptFocus={() => { /* retain local draft focus */ }} onOperationFeedback={onOperationFeedback} />;
 }
 
 type MobileKeyIconName = 'control'|'shift'|'tab'|'up'|'down'|'left'|'right';
@@ -2775,7 +2774,7 @@ function useFilePreview(previewUrl: string) {
 function useLatestAssistantFiles(agentId: string, message: string | undefined, onOpenFile: (path: string) => void) {
   const [files, setFiles] = useState<AssistantFile[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
-  const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen, { placement: 'left', boundarySelector: '.log', boundaryRootSelector: '.agent-view', contentSized: true });
+  const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen);
 
   useEffect(() => {
     let cancelled = false;
@@ -2859,7 +2858,7 @@ function useWorktreeConversations(worktreeId?: string, agentId?: string, resume?
   const [removingKey, setRemovingKey] = useState<string>();
   const loadGeneration = useRef(0);
   const resourceBase = persistenceResourceBase(worktreeId, agentId);
-  const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen, { placement: 'left', boundarySelector: '.log', boundaryRootSelector: '.agent-view, .worktree-view', contentSized: true });
+  const { anchorRef, flyoutRef, style: flyoutStyle } = useViewportFlyout<HTMLDivElement>(menuOpen);
 
   // reset state between contexts, discarding any in-flight load from the previous context
   useEffect(() => {
@@ -3025,7 +3024,7 @@ function useWorktreeConversations(worktreeId?: string, agentId?: string, resume?
   };
 
   // hide conversations without any persistence context
-  if (resourceBase === undefined) return { control: null };
+  if (resourceBase === undefined) return { control: null, currentName: undefined };
   // the closed control counts the console-named rows
   const consoleNamedRows = (conversations ?? []).filter(conversation => conversation.consoleNamed);
   const consoleNamedCount = consoleNamedRows.length;
@@ -3057,7 +3056,8 @@ function useWorktreeConversations(worktreeId?: string, agentId?: string, resume?
 
   // distinguish conversations with left- and right-facing message bubbles
   const control = <div className="conversations-control" ref={anchorRef}><button className={`log-control page-arrow conversations-toggle${menuOpen ? ' active' : ''}`} type="button" aria-label={label} title={label} aria-expanded={menuOpen} disabled={loading} onPointerDown={event => event.preventDefault()} onClick={() => void toggle()}>{loading ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h11a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H7l-5 4V5a2 2 0 0 1 2-2Z" /><path d="M20 8a2 2 0 0 1 2 2v11l-4-3h-7a2 2 0 0 1-2-2" /></svg>}{consoleNamedCount > 0 && <span className="saved-prompts-count conversations-count" aria-hidden="true">{consoleNamedCount}</span>}</button>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div ref={flyoutRef} className="conversations-menu" style={flyoutStyle} aria-label="Conversations">{agentId !== undefined && <form className="conversation-name" onSubmit={event => { event.preventDefault(); void submitName(); }}><input type="text" value={nameDraft} maxLength={120} placeholder={currentName ? `Rename “${currentName}”` : 'Name this conversation'} aria-label="Name this conversation" onChange={event => setNameDraft(event.target.value)} /><button type="submit" disabled={naming || nameDraft.trim() === ''} aria-label="Name conversation">{naming ? <span className="spinner" /> : 'Name'}</button></form>}{error && <p className="conversation-error" role="alert">{error}</p>}{flyoutConsoleNamed.length > 0 && <><p className="conversations-note">Tap a conversation to resume it in its home worktree.</p><ul className="conversation-rows">{flyoutConsoleNamed.map(conversation => row(conversation, true))}</ul></>}<button className="log-control conversations-all" type="button" onClick={() => void openDialog()}><span>All conversations</span><small>{total}</small></button></div></FlyoutPortal>}{dialog}</div>;
-  return { control };
+  // the current Conversation's name, once the list has loaded (it is fetched on open, never polled)
+  return { control, currentName };
 }
 
 // manage persistent worktree notes
@@ -4405,9 +4405,10 @@ function CodePane({ controller, prAvailable, branch, review }: { controller: Cod
     <CodePanel mode={controller.mode} state={controller.state} patch={controller.patch} selectedPath={controller.selectedPath} filePreview={controller.filePreview} prAvailable={prAvailable} branch={branch} review={review} loadFile={controller.loadFile} onSelectFile={controller.selectFile} onClearFile={controller.clearFile} onSetMode={controller.setMode} onCloseFile={controller.closeFilePreview} onClose={controller.close} onRetry={controller.refresh} />
   </Suspense>;
 }
-// render ordered resizable output panels: the agent, any Terminals, then note, browser and code
+// render ordered resizable output panels: the agent (when one runs or is starting), any Terminals,
+// then note, browser and code; with none open it shows `empty`
 // `expansion` is the Workspace's expanded panel; a split without a Workspace keeps its own.
-function ResizableLogSplit({ worktreeId, output, note, browser, code, terminals, terminalSelectionActions, onPhoneTerminal, expansion: workspaceExpansion }: { worktreeId?: string; output: ReactNode; note?: ReactNode; browser?: ReactNode; code?: ReactNode; terminals?: TerminalColumn[]; terminalSelectionActions?: TerminalSelectionActions; onPhoneTerminal?: (paneId: string | undefined) => void; expansion?: PanelExpansion }) {
+function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, terminals, terminalSelectionActions, onPhoneTerminal, expansion: workspaceExpansion }: { worktreeId?: string; output?: ReactNode; empty?: ReactNode; note?: ReactNode; browser?: ReactNode; code?: ReactNode; terminals?: TerminalColumn[]; terminalSelectionActions?: TerminalSelectionActions; onPhoneTerminal?: (paneId: string | undefined) => void; expansion?: PanelExpansion }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const ownExpansion = usePanelExpansion();
   const expansion = workspaceExpansion ?? ownExpansion;
@@ -4417,9 +4418,10 @@ function ResizableLogSplit({ worktreeId, output, note, browser, code, terminals,
   const hasCode = code !== undefined && code !== null;
   const termCols = terminals ?? [];
   const hasTerminals = termCols.length > 0;
+  const hasAgent = output !== undefined && output !== null;
   // the panels in column order, each with its key and rendered node
   const columns: { key: string; node: ReactNode }[] = [
-    { key: 'agent', node: output },
+    ...(hasAgent ? [{ key: 'agent', node: output }] : []),
     ...termCols.map(col => ({ key: col.key, node: col.node })),
     ...(hasNote ? [{ key: 'note', node: note }] : []),
     ...(hasBrowser ? [{ key: 'browser', node: browser }] : []),
@@ -4432,7 +4434,7 @@ function ResizableLogSplit({ worktreeId, output, note, browser, code, terminals,
   const previousKeys = useRef(keys);
   const expansionScope = useExpansionScope(expansion, keys, containerRef);
   const [sizes, setSizes] = useState<SplitSizes>(() => savedSplitSizes(worktreeId, signature, keys));
-  const [mobilePanel, setMobilePanel] = useState<string>('agent');
+  const [mobilePanel, setMobilePanel] = useState<string>(() => keys[0] ?? 'agent');
   // restore the exact workspace layout for each open-panel composition
   useEffect(() => setSizes(savedSplitSizes(worktreeId, signature, signature.split('|'))), [signature, worktreeId]);
   // select a newly opened panel on phone; fall back to the agent when the shown one closes
@@ -4443,7 +4445,7 @@ function ResizableLogSplit({ worktreeId, output, note, browser, code, terminals,
       // follow a newly opened note or Terminal to it; the browser stays a deliberate tap
       const opened = keys.find(key => key !== 'agent' && key !== 'browser' && !previous.includes(key));
       if (opened !== undefined) return opened;
-      if (!keys.includes(current)) return 'agent';
+      if (!keys.includes(current)) return keys[0] ?? 'agent';
       return current;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -4512,9 +4514,9 @@ function ResizableLogSplit({ worktreeId, output, note, browser, code, terminals,
     saveSplitSizes(worktreeId, signature, resized);
     event.preventDefault();
   };
-  const hasSplit = hasNote || hasBrowser || hasCode || hasTerminals;
-  // fall back to the agent when the chosen mobile panel is no longer open
-  const visibleMobilePanel = keys.includes(mobilePanel) ? mobilePanel : 'agent';
+  const hasSplit = keys.length > 1;
+  // fall back to the first panel (the agent's, when one runs) when the chosen one is no longer open
+  const visibleMobilePanel = keys.includes(mobilePanel) ? mobilePanel : keys[0] ?? 'agent';
   // Report the visible phone Terminal so the footer swaps the Agent's composer for that pane's
   // helper keys (spec, the phone footer); undefined whenever the agent, note or browser shows.
   // This mirrors the `mobile-terminal-view` class that drives the swap in CSS, so the two stay
@@ -4569,8 +4571,8 @@ function ResizableLogSplit({ worktreeId, output, note, browser, code, terminals,
       : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1" /><path d="m7 8 3 3-3 3M12 15h4" /></svg>;
     return <button key={column.key} className={`mobile-${kind}-switch`} type="button" aria-label={label} title={label} onClick={() => setMobilePanel(column.key)}>{icon}</button>;
   })}</div> : null;
-  const mobileView = hasSplit ? ` mobile-${splitPanelKind(visibleMobilePanel)}-view` : '';
-  return <PanelExpandContext.Provider value={expansionScope.context}><div ref={containerRef} className={`log-split${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}${hasCode ? ' has-code' : ''}${hasTerminals ? ' has-terminals' : ''}${mobileView}`} style={style} onKeyDown={expansionScope.onKeyDown}>{laidOut}{mobileSwitches}</div></PanelExpandContext.Provider>;
+  const mobileView = keys.length > 0 ? ` mobile-${splitPanelKind(visibleMobilePanel)}-view` : '';
+  return <PanelExpandContext.Provider value={expansionScope.context}><div ref={containerRef} className={`log-split${hasAgent ? '' : ' no-agent'}${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}${hasCode ? ' has-code' : ''}${hasTerminals ? ' has-terminals' : ''}${mobileView}`} style={style} onKeyDown={expansionScope.onKeyDown}>{columns.length === 0 ? empty : laidOut}{mobileSwitches}</div></PanelExpandContext.Provider>;
 }
 
 // One pane of a Worktree the picker can show as a Terminal (the wire shape of
@@ -5207,11 +5209,12 @@ function WorkspaceGitStatus({ workspace, actions, onToggle }: { workspace: Works
   return <GitStatus {...actions} branch={place.branch} summary={place.gitStatus} prSummary={place.gitPrStatus} pullRequest={place.pullRequest} expanded={workspace.gitExpanded} onToggle={() => { onToggle?.(); setGitExpanded(value => !value); }} onOpenFile={(path, mode) => { setGitExpanded(false); code.openChanges(mode, path); }} onViewChanges={mode => { setGitExpanded(false); code.openChanges(mode); }} onReview={onReview === undefined ? undefined : scope => { setGitExpanded(false); onReview(scope); }} />;
 }
 
-// Render one Place's panels in the resizable split: the agent output first (or, with no Agent,
-// the card's idle placeholder in its column), then Terminals, note, browser and code. The git
-// status portals into the composer's status slot.
-function Workspace({ workspace, output, idle = false, git, onGitToggle, onAddToPrompt, statusSlot }: { workspace: WorkspaceState; output: ReactNode; idle?: boolean; git?: WorkspaceGitActions; onGitToggle?: () => void; onAddToPrompt?: (text: string) => void; statusSlot: HTMLElement | null }) {
+// Render one Place's panels in the resizable split: the agent panel first (while an Agent runs or
+// is starting here), then Terminals, note, browser and code. With no panel open the Workspace
+// shows `empty` instead. With no agent panel the Workspace is idle.
+function Workspace({ workspace, output, empty, git, onAddToPrompt }: { workspace: WorkspaceState; output?: ReactNode; empty?: ReactNode; git?: WorkspaceGitActions; onAddToPrompt?: (text: string) => void }) {
   const { place, browser, code, notes, expansion } = workspace;
+  const idle = output === undefined || output === null;
   // With no Agent there is no output to split against, so the Code panel opens filling the Workspace.
   useLayoutEffect(() => { if (idle && code.open) expansion.setExpanded('code', true); }, [idle, code.open, expansion.setExpanded]);
   // Terminal selections save into this Place's notes or go to the card's composer.
@@ -5223,15 +5226,16 @@ function Workspace({ workspace, output, idle = false, git, onGitToggle, onAddToP
   const browserPane = browser.url === undefined || browser.homeUrl === undefined ? null : <ProjectBrowserPane url={browser.url} homeUrl={browser.homeUrl} proxied={browser.proxied} worktreeId={place.id} navigationRequest={browser.navigationRequest} onNavigate={browser.navigate} onClose={browser.close} />;
   const review = git === undefined || (git.onReview === undefined && git.reviewUnavailable === undefined) ? undefined : { onReview: git.onReview, open: git.reviewOpen === true, unavailable: git.reviewUnavailable };
   const codePane = code.open ? <CodePane controller={code} prAvailable={place.gitPrStatus !== undefined} branch={place.branch} review={review} /> : null;
-  return <section className="log-shell"><div className={`log${idle ? ' inactive-log' : ''}`}><ResizableLogSplit worktreeId={place.id} expansion={expansion} output={output} note={notes.pane} browser={browserPane} code={codePane} terminals={workspace.terminals.columns} terminalSelectionActions={terminalSelectionActions} onPhoneTerminal={workspace.setPhoneTerminal} /></div>{statusSlot && createPortal(<WorkspaceGitStatus workspace={workspace} actions={git} onToggle={onGitToggle} />, statusSlot)}</section>;
+  return <section className="log-shell"><div className={`log${idle ? ' inactive-log' : ''}`}><ResizableLogSplit worktreeId={place.id} expansion={expansion} output={output} empty={empty} note={notes.pane} browser={browserPane} code={codePane} terminals={workspace.terminals.columns} terminalSelectionActions={terminalSelectionActions} onPhoneTerminal={workspace.setPhoneTerminal} /></div></section>;
 }
 
-type LogProps = { id: string; embedded?: boolean; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined, overflow: boolean) => void; controls?: ReactNode; notes?: WorktreeNotes; onAddToPrompt?: (text: string) => void; onOpenUrl?: (url: string) => boolean; onOpenFile?: (path: string) => void; processingLabel?: string; processingDetail?: string };
+type LogProps = { id: string; embedded?: boolean; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined, overflow: boolean) => void; header?: (connection: string) => ReactNode; composer?: ReactNode; notes?: WorktreeNotes; onAddToPrompt?: (text: string) => void; onOpenUrl?: (url: string) => boolean; onOpenFile?: (path: string) => void; processingLabel?: string; processingDetail?: string };
 
-// Render one Agent's live output panel: the streamed pane, its loading and status overlays, the
-// selection toolbar, and the footer controls the owning card hands it. The Workspace around it
-// owns everything Place-scoped (notes, browser, code, Terminals, git).
-function Log({ id, embedded = false, onQuestion, onMetadata, controls, notes, onAddToPrompt, onOpenUrl, onOpenFile, processingLabel, processingDetail }: LogProps) {
+// Render one Agent's live output: the streamed pane, its loading and status overlays and the
+// selection toolbar. As the agent panel it also carries the header and composer the owning card
+// hands it (the header receives the connection status to show); the embedded update advisor has
+// neither. The Workspace around it owns everything Place-scoped (notes, browser, code, Terminals, git).
+function Log({ id, embedded = false, onQuestion, onMetadata, header, composer, notes, onAddToPrompt, onOpenUrl, onOpenFile, processingLabel, processingDetail }: LogProps) {
   const canvas = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<XTerm | undefined>(undefined);
   // A Log mounts whenever its tab becomes active. Existing agents therefore
@@ -5239,7 +5243,7 @@ function Log({ id, embedded = false, onQuestion, onMetadata, controls, notes, on
   const [status, setStatus] = useState('Connecting');
   const [hasRendered, setHasRendered] = useState(false);
   // The agent output's share of the Workspace's expansion. The `.expanded` class is what the
-  // split's `:has()` rule promotes to fill the Workspace; the control is hidden on phones.
+  // split's `:has()` rule promotes to fill the Workspace; the header's expand control drives it.
   const expand = usePanelExpand('agent');
   const expanded = expand?.expanded === true;
   const [inputActive, setInputActive] = useState(false);
@@ -5294,8 +5298,6 @@ function Log({ id, embedded = false, onQuestion, onMetadata, controls, notes, on
         onMetadataRef.current?.(metadata.message.trim() || undefined, metadata.overflow);
       }
     });
-    // size the handle around the current output controls
-    const releaseOutputScrollbar = attachOutputScrollbar(canvas.current!);
     const terminal = handle.terminal;
     terminalRef.current = terminal;
     // Helper keys, paste and the composer's blank-Enter forward reach the pane through
@@ -5349,7 +5351,6 @@ function Log({ id, embedded = false, onQuestion, onMetadata, controls, notes, on
       if (exitTerminalInput.get(id) === exitInput) exitTerminalInput.delete(id);
       if (answeredQuestionActions.get(id) === answeredQuestion) answeredQuestionActions.delete(id);
       if (terminalRef.current === terminal) terminalRef.current = undefined;
-      releaseOutputScrollbar();
       handle.dispose();
     };
   }, [embedded, id, onQuestion]);
@@ -5364,7 +5365,12 @@ function Log({ id, embedded = false, onQuestion, onMetadata, controls, notes, on
     {onAddToPrompt !== undefined && <button type="button" onClick={() => onAddToPrompt(selectionToolbar.text)}>Add to prompt</button>}
     <button type="button" onClick={() => void copyOutputSelectionRef.current(selectionToolbar.text)}>Copy</button>
   </div>, document.body);
-  return <><div className={`log-output${expanded ? ' expanded' : ''}${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}><div className="log-canvas" ref={canvas} aria-label="Live log" />{((status !== 'Live' && !hasRendered) || processing) && <div className="log-stale-overlay" aria-hidden="true" />}{loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span><div className="log-footer">{!embedded && <div className="log-controls-bottom"><div className="page-controls">{controls}{expand !== undefined && <button type="button" className="log-control page-arrow log-expand" aria-label={expanded ? 'Restore agent output' : 'Expand agent output'} aria-pressed={expanded} title={expanded ? 'Restore the other panels' : 'Fill the Workspace'} onClick={expand.toggle}><svg viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? panelIcons.restore : panelIcons.expand} /></svg></button>}</div></div>}</div></div>{selectionActions}</>;
+  const stale = (status !== 'Live' && !hasRendered) || processing;
+  const loadingOverlay = loading && <div className="log-loading" role={processing ? 'status' : undefined} aria-label={processing ? processingLabel : undefined}><span className="spinner" /><strong>{loadingLabel}</strong>{processingDetail && <span>{processingDetail}</span>}</div>;
+  const outputBody = <><div className="log-canvas" ref={canvas} aria-label="Live log" />{stale && <div className="log-stale-overlay" aria-hidden="true" />}{loadingOverlay}</>;
+  // the embedded advisor floats its status over the output; the agent panel's header shows it
+  if (header === undefined) return <><div className={`log-output${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`}>{outputBody}<span className={`status log-status ${visibleStatus.toLowerCase()}`}>{visibleStatus}</span></div>{selectionActions}</>;
+  return <><AgentPanelFrame className={`${inputActive ? ' input-active' : ''}${selectionActive ? ' selection-active' : ''}`} header={header(visibleStatus)} composer={composer}>{outputBody}</AgentPanelFrame>{selectionActions}</>;
 }
 
 // The composer's prompt-history button and flyout for one Agent. The open state is the caller's,
@@ -5795,9 +5801,6 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
   const [clearing, setClearing] = useState(false);
   const [deactivating, setDeactivating] = useState(false);
   const [question, setQuestion] = useState<ChoiceQuestion>();
-  // git status and prompt history portal into Prompt's shortcut rail and bottom action row
-  const [statusSlot, setStatusSlot] = useState<HTMLElement | null>(null);
-  const [historySlot, setHistorySlot] = useState<HTMLElement | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   // the latest response the output reported, for the note and response-file shortcuts
   const [latestAssistantMessage, setLatestAssistantMessage] = useState<string>();
@@ -5826,20 +5829,21 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
   const startingNewTask = usePendingOperation(newTaskOperationKey(agent.worktreeId ?? agent.id));
   // cancel active agent work
   const cancel = async () => { if (cancelling) return; setCancelling(true); try { await request(`/api/agents/${encodeURIComponent(agent.id)}/cancel`, { method: 'POST' }); } finally { setCancelling(false); } };
-  // close one scratch agent
+  // turn off an Agent outside a Worktree (Scratch, a directory Project): its session closes
   const remove = async () => {
     // prevent duplicate closure
     if (deleting) return;
     setDeleting(true);
-    onOperationFeedback({ tone: 'pending', message: 'Closing scratch agent…', detail: 'The session is being stopped and removed from the console.' });
+    const label = displayLabel;
+    onOperationFeedback({ tone: 'pending', message: `Turning off ${label}…`, detail: 'The session is being stopped and removed from the console.' });
     try {
       const response = await request(`/api/agents/${encodeURIComponent(agent.id)}`, { method: 'DELETE' });
       // surface failed closure
-      if (!response.ok) return onOperationFeedback({ tone: 'error', message: 'Scratch agent could not be closed', detail: await launchError(response) });
+      if (!response.ok) return onOperationFeedback({ tone: 'error', message: `${label} could not be turned off`, detail: await launchError(response) });
       await onDeleted();
-      onOperationFeedback({ tone: 'success', message: 'Scratch agent closed', detail: 'The session was removed successfully.' });
-    } catch { onOperationFeedback({ tone: 'error', message: 'Scratch agent could not be closed', detail: 'The console could not be reached. The agent may still be running.' }); }
-    finally { setDeleting(false); }
+      onOperationFeedback({ tone: 'success', message: `${label} is off`, detail: 'The session was removed successfully.' });
+    } catch { onOperationFeedback({ tone: 'error', message: `${label} could not be turned off`, detail: 'The console could not be reached. The agent may still be running.' }); }
+    finally { if (mounted.current) setDeleting(false); }
   };
   // deactivate one configured agent
   const deactivate = async () => {
@@ -5986,18 +5990,96 @@ function AgentCard({ agent, active, tabBar, cleanupControl, reviewCapability, re
   };
   // the Agent's push, fixup and guided-review actions on the git status
   const gitActions: WorkspaceGitActions = { id: agent.id, worktreeId: agent.worktreeId, onFixup: queueFixup, onReview: agent.worktreeId === undefined ? undefined : review === undefined ? scope => onReview({ agentId: agent.id, worktreeId: agent.worktreeId!, scope }) : () => review.onOpen(), reviewOpen: review !== undefined, reviewUnavailable: review === undefined ? reviewUnavailable : undefined, pushAction, pushPending, onPush: queuePush, onSelectTarget, onOperationFeedback };
-  // the Agent's live output fills the Workspace's first column
   // selected output and Terminal text append to the Agent's draft without queueing it
   const addToPrompt = (text: string) => setPromptDraft(agent.id, current => appendTextBlock(current, text));
-  const output = <Log id={agent.id} onQuestion={setQuestion} onMetadata={reportMetadata} onAddToPrompt={addToPrompt} controls={<>{cleanupControl}{responseFiles.control}{workspace.conversations.control}{workspace.notes.control}</>} notes={workspace.notes} onOpenUrl={openOutputUrl} onOpenFile={openFileInCode} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />;
-  return <article className="agent-view"><Workspace workspace={workspace} output={output} git={gitActions} onGitToggle={() => setHistoryOpen(false)} onAddToPrompt={addToPrompt} statusSlot={statusSlot} />{historySlot && createPortal(<PromptHistoryControl agentId={agent.id} history={promptHistory.history} refreshHistory={promptHistory.refresh} notes={workspace.notes} open={historyOpen} onOpenChange={changeHistoryOpen} />, historySlot)}{tabBar}{upstreamRebase}<Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} canCancel={active} cancelling={cancelling} deleting={deleting} restarting={restarting} clearing={clearing} deactivating={deactivating} onCancel={() => void cancel()} onDelete={!active && agent.worktreeId === undefined ? () => void remove() : undefined} onRestart={!active && agent.worktreeId !== undefined ? () => void restart() : undefined} onRestartAs={!active && agent.worktreeId !== undefined ? { label: displayLabel, resolution: agent.launch, onLaunch: choice => void restart(choice) } : undefined} onClear={!active && agent.worktreeId !== undefined ? () => void clear() : undefined} onDeactivate={!active && agent.worktreeId !== undefined ? () => void deactivate() : undefined} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} projectUrl={agent.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} stack={agent.stack} review={review} placeId={workspace.place.id} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} statusSlotRef={setStatusSlot} historySlotRef={setHistorySlot} terminalControl={workspace.terminals.control} phoneTerminal={workspace.phoneTerminal} /></article>;
+  const conversationName = useCurrentConversationName(agent.id, [agent.conversationId, workspace.conversations.currentName]);
+  const panelState = agentPanelState(agent, startingNewTask);
+  // Cancel interrupts work in progress; the power menu waits until the Agent is idle
+  const cancelButton = active && <button type="button" className="panel-header-action agent-cancel" disabled={cancelling} aria-label="Cancel agent" title="Cancel agent" onClick={() => void cancel()}>{cancelling ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>}</button>;
+  const power = <AgentPowerMenu mode="active" className="panel-header-action agent-power" pending={restarting || clearing || deactivating || deleting} {...(active ? { disabledReason: 'Cancel the agent’s work before restarting, clearing or turning it off' } : {})} onClear={() => void clear()} onTurnOff={() => void (agent.worktreeId === undefined ? remove() : deactivate())} {...(agent.worktreeId === undefined ? {} : { onRestart: () => void restart(), restartAs: { label: displayLabel, resolution: agent.launch, onLaunch: choice => void restart(choice) } })} />;
+  const header = (connection: string) => <PanelHeader panelKey="agent" label="agent output" title={<AgentPanelTitle kind={agent.kind} sandboxed={agent.sandboxed} title={conversationName ?? displayLabel} state={panelState} connection={connection} />} actions={<>{cancelButton}{workspace.conversations.control}{responseFiles.control}</>} close={power} />;
+  const composer = <Prompt id={agent.id} history={promptHistory.history} onHistoryChanged={promptHistory.refresh} onPromptFocus={onPromptFocus} onOperationFeedback={onOperationFeedback} question={dashboardQuestion ?? question} worktreeId={agent.worktreeId} placeId={workspace.place.id} historyControl={<PromptHistoryControl agentId={agent.id} history={promptHistory.history} refreshHistory={promptHistory.refresh} notes={workspace.notes} open={historyOpen} onOpenChange={changeHistoryOpen} />} />;
+  const output = <Log id={agent.id} onQuestion={setQuestion} onMetadata={reportMetadata} onAddToPrompt={addToPrompt} header={header} composer={composer} notes={workspace.notes} onOpenUrl={openOutputUrl} onOpenFile={openFileInCode} processingLabel={startingNewTask ? 'Starting new task…' : undefined} processingDetail={startingNewTask ? 'Closing this session and preparing a fresh agent. This can take a few seconds.' : undefined} />;
+  return <article className="agent-view"><Workspace workspace={workspace} output={output} git={gitActions} onAddToPrompt={addToPrompt} />{tabBar}{upstreamRebase}<WorkspaceBar phoneKeys={workspace.phoneTerminal ?? agent.id}>
+    <WorkspaceGitStatus workspace={workspace} actions={gitActions} onToggle={() => setHistoryOpen(false)} />
+    <span className="prompt-actions-spacer" aria-hidden="true" />
+    {cleanupControl}
+    <ReviewTourButton review={review} />
+    <More id={agent.id} worktreeId={agent.worktreeId} newTaskConfigured={agent.newTaskConfigured} onOperationFeedback={onOperationFeedback} pinned={pinned} onTogglePin={onTogglePin} onRenameWorktree={onRenameWorktree} />
+    {workspace.notes.control}
+    {workspace.terminals.control}
+    <ProjectOpen url={agent.projectUrl} stack={agent.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={agent.worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(agent.worktreeId!)}/commands/${action}`, { method: 'POST' })} onStackLog={agent.worktreeId === undefined ? undefined : () => stackLog(agent.worktreeId!)} />
+  </WorkspaceBar></article>;
+}
+
+// The agent panel's state pill: its words and the tone that colours it.
+type AgentPanelState = { label: string; tone: 'working' | 'starting' | 'needs-answer' | 'done' | 'idle' | 'off' | 'failed' };
+
+// A live Agent's state pill, from its attention and whether its finished turn is unread.
+function agentPanelState(agent: Agent, starting: boolean): AgentPanelState {
+  if (starting) return { label: 'Starting', tone: 'starting' };
+  const state = agentState(agent);
+  if (state === 'action-required') return { label: 'Needs answer', tone: 'needs-answer' };
+  if (state === 'working') return { label: 'Working', tone: 'working' };
+  return agent.unread === true ? { label: 'Done', tone: 'done' } : { label: 'Idle', tone: 'idle' };
+}
+
+// The current Conversation's name, which titles the agent panel. It is read once per Agent and
+// again whenever `refreshOn` changes (a new conversation id after Clear, a name given from the
+// Conversations fly-out); undefined until read or when the Conversation has no name.
+function useCurrentConversationName(agentId: string, refreshOn: readonly unknown[]): string | undefined {
+  const [name, setName] = useState<{ agentId: string; name?: string }>();
+  const refreshKey = JSON.stringify(refreshOn);
+  useEffect(() => {
+    let cancelled = false;
+    void request(`/api/agents/${encodeURIComponent(agentId)}/conversation`).then(response => response.ok ? response.json() : undefined).then((payload: unknown) => {
+      if (cancelled) return;
+      const next = payload !== null && typeof payload === 'object' && typeof (payload as { name?: unknown }).name === 'string' ? (payload as { name: string }).name : undefined;
+      setName({ agentId, ...(next === undefined ? {} : { name: next }) });
+    }).catch(() => { /* keep the last name; the panel falls back to its label */ });
+    return () => { cancelled = true; };
+  }, [agentId, refreshKey]);
+  return name?.agentId === agentId ? name.name : undefined;
+}
+
+// The agent panel's title pill: the kind mark, the title, the state and, while the output is not
+// live, its connection status.
+function AgentPanelTitle({ kind, sandboxed, title, state, connection = 'Live' }: { kind?: AgentKind; sandboxed?: boolean; title: string; state: AgentPanelState; connection?: string }) {
+  return <>
+    {kind !== undefined && <LaunchTabBadge kind={kind} sandboxed={sandboxed} />}
+    <span className="agent-panel-title" title={title}>{title}</span>
+    <span className={`agent-state-pill ${state.tone}`}>{state.label}</span>
+    {connection !== 'Live' && <span className={`status log-status ${connection.toLowerCase()}`}>{connection}</span>}
+  </>;
+}
+
+// The agent panel's frame: the floating header, the output (or a startup notice) and the composer
+// at its foot. It fills the split's agent column, and the expansion promotes it by `.expanded`.
+function AgentPanelFrame({ header, composer, className = '', children }: { header: ReactNode; composer?: ReactNode; className?: string; children: ReactNode }) {
+  const expanded = usePanelExpand('agent')?.expanded === true;
+  return <div className={`log-output agent-panel${expanded ? ' expanded' : ''}${className}`}>{header}<div className="agent-output">{children}</div>{composer}</div>;
+}
+
+// The guided review's button, once a review exists for the Worktree.
+function ReviewTourButton({ review }: { review?: ReviewButtonState }) {
+  if (review === undefined) return null;
+  return <button className={`review-tour-toggle icon-button${review.generating ? ' generating' : ''}${review.stale ? ' stale' : ''}`} type="button" aria-label={review.generating ? 'Open generating guided review' : review.stale ? 'Open out-of-date guided review' : 'Open guided review'} aria-busy={review.generating} title={review.generating ? 'Guided review is generating' : review.stale ? 'Guided review is out of date' : 'Open guided review'} onClick={review.onOpen}>{review.generating ? <span className="spinner" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 2h8l5 5v4M5 2v20h8M13 2v6h5" /><circle cx="16.5" cy="16.5" r="3.5" /><path d="m19 19 3 3" /></svg>}</button>;
+}
+
+// The row beneath the tab row: the Workspace's controls (git, notes, Terminals, stack, More and,
+// with no Agent, Launch) until the Workspace toolbar replaces it. On a phone it swaps for the
+// helper keys of the pane in focus (`phoneKeys`, the shown Terminal or the Agent).
+function WorkspaceBar({ children, phoneKeys }: { children: ReactNode; phoneKeys?: string }) {
+  return <section className="workspace-bar" aria-label="Workspace controls"><div className="prompt-actions">{children}</div>{phoneKeys !== undefined && <MobileTerminalKeys key={phoneKeys} id={phoneKeys} />}</section>;
 }
 
 function launchError(response: Response): Promise<string> {
   return response.json().then((body: { error?: unknown }) => typeof body.error === 'string' ? body.error : `Launch failed (${response.status}).`).catch(() => `Launch failed (${response.status}).`);
 }
 
-type InactiveWorktreePresentation = { ariaLabel?: string; heading: string; detail: string; status: string };
+// what a starting agent panel says about the draft in its composer: it waits there, to queue once the Agent is ready
+const pendingPromptDetail = 'Creating the agent session. Your prompt waits in the composer until the agent is ready.';
+type InactiveWorktreePresentation = { ariaLabel?: string; heading: string; detail: string; status: string; tone: AgentPanelState['tone'] };
 // describe one pending worktree launch
 const worktreeLaunchPendingDetail = (kind: AgentKind | undefined): string => `Launching ${kind === undefined ? 'an agent' : agentKindLabel[kind]} and waiting for the agent session to become ready.`;
 // describe one inactive worktree state (the Launch button now shows its own kind label)
@@ -6005,14 +6087,14 @@ const inactiveWorktreePresentation = (label: string, kind: AgentKind | undefined
   // name the configured launch agent
   const agentName = kind === undefined ? 'agent' : agentKindLabel[kind];
   // describe a fresh conversation
-  if (state.startingNewTask) return { ariaLabel: 'Starting new task', heading: 'Starting new task…', detail: 'Waiting for the fresh agent session to become ready.', status: 'Starting' };
+  if (state.startingNewTask) return { ariaLabel: 'Starting new task', heading: 'Starting new task…', detail: 'Waiting for the fresh agent session to become ready.', status: 'Starting', tone: 'starting' };
   // describe a restarted conversation
-  if (state.restarting) return { ariaLabel: `Restarting ${label}`, heading: 'Restarting agent…', detail: 'Running the resume alias and reconnecting the previous conversation.', status: 'Restarting' };
+  if (state.restarting) return { ariaLabel: `Restarting ${label}`, heading: 'Restarting agent…', detail: 'Running the resume alias and reconnecting the previous conversation.', status: 'Restarting', tone: 'starting' };
   // describe an Agent that is still stopping
-  if (state.turningOff) return { ariaLabel: `Turning off ${label}`, heading: 'Turning off…', detail: 'Stopping the agent.', status: 'Turning off' };
+  if (state.turningOff) return { ariaLabel: `Turning off ${label}`, heading: 'Turning off…', detail: 'Stopping the agent.', status: 'Turning off', tone: 'working' };
   // describe a fresh launch
-  if (state.launching) return { ariaLabel: `Starting ${label}`, heading: `Starting ${agentName}…`, detail: 'Creating the agent session and connecting its output.', status: 'Starting' };
-  return { heading: 'Agent is off', detail: 'This worktree is available. Launch an agent when you are ready to continue.', status: 'Off' };
+  if (state.launching) return { ariaLabel: `Starting ${label}`, heading: `Starting ${agentName} at ${label}…`, detail: pendingPromptDetail, status: 'Starting', tone: 'starting' };
+  return { heading: 'Agent is off', detail: 'This worktree is available. Launch an agent when you are ready to continue.', status: 'Off', tone: 'off' };
 };
 
 // render an inactive worktree
@@ -6038,7 +6120,6 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperatio
   // The Workspace works with no live Agent: Terminals, notes, browser and code all open here.
   const workspace = useWorkspace({ ...worktree, worktreeId: worktree.id }, { noteOptions: { schedulePrefill, onLaunchAndRun: noteId => launchAndRun(noteId), launchRunLabel: `${launchKind === undefined ? 'an agent' : agentKindLabel[launchKind]} on ${worktree.label}` }, onNavigateWorktree, onOperationFeedback });
   const { browser: projectBrowser } = workspace;
-  const [statusSlot, setStatusSlot] = useState<HTMLElement | null>(null);
   const [error, setError] = useState('');
   useEffect(() => {
     if (!error) return;
@@ -6130,28 +6211,56 @@ function WorktreeCard({ worktree, tabBar, cleanupControl, onLaunched, onOperatio
       }
     }
   };
-  // retain the normal left-side power placement: an idle Worktree tab (never Main) offers
-  // Remove, disabled with its reason when git holds a lock
+  // an idle Worktree tab (never Main) offers Rename and Remove, disabled with its reason when git
+  // holds a lock
   const powerMenu = onRemove !== undefined
     ? <AgentPowerMenu mode="idle" pending={processing} onRemove={onRemove} onRename={onRename} {...(removeDisabledReason === undefined ? {} : { removeDisabledReason })} />
     : null;
-  const output = <div className="log-output"><div className="log-loading inactive" role={processing ? 'status' : undefined} aria-label={presentation.ariaLabel}>{processing ? <span className="spinner" /> : null}<strong>{presentation.heading}</strong><span>{presentation.detail}</span></div><span className={`status log-status ${processing ? 'connecting' : 'inactive'}`}>{presentation.status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{workspace.conversations.control}{workspace.notes.control}</div></div></div></div>;
   // guided review needs an Agent
   const gitActions: WorkspaceGitActions = { reviewUnavailable: 'Launch agent to review' };
-  // preserve the idle recovery actions alongside the prepared draft
-  const launchControl = processing ? undefined
-    : <LaunchSplitButton label={worktree.label} resolution={worktree.launch} disabled={!worktree.available} pending={false} onLaunch={choice => { /* retry launch */ void start(choice); }} />;
-  // reuse the complete composer while deferring agent-only operations
-  const prompt = launching || promptOpened ? <>
-    {error && <p className="launch-error" role="alert">{error}</p>}
-    <Prompt id={draftId} ready={false} history={[]} onHistoryChanged={async () => { /* no agent history yet */ }} canCancel={false} cancelling={false} deleting={false} restarting={restarting} clearing={false} deactivating={turningOff} onCancel={() => { /* startup cannot be cancelled here */ }} onPromptFocus={() => { /* draft belongs to the inactive worktree */ }} onOperationFeedback={onOperationFeedback} worktreeId={worktree.id} projectUrl={worktree.projectUrl} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} stack={worktree.stack} lifecycleControl={powerMenu ?? undefined} launchControl={launchControl} statusSlotRef={setStatusSlot} terminalControl={workspace.terminals.control} phoneTerminal={workspace.phoneTerminal} />
-  </> : <section className="prompt"><textarea aria-label="Prompt" disabled />{error && <p className="launch-error" role="alert">{error}</p>}<div className="prompt-actions">{powerMenu}<WorkspaceGitStatus workspace={workspace} actions={gitActions} /><span className="prompt-actions-spacer" aria-hidden="true" />{workspace.terminals.control}<ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} /><LaunchSplitButton label={worktree.label} resolution={worktree.launch} disabled={!worktree.available} pending={processing} onLaunch={choice => void start(choice)} /></div></section>;
+  // a starting Agent (or a draft typed before launch) gets the agent panel; with none, the
+  // Workspace shows only its other panels
+  const starting = launching || restarting || startingNewTask;
+  // a draft with no launch under way can be dropped, which closes its panel
+  const discardDraft: PanelAction = { key: 'discard', label: 'Discard draft', title: 'Discard this draft and its attachments', className: 'agent-discard', icon: <PanelIcon path={actionIconPaths.trash} />, onSelect: () => {
+    // confirm before losing prepared text or files, as a failed launch's discard does
+    if ((getPromptDraft(draftId) || promptAttachments.has(draftId)) && !window.confirm('Discard this draft and its attachments?')) return;
+    promptAttachments.delete(draftId);
+    setPromptDraft(draftId, '');
+    setPromptOpened(false);
+  } };
+  const agentPanel = starting || promptOpened
+    ? <PendingAgentPanel kind={launchKind} title={worktree.label} state={processing ? { label: presentation.status, tone: presentation.tone } : { label: 'Off', tone: 'off' }} loading={<PanelNotice busy={processing} ariaLabel={presentation.ariaLabel} heading={presentation.heading} detail={presentation.detail} />} close={starting ? undefined : discardDraft} composer={<Prompt id={draftId} ready={false} history={[]} onHistoryChanged={async () => { /* no agent history yet */ }} onPromptFocus={() => { /* draft belongs to the inactive worktree */ }} onOperationFeedback={onOperationFeedback} worktreeId={worktree.id} />} />
+    : undefined;
+  const empty = <PanelNotice className="workspace-empty" busy={processing} ariaLabel={presentation.ariaLabel} heading={presentation.heading} detail={presentation.detail} />;
   // a Terminal selection added to the prompt opens the draft composer
   const addToPrompt = (text: string) => {
     setPromptDraft(draftId, current => appendTextBlock(current, text));
     setPromptOpened(true);
   };
-  return <article className="agent-view"><Workspace workspace={workspace} output={output} idle git={gitActions} onAddToPrompt={addToPrompt} statusSlot={statusSlot} />{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} />{prompt}</article>;
+  return <article className="agent-view"><Workspace workspace={workspace} output={agentPanel} empty={empty} git={gitActions} onAddToPrompt={addToPrompt} />{tabBar}<UpstreamRebaseBanner summary={worktree.gitUpstream} />{error && <p className="launch-error" role="alert">{error}</p>}<WorkspaceBar phoneKeys={workspace.phoneTerminal}>
+    {powerMenu}
+    <WorkspaceGitStatus workspace={workspace} actions={gitActions} />
+    <span className="prompt-actions-spacer" aria-hidden="true" />
+    {cleanupControl}
+    {workspace.conversations.control}
+    {workspace.notes.control}
+    {workspace.terminals.control}
+    <ProjectOpen url={worktree.projectUrl} stack={worktree.stack} browserOpen={projectBrowser.open} onBrowserToggle={projectBrowser.toggle} onStackAction={action => request(`/api/worktrees/${encodeURIComponent(worktree.id)}/commands/${action}`, { method: 'POST' })} onStackLog={() => stackLog(worktree.id)} />
+    <LaunchSplitButton label={worktree.label} resolution={worktree.launch} disabled={!worktree.available} pending={processing} onLaunch={choice => void start(choice)} />
+  </WorkspaceBar></article>;
+}
+
+// The agent panel before its Agent exists: the kind, the Place and a state pill in the header,
+// the startup (or failure) notice over the output, and the composer holding the prompt for the
+// Agent once it is ready. `close` is the panel's trailing action, when it has one.
+function PendingAgentPanel({ kind, title, state, loading, composer, close }: { kind?: AgentKind; title: string; state: AgentPanelState; loading: ReactNode; composer?: ReactNode; close?: PanelAction }) {
+  return <AgentPanelFrame header={<PanelHeader panelKey="agent" label="agent output" close={close} title={<AgentPanelTitle kind={kind} title={title} state={state} />} />} composer={composer}>{loading}</AgentPanelFrame>;
+}
+
+// A startup, failure or idle notice centred in a panel or an empty Workspace.
+function PanelNotice({ busy = false, ariaLabel, heading, detail, className = '', role }: { busy?: boolean; ariaLabel?: string; heading: string; detail: string; className?: string; role?: 'status' }) {
+  return <div className={`log-loading inactive${className === '' ? '' : ` ${className}`}`} role={role ?? (busy ? 'status' : undefined)} aria-label={ariaLabel}>{busy ? <span className="spinner" /> : null}<strong>{heading}</strong><span>{detail}</span></div>;
 }
 
 // How an agentless Place tab launches: the directory Project in place or the configured Scratch
@@ -6202,35 +6311,45 @@ function PlaceCard({ place, tabBar, cleanupControl, launchDisabled, launch, onLa
   const workspace = useWorkspace({ id: place.id }, { noteOptions: { schedulePrefill, ...(launch === undefined ? {} : { onLaunchAndRun: launchAndRun, launchRunLabel: `${launchKind === undefined ? 'an agent' : agentKindLabel[launchKind]} on ${place.label}` }) }, onOperationFeedback });
   // an ad-hoc Scratch folder has no launch: only its terminals and notes live here
   const detail = launch === undefined ? 'This folder has no agent. Its terminals and notes stay here.' : 'This place is available. Launch an agent when you are ready to continue.';
-  const output = <div className="log-output"><div className="log-loading inactive" role={running ? 'status' : undefined}>{running ? <span className="spinner" /> : null}<strong>{running ? 'Starting agent…' : 'Agent is off'}</strong><span>{detail}</span></div><span className={`status log-status ${running ? 'connecting' : 'inactive'}`}>{running ? 'Starting' : 'Off'}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}{workspace.notes.control}</div></div></div></div>;
+  const empty = <PanelNotice className="workspace-empty" heading="Agent is off" detail={detail} />;
+  // a note's Run launches here: the agent panel shows the start
+  const agentPanel = running ? <PendingAgentPanel kind={launchKind} title={place.label} state={{ label: 'Starting', tone: 'starting' }} loading={<PanelNotice busy heading={`Starting ${launchKind === undefined ? 'agent' : agentKindLabel[launchKind]} at ${place.label}…`} detail="Launching an agent to run the note." />} /> : undefined;
   const pin = <PlaceShellsAndPin place={place} className="icon-button place-pin" onTogglePin={onTogglePin} />;
-  return <article className="agent-view"><Workspace workspace={workspace} output={output} idle statusSlot={null} />{tabBar}<section className="prompt"><textarea aria-label="Prompt" disabled /><div className="prompt-actions">{pin}<span className="prompt-actions-spacer" aria-hidden="true" />{workspace.terminals.control}{launch !== undefined && <LaunchSplitButton label={place.label} resolution={launch.resolution} disabled={launchDisabled || running} pending={running} onLaunch={launch.start} />}</div></section></article>;
+  return <article className="agent-view"><Workspace workspace={workspace} output={agentPanel} empty={empty} />{tabBar}<WorkspaceBar phoneKeys={workspace.phoneTerminal}>
+    {pin}
+    <span className="prompt-actions-spacer" aria-hidden="true" />
+    {cleanupControl}
+    {workspace.notes.control}
+    {workspace.terminals.control}
+    {launch !== undefined && <LaunchSplitButton label={place.label} resolution={launch.resolution} disabled={launchDisabled || running} pending={running} onLaunch={launch.start} />}
+  </WorkspaceBar></article>;
 }
 
 // render a scratch or directory session before discovery publishes its agent identity
 function PendingSessionCard({ launch, tabBar, cleanupControl, retrying, onRetry, onDiscard, onOperationFeedback }: { launch: PendingSessionLaunch; tabBar: ReactNode; cleanupControl?: ReactNode; retrying: boolean; onRetry: (choice?: LaunchChoice) => void; onDiscard: () => void; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void }) {
   const processing = launch.phase !== 'failed';
-  let heading = 'Starting agent…';
-  let detail = 'Creating the agent session so it can receive your prepared prompt.';
-  let status = 'Starting';
+  const kind = launch.kind ?? launch.resolution?.kind;
+  let heading = `Starting ${kind === undefined ? 'agent' : agentKindLabel[kind]} at ${launch.label}…`;
+  let detail = pendingPromptDetail;
+  let state: AgentPanelState = { label: 'Starting', tone: 'starting' };
   // distinguish session creation, discovery and rejected starts
   switch (launch.phase) {
     case 'confirming':
     case 'delayed':
       heading = 'Connecting agent…';
       detail = 'The session started. Waiting for it to appear on the dashboard.';
-      status = 'Connecting';
+      state = { label: 'Connecting', tone: 'starting' };
       break;
     case 'failed':
       heading = 'Agent did not start';
       detail = launch.error ?? 'Retry the launch when you are ready.';
-      status = 'Failed';
+      state = { label: 'Failed', tone: 'failed' };
       break;
   }
-  const output = <div className="log-output"><div className="log-loading inactive" role="status" aria-label={processing ? `Starting ${launch.label}` : `${launch.label} launch failed`}>{processing && <span className="spinner" />}<strong>{heading}</strong><span>{detail}</span></div><span className={`status log-status ${processing ? 'connecting' : 'inactive'}`}>{status}</span><div className="log-footer"><div className="log-controls-bottom"><div className="page-controls">{cleanupControl}</div></div></div></div>;
-  const lifecycleControl = launch.phase === 'failed' ? <button className="icon-button" type="button" aria-label="Discard failed launch" title="Discard failed launch" onClick={onDiscard}><svg className="action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.trash} /></svg></button> : undefined;
-  const launchControl = launch.phase === 'failed' ? <LaunchSplitButton label={launch.label} resolution={launch.resolution} disabled={retrying} onLaunch={choice => { /* retry without replacing the prepared draft */ onRetry(choice); }} /> : undefined;
-  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log">{output}</div></section>{tabBar}{launch.error !== undefined && <p className="launch-error" role="alert">{launch.error}</p>}<PreparingPrompt id={launch.draftId} lifecycleControl={lifecycleControl} launchControl={launchControl} onOperationFeedback={onOperationFeedback} /></article>;
+  const loading = <PanelNotice role="status" busy={processing} ariaLabel={processing ? `Starting ${launch.label}` : `${launch.label} launch failed`} heading={heading} detail={detail} />;
+  const discard: PanelAction | undefined = launch.phase === 'failed' ? { key: 'discard', label: 'Discard failed launch', className: 'agent-discard', icon: <PanelIcon path={actionIconPaths.trash} />, onSelect: onDiscard } : undefined;
+  const retry = launch.phase === 'failed' ? <LaunchSplitButton label={launch.label} resolution={launch.resolution} disabled={retrying} onLaunch={choice => { /* retry without replacing the prepared draft */ onRetry(choice); }} /> : null;
+  return <article className="agent-view"><section className="log-shell"><div className="log inactive-log"><PendingAgentPanel kind={kind} title={launch.label} state={state} loading={loading} close={discard} composer={<PreparingPrompt id={launch.draftId} onOperationFeedback={onOperationFeedback} />} /></div></section>{tabBar}{launch.error !== undefined && <p className="launch-error" role="alert">{launch.error}</p>}<WorkspaceBar><span className="prompt-actions-spacer" aria-hidden="true" />{cleanupControl}{retry}</WorkspaceBar></article>;
 }
 
 // render browser notification enrollment
@@ -7526,7 +7645,7 @@ function DashboardView({ onUnauthorized, onInactive }: { onUnauthorized: () => v
     return <button key={entry.key} id={`tab-${index}`} role="tab" aria-selected={index === visibleActive} aria-controls={`panel-${index}`} tabIndex={index === visibleActive ? 0 : -1} className={`${index === visibleActive ? 'active ' : ''}${transition === undefined ? `status-${entry.state}` : 'status-transitioning'}${entry.unread ? ' unread' : ''}`} title={`${label}${entry.unread ? ' — Unread' : ''}`} aria-label={`${entry.label} — ${label}${entry.unread ? ' — Unread' : ''}`} aria-busy={transition !== undefined} onClick={() => select(index)}>{kind !== undefined && <LaunchTabBadge kind={kind} sandboxed={sandboxed} />}{entry.worktree?.locked === true && <span className="tab-git-lock" aria-hidden="true" title="Git has locked this worktree">🔒</span>}{transition !== undefined ? <span className="tab-transition-label"><span><span className="spinner" aria-hidden="true" />{entry.label}</span><small>{transition}…</small></span> : entry.state === 'working' ? <span className="tab-label" aria-hidden="true">{entry.label}</span> : entry.label}</button>;
   })}<NotificationControl /><span className="launcher" ref={launcherRef}><button ref={plusRef} className="new-agent-tab" type="button" disabled={creatingAgent} aria-label={creatingAgent ? 'Starting agent' : 'Launch agent'} aria-expanded={launcherOpen} onClick={() => setLauncherOpen(value => !value)}>{creatingAgent ? <span className="spinner" /> : '+'}</button></span>{launcherOpen && <FlyoutPortal onDismiss={() => setLauncherOpen(false)}><div className="launcher-menu more-menu flyout-menu" ref={launcherMenuRef} style={launcherStyle} role="group" aria-label="Agent launcher"><div className="launcher-row"><span className="launcher-row-label launcher-symbol-label"><LauncherLabelIcon name="scratch" /><span>Scratch</span></span>{launcherPlaceControls(scratchPlace)}<LaunchSplitButton label="~ Scratch" resolution={data.scratchLaunch} compact disabled={creatingAgent} onLaunch={choice => void createAgent(choice)} /></div>{data.projects.map(launcherProject)}</div></FlyoutPortal>}{plusAlone && <span className="tab-spacer" aria-hidden="true" />}</nav><ToastRegion feedback={visibleOperationFeedback} onDismissFeedback={() => setOperationFeedback(undefined)} launchErrorMessage={launchErrorMessage} /></>;
   const consoleClass = `console${davo.enabled && voiceOpen ? ' voice-visible' : ''}`;
-  if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="page-controls cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
+  if (items.length === 0) return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<article className="worktree-view cleanup-empty-view">{tabBar}<h2>No sessions</h2>{cleanupCount > 0 && <div className="cleanup-standalone">{cleanupControl}</div>}{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</article></main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
   return <AdaptersContext.Provider value={data.adapters}><DashboardGenerationContext.Provider value={{ generation: dashboardGeneration, notesRevision: data.notesRevision, serverStartedAt: data.serverStartedAt }}><VoiceTriggerContext.Provider value={voiceTrigger}><main className={consoleClass}>{voiceDialog}<section className="panel" role="tabpanel" id={`panel-${visibleActive}`} aria-labelledby={`tab-${visibleActive}`} tabIndex={0}>{item?.agent && <AgentCard key={item.agent.id} agent={item.agent} active={item.state === 'working'} tabBar={tabBar} cleanupControl={cleanupControl} reviewCapability={data.reviewTour} review={activeReview} onReview={launchReview} onDeleted={refresh} onSelectTarget={selectTarget} onNavigateWorktree={navigateToWorktree} onPromptFocus={() => viewAgent(item.agent!)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: item.agent.projectId ?? (activePlace?.kind === 'directory' ? activePlace.projectId : undefined) })} {...(activePinTarget === undefined ? {} : { pinned: activePinTarget.pinned, onTogglePin: () => void togglePin(activePinTarget) })} {...(activeWorktree === undefined ? {} : { onRenameWorktree: () => setRenameWorktreeId(activeWorktree.id), worktreeLabel: activeWorktree.label })} />}{item?.worktree && <WorktreeCard key={item.worktree.id} worktree={item.worktree} tabBar={tabBar} cleanupControl={cleanupControl} onLaunched={worktreeLaunched} onOperationFeedback={showOperationFeedback} onNavigateWorktree={navigateToWorktree} onRename={() => setRenameWorktreeId(item.worktree!.id)} schedulePrefill={resolveSchedulePrefill({ projectId: item.worktree.projectId })} {...(item.worktree.main ? {} : { onRemove: () => setRemoveWorktreeId(item.worktree!.id), ...(worktreeRemoveDisabledReason(item.worktree, activeProject) === undefined ? {} : { removeDisabledReason: worktreeRemoveDisabledReason(item.worktree, activeProject) }) })} />}{item?.place && <PlaceCard key={item.place.id} place={item.place} tabBar={tabBar} cleanupControl={cleanupControl} launchDisabled={creatingAgent} launch={placeLaunch(item.place)} onLaunched={agentId => { setActivateAgentId(agentId); void refresh(); }} onTogglePin={() => void togglePin(item.place!)} onOperationFeedback={showOperationFeedback} schedulePrefill={resolveSchedulePrefill({ projectId: item.place.kind === 'directory' ? item.place.projectId : undefined })} />}{item?.pendingLaunch && <PendingSessionCard key={item.pendingLaunch.id} launch={item.pendingLaunch} tabBar={tabBar} cleanupControl={cleanupControl} retrying={creatingAgent} onRetry={choice => { /* retain the same pending draft on retry */ void runPendingSessionLaunch(item.pendingLaunch!, choice); }} onDiscard={() => { /* discard only the selected failed placeholder */ discardPendingSessionLaunch(item.pendingLaunch!.id); }} onOperationFeedback={showOperationFeedback} />}</section>{cleanupDialog}{worktreeManagementDialogs}{reviewDialog}</main></VoiceTriggerContext.Provider></DashboardGenerationContext.Provider></AdaptersContext.Provider>;
 }
 

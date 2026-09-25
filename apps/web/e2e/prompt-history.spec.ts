@@ -51,13 +51,14 @@ test('shows worktree prompt history and cycles it from the composer', async ({ p
   // the recent-prompt text button is gone; history is reached from the composer-row icon
   await expect(page.getByRole('button', { name: 'Last prompt', exact: true })).toHaveCount(0);
   const historyToggle = page.getByRole('button', { name: 'Prompt history (2)' });
-  const submissionControls = page.getByRole('group', { name: 'Prompt submission controls' });
-  const queue = submissionControls.getByRole('button', { name: 'Queue', exact: true });
+  // history sits above attach in the composer's left column
+  const attach = page.getByRole('region', { name: 'Prompt composer' }).getByRole('button', { name: 'Attach files' });
   await expect(historyToggle).toBeVisible();
-  const [historyBounds, queueBounds] = await Promise.all([historyToggle.boundingBox(), queue.boundingBox()]);
+  const [historyBounds, attachBounds] = await Promise.all([historyToggle.boundingBox(), attach.boundingBox()]);
   expect(historyBounds).not.toBeNull();
-  expect(queueBounds).not.toBeNull();
-  expect(Math.abs(historyBounds!.x + historyBounds!.width - queueBounds!.x)).toBeLessThanOrEqual(1);
+  expect(attachBounds).not.toBeNull();
+  expect(Math.abs(historyBounds!.x - attachBounds!.x)).toBeLessThanOrEqual(1);
+  expect(historyBounds!.y + historyBounds!.height).toBeLessThanOrEqual(attachBounds!.y);
   await historyToggle.click();
   const historyMenu = page.getByLabel('Prompt history', { exact: true });
   const historyHeader = historyMenu.locator('header');

@@ -211,10 +211,10 @@ test('shows and switches the configured server on authentication and output scre
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(selector.locator('.server-selector-name')).toBeHidden();
   await expect(selector.locator('img')).toBeVisible();
-  const [narrowSelectorBounds, statusBounds, narrowOutputBounds] = await Promise.all([renderedBounds(selector), renderedBounds(page.locator('.log-status')), renderedBounds(page.locator('.log-output'))]);
+  const [narrowSelectorBounds, titleBounds, narrowOutputBounds] = await Promise.all([renderedBounds(selector), renderedBounds(page.locator('.agent-panel .panel-header-title')), renderedBounds(page.locator('.log-output'))]);
   expect(narrowSelectorBounds.x).toBeLessThanOrEqual(1);
-  // the status pill takes the corner the switcher left
-  expect(statusBounds.y - narrowOutputBounds.y).toBeLessThan(12);
+  // the agent panel's title pill takes the corner the switcher left
+  expect(titleBounds.y - narrowOutputBounds.y).toBeLessThan(12);
 
   await selector.click();
   await remote.click();

@@ -1252,6 +1252,16 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const conversations = await listConversations(directories, scope, currentId, records);
     return { conversations, canResume: persistence.worktree !== undefined && launch.canResumeConversation(persistence.worktree.id) };
   });
+  // the current Conversation's name, which titles the agent panel: one pane's by-id store read
+  // (no scan of the agents' stores), so the panel can ask on mount and after Clear or naming
+  app.get('/api/agents/:id/conversation', async (request, reply) => {
+    controlled(request);
+    const id = (request.params as { id: string }).id;
+    if (await discovery.target(id) === undefined) return reply.code(404).send({ error: 'agent unavailable' });
+    // an unreadable store degrades to an untitled Conversation, as the list does
+    const conversation = await discovery.conversation(id).catch(() => undefined);
+    return conversation?.title === undefined ? {} : { name: conversation.title };
+  });
   // name the current Conversation from the console: submit the CLI's own rename command into the
   // pane (bypassing the prompt service — no history entry, no queued-prompt phase), confirm the
   // name from the agent's own store, then record that the console named it (ADR 0007). The name

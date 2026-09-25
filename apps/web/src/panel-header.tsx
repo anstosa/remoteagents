@@ -1,4 +1,4 @@
-import { createContext, type KeyboardEvent, type ReactNode, type RefObject, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createContext, isValidElement, type KeyboardEvent, type ReactElement, type ReactNode, type RefObject, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { FlyoutPortal } from './flyout-portal.js';
 import { useViewportFlyout } from './viewport-flyout.js';
 
@@ -56,8 +56,8 @@ export const PanelExpandContext = createContext<Omit<PanelExpansion, 'setExpande
 // counts only while its panel is open: a panel that has not mounted yet (a note still loading)
 // keeps its request without hiding its siblings, and closing the expanded panel restores the
 // rest, so reopening it does not expand it again. `onKeyDown` goes on the container: Esc restores,
-// except inside a pane's canvas (a shell app needs its Escape), after a handler that already used
-// the key, or from a flyout portaled out of the container.
+// except inside a pane's canvas (a shell app needs its Escape) or the agent panel's composer, after
+// a handler that already used the key, or from a flyout portaled out of the container.
 export function useExpansionScope(expansion: PanelExpansion, openKeys: readonly string[], containerRef: RefObject<HTMLElement | null>) {
   const { expanded: requested, toggle, restore } = expansion;
   const expanded = requested !== undefined && openKeys.includes(requested) ? requested : undefined;
@@ -74,7 +74,7 @@ export function useExpansionScope(expansion: PanelExpansion, openKeys: readonly 
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key !== 'Escape' || expanded === undefined || event.defaultPrevented) return;
     const target = event.target as Element;
-    if (!containerRef.current?.contains(target) || target.closest('.log-canvas, .terminal-canvas') !== null) return;
+    if (!containerRef.current?.contains(target) || target.closest('.log-canvas, .terminal-canvas, .prompt') !== null) return;
     event.preventDefault();
     restore();
   };
@@ -121,8 +121,9 @@ type PanelHeaderProps = {
   actions?: ReactNode;
   // actions that fold into the ⋮ when the panel is narrow
   secondary?: PanelAction[];
-  // the trailing action: close, or minimize for a Terminal
-  close?: PanelAction;
+  // the trailing action: close, minimize for a Terminal, or a control that opens a popup of its
+  // own (the agent panel's power menu)
+  close?: PanelAction | ReactElement;
   expandDisabled?: boolean;
 };
 
@@ -159,7 +160,7 @@ export function PanelHeader({ panelKey, label, title, actions, secondary = [], c
       {!folded && secondary.map(action => actionButton(action))}
       {showMore && <button ref={anchorRef} type="button" className={`panel-header-action panel-header-more${moreOpen ? ' active' : ''}`} aria-label={`More ${label} actions`} aria-expanded={moreOpen} title="More" onClick={() => setMoreOpen(value => !value)} onKeyDown={event => { if (event.key === 'Escape' && moreOpen) { event.preventDefault(); event.stopPropagation(); closeMore(); } }}><svg className="panel-header-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="12" cy="19" r="1" /></svg></button>}
       {expand !== undefined && <button type="button" className="panel-header-action panel-header-expand" disabled={expandDisabled} aria-label={`${expand.expanded ? 'Restore' : 'Expand'} ${label}`} aria-pressed={expand.expanded} title={expand.expanded ? 'Restore the other panels' : 'Fill the Workspace'} onClick={expand.toggle}><PanelIcon path={expand.expanded ? panelIcons.restore : panelIcons.expand} /></button>}
-      {close !== undefined && actionButton(close)}
+      {close === undefined || isValidElement(close) ? close : actionButton(close)}
     </div>
     {showMore && moreOpen && <FlyoutPortal onDismiss={closeMore}><div ref={flyoutRef} className="more-menu panel-header-menu" role="group" aria-label={`More ${label} actions`} style={style} onClick={closeMore} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); closeMore(); } }}>{secondary.map(action => actionButton(action, true))}</div></FlyoutPortal>}
   </div>;

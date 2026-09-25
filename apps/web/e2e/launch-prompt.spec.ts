@@ -236,7 +236,8 @@ test('keeps the complete launch composer editable through tab changes and delaye
   await expect(composer).toBeVisible();
   await expect(prompt).toBeEnabled();
   await expect(composer.getByRole('button', { name: 'Attach files' })).toBeEnabled();
-  await expect(composer.getByRole('button', { name: 'More options' })).toBeDisabled();
+  // the Workspace's More menu lives in the row beneath the tabs, not the composer
+  await expect(composer.getByRole('button', { name: 'More options' })).toHaveCount(0);
   await prompt.fill('before  after');
   await attach(page, 'launch-context.txt', 'launch context');
   await expect(page.getByLabel('Selected attachments')).toContainText('launch-context.txt');
@@ -398,7 +399,8 @@ test('keeps one returned scratch launch pending beyond the discovery timeout', a
   await expect(page.getByRole('status', { name: 'Starting Scratch' })).toBeVisible();
   await expect(prompt).toHaveValue('Late scratch handoff');
   await expect(page.getByLabel('Selected attachments')).toContainText('late-context.txt');
-  await expect(composer.getByRole('button', { name: 'Launch Codex' })).toHaveCount(0);
+  // no retry while the launch is still under way: it would sit in the row beneath the tabs
+  await expect(page.getByRole('region', { name: 'Workspace controls' }).getByRole('button', { name: 'Launch Codex' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Discard failed launch' })).toHaveCount(0);
   expect(harness.launchRequests()).toBe(1);
 

@@ -43,10 +43,11 @@ test('shows selection actions for a terminal drag selection and adds to the prom
 
   await page.goto('/');
   await seedPaneSize(page, 'agent-1', 80, 24);
-  // Several rows down so the selectable row clears the top-left server switcher (the
-  // stream writes top-down; the old snapshot bottom-aligned its text).
+  // Several rows down so the selectable row sits well inside the output (the stream
+  // writes top-down; the old snapshot bottom-aligned its text).
   await pushBytes(page, 'agent-1', '\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\nSelectable output text\r\n');
-  await expect(page.locator('.log-status')).toHaveText('Live');
+  // the agent panel's header drops its connection pill once the stream is live
+  await expect(page.locator('.log-output .log-status')).toHaveCount(0);
   const screen = page.locator('.log-canvas .xterm-screen');
   await expect(screen).toBeVisible();
   const selectedRow = page.locator('.log-canvas .xterm-rows > div', { hasText: 'Selectable output text' });
@@ -253,7 +254,8 @@ for (const platform of ['Linux x86_64', 'Win32', 'MacIntel']) {
     await page.goto('/');
     await seedPaneSize(page, 'agent-1', 80, 24);
     await pushBytes(page, 'agent-1', `${'\r\n'.repeat(8)}Freeze selected output`);
-    await expect(page.locator('.log-status')).toHaveText('Live');
+    // the agent panel's header drops its connection pill once the stream is live
+  await expect(page.locator('.log-output .log-status')).toHaveCount(0);
 
     const selectedRow = page.locator('.log-canvas .xterm-rows > div', { hasText: 'Freeze selected output' });
     await expect(selectedRow).toBeVisible();

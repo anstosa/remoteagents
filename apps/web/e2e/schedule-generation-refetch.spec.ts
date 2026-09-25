@@ -239,6 +239,8 @@ test('keeps queued-note badges red until notes are opened and shares acknowledge
   // keep the control visible at phone and desktop widths
   for (const viewport of [{ label: 'phone', width: 320, height: 640 }, { label: 'desktop', width: 1440, height: 900 }]) {
     await page.setViewportSize(viewport);
+    // measure once the resized layout has settled with the control on screen
+    await expect(page.locator('.notes-control')).toBeInViewport({ ratio: 1 });
     const bounds = await page.locator('.notes-control').boundingBox();
     expect(bounds).not.toBeNull();
     // stop coordinate checks when Playwright reports no rendered box

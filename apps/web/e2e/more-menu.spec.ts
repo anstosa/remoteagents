@@ -28,7 +28,7 @@ test('keeps attachments and repository choices out of the more menu', async ({ p
   });
 
   await page.goto('/');
-  const attachmentShortcut = page.locator('.prompt-action-rail').getByRole('button', { name: 'Attach files', exact: true });
+  const attachmentShortcut = page.locator('.agent-composer-column').getByRole('button', { name: 'Attach files', exact: true });
   await expect(attachmentShortcut).toBeVisible();
   await page.getByRole('button', { name: 'More options' }).click();
   const menu = page.locator('.more-menu');
