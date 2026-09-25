@@ -10,8 +10,8 @@ const patchOf = (files: ComparisonFile[]): ComparisonPatch => ({ kind: 'working'
 const codePanel = (page: Page) => page.getByRole('region', { name: 'Code changes' });
 const agentOutput = (page: Page) => page.locator('.log-output');
 
-// On a phone the Code panel must join the single-panel switcher (like note / browser / terminal)
-// rather than stacking on top of the agent output — even when it is the only extra panel open.
+// On a phone the Code panel must join the panel carousel (like note / browser / terminal) rather
+// than stacking on top of the agent output — even when it is the only extra panel open.
 test('shows the Code panel as a switchable mobile panel, not stacked on the agent', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await installPaneMock(page);
@@ -33,19 +33,19 @@ test('shows the Code panel as a switchable mobile panel, not stacked on the agen
   await page.getByRole('button', { name: /^Git status:/u }).click();
   await page.getByRole('button', { name: 'View changes', exact: true }).click();
 
-  // opening the Code panel puts the split into single-panel mobile mode and follows the newly opened
-  // panel to it (the regression: without the Code panel counting as a split, no `mobile-*-view` class
-  // was applied and the panels stacked). It shows only the Code panel, with a switch back to the agent.
+  // opening the Code panel adds it to the phone carousel and scrolls to it, the newly opened panel
+  // (the regression: without the Code panel counting as a panel, it stacked on the agent output).
+  // It fills the screen, and the dots offer the way back to the agent.
   const split = page.locator('.log-split');
   await expect(split).toHaveClass(/\bmobile-code-view\b/u);
-  await expect(codePanel(page)).toBeVisible();
-  await expect(agentOutput(page)).toBeHidden();
+  await expect(codePanel(page)).toBeInViewport({ ratio: 0.99 });
+  await expect(agentOutput(page)).not.toBeInViewport();
 
-  // the single-panel switcher can return to the agent output, hiding the Code panel
-  const showAgent = page.getByRole('button', { name: 'Show agent output' });
+  // the agent's dot returns to the agent output, moving the Code panel off screen
+  const showAgent = page.getByRole('group', { name: 'Panels' }).getByRole('button', { name: 'Show agent output' });
   await expect(showAgent).toBeVisible();
   await showAgent.click();
   await expect(split).toHaveClass(/\bmobile-agent-view\b/u);
-  await expect(agentOutput(page)).toBeVisible();
-  await expect(codePanel(page)).toBeHidden();
+  await expect(agentOutput(page)).toBeInViewport({ ratio: 0.99 });
+  await expect(codePanel(page)).not.toBeInViewport();
 });

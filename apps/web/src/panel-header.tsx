@@ -1,8 +1,9 @@
-import { createContext, isValidElement, type KeyboardEvent, type ReactElement, type ReactNode, type RefObject, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createContext, isValidElement, type KeyboardEvent, type ReactElement, type ReactNode, type RefObject, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { FlyoutPortal } from './flyout-portal.js';
 import { useViewportFlyout } from './viewport-flyout.js';
 
-// The app-wide phone breakpoint. Phones show one panel at a time, so expand does nothing there.
+// The app-wide phone breakpoint. A phone shows a Workspace's panels one per screen, in a swipe
+// carousel, and expanding a panel there hides the tab row and toolbar instead.
 const phoneQuery = '(max-width: 768px)';
 // Below this panel width a header's secondary actions fold into its ⋮.
 const panelFoldWidth = 620;
@@ -10,29 +11,40 @@ const panelFoldWidth = 620;
 export const panelIcons = { expand: 'M9 3H3v6m18 6v6h-6M3 3l6 6m6 6 6 6', restore: 'M9 3v6H3m18 6h-6v6M3 9l6-6m6 18 6-6', close: 'm6 6 12 12M18 6 6 18', copy: 'M9 9h10v10H9zM5 15H4V5h10v1', check: 'm5 12 4 4L19 6' };
 
 const matchesPhone = () => typeof window !== 'undefined' && window.matchMedia(phoneQuery).matches;
+const subscribePhone = (listener: () => void) => {
+  const media = window.matchMedia(phoneQuery);
+  media.addEventListener('change', listener);
+  return () => media.removeEventListener('change', listener);
+};
+// Whether the phone layout applies now.
+export const usePhoneLayout = (): boolean => useSyncExternalStore(subscribePhone, matchesPhone, () => false);
 
 // Which panel of a Workspace fills it, by split key ('agent', 'note', 'browser', 'code', or a
-// Terminal's pane id). One key at most; the split hides every sibling of the expanded panel.
+// Terminal's pane id). One key at most; the split hides every sibling of the expanded panel. On a
+// phone the expansion is `immersive` instead: whichever panel is in view fills the screen, and the
+// tab row and toolbar fold away.
 export type PanelExpansion = {
   expanded: string | undefined;
+  immersive: boolean;
   setExpanded: (key: string, on: boolean) => void;
   toggle: (key: string) => void;
   restore: () => void;
 };
 
-// Hold one Workspace's expanded panel. It is transient (a panel that wants its expansion back
-// after a reload, like the note, restores it itself), and phones never expand: reaching a phone
-// width restores, and requests made there are ignored.
+// Hold one Workspace's expansion. It is transient (a panel that wants its expansion back after a
+// reload, like the note, restores it itself through setExpanded, which a phone ignores), and
+// crossing the phone breakpoint either way restores.
 export function usePanelExpansion(): PanelExpansion {
   const [expanded, setExpandedKey] = useState<string>();
+  const [immersive, setImmersive] = useState(false);
   const phone = useRef(matchesPhone());
   useLayoutEffect(() => {
     const media = window.matchMedia(phoneQuery);
     const sync = () => {
       phone.current = media.matches;
-      if (media.matches) setExpandedKey(undefined);
+      setExpandedKey(undefined);
+      setImmersive(false);
     };
-    sync();
     media.addEventListener('change', sync);
     return () => media.removeEventListener('change', sync);
   }, []);
@@ -41,36 +53,49 @@ export function usePanelExpansion(): PanelExpansion {
     else setExpandedKey(current => current === key ? undefined : current);
   }, []);
   const toggle = useCallback((key: string) => {
-    if (phone.current) return;
-    setExpandedKey(current => current === key ? undefined : key);
+    if (phone.current) setImmersive(current => !current);
+    else setExpandedKey(current => current === key ? undefined : key);
   }, []);
-  const restore = useCallback(() => setExpandedKey(undefined), []);
-  return { expanded, setExpanded, toggle, restore };
+  const restore = useCallback(() => {
+    setExpandedKey(undefined);
+    setImmersive(false);
+  }, []);
+  return { expanded, immersive, setExpanded, toggle, restore };
 }
 
 // What the split hands its panels: the expanded key (only while that panel is open) and the
 // controls. Panels read it by their own key through usePanelExpand.
-export const PanelExpandContext = createContext<Omit<PanelExpansion, 'setExpanded'> | undefined>(undefined);
+export const PanelExpandContext = createContext<Omit<PanelExpansion, 'setExpanded' | 'immersive'> | undefined>(undefined);
 
 // Scope an expansion to the panels a container holds (`openKeys`, in any order). The expanded key
 // counts only while its panel is open: a panel that has not mounted yet (a note still loading)
 // keeps its request without hiding its siblings, and closing the expanded panel restores the
-// rest, so reopening it does not expand it again. `onKeyDown` goes on the container: Esc restores,
-// except inside a pane's canvas (a shell app needs its Escape) or the agent panel's composer, after
-// a handler that already used the key, or from a flyout portaled out of the container.
-export function useExpansionScope(expansion: PanelExpansion, openKeys: readonly string[], containerRef: RefObject<HTMLElement | null>) {
-  const { expanded: requested, toggle, restore } = expansion;
-  const expanded = requested !== undefined && openKeys.includes(requested) ? requested : undefined;
+// rest, so reopening it does not expand it again. While immersive (a phone), the expanded panel is
+// the one in view (`visibleKey`), so it follows a swipe, and closing that panel restores. `onKeyDown`
+// goes on the container: Esc restores, except inside a pane's canvas (a shell app needs its Escape)
+// or the agent panel's composer, after a handler that already used the key, or from a flyout
+// portaled out of the container.
+export function useExpansionScope(expansion: PanelExpansion, openKeys: readonly string[], containerRef: RefObject<HTMLElement | null>, visibleKey?: string) {
+  const { expanded: requested, immersive, toggle, restore } = expansion;
+  const expanded = immersive
+    ? visibleKey !== undefined && openKeys.includes(visibleKey) ? visibleKey : undefined
+    : requested !== undefined && openKeys.includes(requested) ? requested : undefined;
   const signature = openKeys.join('|');
   const previousKeys = useRef(openKeys);
-  const request = useRef(requested);
-  request.current = requested;
+  const request = useRef({ requested, immersive });
+  request.current = { requested, immersive };
+  // the panel in view at the last commit, which a close may just have taken away
+  const shown = useRef(visibleKey);
   useLayoutEffect(() => {
     const previous = previousKeys.current;
     previousKeys.current = signature.split('|');
-    const key = request.current;
-    if (key !== undefined && previous.includes(key) && !previousKeys.current.includes(key)) restore();
+    const closed = previous.filter(key => !previousKeys.current.includes(key));
+    // full screen ends with the panel it was showing, not with a shell exiting off screen
+    const { requested: key, immersive: full } = request.current;
+    const ended = full ? shown.current : key;
+    if (ended !== undefined && closed.includes(ended)) restore();
   }, [signature, restore]);
+  useLayoutEffect(() => { shown.current = visibleKey; });
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key !== 'Escape' || expanded === undefined || event.defaultPrevented) return;
     const target = event.target as Element;
@@ -132,6 +157,7 @@ type PanelHeaderProps = {
 // fills the Workspace with this panel) and the panel's close.
 export function PanelHeader({ panelKey, label, title, actions, secondary = [], close, expandDisabled = false }: PanelHeaderProps) {
   const expand = usePanelExpand(panelKey);
+  const phone = usePhoneLayout();
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [folded, setFolded] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -159,7 +185,7 @@ export function PanelHeader({ panelKey, label, title, actions, secondary = [], c
       {actions}
       {!folded && secondary.map(action => actionButton(action))}
       {showMore && <button ref={anchorRef} type="button" className={`panel-header-action panel-header-more${moreOpen ? ' active' : ''}`} aria-label={`More ${label} actions`} aria-expanded={moreOpen} title="More" onClick={() => setMoreOpen(value => !value)} onKeyDown={event => { if (event.key === 'Escape' && moreOpen) { event.preventDefault(); event.stopPropagation(); closeMore(); } }}><svg className="panel-header-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="12" cy="19" r="1" /></svg></button>}
-      {expand !== undefined && <button type="button" className="panel-header-action panel-header-expand" disabled={expandDisabled} aria-label={`${expand.expanded ? 'Restore' : 'Expand'} ${label}`} aria-pressed={expand.expanded} title={expand.expanded ? 'Restore the other panels' : 'Fill the Workspace'} onClick={expand.toggle}><PanelIcon path={expand.expanded ? panelIcons.restore : panelIcons.expand} /></button>}
+      {expand !== undefined && <button type="button" className="panel-header-action panel-header-expand" disabled={expandDisabled} aria-label={`${expand.expanded ? 'Restore' : 'Expand'} ${label}`} aria-pressed={expand.expanded} title={phone ? expand.expanded ? 'Show the tabs and toolbar' : 'Full screen' : expand.expanded ? 'Restore the other panels' : 'Fill the Workspace'} onClick={expand.toggle}><PanelIcon path={expand.expanded ? panelIcons.restore : panelIcons.expand} /></button>}
       {close === undefined || isValidElement(close) ? close : actionButton(close)}
     </div>
     {showMore && moreOpen && <FlyoutPortal onDismiss={closeMore}><div ref={flyoutRef} className="more-menu panel-header-menu" role="group" aria-label={`More ${label} actions`} style={style} onClick={closeMore} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); closeMore(); } }}>{secondary.map(action => actionButton(action, true))}</div></FlyoutPortal>}

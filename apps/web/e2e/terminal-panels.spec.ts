@@ -557,9 +557,9 @@ test('a phone Terminal selection adds text to the agent prompt and switches pane
   for (const label of ['Create note', 'Add to prompt', 'Copy']) await expect(toolbar.getByRole('button', { name: label, exact: true })).toBeVisible();
   await toolbar.getByRole('button', { name: 'Add to prompt', exact: true }).tap();
 
-  await expect(terminal).toBeHidden();
-  await expect(page.locator('.log-output')).toBeVisible();
-  await expect(prompt).toBeVisible();
+  await expect(terminal).not.toBeInViewport();
+  await expect(page.locator('.log-output')).toBeInViewport({ ratio: 0.99 });
+  await expect(prompt).toBeInViewport();
   await expect(prompt).toHaveValue('mobile draft\n\nMobile');
   await expect(toolbar).toBeHidden();
   expect(prompts).toEqual([]);
@@ -608,8 +608,8 @@ test('a phone Terminal keeps its selected text when note creation fails', async 
   rejectCreate = false;
   await create.tap();
   const notePane = page.getByRole('dialog', { name: 'Note' });
-  await expect(notePane).toBeVisible();
-  await expect(terminal).toBeHidden();
+  await expect(notePane).toBeInViewport({ ratio: 0.99 });
+  await expect(terminal).not.toBeInViewport();
   await expect(notePane.locator('.note-picker strong')).toHaveText('Retryable');
   await expect(page.getByLabel('Note preview')).toContainText('Retryable');
   await expect.poll(() => savedNotes).toContain('Retryable');
@@ -683,16 +683,16 @@ test('a phone panel switch clears native Terminal selection and releases queued 
   await page.waitForTimeout(100);
   expect(await paneAckTotal(page, '%5')).toBe(acknowledged);
 
-  const switches = page.locator('.mobile-split-switches');
-  await switches.locator('.mobile-agent-switch').tap();
-  await expect(terminal).toBeHidden();
+  const dots = page.getByRole('group', { name: 'Panels' });
+  await dots.getByRole('button', { name: 'Show agent output' }).tap();
+  await expect(terminal).not.toBeInViewport();
   await expect(toolbar).toBeHidden();
   await expect(terminal).not.toHaveClass(/\bselection-active\b/u);
   await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? '')).toBe('');
   await expect.poll(() => paneAckTotal(page, '%5')).toBeGreaterThan(acknowledged);
 
-  await switches.locator('.mobile-terminal-switch').tap();
-  await expect(terminal).toBeVisible();
+  await dots.getByRole('button', { name: 'Show terminal build' }).tap();
+  await expect(terminal).toBeInViewport({ ratio: 0.99 });
   await expect(terminal.locator('.xterm-accessibility-tree [role="listitem"]', { hasText: 'terminal output released behind agent' })).toBeVisible();
   await expect(toolbar).toBeHidden();
   await context.close();
@@ -981,20 +981,23 @@ for (const panels of ['note', 'browser', 'note and browser']) {
     await page.setViewportSize({ width: 390, height: 844 });
     const phoneTerminal = split.locator('.terminal-pane[data-panel-key="%5"]');
     await expect(phoneTerminal).not.toHaveClass(/\bexpanded\b/u);
-    await expect(terminalHeader.locator('.panel-header-expand')).toHaveCount(1);
-    await expect(terminalHeader.locator('.panel-header-expand')).toBeHidden();
-    await expect(visiblePanels).toHaveCount(1);
+    // on the phone expand offers full screen instead
+    await expect(terminalHeader.locator('.panel-header-expand')).toBeVisible();
+    // one panel per screen: the last opened, the Terminal
+    await expect(phoneTerminal).toBeInViewport({ ratio: 0.99 });
+    await expect(split.locator('.log-output')).not.toBeInViewport();
     await expectFullSplitHeight(phoneTerminal);
     const phoneHeaderHeight = (await terminalHeader.boundingBox())!.height;
     expect(phoneHeaderHeight).toBeCloseTo(referenceHeaderHeight, 0);
-    await page.getByRole('button', { name: 'Show agent output' }).click();
-    await expect(split.locator('.log-output')).toBeVisible();
+    const dots = page.getByRole('group', { name: 'Panels' });
+    await dots.getByRole('button', { name: 'Show agent output' }).click();
+    await expect(split.locator('.log-output')).toBeInViewport({ ratio: 0.99 });
     await expectFullSplitHeight(split.locator('.log-output'));
-    await split.locator('.mobile-terminal-switch').click();
-    await expect(phoneTerminal).toBeVisible();
+    await dots.getByRole('button', { name: 'Show terminal build' }).click();
+    await expect(phoneTerminal).toBeInViewport({ ratio: 0.99 });
     await expectFullSplitHeight(phoneTerminal);
-    await page.getByRole('button', { name: 'Show agent output' }).click();
-    await expect(split.locator('.log-output')).toBeVisible();
+    await dots.getByRole('button', { name: 'Show agent output' }).click();
+    await expect(split.locator('.log-output')).toBeInViewport({ ratio: 0.99 });
   });
 }
 
@@ -1103,7 +1106,7 @@ test('a narrow panel folds its secondary actions into the header ⋮', async ({ 
   await expect(note.getByRole('button', { name: 'Lock note', exact: true })).toBeVisible();
 });
 
-test('on a phone the split switcher gains a chip for the Terminal', async ({ page }) => {
+test('on a phone the carousel gains a dot for the Terminal', async ({ page }) => {
   await page.setViewportSize({ width: 428, height: 880 });
   await installPaneMock(page);
   await routeApi(page);
@@ -1114,20 +1117,20 @@ test('on a phone the split switcher gains a chip for the Terminal', async ({ pag
   await page.getByRole('menuitem', { name: /build/u }).click();
   await seedPaneSize(page, '%5', 80, 24);
 
-  // the newly opened Terminal is the visible phone panel; the switcher offers the agent
+  // the newly opened Terminal is the phone panel in view; the dots offer the agent
   const column = page.locator('.terminal-pane[data-panel-key="%5"]');
-  await expect(column).toBeVisible();
+  await expect(column).toBeInViewport({ ratio: 0.99 });
   await expect(page.locator('.terminal-minimized-count')).toHaveCount(0);
-  const switches = page.locator('.mobile-split-switches');
-  await expect(switches).toBeVisible();
-  await switches.locator('.mobile-agent-switch').click();
-  await expect(page.locator('.log-output')).toBeVisible();
-  await expect(column).toBeHidden();
+  const dots = page.getByRole('group', { name: 'Panels' });
+  await expect(dots).toBeVisible();
+  await dots.getByRole('button', { name: 'Show agent output' }).click();
+  await expect(page.locator('.log-output')).toBeInViewport({ ratio: 0.99 });
+  await expect(column).not.toBeInViewport();
   // panel switching is not minimizing
   await expect(page.locator('.terminal-minimized-count')).toHaveCount(0);
-  // a Terminal chip now returns to it
-  await switches.locator('.mobile-terminal-switch').click();
-  await expect(column).toBeVisible();
+  // the Terminal's dot returns to it
+  await dots.locator('.terminal-dot').click();
+  await expect(column).toBeInViewport({ ratio: 0.99 });
 });
 
 test('an agentless Worktree tab can open a Terminal', async ({ page }) => {
@@ -1418,7 +1421,7 @@ test('renaming a Console shell from its panel updates the head and the picker ro
   await expect(picker.getByRole('menuitem', { name: /deploy/u })).toBeVisible();
 });
 
-test('renaming a Console shell renames its phone chip', async ({ page }) => {
+test('renaming a Console shell renames its phone dot', async ({ page }) => {
   await page.setViewportSize({ width: 428, height: 880 });
   await installPaneMock(page);
   const renamed: { paneId: string; name: string }[] = [];
@@ -1439,14 +1442,14 @@ test('renaming a Console shell renames its phone chip', async ({ page }) => {
   await nameField.press('Enter');
   await expect.poll(() => renamed).toContainEqual({ paneId: '%5', name: 'deploy' });
 
-  // switch away so the Terminal's chip is offered; it names the renamed shell
-  const switches = page.locator('.mobile-split-switches');
-  await switches.locator('.mobile-agent-switch').click();
-  await expect(page.locator('.log-output')).toBeVisible();
-  await expect(switches.locator('.mobile-terminal-switch')).toHaveAttribute('aria-label', 'Show terminal deploy');
+  // the Terminal's dot names the renamed shell
+  const dots = page.getByRole('group', { name: 'Panels' });
+  await dots.getByRole('button', { name: 'Show agent output' }).click();
+  await expect(page.locator('.log-output')).toBeInViewport({ ratio: 0.99 });
+  await expect(dots.locator('.terminal-dot')).toHaveAttribute('aria-label', 'Show terminal deploy');
 });
 
-test('on a phone a visible Terminal swaps the footer to the helper keys and the agent chip restores the composer', async ({ page }) => {
+test('on a phone a visible Terminal swaps the footer to the helper keys and the agent dot restores the composer', async ({ page }) => {
   await page.setViewportSize({ width: 428, height: 880 });
   await installPaneMock(page);
   await routeApi(page);
@@ -1459,19 +1462,23 @@ test('on a phone a visible Terminal swaps the footer to the helper keys and the 
 
   // the newly opened Terminal is the visible phone panel; the footer is now its helper keys
   const column = page.locator('.terminal-pane[data-panel-key="%5"]');
-  await expect(column).toBeVisible();
+  await expect(column).toBeInViewport({ ratio: 0.99 });
   const composer = page.getByRole('textbox', { name: 'Prompt' });
   const escKey = page.getByRole('button', { name: 'Esc' });
   await expect(escKey).toBeVisible();
-  await expect(composer).toBeHidden();
+  await expect(composer).not.toBeInViewport();
+  // the rest of the toolbar gives way to the keys; only the dots stay to move between panels
+  const workspaceToolbar = page.getByRole('region', { name: 'Workspace toolbar' });
+  await expect(workspaceToolbar.getByRole('button', { name: 'Open a terminal' })).toBeHidden();
+  await expect(workspaceToolbar.getByRole('group', { name: 'Panels' })).toBeVisible();
 
   // switching back to the agent panel brings the Agent's composer back and hides the keys;
-  // the switcher now offers a chip back to the Terminal (opening it added the chip)
-  const switches = page.locator('.mobile-split-switches');
-  await switches.locator('.mobile-agent-switch').click();
-  await expect(page.locator('.log-output')).toBeVisible();
-  await expect(switches.locator('.mobile-terminal-switch')).toBeVisible();
-  await expect(composer).toBeVisible();
+  // the dots still offer the way back to the Terminal
+  const dots = page.getByRole('group', { name: 'Panels' });
+  await dots.getByRole('button', { name: 'Show agent output' }).click();
+  await expect(page.locator('.log-output')).toBeInViewport({ ratio: 0.99 });
+  await expect(dots.locator('.terminal-dot')).toBeVisible();
+  await expect(composer).toBeInViewport();
   await expect(escKey).toBeHidden();
 });
 
@@ -1495,9 +1502,8 @@ test('on a phone the helper keys drive the visible Terminal, and the Agent pane 
   expect(await paneInputText(page, 'agent-1')).not.toContain(esc);
 
   // back on the agent panel, focusing the pane surfaces the keys and they drive the Agent
-  const switches = page.locator('.mobile-split-switches');
-  await switches.locator('.mobile-agent-switch').click();
-  await expect(page.locator('.log-output')).toBeVisible();
+  await page.getByRole('group', { name: 'Panels' }).getByRole('button', { name: 'Show agent output' }).click();
+  await expect(page.locator('.log-output')).toBeInViewport({ ratio: 0.99 });
   await page.locator('.log-output .xterm-screen').click();
   await expect(page.locator('.log-output')).toHaveClass(/input-active/u);
   await page.getByRole('button', { name: 'Esc' }).click();
@@ -1534,7 +1540,7 @@ test('on a phone a tap on a Terminal focuses its textarea', async ({ page }) => 
   expect(focusedSynchronously).toBe(true);
 });
 
-test('on a phone minimizing a Terminal returns to the agent panel and drops its chip', async ({ page }) => {
+test('on a phone minimizing a Terminal returns to the agent panel and drops its dot', async ({ page }) => {
   await page.setViewportSize({ width: 428, height: 880 });
   await installPaneMock(page);
   await routeApi(page);
@@ -1547,11 +1553,11 @@ test('on a phone minimizing a Terminal returns to the agent panel and drops its 
   const column = page.locator('.terminal-pane[data-panel-key="%5"]');
   await expect(column).toBeVisible();
 
-  // minimizing returns the phone view to the agent and removes its chip
+  // minimizing returns the phone view to the agent and removes its dot
   await column.getByRole('button', { name: 'Minimize terminal build', exact: true }).click();
   await expect(column).toHaveCount(0);
-  await expect(page.locator('.log-output')).toBeVisible();
-  await expect(page.locator('.mobile-split-switches .mobile-terminal-switch')).toHaveCount(0);
+  await expect(page.locator('.log-output')).toBeInViewport({ ratio: 0.99 });
+  await expect(page.locator('.panel-dots .terminal-dot')).toHaveCount(0);
   await expect(page.locator('.terminal-minimized-count')).toHaveText('1');
   // the composer is back now that no Terminal is the visible panel
   await expect(page.getByRole('textbox', { name: 'Prompt' })).toBeVisible();

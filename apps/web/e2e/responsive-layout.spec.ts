@@ -36,6 +36,19 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   await expect(lead.getByRole('button', { name: 'Call Davo' }).locator('svg')).toBeVisible();
   await expect(lead.getByRole('button', { name: 'Call Davo' }).locator('span')).toBeHidden();
   await expect(lead.locator('.server-selector-name')).toBeHidden();
+  // the phone toolbar keeps Launch, Terminal and Notes; Browser and Code move into its ⋮, and a
+  // Workspace with one panel shows no position dots
+  const workspaceToolbar = page.getByRole('region', { name: 'Workspace toolbar' });
+  await expect(workspaceToolbar.getByRole('button', { name: 'Open a terminal' })).toBeVisible();
+  await expect(workspaceToolbar.getByRole('button', { name: 'Browser', exact: true })).toHaveCount(0);
+  await expect(workspaceToolbar.getByRole('button', { name: 'Code', exact: true })).toHaveCount(0);
+  await expect(workspaceToolbar.getByRole('group', { name: 'Panels' })).toHaveCount(0);
+  await workspaceToolbar.getByRole('button', { name: 'More options' }).click();
+  await expect(page.locator('.place-menu').getByRole('button', { name: 'Browser', exact: true })).toBeVisible();
+  await expect(page.locator('.place-menu').getByRole('button', { name: 'Code', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.mouse.click(4, 4);
+  await expect(page.locator('.place-menu')).toHaveCount(0);
   const gitStatus = page.getByLabel('Git status: feature/output-git-summary; 3 changes (1 staged file, 2 unstaged files, 1 untracked file)');
   await expect(gitStatus).toBeVisible();
   await gitStatus.click();

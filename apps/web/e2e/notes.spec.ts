@@ -276,34 +276,32 @@ test('switches sticky notes between full-screen mobile panes and a horizontal de
   await expect(outputStatus).toHaveCount(1);
   await expect(page.locator('.log > .log-status')).toHaveCount(0);
 
-  // show one full-size pane with a top-left switch on phones
-  const showOutput = page.getByRole('button', { name: 'Show agent output' });
-  await expect(output).toBeHidden();
+  // show one full-size pane per screen on phones, with the toolbar's dots to move between them
+  const showOutput = page.getByRole('group', { name: 'Panels' }).getByRole('button', { name: 'Show agent output' });
+  await expect(pane).toBeInViewport({ ratio: 0.99 });
+  await expect(output).not.toBeInViewport();
   await expect(showOutput).toBeVisible();
   await expect(page.getByRole('separator', { name: 'Resize agent and note panels' })).toBeHidden();
-  await expect(page.getByRole('button', { name: 'Expand note' })).toBeHidden();
-  const mobileNote = await Promise.all([renderedBounds(log), renderedBounds(pane), renderedBounds(showOutput)]);
+  await expect(pane.getByRole('button', { name: 'Expand note' })).toBeVisible();
+  const mobileNote = await Promise.all([renderedBounds(log), renderedBounds(pane)]);
   expect(mobileNote[1].width / mobileNote[0].width).toBeGreaterThan(0.95);
   expect(mobileNote[1].height / mobileNote[0].height).toBeGreaterThan(0.95);
-  expect(mobileNote[2].x - mobileNote[0].x).toBeLessThan(10);
-  // under the header pills, clear of the agent panel's composer at the foot
-  expect(mobileNote[2].y - mobileNote[0].y).toBeLessThan(64);
 
   await showOutput.click();
-  const showNote = page.getByRole('button', { name: 'Show note' });
-  await expect(output).toBeVisible();
-  await expect(pane).toBeHidden();
+  const showNote = page.getByRole('group', { name: 'Panels' }).getByRole('button', { name: 'Show note' });
+  await expect(output).toBeInViewport({ ratio: 0.99 });
+  await expect(pane).not.toBeInViewport();
   await expect(showNote).toBeVisible();
   const mobileOutput = await Promise.all([renderedBounds(log), renderedBounds(output)]);
   expect(mobileOutput[1].width / mobileOutput[0].width).toBeGreaterThan(0.95);
   expect(mobileOutput[1].height / mobileOutput[0].height).toBeGreaterThan(0.95);
   await showNote.click();
-  await expect(pane).toBeVisible();
-  await expect(output).toBeHidden();
+  await expect(pane).toBeInViewport({ ratio: 0.99 });
+  await expect(output).not.toBeInViewport();
 
   await page.getByLabel('Note preview').click();
   await expect(page.getByRole('textbox', { name: 'Note content' })).toBeFocused();
-  await expect(output).toBeHidden();
+  await expect(output).not.toBeInViewport();
 
   await page.setViewportSize({ width: 1_000, height: 600 });
   await expect.poll(async () => {

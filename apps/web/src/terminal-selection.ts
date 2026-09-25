@@ -11,6 +11,8 @@ type TerminalSelectionOptions = {
 };
 
 const selectionContainers = new Set<HTMLElement>();
+// the share of a pane that must show for it to count as on screen
+const minimumInViewRatio = 0.01;
 let shortcutOwner: HTMLElement | undefined;
 
 // resolve text-node event targets to their parent element
@@ -56,6 +58,9 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
   let mouseSelectionGesture = false;
   let copiedSelectionTimer: number | undefined;
   let terminalThemeFlashed = false;
+  // whether the pane is on screen; the view observer below keeps it current
+  let inView = true;
+  const paneIsVisible = () => inView && containerIsVisible(container);
   selectionContainers.add(container);
 
   // scope the browser selection to one terminal
@@ -120,7 +125,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
   // publish the current terminal or browser selection
   const syncSelectionMode = (claimShortcuts = false) => {
     // release hidden panes instead of retaining global shortcut ownership
-    if (!containerIsVisible(container)) {
+    if (!paneIsVisible()) {
       mouseSelectionGesture = false;
       nativeSelectionWasActive = false;
       // discard browser ranges owned by the hidden pane
@@ -184,7 +189,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
   // freeze before xterm commits desktop drag selections on mouseup
   const beginOutputSelection = (event: PointerEvent) => {
     // leave hidden panes, touch scrolling, secondary clicks and scrollbar drags alone
-    if (!containerIsVisible(container) || event.pointerType !== 'mouse' || event.button !== 0 || !(event.target instanceof Element) || !event.target.closest('.xterm-screen')) return;
+    if (!paneIsVisible() || event.pointerType !== 'mouse' || event.button !== 0 || !(event.target instanceof Element) || !event.target.closest('.xterm-screen')) return;
     // preserve live application mouse gestures without the platform override
     if (terminal.modes.mouseTrackingMode !== 'none') {
       const forceSelection = navigator.platform.startsWith('Mac')
@@ -247,7 +252,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
     // leave every other output surface untouched
     if (targetsForeignOutput(target)) return;
     // measure visibility only for this pane's copy shortcuts
-    if (!containerIsVisible(container)) return;
+    if (!paneIsVisible()) return;
     const selected = selectedOutput();
     // preserve the key when selection has cleared
     if (!selected) return;
@@ -259,7 +264,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
   // acknowledge the browser's native clipboard copy
   const nativeOutputCopied = () => {
     // flash only the visible pane that owns the native selection
-    if (containerIsVisible(container) && nativeSelectionActive()) flashCopiedSelection();
+    if (paneIsVisible() && nativeSelectionActive()) flashCopiedSelection();
   };
 
   container.addEventListener('pointerdown', beginOutputSelection, true);
@@ -278,12 +283,22 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
     if (!disposed) syncSelectionMode();
   });
   selectionResizeObserver.observe(container);
+  // A pane swiped out of the phone's panel carousel is hidden too, though its size is unchanged.
+  // Its neighbour's edge still touches the screen, which counts as intersecting at ratio 0, so a
+  // pane is on screen only while a sliver of it shows.
+  const selectionViewObserver = new IntersectionObserver(entries => {
+    const entry = entries.at(-1);
+    if (entry !== undefined) inView = entry.intersectionRatio >= minimumInViewRatio;
+    // ignore callbacks queued before cleanup
+    if (!disposed) syncSelectionMode();
+  }, { threshold: minimumInViewRatio });
+  selectionViewObserver.observe(container);
   // let focused terminals copy instead of sending interrupt
   terminal.attachCustomKeyEventHandler(event => {
     // preserve non-copy keys and late terminal events
     if (disposed || event.type !== 'keydown' || event.key.toLowerCase() !== 'c') return true;
     // copy a visible xterm selection on Ctrl/Cmd+C
-    if (containerIsVisible(container) && (event.ctrlKey || event.metaKey) && !event.shiftKey && terminal.hasSelection()) {
+    if (paneIsVisible() && (event.ctrlKey || event.metaKey) && !event.shiftKey && terminal.hasSelection()) {
       event.preventDefault();
       void copy(terminal.getSelection());
       return false;
@@ -304,6 +319,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
     options.flashElement.classList.remove('selection-copied');
     selectionSub.dispose();
     selectionResizeObserver.disconnect();
+    selectionViewObserver.disconnect();
     container.removeEventListener('pointerdown', beginOutputSelection, true);
     window.removeEventListener('pointerup', endOutputSelection, true);
     window.removeEventListener('pointercancel', endOutputSelection, true);

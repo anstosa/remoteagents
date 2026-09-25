@@ -198,8 +198,8 @@ test('a native output selection creates and appends notes, copies, and guards th
   const noteEditor = page.getByRole('textbox', { name: 'Note content' });
   await notePreview.click();
   await expect(noteEditor).toHaveValue('Selectable');
-  await page.getByRole('button', { name: 'Show agent output' }).click();
-  await expect(page.getByRole('dialog', { name: 'Note' })).toBeHidden();
+  await page.getByRole('group', { name: 'Panels' }).getByRole('button', { name: 'Show agent output' }).click();
+  await expect(page.getByRole('dialog', { name: 'Note' })).not.toBeInViewport();
   await expect.poll(() => savedNotes).toContain('Selectable');
 
   // With a note open, Append is offered and appends.

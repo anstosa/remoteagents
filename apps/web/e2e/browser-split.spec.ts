@@ -467,42 +467,46 @@ test.describe('phone browser split', () => {
     await page.goto('/');
     expect(await page.evaluate(() => navigator.userAgent)).toContain('Mobile');
     expect(await page.evaluate(() => navigator.maxTouchPoints)).toBeGreaterThan(0);
+    // on the phone the Browser is in the toolbar's ⋮; the newly opened panel scrolls into view
+    await page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'More options' }).click();
     await page.getByRole('button', { name: 'Browser', exact: true }).click();
 
     const browser = page.getByRole('dialog', { name: 'Browser' });
     const output = page.locator('.log-output');
-    const browserSwitch = page.getByRole('button', { name: 'Show project browser' });
-    await expect(output).toBeVisible();
-    await expect(browser).toBeHidden();
+    const dots = page.getByRole('group', { name: 'Panels' });
+    const browserSwitch = dots.getByRole('button', { name: 'Show project browser' });
+    await expect(browser).toBeInViewport({ ratio: 0.99 });
+    await expect(output).not.toBeInViewport();
     await expect(browserSwitch).toBeVisible();
 
     // switch directly among output, note, and browser panes
+    await dots.getByRole('button', { name: 'Show agent output' }).click();
+    await expect(output).toBeInViewport({ ratio: 0.99 });
     await page.getByRole('button', { name: 'Notes (1)' }).click();
     await page.getByRole('button', { name: 'Keep notes beside the browser.…', exact: true }).click();
     const note = page.getByRole('dialog', { name: 'Note' });
-    await expect(note).toBeVisible();
-    await expect(output).toBeHidden();
-    await expect(browser).toBeHidden();
-    await expect(page.getByRole('button', { name: 'Show agent output' })).toBeVisible();
-    await page.getByRole('button', { name: 'Show project browser' }).click();
-    await expect(browser).toBeVisible();
-    await expect(note).toBeHidden();
-    await expect(page.getByRole('button', { name: 'Show note' })).toBeVisible();
-    await page.getByRole('button', { name: 'Show note' }).click();
-    await expect(note).toBeVisible();
+    await expect(note).toBeInViewport({ ratio: 0.99 });
+    await expect(output).not.toBeInViewport();
+    await expect(browser).not.toBeInViewport();
+    await expect(dots.getByRole('button', { name: 'Show agent output' })).toBeVisible();
+    await browserSwitch.click();
+    await expect(browser).toBeInViewport({ ratio: 0.99 });
+    await expect(note).not.toBeInViewport();
+    await expect(dots.getByRole('button', { name: 'Show note' })).toBeVisible();
+    await dots.getByRole('button', { name: 'Show note' }).click();
+    await expect(note).toBeInViewport({ ratio: 0.99 });
     await note.getByRole('button', { name: 'Close note' }).click();
-    await expect(output).toBeVisible();
+    await expect(output).toBeInViewport({ ratio: 0.99 });
     await expect(note).toHaveCount(0);
     await browserSwitch.click();
 
-    const mobileSwitch = page.getByRole('button', { name: 'Show agent output' });
+    const mobileSwitch = dots.getByRole('button', { name: 'Show agent output' });
     const preview = page.frameLocator('iframe[title="Project browser"]');
-    await expect(browser).toBeVisible();
-    await expect(output).toBeHidden();
+    await expect(browser).toBeInViewport({ ratio: 0.99 });
+    await expect(output).not.toBeInViewport();
     await expect(mobileSwitch).toBeVisible();
-    // present but hidden (getByRole skips hidden elements, so count by class)
-    await expect(browser.locator('.panel-header-expand')).toHaveCount(1);
-    await expect(browser.getByRole('button', { name: 'Expand browser' })).toBeHidden();
+    // on the phone expand offers full screen
+    await expect(browser.getByRole('button', { name: 'Expand browser' })).toBeVisible();
     await expectPanelAction(browser, 'Use mobile viewport and user agent', async toggle => {
       await expect(toggle.locator('svg')).toHaveCount(1);
       await expect(toggle.locator('svg')).toHaveAttribute('data-device', 'desktop');
@@ -533,24 +537,18 @@ test.describe('phone browser split', () => {
     expect(await preview.locator('main').evaluate(() => window.innerWidth)).toBe(980);
 
     await mobileSwitch.click();
-    await expect(output).toBeVisible();
-    await expect(browser).toBeHidden();
+    await expect(output).toBeInViewport({ ratio: 0.99 });
+    await expect(browser).not.toBeInViewport();
     await expect(browserSwitch).toBeVisible();
-    // the switches sit under the agent panel's header pills, clear of the composer at its foot
-    const [browserSwitchTop, mobileOutputTop] = await Promise.all([
-      browserSwitch.evaluate(element => element.getBoundingClientRect().top),
-      page.locator('.log-output').evaluate(element => element.getBoundingClientRect().top)
-    ]);
-    expect(browserSwitchTop).toBeGreaterThan(mobileOutputTop);
-    expect(browserSwitchTop - mobileOutputTop).toBeLessThan(64);
 
     await browserSwitch.click();
-    await expect(browser).toBeVisible();
-    await expect(output).toBeHidden();
+    await expect(browser).toBeInViewport({ ratio: 0.99 });
+    await expect(output).not.toBeInViewport();
 
+    // a reload reopens the browser beside the agent, which leads the carousel
     await page.reload();
-    await expect(output).toBeVisible();
-    await expect(browser).toBeHidden();
+    await expect(output).toBeInViewport({ ratio: 0.99 });
+    await expect(browser).not.toBeInViewport();
     await expect(browserSwitch).toBeVisible();
   });
 });

@@ -9,7 +9,8 @@ import { mountStreamedTerminal } from './streamed-terminal.js';
 import { attachTerminalSelection, type TerminalSelection } from './terminal-selection.js';
 import { createAgentPaneConnector, createWorktreePaneConnector } from './pane-socket-client.js';
 import { FlyoutPortal } from './flyout-portal.js';
-import { PanelExpandContext, type PanelAction, type PanelExpansion, PanelHeader, PanelIcon, panelIcons, useExpansionScope, usePanelExpand, usePanelExpansion } from './panel-header.js';
+import { PanelExpandContext, type PanelAction, type PanelExpansion, PanelHeader, PanelIcon, panelIcons, useExpansionScope, usePanelExpand, usePanelExpansion, usePhoneLayout } from './panel-header.js';
+import { type CarouselPanel, type PanelCarousel, PanelDots, usePanelCarousel } from './panel-carousel.js';
 import { NoteMarkdown } from './note-markdown.js';
 import { ProjectOpen } from './project-open.js';
 import type { CodePanelReview } from './code-panel/code-panel.js';
@@ -4045,8 +4046,11 @@ function useWorktreeNotes(worktreeId: string | undefined, expansion: PanelExpans
     // a locked note must be unlocked before it can be removed
     ...(activeNote.locked ? [] : [{ key: 'delete', label: 'Delete note', className: 'note-delete', disabled: noteFilesDisabled, icon: deleting ? <span className="spinner" /> : <PanelIcon path={actionIconPaths.trash} />, onSelect: remove }])
   ];
+  // a phone's full screen expands whichever panel is in view; the note keeps only a desktop
+  // expansion with its view
+  const paneExpanded = expanded || expansion.immersive;
   // Esc closes the note, unless it is expanded: then the Workspace restores its siblings first
-  const pane = activeNote === undefined ? null : <><section className={`note-pane${expanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onDragEnter={dragNoteFiles} onDragOver={dragNoteFiles} onDragLeave={leaveNoteFiles} onDrop={dropNoteFiles} onPaste={pasteNoteFiles} onKeyDown={event => { if (event.key === 'Escape' && !expanded && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><PanelHeader panelKey="note" label="note" title={noteTitlePill} actions={noteSendAction} secondary={noteSecondary} expandDisabled={noteFilesDisabled} close={{ key: 'close', label: 'Close note', className: 'note-close', disabled: noteFilesDisabled, icon: <PanelIcon path={panelIcons.close} />, onSelect: close }} /><div className="note-pane-head">{lockError && <p className="note-lock-error" role="alert">{lockError}</p>}{scheduleArea}{noteAttachmentPicker}{noteAttachmentControls}</div>{draggingNoteFiles && <div className="prompt-drop-overlay" role="status">Drop files to attach to this note</div>}{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}{noteFilePreview.dialog}{notePicker}</>;
+  const pane = activeNote === undefined ? null : <><section className={`note-pane${paneExpanded ? ' expanded' : ''}${editing ? ' editing' : ' selecting'}`} role="dialog" aria-label="Note" onDragEnter={dragNoteFiles} onDragOver={dragNoteFiles} onDragLeave={leaveNoteFiles} onDrop={dropNoteFiles} onPaste={pasteNoteFiles} onKeyDown={event => { if (event.key === 'Escape' && !paneExpanded && !deleting && sendState !== 'sending') { event.preventDefault(); close(); } }}><PanelHeader panelKey="note" label="note" title={noteTitlePill} actions={noteSendAction} secondary={noteSecondary} expandDisabled={noteFilesDisabled} close={{ key: 'close', label: 'Close note', className: 'note-close', disabled: noteFilesDisabled, icon: <PanelIcon path={panelIcons.close} />, onSelect: close }} /><div className="note-pane-head">{lockError && <p className="note-lock-error" role="alert">{lockError}</p>}{scheduleArea}{noteAttachmentPicker}{noteAttachmentControls}</div>{draggingNoteFiles && <div className="prompt-drop-overlay" role="status">Drop files to attach to this note</div>}{editing ? <textarea ref={editorRef} aria-label="Note content" value={draft} maxLength={30_000} disabled={deleting} onChange={event => changeDraft(event.target.value)} onBlur={() => { flush(); setEditing(false); }} /> : <div className="note-preview-interaction" onPointerDown={() => { selectionAtPointerDown.current = Boolean(window.getSelection()?.toString()); }} onClick={event => inferEditing(event.target)}><NoteMarkdown text={draft} containerRef={previewRef} /></div>}</section>{selectionActions}{noteFilePreview.dialog}{notePicker}</>;
   return { active: activeNote !== undefined, appendToActive, canAppendToActive, canCreate: !loading, control, createWithText: create, pane, toggleMenu: toggle };
 }
 type WorktreeNotes = ReturnType<typeof useWorktreeNotes>;
@@ -4374,7 +4378,7 @@ function ProjectBrowserPane({ url, homeUrl, proxied, worktreeId, navigationReque
 // `addToPrompt` is absent where the tab has no composer (an agentless directory-Project or Scratch Place)
 type TerminalSelectionActions = { canCreateNote: boolean; createNote: (text: string) => Promise<boolean>; addToPrompt?: (text: string) => void };
 // let the split supply visibility and selection actions to terminal columns
-type TerminalColumnProps = { mobileHidden?: boolean; selectionActions?: TerminalSelectionActions };
+type TerminalColumnProps = { selectionActions?: TerminalSelectionActions };
 // keep each rendered terminal keyed by its stable tmux pane id
 type TerminalColumn = { key: string; label: string; node: ReactElement<TerminalColumnProps> };
 type SplitSizes = Record<string, number>;
@@ -4385,7 +4389,7 @@ const splitPanelSelector = (key: string): string => key === 'agent' ? '.log-outp
 const browserMobileWidth = 390;
 const minimumSplitPanelWidth = browserMobileWidth;
 // the panel kind for a key: the fixed panels are themselves, every Terminal is "terminal".
-// Drives the mobile view class, the switch class and a resizer's aria-label alike.
+// Drives the mobile view class, the phone dot's tint and a resizer's aria-label alike.
 const splitPanelKind = (key: string): string => key === 'agent' || key === 'note' || key === 'browser' || key === 'code' ? key : 'terminal';
 // scope split layouts to one browser client and workspace composition
 const splitSizesKey = (worktreeId: string, signature: string) => `rac.split-sizes:${worktreeId}:${signature}`;
@@ -4425,7 +4429,9 @@ function CodePane({ controller, prAvailable, branch, review }: { controller: Cod
 // render ordered resizable output panels: the agent (when one runs or is starting), any Terminals,
 // then note, browser and code; with none open it shows `empty`
 // `expansion` is the Workspace's expanded panel; a split without a Workspace keeps its own.
-function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, terminals, terminalSelectionActions, onPhoneTerminal, expansion: workspaceExpansion }: { worktreeId?: string; output?: ReactNode; empty?: ReactNode; note?: ReactNode; browser?: ReactNode; code?: ReactNode; terminals?: TerminalColumn[]; terminalSelectionActions?: TerminalSelectionActions; onPhoneTerminal?: (paneId: string | undefined) => void; expansion?: PanelExpansion }) {
+// On a phone the panels sit in a swipe carousel, one per screen; `onCarousel` hears its panels and
+// the one in view, for the toolbar's dots.
+function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, terminals, terminalSelectionActions, onCarousel, expansion: workspaceExpansion }: { worktreeId?: string; output?: ReactNode; empty?: ReactNode; note?: ReactNode; browser?: ReactNode; code?: ReactNode; terminals?: TerminalColumn[]; terminalSelectionActions?: TerminalSelectionActions; onCarousel?: (carousel: PanelCarousel) => void; expansion?: PanelExpansion }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const ownExpansion = usePanelExpansion();
   const expansion = workspaceExpansion ?? ownExpansion;
@@ -4448,25 +4454,12 @@ function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, ter
   // one layout per open-panel composition (the ordered keys), so opening or closing a panel
   // restores that combination's own widths
   const signature = keys.join('|');
-  const previousKeys = useRef(keys);
-  const expansionScope = useExpansionScope(expansion, keys, containerRef);
+  const phone = usePhoneLayout();
+  const carousel = usePanelCarousel(containerRef, keys, phone);
+  const expansionScope = useExpansionScope(expansion, keys, containerRef, carousel.visibleKey);
   const [sizes, setSizes] = useState<SplitSizes>(() => savedSplitSizes(worktreeId, signature, keys));
-  const [mobilePanel, setMobilePanel] = useState<string>(() => keys[0] ?? 'agent');
   // restore the exact workspace layout for each open-panel composition
   useEffect(() => setSizes(savedSplitSizes(worktreeId, signature, signature.split('|'))), [signature, worktreeId]);
-  // select a newly opened panel on phone; fall back to the agent when the shown one closes
-  useLayoutEffect(() => {
-    const previous = previousKeys.current;
-    previousKeys.current = keys;
-    setMobilePanel(current => {
-      // follow a newly opened note or Terminal to it; the browser stays a deliberate tap
-      const opened = keys.find(key => key !== 'agent' && key !== 'browser' && !previous.includes(key));
-      if (opened !== undefined) return opened;
-      if (!keys.includes(current)) return keys[0] ?? 'agent';
-      return current;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signature]);
   // collect current panel widths
   const measuredSizes = (): SplitSizes => {
     const container = containerRef.current;
@@ -4531,16 +4524,23 @@ function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, ter
     saveSplitSizes(worktreeId, signature, resized);
     event.preventDefault();
   };
-  const hasSplit = keys.length > 1;
-  // fall back to the first panel (the agent's, when one runs) when the chosen one is no longer open
-  const visibleMobilePanel = keys.includes(mobilePanel) ? mobilePanel : keys[0] ?? 'agent';
-  // Report the visible phone Terminal so the footer swaps the Agent's composer for that pane's
-  // helper keys (spec, the phone footer); undefined whenever the agent, note or browser shows.
-  // This mirrors the `mobile-terminal-view` class that drives the swap in CSS, so the two stay
-  // in step. Reported in a layout effect (before paint) so the helper keys never paint pointed
-  // at the Agent for a frame before the target catches up to the CSS-driven swap.
-  const phoneTerminal = splitPanelKind(visibleMobilePanel) === 'terminal' ? visibleMobilePanel : undefined;
-  useLayoutEffect(() => { onPhoneTerminal?.(phoneTerminal); }, [phoneTerminal, onPhoneTerminal]);
+  // each panel's dot: its kind and the label naming the panel it shows
+  const carouselPanels: CarouselPanel[] = columns.map(column => {
+    const kind = splitPanelKind(column.key);
+    const termLabel = termCols.find(col => col.key === column.key)?.label.trim();
+    const label = kind === 'agent' ? 'Show agent output' : kind === 'note' ? 'Show note' : kind === 'browser' ? 'Show project browser' : kind === 'code' ? 'Show code changes' : `Show terminal ${termLabel || termCols.findIndex(col => col.key === column.key) + 1}`;
+    return { key: column.key, kind, label };
+  });
+  const carouselSignature = carouselPanels.map(panel => `${panel.key}\u0000${panel.label}`).join('\u0001');
+  // Report the carousel so the toolbar's dots follow it, and the footer swaps the Agent's composer
+  // for a visible Terminal's helper keys (spec, the phone footer). This mirrors the
+  // `mobile-terminal-view` class that drives the swap in CSS, so the two stay in step. Reported in
+  // a layout effect (before paint) so the helper keys never paint pointed at the Agent for a frame
+  // before the target catches up to the CSS-driven swap.
+  useLayoutEffect(() => {
+    onCarousel?.({ panels: carouselPanels, visibleKey: carousel.visibleKey, show: carousel.show });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [carouselSignature, carousel.visibleKey, carousel.show, onCarousel]);
   // one resizer between two adjacent panel keys
   const resizer = (left: string, right: string) => <div key={`resizer:${left}:${right}`} className={`split-resizer ${splitPanelKind(right)}-resizer`} role="separator" aria-label={`Resize ${splitPanelKind(left)} and ${splitPanelKind(right)} panels`} aria-orientation="vertical" tabIndex={0} data-left={left} data-right={right} onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={stopResize} onPointerCancel={stopResize} onKeyDown={keyboardResize} />;
   const style: SplitStyle = {
@@ -4560,36 +4560,23 @@ function ResizableLogSplit({ worktreeId, output, empty, note, browser, code, ter
     createNote: async text => {
       const created = await terminalSelectionActions.createNote(text);
       // retain the selected terminal for retry when creation fails
-      if (created) setMobilePanel('note');
+      if (created) carousel.show('note');
       return created;
     },
     // show the composer without submitting the selected output
     addToPrompt: terminalSelectionActions.addToPrompt === undefined ? undefined : text => {
       terminalSelectionActions.addToPrompt?.(text);
-      setMobilePanel('agent');
+      carousel.show('agent');
     }
   };
-  // the panel columns interleaved with resizers; a terminal hidden on phone carries mobileHidden
+  // the panel columns interleaved with resizers
   const laidOut = columns.flatMap((column, index) => {
     const isTerminal = splitPanelKind(column.key) === 'terminal';
-    const node = isTerminal ? cloneElement(column.node as ReactElement<TerminalColumnProps>, { key: column.key, mobileHidden: hasTerminals && column.key !== visibleMobilePanel, selectionActions }) : <Fragment key={column.key}>{column.node}</Fragment>;
+    const node = isTerminal ? cloneElement(column.node as ReactElement<TerminalColumnProps>, { key: column.key, selectionActions }) : <Fragment key={column.key}>{column.node}</Fragment>;
     return index === 0 ? [node] : [resizer(columns[index - 1].key, column.key), node];
   });
-  // a switch to every hidden panel (agent, each Terminal, note, browser)
-  const mobileSwitches = hasSplit ? <div className="mobile-split-switches" role="toolbar" aria-label="Split view">{columns.filter(column => column.key !== visibleMobilePanel).map(column => {
-    const kind = splitPanelKind(column.key);
-    const termIndex = termCols.findIndex(col => col.key === column.key);
-    const termLabel = termCols[termIndex]?.label.trim();
-    const label = kind === 'agent' ? 'Show agent output' : kind === 'note' ? 'Show note' : kind === 'browser' ? 'Show project browser' : kind === 'code' ? 'Show code changes' : `Show terminal ${termLabel || termIndex + 1}`;
-    const icon = kind === 'agent' ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1" /><path d="m7 9 3 3-3 3M12 15h5" /></svg>
-      : kind === 'note' ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14a2 2 0 0 1 2 2v10l-6 6H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M15 21v-6h6" /></svg>
-      : kind === 'browser' ? <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" /></svg>
-      : kind === 'code' ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 8-4 4 4 4M16 8l4 4-4 4M13 5l-2 14" /></svg>
-      : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1" /><path d="m7 8 3 3-3 3M12 15h4" /></svg>;
-    return <button key={column.key} className={`mobile-${kind}-switch`} type="button" aria-label={label} title={label} onClick={() => setMobilePanel(column.key)}>{icon}</button>;
-  })}</div> : null;
-  const mobileView = keys.length > 0 ? ` mobile-${splitPanelKind(visibleMobilePanel)}-view` : '';
-  return <PanelExpandContext.Provider value={expansionScope.context}><div ref={containerRef} className={`log-split${hasAgent ? '' : ' no-agent'}${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}${hasCode ? ' has-code' : ''}${hasTerminals ? ' has-terminals' : ''}${mobileView}`} style={style} onKeyDown={expansionScope.onKeyDown}>{columns.length === 0 ? empty : laidOut}{mobileSwitches}</div></PanelExpandContext.Provider>;
+  const mobileView = carousel.visibleKey !== undefined ? ` mobile-${splitPanelKind(carousel.visibleKey)}-view` : '';
+  return <PanelExpandContext.Provider value={expansionScope.context}><div ref={containerRef} className={`log-split${hasAgent ? '' : ' no-agent'}${hasNote ? ' has-note' : ''}${hasBrowser ? ' has-browser' : ''}${hasCode ? ' has-code' : ''}${hasTerminals ? ' has-terminals' : ''}${mobileView}`} style={style} onKeyDown={expansionScope.onKeyDown}>{columns.length === 0 ? empty : laidOut}</div></PanelExpandContext.Provider>;
 }
 
 // One pane of a Worktree the picker can show as a Terminal (the wire shape of
@@ -4789,7 +4776,7 @@ function useWorktreeTerminals(worktreeId: string | undefined) {
 type WorktreeTerminals = ReturnType<typeof useWorktreeTerminals>;
 
 // render a live terminal with fullscreen, minimize and managed-shell delete actions
-function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, onDelete, mobileHidden, selectionActions }: { worktreeId: string; paneId: string; name: string; onMinimize: () => void; onExit: () => void; onRename?: (name: string) => Promise<boolean>; onDelete?: () => Promise<boolean | undefined> } & TerminalColumnProps) {
+function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, onDelete, selectionActions }: { worktreeId: string; paneId: string; name: string; onMinimize: () => void; onExit: () => void; onRename?: (name: string) => Promise<boolean>; onDelete?: () => Promise<boolean | undefined> } & TerminalColumnProps) {
   const canvas = useRef<HTMLDivElement | null>(null);
   const [focused, setFocused] = useState(false);
   const [selection, setSelection] = useState<TerminalSelection>();
@@ -4866,7 +4853,7 @@ function TerminalPane({ worktreeId, paneId, name, onMinimize, onExit, onRename, 
   const secondary: PanelAction[] = [];
   if (onRename !== undefined) secondary.push({ key: 'rename', label: `Rename terminal ${name}`, title: 'Rename terminal', className: 'pane-rename-toggle', disabled: deletePending || renaming, icon: <PanelIcon path={actionIconPaths.pencil} />, onSelect: () => { setRenameDraft(name); setRenaming(true); } });
   if (onDelete !== undefined) secondary.push({ key: 'delete', label: `Delete terminal ${name}`, title: 'Delete shell (ends the running shell)', className: 'pane-delete', disabled: deletePending || renamePending, icon: deletePending ? <span className="spinner" /> : <PanelIcon path={actionIconPaths.trash} />, onSelect: () => void deleteShell() });
-  return <section className={`terminal-pane${expanded ? ' expanded' : ''}${focused ? ' focused' : ''}${selection ? ' selection-active' : ''}${mobileHidden ? ' mobile-hidden' : ''}`} data-panel-key={paneId}>
+  return <section className={`terminal-pane${expanded ? ' expanded' : ''}${focused ? ' focused' : ''}${selection ? ' selection-active' : ''}`} data-panel-key={paneId}>
     <PanelHeader panelKey={paneId} label={`terminal ${name}`} expandDisabled={deletePending} secondary={secondary} close={{ key: 'minimize', label: `Minimize terminal ${name}`, title: 'Minimize terminal (the shell keeps running)', className: 'pane-minimize', disabled: deletePending, icon: <PanelIcon path="M5 12h14" />, onSelect: onMinimize }} title={<>
       <span className={`pane-status${deleteError ? ' error' : ''}`} role={deleteError ? 'alert' : 'status'} title={deleteError ? 'Could not delete shell. Try again.' : undefined}>{deleteError ? 'Delete failed' : 'Live'}</span>
       {renaming
@@ -5067,7 +5054,8 @@ function GitStatus({ id, worktreeId, branch, summary, prSummary, pullRequest, on
       const anchorRect = wrap.getBoundingClientRect();
       const anchorTop = anchorRect.top;
       const gap = rootFontSize * .7;
-      const maxHeight = Math.max(0, Math.floor(anchorTop - viewportTop - gap));
+      // unrounded, so a full-height popup meets the viewport's top wherever the toolbar lays out
+      const maxHeight = Math.max(0, anchorTop - viewportTop - gap);
     // open upward from the branch shortcut and clamp to the viewport
       const edge = rootFontSize * .375;
       const left = Math.min(Math.max(edge, anchorRect.left), window.innerWidth - edge);
@@ -5264,15 +5252,16 @@ function useWorkspace(place: WorkspacePlace, { agentId, noteOptions: notes, onNa
   const browser = useProjectBrowser(place.projectUrl, place.id, place.projectProxied);
   const code = useCodePanel(place.worktreeId, request, comparisonChangeSignal(place.gitStatus, place.gitPrStatus, place.attention));
   const terminals = useTerminalViews(place.id);
-  // The Terminal the phone shows as the single panel (the split reports it), so the composer swaps
-  // for that pane's helper keys (spec, the phone footer).
-  const [phoneTerminal, setPhoneTerminal] = useState<string>();
+  // The phone carousel the split reports: the toolbar's dots follow it, and while a Terminal is
+  // the panel in view the composer swaps for that pane's helper keys (spec, the phone footer).
+  const [carousel, setCarousel] = useState<PanelCarousel>();
+  const phoneTerminal = carousel?.visibleKey !== undefined && splitPanelKind(carousel.visibleKey) === 'terminal' ? carousel.visibleKey : undefined;
   const conversations = useWorktreeConversations(place.worktreeId, agentId, { onNavigateWorktree, onOperationFeedback });
   // the panel filling the Workspace; the notes restore theirs, so they share it
   const expansion = usePanelExpansion();
   const placeNotes = useWorktreeNotes(place.id, expansion, agentId, notes.agentWorking, notes.latestAssistantMessage, notes.latestAssistantMessageOverflows, notes.onPromptHistoryChanged, notes.promptHistory, notes.schedulePrefill, notes.onLaunchAndRun, notes.launchRunLabel);
   const [gitExpanded, setGitExpanded] = useState(false);
-  return { place, browser, code, terminals, phoneTerminal, setPhoneTerminal, conversations, notes: placeNotes, expansion, gitExpanded, setGitExpanded };
+  return { place, browser, code, terminals, carousel, setCarousel, phoneTerminal, conversations, notes: placeNotes, expansion, gitExpanded, setGitExpanded };
 }
 type WorkspaceState = ReturnType<typeof useWorkspace>;
 // The git actions only an Agent offers (push, fixup, guided review); an agentless Workspace passes
@@ -5304,7 +5293,7 @@ function Workspace({ workspace, output, empty, git, onAddToPrompt }: { workspace
   const browserPane = browser.url === undefined || browser.homeUrl === undefined ? null : <ProjectBrowserPane url={browser.url} homeUrl={browser.homeUrl} proxied={browser.proxied} worktreeId={place.id} navigationRequest={browser.navigationRequest} onNavigate={browser.navigate} onClose={browser.close} />;
   const review = git === undefined || (git.onReview === undefined && git.reviewUnavailable === undefined) ? undefined : { onReview: git.onReview, open: git.reviewOpen === true, unavailable: git.reviewUnavailable };
   const codePane = code.open ? <CodePane controller={code} prAvailable={place.gitPrStatus !== undefined} branch={place.branch} review={review} /> : null;
-  return <section className="log-shell"><div className={`log${idle ? ' inactive-log' : ''}`}><ResizableLogSplit worktreeId={place.id} expansion={expansion} output={output} empty={empty} note={notes.pane} browser={browserPane} code={codePane} terminals={workspace.terminals.columns} terminalSelectionActions={terminalSelectionActions} onPhoneTerminal={workspace.setPhoneTerminal} /></div></section>;
+  return <section className="log-shell"><div className={`log${idle ? ' inactive-log' : ''}`}><ResizableLogSplit worktreeId={place.id} expansion={expansion} output={output} empty={empty} note={notes.pane} browser={browserPane} code={codePane} terminals={workspace.terminals.columns} terminalSelectionActions={terminalSelectionActions} onCarousel={workspace.setCarousel} /></div></section>;
 }
 
 type LogProps = { id: string; embedded?: boolean; onQuestion: (question: ChoiceQuestion | undefined) => void; onMetadata?: (response: string | undefined, overflow: boolean) => void; header?: (connection: string) => ReactNode; composer?: ReactNode; notes?: WorktreeNotes; onAddToPrompt?: (text: string) => void; onOpenUrl?: (url: string) => boolean; onOpenFile?: (path: string) => void; processingLabel?: string; processingDetail?: string };
@@ -5766,10 +5755,13 @@ function RemoveBranchDialog({ worktreeId, branch, onClose, onDeleted }: { worktr
 // and New Task apply. `removeDisabledReason` says why the Worktree cannot go now (an Agent runs
 // there, a launch is under way, git holds a lock).
 type PlaceMenuProps = { agentId?: string; worktreeId?: string; git?: boolean; newTaskConfigured?: boolean; pinned?: boolean; onTogglePin?: () => void; onRenameWorktree?: () => void; onRemoveWorktree?: () => void; removeDisabledReason?: string; onOperationFeedback: (feedback: Omit<OperationFeedback, 'id'>) => void };
+// A panel the ⋮ opens on a phone, where it leaves the toolbar (Browser, Code).
+type PlaceMenuPanel = { key: string; label: string; icon: ReactNode; title: string; disabled?: boolean; onSelect: () => void };
 
-// The toolbar's ⋮: Pin/Unpin · Rename worktree… · GitHub Actions · New Task · Remove worktree,
-// each where the Place has it. GitHub Actions is looked up by Worktree (by Agent outside one).
-function PlaceMenu({ agentId, worktreeId, git = false, newTaskConfigured = false, pinned, onTogglePin, onRenameWorktree, onRemoveWorktree, removeDisabledReason, onOperationFeedback }: PlaceMenuProps) {
+// The toolbar's ⋮: on a phone the panels that left the toolbar, then Pin/Unpin · Rename worktree… ·
+// GitHub Actions · New Task · Remove worktree, each where the Place has it. GitHub Actions is
+// looked up by Worktree (by Agent outside one).
+function PlaceMenu({ agentId, worktreeId, git = false, newTaskConfigured = false, pinned, onTogglePin, onRenameWorktree, onRemoveWorktree, removeDisabledReason, onOperationFeedback, panels = [] }: PlaceMenuProps & { panels?: PlaceMenuPanel[] }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const { anchorRef, flyoutRef, style } = useViewportFlyout(menuOpen);
   const [githubActionsUrl, setGithubActionsUrl] = useState<string>();
@@ -5877,14 +5869,15 @@ function PlaceMenu({ agentId, worktreeId, git = false, newTaskConfigured = false
   // close the menu, then act
   const choose = (action: () => void) => { setMenuOpen(false); action(); };
   // a Place with none of these actions has no menu
-  if (githubActionsRoute === undefined && !newTaskShown && onTogglePin === undefined && onRenameWorktree === undefined && onRemoveWorktree === undefined) return null;
+  if (panels.length === 0 && githubActionsRoute === undefined && !newTaskShown && onTogglePin === undefined && onRenameWorktree === undefined && onRemoveWorktree === undefined) return null;
   const newTaskReason = agentId === undefined ? 'Launch an agent to start a new task.' : !newTaskConfigured ? 'Not configured for this worktree.' : newTask === undefined ? 'Checking availability…' : newTask.enabled ? 'Start a fresh task for this worktree.' : newTask.reason ?? 'New Task is currently unavailable.';
+  const panelRows = panels.map(panel => <button key={panel.key} type="button" className={`place-menu-panel ${panel.key}-panel-row`} disabled={panel.disabled} title={panel.title} onClick={() => choose(panel.onSelect)}>{panel.icon}{panel.label}</button>);
   const pinToggle = onTogglePin !== undefined && <button className="more-pin-toggle" aria-pressed={pinned === true} onClick={() => choose(onTogglePin)}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6Zm3 11v5" /></svg>{`${pinned ? 'Unpin' : 'Pin'} ${worktreeId === undefined ? 'folder' : 'worktree'}`}</button>;
   const rename = onRenameWorktree !== undefined && <button onClick={() => choose(onRenameWorktree)}><MoreMenuIcon name="rename" />Rename worktree…</button>;
   const githubActions = githubActionsRoute === undefined ? null : loadingGithubActions ? <button className="github-actions-loading" type="button" disabled><span className="spinner" />GitHub Actions</button> : githubActionsUrl === undefined ? <button type="button" disabled title="GitHub Actions unavailable"><MoreMenuIcon name="actions" />GitHub Actions</button> : <a className="more-menu-link" href={githubActionsUrl} target="_blank" rel="noreferrer" onClick={() => setMenuOpen(false)}><MoreMenuIcon name="actions" />GitHub Actions</a>;
   const newTaskOption = newTaskShown && <div className="new-task-option"><button disabled={!checkNewTask || loadingNewTask || !newTask?.enabled || startingNewTask} onClick={() => void startNewTask()}>{loadingNewTask || startingNewTask ? <><span className="spinner" />{startingNewTask ? 'Starting New Task' : 'New Task'}</> : <><MoreMenuIcon name="new-task" />New Task</>}</button><span className="more-menu-reason" role="status">{newTaskReason}</span></div>;
   const removal = onRemoveWorktree !== undefined && <button className="remove-worktree-option" type="button" disabled={removeDisabledReason !== undefined} title={removeDisabledReason ?? 'Remove worktree'} onClick={() => choose(onRemoveWorktree)}><svg className="more-menu-icon action-icon-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d={actionIconPaths.trash} /></svg>Remove worktree…</button>;
-  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} title="Workspace options" onClick={toggleMenu}>⋮</button></span>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="more-menu flyout-menu place-menu" ref={flyoutRef} style={style} aria-busy={loadingGithubActions || loadingNewTask}>{pinToggle}{rename}{githubActions}{newTaskOption}{removal}</div></FlyoutPortal>}</>;
+  return <><span className="more-wrap" ref={anchorRef}><button className="more icon-button" aria-label="More options" aria-expanded={menuOpen} title="Workspace options" onClick={toggleMenu}>⋮</button></span>{menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="more-menu flyout-menu place-menu" ref={flyoutRef} style={style} aria-busy={loadingGithubActions || loadingNewTask}>{panelRows}{pinToggle}{rename}{githubActions}{newTaskOption}{removal}</div></FlyoutPortal>}</>;
 }
 
 // render the Workspace of a Place where Agents run: the Place's panels and toolbar, with the agent
@@ -6218,42 +6211,55 @@ type ToolbarLaunch = { label: string; resolution?: LaunchResolution; start: (cho
 // with and without an Agent. From the left: Launch (a labelled primary when no Agent runs here),
 // the panel buttons (Terminal, Notes, Browser, Code), then the Place's git status (or, without
 // git, its path), the stack and the ⋮ of Place actions. `conversations` sits beside Launch while no
-// agent panel carries it. On a phone the toolbar swaps for the helper keys of the pane in focus
-// (`phoneKeys`, the shown Terminal or the Agent). A launch not yet discovered has no Workspace, so
-// it shows only Launch.
+// agent panel carries it. On a phone, Browser and Code move into the ⋮, and the carousel's
+// position dots sit in the middle; while a Terminal or the Agent's pane takes keys the rest of the
+// toolbar swaps for its helper keys (`phoneKeys`, the shown Terminal or the Agent). A launch not
+// yet discovered has no Workspace, so it shows only Launch.
 function WorkspaceToolbar({ workspace, hasAgent = false, launch, conversations, git, onGitToggle, review, cleanupControl, menu, phoneKeys }: { workspace?: WorkspaceState; hasAgent?: boolean; launch?: ToolbarLaunch; conversations?: ReactNode; git?: WorkspaceGitActions; onGitToggle?: () => void; review?: ReviewButtonState; cleanupControl?: ReactNode; menu?: PlaceMenuProps; phoneKeys?: string }) {
+  const phone = usePhoneLayout();
   const place = workspace?.place;
   const worktreeId = place?.worktreeId;
   // a Worktree shows its git status, a directory-Project or Scratch Place its path; an Agent the
   // dashboard placed nowhere (no Place id) still shows the git status discovery found for it
   const hasGit = worktreeId !== undefined || (place?.id === undefined && (place?.branch !== undefined || place?.gitStatus !== undefined));
+  // on a phone the ⋮ opens Browser and Code, or brings an open one into view
+  const menuPanels: PlaceMenuPanel[] = [];
+  if (phone && workspace !== undefined) {
+    const { browser, code, carousel } = workspace;
+    menuPanels.push({ key: 'browser', label: 'Browser', icon: <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true">{browserGlyph}</svg>, title: browser.homeUrl === undefined ? 'No project URL is configured here' : 'Show the project in the browser panel', disabled: browser.homeUrl === undefined, onSelect: () => browser.open ? carousel?.show('browser') : browser.toggle() });
+    if (worktreeId !== undefined) menuPanels.push({ key: 'code', label: 'Code', icon: <svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true">{codeGlyph}</svg>, title: 'Show the working changes in the Code panel', onSelect: () => code.open ? carousel?.show('code') : code.openChanges('working') });
+  }
   return <section className="workspace-toolbar" aria-label="Workspace toolbar"><div className="workspace-toolbar-actions">
     {launch !== undefined && <LaunchSplitButton label={launch.label} resolution={launch.resolution} quiet={hasAgent} disabled={launch.disabled} disabledReason={launch.disabledReason} pending={launch.pending} onLaunch={launch.start} />}
     {conversations}
     {workspace?.terminals.control}
     {workspace?.notes.control}
-    {workspace !== undefined && <BrowserToggle browser={workspace.browser} />}
-    {workspace !== undefined && worktreeId !== undefined && <CodeToggle code={workspace.code} />}
-    <span className="toolbar-spacer" aria-hidden="true" />
+    {workspace !== undefined && !phone && <BrowserToggle browser={workspace.browser} />}
+    {workspace !== undefined && !phone && worktreeId !== undefined && <CodeToggle code={workspace.code} />}
+    {phone && workspace?.carousel !== undefined && workspace.carousel.panels.length > 1 ? <PanelDots carousel={workspace.carousel} /> : <span className="toolbar-spacer" aria-hidden="true" />}
     {cleanupControl}
     {workspace !== undefined && (hasGit ? <WorkspaceGitStatus workspace={workspace} actions={git} onToggle={onGitToggle} /> : place?.path !== undefined && <span className="toolbar-path" title={place.path}>{place.path}</span>)}
     <ReviewTourButton review={review} />
     {workspace !== undefined && <ProjectOpen url={place?.projectUrl} stack={place?.stack} browserOpen={workspace.browser.open} onBrowserToggle={workspace.browser.toggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} />}
-    {menu !== undefined && <PlaceMenu {...menu} />}
+    {menu !== undefined && <PlaceMenu {...menu} panels={menuPanels} />}
   </div>{phoneKeys !== undefined && <MobileTerminalKeys key={phoneKeys} id={phoneKeys} />}</section>;
 }
+
+// the Browser and Code glyphs, shared by the toolbar buttons and their phone ⋮ rows
+const browserGlyph = <><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" /></>;
+const codeGlyph = <path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16" />;
 
 // The toolbar's Browser button: it opens and closes the Place's browser panel, tinted while open.
 // A Place with no project URL has nothing to browse.
 function BrowserToggle({ browser }: { browser: WorkspaceState['browser'] }) {
   const unavailable = browser.homeUrl === undefined;
   const title = unavailable ? 'No project URL is configured here' : browser.open ? 'Close the browser panel' : 'Open the project in the browser panel';
-  return <button type="button" className={`toolbar-button browser-toggle${browser.open ? ' panel-open' : ''}`} aria-label="Browser" aria-pressed={browser.open} disabled={unavailable} title={title} onClick={browser.toggle}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" /></svg><span className="toolbar-label">Browser</span></button>;
+  return <button type="button" className={`toolbar-button browser-toggle${browser.open ? ' panel-open' : ''}`} aria-label="Browser" aria-pressed={browser.open} disabled={unavailable} title={title} onClick={browser.toggle}><svg viewBox="0 0 24 24" aria-hidden="true">{browserGlyph}</svg><span className="toolbar-label">Browser</span></button>;
 }
 
 // The toolbar's Code button: it opens the Worktree's working changes in the Code panel, or closes it.
 function CodeToggle({ code }: { code: CodePanelController }) {
-  return <button type="button" className={`toolbar-button code-toggle${code.open ? ' panel-open' : ''}`} aria-label="Code" aria-pressed={code.open} title={code.open ? 'Close the Code panel' : 'Open the working changes in the Code panel'} onClick={() => code.open ? code.close() : code.openChanges('working')}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16" /></svg><span className="toolbar-label">Code</span></button>;
+  return <button type="button" className={`toolbar-button code-toggle${code.open ? ' panel-open' : ''}`} aria-label="Code" aria-pressed={code.open} title={code.open ? 'Close the Code panel' : 'Open the working changes in the Code panel'} onClick={() => code.open ? code.close() : code.openChanges('working')}><svg viewBox="0 0 24 24" aria-hidden="true">{codeGlyph}</svg><span className="toolbar-label">Code</span></button>;
 }
 
 // what a tmux mode holding the Agent's pane looks like to the operator; the stream never

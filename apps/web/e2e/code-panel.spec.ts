@@ -295,15 +295,15 @@ test('opens already promoted when startExpanded is set on a desktop viewport', a
   await expect(region.getByRole('button', { name: 'Restore code panel' })).toHaveAttribute('aria-pressed', 'true');
 });
 
-test('ignores startExpanded on a phone viewport, where the control is a no-op', async ({ page }) => {
+test('ignores startExpanded on a phone viewport, where the control offers full screen', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await mountPanel(page, patchOf([trackedFile('src/app.ts')]), {}, true);
   const region = panel(page);
   // the panel is not promoted (the desktop-only seed is gated off)
   await expect(region).not.toHaveClass(/\bexpanded\b/u);
-  // the control is still rendered — just CSS-hidden below the phone breakpoint, not removed
-  await expect(page.locator('.panel-header-expand')).toHaveCount(1);
-  await expect(page.locator('.panel-header-expand')).toBeHidden();
+  // on a phone the control hides the tab row and toolbar instead of filling the Workspace
+  await expect(page.locator('.panel-header-expand')).toBeVisible();
+  await expect(page.locator('.panel-header-expand')).toHaveAttribute('title', 'Full screen');
 });
 
 test('promotes the File view to full screen and restores it', async ({ page }) => {

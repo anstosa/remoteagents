@@ -78,6 +78,32 @@ test('hides the tablist under the keyboard and keeps pane focus across streamed 
   await setViewportHeight(900);
   await expect(tabs).toBeVisible();
 
+  // On the phone a second panel joins the carousel; typing in the composer shows the agent alone,
+  // and closing the keyboard brings the carousel and its dots back where they were.
+  // leave the pane, so the toolbar is back from its helper keys
+  await terminalInput.evaluate(element => (element as HTMLElement).blur());
+  await expect(page.locator('.log-output')).not.toHaveClass(/input-active/u);
+  await page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'More options' }).click();
+  await page.getByRole('button', { name: 'Browser', exact: true }).click();
+  const phoneBrowser = page.getByRole('dialog', { name: 'Browser' });
+  await expect(phoneBrowser).toBeInViewport({ ratio: 0.99 });
+  const dots = page.getByRole('group', { name: 'Panels' });
+  await dots.getByRole('button', { name: 'Show agent output' }).click();
+  await expect(page.locator('.log-output')).toBeInViewport({ ratio: 0.99 });
+  await prompt.focus();
+  await setViewportHeight(500);
+  await expect(phoneBrowser).toBeHidden();
+  await expect(page.locator('.log-output')).toBeInViewport({ ratio: 0.99 });
+  await setViewportHeight(900);
+  await expect(dots).toBeVisible();
+  await expect(page.locator('.log-output')).toBeInViewport({ ratio: 0.99 });
+  await expect(dots.getByRole('button', { name: 'Show agent output' })).toHaveAttribute('aria-current', 'true');
+  await dots.getByRole('button', { name: 'Show project browser' }).click();
+  await expect(phoneBrowser).toBeInViewport({ ratio: 0.99 });
+  // leave the browser closed for the desktop step below
+  await phoneBrowser.getByRole('button', { name: 'Close browser' }).click();
+  await expect(phoneBrowser).toHaveCount(0);
+
   // The split-view browser keeps the output full-width across keyboard aspect changes.
   await page.setViewportSize({ width: 900, height: 1200 });
   await setViewportHeight(1200);
