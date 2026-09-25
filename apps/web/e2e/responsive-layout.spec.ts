@@ -189,6 +189,8 @@ test('a phone shows only the current Workspace, as a dropdown over a sheet of ev
   const badge = dropdown.locator('.workspace-dropdown-badge');
   await expect(badge).toHaveText('2');
   await expect(badge).toHaveClass(/\bquestion\b/u);
+  // the marks stand apart from the title
+  await expect(dropdown).toHaveCSS('gap', '9.6px');
 
   // one row that never scrolls sideways: server selector, Call, settings, the dropdown filling the rest, +
   const row = await tabs.evaluate(nav => {

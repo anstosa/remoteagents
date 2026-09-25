@@ -284,7 +284,8 @@ test('agent tab glyphs stay unboxed, full-size, and tightly spaced on desktop an
       await expect(mark).toHaveCSS('width', '20px');
       await expect(mark).toHaveCSS('height', '20px');
       await expect(mark).toHaveCSS('font-size', '20px');
-      await expect(tab).toHaveCSS('gap', '4px');
+      // a desktop tab keeps its glyphs tight; the phone's Workspace dropdown spaces them from its title
+      await expect(tab).toHaveCSS('gap', viewport.width > 768 ? '4px' : '9.6px');
       await expect(badge).toHaveCSS('margin-right', '0px');
     }
   }
