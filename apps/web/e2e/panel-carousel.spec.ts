@@ -122,6 +122,17 @@ test('swiping moves between panels one screen at a time, and the dots follow', a
   await expect(changes).toHaveCount(0);
 });
 
+test('with only the agent panel, and so no dots, the phone toolbar still keeps to one row', async ({ page }) => {
+  await expect(agentPanel(page)).toBeInViewport();
+  await expect(dots(page)).toHaveCount(0);
+  const actions = toolbar(page).locator('.workspace-toolbar-actions');
+  const middles = await actions.locator('> *').evaluateAll(elements => elements.map(element => { const box = element.getBoundingClientRect(); return Math.round(box.top + box.height / 2); }));
+  expect(new Set(middles).size).toBe(1);
+  expect(await actions.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await expect(toolbar(page).locator('.git-branch')).toBeHidden();
+  await expect(toolbar(page).locator('.git-status-dot')).toBeVisible();
+});
+
 test('tapping a Terminal that has not rendered yet keeps it in view', async ({ page }) => {
   // a Terminal still connecting: its pane has sent no size or bytes, so nothing has rendered
   await toolbar(page).getByRole('button', { name: 'Open a terminal' }).click();

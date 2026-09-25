@@ -125,15 +125,13 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   expect(Math.abs(layout.tabs.top - layout.output.bottom)).toBeLessThanOrEqual(1);
   await expect(page.locator('.log-topbar')).toHaveCount(0);
   await expect(page.locator('.agent-view > .pull-request-card')).toHaveCount(0);
-  // the Workspace's controls sit in the row beneath the tabs, the branch as a chip
+  // the Workspace's controls sit on one row beneath the tabs, git shrunk to its icon and state dot
   expect(layout.bar.top).toBeGreaterThanOrEqual(layout.tabs.bottom - 1);
-  expect(layout.gitBranchDisplay).not.toBe('none');
+  expect(layout.gitBranchDisplay).toBe('none');
   expect(layout.gitSummary.right).toBeLessThanOrEqual(layout.viewportWidth);
   expect(layout.controls.every(control => control.left >= 0 && control.right <= layout.viewportWidth)).toBe(true);
-  const finalRowTop = Math.max(...layout.controls.map(control => control.top));
-  const finalRow = layout.controls.filter(control => Math.abs(control.top - finalRowTop) < 1);
-  const finalRowRight = Math.max(...finalRow.map(control => control.right));
-  expect(Math.abs(layout.barActions.right - finalRowRight)).toBeLessThanOrEqual(1);
+  expect(new Set(layout.controls.map(control => Math.round(control.top))).size).toBe(1);
+  expect(Math.abs(layout.barActions.right - Math.max(...layout.controls.map(control => control.right)))).toBeLessThanOrEqual(1);
 
   const promptBox = page.getByRole('textbox', { name: 'Prompt' });
   await promptBox.fill(Array.from({ length: 10 }, (_, index) => `Growing line ${index + 1}`).join('\n'));
