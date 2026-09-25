@@ -12,7 +12,7 @@ _Avoid_: Repo entry, workspace
 
 **Worktree**:
 One checkout of a Project as reported by `git worktree list`, the main checkout included. Discovered from git, never declared in config.
-_Avoid_: Workspace, worktree entry
+_Avoid_: Worktree entry (Workspace is a different thing: the Panels open at a Place)
 
 **Main worktree**:
 The checkout that holds the repository's git directory; git lists it first. A Project may be configured through any of its Worktrees, but only the Main worktree can differ between the console's view and the host's.
@@ -23,7 +23,7 @@ Any other checkout of the Project, created with `git worktree add` by the consol
 _Avoid_: Secondary worktree, branch checkout
 
 **Pinned**:
-A Worktree the operator keeps a tab for even while no Agent runs in it. Chosen per Worktree in the console; a Main worktree starts pinned, a Linked worktree does not.
+A Place whose Workspace the operator keeps even while no Agent runs there. Chosen per Place in the console; a Main worktree starts pinned, every other Place does not.
 _Avoid_: Favourite, sticky, visible
 
 **Worktrees directory**:
@@ -39,8 +39,12 @@ The explicit per-Project action that clears a Project's Stale worktrees, both gi
 _Avoid_: Cleanup (reserved for agents), garbage collection, auto-prune
 
 **Scratch**:
-A pane running an agent in a directory that belongs to no configured Project.
-_Avoid_: Unconfigured worktree
+A folder that belongs to no configured Project, seen as a Place. The console launches into one configured Scratch folder, but any unconfigured folder an agent runs in is a Scratch of its own.
+_Avoid_: Unconfigured worktree, scratch pane
+
+**Place**:
+Where a Workspace lives and what its panes belong to: a Worktree, a directory Project, or a Scratch folder. Each has a home folder; a pane belongs to the nearest Place whose home contains it.
+_Avoid_: Location, target, context
 
 ### Agents
 
@@ -69,7 +73,7 @@ The choice a worktree launches with: an Adapter plus whether the agent is Sandbo
 _Avoid_: Agent selection, launch preset
 
 **Setup command / Teardown command**:
-Operator-configured lifecycle commands on an adapter entry, keyed by kind. The setup command runs in the launched pane before the program and aborts the launch on failure; the teardown command runs best-effort in the agent's workspace after the console stops an agent of that kind. Home for host-specific repairs (the OMX-on-ZFS pointer cleanup, on the OMX Adapter's entry), not part of the Adapter module.
+Operator-configured lifecycle commands on an adapter entry, keyed by kind. The setup command runs in the launched pane before the program and aborts the launch on failure; the teardown command runs best-effort in the agent's home folder after the console stops an agent of that kind. Home for host-specific repairs (the OMX-on-ZFS pointer cleanup, on the OMX Adapter's entry), not part of the Adapter module.
 _Avoid_: Pre/post hooks (hooks name the agent-CLI mechanism Adapters inject)
 
 **Sandboxed**:
@@ -110,8 +114,12 @@ _Avoid_: Log feed, output channel, live capture
 A panel's standing request that its pane be sized to the panel's grid, yielding to any smaller terminal attached to the window. One per window, held only while the panel is shown; the panel always conforms to the size the pane actually gets.
 _Avoid_: Viewport lease, pin, resize request
 
+**Workspace**:
+The set of Panels open at one Place, and the console's unit of navigation: one per Place, selected from the tab row. It exists while its Place has an Agent, a Console shell, or a pending launch, or is Pinned; which Panels are open is remembered per browser.
+_Avoid_: Tab (the selector entry), session, worktree (a kind of Place)
+
 **Panel**:
-One of the four things a tab shows side by side: agent, note, browser, terminal.
+One of the five things a Workspace shows side by side: agent, terminal, notes, browser, code. All share one header whose buttons and text vary by kind; the agent panel holds the composer and switches between the Agents at its Place.
 _Avoid_: Pane (tmux's word), split, view
 
 **Terminal**:
@@ -119,7 +127,7 @@ A pane shown as a Panel, whichever pane it is: a Console shell, a pane split by 
 _Avoid_: Terminal mode, swap, interactive pane
 
 **Console shell**:
-A login shell pane the console created in a Worktree, marked so a launch never adopts it. It outlives the Agent and ends only when its shell exits or the operator ends it.
+A login shell pane the console created at a Place, marked so a launch never adopts it. It outlives the Agent and ends only when its shell exits or the operator ends it.
 _Avoid_: Shell pane, companion pane, landing shell (the wrapper's prompt left behind when an Agent exits)
 
 ### Operator state
