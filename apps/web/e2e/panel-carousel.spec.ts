@@ -108,6 +108,12 @@ test('swiping moves between panels one screen at a time, and the dots follow', a
   await expect(agentPanel(page)).toBeInViewport({ ratio: 0.99 });
   await expectSnapped(page);
   await expectCurrentDot(page, 'Show agent output');
+
+  // with the dots in it the phone toolbar keeps to one row: git shrinks to its icon and state dot
+  const tops = await toolbar(page).locator('.workspace-toolbar-actions > *').evaluateAll(elements => elements.map(element => Math.round(element.getBoundingClientRect().top)));
+  expect(new Set(tops).size).toBe(1);
+  await expect(toolbar(page).locator('.git-branch')).toBeHidden();
+  await expect(toolbar(page).locator('.git-status-dot')).toBeVisible();
 });
 
 test('Browser and Code move into the ⋮, and a panel opened from the toolbar scrolls into view', async ({ page }) => {

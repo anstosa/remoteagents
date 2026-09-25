@@ -1019,6 +1019,22 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 .panel-dots .code-dot { --dot-color: var(--mauve); }
 @media (prefers-reduced-motion: reduce) { .panel-dots .panel-dot::before { transition: none; } }
 :root[data-motion="reduced"] .panel-dots .panel-dot::before { transition: none; }
+/* With the carousel's dots, the phone toolbar keeps to one row: Launch shows only its agent's
+   mark, and the git status only its icon and a dot in its state's colour (the prototype's phone
+   toolbar). */
+@media (max-width: 600px) {
+  .workspace-toolbar-actions:has(> .panel-dots) { flex-wrap: nowrap; gap: .25rem; }
+  .workspace-toolbar-actions:has(> .panel-dots) .launch-primary:has(> .launch-kind-mark) { padding-inline: .55rem; }
+  .workspace-toolbar-actions:has(> .panel-dots) .launch-primary:has(> .launch-kind-mark) > .launch-primary-label { display: none; }
+  .workspace-toolbar-actions > .panel-dots .panel-dot { width: .95rem; }
+  .workspace-toolbar-actions:has(> .panel-dots) .git-status-wrap { flex: none; }
+  .workspace-toolbar-actions:has(> .panel-dots) .git-status-summary > :is(.git-branch, .git-status-separator, .git-worktree-state) { display: none; }
+  .workspace-toolbar-actions:has(> .panel-dots) .git-status-summary > .git-status-dot { display: block; }
+  .git-status-summary.clean > .git-status-dot { color: var(--green); }
+  .git-status-summary.dirty > .git-status-dot { color: var(--yellow); }
+  .git-status-summary.conflicted > .git-status-dot { color: var(--red); }
+  .git-status-summary.unavailable > .git-status-dot { color: var(--overlay-0); }
+}
 /* a full-screen Terminal (or the Agent's pane taking keys) keeps its helper keys, and only them */
 @media (max-width: 600px) {
   .agent-view:has(.log-split > .expanded):has(.log-output.input-active, .log-split.mobile-terminal-view) > section.workspace-toolbar { display: block; }
