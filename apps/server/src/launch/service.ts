@@ -331,10 +331,12 @@ export class LaunchService {
   // Every pane the console may stream for a Place: every pane of every tmux session that
   // holds at least one pane belonging to the Place (its live Agent's window, its Console
   // shells, an idle landing shell), which subsumes the Place's Console shells wherever they
-  // sit. Membership for the Place pane socket and the source of the panes-API listing.
+  // sit. Membership for the Place pane socket and the source of the panes-API listing. The
+  // console's own `rac-stack-*` sessions never count: their windows are transient command runs,
+  // and the status-probe holder (idle, sat in the console's cwd) would stream as a blank pane.
   async placePanes(place: Pick<Place, 'id'>): Promise<Pane[]> {
     const [places, sockets] = await Promise.all([this.places(), this.finder.find()]);
-    const all = (await Promise.all(sockets.map(socket => this.panes.listPanes(socket)))).flat();
+    const all = (await Promise.all(sockets.map(socket => this.panes.listPanes(socket)))).flat().filter(pane => !pane.sessionName?.startsWith('rac-stack-'));
     const belongs = await Promise.all(all.map(async pane => await this.placeIdOf(places, pane.path) === place.id));
     const sessions = new Set<string>();
     all.forEach((pane, index) => { if (belongs[index]) sessions.add(`${pane.socket.fingerprint}\0${pane.sessionId}`); });

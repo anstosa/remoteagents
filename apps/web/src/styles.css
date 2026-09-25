@@ -891,6 +891,11 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
    letterbox matches the pane instead. */
 .xterm .xterm-viewport { overflow: hidden !important; scrollbar-width: none; background-color: var(--base); }
 .xterm .xterm-viewport::-webkit-scrollbar { display: none; }
+/* xterm parks its input textarea at `left: -9999em` until the terminal first renders and moves it
+   to the cursor. Focusing it there (a tap on a Terminal still connecting) makes Firefox scroll it
+   into view, which pulls the phone carousel back to its first panel. Park it at the terminal's own
+   left edge instead; it stays invisible (zero size, no opacity). */
+.xterm .xterm-helper-textarea { left: 0; }
 /* keep both handle widths right-aligned inside xterm's native drag target */
 .xterm .xterm-scrollable-element > .scrollbar.vertical > .slider { left: auto !important; right: 0; }
 /* use the toolbar inset only while any part of the handle overlaps its controls */

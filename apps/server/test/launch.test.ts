@@ -896,6 +896,17 @@ describe('LaunchService', () => {
 
         expect(panes.map(pane => pane.paneId)).toEqual(['%1', '%2']);
       });
+
+      it("never streams the console's own stack sessions, though their cwd is at the Place", async () => {
+        // the status-probe holder inherits the console's cwd, and a stack operation runs in the Worktree
+        const panes = await service([
+          { paneId: '%1', sessionId: '$1', path: '/data/notes' },
+          { paneId: '%3', sessionId: '$2', sessionName: 'rac-stack-probes', command: 'sh', path: '/data/notes' },
+          { paneId: '%4', sessionId: '$3', sessionName: 'rac-stack-notes-start', path: '/data/notes' }
+        ]).placePanes({ id: 'notes:/data/notes' });
+
+        expect(panes.map(pane => pane.paneId)).toEqual(['%1']);
+      });
     });
   });
 

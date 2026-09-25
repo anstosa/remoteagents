@@ -122,6 +122,23 @@ test('swiping moves between panels one screen at a time, and the dots follow', a
   await expect(changes).toHaveCount(0);
 });
 
+test('tapping a Terminal that has not rendered yet keeps it in view', async ({ page }) => {
+  // a Terminal still connecting: its pane has sent no size or bytes, so nothing has rendered
+  await toolbar(page).getByRole('button', { name: 'Open a terminal' }).click();
+  await page.getByRole('menuitem', { name: /build/u }).click();
+  await expect(terminalPanel(page)).toBeInViewport({ ratio: 0.99 });
+  await expectCurrentDot(page, 'Show terminal build');
+
+  // a tap focuses the terminal's input, and Firefox scrolls a focused element into view
+  const box = (await terminalPanel(page).locator('.terminal-canvas').boundingBox())!;
+  await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(terminalPanel(page).locator('.xterm-helper-textarea')).toBeFocused();
+  await page.evaluate(() => (document.activeElement as HTMLElement).scrollIntoView({ block: 'nearest', inline: 'nearest' }));
+  await expectSnapped(page);
+  await expect(terminalPanel(page)).toBeInViewport({ ratio: 0.99 });
+  await expectCurrentDot(page, 'Show terminal build');
+});
+
 test('Browser and Code move into the ⋮, and a panel opened from the toolbar scrolls into view', async ({ page }) => {
   // the phone toolbar keeps Launch, Terminal and Notes; Browser and Code are in the ⋮
   await expect(toolbar(page).getByRole('button', { name: 'Open a terminal' })).toBeVisible();
