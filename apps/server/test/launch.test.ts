@@ -1084,3 +1084,82 @@ describe('LaunchService', () => {
     });
   });
 });
+
+// A checkout path is agent-controlled: an Agent can create a Worktree whose folder name carries a
+// tmux format. tmux format-expands a `-c` start directory and a `-s` session name, so an
+// undoubled `#(…)` in either would run a shell command inside the tmux server.
+describe('hostile checkout paths', () => {
+  const hostile = '/worktrees/x#(touch pwned)';
+  // every `-c` / `-s` value a tmux call carried
+  const formatted = () => run.mock.calls.flatMap(call => (call[1] as string[]).flatMap((arg, index, args) => (args[index - 1] === '-c' || args[index - 1] === '-s') && args[index - 2] !== '/bin/sh' ? [arg] : []));
+  const expectLiteral = () => {
+    const values = formatted();
+    expect(values.length).toBeGreaterThan(0);
+    // `##` collapses back to `#`; an undoubled `#(` would run
+    for (const value of values) expect(value).not.toMatch(/(?:^|[^#])(?:##)*#\(/u);
+  };
+  const created = (verb: string) => run.mock.calls.find(call => (call[1] as string[]).includes(verb))?.[1] as string[];
+
+  it('starts a Worktree idle shell with its session name and directory as literals, locally and on the bridge', async () => {
+    run.mockImplementation(async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('new-session') ? '%7\n' : '', stderr: '' }));
+    delete process.env.RAC_HOST_TMUX_DIR;
+    const local = testWorktree({ id: 'x', projectId: 'proj', path: hostile, identity: hostile, main: false });
+    await expect(new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [local]).startWorktreeShell(local)).resolves.toBe(true);
+    expect(created('new-session')).toEqual(expect.arrayContaining(['-s', 'x##(touch pwned)', '-c', '/worktrees/x##(touch pwned)']));
+    expectLiteral();
+
+    run.mockClear();
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    const bridged = cora({ id: 'x', path: hostile, hostPath: '/home/ubuntu/x#(touch pwned)' });
+    await expect(new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [bridged]).startWorktreeShell(bridged)).resolves.toBe(true);
+    expect(created('new-session')).toEqual(expect.arrayContaining(['-c', '/home/ubuntu/x##(touch pwned)']));
+    expectLiteral();
+  });
+
+  it('launches an Agent into a fresh session on the bridge with its name and directory as literals', async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    run.mockImplementation(async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('new-session') ? '%7\n' : '', stderr: '' }));
+    const worktree = cora({ id: 'x', path: hostile, hostPath: '/home/ubuntu/x#(touch pwned)' });
+    const service = new LaunchService(codex, { find: async () => [] }, { listPanes: async () => [] } as never, undefined, undefined, () => [worktree]);
+
+    await expect(service.launch('x')).resolves.toBe(true);
+    expect(created('new-session')).toEqual(expect.arrayContaining(['-s', 'x##(touch pwned)', '-c', '/home/ubuntu/x##(touch pwned)']));
+    expectLiteral();
+  });
+
+  it("launches an Agent as a window of the Place's session with its directory as a literal", async () => {
+    process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+    run.mockResolvedValue({ code: 0, stdout: '%9', stderr: '' });
+    const socket: SocketRef = { fingerprint: 'sock', path: '/host-tmux/default', device: 1, inode: 2 };
+    const worktree = cora({ id: 'x', path: hostile, hostPath: '/home/ubuntu/x#(touch pwned)' });
+    const service = new LaunchService(codex, { find: async () => [socket] }, { listPanes: async () => [] } as never, undefined, undefined, () => [worktree], () => new Set(), async () => ({ socket, session: '$3' }));
+
+    await expect(service.launch('x')).resolves.toBe(true);
+    expect(created('new-window')).toEqual(expect.arrayContaining(['-c', '/home/ubuntu/x##(touch pwned)']));
+    expectLiteral();
+  });
+
+  it("opens a Worktree's first Console shell in a fresh session with its name and directory as literals", async () => {
+    delete process.env.RAC_HOST_TMUX_DIR;
+    run.mockImplementation(async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('new-session') ? '%5' : '', stderr: '' }));
+    const worktree = testWorktree({ id: 'x', projectId: 'proj', path: hostile, identity: hostile, main: false });
+    const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
+
+    await expect(service.createConsoleShell(worktreePlace(worktree), '')).resolves.toBe('%5');
+    expect(created('new-session')).toEqual(expect.arrayContaining(['-s', 'x##(touch pwned)', '-c', '/worktrees/x##(touch pwned)']));
+    expectLiteral();
+  });
+
+  it('replaces a named session with the new name as a literal, and restores it as one', async () => {
+    run.mockImplementation(async (_binary: string, args: string[]) => {
+      if (args.includes('display-message')) return { code: 0, stdout: args.at(-1) === '#{session_id}' ? '$1\n' : 'x#(touch pwned)\n', stderr: '' };
+      // the new session fails, so the displaced one is renamed back
+      if (args.includes('new-session')) return { code: 1, stdout: '', stderr: 'boom' };
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    await expect(startNamedReplacementSession('/usr/bin/tmux', '/host-tmux/default', 'x#(touch pwned)', 'x#(touch pwned)', ['-c', '/tmp'], run as never)).resolves.toBeUndefined();
+    expect(created('new-session')).toEqual(expect.arrayContaining(['-s', 'x##(touch pwned)']));
+    const restored = run.mock.calls.map(call => call[1] as string[]).filter(args => args.includes('rename-session')).at(-1);
+    expect(restored?.at(-1)).toBe('x##(touch pwned)');
+  });
+});

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { basename } from 'node:path';
-import { run } from './command.js';
+import { run, tmuxFormatLiteral } from './command.js';
 
 type SessionCommand = (binary: string, args: string[]) => Promise<{ code: number; stdout: string }>;
 const sessionId = /^\$\d+$/u;
@@ -23,7 +23,9 @@ export async function availableSessionName(binary: string, socketArgs: string[],
 }
 
 // Replace one colliding named session, returning the new session's pane id (undefined on
-// failure). Options on the new session target that pane id, never the name: tmux reads a dot
+// failure). `name` is taken literally: tmux format-expands a session name, and one derived from
+// a checkout path is agent-controlled, so it is escaped here; `tail` is the caller's to escape.
+// Options on the new session target that pane id, never the name: tmux reads a dot
 // in a bare name as a pane separator, so `-p -t ferry.fyi` finds no pane.
 export async function startNamedReplacementSession(binary: string, socket: string, currentSession: string, name: string, tail: string[], command: SessionCommand = run): Promise<string | undefined> {
   // fully qualify names before tmux parses dotted targets
@@ -36,9 +38,9 @@ export async function startNamedReplacementSession(binary: string, socket: strin
     : undefined;
   // avoid tmux parsing dots as pane separators
   if (displacement !== undefined && (await command(binary, ['-S', socket, 'rename-session', '-t', displacement.target, displacement.temporaryName])).code !== 0) return undefined;
-  const created = await command(binary, ['-S', socket, 'new-session', '-d', '-s', name, '-P', '-F', '#{pane_id}', ...tail]);
+  const created = await command(binary, ['-S', socket, 'new-session', '-d', '-s', tmuxFormatLiteral(name), '-P', '-F', '#{pane_id}', ...tail]);
   if (created.code === 0) return created.stdout.trim();
   // restore the displaced session after a failed launch
-  if (displacement !== undefined) await command(binary, ['-S', socket, 'rename-session', '-t', displacement.target, name]);
+  if (displacement !== undefined) await command(binary, ['-S', socket, 'rename-session', '-t', displacement.target, tmuxFormatLiteral(name)]);
   return undefined;
 }

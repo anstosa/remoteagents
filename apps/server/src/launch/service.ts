@@ -2,7 +2,7 @@ import { mkdir, open, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { resolveCodexProgram, type ValidatedConfig } from '../config/schema.js';
-import { run } from '../tmux/command.js';
+import { run, tmuxFormatLiteral } from '../tmux/command.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { hostCommand, hostInteractiveShellPath, interactiveShellBootstrap, interactiveShellName, interactiveShellPath } from '../tmux/interactive-shell.js';
 import { availableSessionName, startNamedReplacementSession, worktreeSessionName } from '../tmux/session-name.js';
@@ -443,10 +443,10 @@ export class LaunchService {
   // of the same name in another session.
   private async startLaunchSession(site: LaunchSite, command: string, id: string, session: string): Promise<string | undefined> {
     let created: { code: number; stdout: string; stderr: string };
-    if (this.hostSocket !== undefined) created = await run(this.tmux, ['-S', this.hostSocket, 'new-session', '-d', '-s', session, '-c', site.cwd, '-P', '-F', '#{pane_id}', ...this.hostLaunchArgv(site, command)]);
+    if (this.hostSocket !== undefined) created = await run(this.tmux, ['-S', this.hostSocket, 'new-session', '-d', '-s', tmuxFormatLiteral(session), '-c', tmuxFormatLiteral(site.cwd), '-P', '-F', '#{pane_id}', ...this.hostLaunchArgv(site, command)]);
     else {
       const { descriptor, runner } = await this.writeLaunchDescriptor(id, command, site);
-      created = await run(this.tmux, ['new-session', '-d', '-s', session, '-P', '-F', '#{pane_id}', process.execPath, runner, descriptor]);
+      created = await run(this.tmux, ['new-session', '-d', '-s', tmuxFormatLiteral(session), '-P', '-F', '#{pane_id}', process.execPath, runner, descriptor]);
       // clean failed launch descriptors
       if (created.code !== 0) await unlink(descriptor).catch(() => {});
     }
@@ -552,7 +552,7 @@ export class LaunchService {
     // launch host-mounted worktrees on the host socket, the site keeping credentials and CLI
     // state rooted in the authenticated account
     if (this.hostSocket !== undefined) {
-      const tail = ['-c', site.cwd, ...this.hostLaunchArgv(site, command)];
+      const tail = ['-c', tmuxFormatLiteral(site.cwd), ...this.hostLaunchArgv(site, command)];
       // the host socket is RAC's own, so displacing a same-named session in place is safe
       const pane = await startNamedReplacementSession(this.tmux, this.hostSocket, session, session, tail);
       if (pane === undefined) {
@@ -569,7 +569,7 @@ export class LaunchService {
     // (`-2`/`-3`, as startWorktreeShell does) rather than a bare new-session that fails —
     // that collision is what surfaced as a silent "couldn't start".
     const name = await this.availableSessionName(session);
-    const created = await run(this.tmux, ['new-session', '-d', '-s', name, '-P', '-F', '#{pane_id}', process.execPath, runner, descriptor]);
+    const created = await run(this.tmux, ['new-session', '-d', '-s', tmuxFormatLiteral(name), '-P', '-F', '#{pane_id}', process.execPath, runner, descriptor]);
     // remove rejected launch descriptors
     if (created.code !== 0) {
       console.error(`[launch] ${worktree.identity}: tmux new-session '${name}' failed (code ${created.code})${created.stderr.trim() === '' ? '' : `: ${created.stderr.trim()}`}`);
@@ -591,7 +591,7 @@ export class LaunchService {
     const logFailure = (created: { code: number; stderr: string }) => console.error(`[launch] ${logName}: tmux new-window in '${session}' failed (code ${created.code})${created.stderr.trim() === '' ? '' : `: ${created.stderr.trim()}`}`);
     let pane: string;
     if (this.hostSocket !== undefined) {
-      const created = await run(this.tmux, ['-S', socket.path, 'new-window', '-d', '-t', session, '-c', site.cwd, '-P', '-F', '#{pane_id}', '--', ...this.hostLaunchArgv(site, command)]);
+      const created = await run(this.tmux, ['-S', socket.path, 'new-window', '-d', '-t', session, '-c', tmuxFormatLiteral(site.cwd), '-P', '-F', '#{pane_id}', '--', ...this.hostLaunchArgv(site, command)]);
       if (created.code !== 0) { logFailure(created); return undefined; }
       pane = created.stdout.trim();
     } else {
@@ -631,10 +631,10 @@ export class LaunchService {
       // keep credentials and CLI state rooted in the authenticated account
       const home = this.agentHome(worktree.projectId);
       // the bridge shell still needs the host HOME/PATH the launch bootstrap sets
-      const tail = ['-c', hostRoot, this.hostShell, '-lc', interactiveShellBootstrap(hostCommand('', home), home, this.hostShell)];
-      return await this.markStartedShell(this.hostSocket, await run(this.tmux, ['-S', this.hostSocket, 'new-session', '-d', '-s', name, '-P', '-F', '#{pane_id}', ...tail]), worktree);
+      const tail = ['-c', tmuxFormatLiteral(hostRoot), this.hostShell, '-lc', interactiveShellBootstrap(hostCommand('', home), home, this.hostShell)];
+      return await this.markStartedShell(this.hostSocket, await run(this.tmux, ['-S', this.hostSocket, 'new-session', '-d', '-s', tmuxFormatLiteral(name), '-P', '-F', '#{pane_id}', ...tail]), worktree);
     }
-    return await this.markStartedShell(undefined, await run(this.tmux, ['new-session', '-d', '-s', name, '-c', worktree.identity, '-P', '-F', '#{pane_id}', this.localShell, '-l']), worktree);
+    return await this.markStartedShell(undefined, await run(this.tmux, ['new-session', '-d', '-s', tmuxFormatLiteral(name), '-c', tmuxFormatLiteral(worktree.identity), '-P', '-F', '#{pane_id}', this.localShell, '-l']), worktree);
   }
 
   // mark a started Worktree idle shell through its new pane id (a dotted session name is no tmux target)
@@ -679,7 +679,7 @@ export class LaunchService {
   private async createConsoleShellSession(place: ConsoleShellPlace, cwd: string, argv: string[], name: string): Promise<string | undefined> {
     const session = await this.availableSessionName(placeSessionName(place));
     const socketArgs = this.hostSocket === undefined ? [] : ['-S', this.hostSocket];
-    const created = await run(this.tmux, [...socketArgs, 'new-session', '-d', '-s', session, '-c', cwd, '-P', '-F', '#{pane_id}', '--', ...argv]);
+    const created = await run(this.tmux, [...socketArgs, 'new-session', '-d', '-s', tmuxFormatLiteral(session), '-c', tmuxFormatLiteral(cwd), '-P', '-F', '#{pane_id}', '--', ...argv]);
     if (created.code !== 0) return undefined;
     const pane = created.stdout.trim();
     if (await this.markPaneConsoleShell(this.hostSocket, pane, name) && await this.markSessionPlace(this.hostSocket, pane, place.id)) return pane;

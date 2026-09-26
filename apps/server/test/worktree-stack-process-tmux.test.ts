@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -98,6 +98,20 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
     expect(await tmuxAt('show-options', '-v', '-t', `=${session}:`, '@rac_place')).toBe(worktree.id);
     await vi.waitFor(async () => { expect(await instance.state(worktree)).toEqual({ running: false, process: { name: 'dev', state: 'exited', exitCode: 3 } }); }, { timeout: 10_000, interval: 100 });
     expect(await tmuxAt('capture-pane', '-p', '-J', '-S', '-', '-t', `=${session}:dev`)).toContain('missing binary');
+  });
+
+  // tmux format-expands a session name and a start directory; a checkout folder named with a
+  // format must come back literally (a harmless `#{pid}` stands in for a `#(command)`)
+  it('names a new Workspace session for a checkout whose folder carries a tmux format, literally', async () => {
+    const { root, tmuxAt } = await fixture('exec sleep 300');
+    const checkout = join(root, 'app#{pid}');
+    await mkdir(checkout);
+    const worktree = testWorktree({ id: `proj:${checkout}`, projectId: 'proj', path: checkout, commands: { processes: { dev: 'echo "in $PWD"; exec sleep 300' } } });
+    const service = new WorktreeCommandService(testConfig(), { worktreesNow: () => [worktree] } as never);
+
+    await expect(service.start(worktree.id, 'start')).resolves.toBe('started');
+    expect((await tmuxAt('list-sessions', '-F', '#{session_name}')).split('\n')).toContain('app#{pid}');
+    await vi.waitFor(async () => { expect(await service.state(worktree)).toMatchObject({ running: true }); }, { timeout: 10_000, interval: 100 });
   });
 
   it('reports a process stopped before it ever ran, and makes no session by reading', async () => {

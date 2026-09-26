@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import type { DavoSettings, ValidatedConfig } from '../config/schema.js';
 import type { AgentKind } from '../adapters/types.js';
 import { serverCheckout, serverCheckoutOnHost } from '../workspaces/server-checkout.js';
-import { run } from '../tmux/command.js';
+import { run, tmuxFormatLiteral } from '../tmux/command.js';
 import { isFullGitSha } from '../git/revision.js';
 
 export type ServerUpdateState = 'queued' | 'running' | 'complete' | 'failed';
@@ -180,7 +180,7 @@ export class ServerAdminService {
     await writeFile(this.statusPath(id), `${JSON.stringify(status)}\n`, { mode: 0o600 });
     const session = `rac-update-${id.slice(0, 12)}`;
     const script = join(this.hostRepository, 'scripts', 'update-server.sh');
-    const result = await this.runCommand(this.tmuxBinary, ['-S', this.tmuxSocket, 'new-session', '-d', '-s', session, '-c', this.hostRepository, '/bin/bash', script, id, targetSha], undefined, 5_000);
+    const result = await this.runCommand(this.tmuxBinary, ['-S', this.tmuxSocket, 'new-session', '-d', '-s', session, '-c', tmuxFormatLiteral(this.hostRepository), '/bin/bash', script, id, targetSha], undefined, 5_000);
     // replace queued state after launch failure
     if (result.code !== 0) {
       const failed: ServerUpdateStatus = { ...status, state: 'failed' };

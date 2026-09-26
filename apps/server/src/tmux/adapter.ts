@@ -1,7 +1,7 @@
 import type { Pane, SocketRef } from '../domain/models.js';
 import { lastPromptFromHistory, latestAgentMessageFromHistory, latestCompletedAssistantMessage } from '../adapters/codex-turns.js';
 import type { AttentionState, TmuxKey } from '../adapters/types.js';
-import { capturePaneArgs, paneIdPattern as paneId, run, sessionIdPattern as sessionId, tmuxBinary } from './command.js';
+import { capturePaneArgs, paneIdPattern as paneId, run, sessionIdPattern as sessionId, tmuxBinary, tmuxFormatLiteral } from './command.js';
 
 const attentionStates: ReadonlySet<string> = new Set(['working', 'finished', 'question']);
 const inputBlockingPaneModes: ReadonlySet<string> = new Set(['copy-mode', 'view-mode']);
@@ -202,7 +202,7 @@ export class TmuxAdapter {
   // failure. The window is detached (`-d`) so an attached terminal is not yanked to it (spec).
   async createConsoleShellWindow(socket: SocketRef, session: string, cwd: string, shellArgv: readonly string[], name: string): Promise<string | undefined> {
     if (!sessionId.test(session) && !/^[A-Za-z0-9_@%+=:,./-]+$/u.test(session)) return undefined;
-    const created = await run(this.binary, ['-S', socket.path, 'new-window', '-d', '-t', session, '-c', cwd, '-P', '-F', '#{pane_id}', '--', ...shellArgv]);
+    const created = await run(this.binary, ['-S', socket.path, 'new-window', '-d', '-t', session, '-c', tmuxFormatLiteral(cwd), '-P', '-F', '#{pane_id}', '--', ...shellArgv]);
     if (created.code !== 0) return undefined;
     const pane = created.stdout.trim();
     if (!paneId.test(pane)) return undefined;

@@ -649,6 +649,13 @@ describe('TmuxAdapter Console shells', () => {
     expect(run).toHaveBeenCalledWith(expect.any(String), ['-S', '/tmp/tmux', 'set-option', '-p', '-t', '%7', '@rac_role', 'shell']);
   });
 
+  // tmux format-expands a start directory, and a checkout path is agent-controlled
+  it('createConsoleShellWindow passes a hostile directory to tmux as a literal', async () => {
+    run.mockImplementation(async (_bin: string, args: string[]) => ({ code: 0, stdout: args.includes('new-window') ? '%7' : '', stderr: '' }));
+    await expect(new TmuxAdapter().createConsoleShellWindow(socket, '$1', '/repo/x#(touch pwned)', ['/usr/bin/zsh', '-l'], 'build')).resolves.toBe('%7');
+    expect(run).toHaveBeenCalledWith(expect.any(String), ['-S', '/tmp/tmux', 'new-window', '-d', '-t', '$1', '-c', '/repo/x##(touch pwned)', '-P', '-F', '#{pane_id}', '--', '/usr/bin/zsh', '-l']);
+  });
+
   it('createConsoleShellWindow ends the pane and reports failure when the markers cannot be set', async () => {
     // new-window succeeds but the marking set-option fails: the unmarked shell must be killed so
     // a later Launch never adopts it

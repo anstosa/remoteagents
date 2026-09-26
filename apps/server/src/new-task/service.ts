@@ -6,7 +6,7 @@ import { agentTmuxSession, type Worktree } from '../domain/models.js';
 import { cleanAndPushedOrDetached, type GitCommand } from '../git/worktree-state.js';
 import { worktreeHostRoot, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
-import { run } from '../tmux/command.js';
+import { run, tmuxFormatLiteral } from '../tmux/command.js';
 import { hostCommand, hostInteractiveShellPath, interactiveShellBootstrap, interactiveShellPath } from '../tmux/interactive-shell.js';
 import { startNamedReplacementSession, worktreeSessionName } from '../tmux/session-name.js';
 
@@ -40,7 +40,7 @@ export class NewTaskService {
     const session = worktreeSessionName(path);
     const currentSession = agentTmuxSession(target.agent);
     const shell = process.env.RAC_HOST_TMUX_DIR === undefined ? interactiveShellPath() : hostInteractiveShellPath();
-    const pane = await startNamedReplacementSession(this.tmuxBinary, target.socket.path, currentSession, session, ['-c', path, shell, '-lc', interactiveShellBootstrap(script, home, shell)], this.command);
+    const pane = await startNamedReplacementSession(this.tmuxBinary, target.socket.path, currentSession, session, ['-c', tmuxFormatLiteral(path), shell, '-lc', interactiveShellBootstrap(script, home, shell)], this.command);
     if (pane === undefined) return false;
     // the new session replaces the Agent's as the Worktree's Workspace
     await this.tmux.markSessionPlace(target.socket, pane, worktree.id);
