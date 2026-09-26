@@ -10,6 +10,18 @@ export function worktreeSessionName(path: string): string {
   return basename(path).replaceAll(':', '-');
 }
 
+// A session name free on a socket (`socketArgs` selects it, empty for the default one): the
+// base name, else `-2`/`-3`/…, so a new session never collides with a same-named one (two
+// Projects can share a checkout basename, and the default socket is the operator's own too).
+// Falls back to a random suffix after a run of taken names.
+export async function availableSessionName(binary: string, socketArgs: string[], base: string, command: SessionCommand = run): Promise<string> {
+  const listed = await command(binary, [...socketArgs, 'list-sessions', '-F', '#{session_name}']);
+  const taken = new Set(listed.code === 0 ? listed.stdout.split('\n').map(line => line.trim()).filter(line => line !== '') : []);
+  if (!taken.has(base)) return base;
+  for (let suffix = 2; suffix <= 99; suffix += 1) { const candidate = `${base}-${suffix}`; if (!taken.has(candidate)) return candidate; }
+  return `${base}-${randomBytes(4).toString('hex')}`;
+}
+
 // Replace one colliding named session, returning the new session's pane id (undefined on
 // failure). Options on the new session target that pane id, never the name: tmux reads a dot
 // in a bare name as a pane separator, so `-p -t ferry.fyi` finds no pane.

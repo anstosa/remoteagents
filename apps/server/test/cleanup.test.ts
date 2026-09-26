@@ -48,10 +48,11 @@ describe('runtime cleanup', () => {
     expect(targets.every(target => /^cleanup-[A-Za-z0-9_-]{24}$/u.test(target.id))).toBe(true);
   });
 
-  it('never proposes a Console shell, even one an adapter rule would otherwise match', async () => {
-    // a recognized-but-inactive Codex pane classifies as a stale agent — unless it is a Console
-    // shell (the operator's own pane), which cleanup skips outright (spec, Console shells)
-    const marked = [pane('%9', '$shell', 900, { role: 'shell', command: 'zsh' })];
+  it.each(['shell', 'process'])('never proposes a pane with the %s role, even one an adapter rule would otherwise match', async role => {
+    // a recognized-but-inactive Codex pane classifies as a stale agent — unless it carries a
+    // console role (a Console shell, the operator's own pane, or a Stack process), which cleanup
+    // skips outright (spec, Console shells)
+    const marked = [pane('%9', '$shell', 900, { role, command: 'zsh' })];
     const unmarked = [pane('%9', '$shell', 900, { command: 'zsh' })];
     const build = (panes: Pane[]) => new CleanupService(
       { refresh: async () => [] },

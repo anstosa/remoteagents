@@ -34,7 +34,7 @@
       "label": "Example",
       "path": "/home/me/code/example",
       "worktreesDirectory": "../example.worktrees",
-      "commands": { "setup": "pnpm install" }
+      "commands": { "setup": "pnpm install", "processes": { "dev": "pnpm dev" } }
     }
   ]
 }

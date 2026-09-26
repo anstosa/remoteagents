@@ -10,6 +10,14 @@ export const sessionIdPattern = /^\$?[-\w.]+$/u;
 // argv by the adapter, or joined into a control-connection command (ADR 0008). Both must
 // stay byte-identical, so the flags live here. The pane is validated by the caller.
 export const capturePaneArgs = (pane: string, depth: number): string[] => ['capture-pane', '-e', '-p', '-t', pane, '-S', `-${depth}`];
+// tmux reads any argv element ending in `;` as a command separator and drops the `;`;
+// escaping it as `\;` keeps a value such as a checkout path whole
+export const tmuxLiteralArg = (value: string): string => value.endsWith(';') ? `${value.slice(0, -1)}\\;` : value;
+// A `-c` start directory or a `-s` session name is format-expanded, so a `#(…)` in one
+// derived from an agent-controlled checkout path would run as a shell command inside the tmux
+// server. Doubling every `#` makes tmux collapse it back to the literal text (as `runShell`
+// does for its command).
+export const tmuxFormatLiteral = (value: string): string => tmuxLiteralArg(value.replaceAll('#', '##'));
 // build one restricted subprocess environment; SHELL names the console's interactive shell,
 // resolved by the one reader of RAC_INTERACTIVE_SHELL
 export const safeEnv = (): NodeJS.ProcessEnv => { const user = userInfo(); return { HOME: user.homedir, USER: user.username, LOGNAME: user.username, SHELL: interactiveShellPath(), TERM: 'xterm-256color', COLORTERM: 'truecolor', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', PATH: '/usr/local/bin:/usr/bin:/bin' }; };

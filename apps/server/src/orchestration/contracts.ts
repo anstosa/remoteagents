@@ -1,5 +1,5 @@
 import type { DashboardPayload } from '../dashboard/updates.js';
-import type { GitComparisonSummary, GitStatusSummary, GitUpstreamSummary, PullRequestSummary, StackAction } from '../domain/models.js';
+import type { GitComparisonSummary, GitStatusSummary, GitUpstreamSummary, PullRequestSummary, StackAction, StackProcessState } from '../domain/models.js';
 import type { AgentAttentionState } from '../notifications.js';
 import type { PromptHistoryEntry } from '../prompt-history/service.js';
 import type { QueuedPromptSummary } from '../prompts/queue.js';
@@ -49,6 +49,7 @@ export type StackStateV1 = {
   transition?: 'starting' | 'migrating';
   operation?: StackAction;
   tunnel?: boolean;
+  process?: StackProcessState;
 };
 
 export type WorktreeStatusV1 = {

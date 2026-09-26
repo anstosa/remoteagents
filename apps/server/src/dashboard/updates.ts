@@ -1,8 +1,8 @@
-import type { Agent, Dashboard, DashboardPlace, DashboardProject, DashboardWorktree, StackAction } from '../domain/models.js';
+import type { Agent, Dashboard, DashboardPlace, DashboardProject, DashboardWorktree } from '../domain/models.js';
 import type { LaunchResolution } from '../launch/resolution.js';
+import type { StackState } from '../worktree-commands/service.js';
 import type { ReviewTourCapability, StoredReviewTourSummary } from '../review-tour/contracts.js';
 
-type StackState = { running?: boolean; transition?: 'starting' | 'migrating'; operation?: StackAction; tunnel?: boolean };
 // one Worktree on the wire, augmented with the per-Worktree state the loader adds:
 // its stack controls and its resolved Launch profile
 export type PayloadWorktree = DashboardWorktree & { stack?: StackState; launch?: LaunchResolution };

@@ -770,6 +770,38 @@ describe('LaunchService', () => {
       expect(run.mock.calls.some(call => call[1].includes('new-session') || call[1].includes('rename-session'))).toBe(false);
     });
 
+    // a Stack process runs in the Workspace session; its pane's foreground command is the login
+    // shell wrapping the dev server, so only its role tells it from an idle shell
+    it('never adopts a Stack process pane for a launch, which would type a prompt into the dev server', async () => {
+      process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+      run.mockResolvedValue({ code: 0, stdout: '%9', stderr: '' });
+      const socket: SocketRef = { fingerprint: 'sock', path: '/host-tmux/default', device: 1, inode: 2 };
+      const worktree = alex();
+      const panes = { listPanes: async () => [shellPane({ role: 'process' }, socket)], pastePrompt: vi.fn(async () => true), enter: vi.fn(async () => true) };
+      const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree]);
+
+      await expect(service.launch('alex')).resolves.toBe(true);
+
+      expect(panes.pastePrompt).not.toHaveBeenCalled();
+    });
+
+    // Start makes a Worktree's Workspace session when it has none; a later launch joins it
+    // rather than start (or, on the bridge, displace it with) another
+    it("joins the session holding the Worktree's Stack process when it has no Agent or Console shell", async () => {
+      process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
+      run.mockResolvedValue({ code: 0, stdout: '%9', stderr: '' });
+      const socket: SocketRef = { fingerprint: 'sock', path: '/host-tmux/default', device: 1, inode: 2 };
+      const worktree = alex();
+      const panes = { listPanes: async () => [shellPane({ sessionId: '$4', role: 'process' }, socket)], pastePrompt: vi.fn(async () => true), enter: vi.fn(async () => true) };
+      const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree]);
+
+      await expect(service.launch('alex')).resolves.toBe(true);
+
+      const newWindow = run.mock.calls.find(call => call[1].includes('new-window'));
+      expect(newWindow?.[1]).toEqual(expect.arrayContaining(['-S', '/host-tmux/default', 'new-window', '-d', '-t', '$4']));
+      expect(run.mock.calls.some(call => call[1].includes('new-session') || call[1].includes('rename-session'))).toBe(false);
+    });
+
     it('never adopts a pane the operator currently has open as a Terminal', async () => {
       process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
       run.mockResolvedValue({ code: 0, stdout: '%9', stderr: '' });
@@ -784,7 +816,7 @@ describe('LaunchService', () => {
       expect(panes.pastePrompt).not.toHaveBeenCalled();
     });
 
-    it("killWorktreeShells leaves a Console shell and an open Terminal alone, killing only an idle landing shell", async () => {
+    it("killWorktreeShells leaves a Console shell, a Stack process and an open Terminal alone, killing only an idle landing shell", async () => {
       const socket: SocketRef = { fingerprint: 'sock', path: '/host-tmux/default', device: 1, inode: 2 };
       const worktree = alex();
       const closed: string[] = [];
@@ -794,7 +826,9 @@ describe('LaunchService', () => {
           shellPane({ paneId: '%2' }, socket),
           shellPane({ paneId: '%3' }, socket),
           // the operator's own shell in the checkout, outside the Workspace session
-          shellPane({ paneId: '%4', sessionId: '$2', placeMark: undefined }, socket)
+          shellPane({ paneId: '%4', sessionId: '$2', placeMark: undefined }, socket),
+          // a Stack process, whose pane reports the login shell wrapping it
+          shellPane({ paneId: '%5', role: 'process' }, socket)
         ],
         close: async (_socket: SocketRef, pane: string) => { closed.push(pane); return true; }
       };
@@ -802,8 +836,8 @@ describe('LaunchService', () => {
 
       await service.killWorktreeShells(worktree);
 
-      // %1 is a Console shell, %3 is open as a Terminal, %4 is not the Workspace's; only the idle
-      // landing shell %2 is killed
+      // %1 is a Console shell, %3 is open as a Terminal, %4 is not the Workspace's, %5 is a Stack
+      // process; only the idle landing shell %2 is killed
       expect(closed).toEqual(['%2']);
     });
 

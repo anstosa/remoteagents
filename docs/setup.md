@@ -273,7 +273,7 @@ within a tick — no config edit or restart.
   Listed checkouts appear first in launch rows and tabs, independent of labels
   or branches. Missing paths are ignored. Unlisted checkouts retain the default
   Main-first, branch-name order, with detached checkouts last.
-- `commands` (`start`/`stop`/`build`/`restart`/`migrate`/`status`/`setup`) provides
+- `commands` (`start`/`stop`/`build`/`restart`/`migrate`/`status`/`setup`/`processes`) provides
   default stack commands; `newTask` and `push` are Project-wide. `newTask` adds a **New Task** action, uses
   `{taskId}` for an 8-character URL-safe random ID, and is enabled only when the
   Worktree is clean and fully pushed. `push` overrides the default
@@ -287,6 +287,22 @@ within a tick — no config edit or restart.
   run keeps its combined output under `.data/stack-logs` (its path is logged) for
   inspection. Like the other `commands` it is operator-trust shell, so it is never
   surfaced to the browser.
+- `commands.processes` declares a **Stack process**: a foreground command that
+  runs until it is killed, such as `{ "dev": "pnpm dev" }`, for a stack with no
+  daemon to hand off to. The stack menu's Start runs it in the background, as a
+  window named for the process in the Worktree's Workspace session (the tmux
+  session holding its Agents and Terminals, created the way a launch creates one
+  when there is none yet), with the same socket, login shell, host `PATH`, and
+  Worktree root as the other `commands`. The stack badge reads running, exited or
+  stopped straight from that window — no `status` command. The process belongs
+  to tmux, so it keeps running across a console restart and is found again by
+  the tags on its window, and its pane scrolls back as far as that session's
+  `history-limit`. Its name is letters, digits, `_` and `-`,
+  and the map holds one process for now. A process derives the `start`, `stop`,
+  and `restart` actions, so `processes` cannot sit beside `start`, `stop`,
+  `restart`, or `status`; `build`, `migrate`, and `setup` stay available beside
+  it. There is no separate working-directory setting: to run from a
+  subdirectory, write `{ "dev": "cd web && pnpm dev" }`.
 - Preview configuration selects one of two mutually exclusive modes. `port` +
   `hostname` (both or neither) provide `https://<hostname>` proxied to
   `127.0.0.1:<port>`. Alternatively, `externalUrl` names an existing canonical
@@ -334,7 +350,8 @@ default lifetime is four hours; `--ttl` accepts minutes, hours, or days up to
 seven days, such as `30m`, `4h`, or `1d`.
 
 For example, add these entries to a Project to give a sibling checkout an
-independent UI stack and keep a research checkout stack-free:
+independent UI stack, run another as a foreground dev server, and keep a
+research checkout stack-free:
 
 ```json
 {
@@ -349,10 +366,15 @@ independent UI stack and keep a research checkout stack-free:
         "status": "test -n \"$(docker compose ps --status running --services ui)\""
       }
     },
+    { "path": "../example-web", "commands": { "processes": { "dev": "cd web && pnpm dev" } } },
     { "path": "../example-research", "hostname": null, "port": null, "commands": {} }
   ]
 }
 ```
+
+The `../example-web` entry swaps the Project's commands for a Stack process run
+from the checkout's `web` subdirectory — replacing `commands` replaces
+`processes` too.
 
 The legacy `worktrees[]` migration preserves differing stack settings in these
 overrides. Already-migrated installations can restore them from the saved

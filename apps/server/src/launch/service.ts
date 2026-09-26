@@ -5,7 +5,8 @@ import { resolveCodexProgram, type ValidatedConfig } from '../config/schema.js';
 import { run } from '../tmux/command.js';
 import { TmuxAdapter } from '../tmux/adapter.js';
 import { hostCommand, hostInteractiveShellPath, interactiveShellBootstrap, interactiveShellName, interactiveShellPath } from '../tmux/interactive-shell.js';
-import { startNamedReplacementSession, worktreeSessionName } from '../tmux/session-name.js';
+import { availableSessionName, startNamedReplacementSession, worktreeSessionName } from '../tmux/session-name.js';
+import { processPaneRole } from '../tmux/stack-sessions.js';
 import { ProcSocketFinder, workspaceRoot, type SocketFinder } from '../discovery/service.js';
 import { projectIdOf, worktreeHostRoot, worktreeMatchesWorkspace } from '../workspaces/resolver.js';
 import { adapterCapabilities, adapterFor } from '../adapters/registry.js';
@@ -232,12 +233,13 @@ export class LaunchService {
     return (await this.places()).find(candidate => candidate.kind === 'directory' && candidate.projectId === projectId);
   }
 
-  // An idle login shell a launch could adopt: never a transient stack-command pane, a Console
-  // shell (its own, operator-owned pane) or a pane the operator has open as a Terminal, so a
-  // Launch cannot paste into what someone is typing into or reading.
+  // An idle login shell a launch could adopt: never a transient stack-command pane, a pane with
+  // a console role — a Console shell (the operator's own) or a Stack process (a dev server run
+  // in a login shell, so its command reads as the shell) — or a pane the operator has open as a
+  // Terminal, so a Launch cannot paste into what someone is typing into or reading.
   private idleLandingShell(pane: Pane): boolean {
     if (pane.sessionName?.startsWith('rac-stack-')) return false;
-    if (pane.role === 'shell' || this.paneHasOpenTerminal(pane)) return false;
+    if (pane.role !== undefined || this.paneHasOpenTerminal(pane)) return false;
     return pane.command === this.hostShellName;
   }
 
@@ -286,12 +288,14 @@ export class LaunchService {
   }
 
   // the session a launch or a Console shell at a Place joins: its live Agent's, else the one
-  // holding its Console shells
+  // holding its Console shells, else the one holding its Stack process (a Workspace session
+  // Start made for a Worktree that had none), so a Place's panes keep to one session
   private async placeSession(place: Pick<Place, 'id'>): Promise<TmuxSession | undefined> {
     const agent = await this.placeAgentSession(place.id);
     if (agent !== undefined) return agent;
-    const shell = (await this.placeConsoleShells(place))[0];
-    return shell === undefined ? undefined : { socket: shell.socket, session: shell.sessionId };
+    const panes = await this.placePanes(place);
+    const member = panes.find(pane => pane.role === 'shell') ?? panes.find(pane => pane.role === processPaneRole);
+    return member === undefined ? undefined : { socket: member.socket, session: member.sessionId };
   }
 
   // Kill every idle interactive shell sitting exactly in this Worktree in its Workspace session —
@@ -645,12 +649,7 @@ export class LaunchService {
   // new Worktree's idle shell never collides with a same-basename Worktree of another
   // Project. Falls back to a random suffix after a run of taken names.
   private async availableSessionName(base: string): Promise<string> {
-    const socket = this.hostSocket === undefined ? [] : ['-S', this.hostSocket];
-    const listed = await run(this.tmux, [...socket, 'list-sessions', '-F', '#{session_name}']);
-    const taken = new Set(listed.code === 0 ? listed.stdout.split('\n').map(line => line.trim()).filter(line => line !== '') : []);
-    if (!taken.has(base)) return base;
-    for (let suffix = 2; suffix <= 99; suffix += 1) { const candidate = `${base}-${suffix}`; if (!taken.has(candidate)) return candidate; }
-    return `${base}-${randomBytes(4).toString('hex')}`;
+    return await availableSessionName(this.tmux, this.hostSocket === undefined ? [] : ['-S', this.hostSocket], base);
   }
 
   // the login-shell command and cwd for a Console shell at a Place: a native login shell in the

@@ -243,6 +243,58 @@ describe('project configuration', () => {
     await expect(validateConfig(await withProject(repo, { newTask: 'new {unknown}' }))).rejects.toThrow('unknown new task placeholder');
   });
 
+  // a Stack process is one named foreground command; start/stop/restart/status derive from it
+  describe('Stack processes', () => {
+    it('accepts one process beside the one-shot build, migrate and setup commands', async () => {
+      const repo = await gitRepo();
+      const commands = { processes: { 'dev_server-2': 'cd web && pnpm dev' }, build: 'pnpm build', migrate: 'pnpm migrate', setup: 'pnpm install' };
+      const config = await validateConfig(await withProject(repo, { commands }));
+      expect(config.projects[0]?.commands).toEqual(commands);
+    });
+
+    it('rejects more than one process, and an empty map', async () => {
+      const repo = await gitRepo();
+      await expect(validateConfig(await withProject(repo, { commands: { processes: { dev: 'pnpm dev', worker: 'pnpm worker' } } }))).rejects.toThrow(/at most one/);
+      await expect(validateConfig(await withProject(repo, { commands: { processes: {} } }))).rejects.toThrow();
+    });
+
+    it.each(['start', 'stop', 'restart', 'status'])('rejects a process beside %s, whose action it derives', async action => {
+      const repo = await gitRepo();
+      await expect(validateConfig(await withProject(repo, { commands: { processes: { dev: 'pnpm dev' }, [action]: 'run' } }))).rejects.toThrow(new RegExp(`\`${action}\``));
+    });
+
+    it.each(['dev server', 'dev.server', 'dev:1', 'dév', '', 'x'.repeat(41)])('rejects the process name %j', async name => {
+      const repo = await gitRepo();
+      await expect(validateConfig(await withProject(repo, { commands: { processes: { [name]: 'pnpm dev' } } }))).rejects.toThrow();
+    });
+
+    it('rejects an empty or NUL-bearing process command', async () => {
+      const repo = await gitRepo();
+      await expect(validateConfig(await withProject(repo, { commands: { processes: { dev: '' } } }))).rejects.toThrow();
+      await expect(validateConfig(await withProject(repo, { commands: { processes: { dev: 'pnpm\0dev' } } }))).rejects.toThrow();
+    });
+
+    // an override's `commands` replaces the Project's whole set, `processes` included
+    it('lets a Worktree override replace commands as a whole, processes included', async () => {
+      const repo = await gitRepo();
+      const config = await validateConfig(await withProject(repo, {
+        commands: { processes: { dev: 'pnpm dev' }, build: 'pnpm build' },
+        worktreeOverrides: [
+          { path: '../daemon', commands: { start: 'docker compose up -d', stop: 'docker compose down' } },
+          { path: '../web', commands: { processes: { web: 'cd web && pnpm dev' } } },
+          { path: '../inherit', port: 4000, hostname: 'inherit.example.com' }
+        ]
+      }));
+      expect(config.projects[0]?.worktreeOverrides?.map(override => override.commands)).toEqual([
+        { start: 'docker compose up -d', stop: 'docker compose down' },
+        { processes: { web: 'cd web && pnpm dev' } },
+        { processes: { dev: 'pnpm dev' }, build: 'pnpm build' }
+      ]);
+      // the same rules bind an override's commands
+      await expect(validateConfig(await withProject(repo, { worktreeOverrides: [{ path: '../web', commands: { processes: { dev: 'pnpm dev' }, start: 'up' } }] }))).rejects.toThrow(/`start`/);
+    });
+  });
+
   it('refuses a legacy worktrees[] configuration with a pointer to the migration', async () => {
     await expect(validateConfig({ publicOrigin: 'https://agents.example.com', worktrees: [] })).rejects.toThrow(/migration/);
     await expect(validateConfig({ publicOrigin: 'https://agents.example.com', worktrees: [{ id: 'a', path: '/x', command: 'codex' }] })).rejects.toThrow(/retired `worktrees\[\]`/);

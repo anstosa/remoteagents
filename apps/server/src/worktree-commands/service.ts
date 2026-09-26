@@ -3,10 +3,12 @@ import { dirname, join } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import type { ValidatedConfig } from '../config/schema.js';
 import type { DiscoveryService } from '../discovery/service.js';
-import { stackActions, type StackAction, type Worktree } from '../domain/models.js';
+import { stackActions, type StackAction, type StackProcessState, type Worktree } from '../domain/models.js';
 import { worktreeById, worktreeHostRoot } from '../workspaces/resolver.js';
 import { serverCheckout, serverCheckoutOnHost } from '../workspaces/server-checkout.js';
-import { run } from '../tmux/command.js';
+import { run, tmuxLiteralArg, tmuxFormatLiteral } from '../tmux/command.js';
+import { probeHolderSession, processNameOption, processPaneRole, processWorktreeOption } from '../tmux/stack-sessions.js';
+import { availableSessionName, worktreeSessionName } from '../tmux/session-name.js';
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 // a tmux- and filesystem-safe token for one Worktree: its wire id `<projectId>:<realpath>`
@@ -23,9 +25,25 @@ const defaultSetupTiming = { timeoutMs: 5 * 60_000, pollMs: 250 };
 // a status probe must be quick: the dashboard rebuilds ~once a second, so a probe that has
 // not answered within this budget is abandoned (and its window killed) rather than waited on
 const defaultStatusTiming = { timeoutMs: 2_000, pollMs: 100 };
-// the one long-lived session whose windows host status probes (see `probeWindow`); the
-// `rac-stack-` prefix keeps its panes out of launch reuse like every other stack session
-const probeSession = 'rac-stack-probes';
+// what the status-probe holder's placeholder window runs so the session never ends
+const idleCommand = ['/bin/sh', '-c', 'while :; do sleep 3600; done'];
+// What a new process window runs until it is tagged and respawned with the command. It
+// ends by itself, so a console that dies mid-Start leaves a dead pane (reported exited,
+// and rerun by the next Start) rather than a tagged idle one that reads as running forever.
+const processPlaceholder = ['/bin/sh', '-c', 'sleep 30'];
+export type StackState = { running?: boolean; transition?: 'starting'|'migrating'; operation?: StackAction; tunnel?: boolean; process?: StackProcessState };
+// a Worktree's configured Stack process; the map holds at most one (config/schema.ts)
+type StackProcess = { name: string; command: string };
+const stackProcess = (worktree: Worktree): StackProcess | undefined => {
+  const [entry] = Object.entries(worktree.commands?.processes ?? {});
+  return entry === undefined ? undefined : { name: entry[0], command: entry[1] };
+};
+// one pane on the stack socket, as `list-panes -a` reports it: its session, the Place its
+// session is the Workspace of, and the Stack process tags on its window (empty when untagged)
+type ListedPane = { sessionId: string; windowId: string; paneId: string; place: string; name: string; worktree: string; dead: boolean; exitCode?: number };
+// the actions a Stack process derives; any other action is a one-shot command. Only Start
+// is implemented, so only Start is offered until Stop and Restart land.
+const processActions: readonly StackAction[] = ['start'];
 
 // prepend an explicitly configured host executable path
 const hostPathExport = () => {
@@ -71,6 +89,12 @@ export class WorktreeCommandService {
   private readonly launchingOperations = new Set<string>();
   private readonly tunnelCache = new Map<string, { value: boolean; expiresAt: number }>();
   private readonly tunnelRefreshes = new Map<string, Promise<void>>();
+  // the Stack process action in flight per Worktree: its guard against an overlapping one,
+  // and the operation the dashboard reports meanwhile. The processes themselves are never
+  // recorded here — tmux holds them, and `stackPanes` finds them by their tags.
+  private readonly processOperations = new Map<string, StackAction>();
+  // one `list-panes` answers every Worktree's state during a dashboard build
+  private processListing: Promise<ListedPane[] | undefined> | undefined;
 
   constructor(config: ValidatedConfig, private readonly discovery: DiscoveryService, private readonly command: Command = run, private readonly checkout: string = serverCheckout(), private readonly setupTiming: { timeoutMs: number; pollMs: number } = defaultSetupTiming, private readonly statusTiming: { timeoutMs: number; pollMs: number } = defaultStatusTiming) {
     // status and log files live under the server's own checkout (see server-checkout.ts). A
@@ -79,7 +103,11 @@ export class WorktreeCommandService {
     this.hostWorkspace = this.hostSocket === undefined ? checkout : serverCheckoutOnHost(config.projects, process.env.RAC_HOST_WORKSPACE, checkout);
   }
 
-  actions(worktree: Worktree): StackAction[] { return stackActions.filter(action => worktree.commands?.[action] !== undefined); }
+  // a Stack process derives its actions; everything else is a configured one-shot
+  actions(worktree: Worktree): StackAction[] {
+    const derived = stackProcess(worktree) === undefined ? [] : processActions;
+    return stackActions.filter(action => derived.includes(action) || worktree.commands?.[action] !== undefined);
+  }
 
   // one entry point for every tmux call: prepend the socket selector (empty on the default
   // socket) and never let a spawn failure escape into a request handler — a tmux that cannot
@@ -119,7 +147,7 @@ export class WorktreeCommandService {
       await mkdir(dirname(markerFile), { recursive: true, mode: 0o700 });
       // capture combined output to the log and the setup exit code (or a failed cd) to the marker
       const script = `${hostPathExport()}{ cd -- ${quote(directory)} && { ${command}; }; } > ${quote(hostLogFile)} 2>&1; printf '%s' "$?" > ${quote(hostMarkerFile)}`;
-      launched = (await this.tmux(['new-session', '-d', '-s', session, '-c', directory, '/bin/bash', '-lc', script])).code === 0;
+      launched = (await this.tmux(['new-session', '-d', '-s', session, '-c', tmuxFormatLiteral(directory), '/bin/bash', '-lc', script])).code === 0;
       if (!launched) return { ok: false, log: logFile };
       const deadline = Date.now() + this.setupTiming.timeoutMs;
       while (Date.now() < deadline) {
@@ -154,9 +182,11 @@ export class WorktreeCommandService {
     return await this.start(worktreeId, action) === 'started';
   }
 
-  // start one exclusive stack operation
+  // start one stack action: a Stack process's own action, or an exclusive one-shot operation
   async start(worktreeId: string, action: StackAction): Promise<'started'|'busy'|false> {
     const worktree = worktreeById(this.discovery.worktreesNow(), worktreeId);
+    const declared = worktree === undefined ? undefined : stackProcess(worktree);
+    if (worktree !== undefined && declared !== undefined && processActions.includes(action)) return await this.processAction(worktree, declared, action);
     const command = worktree?.commands?.[action];
     // require a configured action
     if (worktree === undefined || command === undefined) return false;
@@ -196,12 +226,30 @@ export class WorktreeCommandService {
     return { action: operation.action, active, startedAt: operation.startedAt, ...(operation.completedAt === undefined ? {} : { completedAt: operation.completedAt }), output };
   }
 
-  async state(worktree: Worktree): Promise<{ running?: boolean; transition?: 'starting'|'migrating'; operation?: StackAction; tunnel?: boolean }> {
-    const [running, tunnel, operation] = await Promise.all([this.running(worktree), this.tunnel(worktree), this.operation(worktree)]);
+  // A Worktree with a Stack process reads `running` straight from the process pane and
+  // never runs a `status` probe; that probe is for daemon-style stacks only.
+  async state(worktree: Worktree): Promise<StackState> {
+    const withProcess = stackProcess(worktree) !== undefined;
+    const [process, probed, tunnel, operation] = await Promise.all([this.processState(worktree), withProcess ? undefined : this.running(worktree), this.tunnel(worktree), this.operation(worktree)]);
+    const running = withProcess ? process === undefined ? undefined : process.state === 'running' : probed;
     const transition = this.transitions.get(worktree.id);
-    if (transition !== undefined && transition.expiresAt <= Date.now()) this.transitions.delete(worktree.id);
+    // a process that is not running has nothing left to start, so it no longer reads as
+    // Starting — a command that dies at once shows as down straight away
+    if (transition !== undefined && (transition.expiresAt <= Date.now() || (transition.value === 'starting' && process !== undefined && process.state !== 'running'))) this.transitions.delete(worktree.id);
     const activeTransition = this.transitions.get(worktree.id)?.value;
-    return { ...(running === undefined ? {} : { running }), ...(activeTransition === undefined ? {} : { transition: activeTransition }), ...(operation === undefined ? {} : { operation }), ...(tunnel === undefined ? {} : { tunnel }) };
+    return { ...(running === undefined ? {} : { running }), ...(activeTransition === undefined ? {} : { transition: activeTransition }), ...(operation === undefined ? {} : { operation }), ...(tunnel === undefined ? {} : { tunnel }), ...(process === undefined ? {} : { process }) };
+  }
+
+  // a Worktree's Stack process as its tagged window shows it: live, dead with its exit code,
+  // or no window at all. Undefined without a configured process, or when tmux cannot answer.
+  private async processState(worktree: Worktree): Promise<StackProcessState | undefined> {
+    const declared = stackProcess(worktree);
+    if (declared === undefined) return undefined;
+    const panes = await this.stackPanes();
+    if (panes === undefined) return undefined;
+    const window = this.processWindow(panes, worktree, declared.name);
+    if (window === undefined) return { name: declared.name, state: 'stopped' };
+    return window.dead ? { name: declared.name, state: 'exited', ...(window.exitCode === undefined ? {} : { exitCode: window.exitCode }) } : { name: declared.name, state: 'running' };
   }
 
   async running(worktree: Worktree): Promise<boolean | undefined> {
@@ -269,6 +317,8 @@ export class WorktreeCommandService {
   }
 
   private async operation(worktree: Worktree): Promise<StackAction | undefined> {
+    const processOperation = this.processOperations.get(worktree.id);
+    if (processOperation !== undefined) return processOperation;
     const operation = this.operations.get(worktree.id);
     // report only active operations to the dashboard
     return operation !== undefined && await this.operationActive(operation) ? operation.action : undefined;
@@ -303,23 +353,109 @@ export class WorktreeCommandService {
     return 'unknown';
   }
 
-  // Run a status probe as a detached window of the shared holder session and return its
-  // window id. A session per probe would close a session on every refresh, and a closing
-  // session fires the operator's tmux `session-closed` hook — a common `choose-tree` hook then
-  // opens the session picker over whatever pane they (or an Agent) are using, where it also
-  // swallows a submitted prompt's Enter. A closing window of a session that lives on fires
-  // nothing, so the holder is created once (on first use, or after a tmux server restart).
-  private async probeWindow(worktree: Worktree, script: string): Promise<string | undefined> {
+  // Run one Stack process action, serialized per Worktree by its own guard rather than the
+  // one-shot exclusive session, so `build`/`migrate` still run beside a live process.
+  private async processAction(worktree: Worktree, declared: StackProcess, action: StackAction): Promise<'started'|'busy'|false> {
+    if (this.processOperations.has(worktree.id)) return 'busy';
+    if (action !== 'start') return false;
+    this.processOperations.set(worktree.id, action);
+    try {
+      return await this.startProcess(worktree, declared) ? 'started' : false;
+    } finally {
+      this.processOperations.delete(worktree.id);
+    }
+  }
+
+  // Start a Worktree's Stack process: a live one is left alone, a dead pane is respawned in
+  // its window, and otherwise a new window opens in the Worktree's Workspace session — the
+  // session marked as its Place, where its Agents and Terminals live — or, when it has none
+  // yet, in a new session named and marked for it the way a launch makes one. The window is
+  // tagged, set to remain on exit and its pane marked as a process while it still runs a
+  // placeholder, and only then respawned with the command, so even a command that dies at
+  // once leaves a findable dead pane.
+  private async startProcess(worktree: Worktree, declared: StackProcess): Promise<boolean> {
+    // a listing already in flight may predate a window a just-finished Start opened
+    const panes = await this.stackPanes(true);
+    if (panes === undefined) return false;
+    const existing = this.processWindow(panes, worktree, declared.name);
+    if (existing !== undefined && !existing.dead) return true;
     const directory = worktreeHostRoot(worktree);
-    const open = () => this.tmux(['new-window', '-d', '-t', `=${probeSession}:`, '-c', directory, '-P', '-F', '#{window_id}', '/bin/bash', '-lc', script]);
+    let pane = existing?.paneId;
+    if (pane === undefined) {
+      const workspace = panes.find(candidate => candidate.place === worktree.id)?.sessionId;
+      const shape = ['-n', declared.name, '-c', tmuxFormatLiteral(directory), '-P', '-F', '#{window_id} #{pane_id}', ...processPlaceholder];
+      const opened = workspace === undefined
+        ? await this.tmux(['new-session', '-d', '-s', tmuxFormatLiteral(await availableSessionName(this.tmuxBinary, this.socketArgs, worktreeSessionName(directory), this.command)), ...shape])
+        : await this.tmux(['new-window', '-d', '-t', `${workspace}:`, ...shape]);
+      const [window, created] = opened.stdout.trim().split(' ');
+      if (opened.code !== 0 || window === undefined || created === undefined) return false;
+      pane = created;
+      // a session made here becomes the Worktree's Workspace, marked through its pane id as a
+      // launch marks one (a dotted session name is no tmux target)
+      const marks = [...this.windowOption(window, 'remain-on-exit', 'on'), ';', ...this.windowOption(window, processWorktreeOption, worktree.path), ';', ...this.windowOption(window, processNameOption, declared.name), ';', 'set-option', '-p', '-t', pane, '@rac_role', processPaneRole, ...(workspace === undefined ? [';', 'set-option', '-t', pane, '@rac_place', tmuxLiteralArg(worktree.id)] : [])];
+      if ((await this.tmux(marks)).code !== 0) { await this.tmux(['kill-window', '-t', window]); return false; }
+    }
+    const script = `${hostPathExport()}( cd -- ${quote(directory)} && { ${declared.command}; } )`;
+    const respawned = await this.tmux(['respawn-pane', '-k', '-t', pane, '-c', tmuxFormatLiteral(directory), '/bin/bash', '-lc', script]);
+    // a fresh window left on its placeholder would read as a running process, so remove it
+    if (respawned.code !== 0) { if (existing === undefined) await this.tmux(['kill-window', '-t', pane]); return false; }
+    this.transitions.set(worktree.id, { value: 'starting', expiresAt: Date.now() + 60_000 });
+    return true;
+  }
+
+  private windowOption(window: string, name: string, value: string): string[] { return ['set-option', '-w', '-t', window, name, tmuxLiteralArg(value)]; }
+
+  // the process window for this Worktree and name, preferring a live one should a race or an
+  // operator have left two; windows of other Worktrees or of names no longer configured are
+  // orphans the stack controls ignore
+  private processWindow(panes: ListedPane[], worktree: Worktree, name: string): ListedPane | undefined {
+    const matching = panes.filter(pane => pane.name === name && pane.worktree === worktree.path);
+    return matching.find(pane => !pane.dead) ?? matching[0];
+  }
+
+  // Every pane on the stack socket, read from tmux on each call so a restarted console finds
+  // the processes a previous instance started, in whichever session they live. Concurrent
+  // dashboard readers share one `list-panes`; `fresh` skips joining one already in flight. A
+  // tmux server that is not running holds no panes; undefined means tmux could not answer (it
+  // could not run, or its socket refused us).
+  private stackPanes(fresh = false): Promise<ListedPane[] | undefined> {
+    const list = async (): Promise<ListedPane[] | undefined> => {
+      const listed = await this.tmux(['list-panes', '-a', '-F', `#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_dead}\t#{pane_dead_status}\t#{@rac_place}\t#{${processNameOption}}\t#{${processWorktreeOption}}`]);
+      if (listed.code !== 0) return listed.code === 1 && (listed.stderr === undefined || /no server running/u.test(listed.stderr)) ? [] : undefined;
+      return listed.stdout.split('\n').flatMap(line => {
+        const [sessionId, windowId, paneId, dead, status, place, name, ...path] = line.split('\t');
+        if (sessionId === undefined || windowId === undefined || paneId === undefined || name === undefined || paneId === '') return [];
+        const exitCode = status === undefined || status === '' ? undefined : Number(status);
+        return [{ sessionId, windowId, paneId, place: place ?? '', name, worktree: path.join('\t'), dead: dead === '1', ...(exitCode === undefined || Number.isNaN(exitCode) ? {} : { exitCode }) }];
+      });
+    };
+    if (fresh) return list();
+    this.processListing ??= list().finally(() => { this.processListing = undefined; });
+    return this.processListing;
+  }
+
+  // Open a detached window in the status-probe holder session, creating the holder on first
+  // use (or after a tmux server restart), and return the window id. A session per probe would
+  // close a session on every refresh, and a closing session fires the operator's tmux
+  // `session-closed` hook — a common `choose-tree` hook then opens the session picker over
+  // whatever pane they (or an Agent) are using, where it also swallows a submitted prompt's
+  // Enter. A closing window of a session that lives on fires nothing, so the holder keeps a
+  // placeholder window and is never closed.
+  private async holderWindow(args: string[]): Promise<string | undefined> {
+    const open = () => this.tmux(['new-window', '-d', '-t', `=${probeHolderSession}:`, '-P', '-F', '#{window_id}', ...args]);
     let opened = await open();
     if (opened.code !== 0) {
       // no holder yet; a concurrent probe may win the race to create it, so just retry
-      await this.tmux(['new-session', '-d', '-s', probeSession, '-n', 'holder', '/bin/sh', '-c', 'while :; do sleep 3600; done']);
+      await this.tmux(['new-session', '-d', '-s', probeHolderSession, '-n', 'holder', ...idleCommand]);
       opened = await open();
     }
     const window = opened.stdout.trim();
     return opened.code === 0 && window !== '' ? window : undefined;
+  }
+
+  // run a status probe as a window of the probe holder and return its window id
+  private async probeWindow(worktree: Worktree, script: string): Promise<string | undefined> {
+    return await this.holderWindow(['-c', tmuxFormatLiteral(worktreeHostRoot(worktree)), '/bin/bash', '-lc', script]);
   }
 
   // launch a detached operation session with durable output when the host workspace resolves
@@ -337,7 +473,7 @@ export class WorktreeCommandService {
     }
     const invocation = hostLogFile === undefined ? command : `{ ${command}; } > ${quote(hostLogFile)} 2>&1`;
     const script = `${hostPathExport()}cd -- ${quote(directory)} && ${invocation}`;
-    const launched = (await this.tmux(['new-session', '-d', '-s', session, '-c', directory, '/bin/bash', '-lc', script])).code === 0;
+    const launched = (await this.tmux(['new-session', '-d', '-s', session, '-c', tmuxFormatLiteral(directory), '/bin/bash', '-lc', script])).code === 0;
     if (!launched) return undefined;
     return { action, session, startedAt: new Date().toISOString(), ...(logFile === undefined ? {} : { logFile }) };
   }

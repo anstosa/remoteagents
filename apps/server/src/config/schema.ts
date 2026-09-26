@@ -18,7 +18,21 @@ const wildcard = new Set(['0.0.0.0', '::']);
 const command = z.string().min(1).max(32_000).refine((v) => !v.includes('\0'), 'NUL is forbidden');
 // `status` is a probe and `setup` is a creation-time hook (run once when the console adds
 // a Worktree), so neither is an operator-invokable stack action — see `stackActions`.
-const stackCommands = z.object({ start: command.optional(), stop: command.optional(), build: command.optional(), restart: command.optional(), migrate: command.optional(), status: command.optional(), setup: command.optional() }).strict();
+// A Stack process is a named foreground command (`dev: pnpm dev`) the console runs as a
+// window of its Worktree's Workspace session; its name tags and names that window, so it
+// stays a short tmux-safe token. The
+// map is shaped for several processes but holds one for now. A process derives the
+// start/stop/restart actions and the running state, so it excludes the daemon-style
+// commands that would configure a second way to run the stack.
+const processName = z.string().regex(/^[A-Za-z0-9_-]{1,40}$/u, 'process names are letters, digits, `_` and `-`');
+const stackProcesses = z.record(processName, command).refine(processes => Object.keys(processes).length >= 1, 'processes must declare a process').refine(processes => Object.keys(processes).length <= 1, 'processes holds at most one process for now');
+const processDerivedCommands = ['start', 'stop', 'restart', 'status'] as const;
+const stackCommands = z.object({ start: command.optional(), stop: command.optional(), build: command.optional(), restart: command.optional(), migrate: command.optional(), status: command.optional(), setup: command.optional(), processes: stackProcesses.optional() }).strict().superRefine((commands, context) => {
+  if (commands.processes === undefined) return;
+  for (const name of processDerivedCommands) {
+    if (commands[name] !== undefined) context.addIssue({ code: z.ZodIssueCode.custom, path: [name], message: `\`${name}\` cannot be configured beside \`processes\`, which derives it` });
+  }
+});
 // share preview validation across defaults and checkout overrides
 const previewPort = z.number().int().min(1).max(65535);
 const previewHostname = z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/);
