@@ -83,3 +83,19 @@ export const renderStackOnlyStatuses = (root: HTMLElement) => {
     createElement(ProjectOpen, { stack: { actions: ['start'] }, onStackAction: ignoreStackAction })
   ));
 };
+
+// render a Stack process that is still Starting (up, but its tunnel not yet healthy)
+export const renderStartingProcessControls = (root: HTMLElement) => {
+  const Controls = () => {
+    const [operation, setOperation] = useState<'stop'>();
+    return createElement(ProjectOpen, {
+      stack: { actions: ['start', 'stop', 'restart'], running: true, transition: 'starting', ...(operation === undefined ? {} : { operation }) },
+      onStackAction: async () => {
+        setOperation('stop');
+        // preserve visible progress for assertions
+        await new Promise(resolve => window.setTimeout(resolve, 200));
+      }
+    });
+  };
+  createRoot(root).render(createElement(Controls));
+};

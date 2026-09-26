@@ -294,7 +294,11 @@ within a tick — no config edit or restart.
   session holding its Agents and Terminals, created the way a launch creates one
   when there is none yet), with the same socket, login shell, host `PATH`, and
   Worktree root as the other `commands`. The stack badge reads running, exited or
-  stopped straight from that window — no `status` command. The process belongs
+  stopped straight from that window — no `status` command. Stop sends the
+  process Ctrl+C, waits up to about 10 seconds for it to exit, then closes its
+  window either way (a window that is the last in its session takes that session
+  with it); Restart interrupts it the same way and reruns the command in the
+  same pane, so a Terminal open on it stays attached. The process belongs
   to tmux, so it keeps running across a console restart and is found again by
   the tags on its window, and its pane scrolls back as far as that session's
   `history-limit`. Its name is letters, digits, `_` and `-`,

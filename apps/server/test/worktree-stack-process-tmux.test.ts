@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -10,8 +10,9 @@ import { testConfig, testWorktree } from './helpers/config.js';
 
 // Stack processes against a throwaway tmux server on a private socket: a real long-running
 // command stays live in its tagged window, a fresh service instance (a restarted console)
-// finds it again by those tags, and a command that dies at once leaves a findable dead pane. Unix sockets are blocked in the build sandbox, so this is
-// skipped there and runs on the host and in CI.
+// finds it again by those tags, a command that dies at once leaves a findable dead pane, and
+// Stop ends a command with Ctrl+C (or a kill, when it ignores that). Unix sockets are blocked
+// in the build sandbox, so this is skipped there and runs on the host and in CI.
 
 const tmux = execFileSync('/bin/sh', ['-c', 'command -v tmux || true'], { encoding: 'utf8' }).trim();
 const tmuxSocketsWork = (() => {
@@ -113,6 +114,56 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
     expect((await tmuxAt('list-sessions', '-F', '#{session_name}')).split('\n')).toContain('app#{pid}');
     await vi.waitFor(async () => { expect(await service.state(worktree)).toMatchObject({ running: true }); }, { timeout: 10_000, interval: 100 });
   });
+
+  // The process runs under a login bash and a subshell without job control, so they share one
+  // process group and Ctrl+C reaches the command itself; its INT trap counts each interrupt,
+  // proving it was the signal, not a kill, that ended it. The pane starts in copy mode, as an
+  // operator scrolling its Terminal leaves it, where a bare Ctrl+C would only leave the mode.
+  it('restarts a real command in its own pane and stops it with Ctrl+C, even from copy mode', async () => {
+    const { root, worktree, service, tmuxAt } = await fixture(`trap 'echo interrupted >> interrupted; exit 0' INT; echo "dev up"; while :; do sleep 0.1; done`);
+    await tmuxAt('set-option', '-t', '=fixture:', '@rac_place', worktree.id);
+    const instance = service();
+    const interrupts = async () => (await readFile(join(root, 'interrupted'), 'utf8').catch(() => '')).split('\n').filter(Boolean).length;
+
+    await expect(instance.start(worktree.id, 'start')).resolves.toBe('started');
+    await vi.waitFor(async () => { expect(await tmuxAt('capture-pane', '-p', '-J', '-t', '=fixture:dev')).toContain('dev up'); }, { timeout: 10_000, interval: 100 });
+    const [pane, pid] = (await tmuxAt('display-message', '-p', '-t', '=fixture:dev', '#{pane_id} #{pane_pid}')).split(' ');
+    await tmuxAt('copy-mode', '-t', '=fixture:dev');
+
+    await expect(instance.start(worktree.id, 'restart')).resolves.toBe('started');
+    expect(await interrupts()).toBe(1);
+    // the same pane, running a new process
+    const [restartedPane, restartedPid] = (await tmuxAt('display-message', '-p', '-t', '=fixture:dev', '#{pane_id} #{pane_pid}')).split(' ');
+    expect(restartedPane).toBe(pane);
+    expect(restartedPid).not.toBe(pid);
+    await vi.waitFor(async () => { expect(await instance.state(worktree)).toMatchObject({ running: true, process: { name: 'dev', state: 'running' } }); }, { timeout: 10_000, interval: 100 });
+    await vi.waitFor(async () => { expect(await tmuxAt('capture-pane', '-p', '-J', '-t', '=fixture:dev')).toContain('dev up'); }, { timeout: 10_000, interval: 100 });
+
+    await tmuxAt('copy-mode', '-t', '=fixture:dev');
+    const began = Date.now();
+    await expect(instance.start(worktree.id, 'stop')).resolves.toBe('started');
+    // well inside the 10 s budget, so Ctrl+C ended it rather than the kill
+    expect(Date.now() - began).toBeLessThan(5_000);
+    expect(await interrupts()).toBe(2);
+    await expect(instance.state(worktree)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+    // the Workspace session and its own window outlive the process window
+    expect(await tmuxAt('list-windows', '-t', '=fixture:', '-F', '#{window_name}')).not.toContain('dev');
+  }, 40_000);
+
+  it('kills a real command that ignores Ctrl+C once the stop budget runs out', async () => {
+    const { root, worktree, tmuxAt } = await fixture('trap "" INT; echo "$BASHPID" > pid; echo "stubborn up"; while :; do sleep 0.1; done');
+    await tmuxAt('set-option', '-t', '=fixture:', '@rac_place', worktree.id);
+    const instance = new WorktreeCommandService(testConfig(), { worktreesNow: () => [worktree] } as never, undefined, undefined, undefined, undefined, { timeoutMs: 500, pollMs: 50 });
+
+    await expect(instance.start(worktree.id, 'start')).resolves.toBe('started');
+    await vi.waitFor(async () => { expect(await tmuxAt('capture-pane', '-p', '-J', '-t', '=fixture:dev')).toContain('stubborn up'); }, { timeout: 10_000, interval: 100 });
+    const pid = Number((await readFile(join(root, 'pid'), 'utf8')).trim());
+    await expect(instance.start(worktree.id, 'stop')).resolves.toBe('started');
+    await expect(instance.state(worktree)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+    expect(await tmuxAt('list-windows', '-t', '=fixture:', '-F', '#{window_name}')).not.toContain('dev');
+    // the command itself is gone, not just its window
+    await vi.waitFor(() => { expect(() => process.kill(pid, 0)).toThrow(); }, { timeout: 5_000, interval: 100 });
+  }, 30_000);
 
   it('reports a process stopped before it ever ran, and makes no session by reading', async () => {
     const { worktree, service, tmuxAt } = await fixture('exec sleep 300');

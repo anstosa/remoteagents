@@ -158,3 +158,23 @@ test('shows accessible running, stopped, and unknown states on stack-only contro
   await expect(stopped).toHaveAttribute('title', 'Stack controls · stopped');
   await expect(unknown).toHaveAttribute('title', 'Stack controls · unknown');
 });
+
+// a Start that is still waiting on its tunnel can be stopped or restarted, but not started again
+test('offers Stop and Restart while the stack is Starting', async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderStartingProcessControls } = await import('/e2e/project-open-fixture.tsx');
+    renderStartingProcessControls(document.querySelector<HTMLElement>('#control-root')!);
+  });
+
+  const toggle = page.getByRole('button', { name: 'Stack controls: working' });
+  await toggle.click();
+  await expect(page.getByRole('button', { name: 'Start stack', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Restart stack', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Stop stack', exact: true }).click();
+  // the Stop in flight locks the menu and names itself
+  await toggle.click();
+  await expect(page.getByRole('button', { name: 'Stopping…' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Restart stack', exact: true })).toBeDisabled();
+});

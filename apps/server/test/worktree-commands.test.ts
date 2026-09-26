@@ -70,6 +70,29 @@ describe('worktree stack commands', () => {
     expect(new Set(binaries)).toEqual(new Set(['/host-tools/tmux']));
   });
 
+  // the menu offers Stop while a Start still waits on its tunnel, and a Stop ends that wait; a
+  // Restart starts the stack again, so it is left Starting
+  it('drops a pending Starting transition when a Stop is launched, not a Restart', async () => {
+    delete process.env.RAC_HOST_TMUX_DIR;
+    const daemon = testWorktree({ id: 'proj:/worktrees/cora', projectId: 'proj', path: '/worktrees/cora', commands: { start: 'up', stop: 'down', restart: 'bounce' } });
+    const live = new Set<string>();
+    const command = async (_binary: string, args: string[]) => {
+      if (args.includes('new-session')) { live.add(args[args.indexOf('-s') + 1] ?? ''); return { code: 0, stdout: '' }; }
+      if (args.includes('has-session')) return { code: live.has((args[args.indexOf('-t') + 1] ?? '').replace(/^=/u, '')) ? 0 : 1, stdout: '' };
+      return { code: 1, stdout: '' };
+    };
+    const service = new WorktreeCommandService(config, { worktreesNow: () => [daemon] } as never, command);
+
+    for (const [action, after] of [['restart', { transition: 'starting' }], ['stop', {}]] as const) {
+      await expect(service.start(daemon.id, 'start')).resolves.toBe('started');
+      live.clear();
+      await expect(service.state(daemon)).resolves.toEqual({ transition: 'starting' });
+      await expect(service.start(daemon.id, action)).resolves.toBe('started');
+      live.clear();
+      await expect(service.state(daemon)).resolves.toEqual(after);
+    }
+  });
+
   it('detects a running stack operation but ignores transient status probes (Remove blocker)', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
     const other = testWorktree({ id: 'proj:/worktrees/dana', projectId: 'proj', path: '/worktrees/dana', hostPath: '/home/ubuntu/dana', pinned: false });
@@ -298,13 +321,15 @@ describe('worktree stack commands', () => {
 });
 
 // A small in-memory tmux: sessions with options, one pane per window with its own pane options,
-// the `;` command sequences the service chains (with `\;` as an escaped literal), a `-c` start
-// directory format-expanded as tmux does it (a `#(…)` there would run, and is recorded in
+// a pane that dies on `send-keys C-c` (status 130) unless it `ignoresInterrupt` or is `inMode`
+// (where C-c only leaves the mode, as in copy mode, and `copy-mode -q` leaves it too),
+// `display-message -p` on a pane, the `;` command sequences the service chains (with `\;` as an
+// escaped literal), a `-c` start directory format-expanded as tmux does it (a `#(…)` there would run, and is recorded in
 // `formatCommands`), `set-option` scoped by `-p`/`-w` or else to the target's session, and a
 // `list-panes` that lists every session with `-a`, a session's windows with `-s`, else its
 // active window only. A session target must be `=name:`, as real tmux reads a bare `=name` as
 // a window. `fail` makes every call fail as tmux does when it cannot run.
-type FakeWindow = { id: string; paneId: string; session: string; options: Map<string, string>; paneOptions: Map<string, string>; dead: boolean; status?: number; command: string[]; cwd?: string };
+type FakeWindow = { id: string; paneId: string; session: string; options: Map<string, string>; paneOptions: Map<string, string>; dead: boolean; status?: number; command: string[]; cwd?: string; ignoresInterrupt?: boolean; inMode?: boolean };
 function fakeTmux() {
   const sessions = new Map<string, Map<string, string>>();
   // tmux's stable `$N` session ids, by name
@@ -381,8 +406,32 @@ function fakeTmux() {
     }
     if (verb === 'kill-window') {
       const target = find(value(args, '-t')); const index = target === undefined ? -1 : windows.indexOf(target);
-      if (index >= 0) { const [killed] = windows.splice(index, 1); if (!windows.some(entry => entry.session === killed!.session)) sessions.delete(killed!.session); }
+      if (index < 0) return { code: 1, stdout: '', stderr: "can't find window" };
+      const [killed] = windows.splice(index, 1);
+      if (!windows.some(entry => entry.session === killed!.session)) sessions.delete(killed!.session);
+      events.push(`kill ${killed!.id}`);
       return { code: 0, stdout: '' };
+    }
+    if (verb === 'copy-mode') {
+      const entry = find(value(args, '-t'));
+      if (entry === undefined) return { code: 1, stdout: '', stderr: "can't find pane" };
+      entry.inMode = !args.includes('-q');
+      events.push(`${entry.inMode ? 'enter' : 'leave'}-mode ${entry.paneId}`);
+      return { code: 0, stdout: '' };
+    }
+    if (verb === 'send-keys') {
+      const entry = find(value(args, '-t'));
+      if (entry === undefined) return { code: 1, stdout: '', stderr: "can't find pane" };
+      const keys = commandOf(args, ['-t']);
+      events.push(`keys ${entry.paneId} ${keys.join(' ')}`);
+      if (keys.includes('C-c') && entry.inMode === true) entry.inMode = false;
+      else if (keys.includes('C-c') && !entry.dead && entry.ignoresInterrupt !== true) Object.assign(entry, { dead: true, status: 130 });
+      return { code: 0, stdout: '' };
+    }
+    if (verb === 'display-message') {
+      const entry = find(value(args, '-t'));
+      if (entry === undefined) return { code: 1, stdout: '', stderr: "can't find pane" };
+      return { code: 0, stdout: `${format(args.at(-1)!, entry)}\n` };
     }
     if (verb === 'list-panes') {
       if (sessions.size === 0) return { code: 1, stdout: '', stderr: 'no server running on /tmp/tmux-1000/default' };
@@ -437,12 +486,10 @@ describe('worktree Stack process', () => {
   // native mode unless a test bridges: tmux's default socket and no host PATH
   beforeEach(() => { delete process.env.RAC_HOST_TMUX_DIR; delete process.env.RAC_HOST_PATH; });
 
-  // Stop and Restart join Start once they are implemented, rather than offer actions that fail
-  it('offers Start beside the configured one-shot commands', async () => {
+  it('offers Start, Stop and Restart beside the configured one-shot commands', () => {
     const service = processService(fakeTmux());
-    expect(service.actions(cora)).toEqual(['start', 'build']);
-    expect(service.actions(dana)).toEqual(['start']);
-    await expect(service.start(cora.id, 'stop')).resolves.toBe(false);
+    expect(service.actions(cora)).toEqual(['start', 'stop', 'build', 'restart']);
+    expect(service.actions(dana)).toEqual(['start', 'stop', 'restart']);
   });
 
   it("starts the process in a tagged, remain-on-exit window of the Worktree's Workspace session", async () => {
@@ -606,6 +653,223 @@ describe('worktree Stack process', () => {
     const results = await Promise.all([service.start(cora.id, 'start'), service.start(cora.id, 'start'), service.start(dana.id, 'start')]);
     expect(results).toEqual(['started', 'busy', 'started']);
     expect(processWindows(tmux).map(entry => entry.options.get('@rac_worktree'))).toEqual(['/worktrees/cora', '/worktrees/dana']);
+  });
+
+  // a short graceful-stop budget, so a process that ignores Ctrl+C is killed in milliseconds
+  const stopTiming = { timeoutMs: 60, pollMs: 5 };
+  const stoppingService = (tmux: ReturnType<typeof fakeTmux>, timing = stopTiming) => new WorktreeCommandService(config, { worktreesNow: () => [cora, dana, erin] } as never, tmux.command, undefined, undefined, undefined, timing);
+
+  // an operator scrolling the process's Terminal leaves its pane in copy mode, where a bare
+  // Ctrl+C would only leave the mode; and a process that exits on it is not waited on further
+  it('stops a live process with Ctrl+C, even from copy mode, then removes its window', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    const dev = tmux.seedProcess('cora', '/worktrees/cora', 'dev');
+    dev.inMode = true;
+    const service = stoppingService(tmux, { timeoutMs: 5_000, pollMs: 5 });
+
+    const began = Date.now();
+    await expect(service.start(cora.id, 'stop')).resolves.toBe('started');
+    expect(Date.now() - began).toBeLessThan(1_000);
+    expect(dev.status).toBe(130);
+    // any mode holding the pane is left first, so Ctrl+C reaches the process and not copy mode
+    expect(tmux.events.filter(event => event.startsWith('leave-mode') || event.startsWith('keys') || event.startsWith('kill'))).toEqual([`leave-mode ${dev.paneId}`, `keys ${dev.paneId} C-c`, `kill ${dev.id}`]);
+    // the Workspace's own shell is untouched
+    expect(tmux.windows.map(entry => entry.session)).toEqual(['cora']);
+    await expect(service.state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+  });
+
+  it('kills a process that ignores Ctrl+C once the graceful budget runs out', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    const dev = tmux.seedProcess('cora', '/worktrees/cora', 'dev');
+    dev.ignoresInterrupt = true;
+    const service = stoppingService(tmux);
+
+    const began = Date.now();
+    await expect(service.start(cora.id, 'stop')).resolves.toBe('started');
+    expect(Date.now() - began).toBeGreaterThanOrEqual(stopTiming.timeoutMs);
+    expect(tmux.events.indexOf(`kill ${dev.id}`)).toBeGreaterThan(tmux.events.indexOf(`keys ${dev.paneId} C-c`));
+    await expect(service.state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+  });
+
+  it('clears an exited process by removing its window, without sending Ctrl+C', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    const crashed = tmux.seedProcess('cora', '/worktrees/cora', 'dev', true, 1);
+    const service = stoppingService(tmux);
+
+    await expect(service.start(cora.id, 'stop')).resolves.toBe('started');
+    expect(tmux.events.filter(event => event.startsWith('keys'))).toEqual([]);
+    expect(tmux.events).toContain(`kill ${crashed.id}`);
+    await expect(service.state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+  });
+
+  it('does nothing to stop when there is no process window', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    const windows = [...tmux.windows];
+    await expect(stoppingService(tmux).start(cora.id, 'stop')).resolves.toBe('started');
+    expect(tmux.events.filter(event => event.startsWith('keys') || event.startsWith('kill'))).toEqual([]);
+    expect(tmux.windows).toEqual(windows);
+  });
+
+  // a race or an operator may have left two windows for one process; Stop leaves neither
+  it('stops every window of the process, and none of another Worktree or name', async () => {
+    const tmux = fakeTmux();
+    const first = tmux.seedProcess('cora', '/worktrees/cora', 'dev');
+    const second = tmux.seedProcess('cora', '/worktrees/cora', 'dev', true, 0);
+    const other = tmux.seedProcess('dana', '/worktrees/dana', 'dev');
+    const orphan = tmux.seedProcess('cora', '/worktrees/cora', 'old');
+    await expect(stoppingService(tmux).start(cora.id, 'stop')).resolves.toBe('started');
+    expect(tmux.windows).toEqual([other, orphan]);
+    expect(tmux.events).toEqual(expect.arrayContaining([`kill ${first.id}`, `kill ${second.id}`]));
+  });
+
+  // Restart reruns the command in the same pane, so a Terminal open on it stays attached and a
+  // process window alone in its session never closes that session
+  it('restarts a live process in its own pane: Ctrl+C, then the command again', async () => {
+    const tmux = fakeTmux();
+    const dev = tmux.seedProcess('cora-2', '/worktrees/cora', 'dev');
+    tmux.sessions.get('cora-2')!.set('@rac_place', cora.id);
+    const service = stoppingService(tmux);
+
+    await expect(service.start(cora.id, 'restart')).resolves.toBe('started');
+    expect(tmux.events.indexOf(`respawn ${dev.id}`)).toBeGreaterThan(tmux.events.indexOf(`keys ${dev.paneId} C-c`));
+    expect(tmux.events.filter(event => event.startsWith('kill') || event.startsWith('session'))).toEqual([]);
+    expect(processWindows(tmux)).toEqual([dev]);
+    expect(dev.command.at(-1)).toContain('pnpm dev');
+    await expect(service.state(cora)).resolves.toEqual({ running: true, transition: 'starting', process: { name: 'dev', state: 'running' } });
+  });
+
+  it('restarts a process that ignores Ctrl+C by respawning its pane once the budget runs out', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    const dev = tmux.seedProcess('cora', '/worktrees/cora', 'dev');
+    dev.ignoresInterrupt = true;
+    await expect(stoppingService(tmux).start(cora.id, 'restart')).resolves.toBe('started');
+    expect(tmux.events.indexOf(`respawn ${dev.id}`)).toBeGreaterThan(tmux.events.indexOf(`keys ${dev.paneId} C-c`));
+    expect(processWindows(tmux)).toEqual([dev]);
+  });
+
+  it('restarts an exited process, and starts one that has no window', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    tmux.seedWorkspace('dana', dana.id);
+    const crashed = tmux.seedProcess('cora', '/worktrees/cora', 'dev', true, 1);
+    const service = stoppingService(tmux);
+
+    await expect(service.start(cora.id, 'restart')).resolves.toBe('started');
+    await expect(service.start(dana.id, 'restart')).resolves.toBe('started');
+    expect(tmux.events).toContain(`respawn ${crashed.id}`);
+    expect(processWindows(tmux).map(entry => entry.options.get('@rac_worktree'))).toEqual(['/worktrees/cora', '/worktrees/dana']);
+    await expect(service.state(cora)).resolves.toMatchObject({ running: true, process: { name: 'dev', state: 'running' } });
+    await expect(service.state(dana)).resolves.toMatchObject({ running: true, process: { name: 'dev', state: 'running' } });
+  });
+
+  // a Stop issued while the process still reads as Starting ends that transition with it
+  it('drops the Starting transition when the process is stopped', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    const service = stoppingService(tmux);
+    await service.start(cora.id, 'start');
+    await expect(service.state(cora)).resolves.toMatchObject({ transition: 'starting' });
+    await expect(service.start(cora.id, 'stop')).resolves.toBe('started');
+    await expect(service.state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+  });
+
+  // a one-shot migrate runs beside the process, so stopping the process leaves it Migrating
+  it('keeps a one-shot Migrating transition across a process Stop', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    tmux.seedProcess('cora', '/worktrees/cora', 'dev');
+    const migrating = testWorktree({ ...cora, commands: { processes: { dev: 'pnpm dev' }, migrate: 'pnpm migrate' } });
+    const service = new WorktreeCommandService(config, { worktreesNow: () => [migrating] } as never, async (binary, args) => args.includes('new-session') ? { code: 0, stdout: '' } : await tmux.command(binary, args), undefined, undefined, undefined, stopTiming);
+    await expect(service.start(migrating.id, 'migrate')).resolves.toBe('started');
+    await expect(service.start(migrating.id, 'stop')).resolves.toBe('started');
+    await expect(service.state(migrating)).resolves.toMatchObject({ transition: 'migrating' });
+  });
+
+  // A shell the operator split into the process window carries the window's tags but not the
+  // pane's process role: it never reads as the process, is never sent Ctrl+C or waited on, and
+  // goes with the window
+  it('ignores an operator split of the process window, and removes the window once', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    const dev = tmux.seedProcess('cora', '/worktrees/cora', 'dev', true, 1);
+    const kills: string[][] = [];
+    // the split: the same window and tags, a live shell, and no `@rac_role`
+    const withSplit = async (binary: string, args: string[]) => {
+      if (args[0] === 'kill-window') kills.push(args);
+      const result = await tmux.command(binary, args);
+      if (args[0] !== 'list-panes' || result.code !== 0) return result;
+      const own = result.stdout.split('\n').find(line => line.includes(`\t${dev.paneId}\t`));
+      if (own === undefined) return result;
+      const [sessionId, windowId, , , , place, , name, ...path] = own.split('\t');
+      return { ...result, stdout: `${result.stdout}${[sessionId, windowId, '%99', '0', '', place, '', name, ...path].join('\t')}\n` };
+    };
+    const service = new WorktreeCommandService(config, { worktreesNow: () => [cora] } as never, withSplit, undefined, undefined, undefined, { timeoutMs: 5_000, pollMs: 5 });
+    await expect(service.state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'exited', exitCode: 1 } });
+
+    const began = Date.now();
+    await expect(service.start(cora.id, 'stop')).resolves.toBe('started');
+    expect(Date.now() - began).toBeLessThan(1_000);
+    expect(tmux.events.filter(event => event.startsWith('keys'))).toEqual([]);
+    expect(kills).toEqual([['kill-window', '-t', dev.id]]);
+  });
+
+  // a double-click cannot stop and start the process twice; the badge says what is under way
+  it('reports a Stop in flight as the operation, and refuses another process action meanwhile', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    const service = stoppingService(tmux, { timeoutMs: 5_000, pollMs: 5 });
+    await service.start(cora.id, 'start');
+    await expect(service.state(cora)).resolves.toMatchObject({ transition: 'starting' });
+    // it outlives Ctrl+C until the test lets it exit, well inside the budget
+    const [dev] = processWindows(tmux);
+    dev!.ignoresInterrupt = true;
+
+    const stopping = service.start(cora.id, 'stop');
+    await vi.waitFor(() => { expect(tmux.events).toContain(`keys ${dev!.paneId} C-c`); });
+    // Stopping, not Starting, while the Stop is under way
+    await expect(service.state(cora)).resolves.toEqual({ operation: 'stop', running: true, process: { name: 'dev', state: 'running' } });
+    await expect(service.start(cora.id, 'start')).resolves.toBe('busy');
+    await expect(service.start(cora.id, 'restart')).resolves.toBe('busy');
+    Object.assign(dev!, { dead: true, status: 0 });
+    await expect(stopping).resolves.toBe('started');
+    await expect(service.state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+  });
+
+  it('fails Stop and Restart, without throwing, when tmux cannot run', async () => {
+    const tmux = fakeTmux();
+    tmux.state.fail = true;
+    const service = stoppingService(tmux);
+    await expect(service.start(cora.id, 'stop')).resolves.toBe(false);
+    await expect(service.start(cora.id, 'restart')).resolves.toBe(false);
+  });
+
+  // the operator may close the window themselves while Stop waits on it
+  it('counts a process window that vanished during Stop as stopped', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    const dev = tmux.seedProcess('cora', '/worktrees/cora', 'dev');
+    const service = new WorktreeCommandService(config, { worktreesNow: () => [cora] } as never, async (binary, args) => {
+      if (args[0] === 'copy-mode') tmux.windows.splice(tmux.windows.indexOf(dev), 1);
+      return await tmux.command(binary, args);
+    }, undefined, undefined, undefined, stopTiming);
+    await expect(service.start(cora.id, 'stop')).resolves.toBe('started');
+    await expect(service.state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'stopped' } });
+  });
+
+  it('fails Stop when the process window cannot be removed', async () => {
+    const tmux = fakeTmux();
+    tmux.seedWorkspace('cora', cora.id);
+    tmux.seedProcess('cora', '/worktrees/cora', 'dev');
+    const service = new WorktreeCommandService(config, { worktreesNow: () => [cora] } as never, async (binary, args) => args[0] === 'kill-window' ? { code: 1, stdout: '', stderr: 'kill failed' } : await tmux.command(binary, args), undefined, undefined, undefined, stopTiming);
+    await expect(service.start(cora.id, 'stop')).resolves.toBe(false);
+    // a Restart needs no kill: it reruns the command in the window it keeps
+    await expect(service.start(cora.id, 'restart')).resolves.toBe('started');
+    expect(processWindows(tmux)).toHaveLength(1);
   });
 
   it('runs a one-shot build beside the process on its existing path', async () => {
