@@ -52,7 +52,7 @@ describe('TmuxAdapter capture', () => {
       socket
     }]);
 
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_question}\t#{@rac_console_managed}\t#{@rac_role}\t#{@rac_pane_name}\t#{window_id}\t#{?pane_in_mode,#{pane_mode},}\t#{@rac_place}']);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_question}\t#{@rac_console_managed}\t#{@rac_role}\t#{@rac_pane_name}\t#{window_id}\t#{?pane_in_mode,#{pane_mode},}\t#{@rac_place}\t#{@rac_process}']);
   });
 
   it("reads a pane's session Place mark and marks a session by its id or one of its panes", async () => {
@@ -69,6 +69,17 @@ describe('TmuxAdapter capture', () => {
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'set-option', '-t', '%1', '@rac_place', 'alex:/worktrees/alex']);
     // a control character never reaches tmux
     await expect(adapter.markSessionPlace(socket, '$1', 'a\nb')).resolves.toBe(false);
+  });
+
+  // a Stack process's name is a tag on its window, so an operator's split of that window reads
+  // it too; only the pane marked as the process takes it
+  it("reads a Stack process pane's process name from its window tag", async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValueOnce({ code: 0, stdout: '%1\t$1\tcora\t123\t/worktrees/cora\tnode\t\t\t\t\t\t\t\t\tprocess\t\t@7\t\tcora:/worktrees/cora\tdev\n%2\t$1\tcora\t124\t/worktrees/cora\tzsh\t\t\t\t\t\t\t\t\t\t\t@7\t\tcora:/worktrees/cora\tdev\n', stderr: '' });
+
+    const panes = await new TmuxAdapter().listPanes(socket);
+
+    expect(panes.map(pane => [pane.paneId, pane.role, pane.processName])).toEqual([['%1', 'process', 'dev'], ['%2', undefined, undefined]]);
   });
 
   // a picker (tree-mode) swallows console input and is invisible in the streamed pane, so the

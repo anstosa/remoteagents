@@ -1,6 +1,7 @@
 import { createElement, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ProjectOpen } from '../src/project-open.js';
+import { isStackProcessOutput } from '../src/stack-operations.js';
 
 // render controls during an active operation
 export const renderProjectOpen = (root: HTMLElement) => {
@@ -110,17 +111,28 @@ export const renderExitedProcessStatuses = (root: HTMLElement) => {
   ));
 };
 
+// the Terminals "Open as Terminal" asked for, for a spec to read back
+type OpenedTerminals = { openedTerminals?: { paneId: string; name: string }[] };
+const recordOpenedTerminal = (paneId: string, name: string) => {
+  const record = window as unknown as OpenedTerminals;
+  record.openedTerminals = [...record.openedTerminals ?? [], { paneId, name }];
+};
+
 // render a Stack process Worktree that also has a one-shot `build`: its process output grows a
-// line on every read, so the dialog's polling shows as new lines
+// line on every read, so the dialog's polling shows as new lines. Its pane is `%17`, read through
+// the same check the console's fetch applies.
 export const renderProcessOutputControls = (root: HTMLElement) => {
   let reads = 0;
   createRoot(root).render(createElement(ProjectOpen, {
     stack: { actions: ['start', 'stop', 'build', 'restart'], running: true, process: { name: 'dev', state: 'running' } },
     onStackAction: () => {},
     onStackLog: async () => ({ action: 'build', active: false, startedAt: '2026-09-26T10:00:00.000Z', completedAt: '2026-09-26T10:01:00.000Z', output: 'built in 3s' }),
+    onOpenTerminal: recordOpenedTerminal,
     onProcessOutput: async () => {
       reads += 1;
-      return { name: 'dev', state: 'running', output: ['ready in 120ms', ...Array.from({ length: 80 }, (_, index) => `compiled module ${index + 1}`), ...Array.from({ length: reads }, (_, index) => `request ${index + 1}`)].join('\n') };
+      const payload: unknown = { name: 'dev', state: 'running', paneId: '%17', output: ['ready in 120ms', ...Array.from({ length: 80 }, (_, index) => `compiled module ${index + 1}`), ...Array.from({ length: reads }, (_, index) => `request ${index + 1}`)].join('\n') };
+      if (!isStackProcessOutput(payload)) throw new Error('invalid process output');
+      return payload;
     }
   }));
 };
@@ -131,6 +143,7 @@ export const renderExitedProcessOutputControls = (root: HTMLElement) => {
     stack: { actions: ['start', 'stop', 'restart'], running: false, process: { name: 'dev', state: 'exited', exitCode: 127 } },
     onStackAction: () => {},
     onStackLog: async () => undefined,
+    onOpenTerminal: recordOpenedTerminal,
     onProcessOutput: async () => ({ name: 'dev', state: 'exited', exitCode: 127, output: 'bash: line 1: pnpm: command not found' })
   }));
 };

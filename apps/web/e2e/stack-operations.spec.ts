@@ -232,6 +232,23 @@ test("shows a Stack process's output in the log dialog, refreshing while it is o
   await expect(commandDialog.locator('header strong')).toHaveText('Build stack output');
 });
 
+test("opens a running Stack process's own pane as a Terminal from its output dialog", async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderProcessOutputControls } = await import('/e2e/project-open-fixture.tsx');
+    renderProcessOutputControls(document.querySelector<HTMLElement>('#control-root')!);
+  });
+
+  await page.getByRole('button', { name: 'Stack controls: running' }).click();
+  await page.getByRole('button', { name: 'Show dev output' }).click();
+  const dialog = page.getByRole('dialog', { name: 'dev output' });
+  await dialog.getByRole('button', { name: 'Open as Terminal' }).click();
+  // it asks for the process pane, named for the process, and gets out of the way
+  await expect(dialog).toHaveCount(0);
+  expect(await page.evaluate(() => (window as unknown as { openedTerminals?: unknown }).openedTerminals)).toEqual([{ paneId: '%17', name: 'dev' }]);
+});
+
 test('offers no last command output without one-shot commands, and shows an exited process with its code', async ({ page }) => {
   await page.goto('/');
   await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
@@ -246,4 +263,6 @@ test('offers no last command output without one-shot commands, and shows an exit
   const dialog = page.getByRole('dialog', { name: 'dev output' });
   await expect(dialog.locator('pre')).toHaveText('bash: line 1: pnpm: command not found');
   await expect(dialog.locator('footer')).toHaveText('Exited (127)');
+  // a dead pane is no live Terminal
+  await expect(dialog.getByRole('button', { name: 'Open as Terminal' })).toHaveCount(0);
 });

@@ -302,7 +302,10 @@ within a tick — no config edit or restart.
   to tmux, so it keeps running across a console restart and is found again by
   the tags on its window, and its pane scrolls back as far as that session's
   `history-limit`. The stack menu's "Show `<name>` output" opens that history
-  in the log dialog and keeps it refreshing; "Show last command output" is the
+  in the log dialog and keeps it refreshing; while the process runs, that
+  dialog's "Open as Terminal" opens its pane as a live Terminal panel, where
+  dev-server hotkeys such as Vite's `r` work. The pane is also in the Place's
+  Terminal switcher, named for the process. "Show last command output" is the
   latest `build` or `migrate` run. A process name is letters, digits, `_` and `-`,
   and the map holds one process for now. A process derives the `start`, `stop`,
   and `restart` actions, so `processes` cannot sit beside `start`, `stop`,

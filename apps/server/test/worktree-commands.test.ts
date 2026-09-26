@@ -633,10 +633,12 @@ describe('worktree Stack process', () => {
     split.output = 'operator shell';
     const service = processService(tmux);
 
-    await expect(service.processOutput(cora.id, 'dev')).resolves.toEqual({ name: 'dev', state: 'running', output: 'ready in 120ms\nlocal' });
+    // the running pane's id, so "Open as Terminal" can stream the process itself
+    await expect(service.processOutput(cora.id, 'dev')).resolves.toEqual({ name: 'dev', state: 'running', paneId: dev.paneId, output: 'ready in 120ms\nlocal' });
     expect(tmux.calls.find(args => args[0] === 'capture-pane')).toEqual(['capture-pane', '-p', '-J', '-S', '-', '-t', dev.paneId]);
   });
 
+  // a dead pane is not one of its Place's streamable panes, so it offers no Terminal
   it("keeps an exited process's last output with its exit code, and reads a stopped one as empty", async () => {
     const tmux = fakeTmux();
     tmux.seedProcess('dana', '/worktrees/dana', 'dev', true, 127).output = 'bash: line 1: pnpm: command not found\n';

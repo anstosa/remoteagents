@@ -2448,20 +2448,24 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     const target = await discovery.target(agent.id);
     return target === undefined ? undefined : { socket: target.socket, session: agentTmuxSession(target.agent) };
   };
-  // shape one Worktree pane for the wire: its id, session, role/name markers and the busy
-  // flag for a Console shell, and whether it is a live Agent's own pane (the picker disables
-  // it). `agentIds` holds Agent ids, which are `${fingerprint}:${paneId}` — the same key this
-  // rebuilds from the pane, so a pane backing a live Agent is matched.
-  const worktreePaneView = (pane: Pane, agentIds: ReadonlySet<string>) => ({
-    paneId: pane.paneId, session: pane.sessionId, ...(pane.sessionName ? { sessionName: pane.sessionName } : {}),
-    // the pane's tmux window, so the picker can disable every pane sharing a window with an
-    // open Terminal (one Size claim per window, the invariant the socket's claim relies on)
-    ...(pane.windowId ? { window: pane.windowId } : {}),
-    ...(pane.role ? { role: pane.role } : {}), ...(pane.paneName ? { name: pane.paneName } : {}),
-    command: pane.command, path: pane.path, title: pane.title,
-    agent: agentIds.has(`${pane.socket.fingerprint}:${pane.paneId}`),
-    ...(pane.role === 'shell' ? { busy: launch.consoleShellBusy(pane) } : {})
-  });
+  // shape one Worktree pane for the wire: its id, session, role/name markers (a Stack
+  // process's pane is named for its process) and the busy flag for a Console shell, and
+  // whether it is a live Agent's own pane (the picker disables it). `agentIds` holds Agent
+  // ids, which are `${fingerprint}:${paneId}` — the same key this rebuilds from the pane, so
+  // a pane backing a live Agent is matched.
+  const worktreePaneView = (pane: Pane, agentIds: ReadonlySet<string>) => {
+    const name = pane.paneName ?? pane.processName;
+    return {
+      paneId: pane.paneId, session: pane.sessionId, ...(pane.sessionName ? { sessionName: pane.sessionName } : {}),
+      // the pane's tmux window, so the picker can disable every pane sharing a window with an
+      // open Terminal (one Size claim per window, the invariant the socket's claim relies on)
+      ...(pane.windowId ? { window: pane.windowId } : {}),
+      ...(pane.role ? { role: pane.role } : {}), ...(name ? { name } : {}),
+      command: pane.command, path: pane.path, title: pane.title,
+      agent: agentIds.has(`${pane.socket.fingerprint}:${pane.paneId}`),
+      ...(pane.role === 'shell' ? { busy: launch.consoleShellBusy(pane) } : {})
+    };
+  };
   // list every pane the console may stream for a Place (its Agent's session, its Console
   // shells, idle landing shells), a read behind the read guard (spec, Console shells)
   app.get('/api/worktrees/:id/panes', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (request, reply) => {

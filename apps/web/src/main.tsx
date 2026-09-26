@@ -6673,6 +6673,8 @@ function WorkspaceToolbar({ workspace, hasAgent = false, launch, conversations, 
   const place = workspace?.place;
   const worktreeId = place?.worktreeId;
   const processName = place?.stack?.process?.name;
+  // the Place whose Terminals a Stack process's "Open as Terminal" joins
+  const placeId = place?.id;
   // a Worktree shows its git status, a directory-Project or Scratch Place its path; an Agent the
   // dashboard placed nowhere (no Place id) still shows the git status discovery found for it
   const hasGit = worktreeId !== undefined || (place?.id === undefined && (place?.branch !== undefined || place?.gitStatus !== undefined));
@@ -6695,7 +6697,7 @@ function WorkspaceToolbar({ workspace, hasAgent = false, launch, conversations, 
     {phone && !settingsSplit?.open && workspace?.carousel !== undefined && workspace.carousel.panels.length > 1 ? <PanelDots carousel={workspace.carousel} /> : <span className="toolbar-spacer" aria-hidden="true" />}
     {cleanupControl}
     {workspace !== undefined && (hasGit ? <WorkspaceGitStatus workspace={workspace} actions={git} onToggle={onGitToggle} /> : place?.path !== undefined && <span className="toolbar-path" title={place.path}>{place.path}</span>)}
-    {workspace !== undefined && <ProjectOpen url={place?.projectUrl} stack={place?.stack} browserOpen={workspace.browser.open} onBrowserToggle={workspace.browser.toggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} onProcessOutput={worktreeId === undefined || processName === undefined ? undefined : () => processOutput(worktreeId, processName)} />}
+    {workspace !== undefined && <ProjectOpen url={place?.projectUrl} stack={place?.stack} browserOpen={workspace.browser.open} onBrowserToggle={workspace.browser.toggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} onProcessOutput={worktreeId === undefined || processName === undefined ? undefined : () => processOutput(worktreeId, processName)} onOpenTerminal={placeId === undefined ? undefined : (paneId, name) => { /* on a phone an already-open panel is scrolled to; a new one comes into view as it opens */ workspace.carousel?.show(paneId); requestTerminalFocus(placeId, { paneId, name }); }} />}
     {menu !== undefined && <PlaceMenu {...menu} panels={menuPanels} />}
   </div></section>;
 }

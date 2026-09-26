@@ -18,8 +18,9 @@ const worktreeToken = (worktree: Pick<Worktree, 'projectId' | 'path'>) => `${wor
 type Command = (binary: string, args: string[]) => Promise<{ code: number; stdout: string; stderr?: string }>;
 type StackOperation = { action: StackAction; session: string; startedAt: string; completedAt?: string; logFile?: string };
 export type StackOperationLog = { action: StackAction; active: boolean; startedAt: string; completedAt?: string; output: string };
-// a Stack process's state beside the recent output its pane holds
-export type StackProcessOutput = StackProcessState & { output: string };
+// a Stack process's state beside the recent output its pane holds, and while it runs the
+// pane's id, which "Open as Terminal" streams
+export type StackProcessOutput = StackProcessState & { paneId?: string; output: string };
 const maxStackLogBytes = 128 * 1024;
 // a worktree `setup` runs once at creation and may install dependencies, so the creation
 // flow waits far longer on it than on a status probe before giving up
@@ -242,8 +243,10 @@ export class WorktreeCommandService {
 
   // "Show <name> output": a Capture of the process pane (its full history, wrapped lines joined)
   // as plain text, cut to a stack log's tail, beside the process's state. A pane that no longer
-  // exists has nothing to show. Undefined for an unknown Worktree or a name it does not
-  // configure; 'unavailable' when tmux cannot answer, rather than throwing into the request.
+  // exists has nothing to show. Only a live pane gives its id: tmux reports no cwd for a dead
+  // one, so the Place pane listing, and with it the Terminal stream, leaves it out. Undefined
+  // for an unknown Worktree or a name it does not configure; 'unavailable' when tmux cannot
+  // answer, rather than throwing into the request.
   async processOutput(worktreeId: string, name: string): Promise<StackProcessOutput | 'unavailable' | undefined> {
     const worktree = worktreeById(this.discovery.worktreesNow(), worktreeId);
     const declared = worktree === undefined ? undefined : stackProcess(worktree);
@@ -256,7 +259,7 @@ export class WorktreeCommandService {
     // a window a Stop closed after the listing has stopped, like one never listed
     if (captured.code !== 0) return /can't find pane/u.test(captured.stderr ?? '') ? { name, state: 'stopped', output: '' } : 'unavailable';
     // a Capture pads the screen below the last line with blank rows
-    return { ...processStateOf(window, name), output: outputTail(plainLog(captured.stdout).trimEnd()) };
+    return { ...processStateOf(window, name), ...(window.dead ? {} : { paneId: window.paneId }), output: outputTail(plainLog(captured.stdout).trimEnd()) };
   }
 
   // A Worktree with a Stack process reads `running` straight from the process pane and

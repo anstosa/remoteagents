@@ -966,6 +966,15 @@ describe('Console shells server lifecycle', () => {
     } finally { await app.close(); }
   }, 15_000);
 
+  it('names a Stack process pane for its process', async () => {
+    const processPane = { paneId: '%4', sessionId: '$1', windowId: '@4', pid: 4, path: '/worktrees/cora/web', command: 'node', role: 'process', processName: 'dev', title: '', socket };
+    const { app, headers } = await start({ launch: { placePanes: async () => [processPane], consoleShellBusy } });
+    try {
+      const response = await app.inject({ method: 'GET', url: '/api/worktrees/cora/panes', headers: { host: headers.host, cookie: headers.cookie } });
+      expect(response.json().panes).toEqual([{ paneId: '%4', session: '$1', window: '@4', role: 'process', name: 'dev', command: 'node', path: '/worktrees/cora/web', title: '', agent: false }]);
+    } finally { await app.close(); }
+  }, 15_000);
+
   it('opens a Console shell beside a live Agent, in the Agent session', async () => {
     const agent = stated({ id: 'socket:%1', paneId: '%1', sessionId: 'socket:$1', socketFingerprint: 'socket', home: '/worktrees/cora', title: 'Ready', placeId: 'cora', worktreeId: 'cora' });
     const createConsoleShellWindow = vi.fn(async () => '%9');

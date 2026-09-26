@@ -1,8 +1,9 @@
 export type StackAction = 'start'|'stop'|'build'|'restart'|'migrate';
 // a Worktree's Stack process as its pane shows it; `exitCode` is absent after a signal
 export type StackProcessState = { name: string; state: 'running'|'exited'|'stopped'; exitCode?: number };
-// what "Show <name> output" reads: the process's state and its pane's recent output
-export type StackProcessOutput = StackProcessState & { output: string };
+// what "Show <name> output" reads: the process's state and its pane's recent output, and while
+// it runs the pane's id, which "Open as Terminal" opens
+export type StackProcessOutput = StackProcessState & { paneId?: string; output: string };
 // the actions a Stack process derives; any other action is a one-shot command (mirrors the
 // server's list in worktree-commands/service.ts)
 export const processActions: readonly StackAction[] = ['start', 'stop', 'restart'];
@@ -48,5 +49,6 @@ export const isStackProcessOutput = (value: unknown): value is StackProcessOutpu
   return typeof candidate.name === 'string'
     && (candidate.state === 'running' || candidate.state === 'exited' || candidate.state === 'stopped')
     && (candidate.exitCode === undefined || typeof candidate.exitCode === 'number')
+    && (candidate.paneId === undefined || (typeof candidate.paneId === 'string' && /^%\d+$/u.test(candidate.paneId)))
     && typeof candidate.output === 'string';
 };

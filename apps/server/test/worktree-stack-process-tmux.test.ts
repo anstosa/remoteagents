@@ -6,6 +6,7 @@ import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorktreeCommandService } from '../src/worktree-commands/service.js';
 import { run } from '../src/tmux/command.js';
+import { TmuxAdapter } from '../src/tmux/adapter.js';
 import { testConfig, testWorktree } from './helpers/config.js';
 
 // Stack processes against a throwaway tmux server on a private socket: a real long-running
@@ -59,12 +60,14 @@ async function fixture(command: string) {
   const worktree = testWorktree({ id: `proj:${root}`, projectId: 'proj', path: root, commands: { processes: { dev: command } } });
   const service = () => new WorktreeCommandService(testConfig(), { worktreesNow: () => [worktree] } as never);
   const tmuxAt = async (...args: string[]) => (await run(tmux, ['-S', socket, ...args])).stdout.trim();
-  return { root, worktree, service, tmuxAt };
+  // the Place pane listing the console streams Terminals from, over this server's socket
+  const listPanes = () => new TmuxAdapter().listPanes({ fingerprint: 'fixture', path: socket, device: 0, inode: 0 });
+  return { root, worktree, service, tmuxAt, listPanes };
 }
 
 describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
   it("keeps a long-running command live in a tagged window of the Workspace session, and a new instance finds it", async () => {
-    const { root, worktree, service, tmuxAt } = await fixture('echo "dev server up in $PWD"; exec sleep 300');
+    const { root, worktree, service, tmuxAt, listPanes } = await fixture('echo "dev server up in $PWD"; exec sleep 300');
     // the fixture session is this Worktree's Workspace, as a launch or a claim marks one
     await tmuxAt('set-option', '-t', '=fixture:', '@rac_place', worktree.id);
     const first = service();
@@ -78,7 +81,11 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
     expect(await tmuxAt('list-sessions', '-F', '#{session_name}')).toBe('fixture');
     await vi.waitFor(async () => { expect(await tmuxAt('display-message', '-p', '-t', '=fixture:dev', '#{@rac_worktree}|#{@rac_process}|#{remain-on-exit}|#{pane_dead}|#{@rac_role}')).toBe(`${root}|dev|on|0|process`); }, { timeout: 10_000, interval: 100 });
     expect(await first.state(worktree)).toMatchObject({ running: true, process: { name: 'dev', state: 'running' } });
-    expect(await first.processOutput(worktree.id, 'dev')).toMatchObject({ state: 'running', output: expect.stringContaining(`dev server up in ${root}`) });
+    const pane = await tmuxAt('display-message', '-p', '-t', '=fixture:dev', '#{pane_id}');
+    expect(await first.processOutput(worktree.id, 'dev')).toMatchObject({ state: 'running', paneId: pane, output: expect.stringContaining(`dev server up in ${root}`) });
+    // the Place pane listing, which admits a pane to a Terminal, holds it named for its process
+    const listed = await listPanes();
+    expect(listed.find(candidate => candidate.paneId === pane)).toMatchObject({ role: 'process', processName: 'dev', placeMark: worktree.id });
 
     // a restarted console keeps no memory of the process yet finds it, and Start is a no-op
     const second = service();
@@ -91,7 +98,7 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
   it('makes a Workspace session for a Worktree that has none, keeps a command that dies at once as a dead pane with its output, and Start reruns it there', async () => {
     // an `exit` runs a login shell's logout script, which on Debian clears the screen; each run
     // leaves a line in `runs` (the command runs in the checkout) so a rerun can be counted
-    const { root, worktree, service, tmuxAt } = await fixture('echo run >> runs; echo "missing binary"; exit 3');
+    const { root, worktree, service, tmuxAt, listPanes } = await fixture('echo run >> runs; echo "missing binary"; exit 3');
     const runs = async () => (await readFile(join(root, 'runs'), 'utf8').catch(() => '')).split('\n').filter(Boolean).length;
     const instance = service();
 
@@ -103,11 +110,15 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
     await vi.waitFor(async () => { expect(await instance.state(worktree)).toEqual({ running: false, process: { name: 'dev', state: 'exited', exitCode: 3 } }); }, { timeout: 10_000, interval: 100 });
     expect(await tmuxAt('capture-pane', '-p', '-J', '-S', '-', '-t', `=${session}:dev`)).toContain('missing binary');
     // "Show dev output" reads the same dead pane, with its code
-    expect(await instance.processOutput(worktree.id, 'dev')).toMatchObject({ name: 'dev', state: 'exited', exitCode: 3, output: expect.stringContaining('missing binary') });
+    const exited = await instance.processOutput(worktree.id, 'dev');
+    expect(exited).toMatchObject({ name: 'dev', state: 'exited', exitCode: 3, output: expect.stringContaining('missing binary') });
+    // a dead pane reports no cwd, so the Place pane listing drops it and it offers no Terminal
+    expect(exited).not.toHaveProperty('paneId');
+    const pane = await tmuxAt('display-message', '-p', '-t', `=${session}:dev`, '#{pane_id}');
+    expect((await listPanes()).map(candidate => candidate.paneId)).not.toContain(pane);
     expect(await runs()).toBe(1);
 
     // Start after the crash respawns the command in the same pane, not a second window
-    const pane = await tmuxAt('display-message', '-p', '-t', `=${session}:dev`, '#{pane_id}');
     await expect(instance.start(worktree.id, 'start')).resolves.toBe('started');
     await vi.waitFor(async () => { expect(await runs()).toBe(2); }, { timeout: 10_000, interval: 100 });
     await vi.waitFor(async () => { expect(await instance.state(worktree)).toEqual({ running: false, process: { name: 'dev', state: 'exited', exitCode: 3 } }); }, { timeout: 10_000, interval: 100 });
