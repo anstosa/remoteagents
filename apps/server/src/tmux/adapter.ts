@@ -152,11 +152,11 @@ export class TmuxAdapter {
 
   // read pane identity and console-owned launch metadata
   async listPanes(socket: SocketRef): Promise<Pane[]> {
-    const out = await run(this.binary, ['-S', socket.path, 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_question}\t#{@rac_console_managed}\t#{@rac_role}\t#{@rac_pane_name}\t#{window_id}\t#{?pane_in_mode,#{pane_mode},}']);
+    const out = await run(this.binary, ['-S', socket.path, 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_question}\t#{@rac_console_managed}\t#{@rac_role}\t#{@rac_pane_name}\t#{window_id}\t#{?pane_in_mode,#{pane_mode},}\t#{@rac_place}']);
     if (out.code !== 0) return [];
     return out.stdout.trim().split('\n').filter(Boolean).flatMap((line) => {
-      const [id, session, name, pid, path, command, title, displayLabel, startCommand, attention, sessionRef, sandboxed, question, consoleManaged, role, paneName, windowId, mode] = line.split('\t');
-      return paneId.test(id) && sessionId.test(session) && name && /^\d+$/.test(pid) && path ? [{ paneId: id, sessionId: session, sessionName: name, pid: Number(pid), path, command: command ?? '', title: title ?? '', ...(displayLabel ? { displayLabel } : {}), ...(startCommand ? { startCommand } : {}), ...(attention ? { reportedAttention: attention } : {}), ...(sessionRef ? { reportedSession: sessionRef } : {}), ...(sandboxed ? { reportedSandboxed: sandboxed } : {}), ...(question ? { reportedQuestion: question } : {}), ...(consoleManaged === '1' ? { consoleManaged: true } : {}), ...(role ? { role } : {}), ...(paneName ? { paneName } : {}), ...(windowId ? { windowId } : {}), ...(mode && !inputBlockingPaneModes.has(mode) ? { paneMode: mode } : {}), socket }] : [];
+      const [id, session, name, pid, path, command, title, displayLabel, startCommand, attention, sessionRef, sandboxed, question, consoleManaged, role, paneName, windowId, mode, placeMark] = line.split('\t');
+      return paneId.test(id) && sessionId.test(session) && name && /^\d+$/.test(pid) && path ? [{ paneId: id, sessionId: session, sessionName: name, pid: Number(pid), path, command: command ?? '', title: title ?? '', ...(displayLabel ? { displayLabel } : {}), ...(startCommand ? { startCommand } : {}), ...(attention ? { reportedAttention: attention } : {}), ...(sessionRef ? { reportedSession: sessionRef } : {}), ...(sandboxed ? { reportedSandboxed: sandboxed } : {}), ...(question ? { reportedQuestion: question } : {}), ...(consoleManaged === '1' ? { consoleManaged: true } : {}), ...(role ? { role } : {}), ...(paneName ? { paneName } : {}), ...(windowId ? { windowId } : {}), ...(mode && !inputBlockingPaneModes.has(mode) ? { paneMode: mode } : {}), ...(placeMark ? { placeMark } : {}), socket }] : [];
     });
   }
 
@@ -178,6 +178,14 @@ export class TmuxAdapter {
       option => run(this.binary, ['-S', socket.path, 'set-option', '-p', '-t', pane, '-u', option])
     ));
     return results.every(result => result.code === 0);
+  }
+
+  // Mark a session as the Workspace of a Place: `@rac_place` is a session option, so every pane
+  // of the session, in any window made later too, reads it (`Pane.placeMark`). `target` is the
+  // session id or one of its pane ids.
+  async markSessionPlace(socket: SocketRef, target: string, placeId: string): Promise<boolean> {
+    if ((!sessionId.test(target) && !paneId.test(target)) || placeId.length === 0 || /[\0\r\n]/u.test(placeId)) return false;
+    return (await run(this.binary, ['-S', socket.path, 'set-option', '-t', target, '@rac_place', placeId])).code === 0;
   }
 
   // Mark a pane as a Console shell (ADR 0001 style): `@rac_role=shell` so launch adoption,

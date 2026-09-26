@@ -52,7 +52,23 @@ describe('TmuxAdapter capture', () => {
       socket
     }]);
 
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_question}\t#{@rac_console_managed}\t#{@rac_role}\t#{@rac_pane_name}\t#{window_id}\t#{?pane_in_mode,#{pane_mode},}']);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_id}\t#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_title}\t#{@rac_display_label}\t#{pane_start_command}\t#{@rac_attention}\t#{@rac_session}\t#{@rac_sandboxed}\t#{@rac_question}\t#{@rac_console_managed}\t#{@rac_role}\t#{@rac_pane_name}\t#{window_id}\t#{?pane_in_mode,#{pane_mode},}\t#{@rac_place}']);
+  });
+
+  it("reads a pane's session Place mark and marks a session by its id or one of its panes", async () => {
+    const socket = { fingerprint: 'socket', path: '/tmp/tmux', device: 1, inode: 2 };
+    run.mockResolvedValueOnce({ code: 0, stdout: '%1\t$1\talex\t123\t/srv/elsewhere\tzsh\t\t\t\t\t\t\t\t\tshell\t\t@7\t\talex:/worktrees/alex\n', stderr: '' });
+    const adapter = new TmuxAdapter();
+
+    await expect(adapter.listPanes(socket)).resolves.toMatchObject([{ paneId: '%1', path: '/srv/elsewhere', role: 'shell', placeMark: 'alex:/worktrees/alex' }]);
+
+    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    await expect(adapter.markSessionPlace(socket, '$1', 'alex:/worktrees/alex')).resolves.toBe(true);
+    await expect(adapter.markSessionPlace(socket, '%1', 'alex:/worktrees/alex')).resolves.toBe(true);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'set-option', '-t', '$1', '@rac_place', 'alex:/worktrees/alex']);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/tmp/tmux', 'set-option', '-t', '%1', '@rac_place', 'alex:/worktrees/alex']);
+    // a control character never reaches tmux
+    await expect(adapter.markSessionPlace(socket, '$1', 'a\nb')).resolves.toBe(false);
   });
 
   // a picker (tree-mode) swallows console input and is invisible in the streamed pane, so the

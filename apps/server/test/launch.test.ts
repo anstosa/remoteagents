@@ -75,7 +75,7 @@ describe('LaunchService', () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const worktree = cora();
     const calls: string[][] = [];
-    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', pane, buffer, command]); return true; }, enter: async (_socket: SocketRef, pane: string) => { calls.push(['enter', pane]); return true; } };
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', placeMark: worktree.id, socket }], pastePrompt: async (_socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', pane, buffer, command]); return true; }, enter: async (_socket: SocketRef, pane: string) => { calls.push(['enter', pane]); return true; } };
     const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree]);
 
     await expect(service.resume(worktree.id)).resolves.toBe(true);
@@ -88,7 +88,7 @@ describe('LaunchService', () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const worktree = cora();
     const calls: string[][] = [];
-    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', pane, buffer, command]); return true; }, enter: async (_socket: SocketRef, pane: string) => { calls.push(['enter', pane]); return true; } };
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', placeMark: worktree.id, socket }], pastePrompt: async (_socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', pane, buffer, command]); return true; }, enter: async (_socket: SocketRef, pane: string) => { calls.push(['enter', pane]); return true; } };
     const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree]);
 
     // any launchable codex worktree can resume through its Adapter; a template is no longer configured
@@ -109,7 +109,7 @@ describe('LaunchService', () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const worktree = cora();
     const calls: string[][] = [];
-    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', pane, buffer, command]); return true; }, enter: async (_socket: SocketRef, pane: string) => { calls.push(['enter', pane]); return true; } };
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', placeMark: worktree.id, socket }], pastePrompt: async (_socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', pane, buffer, command]); return true; }, enter: async (_socket: SocketRef, pane: string) => { calls.push(['enter', pane]); return true; } };
     const config = { adapters: { claude: { program: '/usr/local/bin/claude', args: [], env: {}, launchable: true } }, projects: [] };
     const store = { launchProfiles: async () => ({}), rememberLaunchProfile: async () => {} };
     const service = new LaunchService(config as never, { find: async () => [socket] }, panes as never, undefined, store as never, () => [worktree]);
@@ -316,7 +316,7 @@ describe('LaunchService', () => {
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const worktree = cora();
-    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async () => true, enter: async () => true };
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', placeMark: worktree.id, socket }], pastePrompt: async () => true, enter: async () => true };
     const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree]);
 
     await expect((service as unknown as { launchWorktree(id: string, input: unknown): Promise<boolean> }).launchWorktree('cora', { mode: 'fresh', sandboxed: true })).resolves.toBe(true);
@@ -333,6 +333,8 @@ describe('LaunchService', () => {
     await expect(service.launch(worktree.id)).resolves.toBe(true);
 
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['new-session', '-d', '-s', 'ferry.fyi', '-c', worktree.hostPath]));
+    // the new session is the Worktree's Workspace
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-t', 'ferry.fyi', '@rac_place', 'ferry-fyi']);
   });
 
   it('moves a colliding named session aside before launching a worktree agent', async () => {
@@ -362,6 +364,7 @@ describe('LaunchService', () => {
     // the idle shell is a plain host new-session (no displacement), in the worktree dir
     const created = run.mock.calls.find(call => (call[1] as string[]).includes('new-session'))?.[1] as string[];
     expect(created.slice(0, 8)).toEqual(['-S', '/host-tmux/default', 'new-session', '-d', '-s', 'owen', '-c', '/home/ubuntu/owen']);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-t', 'owen', '@rac_place', 'owen']);
     expect(run.mock.calls.some(call => (call[1] as string[]).includes('rename-session'))).toBe(false);
   });
 
@@ -437,6 +440,7 @@ describe('LaunchService', () => {
     // launched under a suffixed name via the node runner, never the taken base name
     const created = run.mock.calls.find(call => (call[1] as string[]).includes('new-session'))?.[1] as string[];
     expect(created.slice(0, 5)).toEqual(['new-session', '-d', '-s', 'owen-2', process.execPath]);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['set-option', '-t', 'owen-2', '@rac_place', 'owen']);
   });
 
   it('preserves ordinary worktree names and removes tmux target separators', () => {
@@ -476,7 +480,7 @@ describe('LaunchService', () => {
     const worktree = cora({ id: 'alex', label: 'Alex', path: '/worktrees/alex', hostPath: '/home/ubuntu/alex' });
     const calls: string[][] = [];
     const finder = { find: async () => [socket] };
-    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: '/home/ubuntu/alex/src', command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', pane, buffer, command]); return true; }, enter: async (_socket: SocketRef, pane: string) => { calls.push(['enter', pane]); return true; } };
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: '/home/ubuntu/alex/src', command: 'zsh', title: '', placeMark: worktree.id, socket }], pastePrompt: async (_socket: SocketRef, pane: string, buffer: string, command: string) => { calls.push(['paste', pane, buffer, command]); return true; }, enter: async (_socket: SocketRef, pane: string) => { calls.push(['enter', pane]); return true; } };
     // the subdirectory shares the worktree's toplevel, so it belongs to the worktree
     const paneRoot = async (path: string) => path === '/home/ubuntu/alex/src' ? '/home/ubuntu/alex' : path;
     const service = new LaunchService(codex, finder, panes as never, paneRoot, undefined, () => [worktree]);
@@ -491,7 +495,7 @@ describe('LaunchService', () => {
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const worktree = cora({ id: 'alex', label: 'Alex', path: '/worktrees/alex', hostPath: '/home/ubuntu/alex' });
-    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: '/home/ubuntu/alex/.claude/worktrees/3', command: 'zsh', title: '', socket }], pastePrompt: vi.fn(), enter: vi.fn() };
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: '/home/ubuntu/alex/.claude/worktrees/3', command: 'zsh', title: '', placeMark: worktree.id, socket }], pastePrompt: vi.fn(), enter: vi.fn() };
     // the nested checkout is its own git worktree — its toplevel is itself, not alex
     const paneRoot = async (path: string) => path;
     const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, paneRoot, undefined, () => [worktree]);
@@ -510,7 +514,7 @@ describe('LaunchService', () => {
     const calls: string[][] = [];
     const started: string[] = [];
     const finder = { find: async () => [first, second] };
-    const pane = (socket: SocketRef, id: string) => ({ paneId: id, sessionId: '$1', pid: 123, path: '/home/ubuntu/alex', command: 'zsh', title: '', socket });
+    const pane = (socket: SocketRef, id: string) => ({ paneId: id, sessionId: '$1', pid: 123, path: '/home/ubuntu/alex', command: 'zsh', title: '', placeMark: worktree.id, socket });
     const panes = {
       // the first socket answers last; a sequential scan would still finish it first, a concurrent scan must not wait to start the second
       listPanes: async (socket: SocketRef) => { started.push(socket.fingerprint); await new Promise(resolve => setTimeout(resolve, socket === first ? 20 : 0)); return [pane(socket, socket === first ? '%1' : '%2')]; },
@@ -534,7 +538,7 @@ describe('LaunchService', () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const worktree = cora({ id: 'owen', label: 'Owen', path: '/worktrees/owen', hostPath: '/home/ubuntu/owen' });
     const panes = {
-      listPanes: async () => [{ paneId: '%4', sessionId: '$1', sessionName: 'operator-bash', pid: 123, path: '/home/ubuntu/owen', command: 'bash', title: '', socket }],
+      listPanes: async () => [{ paneId: '%4', sessionId: '$1', sessionName: 'operator-bash', pid: 123, path: '/home/ubuntu/owen', command: 'bash', title: '', placeMark: worktree.id, socket }],
       pastePrompt: vi.fn(),
       enter: vi.fn()
     };
@@ -550,7 +554,7 @@ describe('LaunchService', () => {
     process.env.RAC_HOST_INTERACTIVE_SHELL = '/bin/bash';
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const worktree = cora({ id: 'bash-project', label: 'Bash project', path: '/worktrees/bash-project', hostPath: '/home/operator/bash-project' });
-    const panes = { listPanes: async () => [{ paneId: '%7', sessionId: '$7', pid: 456, path: worktree.hostPath!, command: 'bash', title: '', socket }], pastePrompt: vi.fn(async () => true), enter: vi.fn(async () => true) };
+    const panes = { listPanes: async () => [{ paneId: '%7', sessionId: '$7', pid: 456, path: worktree.hostPath!, command: 'bash', title: '', placeMark: worktree.id, socket }], pastePrompt: vi.fn(async () => true), enter: vi.fn(async () => true) };
     const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree]);
 
     await expect(service.launch(worktree.id)).resolves.toBe(true);
@@ -565,7 +569,7 @@ describe('LaunchService', () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const worktree = cora({ id: 'owen', label: 'Owen', path: '/worktrees/owen', hostPath: '/home/ubuntu/owen' });
     const panes = {
-      listPanes: async () => [{ paneId: '%4', sessionId: '$1', sessionName: 'rac-stack-owen-a1b2c3', pid: 123, path: '/home/ubuntu/owen', command: 'bash', title: '', socket }],
+      listPanes: async () => [{ paneId: '%4', sessionId: '$1', sessionName: 'rac-stack-owen-a1b2c3', pid: 123, path: '/home/ubuntu/owen', command: 'bash', title: '', placeMark: worktree.id, socket }],
       pastePrompt: vi.fn(),
       enter: vi.fn()
     };
@@ -583,7 +587,7 @@ describe('LaunchService', () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const worktree = cora({ id: 'remoteagents', label: 'Remote Agents', path: '/workspace', hostPath: '/home/ubuntu/remoteagents' });
     const panes = {
-      listPanes: vi.fn().mockResolvedValue([{ paneId: '%4', sessionId: '$1', sessionName: 'rac-advisor', pid: 123, path: worktree.hostPath, command: 'zsh', title: '', displayLabel: 'Update Advisor Starting v4 abc1234', socket }]),
+      listPanes: vi.fn().mockResolvedValue([{ paneId: '%4', sessionId: '$1', sessionName: 'rac-advisor', pid: 123, path: worktree.hostPath, command: 'zsh', title: '', displayLabel: 'Update Advisor Starting v4 abc1234', placeMark: worktree.id, socket }]),
       pastePrompt: vi.fn(),
       enter: vi.fn()
     };
@@ -618,7 +622,7 @@ describe('LaunchService', () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const worktree = cora();
     const calls: string[][] = [];
-    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, _buffer: string, command: string) => { calls.push(['paste', pane, command]); return true; }, enter: async () => true };
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', placeMark: worktree.id, socket }], pastePrompt: async (_socket: SocketRef, pane: string, _buffer: string, command: string) => { calls.push(['paste', pane, command]); return true; }, enter: async () => true };
     const remembered: Array<[string, string]> = [];
     const store = { launchProfiles: async () => ({}), rememberLaunchProfile: async (key: string, kind: string) => { remembered.push([key, kind]); } };
     const config = { adapters: { codex: { program: '/usr/local/bin/codex', args: ['--search'], env: { RAC_X: '1' }, launchable: true } }, projects: [] };
@@ -636,7 +640,7 @@ describe('LaunchService', () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const worktree = cora();
     const calls: string[][] = [];
-    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, _buffer: string, command: string) => { calls.push(['paste', pane, command]); return true; }, enter: async () => true };
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', placeMark: worktree.id, socket }], pastePrompt: async (_socket: SocketRef, pane: string, _buffer: string, command: string) => { calls.push(['paste', pane, command]); return true; }, enter: async () => true };
     const store = { launchProfiles: async () => ({}), rememberLaunchProfile: async () => {} };
     const config = { adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true, setup: 'rm -f .omx/state/session.json' } }, projects: [] };
     const service = new LaunchService(config as never, { find: async () => [socket] }, panes as never, undefined, store as never, () => [worktree]);
@@ -651,7 +655,7 @@ describe('LaunchService', () => {
     const socket: SocketRef = { fingerprint: 'socket', path: '/host-tmux/default', device: 1, inode: 2 };
     const worktree = cora();
     const calls: string[][] = [];
-    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', socket }], pastePrompt: async (_socket: SocketRef, pane: string, _buffer: string, command: string) => { calls.push(['paste', pane, command]); return true; }, enter: async () => true };
+    const panes = { listPanes: async () => [{ paneId: '%4', sessionId: '$1', pid: 123, path: worktree.hostPath!, command: 'zsh', title: '', placeMark: worktree.id, socket }], pastePrompt: async (_socket: SocketRef, pane: string, _buffer: string, command: string) => { calls.push(['paste', pane, command]); return true; }, enter: async () => true };
     const store = { launchProfiles: async () => ({}), rememberLaunchProfile: async () => {} };
     // the OMX-on-ZFS configuration: plain Codex stays on adapters.codex, OMX carries the pointer cleanup
     const config = { adapters: { codex: { program: '/usr/local/bin/codex', args: [], env: {}, launchable: true }, omx: { program: '/abs/omx', args: [], env: {}, launchable: true, setup: 'rm -f .omx/state/session.json' } }, projects: [] };
@@ -694,7 +698,8 @@ describe('LaunchService', () => {
 
   describe('Console shells', () => {
     const alex = () => cora({ id: 'alex', label: 'Alex', path: '/worktrees/alex', hostPath: '/home/ubuntu/alex' });
-    const shellPane = (over: Record<string, unknown>, socket: SocketRef) => ({ paneId: '%1', sessionId: '$1', pid: 1, path: '/home/ubuntu/alex', command: 'zsh', title: '', socket, ...over });
+    // a pane of Alex's Workspace session unless `over` says otherwise
+    const shellPane = (over: Record<string, unknown>, socket: SocketRef) => ({ paneId: '%1', sessionId: '$1', pid: 1, path: '/home/ubuntu/alex', command: 'zsh', title: '', placeMark: 'alex', socket, ...over });
 
     it('opens a Console shell beside a live Agent as a detached window with cwd, a login shell and both marker options', async () => {
       // the argv contract: a detached window (`-d`), the Worktree cwd, a login shell, and the
@@ -723,6 +728,8 @@ describe('LaunchService', () => {
       const newSession = run.mock.calls.find(call => call[1].includes('new-session'));
       expect(newSession?.[1]).toEqual(['new-session', '-d', '-s', 'alex', '-c', '/worktrees/alex', '-P', '-F', '#{pane_id}', '--', interactiveShellPath(), '-l']);
       expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['set-option', '-p', '-t', '%5', '@rac_role', 'shell']);
+      // the new session is the Worktree's Workspace
+      expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['set-option', '-t', '%5', '@rac_place', 'alex']);
     });
 
     it('never adopts a Console shell for a launch and joins its session instead', async () => {
@@ -779,7 +786,9 @@ describe('LaunchService', () => {
         listPanes: async () => [
           shellPane({ paneId: '%1', role: 'shell' }, socket),
           shellPane({ paneId: '%2' }, socket),
-          shellPane({ paneId: '%3' }, socket)
+          shellPane({ paneId: '%3' }, socket),
+          // the operator's own shell in the checkout, outside the Workspace session
+          shellPane({ paneId: '%4', sessionId: '$2', placeMark: undefined }, socket)
         ],
         close: async (_socket: SocketRef, pane: string) => { closed.push(pane); return true; }
       };
@@ -787,22 +796,25 @@ describe('LaunchService', () => {
 
       await service.killWorktreeShells(worktree);
 
-      // %1 is marked, %3 is open as a Terminal; only the bare idle landing shell %2 is killed
+      // %1 is a Console shell, %3 is open as a Terminal, %4 is not the Workspace's; only the idle
+      // landing shell %2 is killed
       expect(closed).toEqual(['%2']);
     });
 
-    it('placeConsoleShells returns only this Worktree\'s marked shells', async () => {
+    it("placeConsoleShells returns the Console shells of this Worktree's Workspace session, wherever they have cd'd", async () => {
       const socket: SocketRef = { fingerprint: 'sock', path: '/host-tmux/default', device: 1, inode: 2 };
       const worktree = alex();
       const panes = { listPanes: async () => [
         shellPane({ paneId: '%1', role: 'shell', paneName: 'build' }, socket),
-        shellPane({ paneId: '%2' }, socket),                                   // unmarked landing shell
-        shellPane({ paneId: '%3', role: 'shell', path: '/home/ubuntu/other' }, socket) // another worktree
+        shellPane({ paneId: '%2' }, socket),                                                  // a landing shell, no Console shell
+        shellPane({ paneId: '%3', sessionId: '$2', role: 'shell', placeMark: 'other' }, socket), // another Workspace's, sat in Alex's folder
+        shellPane({ paneId: '%4', role: 'shell', path: '/home/ubuntu/other' }, socket),       // Alex's own, cd'd into another Worktree
+        shellPane({ paneId: '%5', sessionId: '$3', role: 'shell', placeMark: undefined }, socket) // an unclaimed session
       ] };
       const service = new LaunchService(codex, { find: async () => [socket] }, panes as never, undefined, undefined, () => [worktree]);
 
       const shells = await service.placeConsoleShells(worktree);
-      expect(shells.map(shell => shell.paneId)).toEqual(['%1']);
+      expect(shells.map(shell => shell.paneId)).toEqual(['%1', '%4']);
       expect(service.consoleShellBusy(shells[0]!)).toBe(false);
     });
 
@@ -813,51 +825,29 @@ describe('LaunchService', () => {
       // non-git fake paths are their own roots, as a real `git rev-parse` failure resolves them
       const service = (panes: Array<Record<string, unknown>>, worktrees: Worktree[] = [alex()]) => new LaunchService(config, { find: async () => [socket] }, { listPanes: async () => panes.map(pane => ({ sessionId: '$1', pid: 1, command: 'zsh', title: '', socket, ...pane })) } as never, async path => path, undefined, () => worktrees);
 
-      it("counts a directory Project's Console shells in its folder, its subfolders and its bridge host path", async () => {
+      it("streams every pane of the Place's Workspace sessions and none of another session's, though it sits in the Place's folder", async () => {
+        const panes = await service([
+          { paneId: '%1', sessionId: '$1', path: '/data/notes/2026', placeMark: 'notes:/data/notes' },
+          { paneId: '%2', sessionId: '$1', path: '/tmp', placeMark: 'notes:/data/notes' },
+          { paneId: '%3', sessionId: '$2', path: '/data/notes' },
+          // the status-probe holder inherits the console's cwd and is never marked
+          { paneId: '%4', sessionId: '$3', sessionName: 'rac-stack-probes', command: 'sh', path: '/data/notes' },
+          { paneId: '%5', sessionId: '$4', path: '/data/notes', placeMark: 'scratch:/srv/tools' }
+        ]).placePanes({ id: 'notes:/data/notes' });
+
+        expect(panes.map(pane => pane.paneId)).toEqual(['%1', '%2']);
+      });
+
+      it("lists a Place's Console shells by their session's mark, wherever they have cd'd", async () => {
         const shells = await service([
-          { paneId: '%1', role: 'shell', path: '/data/notes' },
-          { paneId: '%2', role: 'shell', path: '/data/notes/2026/september' },
-          { paneId: '%3', role: 'shell', path: '/host/notes/drafts' },
-          { paneId: '%4', role: 'shell', path: '/data/notes-archive' },
-          { paneId: '%5', path: '/data/notes' }
+          { paneId: '%1', role: 'shell', path: '/data/notes', placeMark: 'notes:/data/notes' },
+          { paneId: '%2', role: 'shell', path: '/srv/tools', placeMark: 'notes:/data/notes' },
+          { paneId: '%3', path: '/data/notes', placeMark: 'notes:/data/notes' },
+          { paneId: '%4', sessionId: '$2', role: 'shell', path: '/data/notes', placeMark: 'scratch:/home/me/scratch' },
+          { paneId: '%5', sessionId: '$3', role: 'shell', path: '/data/notes' }
         ]).placeConsoleShells({ id: 'notes:/data/notes' });
 
-        expect(shells.map(shell => shell.paneId)).toEqual(['%1', '%2', '%3']);
-      });
-
-      it('counts the Scratch folder\'s Console shells and gives an unconfigured folder its own Scratch Place', async () => {
-        const launch = service([
-          { paneId: '%1', role: 'shell', path: '/home/me/scratch/probe' },
-          { paneId: '%2', role: 'shell', path: '/srv/tools' },
-          { paneId: '%3', role: 'shell', path: '/srv/tools/bin' }
-        ]);
-
-        expect((await launch.placeConsoleShells({ id: 'scratch:/home/me/scratch' })).map(shell => shell.paneId)).toEqual(['%1']);
-        expect((await launch.placeConsoleShells({ id: 'scratch:/srv/tools' })).map(shell => shell.paneId)).toEqual(['%2']);
-        // an unconfigured folder contains nothing: a non-git subfolder is a Scratch Place of its own
-        expect((await launch.placeConsoleShells({ id: 'scratch:/srv/tools/bin' })).map(shell => shell.paneId)).toEqual(['%3']);
-      });
-
-      it('counts a Console shell in a nested, unconfigured checkout for the Worktree around it, but not one in a nested Worktree', async () => {
-        const nested = cora({ id: 'alex-agent', label: 'Alex · agent', path: '/worktrees/alex/.claude/worktrees/3', identity: '/worktrees/alex/.claude/worktrees/3', hostPath: undefined });
-        const launch = service([
-          { paneId: '%1', role: 'shell', path: '/home/ubuntu/alex/vendor/lib' },
-          { paneId: '%2', role: 'shell', path: '/worktrees/alex/.claude/worktrees/3' }
-        ], [alex(), nested]);
-
-        expect((await launch.placeConsoleShells({ id: 'alex' })).map(shell => shell.paneId)).toEqual(['%1']);
-        expect((await launch.placeConsoleShells({ id: 'alex-agent' })).map(shell => shell.paneId)).toEqual(['%2']);
-      });
-
-      it('never streams a nested Worktree\'s session for the Worktree around it', async () => {
-        const nested = cora({ id: 'alex-agent', label: 'Alex · agent', path: '/worktrees/alex/.claude/worktrees/3', identity: '/worktrees/alex/.claude/worktrees/3', hostPath: undefined });
-        const launch = service([
-          { paneId: '%1', sessionId: '$1', path: '/worktrees/alex/vendor/lib' },
-          { paneId: '%2', sessionId: '$2', path: '/worktrees/alex/.claude/worktrees/3/src' }
-        ], [alex(), nested]);
-
-        expect((await launch.placePanes({ id: 'alex' })).map(pane => pane.paneId)).toEqual(['%1']);
-        expect((await launch.placePanes({ id: 'alex-agent' })).map(pane => pane.paneId)).toEqual(['%2']);
+        expect(shells.map(shell => shell.paneId)).toEqual(['%1', '%2']);
       });
 
       it("opens a directory Project's first Console shell in its bridge host path, in a session named for it", async () => {
@@ -876,8 +866,8 @@ describe('LaunchService', () => {
         const createConsoleShellWindow = vi.fn(async () => '%9');
         // another Place's shell comes first, so only the Place filter picks the right session
         const panes = [
-          { paneId: '%2', sessionId: '$1', role: 'shell', path: '/data/notes' },
-          { paneId: '%1', sessionId: '$4', role: 'shell', path: '/home/me/scratch' }
+          { paneId: '%2', sessionId: '$1', role: 'shell', path: '/data/notes', placeMark: 'notes:/data/notes' },
+          { paneId: '%1', sessionId: '$4', role: 'shell', path: '/home/me/scratch', placeMark: 'scratch:/home/me/scratch' }
         ].map(pane => ({ pid: 1, command: 'zsh', title: '', socket, ...pane }));
         const launch = new LaunchService(config, { find: async () => [socket] }, { listPanes: async () => panes, createConsoleShellWindow } as never, async path => path, undefined, () => [alex()]);
 
@@ -885,27 +875,6 @@ describe('LaunchService', () => {
 
         expect(createConsoleShellWindow).toHaveBeenCalledWith(socket, '$4', '/home/me/scratch', [interactiveShellPath(), '-l'], '');
         expect(run.mock.calls.some(call => call[1].includes('new-session'))).toBe(false);
-      });
-
-      it("streams every pane of a session that holds one of a directory Project's panes", async () => {
-        const panes = await service([
-          { paneId: '%1', sessionId: '$1', path: '/data/notes/2026' },
-          { paneId: '%2', sessionId: '$1', path: '/tmp' },
-          { paneId: '%3', sessionId: '$2', path: '/srv/tools' }
-        ]).placePanes({ id: 'notes:/data/notes' });
-
-        expect(panes.map(pane => pane.paneId)).toEqual(['%1', '%2']);
-      });
-
-      it("never streams the console's own stack sessions, though their cwd is at the Place", async () => {
-        // the status-probe holder inherits the console's cwd, and a stack operation runs in the Worktree
-        const panes = await service([
-          { paneId: '%1', sessionId: '$1', path: '/data/notes' },
-          { paneId: '%3', sessionId: '$2', sessionName: 'rac-stack-probes', command: 'sh', path: '/data/notes' },
-          { paneId: '%4', sessionId: '$3', sessionName: 'rac-stack-notes-start', path: '/data/notes' }
-        ]).placePanes({ id: 'notes:/data/notes' });
-
-        expect(panes.map(pane => pane.paneId)).toEqual(['%1']);
       });
     });
   });
@@ -915,14 +884,15 @@ describe('LaunchService', () => {
     const notes = { id: 'notes', label: 'Notes', path: '/data/notes', identity: '/data/notes', mode: 'directory', hostPath: '/host/notes', available: true };
     const config = { ...(codex as object), projects: [notes], scratchDirectory: '/home/me/scratch' } as never;
     const store = { launchProfiles: async () => ({}), rememberLaunchProfile: async () => {} };
-    const pane = (over: Record<string, unknown>) => ({ paneId: '%1', sessionId: '$1', pid: 1, path: '/host/notes', command: 'zsh', title: '', socket, ...over });
+    // a pane of the notes Workspace session unless `over` says otherwise
+    const pane = (over: Record<string, unknown>) => ({ paneId: '%1', sessionId: '$1', pid: 1, path: '/host/notes', command: 'zsh', title: '', placeMark: 'notes:/data/notes', socket, ...over });
     // non-git fake paths are their own roots, as a real `git rev-parse` failure resolves them
     const service = (panes: Array<Record<string, unknown>>, agentSession: (placeId: string) => Promise<TmuxSession | undefined> = async () => undefined, extra: Record<string, unknown> = {}, placeConfig = config) =>
       new LaunchService(placeConfig, { find: async () => [socket] }, { listPanes: async () => panes.map(pane), pastePrompt: vi.fn(async () => true), enter: vi.fn(async () => true), ...extra } as never, async path => path, store as never, () => [], () => new Set(), agentSession);
     const tmuxCall = (verb: string) => run.mock.calls.find(call => (call[1] as string[]).includes(verb))?.[1] as string[] | undefined;
     beforeEach(() => { process.env.RAC_HOST_TMUX_DIR = '/host-tmux'; });
 
-    it("adopts the Place's idle console-launched shell, never a Console shell, a stranger's shell, a subfolder or another label", async () => {
+    it("adopts the Place's idle console-launched shell, never a Console shell, a stranger's shell, a subfolder, another label or another session's", async () => {
       const pastePrompt = vi.fn(async () => true);
       const launch = service([
         { paneId: '%1', role: 'shell', consoleManaged: true, displayLabel: 'Notes' }, // a Console shell
@@ -931,6 +901,7 @@ describe('LaunchService', () => {
         { paneId: '%3', path: '/host/notes/drafts', consoleManaged: true, displayLabel: 'Notes' }, // a subfolder
         { paneId: '%4', consoleManaged: true, displayLabel: 'Update Advisor' },     // another launch's label
         { paneId: '%7', command: 'codex', consoleManaged: true, displayLabel: 'Notes' }, // a running Agent
+        { paneId: '%8', sessionId: '$2', consoleManaged: true, displayLabel: 'Notes', placeMark: undefined }, // outside the Workspace session
         { paneId: '%5', consoleManaged: true, displayLabel: 'Notes' }               // the Project's last Agent, exited
       ], undefined, { pastePrompt });
 
@@ -948,7 +919,7 @@ describe('LaunchService', () => {
       const local = { ...(config as object), projects: [{ ...notes, hostPath: undefined }] } as never;
       const launch = service([
         { paneId: '%1', path: '/data/notes', consoleManaged: true, displayLabel: 'Notes' },
-        { paneId: '%2', path: '/home/me/scratch', consoleManaged: true, displayLabel: scratchLabel }
+        { paneId: '%2', sessionId: '$2', path: '/home/me/scratch', consoleManaged: true, displayLabel: scratchLabel, placeMark: 'scratch:/home/me/scratch' }
       ], undefined, { pastePrompt }, local);
 
       await expect(launch.launchProjectDirectory('notes')).resolves.toBe(true);
@@ -963,8 +934,8 @@ describe('LaunchService', () => {
       // another Place's shell comes first, and a stranger's shell sits in the Scratch folder
       const launch = service([
         { paneId: '%2', sessionId: '$1', role: 'shell' },
-        { paneId: '%1', sessionId: '$4', role: 'shell', path: '/home/me/scratch/probe' },
-        { paneId: '%6', sessionId: '$5', path: '/home/me/scratch' }
+        { paneId: '%1', sessionId: '$4', role: 'shell', path: '/home/me/scratch/probe', placeMark: 'scratch:/home/me/scratch' },
+        { paneId: '%6', sessionId: '$5', path: '/home/me/scratch', placeMark: undefined }
       ]);
 
       await expect(launch.launchHome()).resolves.toBe(true);
@@ -979,7 +950,7 @@ describe('LaunchService', () => {
       run.mockResolvedValue({ code: 0, stdout: '%9', stderr: '' });
       const agentSocket: SocketRef = { fingerprint: 'mine', path: '/run/user/1000/tmux/default', device: 3, inode: 4 };
       const asked: string[] = [];
-      const launch = service([{ paneId: '%3', sessionId: '$2', role: 'shell', path: '/home/me/scratch' }], async placeId => { asked.push(placeId); return placeId === 'notes:/data/notes' ? { socket: agentSocket, session: '$7' } : undefined; });
+      const launch = service([{ paneId: '%3', sessionId: '$2', role: 'shell', path: '/home/me/scratch', placeMark: 'scratch:/home/me/scratch' }], async placeId => { asked.push(placeId); return placeId === 'notes:/data/notes' ? { socket: agentSocket, session: '$7' } : undefined; });
 
       await expect(launch.launchProjectDirectory('notes')).resolves.toBe(true);
 
@@ -1005,6 +976,8 @@ describe('LaunchService', () => {
         ['-S', '/host-tmux/default', 'new-session', '-d', '-s', 'scratch', '-c', '/home/me/scratch']
       ]);
       // options target the new pane, never the bare session name (which can resolve to a window elsewhere)
+      expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-t', '%1', '@rac_place', 'notes:/data/notes']);
+      expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-t', '%2', '@rac_place', 'scratch:/home/me/scratch']);
       expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%1', '@rac_display_label', 'Notes']);
       expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%1', '@rac_console_managed', '1']);
       expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%2', '@rac_display_label', scratchLabel]);

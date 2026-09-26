@@ -2,7 +2,7 @@ import { basename, dirname } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import type { Project, Worktree } from '../domain/models.js';
-import { worktreeWireId } from '../workspaces/resolver.js';
+import { projectIdOf, worktreePathOf, worktreeWireId } from '../workspaces/resolver.js';
 
 // the reserved Project id every Scratch Place id carries (`scratch:<realpath>`); config
 // refuses a Project with this id, so a Scratch Place id never collides with a Project's
@@ -60,8 +60,8 @@ function containment(folder: string | undefined, root: string): number {
 // The Place a pane belongs to, from its root (git toplevel, else canonical cwd): the deepest
 // Place whose home, or bridge host path, is the root or one of its ancestors, so a nested
 // checkout joins the Worktree around it unless it is a deeper Place itself. A root inside
-// no configured Place is its own Scratch Place. One rule for Agents, Console shells and the
-// panes a Terminal can open.
+// no configured Place is its own Scratch Place. How discovery claims an unmarked tmux session
+// once; a marked session's panes follow its mark (`markedPlace`), wherever they have `cd`'d.
 export function placeForRoot(places: readonly Place[], root: string): Place {
   let nearest: Place | undefined;
   let depth = -1;
@@ -71,6 +71,19 @@ export function placeForRoot(places: readonly Place[], root: string): Place {
     if (matched > depth) { nearest = place; depth = matched; }
   }
   return nearest ?? adhocScratchPlace(root);
+}
+
+// The Place a tmux session's `@rac_place` mark names: a configured Place by id, else the ad-hoc
+// Scratch Place of a `scratch:<root>` whose root still lies in no configured Place. Undefined for
+// a mark naming no Place now (a Worktree the snapshot has not caught up to, or one since removed):
+// its session belongs nowhere until the mark resolves, and is never re-claimed.
+export function markedPlace(places: readonly Place[], mark: string): Place | undefined {
+  const configured = places.find(place => place.id === mark);
+  if (configured !== undefined) return configured;
+  const root = worktreePathOf(mark);
+  if (projectIdOf(mark) !== scratchProjectId || root === undefined) return undefined;
+  const place = placeForRoot(places, root);
+  return place.id === mark ? place : undefined;
 }
 
 // The notes key of a folder that is no Worktree: `scratch_<hash>`, never the Place id, since a

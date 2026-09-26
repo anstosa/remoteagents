@@ -13,10 +13,10 @@ import { gitCommonDir, listWorktrees, type WorktreeEntry } from '../git/worktree
 import { worktreeManagementAvailability } from '../worktrees/management.js';
 import type { WorktreeLaunchStore } from '../worktrees/store.js';
 import type { Adapter, AdapterConfigs, AgentKind, AttentionState, Conversation, ConversationSummary, InlineQuestion } from '../adapters/types.js';
-import type { Agent, Dashboard, DashboardPlace, DashboardProject, DashboardWorktree, GitComparisonSummary, GitStatusSummary, GitUpstreamSummary, Project, SocketRef, Worktree } from '../domain/models.js';
+import type { Agent, Dashboard, DashboardPlace, DashboardProject, DashboardWorktree, GitComparisonSummary, GitStatusSummary, GitUpstreamSummary, Pane, Project, SocketRef, Worktree } from '../domain/models.js';
 import { addUntrackedLineStats, comparisonAgainst, prComparisonCandidates, workingStatus } from '../git/comparison.js';
 import { isUpdateAdvisorLabel } from '../update-advisor.js';
-import { configuredPlaces, placeForRoot, scratchHome, scratchProjectId, type Place } from '../places/places.js';
+import { configuredPlaces, markedPlace, placeForRoot, scratchHome, scratchProjectId, type Place } from '../places/places.js';
 
 export interface SocketFinder { find(): Promise<SocketRef[]>; }
 export class ProcSocketFinder implements SocketFinder {
@@ -129,10 +129,14 @@ export class DiscoveryService {
   // the base64 reported Inline question payload (`@rac_question`) per agent id, kept
   // server-side so the dashboard and answer path can re-derive it; never published
   private paneQuestionPayloads = new Map<string, string>();
-  // the root (git toplevel, else canonical cwd) of every Console shell (a pane marked
-  // `@rac_role=shell`), so the dashboard can count each Place's shells; rediscovered every
-  // scan, nothing persisted
-  private consoleShellRoots: string[] = [];
+  // each tmux session's `@rac_place` mark, keyed like `Agent.sessionId`
+  // (`${fingerprint}:${session}`); rediscovered every scan, then extended by the dashboard's claims
+  private sessionMarks = new Map<string, string>();
+  // the panes of every unmarked session the last scan saw, by session key, for the dashboard to claim
+  private unmarkedSessions = new Map<string, Pane[]>();
+  // the session key of every Console shell (a pane marked `@rac_role=shell`), so the dashboard
+  // can count each Place's shells; rediscovered every scan, nothing persisted
+  private consoleShellSessions: string[] = [];
   // the configured Scratch folder's realpath, resolved once
   private scratchHomeValue?: Promise<string>;
   private readonly serverStartedAt = Date.now();
@@ -170,9 +174,32 @@ export class DiscoveryService {
     this.scratchHomeValue ??= scratchHome(this.scratchDirectory, this.projects);
     return configuredPlaces(worktrees, this.projects, await this.scratchHomeValue);
   }
-  // the Place a discovered agent's pane root belongs to; a modal update advisor is never placed
+  // the Place a discovered agent belongs to: its session's; a modal update advisor is never placed
   private placeOf(agent: Agent, places: readonly Place[]): Place | undefined {
-    return isUpdateAdvisorLabel(agent.displayLabel) ? undefined : placeForRoot(places, agent.home);
+    const mark = this.sessionMarks.get(agent.sessionId);
+    return isUpdateAdvisorLabel(agent.displayLabel) || mark === undefined ? undefined : markedPlace(places, mark);
+  }
+  // Claim each unmarked session the last scan saw, once: a session the console did not create
+  // (one running before marks, or the operator's own with an agent started by hand) is marked
+  // with the nearest Place of its Agent, else its Console shell, else a console-managed pane.
+  // It is never re-derived, so a shell that later `cd`s elsewhere stays in the Workspace. A
+  // session with none of these (the operator's own shells, `rac-stack-*` runs) stays unmarked.
+  // Only the dashboard claims, over its settled Worktree set: a claim against a Worktree list
+  // not yet scanned would mark a Worktree's session as Scratch for good.
+  private async claimSessions(agents: readonly Agent[], places: readonly Place[]): Promise<void> {
+    const agentHomes = new Map(agents.filter(agent => !isUpdateAdvisorLabel(agent.displayLabel)).map(agent => [agent.id, agent.home]));
+    await Promise.all([...this.unmarkedSessions].map(async ([key, sessionPanes]) => {
+      const agentHome = sessionPanes.map(pane => agentHomes.get(`${pane.socket.fingerprint}:${pane.paneId}`)).find(home => home !== undefined);
+      const claimant = sessionPanes.find(pane => pane.role === 'shell') ?? sessionPanes.find(pane => pane.consoleManaged === true);
+      const root = agentHome ?? (claimant === undefined ? undefined : await workspaceRoot(claimant.path));
+      if (root === undefined) return;
+      const place = placeForRoot(places, root);
+      const { socket, sessionId } = sessionPanes[0]!;
+      // the claim holds until the next scan even if the write fails; that scan claims again
+      await this.tmux.markSessionPlace(socket, sessionId, place.id).catch(() => false);
+      this.sessionMarks.set(key, place.id);
+      this.unmarkedSessions.delete(key);
+    }));
   }
   // reuse socket discovery across adjacent requests
   private async sockets(force = false): Promise<SocketRef[]> {
@@ -209,7 +236,7 @@ export class DiscoveryService {
     const paneReported = new Map<string, AttentionState>();
     const paneQuestionPayloads = new Map<string, string>();
     const places = await this.places(this.worktreeSnapshot);
-    const agents: Agent[] = (await Promise.all(panes.filter(pane => !paneExcluded(pane)).map(async (pane): Promise<Agent | undefined> => {
+    const discovered: Agent[] = (await Promise.all(panes.filter(pane => !paneExcluded(pane)).map(async (pane): Promise<Agent | undefined> => {
       const recognized = await this.processes.recognizeAgent(pane.pid);
       if (recognized === undefined) {
         // a pane whose agent is gone must not keep a stale report; nothing else clears it
@@ -226,15 +253,21 @@ export class DiscoveryService {
       const attention = resolveAttention({ kind: recognized.kind, title: pane.title, reported, hasQuestion: false });
       const conversationId = pane.reportedSession !== undefined && pane.reportedSession.length > 0 ? pane.reportedSession : undefined;
       const agent: Agent = { id, paneId: pane.paneId, sessionId: `${pane.socket.fingerprint}:${pane.sessionId}`, socketFingerprint: pane.socket.fingerprint, home, title: pane.title, kind: recognized.kind, attention, ...(pane.reportedSandboxed === '1' ? { sandboxed: true } : {}), ...(conversationId === undefined ? {} : { conversationId }), ...(pane.displayLabel === undefined ? {} : { displayLabel: pane.displayLabel }), ...(pane.paneMode === undefined ? {} : { paneMode: pane.paneMode }) };
-      // the Agent the server acts on keeps `home` as its pane root, the folder it runs in (a
-      // teardown, attachments, file links and conversations all act there); only the dashboard
-      // publishes its Place's home. The snapshot Place may trail a fresh Worktree scan by one tick.
-      const place = this.placeOf(agent, places);
-      return place === undefined ? agent : { ...agent, placeId: place.id };
+      return agent;
     }))).filter((agent): agent is Agent => agent !== undefined);
-    // resolve each Console shell's root so the dashboard can count a Place's shells
-    // (identity = the `@rac_role=shell` marker plus cwd root, spec, Console shells)
-    this.consoleShellRoots = await Promise.all(panes.filter(pane => pane.role === 'shell').map(pane => workspaceRoot(pane.path)));
+    const sessionKey = (pane: Pane) => `${pane.socket.fingerprint}:${pane.sessionId}`;
+    this.sessionMarks = new Map();
+    this.unmarkedSessions = new Map();
+    for (const pane of panes) {
+      if (pane.placeMark !== undefined) this.sessionMarks.set(sessionKey(pane), pane.placeMark);
+      else if (!pane.sessionName?.startsWith('rac-stack-')) this.unmarkedSessions.set(sessionKey(pane), [...this.unmarkedSessions.get(sessionKey(pane)) ?? [], pane]);
+    }
+    // the Agent the server acts on keeps `home` as its pane root, the folder it runs in (a
+    // teardown, attachments, file links and conversations all act there); only the dashboard
+    // publishes its Place's home. The snapshot Place may trail a fresh Worktree scan by one tick,
+    // and an Agent in a session not yet claimed has none until the next scan.
+    const agents = discovered.map(agent => { const place = this.placeOf(agent, places); return place === undefined ? agent : { ...agent, placeId: place.id }; });
+    this.consoleShellSessions = panes.filter(pane => pane.role === 'shell').map(sessionKey);
     this.snapshot = agents;
     this.panePids = panePids;
     this.paneCwds = paneCwds;
@@ -517,6 +550,7 @@ export class DiscoveryService {
     // re-place every agent against this (possibly fresher) Worktree set, publishing the
     // console-side Place home; a Worktree's Agents take its git identity as before
     const places = await this.places(worktrees);
+    await this.claimSessions(discovered, places);
     const worktreeById = new Map(worktrees.map(worktree => [worktree.id, worktree] as const));
     // the stable tab order follows configured checkout order and discovery defaults
     const orderOf = new Map(worktrees.map((worktree, index) => [worktree.id, index] as const));
@@ -546,8 +580,8 @@ export class DiscoveryService {
     // it on the Worktree record, as the flat list used to. A modal advisor never claims one.
     const activeAgents = agents.filter(agent => !isUpdateAdvisorLabel(agent.displayLabel));
     const activeWorktreeIds = new Set(activeAgents.flatMap(agent => agent.worktreeId === undefined ? [] : [agent.worktreeId]));
-    // every Console shell counts for the Place its root belongs to, by the same rule as Agents
-    const shellPlaces = this.consoleShellRoots.map(root => placeForRoot(places, root));
+    // every Console shell counts for its session's Place, by the same rule as Agents
+    const shellPlaces = this.consoleShellSessions.flatMap(key => { const mark = this.sessionMarks.get(key); return mark === undefined ? [] : markedPlace(places, mark) ?? []; });
     const shellCounts = new Map<string, number>();
     for (const place of shellPlaces) shellCounts.set(place.id, (shellCounts.get(place.id) ?? 0) + 1);
     const worktreeViews = await Promise.all(worktrees.map(async (worktree): Promise<DashboardWorktree> => {
@@ -588,8 +622,7 @@ export class DiscoveryService {
       const root = worktreePathOf(id);
       if (!isPinned || projectIdOf(id) !== scratchProjectId || root === undefined) return undefined;
       if (await realpath(root).catch(() => undefined) !== root) return undefined;
-      const place = placeForRoot(configured, root);
-      return place.id === id ? place : undefined;
+      return markedPlace(configured, id);
     }));
     return pinned.filter((place): place is Place => place !== undefined);
   }

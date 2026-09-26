@@ -43,7 +43,7 @@ A folder that belongs to no configured Project, seen as a Place. The console lau
 _Avoid_: Unconfigured worktree, scratch pane
 
 **Place**:
-Where a Workspace lives and what its panes belong to: a Worktree, a directory Project, or a Scratch folder. Each has a home folder; a pane belongs to the nearest Place whose home contains it.
+Where a Workspace lives and what its panes belong to: a Worktree, a directory Project, or a Scratch folder. Each has a home folder. A pane belongs to the Place its tmux session is marked with, wherever its shell has `cd`'d; a session the console did not create is claimed once, by the nearest Place whose home contains its Agent or Console shell.
 _Avoid_: Location, target, context
 
 ### Agents
@@ -115,7 +115,7 @@ A panel's standing request that its pane be sized to the panel's grid, yielding 
 _Avoid_: Viewport lease, pin, resize request
 
 **Workspace**:
-The set of Panels open at one Place, and the console's unit of navigation: one per Place, selected from the tab row. It exists while its Place has an Agent, a Console shell, or a pending launch, or is Pinned; which Panels are open is remembered per browser.
+The set of Panels open at one Place, and the console's unit of navigation: one per Place, selected from the tab row. Its panes are those of the tmux session marked with its Place, and no others. It exists while its Place has an Agent, a Console shell, or a pending launch, or is Pinned; which Panels are open is remembered per browser.
 _Avoid_: Tab (the selector entry), session, worktree (a kind of Place)
 
 **Panel**:
@@ -127,7 +127,7 @@ A pane shown as a Panel, whichever pane it is: a Console shell, a pane split by 
 _Avoid_: Terminal mode, swap, interactive pane
 
 **Console shell**:
-A login shell pane the console created at a Place, marked so a launch never adopts it. It outlives the Agent and ends only when its shell exits or the operator ends it.
+A login shell pane the console created at a Place, marked so a launch never adopts it. It stays at its Place wherever its shell `cd`s, outlives the Agent, and ends only when its shell exits or the operator ends it.
 _Avoid_: Shell pane, companion pane, landing shell (the wrapper's prompt left behind when an Agent exits)
 
 ### Operator state
