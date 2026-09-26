@@ -2117,7 +2117,7 @@ function Prompt({ id, ready = true, history, onHistoryChanged, onPromptFocus, on
   const historyIndex = useRef<number | undefined>(undefined);
   const historyDraft = useRef('');
   const focusPromptAtEnd = useRef(false);
-  const { anchorRef: queuedPromptAnchorRef, flyoutRef: queuedPromptFlyoutRef, style: queuedPromptFlyoutStyle } = useViewportFlyout<HTMLDivElement>(queuedPromptsOpen);
+  const { anchorRef: queuedPromptAnchorRef, flyoutRef: queuedPromptFlyoutRef, style: queuedPromptFlyoutStyle } = useViewportFlyout<HTMLDivElement>(queuedPromptsOpen, { matchContainerWidth: '.agent-panel' });
   const { anchorRef: commandAnchorRef, flyoutRef: commandFlyoutRef, style: commandFlyoutStyle } = useViewportFlyout<HTMLDivElement>(commandToken !== undefined, { placement: 'above', matchAnchorWidth: true });
   const commandOptions = commandToken === undefined ? [] : promptCommands.filter(command => command.value.startsWith(commandToken.prefix) && command.value.slice(1).toLocaleLowerCase().includes(commandToken.query.toLocaleLowerCase()));
   useEffect(() => { historyIndex.current = undefined; historyDraft.current = ''; }, [id]);

@@ -96,9 +96,10 @@ test('manages waiting prompts from the queue-add control connected to Queue', as
   await expect(copies.last()).toContainText('context.txt');
   await expect(positions).toHaveText(['1', '2']);
   await expect(menu).not.toContainText('Oldest runs first');
-  const [menuBounds, viewportWidth] = await Promise.all([menu.boundingBox(), page.evaluate(() => innerWidth)]);
-  expect(menuBounds!.width).toBeGreaterThanOrEqual(viewportWidth - 17);
-  expect(menuBounds!.width).toBeLessThanOrEqual(viewportWidth - 15);
+  // the menu spans its agent panel, inset by the flyout margin, rather than the whole viewport
+  const [menuBounds, panelBounds] = await Promise.all([menu.boundingBox(), page.locator('.agent-panel').boundingBox()]);
+  expect(Math.abs(menuBounds!.x - (panelBounds!.x + 8))).toBeLessThanOrEqual(1);
+  expect(Math.abs(menuBounds!.width - (panelBounds!.width - 16))).toBeLessThanOrEqual(1);
 
   await page.getByRole('button', { name: 'Move queued prompt earlier: Second queued prompt' }).click();
   await expect(copies.first()).toContainText('Second queued prompt');

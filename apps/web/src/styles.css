@@ -1057,7 +1057,7 @@ html.software-keyboard-open .agent-view:has(:is(.agent-composer, .question-promp
 :is(.workspace-toolbar-actions, .empty-workspace-actions) .queue svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .queued-prompts-toggle svg { width: 1.05rem; height: 1.05rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .queued-prompts-count { background: var(--blue); }
-.more-menu.queued-prompts-panel { display: grid; width: calc(100vw - 1rem); max-width: calc(100vw - 1rem); max-height: min(34rem, calc(100vh - 1rem)); overflow: hidden; }
+.more-menu.queued-prompts-panel { display: grid; max-height: min(34rem, calc(100vh - 1rem)); overflow: hidden; }
 .queued-prompts-panel header { display: flex; align-items: center; gap: .7rem; padding: .6rem .7rem; border-bottom: 1px solid var(--surface-1); color: var(--blue); }
 .queued-prompts-list { display: grid; width: 100%; min-height: 0; overflow: auto; }
 .queued-prompt-item { display: grid; width: 100%; min-width: 0; grid-template-columns: 4.4rem minmax(0, 1fr) auto; align-items: stretch; border-bottom: 1px solid color-mix(in srgb, var(--surface-1) 72%, transparent); }
