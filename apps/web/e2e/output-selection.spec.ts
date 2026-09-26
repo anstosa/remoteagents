@@ -133,6 +133,10 @@ test('shows selection actions for a terminal drag selection and adds to the prom
   await expect(toolbar.getByRole('button', { name: 'Copy' })).toBeVisible();
   await toolbar.getByRole('button', { name: 'Add to prompt' }).click();
   await expect(page.getByRole('textbox', { name: 'Prompt' })).not.toHaveValue('');
+  // the action closes the toolbar and deselects the text
+  await expect(toolbar).toBeHidden();
+  await expect(page.locator('.log-canvas .xterm-selection > div')).toHaveCount(0);
+  await expect(page.locator('.log-output')).not.toHaveClass(/selection-active/u);
 });
 
 // repaint xterm's selection rather than only toggling a native selection class
@@ -154,36 +158,47 @@ test('flashes a copied desktop selection green then restores its highlight', asy
   // require rendered geometry before dragging exact terminal cells
   if (bounds === null) throw new Error('desktop copy row has no rendered bounds');
   const selectedY = bounds.y + bounds.height / 2;
-  await page.mouse.move(bounds.x + cellWidth * 0.25, selectedY);
-  await page.mouse.down();
-  await page.mouse.move(bounds.x + cellWidth * (rawSelection.length - 0.25), selectedY, { steps: 4 });
-  await page.mouse.up();
+  const selectRow = async () => {
+    await page.mouse.move(bounds.x + cellWidth * 0.25, selectedY);
+    await page.mouse.down();
+    await page.mouse.move(bounds.x + cellWidth * (rawSelection.length - 0.25), selectedY, { steps: 4 });
+    await page.mouse.up();
+  };
+  await selectRow();
 
   const toolbar = page.getByRole('toolbar', { name: 'Output selection actions' });
   await expect(toolbar).toBeVisible();
   const highlight = page.locator('.log-canvas .xterm-selection > div').first();
   await expect(highlight).toHaveCSS('background-color', 'rgb(203, 166, 247)');
 
-  // exercise both focused terminal shortcuts and the toolbar's unfocused selection
-  for (const action of ['Control+c', 'toolbar', 'y', 'Control+Shift+c']) {
+  // the focused terminal shortcuts flash the selection and keep it
+  for (const action of ['Control+c', 'y', 'Control+Shift+c']) {
     // clear clipboard evidence before each copy path
     await page.evaluate(() => navigator.clipboard.writeText(''));
-    // toolbar copy must also repaint an inactive xterm selection
-    if (action === 'toolbar') {
-      await page.getByRole('textbox', { name: 'Prompt' }).focus();
-      await toolbar.getByRole('button', { name: 'Copy' }).click();
-    } else {
-      await page.locator('.log-canvas .xterm-helper-textarea').focus();
-      await page.keyboard.press(action);
-    }
+    await page.locator('.log-canvas .xterm-helper-textarea').focus();
+    await page.keyboard.press(action);
     await expect(highlight).toHaveCSS('background-color', 'rgb(166, 227, 161)');
     // wait for clipboard completion independently of the visible flash
     await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(copiedSelection);
     await expect(highlight).toHaveCSS('background-color', 'rgb(203, 166, 247)');
     await expect(toolbar).toBeVisible();
   }
+
+  // the toolbar's Copy repaints an inactive xterm selection too, then deselects it and closes
+  await page.evaluate(() => navigator.clipboard.writeText(''));
+  await page.getByRole('textbox', { name: 'Prompt' }).focus();
+  await toolbar.getByRole('button', { name: 'Copy' }).click();
+  await expect(highlight).toHaveCSS('background-color', 'rgb(166, 227, 161)');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(copiedSelection);
+  await expect(toolbar).toBeHidden();
+  await expect(page.locator('.log-canvas .xterm-selection > div')).toHaveCount(0);
+
+  // Add to prompt takes the uncropped selection, then deselects it and closes
+  await selectRow();
+  await expect(toolbar).toBeVisible();
   await toolbar.getByRole('button', { name: 'Add to prompt' }).click();
   await expect(page.getByRole('textbox', { name: 'Prompt' })).toHaveValue(rawSelection);
+  await expect(toolbar).toBeHidden();
 });
 
 // keep native selection intact through copy feedback and follow-up actions
@@ -263,10 +278,13 @@ test('a native output selection creates and appends notes, copies, and guards th
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('Selectable');
   await expect(page.locator('.log')).toHaveClass(/selection-copied/u);
   await expect(page.locator('.log')).not.toHaveClass(/selection-copied/u);
-  // restoring highlight colors must not replace the native range's text node
-  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Selectable');
+  // once the copied flash has shown, the range is dropped and the toolbar closes
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('');
+  await expect(toolbar).toBeHidden();
 
+  await selectWord();
   await toolbar.getByRole('button', { name: 'Create note' }).click();
+  await expect(toolbar).toBeHidden();
   await expect(page.getByRole('dialog', { name: 'Note' }).locator('.note-picker strong')).toHaveText('Selectable');
   const notePreview = page.getByLabel('Note preview');
   await expect(notePreview).toContainText('Selectable');
@@ -282,11 +300,13 @@ test('a native output selection creates and appends notes, copies, and guards th
   await expect(toolbar.getByRole('button', { name: 'Append to note' })).toBeVisible();
   await toolbar.getByRole('button', { name: 'Append to note' }).click();
   await expect.poll(() => savedNotes).toContain('Selectable\n\nSelectable');
+  await expect(toolbar).toBeHidden();
 
   // Add to prompt fills the composer.
   await selectWord();
   await toolbar.getByRole('button', { name: 'Add to prompt' }).click();
   await expect(page.getByRole('textbox', { name: 'Prompt' })).toHaveValue('Selectable');
+  await expect(toolbar).toBeHidden();
 
   // The yank and Ctrl+Shift+C copy shortcuts do not fire while the composer owns keys.
   await page.evaluate(() => navigator.clipboard.writeText('prompt-shortcut-guard'));
@@ -312,6 +332,8 @@ test('a native output selection creates and appends notes, copies, and guards th
   const log = page.locator('.log');
   await expect(log).toHaveClass(/selection-copied/u);
   await expect(log).not.toHaveClass(/selection-copied/u);
+  // a shortcut copy keeps the range: restoring highlight colors must not replace its text node
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Selectable');
   await selectWord();
   await page.evaluate(() => navigator.clipboard.writeText(''));
   await page.keyboard.press('Control+Shift+C');
@@ -480,16 +502,18 @@ for (const platform of ['Linux x86_64', 'Win32', 'MacIntel']) {
     const toolbar = page.getByRole('toolbar', { name: 'Output selection actions' });
     await expect(page.locator('.log-output')).toHaveClass(/selection-active/u);
     await expect(toolbar).toBeVisible();
-    await toolbar.getByRole('button', { name: 'Copy' }).click();
+    // a shortcut copy keeps the selection (the toolbar's Copy would deselect it)
+    await page.keyboard.press('Control+Shift+c');
     // read the first copied selection
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).not.toBe('');
     const selectedText = await page.evaluate(() => navigator.clipboard.readText());
-    expect(selectedText).not.toBe('');
     const renderedText = await selectedRow.textContent();
     const acknowledgedBeforePause = await paneAckTotal(page, 'agent-1');
 
     await pushBytes(page, 'agent-1', '\r\x1b[2Kbuffered first');
     await pushBytes(page, 'agent-1', ' + second\r\n');
-    await toolbar.getByRole('button', { name: 'Copy' }).click();
+    await page.evaluate(() => navigator.clipboard.writeText(''));
+    await page.keyboard.press('Control+Shift+c');
 
     await expect(selectedRow).toHaveText(renderedText!);
     // read the selection copied after output arrived
@@ -1085,7 +1109,8 @@ test('freezes coarse-pointer output while a native selection is active', async (
   const toolbar = page.getByRole('toolbar', { name: 'Output selection actions' });
   await expect(page.locator('.log-output')).toHaveClass(/selection-active/u);
   await expect(toolbar).toBeVisible();
-  await toolbar.getByRole('button', { name: 'Copy' }).click();
+  // a shortcut copy keeps the selection (the toolbar's Copy would deselect it)
+  await page.keyboard.press('y');
   // read the cropped native selection before output arrives
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('eeze');
   // exercise native copy from xterm's accessibility row
@@ -1098,7 +1123,8 @@ test('freezes coarse-pointer output while a native selection is active', async (
 
   await pushBytes(page, 'agent-1', '\r\x1b[2Kbuffered first');
   await pushBytes(page, 'agent-1', ' + second\r\n');
-  await toolbar.getByRole('button', { name: 'Copy' }).click();
+  await page.evaluate(() => navigator.clipboard.writeText(''));
+  await page.keyboard.press('y');
 
   expect(await paneAckTotal(page, 'agent-1')).toBe(acknowledgedBeforePause);
   await expect(selectedRow).toHaveText('Freeze native selected output');

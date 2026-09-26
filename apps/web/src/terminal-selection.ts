@@ -6,6 +6,10 @@ export type TerminalSelection = { text: string; top: number; left: number };
 
 export type TerminalSelectionController = {
   copy: (value: string) => Promise<void>;
+  // the toolbar's Copy: copy, flash, then drop the selection
+  copyThenClear: (value: string) => Promise<void>;
+  // drop the selection once a selection action is done
+  clear: () => void;
   getSelectedText: () => string;
   selectAll: () => void;
   setMode: (mode: 'prompt' | 'output' | 'selection') => void;
@@ -165,6 +169,8 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
   let linkSelectionDragged = false;
   let copiedSelectionTimer: number | undefined;
   let terminalThemeFlashed = false;
+  // a toolbar Copy drops the selection once its copied flash has shown
+  let clearAfterFlash = false;
   // whether the pane is on screen; the view observer below keeps it current
   let inView = true;
   const paneIsVisible = () => inView && containerIsVisible(container);
@@ -175,6 +181,13 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
     handle.setOutputPaused(active);
     options.onSelectionModeChange?.(active);
   };
+
+  // Drop xterm's selection by replacing it with an empty range, never with clearSelection(): told
+  // there is no selection, xterm's DOM renderer keeps the last range it drew and repaints it on
+  // the next resize, so a pane that loses its selection and then resizes (restoring a fullscreen
+  // panel does both) shows a ghost highlight. An empty range resets what it draws. It notifies
+  // selection listeners only when a selection existed.
+  const dropTerminalSelection = () => terminal.select(0, 0, 0);
 
   // scope the browser selection to one terminal
   const nativeSelectionActive = (): boolean => {
@@ -225,6 +238,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
       copiedSelectionTimer = undefined;
       options.flashElement.classList.remove('selection-copied');
       restoreTerminalTheme();
+      if (clearAfterFlash) clear();
     }, options.copyFlashMs);
   };
 
@@ -247,7 +261,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
       // discard browser ranges owned by the hidden pane
       if (nativeSelectionActive()) window.getSelection()?.removeAllRanges();
       // prevent stale terminal selections from returning after layout changes
-      if (terminal.hasSelection()) terminal.clearSelection();
+      if (terminal.hasSelection()) dropTerminalSelection();
       setSelectionMode(false);
       options.onSelection(undefined);
       // release only this pane's shortcut claim
@@ -261,7 +275,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
       nativeSelectionWasActive = false;
       // let the nested xterm event finish the state transition
       if (terminal.hasSelection()) {
-        terminal.clearSelection();
+        dropTerminalSelection();
         return;
       }
     }
@@ -342,6 +356,28 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
     if (!pinnedSelectionMode) return;
     pinnedSelectionMode = false;
     if (!nativeSelectionActive() && !terminal.hasSelection()) setSelectionMode(false);
+  };
+
+  // Drop this pane's selection — xterm's own and a browser range it owns — which closes its
+  // toolbar and releases the output it froze. A selection action calls it once it is done.
+  const clear = () => {
+    // ignore late completions after cleanup
+    if (disposed) return;
+    clearAfterFlash = false;
+    if (nativeSelectionActive()) window.getSelection()?.removeAllRanges();
+    // unconditionally: the pane may have dropped its selection already (hidden mid-transition)
+    // yet still hold a stale drawn range
+    dropTerminalSelection();
+    syncSelectionMode();
+  };
+
+  // copy from the toolbar: the same copy and flash as a shortcut, then the selection is dropped
+  // once the flash has shown. A failed copy keeps the selection for another try.
+  const copyThenClear = async (value: string): Promise<void> => {
+    await copy(value);
+    // the flash timer clears it; a copy that could not flash clears now
+    if (copiedSelectionTimer === undefined) clear();
+    else clearAfterFlash = true;
   };
 
   // freeze before xterm commits desktop drag selections on mouseup
@@ -520,7 +556,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
     }
     // output mode releases every owned selection before focusing input
     if (nativeSelectionActive()) window.getSelection()?.removeAllRanges();
-    if (terminal.hasSelection()) terminal.clearSelection();
+    if (terminal.hasSelection()) dropTerminalSelection();
     options.onSelection(undefined);
     setSelectionMode(false);
     // prompt mode hands focus to its composer instead of xterm
@@ -593,6 +629,13 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
   const selectionScrollSub = terminal.onScroll(clearProjectedSelection);
   const selectionSizeSub = terminal.onResize(clearProjectedSelection);
   const unsubscribeSelectionFont = subscribeTerminalFontSize(clearProjectedSelection);
+  // xterm clears the selection itself when a resize changes the row count, and that clear (or ours,
+  // when both land in one frame) leaves the renderer's stale range for the resize to repaint.
+  // Resetting to an empty range on every resize without a selection keeps the ghost from
+  // appearing; outside a drag it is invisible, and a drag keeps its mouse listeners.
+  const resizeSub = terminal.onResize(() => {
+    if (!disposed && !mouseSelectionGesture && !terminal.hasSelection()) dropTerminalSelection();
+  });
   // claim native selection shortcuts only in the pane containing the selection
   const nativeSelectionChanged = () => syncSelectionMode(nativeSelectionActive());
   document.addEventListener('selectionchange', nativeSelectionChanged);
@@ -643,6 +686,7 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
     selectionScrollSub.dispose();
     selectionSizeSub.dispose();
     unsubscribeSelectionFont();
+    resizeSub.dispose();
     selectionResizeObserver.disconnect();
     selectionViewObserver.disconnect();
     container.removeEventListener('pointerdown', beginOutputSelection, true);
@@ -668,6 +712,8 @@ export function attachTerminalSelection(container: HTMLElement, handle: Streamed
 
   return {
     copy,
+    copyThenClear,
+    clear,
     // keep transfer actions faithful to the selection; copy applies its own gutter crop
     getSelectedText: () => selectedOutput(),
     selectAll,

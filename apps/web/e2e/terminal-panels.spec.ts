@@ -358,7 +358,9 @@ test('a Terminal selection freezes only its pane and keeps keyboard ownership lo
 
   const highlight = build.locator('.xterm-selection > div').first();
   const originalHighlight = await highlight.evaluate(element => getComputedStyle(element).backgroundColor);
-  await toolbar.getByRole('button', { name: 'Copy', exact: true }).click();
+  // a shortcut copy flashes and keeps the selection (the toolbar's Copy would deselect it)
+  await build.locator('.xterm-helper-textarea').focus();
+  await page.keyboard.press('Control+Shift+c');
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).not.toBe('');
   const selectedText = await page.evaluate(() => navigator.clipboard.readText());
   await expect(highlight).toHaveCSS('background-color', 'rgb(166, 227, 161)');
@@ -454,15 +456,11 @@ test('a native Terminal selection freezes output through copied feedback', async
   await page.waitForTimeout(350);
   await expect(terminal).toHaveClass(/\bselection-copied\b/u);
   await expect(terminal).not.toHaveClass(/\bselection-copied\b/u, { timeout: 900 });
-  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Freeze');
-  await expect(terminal).toHaveClass(/\bselection-active\b/u);
-  await expect(toolbar).toBeVisible();
 
-  // browser range release flushes the pane in order
-  await page.evaluate(() => {
-    window.getSelection()?.removeAllRanges();
-    document.dispatchEvent(new Event('selectionchange'));
-  });
+  // once the copied flash has shown, Copy drops the range and closes the toolbar, which
+  // releases the queued output in order
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('');
+  await expect(terminal).not.toHaveClass(/\bselection-active\b/u);
   await expect(toolbar).toBeHidden();
   await expect(terminal.locator('.xterm-accessibility-tree [role="listitem"]', { hasText: 'queued native output' })).toBeVisible();
   await expect.poll(() => paneAckTotal(page, '%5')).toBeGreaterThan(acknowledged);
@@ -497,11 +495,18 @@ test('Terminal selection actions append to the prompt and create a note from ful
   await toolbar.getByRole('button', { name: 'Copy', exact: true }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).not.toBe('');
   const selectedText = await page.evaluate(() => navigator.clipboard.readText());
+  // Copy deselects once its flash has shown, closing the toolbar
+  await expect(toolbar).toBeHidden();
+  await expect(terminal).not.toHaveClass(/\bselection-active\b/u);
+
+  await selectTerminalText(page, terminal, 'Selected terminal note text');
   await toolbar.getByRole('button', { name: 'Add to prompt', exact: true }).click();
   await expect(prompt).toHaveValue(`existing draft\n\n${selectedText}`);
   expect(prompts).toEqual([]);
-  await expect(toolbar).toBeVisible();
+  await expect(toolbar).toBeHidden();
+  await expect(terminal.locator('.xterm-selection > div')).toHaveCount(0);
 
+  await selectTerminalText(page, terminal, 'Selected terminal note text');
   await terminal.getByRole('button', { name: 'Expand terminal build' }).click();
   await expect(terminal).toHaveClass(/\bexpanded\b/u);
   await toolbar.getByRole('button', { name: 'Create note', exact: true }).click();
@@ -513,6 +518,8 @@ test('Terminal selection actions append to the prompt and create a note from ful
   await expect.poll(() => savedNotes).toContain(selectedText);
   expect(notes[0]).toMatchObject({ text: selectedText, title: selectedText });
   expect(prompts).toEqual([]);
+  await expect(toolbar).toBeHidden();
+  await expect(terminal.locator('.xterm-selection > div')).toHaveCount(0);
 });
 
 // phone-native selection actions remain reachable and reveal the updated draft
@@ -661,6 +668,9 @@ test('terminal fullscreen clears an agent selection and releases queued output',
   await terminal.getByRole('button', { name: 'Restore terminal build' }).click();
   await expect(output.locator('.xterm-rows > div', { hasText: 'agent output released behind fullscreen' })).toBeVisible();
   await expect(toolbar).toBeHidden();
+  // the pane's resize on restoring must not repaint the selection it dropped while hidden
+  await page.waitForTimeout(300);
+  await expect(output.locator('.xterm-selection > div')).toHaveCount(0);
 });
 
 // real touch switches release a hidden terminal selection before returning
@@ -1261,16 +1271,19 @@ test('an agentless Worktree Terminal can create a note and prepare its prompt', 
   await toolbar.getByRole('button', { name: 'Copy', exact: true }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).not.toBe('');
   const selectedText = await page.evaluate(() => navigator.clipboard.readText());
+  await expect(toolbar).toBeHidden();
 
+  await selectTerminalText(page, terminal, 'Agentless terminal selection');
   await toolbar.getByRole('button', { name: 'Add to prompt', exact: true }).click();
   const prompt = page.getByRole('textbox', { name: 'Prompt' });
   await expect(prompt).toBeVisible();
   await expect(prompt).toBeEnabled();
   await expect(prompt).toHaveValue(selectedText);
-  await expect(toolbar).toBeVisible();
+  await expect(toolbar).toBeHidden();
   // the opened draft composer carries the Worktree's git status
   await expect(page.getByRole('button', { name: /^Git status:/u })).toBeVisible();
 
+  await selectTerminalText(page, terminal, 'Agentless terminal selection');
   await toolbar.getByRole('button', { name: 'Create note', exact: true }).click();
   const notePane = page.getByRole('dialog', { name: 'Note' });
   await expect(notePane).toBeVisible();
