@@ -2,16 +2,18 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { FlyoutPortal } from './flyout-portal.js';
 import { PanelIcon, panelIcons } from './panel-header.js';
-import { stackActionLabel, stackOperationLabel, type StackAction, type StackOperationLog } from './stack-operations.js';
+import { stackActionLabel, stackOperationLabel, type StackAction, type StackOperationLog, type StackProcessState } from './stack-operations.js';
 import { useViewportFlyout } from './viewport-flyout.js';
 
-type ProjectStack = { actions?: StackAction[]; running?: boolean; operation?: StackAction; transition?: 'starting'|'migrating'; tunnel?: boolean };
-type ProjectStackStatus = 'working'|'healthy'|'down'|'running'|'stopped'|'unknown';
+type ProjectStack = { actions?: StackAction[]; running?: boolean; operation?: StackAction; transition?: 'starting'|'migrating'; tunnel?: boolean; process?: StackProcessState };
+type ProjectStackStatus = 'working'|'exited'|'healthy'|'down'|'running'|'stopped'|'unknown';
 
 // derive the stack status badge
 function resolveStackStatus(stack: ProjectStack | undefined, inProgress: boolean): ProjectStackStatus {
   // prioritize active operations
   if (inProgress) return 'working';
+  // a Stack process that died on its own outranks whatever its tunnel says
+  if (stack?.process?.state === 'exited') return 'exited';
   // reflect a healthy tunnel
   if (stack?.tunnel === true) return 'healthy';
   // reflect a failed tunnel
@@ -108,6 +110,8 @@ export function ProjectOpen({ url, stack, browserOpen = false, onBrowserToggle, 
   const inProgress = busy || transitionLabel !== undefined;
   // describe the server badge state
   const stackStatus = resolveStackStatus(stack, inProgress);
+  // name an exited process and its code for the tooltip and screen readers
+  const stackDescription = stackStatus === 'exited' && stack?.process !== undefined ? `${stack.process.name} exited${stack.process.exitCode === undefined ? '' : ` (${stack.process.exitCode})`}` : stackStatus;
   const label = operation !== undefined ? `${stackOperationLabel(operation)}…` : transitionLabel !== undefined ? `${transitionLabel}…` : 'Open';
   const title = operation !== undefined ? `${stackOperationLabel(operation)} stack` : transitionLabel !== undefined ? `${transitionLabel} stack` : `Project is ${status}`;
   const logTitle = log === undefined ? 'Stack output' : log.active ? `${stackOperationLabel(log.action)} stack` : `${stackActionLabel(log.action)} output`;
@@ -125,7 +129,7 @@ export function ProjectOpen({ url, stack, browserOpen = false, onBrowserToggle, 
   }}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1" /><path d="M12 4v16" /></svg><span>{browserOpen ? 'Close' : 'Split'}</span></button>;
   return <>
     <span className={`project-open-group${url === undefined ? ' stack-only' : ''}${hasStackActions ? ' has-stack-actions' : ''}`} ref={anchorRef} role="group" aria-label={url === undefined ? 'Stack controls' : 'Project controls'}>
-      {hasStackActions ? <button className="project-stack-toggle project-stack-trigger toolbar-button" type="button" aria-label={`Stack controls: ${stackStatus}`} data-context-flyout aria-expanded={menuOpen} title={`Stack controls · ${stackStatus}`} onClick={() => setMenuOpen(open => !open)}><span className="flyout-caret" aria-hidden="true" /><svg className="project-stack-server-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2" /><rect x="3" y="14" width="18" height="7" rx="2" /><path d="M7 6.5h.01M7 17.5h.01M11 6.5h6M11 17.5h6" /></svg><span className="toolbar-label">Stack</span><span className="project-stack-status-text">{stackStatus}</span><i className={`project-stack-status-dot status-${stackStatus}`} aria-hidden="true" /></button> : url !== undefined && <a className={`project-open status-${status}${inProgress ? ' busy' : ''}`} href={url} target="_blank" rel="noreferrer" aria-busy={inProgress || undefined} title={title}>{inProgress ? <span className="spinner" aria-hidden="true" /> : <i aria-hidden="true" />}{label}</a>}
+      {hasStackActions ? <button className="project-stack-toggle project-stack-trigger toolbar-button" type="button" aria-label={`Stack controls: ${stackDescription}`} data-context-flyout aria-expanded={menuOpen} title={`Stack controls · ${stackDescription}`} onClick={() => setMenuOpen(open => !open)}><span className="flyout-caret" aria-hidden="true" /><svg className="project-stack-server-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2" /><rect x="3" y="14" width="18" height="7" rx="2" /><path d="M7 6.5h.01M7 17.5h.01M11 6.5h6M11 17.5h6" /></svg><span className="toolbar-label">Stack</span><span className="project-stack-status-text">{stackStatus}</span><i className={`project-stack-status-dot status-${stackStatus}`} aria-hidden="true" /></button> : url !== undefined && <a className={`project-open status-${status}${inProgress ? ' busy' : ''}`} href={url} target="_blank" rel="noreferrer" aria-busy={inProgress || undefined} title={title}>{inProgress ? <span className="spinner" aria-hidden="true" /> : <i aria-hidden="true" />}{label}</a>}
     </span>
     {menuOpen && <FlyoutPortal onDismiss={() => setMenuOpen(false)}><div className="stack-menu more-menu flyout-menu" ref={flyoutRef} style={style}>{actions.map(action => <button key={action} disabled={!allowed(action)} onClick={() => void run(action)}>{operation === action ? <><span className="spinner" />{stackOperationLabel(action)}…</> : stackActionLabel(action)}</button>)}{hasStackLogs && <><hr className="more-menu-divider" /><button className="stack-log-menu-button" type="button" onClick={() => { setMenuOpen(false); openLogs(); }}><svg className="more-menu-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14v12H5zM8 10l2 2-2 2M12 14h4" /></svg>Show output</button></>}{url !== undefined && <span className="project-stack-view-actions" role="group" aria-label="Project view controls">{externalControl}{splitControl}</span>}</div></FlyoutPortal>}
     {logDialog}

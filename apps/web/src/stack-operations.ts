@@ -1,4 +1,6 @@
 export type StackAction = 'start'|'stop'|'build'|'restart'|'migrate';
+// a Worktree's Stack process as its pane shows it; `exitCode` is absent after a signal
+export type StackProcessState = { name: string; state: 'running'|'exited'|'stopped'; exitCode?: number };
 export type StackOperationLog = { action: StackAction; active: boolean; startedAt: string; completedAt?: string; output: string };
 
 const actionLabels: Record<StackAction, string> = {

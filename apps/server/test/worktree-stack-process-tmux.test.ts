@@ -87,9 +87,11 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
     expect(await tmuxAt('list-windows', '-t', '=fixture:', '-F', '#{@rac_process}')).toBe('dev');
   });
 
-  it('makes a Workspace session for a Worktree that has none, and keeps a command that dies at once as a dead pane with its output', async () => {
-    // an `exit` runs a login shell's logout script, which on Debian clears the screen
-    const { root, worktree, service, tmuxAt } = await fixture('echo "missing binary"; exit 3');
+  it('makes a Workspace session for a Worktree that has none, keeps a command that dies at once as a dead pane with its output, and Start reruns it there', async () => {
+    // an `exit` runs a login shell's logout script, which on Debian clears the screen; each run
+    // leaves a line in `runs` (the command runs in the checkout) so a rerun can be counted
+    const { root, worktree, service, tmuxAt } = await fixture('echo run >> runs; echo "missing binary"; exit 3');
+    const runs = async () => (await readFile(join(root, 'runs'), 'utf8').catch(() => '')).split('\n').filter(Boolean).length;
     const instance = service();
 
     await expect(instance.start(worktree.id, 'start')).resolves.toBe('started');
@@ -99,6 +101,14 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
     expect(await tmuxAt('show-options', '-v', '-t', `=${session}:`, '@rac_place')).toBe(worktree.id);
     await vi.waitFor(async () => { expect(await instance.state(worktree)).toEqual({ running: false, process: { name: 'dev', state: 'exited', exitCode: 3 } }); }, { timeout: 10_000, interval: 100 });
     expect(await tmuxAt('capture-pane', '-p', '-J', '-S', '-', '-t', `=${session}:dev`)).toContain('missing binary');
+    expect(await runs()).toBe(1);
+
+    // Start after the crash respawns the command in the same pane, not a second window
+    const pane = await tmuxAt('display-message', '-p', '-t', `=${session}:dev`, '#{pane_id}');
+    await expect(instance.start(worktree.id, 'start')).resolves.toBe('started');
+    await vi.waitFor(async () => { expect(await runs()).toBe(2); }, { timeout: 10_000, interval: 100 });
+    await vi.waitFor(async () => { expect(await instance.state(worktree)).toEqual({ running: false, process: { name: 'dev', state: 'exited', exitCode: 3 } }); }, { timeout: 10_000, interval: 100 });
+    expect(await tmuxAt('list-panes', '-s', '-t', `=${session}:`, '-F', '#{pane_id}')).toBe(pane);
   });
 
   // tmux format-expands a session name and a start directory; a checkout folder named with a

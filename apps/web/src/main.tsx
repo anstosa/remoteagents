@@ -20,7 +20,7 @@ import { ProjectOpen } from './project-open.js';
 import type { CodePanelReview } from './code-panel/code-panel.js';
 import { savedCodeOpen, saveCodeOpen, supportingChange, useCodePanel, type CodePanelController, type CodePanelMode } from './code-panel/comparison.js';
 import { PullRequestCard, PullRequestFixup, PullRequestIndicators, type PullRequestSummary } from './pull-request-card.js';
-import { isStackOperationLog, type StackAction, type StackOperationLog } from './stack-operations.js';
+import { isStackOperationLog, type StackAction, type StackOperationLog, type StackProcessState } from './stack-operations.js';
 import { SyntaxHighlightedCode } from './syntax-highlight.js';
 import { isPromptKeyboardTarget, useShiftArrowTabCycling } from './tab-navigation.js';
 import { defaultTerminalFontSize, maxTerminalFontSize, minTerminalFontSize, resetTerminalFontSize, stepTerminalFontSize, useTerminalFontSize } from './terminal-font-size.js';
@@ -49,7 +49,7 @@ const actionIconPaths = {
 // the fields the web reads off the server's inline-question payload; the server
 // also carries targetPaneId for its own keystroke targeting, which the web ignores
 type InlineQuestion = { id: string; text: string; choices: string[]; descriptions?: string[]; source: 'structured' | 'parsed' };
-type Stack = { actions: StackAction[]; running?: boolean; transition?: 'starting'|'migrating'; operation?: StackAction; tunnel?: boolean };
+type Stack = { actions: StackAction[]; running?: boolean; transition?: 'starting'|'migrating'; operation?: StackAction; tunnel?: boolean; process?: StackProcessState };
 type PullRequestChoice = { number: number; title: string; branch: string; draft: boolean; url: string } & Pick<PullRequestSummary, 'checks' | 'issues'>;
 type PullRequestWorktree = { worktreeId: string; worktreeName: string; agentId?: string };
 type SwitchablePullRequest = PullRequestChoice & { checkedOut: boolean; openIn?: PullRequestWorktree };

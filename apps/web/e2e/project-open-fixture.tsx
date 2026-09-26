@@ -99,3 +99,13 @@ export const renderStartingProcessControls = (root: HTMLElement) => {
   };
   createRoot(root).render(createElement(Controls));
 };
+
+// render a Stack process that died on its own: with its exit code and a down tunnel (exited wins),
+// and after a signal, when tmux keeps no exit code
+export const renderExitedProcessStatuses = (root: HTMLElement) => {
+  const ignoreStackAction = () => {};
+  createRoot(root).render(createElement('div', {},
+    createElement(ProjectOpen, { stack: { actions: ['start', 'stop', 'restart'], running: false, tunnel: false, process: { name: 'dev', state: 'exited', exitCode: 127 } }, onStackAction: ignoreStackAction }),
+    createElement(ProjectOpen, { stack: { actions: ['start', 'stop', 'restart'], running: false, process: { name: 'dev', state: 'exited' } }, onStackAction: ignoreStackAction })
+  ));
+};

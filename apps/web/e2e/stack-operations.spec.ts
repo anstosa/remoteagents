@@ -178,3 +178,23 @@ test('offers Stop and Restart while the stack is Starting', async ({ page }) => 
   await expect(page.getByRole('button', { name: 'Stopping…' })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Restart stack', exact: true })).toBeDisabled();
 });
+
+// a crashed Stack process reads apart from a deliberate stop, and its code is in the tooltip
+test('shows an exited Stack process with its exit code, ahead of a down tunnel', async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderExitedProcessStatuses } = await import('/e2e/project-open-fixture.tsx');
+    renderExitedProcessStatuses(document.querySelector<HTMLElement>('#control-root')!);
+  });
+
+  const crashed = page.getByRole('button', { name: 'Stack controls: dev exited (127)', exact: true });
+  const signalled = page.getByRole('button', { name: 'Stack controls: dev exited', exact: true });
+  await expect(crashed).toHaveAttribute('title', 'Stack controls · dev exited (127)');
+  await expect(signalled).toHaveAttribute('title', 'Stack controls · dev exited');
+  await expect(crashed.locator('.project-stack-status-text')).toHaveText('exited');
+  await expect(crashed.locator('.project-stack-status-dot.status-exited')).toBeVisible();
+  // Start reruns it from the menu
+  await crashed.click();
+  await expect(page.getByRole('button', { name: 'Start stack', exact: true })).toBeEnabled();
+});
