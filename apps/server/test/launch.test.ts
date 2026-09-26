@@ -261,24 +261,24 @@ describe('LaunchService', () => {
 
     await expect(service.launch('cora')).resolves.toBe(true);
     const freshSession = run.mock.calls.find(call => (call[1] as string[]).includes('new-session'))?.[1] as string[];
-    expect(freshSession.slice(0, 9)).toEqual(['-S', '/host-tmux/default', 'new-session', '-d', '-s', 'cora', '-c', '/home/ubuntu/cora', '/usr/bin/zsh']);
-    expect(freshSession[9]).toBe('-lc');
+    expect(freshSession.slice(0, 12)).toEqual(['-S', '/host-tmux/default', 'new-session', '-d', '-s', 'cora', '-P', '-F', '#{pane_id}', '-c', '/home/ubuntu/cora', '/usr/bin/zsh']);
+    expect(freshSession[12]).toBe('-lc');
     // a fresh launch runs the configured program unchanged — no resume verb
-    expect(freshSession[10]).toContain('codex');
-    expect(freshSession[10]).not.toContain('resume');
+    expect(freshSession[13]).toContain('codex');
+    expect(freshSession[13]).not.toContain('resume');
 
     run.mockClear();
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
     await expect(service.resume('cora')).resolves.toBe(true);
     const continueSession = run.mock.calls.find(call => (call[1] as string[]).includes('new-session'))?.[1] as string[];
     // continue appends the Adapter's args to the same program
-    expect(continueSession[10]).toContain('codex resume --last');
+    expect(continueSession[13]).toContain('codex resume --last');
   });
 
   // nested checkouts still use the authenticated host account
   it('keeps the account HOME when launching a nested host worktree', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
-    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    run.mockImplementation(async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('new-session') ? '%7\n' : '', stderr: '' }));
     const worktree = cora({
       id: 'worker-1',
       path: '/worktrees/cora/.omx/team/example/worktrees/worker-1',
@@ -293,18 +293,18 @@ describe('LaunchService', () => {
     expect(created).toContain(worktree.hostPath);
     expect(created.join(' ')).toContain("export HOME='/home/ubuntu'");
     expect(created.join(' ')).not.toContain("export HOME='/home/ubuntu/cora/.omx/team/example/worktrees'");
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', 'worker-1', '@rac_console_managed', '1']);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%7', '@rac_console_managed', '1']);
   });
 
   it('records @rac_sandboxed on a Sandboxed launch and leaves an ordinary launch unmarked', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
-    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    run.mockImplementation(async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('new-session') ? '%7\n' : '', stderr: '' }));
     const worktree = cora();
     const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
     const launchWorktree = (input: { mode: 'fresh'; sandboxed?: boolean }) => (service as unknown as { launchWorktree(id: string, input: unknown): Promise<boolean> }).launchWorktree('cora', input);
 
     await expect(launchWorktree({ mode: 'fresh', sandboxed: true })).resolves.toBe(true);
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', 'cora', '@rac_sandboxed', '1']);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%7', '@rac_sandboxed', '1']);
 
     run.mockClear();
     run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
@@ -324,17 +324,19 @@ describe('LaunchService', () => {
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%4', '@rac_sandboxed', '1']);
   });
 
-  it('names a new tmux session after the worktree directory', async () => {
+  it('names a new tmux session after the worktree directory, marking it through its pane since a dotted name is no target', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
-    run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    run.mockImplementation(async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('new-session') ? '%7\n' : '', stderr: '' }));
     const worktree = cora({ id: 'ferry-fyi', label: 'Ferry FYI', path: '/worktrees/ferry.fyi', hostPath: '/home/ubuntu/ferry.fyi' });
     const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
 
     await expect(service.launch(worktree.id)).resolves.toBe(true);
 
     expect(run).toHaveBeenCalledWith('/usr/bin/tmux', expect.arrayContaining(['new-session', '-d', '-s', 'ferry.fyi', '-c', worktree.hostPath]));
-    // the new session is the Worktree's Workspace
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-t', 'ferry.fyi', '@rac_place', 'ferry-fyi']);
+    // tmux reads `-p -t ferry.fyi` as window `ferry`, pane `fyi`, so every option targets the new pane
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-t', '%7', '@rac_place', 'ferry-fyi']);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%7', '@rac_console_managed', '1']);
+    expect(run.mock.calls.some(call => (call[1] as string[]).includes('ferry.fyi') && (call[1] as string[]).includes('set-option'))).toBe(false);
   });
 
   it('moves a colliding named session aside before launching a worktree agent', async () => {
@@ -355,7 +357,7 @@ describe('LaunchService', () => {
 
   it('starts a Worktree idle shell named after the checkout when the name is free', async () => {
     process.env.RAC_HOST_TMUX_DIR = '/host-tmux';
-    run.mockImplementation(async (_binary: string, args: string[]) => args.includes('list-sessions') ? { code: 0, stdout: '', stderr: '' } : { code: 0, stdout: '', stderr: '' });
+    run.mockImplementation(async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('new-session') ? '%7\n' : '', stderr: '' }));
     const worktree = cora({ id: 'owen', label: 'Owen', path: '/worktrees/owen', hostPath: '/home/ubuntu/owen' });
     const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree]);
 
@@ -363,8 +365,9 @@ describe('LaunchService', () => {
 
     // the idle shell is a plain host new-session (no displacement), in the worktree dir
     const created = run.mock.calls.find(call => (call[1] as string[]).includes('new-session'))?.[1] as string[];
-    expect(created.slice(0, 8)).toEqual(['-S', '/host-tmux/default', 'new-session', '-d', '-s', 'owen', '-c', '/home/ubuntu/owen']);
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-t', 'owen', '@rac_place', 'owen']);
+    expect(created.slice(0, 11)).toEqual(['-S', '/host-tmux/default', 'new-session', '-d', '-s', 'owen', '-P', '-F', '#{pane_id}', '-c', '/home/ubuntu/owen']);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-t', '%7', '@rac_place', 'owen']);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['-S', '/host-tmux/default', 'set-option', '-p', '-t', '%7', '@rac_console_managed', '1']);
     expect(run.mock.calls.some(call => (call[1] as string[]).includes('rename-session'))).toBe(false);
   });
 
@@ -422,7 +425,7 @@ describe('LaunchService', () => {
 
     // a direct login shell in the checkout — no node runner, no descriptor, no fs
     const created = run.mock.calls.find(call => (call[1] as string[]).includes('new-session'))?.[1] as string[];
-    expect(created).toEqual(['new-session', '-d', '-s', 'owen', '-c', '/worktrees/owen', '/usr/bin/zsh', '-l']);
+    expect(created).toEqual(['new-session', '-d', '-s', 'owen', '-c', '/worktrees/owen', '-P', '-F', '#{pane_id}', '/usr/bin/zsh', '-l']);
   });
 
   it('suffixes a local worktree launch past a session name an unrelated tmux session already holds', async () => {
@@ -431,7 +434,7 @@ describe('LaunchService', () => {
     tempDirs.push(root);
     // a stray, non-console session already holds the worktree's base name on the shared
     // default socket; the runner path must step around it, not collide on new-session
-    run.mockImplementation(async (_binary: string, args: string[]) => args.includes('list-sessions') ? { code: 0, stdout: 'owen\n', stderr: '' } : { code: 0, stdout: '', stderr: '' });
+    run.mockImplementation(async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('list-sessions') ? 'owen\n' : args.includes('new-session') ? '%7\n' : '', stderr: '' }));
     const worktree = testWorktree({ id: 'owen', projectId: 'proj', path: '/worktrees/owen', identity: '/worktrees/owen', main: false });
     const service = new LaunchService(codex, { find: async () => [] }, undefined, undefined, undefined, () => [worktree], () => new Set(), undefined, root);
 
@@ -439,8 +442,9 @@ describe('LaunchService', () => {
 
     // launched under a suffixed name via the node runner, never the taken base name
     const created = run.mock.calls.find(call => (call[1] as string[]).includes('new-session'))?.[1] as string[];
-    expect(created.slice(0, 5)).toEqual(['new-session', '-d', '-s', 'owen-2', process.execPath]);
-    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['set-option', '-t', 'owen-2', '@rac_place', 'owen']);
+    expect(created.slice(0, 8)).toEqual(['new-session', '-d', '-s', 'owen-2', '-P', '-F', '#{pane_id}', process.execPath]);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['set-option', '-t', '%7', '@rac_place', 'owen']);
+    expect(run).toHaveBeenCalledWith('/usr/bin/tmux', ['set-option', '-p', '-t', '%7', '@rac_console_managed', '1']);
   });
 
   it('preserves ordinary worktree names and removes tmux target separators', () => {
@@ -452,14 +456,16 @@ describe('LaunchService', () => {
     run
       .mockResolvedValueOnce({ code: 0, stdout: '$42\n', stderr: '' })
       .mockResolvedValueOnce({ code: 0, stdout: 'ferry.fyi\n', stderr: '' })
-      .mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+      .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' })
+      .mockResolvedValue({ code: 0, stdout: '%7\n', stderr: '' });
 
-    await expect(startNamedReplacementSession('/usr/bin/tmux', '/tmp/tmux', 'ferry.fyi', 'ferry.fyi', ['-c', '/home/ubuntu/ferry.fyi', 'codex'])).resolves.toBe(true);
+    // the new session's pane id, the only reliable target for its options
+    await expect(startNamedReplacementSession('/usr/bin/tmux', '/tmp/tmux', 'ferry.fyi', 'ferry.fyi', ['-c', '/home/ubuntu/ferry.fyi', 'codex'])).resolves.toBe('%7');
 
     expect(run.mock.calls[0]?.[1]).toEqual(['-S', '/tmp/tmux', 'display-message', '-p', '-t', '=ferry.fyi:', '#{session_id}']);
     expect(run.mock.calls[1]?.[1]).toEqual(['-S', '/tmp/tmux', 'display-message', '-p', '-t', '$42', '#{session_name}']);
     expect(run.mock.calls[2]?.[1]).toEqual(['-S', '/tmp/tmux', 'rename-session', '-t', '$42', expect.stringMatching(/^rac-replacing-[a-f0-9]+$/u)]);
-    expect(run.mock.calls[3]?.[1]).toEqual(['-S', '/tmp/tmux', 'new-session', '-d', '-s', 'ferry.fyi', '-c', '/home/ubuntu/ferry.fyi', 'codex']);
+    expect(run.mock.calls[3]?.[1]).toEqual(['-S', '/tmp/tmux', 'new-session', '-d', '-s', 'ferry.fyi', '-P', '-F', '#{pane_id}', '-c', '/home/ubuntu/ferry.fyi', 'codex']);
   });
 
   it('restores the old session name when its replacement cannot start', async () => {
@@ -470,7 +476,7 @@ describe('LaunchService', () => {
       .mockResolvedValueOnce({ code: 1, stdout: '', stderr: 'failed' })
       .mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
 
-    await expect(startNamedReplacementSession('/usr/bin/tmux', '/tmp/tmux', '$1', 'owen', ['codex'])).resolves.toBe(false);
+    await expect(startNamedReplacementSession('/usr/bin/tmux', '/tmp/tmux', '$1', 'owen', ['codex'])).resolves.toBeUndefined();
 
     expect(run.mock.calls[4]?.[1]).toEqual(['-S', '/tmp/tmux', 'rename-session', '-t', '$42', 'owen']);
   });

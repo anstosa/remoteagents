@@ -40,7 +40,10 @@ export class NewTaskService {
     const session = worktreeSessionName(path);
     const currentSession = agentTmuxSession(target.agent);
     const shell = process.env.RAC_HOST_TMUX_DIR === undefined ? interactiveShellPath() : hostInteractiveShellPath();
-    if (!await startNamedReplacementSession(this.tmuxBinary, target.socket.path, currentSession, session, ['-c', path, shell, '-lc', interactiveShellBootstrap(script, home, shell)], this.command)) return false;
+    const pane = await startNamedReplacementSession(this.tmuxBinary, target.socket.path, currentSession, session, ['-c', path, shell, '-lc', interactiveShellBootstrap(script, home, shell)], this.command);
+    if (pane === undefined) return false;
+    // the new session replaces the Agent's as the Worktree's Workspace
+    await this.tmux.markSessionPlace(target.socket, pane, worktree.id);
     return await this.tmux.closeSession(target.socket, currentSession);
   }
 

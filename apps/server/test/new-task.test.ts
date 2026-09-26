@@ -14,11 +14,12 @@ describe('new task', () => {
   it('closes the agent and starts the configured task in a new tmux session', async () => {
     const discovery = discoveryStub();
     const calls: string[] = [];
-    const tmux = { closeSession: async () => { calls.push('close-session'); return true; } };
+    const tmux = { closeSession: async () => { calls.push('close-session'); return true; }, markSessionPlace: async (_socket: unknown, pane: string, placeId: string) => { calls.push(`mark ${pane} ${placeId}`); return true; } };
     const command = async (binary: string, args: string[]) => {
       calls.push(`${binary} ${args.join(' ')}`);
       // return the requested stable session field
       if (args.includes('display-message')) return { code: 0, stdout: args.at(-1) === '#{session_id}' ? '$1\n' : 'cora\n' };
+      if (args.includes('new-session')) return { code: 0, stdout: '%7\n' };
       return cleanCommand(binary, args);
     };
     const service = new NewTaskService(config, discovery as never, tmux as never, command);
@@ -28,7 +29,9 @@ describe('new task', () => {
     expect(calls).toContain('close-session');
     expect(calls.some(call => /rename-session .* rac-replacing-/u.test(call))).toBe(true);
     const launch = calls.find(call => call.includes('new-session'));
-    expect(launch).toContain('new-session -d -s cora -c /home/ubuntu/cora');
+    expect(launch).toContain('new-session -d -s cora -P -F #{pane_id} -c /home/ubuntu/cora');
+    // the new session replaces the Agent's as the Worktree's Workspace, marked through its pane
+    expect(calls).toContain(`mark %7 ${worktree.id}`);
     expect(launch).toContain('RAC_AGENT_COMMAND=');
     expect(launch).toMatch(/cd -- '\\''\/home\/ubuntu\/cora'\\'' && eval '\\''detach && new [A-Za-z0-9_-]{8}'\\''/);
     expect(calls.findIndex(call => call.includes('new-session'))).toBeLessThan(calls.indexOf('close-session'));
@@ -36,7 +39,7 @@ describe('new task', () => {
 
   it('does not suspend an agent while the worktree has uncommitted work', async () => {
     const discovery = discoveryStub();
-    const tmux = { closeSession: async () => true };
+    const tmux = { closeSession: async () => true, markSessionPlace: async () => true };
     const dirtyCommand = async (_binary: string, args: string[]) => ({ code: 0, stdout: args.includes('status') ? ' M README.md\n' : 'origin/main\n' });
     const service = new NewTaskService(config, discovery as never, tmux as never, dirtyCommand);
 
@@ -46,7 +49,7 @@ describe('new task', () => {
 
   it('allows a clean detached checkout to start a new task', async () => {
     const discovery = discoveryStub();
-    const tmux = { closeSession: async () => true };
+    const tmux = { closeSession: async () => true, markSessionPlace: async () => true };
     const detachedCommand = async (_binary: string, args: string[]) => ({ code: args.includes('rev-parse') || args.includes('symbolic-ref') ? 1 : 0, stdout: '' });
     const service = new NewTaskService(config, discovery as never, tmux as never, detachedCommand);
 
@@ -56,7 +59,7 @@ describe('new task', () => {
 
   it('allows a clean branch whose configured upstream is gone to start a new task', async () => {
     const discovery = discoveryStub();
-    const tmux = { closeSession: async () => true };
+    const tmux = { closeSession: async () => true, markSessionPlace: async () => true };
     const goneUpstreamCommand = async (_binary: string, args: string[]) => {
       if (args.includes('status')) return { code: 0, stdout: '' };
       if (args.includes('symbolic-ref')) return { code: 0, stdout: 'refs/heads/feature/merged\n' };
