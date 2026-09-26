@@ -109,3 +109,28 @@ export const renderExitedProcessStatuses = (root: HTMLElement) => {
     createElement(ProjectOpen, { stack: { actions: ['start', 'stop', 'restart'], running: false, process: { name: 'dev', state: 'exited' } }, onStackAction: ignoreStackAction })
   ));
 };
+
+// render a Stack process Worktree that also has a one-shot `build`: its process output grows a
+// line on every read, so the dialog's polling shows as new lines
+export const renderProcessOutputControls = (root: HTMLElement) => {
+  let reads = 0;
+  createRoot(root).render(createElement(ProjectOpen, {
+    stack: { actions: ['start', 'stop', 'build', 'restart'], running: true, process: { name: 'dev', state: 'running' } },
+    onStackAction: () => {},
+    onStackLog: async () => ({ action: 'build', active: false, startedAt: '2026-09-26T10:00:00.000Z', completedAt: '2026-09-26T10:01:00.000Z', output: 'built in 3s' }),
+    onProcessOutput: async () => {
+      reads += 1;
+      return { name: 'dev', state: 'running', output: ['ready in 120ms', ...Array.from({ length: 80 }, (_, index) => `compiled module ${index + 1}`), ...Array.from({ length: reads }, (_, index) => `request ${index + 1}`)].join('\n') };
+    }
+  }));
+};
+
+// render a Stack process with no one-shot commands, which has died
+export const renderExitedProcessOutputControls = (root: HTMLElement) => {
+  createRoot(root).render(createElement(ProjectOpen, {
+    stack: { actions: ['start', 'stop', 'restart'], running: false, process: { name: 'dev', state: 'exited', exitCode: 127 } },
+    onStackAction: () => {},
+    onStackLog: async () => undefined,
+    onProcessOutput: async () => ({ name: 'dev', state: 'exited', exitCode: 127, output: 'bash: line 1: pnpm: command not found' })
+  }));
+};

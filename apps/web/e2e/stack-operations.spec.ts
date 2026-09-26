@@ -198,3 +198,52 @@ test('shows an exited Stack process with its exit code, ahead of a down tunnel',
   await crashed.click();
   await expect(page.getByRole('button', { name: 'Start stack', exact: true })).toBeEnabled();
 });
+
+// the process's own output and the last one-shot command's output are separate menu entries
+test("shows a Stack process's output in the log dialog, refreshing while it is open", async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderProcessOutputControls } = await import('/e2e/project-open-fixture.tsx');
+    renderProcessOutputControls(document.querySelector<HTMLElement>('#control-root')!);
+  });
+
+  const toggle = page.getByRole('button', { name: 'Stack controls: running' });
+  await toggle.click();
+  await page.getByRole('button', { name: 'Show dev output' }).click();
+  const dialog = page.getByRole('dialog', { name: 'dev output' });
+  await expect(dialog.locator('pre')).toContainText('ready in 120ms');
+  await expect(dialog.locator('footer')).toHaveText('Running');
+  // it keeps polling while open, following new output from the bottom
+  const output = dialog.locator('pre');
+  await expect(output).toContainText('request 3');
+  await expect.poll(() => output.evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(2);
+  // until the operator scrolls up to read, where new output leaves them
+  await output.evaluate(element => { element.scrollTop = 0; });
+  await expect(output).toContainText('request 6');
+  expect(await output.evaluate(element => element.scrollTop)).toBe(0);
+  await dialog.getByRole('button', { name: 'Close stack output' }).click();
+  await expect(dialog).toHaveCount(0);
+
+  await toggle.click();
+  await page.getByRole('button', { name: 'Show last command output' }).click();
+  const commandDialog = page.getByRole('dialog', { name: 'Stack output' });
+  await expect(commandDialog.locator('pre')).toHaveText('built in 3s');
+  await expect(commandDialog.locator('header strong')).toHaveText('Build stack output');
+});
+
+test('offers no last command output without one-shot commands, and shows an exited process with its code', async ({ page }) => {
+  await page.goto('/');
+  await page.setContent('<link rel="stylesheet" href="/src/styles.css"><div class="workspace-toolbar-actions"><div id="control-root"></div></div>');
+  await page.evaluate(async () => {
+    const { renderExitedProcessOutputControls } = await import('/e2e/project-open-fixture.tsx');
+    renderExitedProcessOutputControls(document.querySelector<HTMLElement>('#control-root')!);
+  });
+
+  await page.getByRole('button', { name: 'Stack controls: dev exited (127)' }).click();
+  await expect(page.getByRole('button', { name: 'Show last command output' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Show dev output' }).click();
+  const dialog = page.getByRole('dialog', { name: 'dev output' });
+  await expect(dialog.locator('pre')).toHaveText('bash: line 1: pnpm: command not found');
+  await expect(dialog.locator('footer')).toHaveText('Exited (127)');
+});

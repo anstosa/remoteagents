@@ -329,7 +329,7 @@ describe('worktree stack commands', () => {
 // `list-panes` that lists every session with `-a`, a session's windows with `-s`, else its
 // active window only. A session target must be `=name:`, as real tmux reads a bare `=name` as
 // a window. `fail` makes every call fail as tmux does when it cannot run.
-type FakeWindow = { id: string; paneId: string; session: string; options: Map<string, string>; paneOptions: Map<string, string>; dead: boolean; status?: number; command: string[]; cwd?: string; ignoresInterrupt?: boolean; inMode?: boolean };
+type FakeWindow = { id: string; paneId: string; session: string; options: Map<string, string>; paneOptions: Map<string, string>; dead: boolean; status?: number; command: string[]; cwd?: string; ignoresInterrupt?: boolean; inMode?: boolean; output?: string };
 function fakeTmux() {
   const sessions = new Map<string, Map<string, string>>();
   // tmux's stable `$N` session ids, by name
@@ -427,6 +427,11 @@ function fakeTmux() {
       if (keys.includes('C-c') && entry.inMode === true) entry.inMode = false;
       else if (keys.includes('C-c') && !entry.dead && entry.ignoresInterrupt !== true) Object.assign(entry, { dead: true, status: 130 });
       return { code: 0, stdout: '' };
+    }
+    if (verb === 'capture-pane') {
+      const entry = find(value(args, '-t'));
+      if (entry === undefined) return { code: 1, stdout: '', stderr: "can't find pane" };
+      return { code: 0, stdout: entry.output ?? '' };
     }
     if (verb === 'display-message') {
       const entry = find(value(args, '-t'));
@@ -614,6 +619,76 @@ describe('worktree Stack process', () => {
     await expect(service.state(cora)).resolves.toMatchObject({ transition: 'starting' });
     Object.assign(processWindows(tmux)[0]!, { dead: true, status: 127 });
     await expect(service.state(cora)).resolves.toEqual({ running: false, process: { name: 'dev', state: 'exited', exitCode: 127 } });
+  });
+
+  // "Show dev output": a Capture of the process pane itself, full history with wrapped lines
+  // joined, as plain text like a stack log, beside its state
+  it("reads a process's output from a Capture of its own pane, as plain text", async () => {
+    const tmux = fakeTmux();
+    const dev = tmux.seedProcess('cora', '/worktrees/cora', 'dev');
+    dev.output = '\x1b[32mready\x1b[0m in 120ms\r\n\x1b]8;;http://localhost:5173\x07local\x1b]8;;\x07\n\n\n';
+    // an operator split of the process window carries its tags, never its output
+    const split = tmux.seedProcess('cora', '/worktrees/cora', 'dev');
+    split.paneOptions.delete('@rac_role');
+    split.output = 'operator shell';
+    const service = processService(tmux);
+
+    await expect(service.processOutput(cora.id, 'dev')).resolves.toEqual({ name: 'dev', state: 'running', output: 'ready in 120ms\nlocal' });
+    expect(tmux.calls.find(args => args[0] === 'capture-pane')).toEqual(['capture-pane', '-p', '-J', '-S', '-', '-t', dev.paneId]);
+  });
+
+  it("keeps an exited process's last output with its exit code, and reads a stopped one as empty", async () => {
+    const tmux = fakeTmux();
+    tmux.seedProcess('dana', '/worktrees/dana', 'dev', true, 127).output = 'bash: line 1: pnpm: command not found\n';
+    const service = processService(tmux);
+
+    await expect(service.processOutput(dana.id, 'dev')).resolves.toEqual({ name: 'dev', state: 'exited', exitCode: 127, output: 'bash: line 1: pnpm: command not found' });
+    await expect(service.processOutput(cora.id, 'dev')).resolves.toEqual({ name: 'dev', state: 'stopped', output: '' });
+    expect(tmux.calls.filter(args => args[0] === 'capture-pane')).toHaveLength(1);
+  });
+
+  it('cuts a long history to the same 128 KB tail as a stack log', async () => {
+    const tmux = fakeTmux();
+    const lines = Array.from({ length: 20_000 }, (_, index) => `line ${index}`);
+    tmux.seedProcess('cora', '/worktrees/cora', 'dev').output = `${lines.join('\n')}\n`;
+    const read = await processService(tmux).processOutput(cora.id, 'dev');
+
+    expect(read).not.toBe('unavailable');
+    const output = read === undefined || read === 'unavailable' ? '' : read.output;
+    expect(Buffer.byteLength(output)).toBeLessThanOrEqual(128 * 1024);
+    expect(Buffer.byteLength(output)).toBeGreaterThan(127 * 1024);
+    expect(output.endsWith('line 19999')).toBe(true);
+  });
+
+  it('has no output for an unknown Worktree, a Worktree without a process, or a name not configured', async () => {
+    const tmux = fakeTmux();
+    tmux.seedProcess('erin', '/worktrees/erin', 'dev');
+    const daemon = testWorktree({ id: 'proj:/worktrees/fern', projectId: 'proj', path: '/worktrees/fern', main: false, commands: { start: 'docker compose up -d' } });
+    const service = new WorktreeCommandService(config, { worktreesNow: () => [cora, erin, daemon] } as never, tmux.command);
+
+    await expect(service.processOutput('proj:/worktrees/gone', 'dev')).resolves.toBeUndefined();
+    await expect(service.processOutput(daemon.id, 'dev')).resolves.toBeUndefined();
+    // erin's window is an orphan of a renamed process: the stack controls ignore it
+    await expect(service.processOutput(erin.id, 'dev')).resolves.toBeUndefined();
+    expect(tmux.calls.filter(args => args[0] === 'capture-pane')).toEqual([]);
+  });
+
+  it('reports the output unavailable, without throwing, when tmux cannot run or fails the Capture', async () => {
+    const tmux = fakeTmux();
+    tmux.seedProcess('cora', '/worktrees/cora', 'dev');
+    tmux.state.fail = true;
+    await expect(processService(tmux).processOutput(cora.id, 'dev')).resolves.toBe('unavailable');
+    tmux.state.fail = false;
+    const refused = new WorktreeCommandService(config, { worktreesNow: () => [cora] } as never, async (binary, args) => args[0] === 'capture-pane' ? { code: 1, stdout: '', stderr: 'lost server' } : await tmux.command(binary, args));
+    await expect(refused.processOutput(cora.id, 'dev')).resolves.toBe('unavailable');
+  });
+
+  // a Stop that lands between the listing and the Capture
+  it('reads a process whose window closed before its Capture as stopped', async () => {
+    const tmux = fakeTmux();
+    const dev = tmux.seedProcess('cora', '/worktrees/cora', 'dev');
+    const service = new WorktreeCommandService(config, { worktreesNow: () => [cora] } as never, async (binary, args) => args[0] === 'capture-pane' ? { code: 1, stdout: '', stderr: `can't find pane: ${dev.paneId}` } : await tmux.command(binary, args));
+    await expect(service.processOutput(cora.id, 'dev')).resolves.toEqual({ name: 'dev', state: 'stopped', output: '' });
   });
 
   // a checkout path is agent-controlled: an Agent can create a Worktree whose path carries a

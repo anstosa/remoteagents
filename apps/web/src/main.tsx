@@ -20,7 +20,7 @@ import { ProjectOpen } from './project-open.js';
 import type { CodePanelReview } from './code-panel/code-panel.js';
 import { savedCodeOpen, saveCodeOpen, supportingChange, useCodePanel, type CodePanelController, type CodePanelMode } from './code-panel/comparison.js';
 import { PullRequestCard, PullRequestFixup, PullRequestIndicators, type PullRequestSummary } from './pull-request-card.js';
-import { isStackOperationLog, type StackAction, type StackOperationLog, type StackProcessState } from './stack-operations.js';
+import { isStackOperationLog, isStackProcessOutput, type StackAction, type StackOperationLog, type StackProcessOutput, type StackProcessState } from './stack-operations.js';
 import { SyntaxHighlightedCode } from './syntax-highlight.js';
 import { isPromptKeyboardTarget, useShiftArrowTabCycling } from './tab-navigation.js';
 import { defaultTerminalFontSize, maxTerminalFontSize, minTerminalFontSize, resetTerminalFontSize, stepTerminalFontSize, useTerminalFontSize } from './terminal-font-size.js';
@@ -625,6 +625,16 @@ const stackLog = async (worktreeId: string): Promise<StackOperationLog | undefin
   const payload: unknown = await response.json();
   // reject malformed log payloads
   if (!isStackOperationLog(payload)) throw new Error('invalid stack log');
+  return payload;
+};
+// read a Stack process's recent output from its pane
+const processOutput = async (worktreeId: string, name: string): Promise<StackProcessOutput> => {
+  const response = await request(`/api/worktrees/${encodeURIComponent(worktreeId)}/processes/${encodeURIComponent(name)}/output`);
+  // a process no longer configured (404) is a failed read, shown as such rather than a wait
+  if (!response.ok) throw new Error('process output unavailable');
+  const payload: unknown = await response.json();
+  // reject malformed output payloads
+  if (!isStackProcessOutput(payload)) throw new Error('invalid process output');
   return payload;
 };
 function usePromptHistory(agentId: string) {
@@ -6662,6 +6672,7 @@ function WorkspaceToolbar({ workspace, hasAgent = false, launch, conversations, 
   const visibleLaunch = launch ?? globalLaunch;
   const place = workspace?.place;
   const worktreeId = place?.worktreeId;
+  const processName = place?.stack?.process?.name;
   // a Worktree shows its git status, a directory-Project or Scratch Place its path; an Agent the
   // dashboard placed nowhere (no Place id) still shows the git status discovery found for it
   const hasGit = worktreeId !== undefined || (place?.id === undefined && (place?.branch !== undefined || place?.gitStatus !== undefined));
@@ -6684,7 +6695,7 @@ function WorkspaceToolbar({ workspace, hasAgent = false, launch, conversations, 
     {phone && !settingsSplit?.open && workspace?.carousel !== undefined && workspace.carousel.panels.length > 1 ? <PanelDots carousel={workspace.carousel} /> : <span className="toolbar-spacer" aria-hidden="true" />}
     {cleanupControl}
     {workspace !== undefined && (hasGit ? <WorkspaceGitStatus workspace={workspace} actions={git} onToggle={onGitToggle} /> : place?.path !== undefined && <span className="toolbar-path" title={place.path}>{place.path}</span>)}
-    {workspace !== undefined && <ProjectOpen url={place?.projectUrl} stack={place?.stack} browserOpen={workspace.browser.open} onBrowserToggle={workspace.browser.toggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} />}
+    {workspace !== undefined && <ProjectOpen url={place?.projectUrl} stack={place?.stack} browserOpen={workspace.browser.open} onBrowserToggle={workspace.browser.toggle} onStackAction={worktreeId === undefined ? undefined : action => request(`/api/worktrees/${encodeURIComponent(worktreeId)}/commands/${action}`, { method: 'POST' })} onStackLog={worktreeId === undefined ? undefined : () => stackLog(worktreeId)} onProcessOutput={worktreeId === undefined || processName === undefined ? undefined : () => processOutput(worktreeId, processName)} />}
     {menu !== undefined && <PlaceMenu {...menu} panels={menuPanels} />}
   </div></section>;
 }

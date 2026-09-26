@@ -78,6 +78,7 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
     expect(await tmuxAt('list-sessions', '-F', '#{session_name}')).toBe('fixture');
     await vi.waitFor(async () => { expect(await tmuxAt('display-message', '-p', '-t', '=fixture:dev', '#{@rac_worktree}|#{@rac_process}|#{remain-on-exit}|#{pane_dead}|#{@rac_role}')).toBe(`${root}|dev|on|0|process`); }, { timeout: 10_000, interval: 100 });
     expect(await first.state(worktree)).toMatchObject({ running: true, process: { name: 'dev', state: 'running' } });
+    expect(await first.processOutput(worktree.id, 'dev')).toMatchObject({ state: 'running', output: expect.stringContaining(`dev server up in ${root}`) });
 
     // a restarted console keeps no memory of the process yet finds it, and Start is a no-op
     const second = service();
@@ -101,6 +102,8 @@ describe.skipIf(!tmuxSocketsWork)('Stack process on a real tmux server', () => {
     expect(await tmuxAt('show-options', '-v', '-t', `=${session}:`, '@rac_place')).toBe(worktree.id);
     await vi.waitFor(async () => { expect(await instance.state(worktree)).toEqual({ running: false, process: { name: 'dev', state: 'exited', exitCode: 3 } }); }, { timeout: 10_000, interval: 100 });
     expect(await tmuxAt('capture-pane', '-p', '-J', '-S', '-', '-t', `=${session}:dev`)).toContain('missing binary');
+    // "Show dev output" reads the same dead pane, with its code
+    expect(await instance.processOutput(worktree.id, 'dev')).toMatchObject({ name: 'dev', state: 'exited', exitCode: 3, output: expect.stringContaining('missing binary') });
     expect(await runs()).toBe(1);
 
     // Start after the crash respawns the command in the same pane, not a second window

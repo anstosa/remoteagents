@@ -1,6 +1,11 @@
 export type StackAction = 'start'|'stop'|'build'|'restart'|'migrate';
 // a Worktree's Stack process as its pane shows it; `exitCode` is absent after a signal
 export type StackProcessState = { name: string; state: 'running'|'exited'|'stopped'; exitCode?: number };
+// what "Show <name> output" reads: the process's state and its pane's recent output
+export type StackProcessOutput = StackProcessState & { output: string };
+// the actions a Stack process derives; any other action is a one-shot command (mirrors the
+// server's list in worktree-commands/service.ts)
+export const processActions: readonly StackAction[] = ['start', 'stop', 'restart'];
 export type StackOperationLog = { action: StackAction; active: boolean; startedAt: string; completedAt?: string; output: string };
 
 const actionLabels: Record<StackAction, string> = {
@@ -32,5 +37,16 @@ export const isStackOperationLog = (value: unknown): value is StackOperationLog 
     && typeof candidate.active === 'boolean'
     && typeof candidate.startedAt === 'string'
     && (candidate.completedAt === undefined || typeof candidate.completedAt === 'string')
+    && typeof candidate.output === 'string';
+};
+
+// validate Stack process output responses
+export const isStackProcessOutput = (value: unknown): value is StackProcessOutput => {
+  // require the response object
+  if (value === null || typeof value !== 'object') return false;
+  const candidate = value as Partial<StackProcessOutput>;
+  return typeof candidate.name === 'string'
+    && (candidate.state === 'running' || candidate.state === 'exited' || candidate.state === 'stopped')
+    && (candidate.exitCode === undefined || typeof candidate.exitCode === 'number')
     && typeof candidate.output === 'string';
 };

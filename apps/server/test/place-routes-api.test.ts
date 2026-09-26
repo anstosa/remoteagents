@@ -239,6 +239,7 @@ describe('Git-only routes at a directory-Project or Scratch Place', () => {
     ['DELETE', '/branch', /only a worktree/iu],
     ['POST', '/commands/start', /only a worktree/iu],
     ['GET', '/commands/log', /only a worktree/iu],
+    ['GET', '/processes/dev/output', /only a worktree/iu],
     ['PATCH', '/label', /only a worktree can be renamed/iu],
   ] as const;
   it.each(listed.flatMap(place => routes.map(([method, rest, error]) => [place.id, method, rest, error] as const)))('%s: %s %s answers 409', async (id, method, rest, error) => {

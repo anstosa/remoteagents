@@ -18,6 +18,8 @@ const worktreeToken = (worktree: Pick<Worktree, 'projectId' | 'path'>) => `${wor
 type Command = (binary: string, args: string[]) => Promise<{ code: number; stdout: string; stderr?: string }>;
 type StackOperation = { action: StackAction; session: string; startedAt: string; completedAt?: string; logFile?: string };
 export type StackOperationLog = { action: StackAction; active: boolean; startedAt: string; completedAt?: string; output: string };
+// a Stack process's state beside the recent output its pane holds
+export type StackProcessOutput = StackProcessState & { output: string };
 const maxStackLogBytes = 128 * 1024;
 // a worktree `setup` runs once at creation and may install dependencies, so the creation
 // flow waits far longer on it than on a status probe before giving up
@@ -44,7 +46,10 @@ const stackProcess = (worktree: Worktree): StackProcess | undefined => {
 // session is the Workspace of, its console role, and the Stack process tags on its window
 // (empty when untagged)
 type ListedPane = { sessionId: string; windowId: string; paneId: string; place: string; role: string; name: string; worktree: string; dead: boolean; exitCode?: number };
-// the actions a Stack process derives; any other action is a one-shot command
+// a listed process pane's state: live, or dead with the exit status tmux kept (absent after a signal)
+const processStateOf = (pane: ListedPane, name: string): StackProcessState => pane.dead ? { name, state: 'exited', ...(pane.exitCode === undefined ? {} : { exitCode: pane.exitCode }) } : { name, state: 'running' };
+// the actions a Stack process derives; any other action is a one-shot command (the web mirrors
+// this list in stack-operations.ts)
 const processActions: readonly StackAction[] = ['start', 'stop', 'restart'];
 
 // prepend an explicitly configured host executable path
@@ -58,6 +63,12 @@ const plainLog = (value: string) => value
   .replace(/\x1b\](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\)/gu, '')
   .replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '')
   .replace(/\r/gu, '');
+
+// keep only the newest bounded output, cut at a byte count like a log file's tail
+const outputTail = (value: string): string => {
+  const bytes = Buffer.from(value, 'utf8');
+  return bytes.length <= maxStackLogBytes ? value : bytes.subarray(bytes.length - maxStackLogBytes).toString('utf8');
+};
 
 // read only the newest bounded log output
 const readLogTail = async (path: string): Promise<string> => {
@@ -229,6 +240,25 @@ export class WorktreeCommandService {
     return { action: operation.action, active, startedAt: operation.startedAt, ...(operation.completedAt === undefined ? {} : { completedAt: operation.completedAt }), output };
   }
 
+  // "Show <name> output": a Capture of the process pane (its full history, wrapped lines joined)
+  // as plain text, cut to a stack log's tail, beside the process's state. A pane that no longer
+  // exists has nothing to show. Undefined for an unknown Worktree or a name it does not
+  // configure; 'unavailable' when tmux cannot answer, rather than throwing into the request.
+  async processOutput(worktreeId: string, name: string): Promise<StackProcessOutput | 'unavailable' | undefined> {
+    const worktree = worktreeById(this.discovery.worktreesNow(), worktreeId);
+    const declared = worktree === undefined ? undefined : stackProcess(worktree);
+    if (worktree === undefined || declared?.name !== name) return undefined;
+    const panes = await this.stackPanes();
+    if (panes === undefined) return 'unavailable';
+    const window = this.processWindow(panes, worktree, name);
+    if (window === undefined) return { name, state: 'stopped', output: '' };
+    const captured = await this.tmux(['capture-pane', '-p', '-J', '-S', '-', '-t', window.paneId]);
+    // a window a Stop closed after the listing has stopped, like one never listed
+    if (captured.code !== 0) return /can't find pane/u.test(captured.stderr ?? '') ? { name, state: 'stopped', output: '' } : 'unavailable';
+    // a Capture pads the screen below the last line with blank rows
+    return { ...processStateOf(window, name), output: outputTail(plainLog(captured.stdout).trimEnd()) };
+  }
+
   // A Worktree with a Stack process reads `running` straight from the process pane and
   // never runs a `status` probe; that probe is for daemon-style stacks only.
   async state(worktree: Worktree): Promise<StackState> {
@@ -251,8 +281,7 @@ export class WorktreeCommandService {
     const panes = await this.stackPanes();
     if (panes === undefined) return undefined;
     const window = this.processWindow(panes, worktree, declared.name);
-    if (window === undefined) return { name: declared.name, state: 'stopped' };
-    return window.dead ? { name: declared.name, state: 'exited', ...(window.exitCode === undefined ? {} : { exitCode: window.exitCode }) } : { name: declared.name, state: 'running' };
+    return window === undefined ? { name: declared.name, state: 'stopped' } : processStateOf(window, declared.name);
   }
 
   async running(worktree: Worktree): Promise<boolean | undefined> {

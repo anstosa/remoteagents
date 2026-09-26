@@ -2653,6 +2653,16 @@ export async function buildApp(config: ValidatedConfig, deps: Dependencies = {})
     if (log === undefined) return reply.code(404).send({ error: 'stack log unavailable' });
     return log;
   });
+  // a Stack process's recent output, read from its pane, beside its state
+  app.get('/api/worktrees/:id/processes/:name/output', async (request, reply) => {
+    controlled(request, false);
+    const { id, name } = request.params as { id: string; name: string };
+    if (configuredWorktree(id) === undefined) return await nonWorktreeReply(id, reply, { missing: { error: 'process output unavailable' } });
+    const output = await stackCommands.processOutput(id, name);
+    if (output === undefined) return reply.code(404).send({ error: 'process output unavailable' });
+    if (output === 'unavailable') return reply.code(503).send({ error: 'tmux unavailable' });
+    return output;
+  });
   app.post('/api/agents/launch', async (request, reply) => {
     controlled(request, true);
     const kind = requestedKind(request);

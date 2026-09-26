@@ -301,7 +301,9 @@ within a tick — no config edit or restart.
   same pane, so a Terminal open on it stays attached. The process belongs
   to tmux, so it keeps running across a console restart and is found again by
   the tags on its window, and its pane scrolls back as far as that session's
-  `history-limit`. Its name is letters, digits, `_` and `-`,
+  `history-limit`. The stack menu's "Show `<name>` output" opens that history
+  in the log dialog and keeps it refreshing; "Show last command output" is the
+  latest `build` or `migrate` run. A process name is letters, digits, `_` and `-`,
   and the map holds one process for now. A process derives the `start`, `stop`,
   and `restart` actions, so `processes` cannot sit beside `start`, `stop`,
   `restart`, or `status`; `build`, `migrate`, and `setup` stay available beside

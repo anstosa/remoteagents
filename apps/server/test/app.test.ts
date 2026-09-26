@@ -1055,6 +1055,26 @@ describe('Console shells server lifecycle', () => {
     } finally { await app.close(); }
   }, 15_000);
 
+  // "Show dev output" reads the process pane through the service; a name the Worktree does not
+  // configure is missing, and a tmux that cannot answer is a failed read, not an error page
+  it("returns a Stack process's output, 404 for a name not configured, and 503 when tmux cannot answer", async () => {
+    const reads: string[] = [];
+    const processOutput = async (id: string, name: string) => { reads.push(`${id}/${name}`); return name === 'dev' ? { name: 'dev', state: 'exited', exitCode: 127, output: 'pnpm: command not found' } : name === 'web' ? 'unavailable' : undefined; };
+    const { app, headers } = await start({ worktreeCommands: { processOutput } });
+    try {
+      const read = { host: headers.host, cookie: headers.cookie };
+      const response = await app.inject({ method: 'GET', url: '/api/worktrees/cora/processes/dev/output', headers: read });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ name: 'dev', state: 'exited', exitCode: 127, output: 'pnpm: command not found' });
+      expect((await app.inject({ method: 'GET', url: '/api/worktrees/cora/processes/api/output', headers: read })).statusCode).toBe(404);
+      expect((await app.inject({ method: 'GET', url: '/api/worktrees/cora/processes/web/output', headers: read })).statusCode).toBe(503);
+      expect(reads).toEqual(['cora/dev', 'cora/api', 'cora/web']);
+      // pane output can carry secrets a command printed: it needs a signed-in session
+      expect((await app.inject({ method: 'GET', url: '/api/worktrees/cora/processes/dev/output', headers: { host: headers.host } })).statusCode).toBe(401);
+      expect(reads).toHaveLength(3);
+    } finally { await app.close(); }
+  }, 15_000);
+
   it('refuses to remove a Worktree while it has an open Console shell', async () => {
     const { app, headers } = await start({ launch: { placeConsoleShells: async () => [shell] }, worktreeCommands: { sessionRunning: async () => false } });
     try {
