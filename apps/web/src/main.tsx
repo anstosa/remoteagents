@@ -1085,13 +1085,30 @@ function ServerUpdateDialog({ open, minimized, onMinimize, onClose }: { open: bo
   const [advisorResponse, setAdvisorResponse] = useState<string>();
   const [advisorResponsePending, setAdvisorResponsePending] = useState(false);
   const advisorResponseBaseline = useRef<string | undefined>(undefined);
+  const answeredAdvisorQuestions = useRef(new Set<string>());
   const [advisorError, setAdvisorError] = useState('');
   const [advisorAcknowledged, setAdvisorAcknowledged] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [feedbackPending, setFeedbackPending] = useState(false);
   const [feedbackMessage, setFeedbackMessage] = useState('');
-  const visibleQuestion = advisorQuestion ?? inferredQuestion;
+  // suppress answered questions without hiding the next approval request
+  const visibleQuestion = [advisorQuestion, inferredQuestion].find(question => question !== undefined && !answeredAdvisorQuestions.current.has(question.id));
+  const staleQuestionPending = advisorState === 'action-required' && visibleQuestion === undefined && (advisorQuestion !== undefined || inferredQuestion !== undefined);
+  const advisorNeedsInput = visibleQuestion !== undefined || advisorState === 'action-required' && !staleQuestionPending;
+  const feedbackBlocked = feedbackPending || staleQuestionPending || !advisorNeedsInput && (advisorResponsePending || advisorResponse === undefined);
   const updating = updateSubmitting || updateState === 'queued' || updateState === 'running';
+  // allow identical questions after both transports clear the previous occurrence
+  useEffect(() => {
+    // preserve dismissal while either source still reports an answered question
+    if (advisorQuestion !== undefined || inferredQuestion !== undefined) return;
+    answeredAdvisorQuestions.current.clear();
+  }, [advisorQuestion, inferredQuestion]);
+  // reconcile responses that can arrive before the send request completes
+  useEffect(() => {
+    // require fresh guidance after the acknowledged submission
+    if (!advisorResponsePending || advisorResponse === undefined || advisorResponse === advisorResponseBaseline.current) return;
+    setAdvisorResponsePending(false);
+  }, [advisorResponse, advisorResponsePending]);
   // focus the update surface when restored
   useEffect(() => { if (open && !minimized) dialog.current?.focus(); }, [minimized, open]);
   // load one fresh preview and advisor
@@ -1112,6 +1129,7 @@ function ServerUpdateDialog({ open, minimized, onMinimize, onClose }: { open: bo
     setAdvisorResponse(undefined);
     setAdvisorResponsePending(false);
     advisorResponseBaseline.current = undefined;
+    answeredAdvisorQuestions.current.clear();
     setAdvisorError('');
     setAdvisorAcknowledged(false);
     setFeedback('');
@@ -1163,12 +1181,12 @@ function ServerUpdateDialog({ open, minimized, onMinimize, onClose }: { open: bo
         return;
       }
       setAdvisorState(agentState(agent));
-      setAdvisorQuestion(advisorResponsePending || agent.question === undefined ? undefined : choiceQuestionFromInline(agent.question));
+      setAdvisorQuestion(agent.question === undefined ? undefined : choiceQuestionFromInline(agent.question));
     };
     void refresh();
     const interval = window.setInterval(() => { void refresh(); }, 1_000);
     return () => { active = false; window.clearInterval(interval); };
-  }, [advisorId, advisorResponsePending, open]);
+  }, [advisorId, open]);
   // follow one update across the expected restart
   useEffect(() => {
     // require one active operation
@@ -1186,14 +1204,14 @@ function ServerUpdateDialog({ open, minimized, onMinimize, onClose }: { open: bo
     const interval = window.setInterval(() => { void poll(); }, 1_000);
     return () => { active = false; window.clearInterval(interval); };
   }, [open, updateId, updateState]);
-  // answer one advisor choice
-  const answerAdvisor = async (answerIndex: number) => {
+  // answer one advisor choice or free-form question
+  const answerAdvisor = async (selection: number | string) => {
     // require one current question
     if (advisorId === undefined || visibleQuestion === undefined || feedbackPending) return;
     setFeedbackPending(true);
     setFeedbackMessage('');
     // every inline question — structured or parsed — answers through one endpoint
-    const response = await request(`/api/agents/${encodeURIComponent(advisorId)}/question`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ questionId: visibleQuestion.id, index: answerIndex }) });
+    const response = await request(`/api/agents/${encodeURIComponent(advisorId)}/question`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ questionId: visibleQuestion.id, ...(typeof selection === 'number' ? { index: selection } : { text: selection }) }) });
     setFeedbackPending(false);
     // retain rejected answers
     if (!response.ok) {
@@ -1201,11 +1219,13 @@ function ServerUpdateDialog({ open, minimized, onMinimize, onClose }: { open: bo
       return;
     }
     // require review of the advisor's next response
+    answeredAdvisorQuestions.current.add(visibleQuestion.id);
     advisorResponseBaseline.current = advisorResponse;
     setAdvisorResponsePending(true);
+    setAdvisorState('working');
     setAdvisorAcknowledged(false);
-    setAdvisorQuestion(undefined);
-    setInferredQuestion(undefined);
+    // clear only the submitted text answer
+    if (typeof selection === 'string') setFeedback(current => current.trim() === selection ? '' : current);
   };
   // send direct terminal input for free-form question feedback through the advisor's own
   // Pane stream: the embedded advisor terminal registers its pane input under `advisorId`
@@ -1220,10 +1240,15 @@ function ServerUpdateDialog({ open, minimized, onMinimize, onClose }: { open: bo
     event.preventDefault();
     const value = feedback.trim();
     // prevent empty or duplicate feedback
-    if (!value || advisorId === undefined || feedbackPending || advisorResponsePending || advisorResponse === undefined) return;
+    if (!value || advisorId === undefined || feedbackBlocked) return;
+    // answer an open question instead of queueing behind the blocked turn
+    if (visibleQuestion !== undefined) {
+      await answerAdvisor(value);
+      return;
+    }
     setFeedbackPending(true);
     setFeedbackMessage('');
-    const directInput = advisorState === 'action-required' && visibleQuestion === undefined;
+    const directInput = advisorNeedsInput && visibleQuestion === undefined;
     const sent = directInput
       ? sendAdvisorInput(value)
       : (await request(`/api/agents/${encodeURIComponent(advisorId)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: value, attachments: [] }) })).ok;
@@ -1236,9 +1261,15 @@ function ServerUpdateDialog({ open, minimized, onMinimize, onClose }: { open: bo
     // require review of the advisor's follow-up response
     advisorResponseBaseline.current = advisorResponse;
     setAdvisorResponsePending(true);
+    setAdvisorState('working');
     setAdvisorAcknowledged(false);
     setFeedback('');
     setFeedbackMessage(directInput ? 'Feedback sent.' : 'Feedback queued.');
+  };
+  // reveal questions independently of completed assistant responses
+  const advisorMetadata = (response: string | undefined, question: ChoiceQuestion | undefined) => {
+    setInferredQuestion(question);
+    setAdvisorResponse(response);
   };
   // start one pinned host update
   const startUpdate = async () => {
@@ -1288,7 +1319,9 @@ function ServerUpdateDialog({ open, minimized, onMinimize, onClose }: { open: bo
   };
   // keep update polling alive while hidden
   if (!open || minimized) return null;
-  const adviceReady = advisorResponse !== undefined && !advisorResponsePending && advisorState === 'prompt-done' && visibleQuestion === undefined;
+  const adviceReady = !advisorError && advisorResponse !== undefined && !advisorResponsePending && !feedbackPending && advisorState === 'prompt-done' && visibleQuestion === undefined;
+  // advertise readiness only when the acknowledgement is available
+  const advisorDisplayState = advisorNeedsInput ? 'action-required' : adviceReady ? 'prompt-done' : advisorId === undefined ? 'starting' : 'working';
   const updateBlocked = preview === undefined || !preview.available && !preview.rebuildRetryAvailable || !preview.fastForwardable || updating || updateState === 'complete' || preview.advisory.required && (!adviceReady || !advisorAcknowledged);
   let body: ReactNode;
   // render preview loading
@@ -1305,7 +1338,7 @@ function ServerUpdateDialog({ open, minimized, onMinimize, onClose }: { open: bo
     body = <div className="update-review-loading"><strong>Server is current.</strong><span>No upstream commits are waiting.</span></div>;
   // render the exact pending range
   } else {
-    body = <div className="update-review-body"><section className="update-review-summary"><div><small>{preview.baseSha.slice(0, 7)}</small><span aria-hidden="true">→</span><strong>{preview.targetSha.slice(0, 7)}</strong></div><span>{preview.commitCount} new {preview.commitCount === 1 ? 'commit' : 'commits'}{preview.commitsTruncated ? ` · showing ${preview.commits.length}` : ''}</span></section>{!preview.fastForwardable && <p className="update-review-warning" role="alert">Local main cannot be fast-forwarded to this update. Resolve the checkout manually before updating.</p>}<ol className="update-commit-list" aria-label="Pending commits">{preview.commits.map(commit => <li key={commit.sha}><code>{commit.sha.slice(0, 7)}</code><span><strong>{commit.subject}</strong><small>{commit.author} · {updateCommitDate(commit.authoredAt)}</small></span></li>)}</ol>{preview.advisory.required && <section className="update-advisor"><header><div><small>UPDATE ADVISOR</small><h3>Host changes need review</h3></div><span className={`update-advisor-state ${advisorState ?? 'starting'}`}>{advisorState === 'working' ? 'Reviewing' : advisorState === 'action-required' ? 'Needs input' : advisorState === 'prompt-done' ? 'Ready' : 'Starting'}</span></header><p>The changed paths below may require host-local actions. The advisor inspects the exact commit range without modifying it.</p><div className="update-advisory-reasons">{preview.advisory.reasons.map(reason => <div key={reason.kind}><strong>{updateAdvisoryLabels[reason.kind]}</strong>{reason.paths.length === 0 ? <span>Manual Git reconciliation required</span> : reason.paths.map(path => <code key={path}>{path}</code>)}</div>)}</div>{preview.filesTruncated && <small className="update-review-warning">Changed-path review was truncated; the advisor will inspect the complete Git range.</small>}{advisorError ? <div className="update-advisor-error" role="alert">{advisorError}</div> : advisorId === undefined ? <div className="update-advisor-launching" role="status"><span className="spinner" />Starting a dedicated advisor…</div> : <><EmbeddedAgentOutput id={advisorId} onMetadata={(response, question) => { /* ignore metadata from the turn before current feedback */ setAdvisorResponse(response); if (advisorResponsePending && (response === undefined || response === advisorResponseBaseline.current)) return; if (advisorResponsePending) setAdvisorResponsePending(false); setInferredQuestion(question); }} />{visibleQuestion !== undefined && <div className="update-advisor-question"><strong>{visibleQuestion.text}</strong><div>{visibleQuestion.choices.map(choice => <button type="button" key={`${choice.answerIndex}-${choice.label}`} disabled={feedbackPending} onClick={() => void answerAdvisor(choice.answerIndex)}><b>{choice.number}</b><span>{choice.label}</span></button>)}</div></div>}<form className="update-advisor-feedback" onSubmit={event => void submitFeedback(event)}><label>Approval or feedback<textarea value={feedback} maxLength={32_000} disabled={advisorResponsePending || advisorResponse === undefined} placeholder={advisorResponsePending ? 'Waiting for the advisor response…' : advisorState === 'action-required' && visibleQuestion === undefined ? 'Reply to the advisor…' : 'Queue a follow-up for the advisor…'} onFocus={() => { /* leave terminal input */ if (advisorId !== undefined) exitTerminalInput.get(advisorId)?.(); }} onChange={event => setFeedback(event.target.value)} /></label><button type="submit" disabled={feedbackPending || advisorResponsePending || advisorResponse === undefined || !feedback.trim()}>{feedbackPending ? <><span className="spinner" />Sending…</> : 'Send'}</button></form>{feedbackMessage && <small className="update-advisor-feedback-status" role="status">{feedbackMessage}</small>}{adviceReady && <label className="update-advisor-acknowledgement"><input type="checkbox" checked={advisorAcknowledged} onChange={event => setAdvisorAcknowledged(event.target.checked)} /><span>I reviewed the advisor guidance for this exact update.</span></label>}</>}</section>}</div>;
+    body = <div className="update-review-body"><section className="update-review-summary"><div><small>{preview.baseSha.slice(0, 7)}</small><span aria-hidden="true">→</span><strong>{preview.targetSha.slice(0, 7)}</strong></div><span>{preview.commitCount} new {preview.commitCount === 1 ? 'commit' : 'commits'}{preview.commitsTruncated ? ` · showing ${preview.commits.length}` : ''}</span></section>{!preview.fastForwardable && <p className="update-review-warning" role="alert">Local main cannot be fast-forwarded to this update. Resolve the checkout manually before updating.</p>}<ol className="update-commit-list" aria-label="Pending commits">{preview.commits.map(commit => <li key={commit.sha}><code>{commit.sha.slice(0, 7)}</code><span><strong>{commit.subject}</strong><small>{commit.author} · {updateCommitDate(commit.authoredAt)}</small></span></li>)}</ol>{preview.advisory.required && <section className="update-advisor"><header><div><small>UPDATE ADVISOR</small><h3>Host changes need review</h3></div><span className={`update-advisor-state ${advisorDisplayState}`}>{advisorError ? 'Unavailable' : advisorDisplayState === 'action-required' ? 'Needs input' : adviceReady ? 'Ready' : advisorId === undefined ? 'Starting' : 'Reviewing'}</span></header><p>The changed paths below may require host-local actions. The advisor inspects the exact commit range without modifying it.</p><div className="update-advisory-reasons">{preview.advisory.reasons.map(reason => <div key={reason.kind}><strong>{updateAdvisoryLabels[reason.kind]}</strong>{reason.paths.length === 0 ? <span>Manual Git reconciliation required</span> : reason.paths.map(path => <code key={path}>{path}</code>)}</div>)}</div>{preview.filesTruncated && <small className="update-review-warning">Changed-path review was truncated; the advisor will inspect the complete Git range.</small>}{advisorError ? <div className="update-advisor-error" role="alert">{advisorError}</div> : advisorId === undefined ? <div className="update-advisor-launching" role="status"><span className="spinner" />Starting a dedicated advisor…</div> : <><EmbeddedAgentOutput id={advisorId} onMetadata={advisorMetadata} />{visibleQuestion !== undefined && <div className="update-advisor-question"><strong>{visibleQuestion.text}</strong><div>{visibleQuestion.choices.map(choice => <button type="button" key={`${choice.answerIndex}-${choice.label}`} disabled={feedbackPending} onClick={() => void answerAdvisor(choice.answerIndex)}><b>{choice.number}</b><span>{choice.label}</span></button>)}</div></div>}<form className="update-advisor-feedback" onSubmit={event => void submitFeedback(event)}><label>Approval or feedback<textarea value={feedback} maxLength={32_000} disabled={feedbackBlocked} placeholder={advisorNeedsInput ? 'Reply to the advisor…' : advisorResponsePending || advisorResponse === undefined ? 'Waiting for the advisor response…' : 'Queue a follow-up for the advisor…'} onFocus={() => { /* leave terminal input */ if (advisorId !== undefined) exitTerminalInput.get(advisorId)?.(); }} onChange={event => setFeedback(event.target.value)} /></label><button type="submit" disabled={feedbackBlocked || !feedback.trim()}>{feedbackPending ? <><span className="spinner" />Sending…</> : 'Send'}</button></form>{feedbackMessage && <small className="update-advisor-feedback-status" role="status">{feedbackMessage}</small>}{adviceReady && <label className="update-advisor-acknowledgement"><input type="checkbox" checked={advisorAcknowledged} onChange={event => setAdvisorAcknowledged(event.target.checked)} /><span>I reviewed the advisor guidance for this exact update.</span></label>}</>}</section>}</div>;
   }
   const progress = updateState === undefined ? null : <div className={`update-review-progress ${updateState}`} role="status">{updateState === 'failed' ? <span>Update failed. Check the server update log.</span> : updateState === 'complete' ? <><strong>Update complete.</strong><button type="button" onClick={() => location.reload()}>Reload</button></> : <><span className="spinner" /><span>{updateState === 'queued' ? 'Waiting for the host…' : 'Pulling the reviewed revision, rebuilding, and restarting…'}</span></>}</div>;
   return createPortal(<div ref={dialog} className="dialog server-update-dialog" role="dialog" aria-modal="true" aria-labelledby="server-update-review-title" tabIndex={-1} onKeyDown={dialogKey}><div><header><div><small>SERVER UPDATE</small><h2 id="server-update-review-title">Review update</h2></div><span className="server-update-controls"><button type="button" aria-label="Minimize server update" title="Minimize" onClick={onMinimize}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg></button><button type="button" aria-label="Close server update" title="Close" disabled={updating} onClick={closeDialog}>×</button></span></header>{body}{error && preview !== undefined && <p className="update-review-error" role="alert">{error}</p>}{progress}<footer><span>{preview?.advisory.required && !advisorAcknowledged ? 'Advisor acknowledgement required' : preview?.fastForwardable === false ? 'Manual Git reconciliation required' : preview?.rebuildRetryAvailable ? 'Retry the failed host rebuild.' : 'The update will rebuild this host only.'}</span><button type="button" disabled={updateBlocked} onClick={() => void startUpdate()}>{updating ? <><span className="spinner" />Updating…</> : preview?.rebuildRetryAvailable ? 'Retry rebuild' : 'Update'}</button></footer></div></div>, document.body);

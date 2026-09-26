@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { installPaneMock, paneInputList, pushBytes, pushMetadata } from './pane-stream-mock';
+import { installPaneMock, paneInputList, pushBytes, pushMetadata, pushQuestion } from './pane-stream-mock';
 
 // open the reviewed host update from global settings
 const openUpstreamUpdate = async (page: Page) => {
@@ -7,6 +7,9 @@ const openUpstreamUpdate = async (page: Page) => {
   const settings = page.getByRole('dialog', { name: 'Settings' });
   await settings.getByRole('button', { name: 'View upstream update' }).click();
 };
+
+// let React consume one completed mock response and paint its resulting state
+const settleBrowserFrames = (page: Page) => page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 
 test('keeps the embedded update advisor out of the main agent tabs', async ({ page }) => {
   await page.route('**/api/**', async route => {
@@ -160,6 +163,7 @@ test('opens an advisor for flagged update paths before enabling Update', async (
   const targetSha = '3'.repeat(40);
   let advisorLaunched = false;
   let advisorStops = 0;
+  const advisorAnswers: Array<{ questionId?: string; index?: number }> = [];
   await page.setViewportSize({ width: 430, height: 932 });
   await installPaneMock(page);
   await page.route('**/api/**', async route => {
@@ -188,6 +192,11 @@ test('opens an advisor for flagged update paths before enabling Update', async (
     if (url.pathname === '/api/agents/update-advisor/tickets') return route.fulfill({ json: { ticket: 'advisor-ticket' } });
     // accept one advisor follow-up
     if (url.pathname === '/api/agents/update-advisor/prompt' && request.method() === 'POST') return route.fulfill({ status: 202, json: { status: 'queued' } });
+    // capture one approval that arrives before the follow-up response
+    if (url.pathname === '/api/agents/update-advisor/question' && request.method() === 'POST') {
+      advisorAnswers.push(await request.postDataJSON() as { questionId?: string; index?: number });
+      return route.fulfill({ status: 204 });
+    }
     // return empty prompt stores for the background agent tab
     if (/^\/api\/agents\/update-advisor\/(?:saved-prompts|prompt-history|queued-prompts|skills|message-files)$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [], skills: [], files: [] } });
     // disable push enrollment
@@ -205,6 +214,10 @@ test('opens an advisor for flagged update paths before enabling Update', async (
   await expect(dialog.getByText('.env.example')).toBeVisible();
   const output = dialog.getByLabel('Update advisor output');
   await expect(output).toBeVisible();
+  // do not advertise completion until the advisor publishes reviewable guidance
+  await expect(dialog.locator('.update-advisor-state')).toHaveText('Reviewing');
+  await expect(dialog.getByText('I reviewed the advisor guidance for this exact update.')).toHaveCount(0);
+  await expect(dialog.getByLabel('Approval or feedback')).toBeDisabled();
   // the advisor's pane streams inside a narrow modal: let the terminal measure its own grid
   // (the mock echoes its viewport back as the size) rather than forcing a wide one that would
   // overflow, then paint the reviewed output and publish the response the feedback form gates on
@@ -260,8 +273,19 @@ test('opens an advisor for flagged update paths before enabling Update', async (
   await expect(dialog.getByText('I reviewed the advisor guidance for this exact update.')).toHaveCount(0);
   await expect(dialog.getByLabel('Approval or feedback')).toBeDisabled();
   await expect(dialog.getByRole('button', { name: 'Send' })).toBeDisabled();
+  // show a streamed approval even though the prior completed metadata is still the baseline
+  const followupApproval = { id: 'followup-approval', text: 'Approve the reviewed host action?', choices: ['Approve', 'Cancel'], source: 'parsed' as const };
+  await pushQuestion(page, 'update-advisor', followupApproval);
+  await expect(dialog.getByText(followupApproval.text)).toBeVisible();
+  await expect(dialog.locator('.update-advisor-state')).toHaveText('Needs input');
+  await expect(dialog.getByLabel('Approval or feedback')).toBeEnabled();
+  await dialog.getByRole('button', { name: /Approve/u }).click();
+  await expect.poll(() => advisorAnswers).toHaveLength(1);
+  expect(advisorAnswers[0]).toEqual({ questionId: followupApproval.id, index: 0 });
+  await expect(dialog.getByText(followupApproval.text)).toHaveCount(0);
   // ignore the prior response when a stale frame is replayed
   await pushMetadata(page, 'update-advisor', 'No host migration is required for this update.');
+  await settleBrowserFrames(page);
   await expect(update).toBeDisabled();
   await expect(dialog.getByText('I reviewed the advisor guidance for this exact update.')).toHaveCount(0);
   // unlock review only after a new response arrives
@@ -274,6 +298,224 @@ test('opens an advisor for flagged update paths before enabling Update', async (
   await expect(settingsPage.getByRole('button', { name: 'View upstream update' })).toBeFocused();
   await expect.poll(() => advisorStops).toBe(1);
 });
+
+// keep approval questions interactive before the advisor publishes a completed response
+test('shows and answers advisor questions while completed guidance is pending', async ({ page }) => {
+  const targetSha = '5'.repeat(40);
+  const initialQuestion = { id: 'initial-approval', text: 'Confirm the deployment window.', choices: ['Proceed', 'Wait'], source: 'structured' as const };
+  const dashboardFollowup = { id: 'dashboard-followup', text: 'Use the existing host override?', choices: ['Continue', 'Stop'], source: 'structured' as const };
+  const streamFollowup = { id: 'stream-followup', text: 'Approve the final host action?', choices: ['Approve', 'Cancel'], source: 'parsed' as const };
+  let advisorLaunched = false;
+  let dashboardQuestion: typeof initialQuestion | typeof dashboardFollowup | undefined = initialQuestion;
+  let dashboardRequests = 0;
+  let promptSubmissions = 0;
+  const questionAnswers: Array<{ questionId?: string; index?: number; text?: string }> = [];
+  await installPaneMock(page);
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    // restore one controlling session
+    if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+    // publish current advisor state and any server-derived question
+    if (url.pathname === '/api/dashboard') {
+      dashboardRequests += 1;
+      const agents = advisorLaunched ? [{ id: 'update-advisor', sessionId: 'socket:$2', home: '/workspace', displayLabel: `Update Advisor v4 ${targetSha.slice(0, 7)}`, title: dashboardQuestion === undefined ? 'Ready' : 'Question', attention: dashboardQuestion === undefined ? undefined : 'question', question: dashboardQuestion, queuedPromptCount: 0 }] : [];
+      return route.fulfill({ json: { generation: 1, agents, projects: [] } });
+    }
+    // report remote commits on main
+    if (url.pathname === '/api/server/update-available') return route.fulfill({ json: { available: true } });
+    // preview one flagged configuration change
+    if (url.pathname === '/api/server/update-preview') return route.fulfill({ json: { available: true, rebuildRetryAvailable: false, baseSha: '1'.repeat(40), targetSha, fastForwardable: true, commitCount: 1, commits: [{ sha: targetSha, subject: 'Change server configuration', author: 'Ansel', authoredAt: '2026-08-27T12:00:00-07:00' }], commitsTruncated: false, filesTruncated: false, advisory: { required: true, reasons: [{ kind: 'config', paths: ['.env.example'] }] } } });
+    // launch one pre-prompted advisor
+    if (url.pathname === '/api/server/update-advisor' && request.method() === 'POST') {
+      advisorLaunched = true;
+      return route.fulfill({ status: 201, json: { agentId: 'update-advisor', targetSha } });
+    }
+    // authorize advisor output
+    if (url.pathname === '/api/agents/update-advisor/tickets') return route.fulfill({ json: { ticket: 'advisor-ticket' } });
+    // capture question answers independently from queued prompts
+    if (url.pathname === '/api/agents/update-advisor/question' && request.method() === 'POST') {
+      questionAnswers.push(await request.postDataJSON() as { questionId?: string; index?: number; text?: string });
+      return route.fulfill({ status: 204 });
+    }
+    // flag accidental prompt submissions while a question is open
+    if (url.pathname === '/api/agents/update-advisor/prompt' && request.method() === 'POST') {
+      promptSubmissions += 1;
+      return route.fulfill({ status: 202, json: { status: 'queued' } });
+    }
+    // return empty prompt stores for the background agent tab
+    if (/^\/api\/agents\/update-advisor\/(?:saved-prompts|prompt-history|queued-prompts|skills|message-files)$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [], skills: [], files: [] } });
+    // disable push enrollment
+    if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+
+  await page.goto('/');
+  await openUpstreamUpdate(page);
+  const dialog = page.getByRole('dialog', { name: 'Review update' });
+  const advisorState = dialog.locator('.update-advisor-state');
+  const feedback = dialog.getByLabel('Approval or feedback');
+  const update = dialog.getByRole('button', { name: 'Update', exact: true });
+  await expect(dialog.getByText(initialQuestion.text)).toBeVisible();
+  await expect(advisorState).toHaveText('Needs input');
+  await expect(feedback).toBeEnabled();
+  await expect(feedback).toHaveAttribute('placeholder', 'Reply to the advisor…');
+  await expect(dialog.getByText('I reviewed the advisor guidance for this exact update.')).toHaveCount(0);
+
+  const paneInputsBeforeAnswer = await paneInputList(page, 'update-advisor');
+  await feedback.fill('Proceed after the maintenance notice.');
+  await dialog.getByRole('button', { name: 'Send' }).click();
+  await expect.poll(() => questionAnswers).toHaveLength(1);
+  expect(questionAnswers[0]).toEqual({ questionId: initialQuestion.id, text: 'Proceed after the maintenance notice.' });
+  expect(promptSubmissions).toBe(0);
+  await expect(dialog.getByText(initialQuestion.text)).toHaveCount(0);
+  // suppress the answered dashboard frame without opening an unsafe raw-input fallback
+  const initialReplayRequest = dashboardRequests;
+  await expect.poll(() => dashboardRequests).toBeGreaterThan(initialReplayRequest);
+  await settleBrowserFrames(page);
+  await expect(dialog.getByText(initialQuestion.text)).toHaveCount(0);
+  await expect(advisorState).toHaveText('Reviewing');
+  await expect(feedback).toBeDisabled();
+  expect(await paneInputList(page, 'update-advisor')).toEqual(paneInputsBeforeAnswer);
+
+  // clear both question sources before accepting the same question id as a new turn
+  const clearedDashboardRequest = dashboardRequests;
+  dashboardQuestion = undefined;
+  await expect.poll(() => dashboardRequests).toBeGreaterThan(clearedDashboardRequest);
+  await pushQuestion(page, 'update-advisor', null);
+  await settleBrowserFrames(page);
+  const repeatedDashboardRequest = dashboardRequests;
+  dashboardQuestion = initialQuestion;
+  await expect.poll(() => dashboardRequests).toBeGreaterThan(repeatedDashboardRequest);
+  await pushQuestion(page, 'update-advisor', initialQuestion);
+  await expect(dialog.getByText(initialQuestion.text)).toBeVisible();
+  await dialog.getByRole('button', { name: /Proceed/u }).click();
+  await expect.poll(() => questionAnswers).toHaveLength(2);
+  expect(questionAnswers[1]).toEqual({ questionId: initialQuestion.id, index: 0 });
+
+  dashboardQuestion = dashboardFollowup;
+  await expect(dialog.getByText(dashboardFollowup.text)).toBeVisible();
+  await expect(advisorState).toHaveText('Needs input');
+  await dialog.getByRole('button', { name: /Continue/u }).click();
+  await expect.poll(() => questionAnswers).toHaveLength(3);
+  expect(questionAnswers[2]).toEqual({ questionId: dashboardFollowup.id, index: 0 });
+  const followupReplayRequest = dashboardRequests;
+  await expect.poll(() => dashboardRequests).toBeGreaterThan(followupReplayRequest);
+  await settleBrowserFrames(page);
+  await expect(dialog.getByText(dashboardFollowup.text)).toHaveCount(0);
+
+  // move the next question to the stream after explicit source gaps
+  const streamGapDashboardRequest = dashboardRequests;
+  dashboardQuestion = undefined;
+  await expect.poll(() => dashboardRequests).toBeGreaterThan(streamGapDashboardRequest);
+  await pushQuestion(page, 'update-advisor', null);
+  await pushQuestion(page, 'update-advisor', streamFollowup);
+  await expect(dialog.getByText(streamFollowup.text)).toBeVisible();
+  await expect(feedback).toBeEnabled();
+  await dialog.getByRole('button', { name: /Approve/u }).click();
+  await expect.poll(() => questionAnswers).toHaveLength(4);
+  expect(questionAnswers[3]).toEqual({ questionId: streamFollowup.id, index: 0 });
+  expect(promptSubmissions).toBe(0);
+  await expect(dialog.getByText(streamFollowup.text)).toHaveCount(0);
+  // ignore a replayed stream frame for the answered question
+  await pushQuestion(page, 'update-advisor', streamFollowup);
+  await settleBrowserFrames(page);
+  await expect(dialog.getByText(streamFollowup.text)).toHaveCount(0);
+
+  // unlock acknowledgement only after fresh metadata completes the pending turn
+  const readyDashboardRequest = dashboardRequests;
+  dashboardQuestion = undefined;
+  await expect.poll(() => dashboardRequests).toBeGreaterThan(readyDashboardRequest);
+  await expect(advisorState).toHaveText('Reviewing');
+  await pushMetadata(page, 'update-advisor', 'All requested host approvals are complete.');
+  await pushQuestion(page, 'update-advisor', null);
+  await expect(dialog.getByText('I reviewed the advisor guidance for this exact update.')).toBeVisible();
+  await expect(advisorState).toHaveText('Ready');
+  await expect(update).toBeDisabled();
+  await dialog.getByRole('checkbox').check();
+  await expect(update).toBeEnabled();
+});
+
+// exercise both advisor request endpoints against the same response-before-HTTP race
+for (const requestKind of ['question', 'prompt'] as const) {
+  test(`retains fresh advisor metadata received while ${requestKind} submission is pending`, async ({ page }) => {
+    const targetSha = '6'.repeat(40);
+    const approvalQuestion = { id: 'race-approval', text: 'Approve this host action?', choices: ['Approve', 'Cancel'], source: 'structured' as const };
+    let advisorLaunched = false;
+    let dashboardQuestion = requestKind === 'question' ? approvalQuestion : undefined;
+    let dashboardRequests = 0;
+    let requestStarted = false;
+    let releaseRequest!: () => void;
+    const heldRequest = new Promise<void>(resolve => { releaseRequest = resolve; });
+    await installPaneMock(page);
+    await page.route('**/api/**', async route => {
+      const request = route.request();
+      const url = new URL(request.url());
+      // restore one controlling session
+      if (url.pathname === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device' } });
+      // publish current advisor state and its optional approval
+      if (url.pathname === '/api/dashboard') {
+        dashboardRequests += 1;
+        const agents = advisorLaunched ? [{ id: 'update-advisor', sessionId: 'socket:$2', home: '/workspace', displayLabel: `Update Advisor v4 ${targetSha.slice(0, 7)}`, title: dashboardQuestion === undefined ? 'Ready' : 'Question', attention: dashboardQuestion === undefined ? undefined : 'question', question: dashboardQuestion, queuedPromptCount: 0 }] : [];
+        return route.fulfill({ json: { generation: dashboardRequests, agents, projects: [] } });
+      }
+      // report remote commits on main
+      if (url.pathname === '/api/server/update-available') return route.fulfill({ json: { available: true } });
+      // preview one flagged configuration change
+      if (url.pathname === '/api/server/update-preview') return route.fulfill({ json: { available: true, rebuildRetryAvailable: false, baseSha: '1'.repeat(40), targetSha, fastForwardable: true, commitCount: 1, commits: [{ sha: targetSha, subject: 'Change server configuration', author: 'Ansel', authoredAt: '2026-08-27T12:00:00-07:00' }], commitsTruncated: false, filesTruncated: false, advisory: { required: true, reasons: [{ kind: 'config', paths: ['.env.example'] }] } } });
+      // launch one pre-prompted advisor
+      if (url.pathname === '/api/server/update-advisor' && request.method() === 'POST') {
+        advisorLaunched = true;
+        return route.fulfill({ status: 201, json: { agentId: 'update-advisor', targetSha } });
+      }
+      // authorize advisor output
+      if (url.pathname === '/api/agents/update-advisor/tickets') return route.fulfill({ json: { ticket: 'advisor-ticket' } });
+      // hold the submitted turn until fresh metadata has already arrived
+      if (url.pathname === `/api/agents/update-advisor/${requestKind}` && request.method() === 'POST') {
+        requestStarted = true;
+        await heldRequest;
+        return requestKind === 'question' ? route.fulfill({ status: 204 }) : route.fulfill({ status: 202, json: { status: 'queued' } });
+      }
+      // return empty prompt stores for the background agent tab
+      if (/^\/api\/agents\/update-advisor\/(?:saved-prompts|prompt-history|queued-prompts|skills|message-files)$/u.test(url.pathname)) return route.fulfill({ json: { prompts: [], skills: [], files: [] } });
+      // disable push enrollment
+      if (url.pathname === '/api/push/public-key') return route.fulfill({ json: {} });
+      return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+    });
+
+    await page.goto('/');
+    await openUpstreamUpdate(page);
+    const dialog = page.getByRole('dialog', { name: 'Review update' });
+    const output = dialog.getByLabel('Update advisor output');
+    const update = dialog.getByRole('button', { name: 'Update', exact: true });
+    await expect(output).toBeVisible();
+    await page.waitForFunction(() => (window as unknown as { __pane: { lastViewport: (id: string) => unknown } }).__pane.lastViewport('update-advisor') !== undefined);
+    // establish a completed baseline only for a normal queued prompt
+    if (requestKind === 'prompt') {
+      await pushMetadata(page, 'update-advisor', 'Initial review complete.');
+      await expect(dialog.getByText('I reviewed the advisor guidance for this exact update.')).toBeVisible();
+      await dialog.getByLabel('Approval or feedback').fill('Check the host action again.');
+      await dialog.getByRole('button', { name: 'Send' }).click();
+    } else {
+      await expect(dialog.getByText(approvalQuestion.text)).toBeVisible();
+      await dialog.getByRole('button', { name: /Approve/u }).click();
+    }
+    await expect.poll(() => requestStarted).toBe(true);
+
+    const readyDashboardRequest = dashboardRequests;
+    dashboardQuestion = undefined;
+    await expect.poll(() => dashboardRequests).toBeGreaterThan(readyDashboardRequest);
+    await pushQuestion(page, 'update-advisor', null);
+    await pushMetadata(page, 'update-advisor', 'Fresh guidance arrived before the HTTP response.');
+    await settleBrowserFrames(page);
+    await expect(update).toBeDisabled();
+    await expect(dialog.getByText('I reviewed the advisor guidance for this exact update.')).toHaveCount(0);
+
+    releaseRequest();
+    await expect(dialog.getByText('I reviewed the advisor guidance for this exact update.')).toBeVisible();
+    await expect(dialog.locator('.update-advisor-state')).toHaveText('Ready');
+  });
+}
 
 // retry a failed host rebuild after Git already reached the reviewed target
 test('reopens a durable rebuild retry after a post-merge failure', async ({ page }) => {
