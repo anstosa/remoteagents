@@ -1,8 +1,9 @@
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { FlyoutPortal } from './flyout-portal.js';
+import { useViewportFlyout } from './viewport-flyout.js';
 
-// One panel of a Workspace's phone carousel: its split key, its kind (which tints its dot) and the
-// label of the dot that shows it.
-export type CarouselPanel = { key: string; kind: string; label: string };
+// one phone split with its key, kind, visible menu title and accessible action label
+export type CarouselPanel = { key: string; kind: string; title: string; label: string };
 
 // What the carousel tells the rest of the Workspace: its panels in order, the one in view, and how
 // to bring one into view.
@@ -84,8 +85,19 @@ export function usePanelCarousel(containerRef: RefObject<HTMLElement | null>, ke
   return { visibleKey: visibleKey !== undefined && keys.includes(visibleKey) ? visibleKey : keys[0], show };
 }
 
-// The toolbar's position dots: one per open panel, tinted by kind, the one in view marked current.
-// Tapping a dot brings its panel into view. The toolbar shows them only for two panels or more.
+// the toolbar's position dots show the current split; its whole flex area opens a titled chooser
 export function PanelDots({ carousel }: { carousel: PanelCarousel }) {
-  return <span className="panel-dots" role="group" aria-label="Panels">{carousel.panels.map(panel => <button key={panel.key} type="button" className={`panel-dot ${panel.kind}-dot`} aria-label={panel.label} title={panel.label} aria-current={panel.key === carousel.visibleKey ? 'true' : undefined} onClick={() => carousel.show(panel.key)} />)}</span>;
+  const [open, setOpen] = useState(false);
+  const { anchorRef, flyoutRef, style } = useViewportFlyout<HTMLButtonElement>(open, { align: 'center' });
+  // close the chooser before navigating to its selected split
+  const select = (key: string) => { setOpen(false); carousel.show(key); anchorRef.current?.focus(); };
+  return <><span className="panel-dots" role="group" aria-label="Panels"><button ref={anchorRef} type="button" className="panel-dots-trigger" aria-label="Choose split" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(value => !value)}><span className="flyout-caret" aria-hidden="true" />
+    {/* keep summary dots in panel order */}
+    {carousel.panels.map(panel => <span key={panel.key} className={`panel-dot ${panel.kind}-dot`} aria-hidden="true" title={panel.label} data-current={panel.key === carousel.visibleKey ? 'true' : undefined} />)}
+  </button></span>
+    {open && <FlyoutPortal onDismiss={() => setOpen(false)}><div ref={flyoutRef} style={style} className="more-menu flyout-menu panel-split-menu" role="menu" aria-label="Splits">
+      {/* list titles in the same carousel order */}
+      {carousel.panels.map(panel => <button key={panel.key} type="button" role="menuitem" className={`panel-split-row${panel.key === carousel.visibleKey ? ' active' : ''}`} aria-current={panel.key === carousel.visibleKey ? 'true' : undefined} onClick={() => select(panel.key)}><span className={`panel-split-mark ${panel.kind}-dot`} aria-hidden="true" /><span>{panel.title}</span></button>)}
+    </div></FlyoutPortal>}
+  </>;
 }

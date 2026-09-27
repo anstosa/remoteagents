@@ -41,11 +41,50 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   // the phone toolbar keeps Launch, Terminal and Notes; Browser and Code move into its ⋮, and a
   // Workspace with one panel shows no position dots
   const workspaceToolbar = page.getByRole('region', { name: 'Workspace toolbar' });
+  // point each caret toward the flyout on the nearest button edge
+  const flyoutIcons = [
+    { button: lead.locator('.server-selector'), side: 'above' },
+    { button: page.locator('.tabs .new-agent-tab'), side: 'above' },
+    { button: workspaceToolbar.locator('.terminal-picker-toggle'), side: 'above' },
+    { button: workspaceToolbar.locator('.notes-toggle'), side: 'above' },
+    { button: workspaceToolbar.locator('.git-status-summary'), side: 'above' },
+    { button: workspaceToolbar.locator('.project-stack-trigger'), side: 'above' },
+    { button: workspaceToolbar.locator('.more'), side: 'above' },
+    { button: page.locator('.agent-panel .agent-power'), side: 'below' },
+    { button: page.locator('.agent-composer .prompt-history-toggle'), side: 'above' },
+    { button: page.locator('.agent-composer .queued-prompts-toggle'), side: 'above' },
+  ];
+  // check every mobile flyout trigger against its closest edge
+  for (const { button, side } of flyoutIcons) {
+    const caret = button.locator(':scope > .flyout-caret');
+    await expect(caret).toBeVisible();
+    const [buttonBox, caretBox] = await Promise.all([button.boundingBox(), caret.boundingBox()]);
+    expect(caretBox!.height).toBe(3.5);
+    expect(Math.abs(caretBox!.x + caretBox!.width / 2 - buttonBox!.x - buttonBox!.width / 2)).toBeLessThanOrEqual(1);
+    // compare the caret to its flyout-facing edge
+    if (side === 'above') expect(caretBox!.y + caretBox!.height).toBeLessThan(buttonBox!.y + buttonBox!.height / 3);
+    else expect(caretBox!.y).toBeGreaterThan(buttonBox!.y + buttonBox!.height * 2 / 3);
+    const shape = await caret.evaluate(element => ({ mask: getComputedStyle(element).maskImage, clip: getComputedStyle(element).clipPath }));
+    expect(shape.mask).toContain(side === 'above' ? 'M1 2.8 5 .75 9 2.8' : 'M1 .75 5 2.8 9 .75');
+    expect(shape.mask).toContain("stroke-width='1.1'");
+    expect(shape.clip).toBe('none');
+  }
+  // keep the server caret at the upper edge when this bottom tab row opens above
+  const serverTrigger = lead.locator('.server-selector');
+  await serverTrigger.click();
+  await expect(serverTrigger).toHaveAttribute('data-flyout-side', 'above');
+  const serverMenuBox = await page.getByRole('group', { name: 'Remote Agents servers' }).boundingBox();
+  const serverTriggerBox = await serverTrigger.boundingBox();
+  expect(serverMenuBox!.y + serverMenuBox!.height).toBeLessThan(serverTriggerBox!.y);
+  await page.keyboard.press('Escape');
+  await expect(serverTrigger).not.toHaveAttribute('data-flyout-side');
+  await expect(workspaceToolbar.getByRole('button', { name: 'Browser', exact: true }).locator('.flyout-caret')).toHaveCount(0);
   await expect(workspaceToolbar.getByRole('button', { name: 'Open a terminal' })).toBeVisible();
   await expect(workspaceToolbar.getByRole('button', { name: 'Browser', exact: true })).toHaveCount(0);
   await expect(workspaceToolbar.getByRole('button', { name: 'Code', exact: true })).toHaveCount(0);
   await expect(workspaceToolbar.getByRole('group', { name: 'Panels' })).toHaveCount(0);
   await workspaceToolbar.getByRole('button', { name: 'More options' }).click();
+  await expect(workspaceToolbar.locator('.more-wrap')).toHaveAttribute('data-flyout-side', 'above');
   await expect(page.locator('.place-menu').getByRole('button', { name: 'Browser', exact: true })).toBeVisible();
   await expect(page.locator('.place-menu').getByRole('button', { name: 'Code', exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
@@ -89,8 +128,15 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
       tabRowLead: bounds('.tab-row-lead'),
       serverSettings: bounds('.tab-row-lead .server-switcher-settings'),
       tabs: bounds('.tabs'),
+      tabsBorder: getComputedStyle(document.querySelector<HTMLElement>('.tabs')!).borderBottomWidth,
+      tabsShadow: getComputedStyle(document.querySelector<HTMLElement>('.tabs')!).boxShadow,
+      tabsGap: getComputedStyle(document.querySelector<HTMLElement>('.tabs')!).gap,
+      leadGap: getComputedStyle(document.querySelector<HTMLElement>('.tab-row-lead')!).gap,
       bar: bounds('.workspace-toolbar'),
       barActions: bounds('.workspace-toolbar .workspace-toolbar-actions'),
+      spacer: bounds('.workspace-toolbar-actions > .toolbar-spacer'),
+      barGap: getComputedStyle(document.querySelector<HTMLElement>('.workspace-toolbar-actions')!).gap,
+      promptGap: getComputedStyle(document.querySelector<HTMLElement>('.agent-composer-column')!).gap,
       controls: [...document.querySelectorAll<HTMLElement>('.workspace-toolbar .workspace-toolbar-actions button, .workspace-toolbar .workspace-toolbar-actions .project-open')].map(element => {
         const rect = element.getBoundingClientRect();
         return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
@@ -118,13 +164,16 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   expect(layout.queued.bottom).toBeLessThanOrEqual(layout.send.top);
   expect(layout.send.left).toBeGreaterThanOrEqual(layout.prompt.right);
   expect(layout.send.right).toBeLessThanOrEqual(layout.viewportWidth);
-  // the server selector, Call and settings lead the tab row at tab height
-  expect(Math.abs(layout.tabRowLead.left - layout.tabs.left)).toBeLessThanOrEqual(1);
-  expect(Math.abs(layout.tabRowLead.top - layout.tabs.top)).toBeLessThanOrEqual(1);
+  // the server selector, Call and settings sit inside the tab bar's outlined inset
+  expect(Math.abs(layout.tabRowLead.left - layout.tabs.left - 6)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.tabRowLead.top - layout.tabs.top - 6)).toBeLessThanOrEqual(1);
   expect(Math.abs(layout.serverSettings.height - layout.activeTab.height)).toBeLessThanOrEqual(1);
   expect(Math.abs(layout.serverSettings.width - layout.serverSettings.height)).toBeLessThanOrEqual(1);
   // the upper toolbar is gone: tabs sit directly under the output, and no .log-topbar exists
   expect(Math.abs(layout.tabs.top - layout.output.bottom)).toBeLessThanOrEqual(1);
+  // no divider separates the outlined tabs from the buttons beneath them
+  expect(layout.tabsBorder).toBe('0px');
+  expect(layout.tabsShadow).not.toContain('inset');
   await expect(page.locator('.log-topbar')).toHaveCount(0);
   await expect(page.locator('.agent-view > .pull-request-card')).toHaveCount(0);
   // the Workspace's controls sit on one row beneath the tabs, git shrunk to its icon and state dot
@@ -133,7 +182,18 @@ test('keeps the active tab, output, and prompt controls inside a narrow viewport
   expect(layout.gitSummary.right).toBeLessThanOrEqual(layout.viewportWidth);
   expect(layout.controls.every(control => control.left >= 0 && control.right <= layout.viewportWidth)).toBe(true);
   expect(new Set(layout.controls.map(control => Math.round(control.top))).size).toBe(1);
-  expect(Math.abs(layout.barActions.right - Math.max(...layout.controls.map(control => control.right)))).toBeLessThanOrEqual(1);
+  // both rows and their vertical separation match the prompt-button interval
+  expect(layout.tabsGap).toBe(layout.promptGap);
+  expect(layout.leadGap).toBe(layout.promptGap);
+  expect(layout.barGap).toBe(layout.promptGap);
+  expect(Math.abs(layout.barActions.top - layout.activeTab.bottom - parseFloat(layout.promptGap))).toBeLessThanOrEqual(1);
+  // the one active split still reserves the area used by multi-split position controls
+  expect(layout.spacer.width).toBeGreaterThan(20);
+  const buttonGaps = layout.controls.slice(1).map((control, index) => control.left - layout.controls[index].right);
+  const reservedGap = Math.max(...buttonGaps);
+  expect(reservedGap).toBeGreaterThan(layout.spacer.width);
+  expect(buttonGaps.filter(gap => gap !== reservedGap).every(gap => Math.abs(gap - parseFloat(layout.promptGap)) <= 1)).toBe(true);
+  expect(Math.abs(layout.barActions.left - layout.controls[0].left)).toBeLessThanOrEqual(1);
 
   const promptBox = page.getByRole('textbox', { name: 'Prompt' });
   await promptBox.fill(Array.from({ length: 10 }, (_, index) => `Growing line ${index + 1}`).join('\n'));
@@ -192,16 +252,16 @@ test('a phone shows only the current Workspace, as a dropdown over a sheet of ev
   // the marks stand apart from the title
   await expect(dropdown).toHaveCSS('gap', '9.6px');
 
-  // one row that never scrolls sideways: server selector, Call, settings, the dropdown filling the rest, +
+  // one outlined row with gaps: server selector, Call, settings, the dropdown filling the rest, +
   const row = await tabs.evaluate(nav => {
     const box = (element: Element) => { const rect = element.getBoundingClientRect(); return { left: rect.left, right: rect.right, middle: Math.round(rect.top + rect.height / 2) }; };
     return { overflow: nav.scrollWidth - nav.clientWidth, width: nav.getBoundingClientRect().width, lead: box(nav.querySelector('.tab-row-lead')!), dropdown: box(nav.querySelector('.workspace-dropdown')!), plus: box(nav.querySelector('.launcher')!) };
   });
   expect(row.overflow).toBeLessThanOrEqual(0);
   expect(new Set([row.lead.middle, row.dropdown.middle, row.plus.middle]).size).toBe(1);
-  expect(Math.abs(row.dropdown.left - row.lead.right)).toBeLessThanOrEqual(1);
-  expect(Math.abs(row.plus.left - row.dropdown.right)).toBeLessThanOrEqual(1);
-  expect(Math.abs(row.plus.right - row.width)).toBeLessThanOrEqual(1);
+  expect(Math.abs(row.dropdown.left - row.lead.right - 6)).toBeLessThanOrEqual(1);
+  expect(Math.abs(row.plus.left - row.dropdown.right - 6)).toBeLessThanOrEqual(1);
+  expect(Math.abs(row.plus.right - (row.width - 6))).toBeLessThanOrEqual(1);
 
   // the sheet lists every Workspace with its Agent and shell counts and its state, then New Workspace…
   await dropdown.click();

@@ -8,10 +8,18 @@ describe('instance icon artwork', () => {
   it.each(instanceIconNames)('renders scan lines behind the %s ornament', icon => {
     const svg = instanceIconSvg(icon);
     const scanLines = svg.indexOf('stroke-opacity=".42"');
-    const ornament = svg.indexOf(icon === 'terminal' ? '<circle' : icon === 'potato' ? '<g>' : '<path d="M40 40');
+    const ornament = svg.indexOf(icon === 'terminal' ? '<circle' : icon === 'potato' ? '<g transform="translate(3 5) scale(.82)"' : '<g transform="translate(-1 6) scale(.82)"');
 
     expect(scanLines).toBeGreaterThan(-1);
     expect(scanLines).toBeLessThan(ornament);
+  });
+
+  // fill the whole button-sized icon without an inset frame
+  it.each(instanceIconNames)('keeps the %s frame flush with the button edge', icon => {
+    const svg = instanceIconSvg(icon);
+    expect(svg).toContain('<rect width="64" height="64" rx="7.4"');
+    expect(svg).toContain('<rect x=".75" y=".75" width="62.5" height="62.5"');
+    expect(svg).not.toContain('<rect x="5" y="5"');
   });
 
   // preserve the favicon silhouette after PWA installation

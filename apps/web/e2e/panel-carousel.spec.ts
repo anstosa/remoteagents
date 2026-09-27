@@ -1,8 +1,9 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { installPaneMock, pushBytes, seedPaneSize } from './pane-stream-mock.js';
+import { chooseSplit } from './split-menu.js';
 
 // The phone Workspace: its panels sit in a horizontal swipe carousel, one panel per screen. The
-// toolbar's dots track the panel in view and jump to one when tapped; a panel opened from the
+// toolbar's dots track the panel in view and open a titled split menu; a panel opened from the
 // toolbar scrolls into view; Browser and Code move into the ⋮; and a panel's expand hides the tab
 // row and toolbar until it is restored.
 
@@ -36,8 +37,7 @@ const terminalPanel = (page: Page) => page.locator('.terminal-pane[data-panel-ke
 // the carousel sits on a panel boundary: one panel fills the screen
 const expectSnapped = (page: Page) => expect.poll(() => carousel(page).evaluate(element => element.scrollLeft % element.clientWidth)).toBe(0);
 // the panel whose dot is current
-const expectCurrentDot = (page: Page, name: string) => expect(dots(page).getByRole('button', { name, exact: true })).toHaveAttribute('aria-current', 'true');
-
+const expectCurrentDot = (page: Page, name: string) => expect(dots(page).locator(`.panel-dot[title="${name}"]`)).toHaveAttribute('data-current', 'true');
 // a one-finger swipe across the middle of `over`, `distance` pixels (positive moves the finger
 // right). A quick swipe flings; a `slow` one drags and stops before lifting, so it carries no
 // velocity and the carousel snaps to the nearest panel.
@@ -81,7 +81,8 @@ test('swiping moves between panels one screen at a time, and the dots follow', a
   await openTerminal(page);
   await expect(terminalPanel(page)).toBeInViewport({ ratio: 0.99 });
   await expect(agentPanel(page)).not.toBeInViewport();
-  await expect(dots(page).getByRole('button')).toHaveCount(2);
+  await expect(dots(page).locator('.panel-dot')).toHaveCount(2);
+  await expect(dots(page).getByRole('button', { name: 'Choose split' })).toHaveCount(1);
   await expectCurrentDot(page, 'Show terminal build');
 
   // a swipe over the Terminal back to the agent panel snaps to it, and its dot becomes current
@@ -103,8 +104,19 @@ test('swiping moves between panels one screen at a time, and the dots follow', a
   await expect(terminalPanel(page)).toBeInViewport({ ratio: 0.99 });
   await expectCurrentDot(page, 'Show terminal build');
 
-  // tapping a dot jumps to its panel
-  await dots(page).getByRole('button', { name: 'Show agent output' }).click();
+  // any blank part of the reserved flex area opens the vertical split chooser
+  const trigger = dots(page).getByRole('button', { name: 'Choose split' });
+  await expect(trigger.locator(':scope > .flyout-caret')).toBeVisible();
+  const triggerBox = (await trigger.boundingBox())!;
+  expect(triggerBox.width).toBeGreaterThan(50);
+  await trigger.click({ position: { x: 3, y: triggerBox.height / 2 } });
+  const menu = page.getByRole('menu', { name: 'Splits' });
+  await expect(menu.getByRole('menuitem')).toHaveText(['Agent output', 'Terminal build']);
+  // anchor the flyout over the split strip instead of the toolbar's far edge
+  const menuBox = (await menu.boundingBox())!;
+  expect(Math.abs(menuBox.x + menuBox.width / 2 - triggerBox.x - triggerBox.width / 2)).toBeLessThanOrEqual(1);
+  await expect(terminalPanel(page)).toBeInViewport({ ratio: 0.99 });
+  await menu.getByRole('menuitem', { name: 'Agent output' }).click();
   await expect(agentPanel(page)).toBeInViewport({ ratio: 0.99 });
   await expectSnapped(page);
   await expectCurrentDot(page, 'Show agent output');
@@ -178,19 +190,31 @@ test('Browser and Code move into the ⋮, and a panel opened from the toolbar sc
   await expect(code).toBeInViewport({ ratio: 0.99 });
   await expectCurrentDot(page, 'Show code changes');
 
+  // the flyout lists every title vertically and Escape dismisses it without navigating
+  await dots(page).getByRole('button', { name: 'Choose split' }).click();
+  const menu = page.getByRole('menu', { name: 'Splits' });
+  await expect(menu.getByRole('menuitem')).toHaveText(['Agent output', 'Note', 'Project browser', 'Code changes']);
+  await expect(menu.getByRole('menuitem', { name: 'Code changes' })).toHaveAttribute('aria-current', 'true');
+  const firstRow = (await menu.getByRole('menuitem', { name: 'Agent output' }).boundingBox())!;
+  const secondRow = (await menu.getByRole('menuitem', { name: 'Note' }).boundingBox())!;
+  expect(secondRow.y).toBeGreaterThan(firstRow.y);
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await expect(code).toBeInViewport({ ratio: 0.99 });
+
   // choosing an open panel from the ⋮ shows it rather than closing it
-  await dots(page).getByRole('button', { name: 'Show agent output' }).click();
+  await chooseSplit(page, 'Agent output');
   await expect(agentPanel(page)).toBeInViewport({ ratio: 0.99 });
   await toolbar(page).getByRole('button', { name: 'More options' }).click();
   await page.getByRole('button', { name: 'Browser', exact: true }).click();
   await expect(browser).toBeInViewport({ ratio: 0.99 });
-  await expect(dots(page).getByRole('button')).toHaveCount(4);
+  await expect(dots(page).locator('.panel-dot')).toHaveCount(4);
 });
 
 test('expand hides the tab row and toolbar for every panel kind, and restore brings them back', async ({ page }) => {
   await openTerminal(page);
   // with the Terminal in view the toolbar is its helper keys (and the dots); back to the agent
-  await dots(page).getByRole('button', { name: 'Show agent output' }).click();
+  await chooseSplit(page, 'Agent output');
   await toolbar(page).getByRole('button', { name: 'Notes (1)' }).click();
   await page.getByRole('button', { name: 'Phone checklist…', exact: true }).click();
   await toolbar(page).getByRole('button', { name: 'More options' }).click();
@@ -199,15 +223,16 @@ test('expand hides the tab row and toolbar for every panel kind, and restore bri
   await page.getByRole('button', { name: 'Code', exact: true }).click();
 
   const tabs = page.getByRole('tablist', { name: 'Agents and worktrees' });
-  const panels: [dot: string, panel: Locator, label: string][] = [
-    ['Show agent output', agentPanel(page), 'agent'],
-    ['Show terminal build', terminalPanel(page), 'terminal build'],
-    ['Show note', page.getByRole('dialog', { name: 'Note' }), 'note'],
-    ['Show project browser', page.getByRole('dialog', { name: 'Browser' }), 'browser'],
-    ['Show code changes', page.getByRole('region', { name: 'Code changes' }), 'code']
+  const panels: [title: string, panel: Locator, label: string][] = [
+    ['Agent output', agentPanel(page), 'agent'],
+    ['Terminal build', terminalPanel(page), 'terminal build'],
+    ['Note', page.getByRole('dialog', { name: 'Note' }), 'note'],
+    ['Project browser', page.getByRole('dialog', { name: 'Browser' }), 'browser'],
+    ['Code changes', page.getByRole('region', { name: 'Code changes' }), 'code']
   ];
-  for (const [dot, panel, label] of panels) {
-    await dots(page).getByRole('button', { name: dot }).click();
+  // check expansion for every titled split
+  for (const [title, panel, label] of panels) {
+    await chooseSplit(page, title);
     await expect(panel).toBeInViewport({ ratio: 0.99 });
     const bottom = await panel.evaluate(element => element.getBoundingClientRect().bottom);
     await panel.getByRole('button', { name: `Expand ${label}` }).click();
@@ -226,7 +251,7 @@ test('expand hides the tab row and toolbar for every panel kind, and restore bri
   }
 
   // moving to another panel while expanded stays full screen, and the panel in view offers the restore
-  await dots(page).getByRole('button', { name: 'Show note' }).click();
+  await chooseSplit(page, 'Note');
   await page.getByRole('dialog', { name: 'Note' }).getByRole('button', { name: 'Expand note' }).click();
   await carousel(page).evaluate(element => element.scrollTo({ left: element.clientWidth }));
   await expect(terminalPanel(page)).toBeInViewport({ ratio: 0.99 });

@@ -47,6 +47,73 @@ test('launches the resolved kind in one click and lists every configured kind in
   await expect.poll(() => posts).toEqual([{ path: '/api/worktrees/cora/launch', body: { kind: 'codex', sandboxed: false } }]);
 });
 
+// a phone has one full-size Launch target; choosing a row, not tapping the target, starts an Agent
+test('mobile Launch is one menu button in the toolbar and empty Workspace', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const posts = await mount(page, { generation: 1, adapters: { codex, claude }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'claude', origin: 'worktree' })] }] });
+  const trigger = toolbar(page).locator('.launch-menu-only button');
+  await expect(trigger).toHaveCount(1);
+  await expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
+  await expect(trigger).toHaveAttribute('aria-label', 'Launch agent');
+  // the phone launch icon uses a top caret instead of an inline chevron
+  await expect(trigger.locator('.launch-chevron-icon')).toHaveCount(0);
+  const caret = trigger.locator(':scope > .flyout-caret');
+  await expect(caret).toBeVisible();
+  const [buttonBox, caretBox] = await Promise.all([trigger.boundingBox(), caret.boundingBox()]);
+  expect(Math.abs(caretBox!.x + caretBox!.width / 2 - buttonBox!.x - buttonBox!.width / 2)).toBeLessThanOrEqual(1);
+  expect(caretBox!.y + caretBox!.height).toBeLessThan(buttonBox!.y + buttonBox!.height / 3);
+  await expect(page.locator('.workspace-toolbar-actions .launch-primary, .workspace-toolbar-actions .launch-chevron')).toHaveCount(0);
+  expect((await trigger.boundingBox())?.width).toBeCloseTo((await toolbar(page).getByRole('button', { name: 'Open a terminal' }).boundingBox())?.width ?? 0, 1);
+  await trigger.click();
+  await expect(page.locator('.launch-menu').getByRole('menuitem', { name: /Claude/u })).toBeVisible();
+  expect(posts).toEqual([]);
+  await page.mouse.click(4, 4);
+
+  // the repeated action in the empty Workspace opens the same chooser
+  const emptyTrigger = page.getByRole('region', { name: 'Empty workspace' }).locator('.launch-menu-only button');
+  await expect(emptyTrigger).toHaveCount(1);
+  await emptyTrigger.click();
+  expect(posts).toEqual([]);
+  await page.locator('.launch-menu').getByRole('menuitem', { name: /Codex/u }).click();
+  await expect.poll(() => posts).toEqual([{ path: '/api/worktrees/cora/launch', body: { kind: 'codex', sandboxed: false } }]);
+});
+
+// even without a resolved default, the phone Launch target opens the configured-agent chooser
+test('mobile Launch opens its menu without a resolved default', async ({ page }) => {
+  await page.setViewportSize({ width: 700, height: 844 });
+  const posts = await mount(page, { generation: 1, adapters: { codex }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree(undefined)] }] });
+  const trigger = toolbar(page).locator('.launch-menu-only button');
+  await expect(trigger).toHaveCount(1);
+  await expect(trigger.locator(':scope > .flyout-caret')).toBeVisible();
+  await trigger.click();
+  expect(posts).toEqual([]);
+  await page.locator('.launch-menu').getByRole('menuitem', { name: /Codex/u }).click();
+  await expect.poll(() => posts).toEqual([{ path: '/api/worktrees/cora/launch', body: { kind: 'codex', sandboxed: false } }]);
+});
+
+// the chooser remains available for explanation even when no kind can be launched
+test('mobile Launch opens an empty agent menu when no adapters are configured', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const posts = await mount(page, { generation: 1, adapters: {}, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({})] }] });
+  const trigger = toolbar(page).locator('.launch-menu-only button');
+  await expect(trigger).toBeEnabled();
+  await trigger.click();
+  await expect(page.locator('.launch-menu')).toContainText('No agents configured');
+  expect(posts).toEqual([]);
+});
+
+// the toolbar beside a running Agent uses the same one-target chooser
+test('mobile Launch remains one menu button beside a running Agent', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const agent = { id: 'agent-1', sessionId: 'socket:$1', home: '/worktrees/cora', worktreeId: 'cora', worktreeLabel: 'Cora', worktreeOrder: 1, title: 'Ready', kind: 'codex', attention: 'finished', queuedPromptCount: 0, launch: { kind: 'codex', origin: 'worktree' } };
+  const posts = await mount(page, { generation: 1, adapters: { codex, claude }, agents: [agent], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'codex', origin: 'worktree' })] }] });
+  const launchControl = toolbar(page).locator('.launch-menu-only.quiet');
+  await expect(launchControl.locator('button')).toHaveCount(1);
+  await launchControl.getByRole('button', { name: 'Launch agent' }).click();
+  await expect(page.locator('.launch-menu').getByRole('menuitem', { name: /Claude/u })).toBeVisible();
+  expect(posts).toEqual([]);
+});
+
 test('OMX is its own kind: badged ◈, listed beside Codex, and launched as omx', async ({ page }) => {
   const omx = adapter('/bin/omx', { stateSource: 'title', turnCapture: true, inlineQuestions: true });
   const posts = await mount(page, { generation: 1, adapters: { codex, omx }, agents: [], projects: [{ id: 'proj', label: 'Proj', available: true, worktrees: [pinnedWorktree({ kind: 'omx', origin: 'worktree' })] }] });

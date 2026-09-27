@@ -1,6 +1,7 @@
 import { createPortal } from 'react-dom';
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { useViewportFlyout } from './viewport-flyout.js';
+import { usePhoneLayout } from './panel-header.js';
 
 // The closed registry of agent kinds, in resolution/priority order (duplicated from the
 // server's `agentKinds` by design). A configured kind (one with a program) is launchable;
@@ -105,17 +106,19 @@ export function LaunchMenu({ verb, label, resolution, onLaunch, entries = [], la
 // running at their Place.
 export type LaunchPrimary = { label: string; ariaLabel: string; onSelect: () => void };
 
-// The split button: primary launches the resolved kind in one click (naming it, with a
+// the split button: primary launches the resolved kind in one click (naming it, with a
 // lock when Sandboxed); the chevron opens the actions menu. `compact` gives the launcher
 // rows the same control sized to a row, its menu the same anchored flyout. `quiet` is the Workspace
 // toolbar's Launch beside a running Agent: the kind mark and the verb on a plain control.
 // `disabledReason` titles a disabled primary with why it cannot launch. `primary` replaces the
 // launch with another default action, and `entries` follow the kinds in the menu;
 // `launchDisabled` holds back only the launches, so the other two stay usable. When the
-// dashboard carries no resolution (`resolution === undefined`) the control degrades to a
-// single plain "Launch agent" that launches without a kind, as before the split button.
+// dashboard carries no resolution (`resolution === undefined`) the desktop control degrades to a
+// single plain "Launch agent" that launches without a kind, as before the split button. On a
+// phone, a single button always opens the agent menu instead of launching a default kind.
 export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch, disabled = false, disabledReason, pending = false, compact = false, quiet = false, primary, entries = [], launchDisabled = false }: { verb?: LaunchVerb; label: string; resolution: LaunchResolution | undefined; onLaunch: (choice?: LaunchChoice) => void; disabled?: boolean; disabledReason?: string; pending?: boolean; compact?: boolean; quiet?: boolean; primary?: LaunchPrimary; entries?: readonly LaunchMenuEntry[]; launchDisabled?: boolean }) {
   const adapters = useContext(AdaptersContext);
+  const phone = usePhoneLayout();
   const [open, setOpen] = useState(false);
   const { anchorRef, flyoutRef, style } = useViewportFlyout<HTMLSpanElement>(open);
   // an outside press closes the menu, including one inside the "+" launcher flyout these
@@ -136,6 +139,22 @@ export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch
   // an entry closes the menu before it acts, as a launch does
   const menuEntries = entries.map(entry => ({ ...entry, onSelect: () => { setOpen(false); entry.onSelect(); } }));
   const primaryButton = primary === undefined ? undefined : <button type="button" className={`${primaryClass} launch-primary`} aria-label={primary.ariaLabel} disabled={disabled} onClick={() => { setOpen(false); primary.onSelect(); }}>{primary.label}</button>;
+  // both phone and desktop controls open the same anchored menu, including extra actions
+  const menuLabel = entries.length > 0 ? 'More ways to open' : 'Choose agent';
+  const menu = <LaunchMenu verb={verb} label={label} resolution={resolution} onLaunch={launch} entries={menuEntries} launchDisabled={launchDisabled} />;
+  const flyout = open && createPortal(<div ref={flyoutRef} style={style} className="more-menu flyout-menu launch-menu" role="menu" aria-label={menuLabel}>{menu}</div>, document.body);
+  // launcher rows keep their split action even on a phone; the full-size Launch uses one chooser
+  if (phone && !compact && primary === undefined) {
+    return <>
+      <span className={`launch-split launch-menu-only${quiet ? ' quiet' : ''}`} ref={anchorRef}>
+        <button type="button" className="queue launch-menu-trigger" aria-label={`${verb} agent`} aria-haspopup="menu" aria-expanded={open} disabled={disabled || pending} title={disabled ? disabledReason : undefined} onClick={() => setOpen(value => !value)}>
+          {pending ? <span className="spinner" /> : resolution?.kind === undefined ? <span className="launch-kind-mark" aria-hidden="true">+</span> : <KindMark kind={resolution.kind} />}
+          <span className="launch-menu-trigger-label">{verb} agent</span><span className="flyout-caret" aria-hidden="true" />
+        </button>
+      </span>
+      {flyout}
+    </>;
+  }
   // no resolution from the server: a plain, chevron-less launch of the default kind (or the
   // replacement primary), rendered exactly like the pre-split-button launch control
   if (resolution === undefined) return primaryButton ?? <button type="button" className={`${primaryClass}${quiet ? ' launch-quiet' : ''}`} disabled={disabled || launchDisabled || pending} onClick={() => launch()}>{pending ? <span className="spinner" /> : null}{actionCopy(verb, undefined)}</button>;
@@ -143,9 +162,6 @@ export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch
   const resolvedKind = resolution.kind;
   const sandboxed = defaultSandboxed(resolvedKind === undefined ? undefined : adapters?.[resolvedKind]);
   const hint = primary === undefined ? launchHint(adapters, resolution) : undefined;
-  const menu = <LaunchMenu verb={verb} label={label} resolution={resolution} onLaunch={launch} entries={menuEntries} launchDisabled={launchDisabled} />;
-  // with entries beside the kinds, the chevron opens more than a choice of agent
-  const menuLabel = entries.length > 0 ? 'More ways to open' : 'Choose agent';
   // let the icon identify compact agents without widening the new-task column
   const visibleAction = (compact || quiet) && resolvedKind !== undefined ? verb : actionCopy(verb, resolvedKind);
   const primaryTitle = (disabled ? disabledReason : undefined) ?? hint ?? (resolvedKind === undefined ? undefined : `${agentKindLabel[resolvedKind]} — ${originCopy(resolution.origin)}${sandboxed ? ' — sandboxed' : ''}`);
@@ -157,7 +173,7 @@ export function LaunchSplitButton({ verb = 'Launch', label, resolution, onLaunch
       </button>}
       <button type="button" className={`launch-chevron${compact ? ' compact' : ''}`} aria-label={menuLabel} aria-haspopup="menu" aria-expanded={open} disabled={(none && entries.length === 0) || disabled || pending} onClick={() => setOpen(value => !value)}><ChevronIcon /></button>
     </span>
-    {open && createPortal(<div ref={flyoutRef} style={style} className="more-menu flyout-menu launch-menu" role="menu" aria-label={menuLabel}>{menu}</div>, document.body)}
+    {flyout}
   </>;
 }
 

@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { installPaneMock, paneAckTotal, seedPaneSize, pushBytes } from './pane-stream-mock.js';
+import { chooseSplit } from './split-menu.js';
 
 // The selection toolbar over the streamed pane: selecting output (a terminal drag on
 // desktop, a native long-press selection on a phone) reveals the create-note / append /
@@ -198,7 +199,7 @@ test('a native output selection creates and appends notes, copies, and guards th
   const noteEditor = page.getByRole('textbox', { name: 'Note content' });
   await notePreview.click();
   await expect(noteEditor).toHaveValue('Selectable');
-  await page.getByRole('group', { name: 'Panels' }).getByRole('button', { name: 'Show agent output' }).click();
+  await chooseSplit(page, 'Agent output');
   await expect(page.getByRole('dialog', { name: 'Note' })).not.toBeInViewport();
   await expect.poll(() => savedNotes).toContain('Selectable');
 

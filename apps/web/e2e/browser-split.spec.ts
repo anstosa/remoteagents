@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { installPaneMock, seedPaneSize, pushBytes } from './pane-stream-mock.js';
 import { clickPanelAction, expectPanelAction } from './panel-header';
+import { chooseSplit, openSplitMenu } from './split-menu.js';
 
 // verify direct external preview routing
 test('loads direct external previews without managed proxy endpoints', async ({ page }) => {
@@ -474,13 +475,13 @@ test.describe('phone browser split', () => {
     const browser = page.getByRole('dialog', { name: 'Browser' });
     const output = page.locator('.log-output');
     const dots = page.getByRole('group', { name: 'Panels' });
-    const browserSwitch = dots.getByRole('button', { name: 'Show project browser' });
+    const splitTrigger = dots.getByRole('button', { name: 'Choose split' });
     await expect(browser).toBeInViewport({ ratio: 0.99 });
     await expect(output).not.toBeInViewport();
-    await expect(browserSwitch).toBeVisible();
+    await expect(splitTrigger).toBeVisible();
 
     // switch directly among output, note, and browser panes
-    await dots.getByRole('button', { name: 'Show agent output' }).click();
+    await chooseSplit(page, 'Agent output');
     await expect(output).toBeInViewport({ ratio: 0.99 });
     await page.getByRole('button', { name: 'Notes (1)' }).click();
     await page.getByRole('button', { name: 'Keep notes beside the browser.…', exact: true }).click();
@@ -488,23 +489,22 @@ test.describe('phone browser split', () => {
     await expect(note).toBeInViewport({ ratio: 0.99 });
     await expect(output).not.toBeInViewport();
     await expect(browser).not.toBeInViewport();
-    await expect(dots.getByRole('button', { name: 'Show agent output' })).toBeVisible();
-    await browserSwitch.click();
+    await expect(splitTrigger).toBeVisible();
+    await chooseSplit(page, 'Project browser');
     await expect(browser).toBeInViewport({ ratio: 0.99 });
     await expect(note).not.toBeInViewport();
-    await expect(dots.getByRole('button', { name: 'Show note' })).toBeVisible();
-    await dots.getByRole('button', { name: 'Show note' }).click();
+    await expect((await openSplitMenu(page)).getByRole('menuitem', { name: 'Note' })).toBeVisible();
+    await page.getByRole('menu', { name: 'Splits' }).getByRole('menuitem', { name: 'Note' }).click();
     await expect(note).toBeInViewport({ ratio: 0.99 });
     await note.getByRole('button', { name: 'Close note' }).click();
     await expect(output).toBeInViewport({ ratio: 0.99 });
     await expect(note).toHaveCount(0);
-    await browserSwitch.click();
+    await chooseSplit(page, 'Project browser');
 
-    const mobileSwitch = dots.getByRole('button', { name: 'Show agent output' });
     const preview = page.frameLocator('iframe[title="Project browser"]');
     await expect(browser).toBeInViewport({ ratio: 0.99 });
     await expect(output).not.toBeInViewport();
-    await expect(mobileSwitch).toBeVisible();
+    await expect(splitTrigger).toBeVisible();
     // on the phone expand offers full screen
     await expect(browser.getByRole('button', { name: 'Expand browser' })).toBeVisible();
     await expectPanelAction(browser, 'Use mobile viewport and user agent', async toggle => {
@@ -536,12 +536,12 @@ test.describe('phone browser split', () => {
     expect(requestedDevices.at(-1)).toBe('desktop');
     expect(await preview.locator('main').evaluate(() => window.innerWidth)).toBe(980);
 
-    await mobileSwitch.click();
+    await chooseSplit(page, 'Agent output');
     await expect(output).toBeInViewport({ ratio: 0.99 });
     await expect(browser).not.toBeInViewport();
-    await expect(browserSwitch).toBeVisible();
+    await expect(splitTrigger).toBeVisible();
 
-    await browserSwitch.click();
+    await chooseSplit(page, 'Project browser');
     await expect(browser).toBeInViewport({ ratio: 0.99 });
     await expect(output).not.toBeInViewport();
 
@@ -549,6 +549,6 @@ test.describe('phone browser split', () => {
     await page.reload();
     await expect(output).toBeInViewport({ ratio: 0.99 });
     await expect(browser).not.toBeInViewport();
-    await expect(browserSwitch).toBeVisible();
+    await expect(splitTrigger).toBeVisible();
   });
 });

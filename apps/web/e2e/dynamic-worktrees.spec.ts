@@ -43,7 +43,7 @@ test('dynamic worktrees defaults on and compacts single-worktree projects when d
   await expect(dynamicWorktrees).toBeChecked();
   await settings.getByRole('button', { name: 'Back to console' }).click();
 
-  await page.getByRole('button', { name: 'Launch agent', exact: true }).click();
+  await page.getByRole('tablist', { name: 'Agents and worktrees' }).getByRole('button', { name: 'Launch agent', exact: true }).click();
   let launcher = page.getByRole('group', { name: 'Agent launcher' });
   const expandedSoloProject = launcher.getByRole('group', { name: 'Solo', exact: true });
   await expect(expandedSoloProject.getByRole('button', { name: 'New worktree…' })).toBeVisible();
@@ -97,7 +97,7 @@ test('a stale single-worktree project stays contained when compacted', async ({ 
   const settings = page.getByRole('dialog', { name: 'Settings' });
   await settings.getByRole('switch', { name: 'Dynamic worktrees' }).uncheck();
   await settings.getByRole('button', { name: 'Back to console' }).click();
-  await page.getByRole('button', { name: 'Launch agent', exact: true }).click();
+  await page.getByRole('tablist', { name: 'Agents and worktrees' }).getByRole('button', { name: 'Launch agent', exact: true }).click();
 
   const soloProject = page.getByRole('group', { name: 'Agent launcher' }).getByRole('group', { name: 'Solo', exact: true });
   const soloHeader = soloProject.locator('.launcher-project-header');

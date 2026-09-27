@@ -318,7 +318,9 @@ test('preserves the prepared draft and files after launch failure and retry', as
 test('shows the editable launch composer without overflowing a mobile viewport', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const harness = await mountLifecycle(page);
-  await page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'Launch Codex' }).click();
+  // the phone launch action opens a chooser before starting the selected agent
+  await page.getByRole('region', { name: 'Workspace toolbar' }).getByRole('button', { name: 'Launch agent' }).click();
+  await page.getByRole('menu', { name: 'Choose agent' }).getByRole('menuitem', { name: /^Codex/u }).click();
   await expect.poll(harness.attempts).toBe(1);
 
   const composer = page.getByRole('region', { name: 'Prompt composer' });

@@ -129,7 +129,8 @@ export type PanelAction = {
   popupOpen?: boolean;
 };
 
-const actionButton = (action: PanelAction, row = false) => <button key={action.key} type="button" className={`panel-header-action${row ? ' panel-header-row' : ''}${action.className === undefined ? '' : ` ${action.className}`}`} disabled={action.disabled} aria-label={action.label} aria-pressed={action.pressed} aria-expanded={action.popupOpen} title={action.title ?? action.label} onClick={action.onSelect}>{action.icon}{row && <span>{action.label}</span>}</button>;
+// mark compact actions that open a secondary flyout
+const actionButton = (action: PanelAction, row = false) => <button key={action.key} type="button" className={`panel-header-action${row ? ' panel-header-row' : ''}${action.className === undefined ? '' : ` ${action.className}`}`} disabled={action.disabled} aria-label={action.label} aria-pressed={action.pressed} aria-expanded={action.popupOpen} title={action.title ?? action.label} onClick={action.onSelect}>{action.icon}{!row && action.popupOpen !== undefined && <span className="flyout-caret" aria-hidden="true" />}{row && <span>{action.label}</span>}</button>;
 
 export function PanelIcon({ path }: { path: string }) {
   return <svg className="panel-header-icon" viewBox="0 0 24 24" aria-hidden="true"><path d={path} /></svg>;
@@ -184,7 +185,7 @@ export function PanelHeader({ panelKey, label, title, actions, secondary = [], c
     <div className="panel-header-pill panel-header-actions" role="toolbar" aria-label={`${label[0].toUpperCase()}${label.slice(1)} actions`}>
       {actions}
       {!folded && secondary.map(action => actionButton(action))}
-      {showMore && <button ref={anchorRef} type="button" className={`panel-header-action panel-header-more${moreOpen ? ' active' : ''}`} aria-label={`More ${label} actions`} aria-expanded={moreOpen} title="More" onClick={() => setMoreOpen(value => !value)} onKeyDown={event => { if (event.key === 'Escape' && moreOpen) { event.preventDefault(); event.stopPropagation(); closeMore(); } }}><svg className="panel-header-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="12" cy="19" r="1" /></svg></button>}
+      {showMore && <button ref={anchorRef} type="button" className={`panel-header-action panel-header-more${moreOpen ? ' active' : ''}`} aria-label={`More ${label} actions`} aria-expanded={moreOpen} title="More" onClick={() => setMoreOpen(value => !value)} onKeyDown={event => { if (event.key === 'Escape' && moreOpen) { event.preventDefault(); event.stopPropagation(); closeMore(); } }}><svg className="panel-header-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="12" cy="19" r="1" /></svg><span className="flyout-caret" aria-hidden="true" /></button>}
       {expand !== undefined && <button type="button" className="panel-header-action panel-header-expand" disabled={expandDisabled} aria-label={`${expand.expanded ? 'Restore' : 'Expand'} ${label}`} aria-pressed={expand.expanded} title={phone ? expand.expanded ? 'Show the tabs and toolbar' : 'Full screen' : expand.expanded ? 'Restore the other panels' : 'Fill the Workspace'} onClick={expand.toggle}><PanelIcon path={expand.expanded ? panelIcons.restore : panelIcons.expand} /></button>}
       {close === undefined || isValidElement(close) ? close : actionButton(close)}
     </div>

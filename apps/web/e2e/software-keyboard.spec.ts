@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { installPaneMock, seedPaneSize, pushBytes } from './pane-stream-mock.js';
+import { chooseSplit } from './split-menu.js';
 
 // The soft-keyboard treatment: the tablist hides when the keyboard shrinks the viewport
 // while the composer or the pane is focused, and returns when the keyboard closes; streamed
@@ -88,7 +89,7 @@ test('hides the tablist under the keyboard and keeps pane focus across streamed 
   const phoneBrowser = page.getByRole('dialog', { name: 'Browser' });
   await expect(phoneBrowser).toBeInViewport({ ratio: 0.99 });
   const dots = page.getByRole('group', { name: 'Panels' });
-  await dots.getByRole('button', { name: 'Show agent output' }).click();
+  await chooseSplit(page, 'Agent output');
   await expect(page.locator('.log-output')).toBeInViewport({ ratio: 0.99 });
   await prompt.focus();
   await setViewportHeight(500);
@@ -97,8 +98,8 @@ test('hides the tablist under the keyboard and keeps pane focus across streamed 
   await setViewportHeight(900);
   await expect(dots).toBeVisible();
   await expect(page.locator('.log-output')).toBeInViewport({ ratio: 0.99 });
-  await expect(dots.getByRole('button', { name: 'Show agent output' })).toHaveAttribute('aria-current', 'true');
-  await dots.getByRole('button', { name: 'Show project browser' }).click();
+  await expect(dots.locator('.panel-dot[title="Show agent output"]')).toHaveAttribute('data-current', 'true');
+  await chooseSplit(page, 'Project browser');
   await expect(phoneBrowser).toBeInViewport({ ratio: 0.99 });
   // leave the browser closed for the desktop step below
   await phoneBrowser.getByRole('button', { name: 'Close browser' }).click();

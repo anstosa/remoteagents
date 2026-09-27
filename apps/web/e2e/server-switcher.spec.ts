@@ -1,4 +1,5 @@
 import { expect, test, type Locator } from '@playwright/test';
+import { instanceIconSvg, isInstanceIcon } from '../../server/src/instance-icon.js';
 
 type BoundingBox = NonNullable<Awaited<ReturnType<Locator['boundingBox']>>>;
 
@@ -51,6 +52,9 @@ test('shows and switches the configured server on authentication and output scre
     const url = new URL(request.url());
     // complete remote navigation without network access
     if (url.hostname === 'framework.santosa.dev') return route.fulfill({ contentType: 'text/html', body: '<title>Framework target</title><h1>Framework target</h1>' });
+    // render the bundled icon artwork rather than Vite's HTML fallback
+    const icon = /^\/instance-icons\/(\w+)\.svg$/u.exec(url.pathname)?.[1];
+    if (icon !== undefined && isInstanceIcon(icon)) return route.fulfill({ contentType: 'image/svg+xml', body: instanceIconSvg(icon) });
     if (!url.pathname.startsWith('/api/')) return route.continue();
     if (url.pathname === '/api/auth/session') {
       if (screen === 'login') return route.fulfill({ status: 401, json: { error: 'unauthorized' } });
@@ -115,7 +119,8 @@ test('shows and switches the configured server on authentication and output scre
   const [controlServerBounds, controlDotBounds] = await Promise.all([renderedBounds(controlServers.current), renderedBounds(controlStatusDots.first())]);
   expect(Math.abs(controlDotBounds.x + controlDotBounds.width - (controlServerBounds.x + controlServerBounds.width - 4))).toBeLessThanOrEqual(1);
   expect(Math.abs(controlDotBounds.y - (controlServerBounds.y + 4))).toBeLessThanOrEqual(1);
-  expect(controlDotBounds.width).toBeLessThan(8);
+  // match the shared status dot diameter
+  expect(controlDotBounds.width).toBe(6);
   // require the takeover card to expand with complete labels
   const [controlCardBounds, controlGroupBounds] = await Promise.all([renderedBounds(page.locator('.console-recovery')), renderedBounds(controlServers.group)]);
   expect(controlCardBounds.width).toBeGreaterThan(320);
@@ -145,11 +150,17 @@ test('shows and switches the configured server on authentication and output scre
   await expect(lead.locator('> :first-child')).toHaveAccessibleName(/^Switch server/u);
   await expect(lead.locator('> :last-child').getByRole('button', { name: 'Global settings' })).toBeVisible();
   await expect(selector.locator('img')).toHaveAttribute('src', '/instance-icons/potato.svg');
-  await expect(selector.locator('.server-selector-name')).toHaveText('X1 Carbon');
+  await expect.poll(async () => selector.locator('img').evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  await expect(selector.locator('.server-selector-name')).toBeHidden();
   await expect(selector).toHaveAttribute('aria-expanded', 'false');
-  // the selector rolls up the other servers' attention
+  // the selector names the most urgent peer while one corner dot cycles through servers
   await expect(selector).toHaveAccessibleName('Switch server (X1 Carbon) — Working on another server');
-  await expect(selector.locator('.server-switcher-attention')).toHaveClass(/working/u);
+  const statusDot = selector.locator(':scope > .server-switcher-attention');
+  await expect(statusDot).toBeVisible();
+  const [selectorCornerBounds, dotBounds] = await Promise.all([renderedBounds(selector), renderedBounds(statusDot)]);
+  expect(dotBounds.width).toBe(6);
+  expect(Math.abs(dotBounds.x + dotBounds.width - (selectorCornerBounds.x + selectorCornerBounds.width - 4))).toBeLessThanOrEqual(1);
+  expect(Math.abs(dotBounds.y - (selectorCornerBounds.y + 4))).toBeLessThanOrEqual(1);
   const activeTab = page.getByRole('tab', { selected: true });
   const [selectorBounds, tabBounds, outputBounds] = await Promise.all([renderedBounds(selector), renderedBounds(activeTab), renderedBounds(page.locator('.log-output'))]);
   expect(selectorBounds.x).toBeLessThan(tabBounds.x);
@@ -187,32 +198,44 @@ test('shows and switches the configured server on authentication and output scre
   statusAvailable = false;
   await expect(remote).toHaveAccessibleName('Framework Published — Server unavailable', { timeout: 8_000 });
   await expect(remote.locator('.server-switcher-attention')).toHaveClass(/unavailable/u);
-  // an unreachable server is not attention, so the selector stays bare
+  // an unreachable peer rotates into the one dot without becoming aggregate attention
   await expect(selector).toHaveAccessibleName('Switch server (X1 Carbon)');
-  await expect(selector.locator('.server-switcher-attention')).toHaveCount(0);
+  await expect(selector).toHaveAttribute('aria-description', 'Framework Published — Server unavailable');
+  await expect(statusDot).toHaveClass(/unavailable/u);
 
   statusAvailable = true;
   remoteAttention = 'question';
   await expect(remote).toHaveAccessibleName('Framework Published — Active question', { timeout: 8_000 });
   await expect(remote.locator('.server-switcher-attention')).toHaveClass(/question/u);
-  await expect(selector.locator('.server-switcher-attention')).toHaveClass(/question/u);
+  await expect(selector).toHaveAttribute('aria-description', 'Framework Published — Active question');
+  await expect(statusDot).toHaveClass(/question/u);
   // show a neutral marker when the server needs no attention
   remoteAttention = 'idle';
   await expect(remote).toHaveAccessibleName('Framework Published — Idle', { timeout: 8_000 });
   await expect(remote.locator('.server-switcher-attention')).toHaveClass(/idle/u);
   await expect(remote.locator('.server-switcher-attention')).toHaveCSS('background-color', 'rgb(88, 91, 112)');
-  // an idle peer adds no marker to the selector
+  // an idle peer still takes a turn in the neutral corner dot
   await expect(selector).toHaveAccessibleName('Switch server (X1 Carbon)');
-  await expect(selector.locator('.server-switcher-attention')).toHaveCount(0);
+  await expect(selector).toHaveAttribute('aria-description', 'Framework Published — Idle');
+  await expect(statusDot).toHaveClass(/idle/u);
 
-  // the phone keeps the logo and chevron but drops the name
+  // the phone uses the icon edge-to-edge without padding
   await page.keyboard.press('Escape');
   await expect(menu).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(selector.locator('.server-selector-name')).toBeHidden();
   await expect(selector.locator('img')).toBeVisible();
+  const [iconBounds, buttonBounds] = await Promise.all([renderedBounds(selector.locator('img')), renderedBounds(selector)]);
+  expect(buttonBounds.width - iconBounds.width).toBeLessThanOrEqual(2);
+  expect(buttonBounds.height - iconBounds.height).toBeLessThanOrEqual(2);
+  await expect(selector.locator('img')).toHaveCSS('border-radius', '4.8px');
+  await expect(selector).toHaveCSS('padding-left', '0px');
+  await expect(selector).toHaveCSS('padding-right', '0px');
+  await expect(selector).toHaveCSS('border-top-width', '0px');
+  await expect(selector).toHaveCSS('padding-top', '0px');
   const [narrowSelectorBounds, titleBounds, narrowOutputBounds] = await Promise.all([renderedBounds(selector), renderedBounds(page.locator('.agent-panel .panel-header-title')), renderedBounds(page.locator('.log-output'))]);
-  expect(narrowSelectorBounds.x).toBeLessThanOrEqual(1);
+  // inset the outlined selector with its tab-strip peers
+  expect(Math.abs(narrowSelectorBounds.x - 6)).toBeLessThanOrEqual(1);
   // the agent panel's title pill takes the corner the switcher left
   expect(titleBounds.y - narrowOutputBounds.y).toBeLessThan(12);
 
@@ -220,6 +243,37 @@ test('shows and switches the configured server on authentication and output scre
   await remote.click();
   await expect(page).toHaveURL('https://framework.santosa.dev/');
   await expect(page.getByRole('heading', { name: 'Framework target' })).toBeVisible();
+});
+
+test('keeps the heart and potato artwork clear of the server status corner', async ({ page }) => {
+  const overlaps = await page.evaluate(async icons => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const context = canvas.getContext('2d')!;
+    const counts: number[] = [];
+    // sample the selector dot footprint in the SVG viewbox
+    for (const { svg, colors } of icons) {
+      const image = new Image();
+      image.src = `data:image/svg+xml,${encodeURIComponent(svg)}`;
+      await image.decode();
+      context.clearRect(0, 0, 64, 64);
+      context.drawImage(image, 0, 0, 64, 64);
+      const pixels = context.getImageData(49, 6, 10, 10).data;
+      let count = 0;
+      // count ornament-colored pixels under the status dot
+      for (let index = 0; index < pixels.length; index += 4) {
+        // ignore the shared background and frame colors
+        if (colors.some(color => color.every((channel, part) => Math.abs(pixels[index + part]! - channel) < 25))) count++;
+      }
+      counts.push(count);
+    }
+    return counts;
+  }, [
+    { svg: instanceIconSvg('heart'), colors: [[166, 227, 161]] },
+    { svg: instanceIconSvg('potato'), colors: [[198, 138, 82], [135, 91, 82], [230, 185, 120]] },
+  ]);
+  expect(overlaps).toEqual([0, 0]);
 });
 
 test('leads the empty console tab row with the server selector', async ({ page }) => {
@@ -259,13 +313,62 @@ test('rolls the most urgent remote attention onto the closed selector', async ({
 
   await page.goto('/');
   const selector = page.locator('.tab-row-lead .server-selector');
+  const statusDot = selector.locator(':scope > .server-switcher-attention');
   // a question on one remote outranks work on another
   await expect(selector).toHaveAccessibleName('Switch server (X1 Carbon) — Active question on another server');
-  await expect(selector.locator('.server-switcher-attention')).toHaveClass(/question/u);
+  await expect(statusDot).toHaveCount(1);
+  await expect(selector).toHaveAttribute('aria-description', 'Framework — Working');
+  await expect(statusDot).toHaveClass(/working/u);
+  await expect(selector).toHaveAttribute('aria-description', 'Homelab — Active question');
+  await expect(statusDot).toHaveClass(/question/u);
   // an unread result outranks work, whichever remote carries it
   attention = { framework: 'completed', homelab: 'working' };
   await expect(selector).toHaveAccessibleName('Switch server (X1 Carbon) — Completed notification on another server', { timeout: 8_000 });
-  await expect(selector.locator('.server-switcher-attention')).toHaveClass(/completed/u);
+  await expect(selector).toHaveAttribute('aria-description', 'Framework — Completed notification');
+  await expect(statusDot).toHaveClass(/completed/u);
+  await expect(selector).toHaveAttribute('aria-description', 'Homelab — Working');
+  await expect(statusDot).toHaveClass(/working/u);
+});
+
+test('cycles one corner status dot through configured servers at narrow phone width', async ({ page }) => {
+  await page.clock.install();
+  await page.setViewportSize({ width: 320, height: 780 });
+  const remotes = Array.from({ length: 2 }, (_, index) => ({ name: `Remote ${index + 1}`, url: `https://remote-${index + 1}.example.com`, icon: 'terminal' }));
+  const server = { name: 'X1 Carbon', url: 'https://x1carbon.santosa.dev', icon: 'potato', remotes };
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    // serve distinct statuses for the current instance and two peers
+    if (path === '/api/auth/session') return route.fulfill({ json: { csrfToken: 'csrf-token', active: true, deviceName: 'Test device', server } });
+    if (path === '/api/dashboard') return route.fulfill({ json: { generation: 1, agents: [], projects: [] } });
+    if (path === '/api/server-statuses') return route.fulfill({ json: { servers: [{ name: server.name, url: server.url, icon: server.icon, attention: 'idle' }, ...remotes.map((remote, index) => ({ ...remote, attention: index % 2 === 0 ? 'working' : 'question' }))] } });
+    if (path === '/api/push/public-key') return route.fulfill({ json: {} });
+    return route.fulfill({ status: 404, json: { error: 'not mocked' } });
+  });
+  await page.goto('/');
+  const selector = page.locator('.tab-row-lead .server-selector');
+  const dot = selector.locator(':scope > .server-switcher-attention');
+  await expect(dot).toHaveCount(1);
+  await expect(selector).toHaveAttribute('aria-description', 'X1 Carbon — Idle');
+  await expect(dot).toHaveClass(/idle/u);
+  // hold the current status until the one-second boundary
+  await page.clock.runFor(999);
+  await expect(selector).toHaveAttribute('aria-description', 'X1 Carbon — Idle');
+  await page.clock.runFor(1);
+  await expect(selector).toHaveAttribute('aria-description', 'Remote 1 — Working');
+  await expect(dot).toHaveClass(/working/u);
+  // advance one configured server per second
+  await page.clock.runFor(1_000);
+  await expect(selector).toHaveAttribute('aria-description', 'Remote 2 — Active question');
+  await expect(dot).toHaveClass(/question/u);
+  await page.clock.runFor(1_000);
+  await expect(selector).toHaveAttribute('aria-description', 'X1 Carbon — Idle');
+  await expect(dot).toHaveClass(/idle/u);
+  const [buttonBounds, iconBounds, dotBounds] = await Promise.all([renderedBounds(selector), renderedBounds(selector.locator('img')), renderedBounds(dot)]);
+  expect(buttonBounds.width).toBe(iconBounds.width);
+  expect(buttonBounds.height).toBe(iconBounds.height);
+  expect(dotBounds.width).toBe(6);
+  expect(dotBounds.x + dotBounds.width).toBeLessThanOrEqual(buttonBounds.x + buttonBounds.width);
+  expect(dotBounds.y).toBeGreaterThanOrEqual(buttonBounds.y);
 });
 
 test('renders a single configured server as the current button', async ({ page }) => {

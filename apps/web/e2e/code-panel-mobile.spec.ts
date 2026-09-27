@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { installPaneMock, pushBytes, seedPaneSize } from './pane-stream-mock';
+import { chooseSplit } from './split-menu.js';
 import type { ComparisonFile, ComparisonPatch } from '../src/code-panel/comparison';
 
 // a minimal valid unified diff for one modified file, enough for the panel's parser
@@ -47,9 +48,8 @@ test('shows the Code panel as a switchable mobile panel, not stacked on the agen
   await expect(agentOutput(page)).not.toBeInViewport();
 
   // the agent's dot returns to the agent output, moving the Code panel off screen
-  const showAgent = page.getByRole('group', { name: 'Panels' }).getByRole('button', { name: 'Show agent output' });
-  await expect(showAgent).toBeVisible();
-  await showAgent.click();
+  await expect(page.getByRole('group', { name: 'Panels' }).getByRole('button', { name: 'Choose split' })).toBeVisible();
+  await chooseSplit(page, 'Agent output');
   await expect(split).toHaveClass(/\bmobile-agent-view\b/u);
   await expect(agentOutput(page)).toBeInViewport({ ratio: 0.99 });
   await expect(codePanel(page)).not.toBeInViewport();

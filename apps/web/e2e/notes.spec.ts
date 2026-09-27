@@ -1,4 +1,5 @@
 import { expect, test, type Locator } from '@playwright/test';
+import { chooseSplit } from './split-menu.js';
 
 // require rendered layout geometry
 const renderedBounds = async (locator: Locator) => {
@@ -277,25 +278,24 @@ test('switches sticky notes between full-screen mobile panes and a horizontal de
   await expect(page.locator('.log > .log-status')).toHaveCount(0);
 
   // show one full-size pane per screen on phones, with the toolbar's dots to move between them
-  const showOutput = page.getByRole('group', { name: 'Panels' }).getByRole('button', { name: 'Show agent output' });
+  const splitTrigger = page.getByRole('group', { name: 'Panels' }).getByRole('button', { name: 'Choose split' });
   await expect(pane).toBeInViewport({ ratio: 0.99 });
   await expect(output).not.toBeInViewport();
-  await expect(showOutput).toBeVisible();
+  await expect(splitTrigger).toBeVisible();
   await expect(page.getByRole('separator', { name: 'Resize agent and note panels' })).toBeHidden();
   await expect(pane.getByRole('button', { name: 'Expand note' })).toBeVisible();
   const mobileNote = await Promise.all([renderedBounds(log), renderedBounds(pane)]);
   expect(mobileNote[1].width / mobileNote[0].width).toBeGreaterThan(0.95);
   expect(mobileNote[1].height / mobileNote[0].height).toBeGreaterThan(0.95);
 
-  await showOutput.click();
-  const showNote = page.getByRole('group', { name: 'Panels' }).getByRole('button', { name: 'Show note' });
+  await chooseSplit(page, 'Agent output');
   await expect(output).toBeInViewport({ ratio: 0.99 });
   await expect(pane).not.toBeInViewport();
-  await expect(showNote).toBeVisible();
+  await expect(splitTrigger).toBeVisible();
   const mobileOutput = await Promise.all([renderedBounds(log), renderedBounds(output)]);
   expect(mobileOutput[1].width / mobileOutput[0].width).toBeGreaterThan(0.95);
   expect(mobileOutput[1].height / mobileOutput[0].height).toBeGreaterThan(0.95);
-  await showNote.click();
+  await chooseSplit(page, 'Note');
   await expect(pane).toBeInViewport({ ratio: 0.99 });
   await expect(output).not.toBeInViewport();
 

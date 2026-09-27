@@ -83,3 +83,33 @@ test('uses consistent Workspace toolbar styles, tints an open panel’s button a
   await page.waitForTimeout(175);
   await expect(queue).toHaveCSS('filter', 'brightness(1.08)');
 });
+
+// preserve inline desktop counts while pinning icon-mode badges to button corners
+test('places phone toolbar counts and git status over their icon buttons', async ({ page }) => {
+  await page.goto('/');
+  await page.setContent(`
+    <link rel="stylesheet" href="/src/styles.css">
+    <section class="workspace-toolbar-actions">
+      <button class="terminal-picker-toggle toolbar-button" aria-label="Terminal"><svg viewBox="0 0 24 24"></svg><span class="toolbar-label">Terminal</span><span class="saved-prompts-count">2</span></button>
+      <button class="notes-toggle toolbar-button" aria-label="Notes"><svg viewBox="0 0 24 24"></svg><span class="toolbar-label">Notes</span><span class="saved-prompts-count notes-count">3</span></button>
+      <span class="git-status-wrap"><button class="git-status-summary dirty" aria-label="Git status"><svg class="git-branch-icon" viewBox="0 0 24 24"></svg><span class="git-status-dot"></span><span class="git-branch">main</span><span class="git-status-separator">·</span><span class="git-worktree-state">Changed</span></button></span>
+    </section>
+  `);
+  await expect(page.getByRole('button', { name: 'Terminal' }).locator('.saved-prompts-count')).toHaveCSS('position', 'static');
+  await expect(page.locator('.git-status-dot')).toBeHidden();
+
+  await page.setViewportSize({ width: 428, height: 880 });
+  const buttons = [page.getByRole('button', { name: 'Terminal' }), page.getByRole('button', { name: 'Notes' }), page.getByRole('button', { name: 'Git status' })];
+  // check each badge against its own button, not the toolbar row
+  for (const button of buttons) {
+    const badge = button.locator('.saved-prompts-count, .git-status-dot');
+    await expect(badge).toHaveCSS('position', 'absolute');
+    const [buttonBox, badgeBox, iconBox] = await Promise.all([button.boundingBox(), badge.boundingBox(), button.locator('svg').boundingBox()]);
+    expect(buttonBox).not.toBeNull();
+    expect(badgeBox).not.toBeNull();
+    expect(iconBox).not.toBeNull();
+    expect(badgeBox!.x).toBeGreaterThan(buttonBox!.x + buttonBox!.width / 2);
+    expect(badgeBox!.y).toBeLessThan(buttonBox!.y + buttonBox!.height / 4);
+    expect(Math.abs(iconBox!.x + iconBox!.width / 2 - (buttonBox!.x + buttonBox!.width / 2))).toBeLessThanOrEqual(1);
+  }
+});

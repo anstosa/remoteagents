@@ -1,11 +1,9 @@
 import { type CSSProperties, useLayoutEffect, useRef, useState } from 'react';
 
 type ViewportFlyoutPlacement = 'vertical'|'above'|'left';
-// `align` picks which anchor edge a vertical flyout lines up with: its right edge (`end`, the
-// default, for controls at the right of a row) or its left edge (`start`, for controls at the left).
-// `matchContainerWidth` names an ancestor of the anchor (such as its panel) whose width a vertical
-// flyout spans, so it stays within that ancestor rather than the whole viewport.
-type ViewportFlyoutOptions = { placement?: ViewportFlyoutPlacement; align?: 'start'|'end'; boundarySelector?: string; boundaryRootSelector?: string; contentSized?: boolean; matchAnchorWidth?: boolean; matchContainerWidth?: string };
+// align vertical flyouts at the anchor's left, centre or right
+// matchContainerWidth keeps a flyout within its ancestor panel
+type ViewportFlyoutOptions = { placement?: ViewportFlyoutPlacement; align?: 'start'|'center'|'end'; boundarySelector?: string; boundaryRootSelector?: string; contentSized?: boolean; matchAnchorWidth?: boolean; matchContainerWidth?: string };
 type ViewportFlyoutStyle = CSSProperties & { '--flyout-available-height'?: string };
 
 // position one portal flyout within the viewport
@@ -15,7 +13,8 @@ export function useViewportFlyout<T extends HTMLElement = HTMLSpanElement>(open:
   const flyoutRef = useRef<HTMLDivElement | null>(null);
   const [style, setStyle] = useState<ViewportFlyoutStyle>({ visibility: 'hidden' });
   useLayoutEffect(() => {
-    if (!open) { setStyle({ visibility: 'hidden' }); return; }
+    // clear the last direction when the flyout closes
+    if (!open) { anchorRef.current?.removeAttribute('data-flyout-side'); setStyle({ visibility: 'hidden' }); return; }
     const position = () => {
       const anchor = anchorRef.current;
       const flyout = flyoutRef.current;
@@ -29,6 +28,7 @@ export function useViewportFlyout<T extends HTMLElement = HTMLSpanElement>(open:
       const width = Math.max(1, Math.min(containerWidth ?? (matchAnchorWidth ? right - anchorLeft : flyout.offsetWidth), window.innerWidth - margin * 2));
       // keep side flyouts top-aligned until their lower boundary
       if (placement === 'left') {
+        anchor.dataset.flyoutSide = 'left';
         const boundaryRoot = boundaryRootSelector === undefined ? anchor.ownerDocument : anchor.closest(boundaryRootSelector);
         const boundary = boundarySelector === undefined ? undefined : boundaryRoot?.querySelector(boundarySelector);
         const boundaryBounds = boundary?.getBoundingClientRect();
@@ -47,11 +47,15 @@ export function useViewportFlyout<T extends HTMLElement = HTMLSpanElement>(open:
       const below = window.innerHeight - bottom - gap;
       const above = top - gap;
       const side = placement === 'above' || below < above ? 'above' : 'below';
+      // match the trigger's caret to the actual opening edge
+      anchor.dataset.flyoutSide = side;
       const maxHeight = Math.max(1, side === 'below' ? below : above);
       // a content-sized flyout keeps its own CSS width and height cap, told only the room it has
       const height = Math.min(contentSized ? flyout.offsetHeight : flyout.scrollHeight, maxHeight);
       const flyoutTop = side === 'below' ? bottom + gap : top - height - gap;
-      const left = containerWidth === undefined ? Math.max(margin, Math.min(align === 'start' ? anchorLeft : right - width, window.innerWidth - width - margin)) : containerLeft;
+      // centre the split chooser over its full-width trigger when requested
+      const preferredLeft = align === 'start' ? anchorLeft : align === 'center' ? (anchorLeft + right - width) / 2 : right - width;
+      const left = containerWidth === undefined ? Math.max(margin, Math.min(preferredLeft, window.innerWidth - width - margin)) : containerLeft;
       setStyle({ position: 'fixed', top: flyoutTop, left, right: 'auto', bottom: 'auto', width: contentSized ? 'max-content' : width, maxWidth: `${window.innerWidth - margin * 2}px`, ...(contentSized ? { '--flyout-available-height': `${maxHeight}px` } : { maxHeight: `${maxHeight}px` }), visibility: 'visible' });
     };
     position();
