@@ -141,9 +141,9 @@ test('terminal picker is the toolbar’s Terminal button on desktop and phone', 
     await expect(trigger).toHaveAttribute('aria-expanded', 'false');
     await expect(trigger.locator('svg[aria-hidden="true"]')).toBeVisible();
     await expect(trigger.locator('.terminal-minimized-count')).toHaveText('1');
-    // enlarge the glyph without changing its button
-    await expect(trigger.locator('svg')).toHaveCSS('width', '20px');
-    await expect(trigger.locator('svg')).toHaveCSS('height', '20px');
+    // match the terminal glyph to its neighboring action icons
+    await expect(trigger.locator('svg')).toHaveCSS('width', '16px');
+    await expect(trigger.locator('svg')).toHaveCSS('height', '16px');
 
     const more = page.getByRole('button', { name: 'More options', exact: true });
     const referenceBox = await more.boundingBox();

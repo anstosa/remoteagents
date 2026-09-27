@@ -11,7 +11,7 @@ test('keeps phone icon controls square and aligned with the workspace tab', asyn
         <button class="server-switcher-button server-switcher-voice" aria-label="Call"><svg viewBox="0 0 24 24"></svg><span>Call</span></button>
       </div>
       <button class="workspace-dropdown active" role="tab" aria-selected="true"><span class="tab-kind-stack"><span class="tab-place-mark">◈</span></span><span class="workspace-dropdown-label">Workspace</span><svg class="workspace-dropdown-chevron" viewBox="0 0 24 24"></svg></button>
-      <span class="launcher"><button class="new-agent-tab" aria-label="Launch agent">+</button></span>
+      <span class="launcher"><button class="new-agent-tab" aria-label="Launch agent"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg></button></span>
       <span class="server-switcher-settings-wrap"><button class="server-switcher-button server-switcher-settings" aria-label="Settings"><svg viewBox="0 0 24 24"></svg><span class="server-switcher-settings-update-dot"></span></button></span>
     </nav>
   `);

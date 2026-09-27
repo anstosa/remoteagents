@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { FlyoutPortal } from './flyout-portal.js';
+import { PanelIcon, panelIcons } from './panel-header.js';
 import { stackActionLabel, stackOperationLabel, type StackAction, type StackOperationLog } from './stack-operations.js';
 import { useViewportFlyout } from './viewport-flyout.js';
 
@@ -109,7 +110,7 @@ export function ProjectOpen({ url, stack, browserOpen = false, onBrowserToggle, 
   const logTitle = log === undefined ? 'Stack output' : log.active ? `${stackOperationLabel(log.action)} stack` : `${stackActionLabel(log.action)} output`;
   const logStatus = log === undefined ? 'Waiting for command output…' : log.active ? `${stackOperationLabel(log.action)}…` : `Finished ${new Date(log.completedAt ?? log.startedAt).toLocaleTimeString()}`;
   const splitTitle = browserOpen ? 'Close split view' : 'Open split view';
-  const logDialog = logsOpen && createPortal(<section className="dialog stack-log-dialog" role="dialog" aria-modal="true" aria-label="Stack output"><div><header><strong>{logTitle}</strong>{log?.active && <span className="spinner" aria-hidden="true" />}<button type="button" aria-label="Close stack output" title="Close" onClick={() => setLogsOpen(false)}>×</button></header>{logError && <p className="stack-log-error" role="alert">{logError}</p>}<pre ref={logOutputRef} tabIndex={0} autoFocus>{log?.output || (log === undefined ? 'Waiting for command output…' : 'The command has not produced output yet.')}</pre><footer aria-live="polite">{logStatus}</footer></div></section>, document.body);
+  const logDialog = logsOpen && createPortal(<section className="dialog stack-log-dialog" role="dialog" aria-modal="true" aria-label="Stack output"><div><header><strong>{logTitle}</strong>{log?.active && <span className="spinner" aria-hidden="true" />}<button type="button" aria-label="Close stack output" title="Close" onClick={() => setLogsOpen(false)}><PanelIcon path={panelIcons.close} /></button></header>{logError && <p className="stack-log-error" role="alert">{logError}</p>}<pre ref={logOutputRef} tabIndex={0} autoFocus>{log?.output || (log === undefined ? 'Waiting for command output…' : 'The command has not produced output yet.')}</pre><footer aria-live="polite">{logStatus}</footer></div></section>, document.body);
   const externalControl = url === undefined ? null : <a className="project-menu-external" href={url} target="_blank" rel="noreferrer" aria-busy={inProgress || undefined} title={title} onClick={() => {
     // close after external navigation
     setMenuOpen(false);

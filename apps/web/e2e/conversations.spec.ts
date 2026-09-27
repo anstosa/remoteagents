@@ -49,6 +49,13 @@ test('shows two opposing conversation bubbles on desktop and phone', async ({ pa
     await expect(icon.locator('path')).toHaveCount(2);
     await expect(icon.locator('path').nth(0)).toHaveAttribute('d', 'M4 3h11a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H7l-5 4V5a2 2 0 0 1 2-2Z');
     await expect(icon.locator('path').nth(1)).toHaveAttribute('d', 'M20 8a2 2 0 0 1 2 2v11l-4-3h-7a2 2 0 0 1-2-2');
+    // keep the glyph centered within the control on both layouts
+    const controlBounds = await control.boundingBox();
+    const iconBounds = await icon.boundingBox();
+    requireBounds(controlBounds, 'conversations control');
+    requireBounds(iconBounds, 'conversations icon');
+    expect(Math.abs(iconBounds.x + iconBounds.width / 2 - controlBounds.x - controlBounds.width / 2)).toBeLessThan(0.5);
+    expect(Math.abs(iconBounds.y + iconBounds.height / 2 - controlBounds.y - controlBounds.height / 2)).toBeLessThan(0.5);
     await control.click();
     await expect(control).toHaveAttribute('aria-expanded', 'true');
     await expect(page.locator('.conversations-menu')).toBeVisible();

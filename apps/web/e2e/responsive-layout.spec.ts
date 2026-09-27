@@ -332,6 +332,14 @@ test('a phone shows only the current Workspace, as a dropdown over a sheet of ev
   await expect(dropdown).toHaveAttribute('aria-selected', 'true');
   await expect(dropdown).toHaveAttribute('aria-haspopup', 'dialog');
   await expect(dropdown).toHaveAccessibleDescription('Other Workspaces: 1 need an answer, 1 unread');
+  // verify the real launch, settings and switcher glyphs share the control-icon scale
+  const controlIcons = tabs.locator('.new-agent-tab svg, .server-switcher-settings svg, .workspace-dropdown-chevron');
+  await expect(controlIcons).toHaveCount(3);
+  const iconPaint = await controlIcons.evaluateAll(elements => elements.map(element => {
+    const style = getComputedStyle(element);
+    return [style.width, style.height, Number.parseFloat(style.strokeWidth)];
+  }));
+  expect(iconPaint).toEqual(Array.from({ length: 3 }, () => ['16px', '16px', 2]));
   // the badge counts the Agents in other Workspaces waiting on the operator, red while any has a question
   const badge = dropdown.locator('.workspace-dropdown-badge');
   await expect(badge).toHaveText('2');
